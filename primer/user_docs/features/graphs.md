@@ -2,150 +2,158 @@
 slug: graphs
 title: Graphs
 section: features
-summary: Build and run a multi-node agent graph in the console -- design the canvas, add nodes and edges, wire conditional branches, and run the pipeline.
+summary: Wire agents into a multi-step directed graph -- define nodes and edges on the visual canvas, then run the graph as a workspace session.
 ---
 
-## Overview
+## What a graph is
 
-A graph wires several agents (or several invocations of the same agent) into
-a multi-step workflow. The console provides a visual canvas where you drag
-nodes onto a grid, draw edges between them, configure each node in a side
-panel, and save the result. Running the graph executes every node in
-dependency order, persisting per-node state to the workspace's git-backed
-`.state/graphs/` tree.
+A graph is a directed, potentially cyclic workflow made up of nodes connected by edges. Each node is a unit of work -- an agent turn, a direct tool call, or a data-shaping operation like fan-out or aggregation. Edges carry the result of one node into the next.
 
-Use a graph when the work splits cleanly into stages -- research, critique,
-write; or fetch, classify, dispatch. Use a single agent when the work is one
-continuous conversation.
+The key idea is that a graph encodes structure instead of squeezing multi-step reasoning into a single long prompt. When work splits cleanly into stages -- research, then critique, then rewrite -- a graph makes those stages explicit, each with its own agent, its own tools, and its own context window.
 
-## Open the graph list
+Primer's graph engine runs a Pregel-style superstep loop: it computes the set of nodes ready to run, executes all of them concurrently, records each node's output into a shared context, evaluates outgoing edges to compute the next frontier, and repeats until the ready set drains, a cap is hit, or a failure terminates the run.
 
-Go to **Graphs** in the left nav. Each row shows the graph id, description,
-node and edge counts, entry node, and a status pill (ok / N issues) fetched
-from the graph validator.
+```mermaid
+flowchart TD
+    B([Begin]) --> A[agent node]
+    A --> J{conditional edge}
+    J -->|reject| A
+    J -->|accept| E([End])
+```
 
-Click a row to open the graph detail view with the canvas editor and the
-status panel.
+### Graph sessions
 
-## Create a graph
+A graph does not run by itself. You run a graph by creating a workspace session bound to the graph. The session carries the initial input, the workspace the agents can read and write, and the full run state across every superstep. Go to Sessions, create a new session, pick the graph as the target, supply any `graph_input` the graph expects, and submit. The worker picks up the session and drives the graph to completion.
 
-1. Click **New graph** in the filter bar.
-2. In the modal:
-   - **ID** (optional) -- a slug like `incident-pipeline`. The backend
-     generates one if left blank.
-   - **Description** -- a short label for the list view.
-   - **Seed agent** -- the agent that will occupy the first worker node. The
-     console seeds a minimal valid skeleton: `Begin -> agent -> End`.
-3. Click **Create**. The console opens the graph canvas.
+Per-node state is committed to the workspace's `.state/graphs/<session_id>/` tree after every superstep, so runs survive worker restarts and every turn is recoverable.
 
-If you have no agents yet, click **New** next to the agent dropdown to create
-one inline without leaving the dialog.
+### When to use a graph
 
-## The canvas
+Use a graph when work splits cleanly into stages and you want those stages to be distinct, inspectable, and composable. The classic pattern is a producer-and-judge loop: one agent drafts, another critiques, the conditional edge loops back until the judge accepts, then an End node collects the final output.
+
+Use a single agent for one continuous conversation. Graphs are overhead when the task is a single turn.
+
+## Configuration
+
+### Creating a graph
+
+1. Go to **Graphs** in the left nav and click **New graph**.
+2. Fill in the modal:
+   - **ID** (optional) -- a short slug like `blog-pipeline`. Leave blank and the backend generates one.
+   - **Description** -- a one-line label shown in the list view.
+   - **Seed agent** -- the agent that seeds the first worker node. The console creates a minimal skeleton: `Begin -> agent -> End`.
+3. Click **Create**. The canvas opens immediately.
+
+### The canvas
 
 ```embed:graph-canvas
 ```
 
-The canvas shows nodes on a dot-grid background. Edges are drawn as arrows
-between nodes:
+The canvas shows nodes on a dot-grid. Edges appear as arrows between them:
 
-- Solid arrows -- static edges (always followed).
-- Dashed arrows -- conditional edges (followed when a branch condition is met)
-  or implicit fan-out wiring (FanOut specs, shown for reference only).
+- Solid arrows -- static edges, always followed.
+- Dashed arrows -- conditional edges (carry a JSON-path router) or implicit fan-out wiring shown for reference only.
 
-A legend at the bottom-left identifies the edge styles. Drag any node to
-reposition it; the canvas auto-snaps to an 8-pixel grid. Click **Auto-layout**
-in the toolbar to reset all positions to a computed left-to-right arrangement.
+A legend at the bottom-left identifies edge styles. Drag any node to reposition it; the canvas snaps to an 8-pixel grid. Click **Auto-layout** to reset all positions to a left-to-right computed arrangement.
 
-Click the canvas background to deselect the current node or edge.
+### Node kinds
 
-## Node kinds
+| Kind | `kind` value | Purpose |
+|---|---|---|
+| Begin | `begin` | Entry point; receives the graph's initial input. Every graph needs exactly one. |
+| End | `end` | Sink; renders the final output template. At least one must be reachable from Begin. |
+| Agent | `agent` | Runs a stored agent with a configurable input template. The main workhorse. |
+| Subgraph | `graph` | Delegates to another stored graph (recursive composition). |
+| Fan-out | `fan_out` | Dispatches the current state to multiple downstream nodes in parallel. |
+| Fan-in | `fan_in` | Waits for all parallel branches to finish and aggregates their outputs. |
+| Tool call | `tool_call` | Calls a platform tool directly without an agent turn. |
 
-| Kind | Purpose |
-|---|---|
-| Begin | Entry point; receives the initial run input. Every graph needs exactly one. |
-| Agent | Invokes an agent with a configurable prompt and toolset. The main workhorse. |
-| End | Accepts final output; at least one End reachable from Begin is required. |
-| Fan-out | Dispatches the current state to multiple downstream agent nodes in parallel. |
-| Fan-in | Waits for parallel branches to finish and aggregates their outputs. |
-| Tool call | Calls a platform tool directly without spinning up an agent turn. |
+See `ref:features/graph-node-types` for the full configuration of each kind.
 
-## Add and configure a node
+### Adding and configuring a node
 
 1. Click **Add node** in the toolbar and pick a kind from the dropdown.
 2. The new node appears on the canvas and is immediately selected.
-3. The right-hand side panel opens for that node. Fill in the fields:
-   - **Agent node** -- pick an agent from the dropdown, or click **+ New**
-     to create one inline. Optionally override the prompt.
-   - **End node** -- set the output template (may be left blank).
-   - **Fan-out node** -- add one or more specs (broadcast, map, or tee),
-     each pointing to a target node id.
-   - **Fan-in node** -- set the aggregate template.
-   - **Tool call node** -- pick a tool id from the catalogue and supply the
-     arguments as JSON.
-4. To rename a node, edit the **ID** field in the side panel. All edges
-   referencing that node are updated automatically.
-5. To delete a node, click **Delete node** in the side panel. All edges
-   touching the node are removed.
+3. The right-hand side panel opens. Fill in the fields:
+   - **Agent node** -- pick an agent from the dropdown, or click **+ New** to create one inline. Optionally override the `input_template`.
+   - **End node** -- set the `output_template`. May be left blank.
+   - **Fan-out node** -- add one or more specs (`broadcast`, `map`, or `tee`), each pointing to a target node id.
+   - **Fan-in node** -- set the `aggregate_template`.
+   - **Tool call node** -- pick a tool id and supply arguments as JSON.
+4. To rename a node, edit the **ID** field. All edges referencing that node update automatically.
+5. To delete a node, click **Delete node**. All edges touching it are removed.
 
-## Wire edges
+### Wiring edges
 
-1. Click **Add edge** in the toolbar. The cursor changes to a crosshair and
-   a prompt appears: "Click source node...".
-2. Click the source node. The prompt changes to "Pick target for
-   `<node-id>`...".
-3. Click the target node. The edge is drawn.
+1. Click **Add edge** in the toolbar. The cursor changes to a crosshair.
+2. Select **Static** or **Conditional** from the segment control next to the button.
+3. Click the source node, then the target node. The edge is drawn.
 
-Before clicking Add edge, pick **Static** or **Conditional** from the
-segment control to the right of the button:
+For a conditional edge, open the edge's side panel to add one or more branches. Each branch carries one or more `BranchCondition` predicates (ANDed together). The first branch whose conditions all hold fires; if none match and a `default_to` target is set, that target fires instead. If none match and no default is set, the run terminates failed.
 
-- **Static** -- the edge is always followed.
-- **Conditional** -- the edge carries a JSON-path router with one or more
-  branches and a default target. Configure branches in the side panel after
-  drawing the edge.
-
-To remove an edge, click it on the canvas to select it, then click **Delete
-edge** in the side panel.
+To delete an edge, click it on the canvas then click **Delete edge** in the panel.
 
 ```callout:warning
-FanOut nodes must not have outgoing edges in the edge list. Their downstream
-targets are configured through the node's specs (broadcast, map, tee) and
-are shown on the canvas as dashed implicit arrows. Adding a real edge from a
-FanOut node is a hard violation and blocks Save.
+Fan-out nodes must have no outgoing edges in the edge list. Their downstream targets live on the node's specs (broadcast, map, tee) and appear as dashed implicit arrows. Adding a real edge from a Fan-out node is a hard topology violation and blocks Save.
 ```
 
-## Validate and save
+### `max_iterations`
 
-The canvas runs local topology checks as you edit. Violations appear in a
-banner below the toolbar:
+Any graph whose edges can form a cycle must set `max_iterations` -- a positive integer cap on how many supersteps the executor runs before it terminates the run with `ended_detail='max_iterations_exceeded'`. The canvas validator enforces this: a graph with a cycle and no `max_iterations` is a hard violation that blocks Save.
 
-- **Hard violations** (red) -- block Save. Examples: missing Begin, End not
-  reachable from Begin, duplicate node ids, broken edge endpoints, FanOut
-  with outgoing edges.
-- **Warnings** (amber) -- do not block Save. Examples: orphan nodes with no
-  incoming edges, ToolCall referencing a tool not in the catalogue.
+### Validate and save
 
-Fix hard violations before saving. When the banner is clear (or shows only
-warnings), click **Save** in the toolbar. An "unsaved changes" label appears
-whenever the draft differs from the last saved version.
+The canvas runs local topology checks as you edit:
 
-Click **Discard** to revert the canvas to the last saved state.
+- **Hard violations** (red) -- block Save. Examples: missing Begin, End not reachable from Begin, duplicate node ids, broken edge endpoints, Fan-out with real outgoing edges, cyclic graph without `max_iterations`.
+- **Warnings** (amber) -- do not block Save. Examples: orphan nodes, Tool-call referencing a tool not in the catalogue.
 
-## Run a graph
+When the banner is clear (or shows only warnings), click **Save**. An "unsaved changes" label appears whenever the draft differs from the last saved version. Click **Discard** to revert.
 
-A graph run is started by creating a session bound to the graph. Go to
-**Sessions**, create a new session, and select this graph as the target. The
-graph executor runs each node in turn (or in parallel for fan-out branches),
-persisting per-node state to the workspace's `.state/graphs/<session_id>/`
-git repo. The session detail view shows the graph run progress.
+## Walkthrough -- a producer-judge loop
 
-## Delete a graph
+This walkthrough builds the producer-judge loop from the quickstart: a draft-writer feeds a completeness-judge that either loops back or accepts the draft.
 
-Open the graph detail view and click **Delete** in the status panel. A
-confirmation modal appears. Deletion removes the graph definition. Sessions
-that were bound to the graph are retained as historical records.
+1. Open **Graphs** and click **New graph**. Name it `blog-pipeline`. Choose any agent as the seed.
+2. The canvas opens with three nodes: `begin`, `agent`, and `end`. Click the agent node and rename it `draft-writer` in the side panel. Pick your drafting agent.
+3. Click **Add node** and add a second **Agent** node. Rename it `judge`. Pick your judge agent. In the side panel, set `response_format` to a JSON schema with a `decision` field (`"accept"` or `"reject"`) and an optional `feedback` field.
+4. Draw a **Static** edge from `draft-writer` to `judge`.
+5. Draw a **Conditional** edge from `judge` to `draft-writer` (the reject loop). In the side panel, add a branch with condition `decision eq "reject"`.
+6. Draw a **Conditional** edge from `judge` to `end` (the accept path). Add a branch with condition `decision eq "accept"`.
+7. In the End node's side panel, set the `output_template` to render the accepted draft: `{{ nodes.draft-writer.text }}`.
+8. Set `max_iterations` to `10` on the graph (shown in the graph properties panel).
+9. Click **Save**.
 
-```ref:reference/api-graphs
-Automate this -- the API reference covers creating, updating, and validating
-graphs, and starting graph runs programmatically.
+```mermaid
+flowchart LR
+    b([Begin]) --> d[draft-writer]
+    d --> j{judge}
+    j -->|decision eq reject| d
+    j -->|decision eq accept| e([End])
+```
+
+10. Go to **Sessions**, click **New session**, pick a workspace, select `blog-pipeline` as the graph, paste your initial topic as `graph_input`, and submit.
+
+The session detail view shows per-node status updating as each superstep runs.
+
+## What happens after
+
+Once the graph runs:
+
+- The session moves to `ended` with `ended_reason='completed'` when the ready set drains naturally (every reachable End node fired).
+- The session moves to `ended` with `ended_reason='failed'` if a node fails, a template renders incorrectly, a route cannot be resolved, or `max_iterations` is hit. The `ended_detail` field carries the specific code.
+- Every node's output is accessible at `nodes.<node_id>.text` and `nodes.<node_id>.parsed` for the next turn of any downstream template.
+- The workspace's `.state/graphs/` tree holds per-node message history and graph-level state, browsable with `git log`.
+- The session detail view shows the run status and per-node progress. Turn logs are available at `GET /v1/graphs/{id}/runs/{run_id}/turn_log` and per-node at `.../nodes/{node_id}/turn_log`.
+
+```ref:features/graph-node-types
+Every node kind: configuration fields, behavior, and examples.
+```
+
+```ref:features/graph-templating
+How Jinja2 templates in nodes access upstream outputs and graph input.
+```
+
+```ref:features/sessions
+How sessions are created, how graph_input is validated, and how runs are inspected.
 ```
