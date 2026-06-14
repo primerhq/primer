@@ -39,12 +39,25 @@ def make_tool(
     when: str,
     args_schema: dict[str, Any],
     examples: list[ToolExample],
+    yields: bool = False,
+    requires_session: bool = False,
 ) -> Tool:
     """Build a Tool with validated examples and the standard description anatomy.
 
     ``purpose`` is one imperative sentence; ``when`` starts with "Use when".
     Each example's ``args`` is validated against ``args_schema`` (which must be
     a self-contained JSON Schema) and rejected on mismatch.
+
+    ``yields`` and ``requires_session`` are explicit capability flags that
+    replace the previous source-introspection heuristics in
+    :mod:`primer.toolset.internal`. Set ``yields=True`` when the tool's
+    handler can park the agent turn (its return annotation includes
+    :class:`primer.model.yield_.Yielded` / it raises ``YieldToWorker``).
+    Set ``requires_session=True`` when the handler needs a live
+    ``AgentSession`` (it reads ``ctx.session_id``). Both default to
+    ``False`` and surface via :meth:`InternalToolsetProvider.is_yielding`
+    / :meth:`InternalToolsetProvider.requires_session`, which the MCP
+    exposure guard consults.
     """
     validator = Draft202012Validator(args_schema)
     for ex in examples:
@@ -56,4 +69,6 @@ def make_tool(
         description=render_description(body, examples),
         args_schema=args_schema,
         examples=examples,
+        yields=yields,
+        requires_session=requires_session,
     )

@@ -136,18 +136,32 @@ class Q[ModelT: BaseModel]:
         return self
 
     def where_null(self, field: str) -> "Q[ModelT]":
-        """Add an ``IS NULL`` predicate (field equals ``None``)."""
+        """Add an ``IS NULL`` predicate (field is ``None``).
+
+        Emits :attr:`Op.IS_NULL`, not ``= NULL`` -- SQL ``= NULL`` is
+        always UNKNOWN and never matches, so the equality form was a
+        no-op bug. The right operand is the canonical ``Value(None)``
+        placeholder the unary-op shape requires (it is ignored).
+        """
         self._check_field(field)
         self._predicates.append(
-            Predicate(left=FieldRef(name=field), op=Op.EQ, right=Value(value=None))
+            Predicate(left=FieldRef(name=field), op=Op.IS_NULL, right=Value(value=None))
         )
         return self
 
     def where_not_null(self, field: str) -> "Q[ModelT]":
-        """Add an ``IS NOT NULL`` predicate (field is not ``None``)."""
+        """Add an ``IS NOT NULL`` predicate (field is not ``None``).
+
+        Emits :attr:`Op.IS_NOT_NULL`, not ``!= NULL`` -- SQL ``!= NULL``
+        is always UNKNOWN and never matches, so the inequality form was
+        a no-op bug. The right operand is the canonical ``Value(None)``
+        placeholder the unary-op shape requires (it is ignored).
+        """
         self._check_field(field)
         self._predicates.append(
-            Predicate(left=FieldRef(name=field), op=Op.NE, right=Value(value=None))
+            Predicate(
+                left=FieldRef(name=field), op=Op.IS_NOT_NULL, right=Value(value=None)
+            )
         )
         return self
 

@@ -19,7 +19,6 @@ Every handler mirrors the logic in
 
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -38,6 +37,7 @@ from primer.model.storage import (
     Predicate,
     Value,
 )
+from primer.toolset._helpers import err as _err, ok_json as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -52,19 +52,9 @@ HARNESS_TOOLSET_ID = "harness"
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers (``_ok`` / ``_err`` are the shared toolset result builders, imported
+# above as aliases over :mod:`primer.toolset._helpers`).
 # ---------------------------------------------------------------------------
-
-
-def _ok(payload: Any) -> ToolCallResult:
-    return ToolCallResult(output=json.dumps(payload, default=str), is_error=False)
-
-
-def _err(message: str, *, error_type: str = "tool-error") -> ToolCallResult:
-    return ToolCallResult(
-        output=json.dumps({"type": error_type, "message": message}),
-        is_error=True,
-    )
 
 
 def _harness_dict(harness: Harness) -> dict:

@@ -60,3 +60,49 @@ def test_examples_excluded_from_serialization():
     dumped = tool.model_dump()
     assert "examples" not in dumped  # not on the wire (no /v1/tools change)
     assert dumped["schema"]  # args_schema still serialized under its alias
+
+
+def test_make_tool_flags_default_false():
+    tool = make_tool(
+        id="thing",
+        toolset_id="misc",
+        purpose="Do the thing.",
+        when="Use when you need the thing.",
+        args_schema=_Args.model_json_schema(),
+        examples=[ToolExample(args={"name": "x"})],
+    )
+    assert tool.yields is False
+    assert tool.requires_session is False
+
+
+def test_make_tool_sets_explicit_flags():
+    tool = make_tool(
+        id="thing",
+        toolset_id="misc",
+        purpose="Do the thing.",
+        when="Use when you need the thing.",
+        args_schema=_Args.model_json_schema(),
+        examples=[ToolExample(args={"name": "x"})],
+        yields=True,
+        requires_session=True,
+    )
+    assert tool.yields is True
+    assert tool.requires_session is True
+
+
+def test_make_tool_flags_excluded_from_serialization():
+    # The capability flags are in-memory metadata only; the wire shape
+    # (/v1/tools, MCP tools/list) must stay unchanged.
+    tool = make_tool(
+        id="thing",
+        toolset_id="misc",
+        purpose="Do the thing.",
+        when="Use when you need the thing.",
+        args_schema=_Args.model_json_schema(),
+        examples=[ToolExample(args={"name": "x"})],
+        yields=True,
+        requires_session=True,
+    )
+    dumped = tool.model_dump()
+    assert "yields" not in dumped
+    assert "requires_session" not in dumped

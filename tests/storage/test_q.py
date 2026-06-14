@@ -52,6 +52,38 @@ def test_where_not_null_validated():
         Q(_M).where_not_null("missing")
 
 
+def test_where_null_emits_is_null_op():
+    # Must emit Op.IS_NULL, NOT Op.EQ against Value(None): SQL `= NULL`
+    # is always UNKNOWN and never matches.
+    p = Q(_M).where_null("a").build()
+    assert p.op is Op.IS_NULL
+    assert p.left == FieldRef(name="a")
+
+
+def test_where_not_null_emits_is_not_null_op():
+    p = Q(_M).where_not_null("b").build()
+    assert p.op is Op.IS_NOT_NULL
+    assert p.left == FieldRef(name="b")
+
+
+def test_where_null_renders_is_null_sql():
+    # End-to-end: the SQLite predicate renderer must produce IS NULL /
+    # IS NOT NULL keywords (no parameter binding for the NULL operand).
+    from primer.storage._sqlite_predicate import _SqlitePredicateTranslator
+
+    sql_null, params_null = _SqlitePredicateTranslator(_M).translate(
+        Q(_M).where_null("a").build()
+    )
+    assert "IS NULL" in sql_null
+    assert params_null == []
+
+    sql_nn, params_nn = _SqlitePredicateTranslator(_M).translate(
+        Q(_M).where_not_null("b").build()
+    )
+    assert "IS NOT NULL" in sql_nn
+    assert params_nn == []
+
+
 def test_where_op_validates_field():
     Q(_M).where_op("b", Op.GT, 5).build()
     with pytest.raises(KeyError):

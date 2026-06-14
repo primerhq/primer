@@ -50,6 +50,7 @@ from primer.model.trigger import (
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._describe import make_tool
+from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 from primer.trigger.cron import CronInvalid, TimezoneInvalid
 from primer.trigger.service import (
@@ -85,29 +86,6 @@ TRIGGER_TOOLSET_ID = "trigger"
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _ok(payload: Any) -> ToolCallResult:
-    if isinstance(payload, BaseModel):
-        return ToolCallResult(output=payload.model_dump_json(), is_error=False)
-    if isinstance(payload, list):
-        body = [
-            p.model_dump(mode="json") if isinstance(p, BaseModel) else p
-            for p in payload
-        ]
-        return ToolCallResult(
-            output=json.dumps(body, default=str), is_error=False,
-        )
-    return ToolCallResult(
-        output=json.dumps(payload, default=str), is_error=False,
-    )
-
-
-def _err(message: str, *, error_type: str = "tool-error") -> ToolCallResult:
-    return ToolCallResult(
-        output=json.dumps({"type": error_type, "message": message}),
-        is_error=True,
-    )
 
 
 def _err_validation(exc: ValidationError) -> ToolCallResult:
@@ -443,6 +421,8 @@ TOOL_SUBSCRIBE = make_tool(
             note="yielding: parks the session until the trigger fires",
         ),
     ],
+    yields=True,
+    requires_session=True,
 )
 
 
