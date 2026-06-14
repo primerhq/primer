@@ -301,6 +301,18 @@ ships; the agent has to know the document id to read it back.
   `embedder.provider_id`, `embedder.model`, or `search_provider_id`
   returns 422. The `search` field (MMR + cross-encoder config) IS
   mutable at any time without re-indexing.
+- **Embedding dimension mismatch returns 422 on the first document
+  create/update.** The indexing pipeline probes the active embedder
+  once before embedding any chunks. If the embedder's output dimension
+  does not match the dimension already stored in the vector store for
+  that collection (from a prior ingest with a different model), the
+  API returns HTTP 422 with `type=/errors/dimension-mismatch` and a
+  message naming both dimensions. The Document row IS still persisted;
+  only the vector index is not updated. To resolve: delete all
+  documents from the collection, drop and re-create the collection
+  with the new `embedder` binding, then re-ingest. Alternatively,
+  create a separate collection for the new embedding model. The error
+  surfaces early (before embedding work) so no CPU/API cost is wasted.
 - **Reserved ids start with `_internal_`.** `system::create_collection`
   rejects them with 422. The five internal collections are managed
   by the IC subsystem; don't try to CRUD them via these tools.

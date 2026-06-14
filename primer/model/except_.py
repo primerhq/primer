@@ -75,6 +75,44 @@ class ValidationError(PrimerError):
     """
 
 
+class DimensionMismatchError(ValidationError):
+    """Embedder output dimensionality does not match the collection's stored dim.
+
+    Maps to HTTP 422. Raised BEFORE embedding work begins so that CPU/
+    network time is not wasted on a batch that cannot be stored. The
+    error message names both dimensions and provides a re-index hint.
+
+    Attributes
+    ----------
+    embedder_dim
+        Dimension reported by the active embedder (probe output).
+    collection_dim
+        Dimension recorded in the vector store for this collection.
+    collection_id
+        Identifier of the mismatched collection.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        embedder_dim: int,
+        collection_dim: int,
+        collection_id: str,
+        code: str | None = None,
+        cause: Exception | None = None,
+    ) -> None:
+        super().__init__(
+            message,
+            code=code,
+            status_code=422,
+            cause=cause,
+        )
+        self.embedder_dim = embedder_dim
+        self.collection_dim = collection_dim
+        self.collection_id = collection_id
+
+
 class ProviderError(PrimerError):
     """Upstream provider returned an error.
 

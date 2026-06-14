@@ -42,7 +42,13 @@ from primer.model.agent import Agent
 from primer.model.chat import TextPart
 from primer.model.embedding import ExtendedEmbeddingConfig
 from primer.model.collection import Collection, CollectionEmbedder
-from primer.model.except_ import ConfigError, PrimerError, NotFoundError
+from primer.model.except_ import (
+    ConfigError,
+    ConflictError,
+    DimensionMismatchError,
+    NotFoundError,
+    PrimerError,
+)
 from primer.model.graph import Graph
 from primer.model.internal import (
     AI_DOCS_COLLECTION_ID,
@@ -475,15 +481,43 @@ class InternalCollectionsSubsystem:
         exist, otherwise leave it intact.
 
         Some backends (lance) raise on create when the collection
-        already exists — for re-bootstrap we need this call to be
+        already exists -- for re-bootstrap we need this call to be
         idempotent so the operator can re-run any time without first
         dropping anything. The "exists" check is store-specific; we
         try the create then suppress the typical existence-error
         signatures rather than introspecting each store's API.
+
+        Raises :class:`~primer.model.except_.DimensionMismatchError` (422)
+        when the collection already exists in the store but was created
+        with a different embedding dimension. This surfaces a meaningful
+        error at bootstrap time instead of producing silent indexing
+        failures or 400s at query time.
         """
         try:
             await store.create_collection(collection_id, dimensions=dimensions)
             return
+        except ConflictError as exc:
+            # The store already holds this collection with a different
+            # dimension -- a new embedder model is being activated against
+            # vectors produced by the old one. Raise a typed 422 with a
+            # re-index hint so the operator sees what to fix.
+            import re as _re
+            m = _re.search(r"dimensions=(\d+)", str(exc))
+            stored_dim = int(m.group(1)) if m else 0
+            raise DimensionMismatchError(
+                f"Internal collection {collection_id!r} is stored with "
+                f"dimension {stored_dim} but the active embedder "
+                f"({self._config.embedding_model!r} via provider "
+                f"{self._config.embedding_provider_id!r}) produces "
+                f"dimension {dimensions}. Deactivate the internal "
+                f"collections subsystem (DELETE "
+                f"/v1/internal_collections/config), then re-configure "
+                f"and re-bootstrap with the correct embedding model.",
+                embedder_dim=dimensions,
+                collection_dim=stored_dim,
+                collection_id=collection_id,
+                cause=exc,
+            ) from exc
         except Exception as exc:  # noqa: BLE001
             msg = str(exc).lower()
             if (

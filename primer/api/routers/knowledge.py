@@ -37,7 +37,7 @@ from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router
 from primer.model.chat import TextPart
 from primer.model.collection import Collection, Document
-from primer.model.except_ import BadRequestError, NotFoundError
+from primer.model.except_ import BadRequestError, DimensionMismatchError, NotFoundError
 from primer.model.provider import SemanticSearchProvider
 
 
@@ -512,6 +512,11 @@ async def _index_document_hook(document_id: str, request: Request) -> None:
             provider_registry=provider_registry,
             semantic_search_registry=ssr,
         )
+    except DimensionMismatchError:
+        # Dimension mismatches are operator-configuration errors that must
+        # surface to the caller as 422, not be swallowed. Re-raise so the
+        # FastAPI error handler can render the RFC 7807 problem response.
+        raise
     except Exception:  # noqa: BLE001 - best-effort indexing
         logger.exception(
             "document %s: indexing failed; row persisted but not searchable",

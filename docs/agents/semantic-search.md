@@ -271,6 +271,17 @@ about cron semantics in primer.
   re-embeds every entity (skipping unchanged docs via content-hash).
   On large catalogues with paid embedding providers, this is real
   money. Operators get a confirmation prompt in the UI.
+- **Embedding model change requires deactivate + re-bootstrap.**
+  Each internal collection is stored in the vector store at a fixed
+  dimension determined by the embedder that was active when bootstrap
+  first ran. If you activate the subsystem with a different embedding
+  model (or a different provider that happens to produce a different
+  dimension), bootstrap fails with HTTP 422
+  `type=/errors/dimension-mismatch` naming both dims and pointing to
+  the deactivate endpoint. The fix: DELETE
+  `/v1/internal_collections/config` (this drops the four internal
+  collection tables from the backing SSP and clears the config row),
+  then PUT a new config with the new model, then POST bootstrap.
 - **Hits from `search_ai_docs` carry the chunk, not the whole doc.**
   Don't try to satisfy a user's question entirely from the snippet -
   follow up with `system::get_document_content` if the snippet looks
