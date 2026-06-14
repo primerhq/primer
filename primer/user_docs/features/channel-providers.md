@@ -43,18 +43,106 @@ BotFather: Done! Here is your token:
 | `bot_token` | yes | Bot OAuth token starting with `xoxb-`. Found in the OAuth & Permissions page after installing the app to a workspace. |
 | `signing_secret` | no | Only needed for HTTP event delivery mode. Socket Mode does not use it. |
 
-To set up a Slack app:
+Primer connects over **Socket Mode**, so the app never needs a public Request URL: events, interactive button clicks, modal submissions, and slash commands all flow over the Socket Mode websocket. You enable each feature in the Slack app config, but you leave every "Request URL" field blank.
+
+#### 1. Create the app
 
 ```
 Slack API dashboard  https://api.slack.com/apps
-  1. Create New App  ->  From scratch
-  2. Socket Mode page  ->  Enable Socket Mode
-     ->  Generate App-Level Token with connections:write scope
-         Copy token  (starts with xapp-)
-  3. OAuth & Permissions page  ->  Bot Token Scopes
-     Add: chat:write, channels:read, channels:history
-  4. Install to Workspace  ->  Allow
-     Copy Bot User OAuth Token  (starts with xoxb-)
+  Create New App  ->  From scratch
+    App Name:        e.g. "primer"
+    Pick a workspace  ->  Create App
+```
+
+You can also create the app from a manifest, but the from-scratch flow below is the reference path.
+
+#### 2. Enable Socket Mode and mint the app token
+
+```
+Settings  ->  Socket Mode  ->  Enable Socket Mode  (toggle on)
+  When prompted, generate an App-Level Token:
+    Token Name:  socket
+    Scope:       connections:write
+    ->  Generate  ->  Copy token  (starts with xapp-)
+```
+
+This `xapp-` token is the **`app_token`** field in the primer provider config.
+
+#### 3. Add the bot token scopes
+
+Open **OAuth & Permissions -> Scopes -> Bot Token Scopes** and add the scopes for the channel type you will use. The scope family differs between public and private channels, so add the row that matches your target channel (add both if you will run both).
+
+| Scope | Why primer needs it | Public | Private |
+|---|---|---|---|
+| `chat:write` | Post and update prompts, replies, and the per-session thread anchor (`chat.postMessage`, `chat.update`, `chat.postEphemeral`, and native streaming). | yes | yes |
+| `channels:read` | Resolve and verify the target **public** channel (`conversations.info`). | yes | |
+| `channels:history` | Read message history when rebuilding an approval card after a decision (`conversations.history`). | yes | |
+| `groups:read` | Resolve and verify the target **private** channel. | | yes |
+| `groups:history` | Read message history for the same approval-card rebuild in a private channel. | | yes |
+| `files:write` | Upload outbound media into the channel (`files.uploadV2`). | optional | optional |
+| `files:read` | Download inbound files (images, documents, audio) users send. | optional | optional |
+
+```callout:note
+`channels:read`/`channels:history` cover **public** channels only; `groups:read`/`groups:history` cover **private** channels. They are different scope families, not interchangeable. The `files:*` scopes are only needed if you use channel media (sending or receiving attachments); plain text chat works without them.
+```
+
+```callout:warning
+`conversations:*` are Slack Web API **methods**, not OAuth scopes. Do not add `conversations:read` or `conversations:history` as scopes; they do not exist. The methods `conversations.info` and `conversations.history` are authorized by the `channels:*` (public) or `groups:*` (private) scopes above.
+```
+
+#### 4. Enable Event Subscriptions
+
+Primer consumes inbound messages as Slack events delivered over Socket Mode.
+
+```
+Features  ->  Event Subscriptions  ->  Enable Events  (toggle on)
+  Request URL:  leave blank  (Socket Mode delivers events)
+  Subscribe to bot events:
+    message.channels   (public channels)
+    message.groups     (private channels)
+```
+
+Add only the event matching your channel type (`message.channels` for public, `message.groups` for private, or both). Slack may prompt you to reinstall the app after you change event subscriptions.
+
+#### 5. Enable Interactivity
+
+The tool-approval and ask_user prompts are Block Kit messages with **Approve**/**Reject** buttons, agent-select dropdowns, and a rejection-reason modal. Interactivity must be on for those clicks and modal submissions to reach primer.
+
+```
+Features  ->  Interactivity & Shortcuts  ->  Interactivity  (toggle on)
+  Request URL:  leave blank  (Socket Mode delivers interactions)
+```
+
+#### 6. Register slash commands
+
+Primer offers `/agent` and `/help` on Slack. (`/new`, `/list`, and `/switch` are **not** used on Slack: each thread is its own chat, the channel's threads are the chat list, and a new thread is how you switch (see the channels page below).) Register each command under **Features -> Slash Commands -> Create New Command**, leaving the Request URL blank:
+
+```
+/agent   Pick a different agent for the current chat
+/help    Show the available commands
+```
+
+`/agent` only takes effect when `allow_agent_switch` is enabled on the channel.
+
+#### 7. Install the app and copy the bot token
+
+```
+Settings  ->  Install App  ->  Install to Workspace  ->  Allow
+  Copy Bot User OAuth Token  (starts with xoxb-)
+```
+
+This `xoxb-` token is the **`bot_token`** field in the primer provider config.
+
+#### 8. Invite the bot to the channel
+
+Primer can only read and post in a channel the bot is a member of. In the target Slack channel, run:
+
+```
+/invite @primer
+```
+
+```callout:warning
+For a **private** channel this invite is mandatory: the bot cannot see or join private channels on its own, and `conversations.info` will fail with `channel_not_found` until it is invited. Public channels also require the invite before primer can post.
 ```
 
 ```callout:warning
