@@ -42,6 +42,6 @@ Click **Deactivate** to remove the config row and drop all four reserved collect
 The API reference covers the PUT /internal_collections/config, POST /internal_collections/bootstrap, and DELETE /internal_collections/config endpoints with full schema detail.
 ```
 
-```ref features/knowledge-collections
-The regular knowledge collections feature page covers operator-managed collections backed by the same SSP machinery.
+```ref features/collections-and-documents
+The collections and documents feature page covers operator-managed collections backed by the same SSP machinery.
 ```

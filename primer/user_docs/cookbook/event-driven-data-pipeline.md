@@ -6,7 +6,7 @@ summary: A webhook trigger ingests inbound files through an agent into a knowled
 difficulty: advanced
 time_minutes: 45
 tags: [triggers, agents, knowledge, workspaces]
-prerequisites: [features/triggers, features/knowledge-documents, features/workspaces]
+prerequisites: [features/triggers, features/collections-and-documents, features/workspaces]
 features: [trigger, agent, knowledge, workspace]
 ---
 
