@@ -252,3 +252,65 @@ dispatch, 404 bad token, 403 disabled, HMAC pass/fail, payload mapping); e2e
 (create webhook trigger + subscription -> POST webhook -> subscriber invoked);
 regressions; primectl (add a path if a dedicated webhook retrieval is warranted).
 Mostly independent of user-1/2/3 (own files); can run in parallel with them.
+
+---
+
+# Auto-mode execution plan
+
+## Dispatch ledger (coordinator updates on every dispatch + completion)
+| task | branch | worktree | agent | status |
+|------|--------|----------|-------|--------|
+| llm-timeout | (merged) | - | - | merged 40357e2a |
+| _all others_ | - | - | - | pending |
+
+## Conflict map (concurrent tasks MUST NOT share a hot file)
+- `primer/api/app.py`            : user-1, auth, scale-indexes      (mutually exclusive)
+- `ui/app.jsx` + `ui/foundation/router.js` : user-1, user-3
+- `ui/components/knowledge.jsx`  : user-2, user-3
+- `primer/api/routers/sessions.py` : sessions-filter, hotpaths
+- `primer/model/trigger.py` + triggers routes : user-4, hotpaths
+- `primer/storage/postgres.py`   : scale-indexes, correlation-bus
+- `primer/knowledge/indexing.py` : dim-mismatch, hotpaths
+- `primer/channel/correlation.py`: correlation-bus, hotpaths
+- `tests/e2e/test_sessions_top_level.py` : sessions-filter, audit-relaxed
+- `hotpaths` is the widest hub (sessions/triggers/indexing/correlation/mcp/chat) ->
+  run it SOLO (no concurrent task touching those files), or decompose into
+  hotpaths-{channel,chat,mcp,paginate,embed}.
+- `user-3` depends on user-1 + user-2 (edits app.jsx AND knowledge.jsx) -> dispatch
+  only after BOTH merge.
+
+## Priority order (scheduler picks the highest-priority PENDING task whose hot
+## files do not overlap any in-flight task and whose deps are merged)
+1 failure-isolation  2 user-4 webhook  3 user-2 collection-ui  4 git-timeout
+5 chat-approval-pending  6 sessions-filter  7 auth  8 auto-start  9 dim-mismatch
+10 user-1 bug-reporter  11 user-3 entity-probe (dep: 3,10)  12 scale-indexes
+13 correlation-bus  14 maintainability  15 delivery  16 ui-polish  17 flaky-test
+18 hotpaths (solo)  19 xprocess-workspaces  20 audit-relaxed
+21 env-e2e + FINAL full serial e2e measurement (LAST, alone - the merge gate)
+
+## Auto-mode coordination protocol
+- CONCURRENCY CAP: default 3 in-flight implementer subagents (run_in_background),
+  each in its own `feat/<slug>` branch + `../primer-<slug>` worktree branched
+  from LATEST main, own `uv sync`. Update the ledger on dispatch.
+- PICK RULE: dispatch the next task in priority order whose hot files are
+  disjoint from every in-flight task and whose deps are merged, until the cap.
+- ON COMPLETION (task-notification): VERIFY before merge - read the diff; assert
+  NO em-dash added (`git diff main..feat/<slug> | grep -nP "\x{2014}"` on +
+  lines); run the task's blast-radius tests `-n0`; if it claims to green e2e
+  tests, run exactly those (`-n0`, after `pkill` any existing `pytest tests/e2e`).
+  ALL test runs are SERIALIZED (one at a time, CPU). If good -> `git merge
+  --no-ff`, set ledger merged|SHA, move entry to `## Done`, `git worktree remove`
+  + delete branch, then pick the next eligible task. If not good -> re-dispatch
+  the SAME branch with specific fix notes (max 2 retries) then mark BLOCKED.
+- GUARDRAILS: conventional commits, no Co-Authored-By, no em-dash, stage named
+  files only, branch off + merge to main, never force-push. Do NOT change product
+  behavior to make a test pass; fix the cause or REPORT (see reconciliation
+  lesson, review addendum). After merges that touch runtime code, restart the
+  dogfood (`uv run primer api --config dogfood/config.yaml`) and confirm
+  /v1/health 200. Never run two e2e at once; never `teardown.sh` with volumes.
+- STOP / ESCALATE: pause and surface to the user when - a task needs a product/
+  contract decision (don't guess), a task is BLOCKED after retries, an
+  unresolvable merge conflict, or the env-gated tests need infra (k8s cluster /
+  LM Studio). Otherwise keep draining the queue.
+- DONE: when the queue drains, run task 21 (env-e2e + full serial e2e) as the
+  final gate, then report.
