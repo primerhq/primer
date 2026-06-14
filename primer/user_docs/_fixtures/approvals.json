@@ -2,9 +2,45 @@
   "POST /sessions/find": {
     "kind": "offset",
     "offset": 0,
-    "length": 0,
-    "total": 0,
-    "items": []
+    "length": 2,
+    "total": 2,
+    "items": [
+      {
+        "id": "ses-7f2a1c",
+        "parked_status": "parked"
+      },
+      {
+        "id": "ses-3d9b04",
+        "parked_status": "parked"
+      }
+    ]
+  },
+  "GET /sessions/ses-7f2a1c/tool_approval/pending": {
+    "tool_call_id": "call_a1b2c3",
+    "tool_name": "exec",
+    "toolset_id": "workspaces",
+    "arguments": {
+      "workspace_id": "prod-workspace",
+      "command": "rm -rf /data/cache"
+    },
+    "policy_id": "guard-prod-exec",
+    "approval_type": "policy",
+    "gate_reason": "exec against prod-workspace requires operator sign-off",
+    "parked_at": "2026-06-14T09:31:00+00:00",
+    "timeout_at": "2026-06-14T10:31:00+00:00"
+  },
+  "GET /sessions/ses-3d9b04/tool_approval/pending": {
+    "tool_call_id": "call_d4e5f6",
+    "tool_name": "delete_agent",
+    "toolset_id": "system",
+    "arguments": {
+      "agent_id": "weekly-digest"
+    },
+    "policy_id": "guard-delete-agent",
+    "approval_type": "required",
+    "gate_reason": null,
+    "parked_at": "2026-06-14T09:44:12+00:00",
+    "timeout_at": "2026-06-14T10:44:12+00:00"
   },
   "GET /chats?limit=200": {
     "kind": "offset",
@@ -16,16 +52,44 @@
   "GET /tool_approval_policies?limit=200": {
     "kind": "offset",
     "offset": 0,
-    "length": 1,
-    "total": 1,
+    "length": 3,
+    "total": 3,
     "items": [
       {
-        "id": "require-exec",
-        "name": "Require approval for exec",
+        "id": "guard-delete-agent",
+        "toolset_id": "system",
+        "tool_name": "delete_agent",
         "enabled": true,
-        "mode": "required"
+        "approval": {
+          "type": "required"
+        },
+        "timeout_seconds": 3600
+      },
+      {
+        "id": "guard-prod-exec",
+        "toolset_id": "workspaces",
+        "tool_name": "exec",
+        "enabled": true,
+        "approval": {
+          "type": "policy",
+          "policy": "package primer.approval\n\ndefault required := false\n\nrequired if {\n\tinput.tool_name == \"exec\"\n\tinput.arguments.workspace_id == \"prod-workspace\"\n}\n"
+        },
+        "timeout_seconds": null
+      },
+      {
+        "id": "judge-shell-commands",
+        "toolset_id": "workspaces",
+        "tool_name": "exec",
+        "enabled": false,
+        "approval": {
+          "type": "llm",
+          "provider_id": "primary-llm",
+          "model": "claude-haiku-4-5",
+          "prompt": "Decide if this shell command is safe to run. Set required=true for destructive or production-targeting commands."
+        },
+        "timeout_seconds": 900
       }
     ]
   },
-  "_note": "parked sessions/chats empty-valid: pending approvals require a live parked session"
+  "_note": "Pending tab: two parked sessions each with a tool_approval/pending record (Rego-gated exec + required delete_agent). Policies tab: required, Rego, and LLM-judge configurations."
 }
