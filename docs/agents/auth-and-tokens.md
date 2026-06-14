@@ -61,6 +61,23 @@ all-scopes); bearer tokens must have the named scope in their `scopes`
 list. This is why the MCP endpoint accepts cookie auth from the
 operator console without an explicit token grant.
 
+### WebSocket authentication
+
+The live session and chat streams are WebSockets
+(`/v1/workspaces/{wid}/sessions/{sid}/ws` and `/v1/chats/{cid}/ws`).
+WebSocket handshakes carry auth the same way HTTP requests do - the
+signed session cookie, or an `Authorization: Bearer <token>` header -
+and the same middleware populates the connection's principal before
+the handler runs. A handshake that carries no valid cookie or bearer
+is **rejected**: the server accepts the upgrade and immediately closes
+the socket with WebSocket close code **4401** (`auth_required`). This
+is the WebSocket analogue of an HTTP 401 (the standard close-code
+convention adds 4000 to the HTTP status). Clients should treat a 4401
+close as "authenticate, then reconnect", not as a transient blip to
+retry blindly. When auth is disabled on the deployment, the handshake
+connects without credentials (a synthetic operator identity is
+injected), exactly like the HTTP routes.
+
 ## Lifecycle and states
 
 An `ApiToken` is in one of three observable states:
@@ -176,6 +193,19 @@ server side.
   transport layer - it invalidates the next request from that token.
   If the agent is mid-streaming-tool-result, the current response
   completes; the *next* call gets 401.
+- **WebSocket auth failures close with 4401, not HTTP 401.** A bad or
+  missing cookie/bearer on a session/chat WS handshake does not get a
+  401 response body - the socket is accepted then closed with code
+  4401. Distinguish this in client code from the other documented WS
+  close codes (4404 not-found, 4410 ended).
+- **Most of `/v1/workers` is a public probe surface, but the drain
+  mutation is not.** `GET /v1/workers` stays reachable without auth so
+  liveness/readiness probes work pre-login; `POST /v1/workers/{id}/drain`
+  requires auth (401 without it).
+- **Approval-required tools are not callable over MCP.** Even with the
+  `mcp` scope and the tool allowlisted, a tool whose effective approval
+  policy is `required` is refused at `tools/call` - MCP has no surface
+  to collect the approval. See [mcp-exposure](mcp-exposure.md).
 
 ## Related
 

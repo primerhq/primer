@@ -1213,6 +1213,7 @@ def _make_lifespan(config: AppConfig):
             app,
             storage_provider=storage_provider,
             provider_registry=provider_registry,
+            approval_resolver=approval_resolver,
         )
         logger.info("lifespan: MCP /v1/mcp mounted")
 
@@ -1730,6 +1731,7 @@ async def _start_mcp_mount(
     *,
     storage_provider,
     provider_registry,
+    approval_resolver=None,
 ):
     """Build the MCP session manager, mount /v1/mcp, return a teardown.
 
@@ -1747,6 +1749,7 @@ async def _start_mcp_mount(
         return ExposureDeps(
             storage_provider=storage_provider,
             provider_registry=provider_registry,
+            approval_resolver=approval_resolver,
         )
 
     mcp_server = build_mcp_server(_deps_factory)
@@ -2353,6 +2356,7 @@ def create_test_app(
             app,
             storage_provider=storage_provider,
             provider_registry=provider_registry,
+            approval_resolver=_test_approval_resolver,
         )
 
     async def _stop_mcp() -> None:

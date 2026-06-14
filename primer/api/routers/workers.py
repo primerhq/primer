@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path
 
-from primer.api.deps import get_scheduler
+from primer.api.deps import get_scheduler, require_auth
 from primer.api.errors import common_responses
 
 
@@ -35,7 +35,12 @@ async def list_workers(scheduler=Depends(get_scheduler)) -> dict:
     "/workers/{worker_id}/drain",
     status_code=204,
     summary="Mark a worker as draining (other workers take over its sessions)",
-    responses=common_responses(500),
+    responses=common_responses(401, 500),
+    # Mutating endpoint: requires auth even though the router as a whole
+    # is mounted public so liveness/readiness probes can read GET /workers
+    # pre-login. require_auth no-ops under auth-disabled (the middleware
+    # injects a synthetic system user), so dogfood is unaffected.
+    dependencies=[Depends(require_auth)],
 )
 async def drain_worker(
     worker_id: str = Path(...),
