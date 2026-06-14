@@ -508,17 +508,6 @@ async def test_t0835_sessions_tool_approval_respond_returns_202(
 # ===========================================================================
 
 
-@pytest.mark.xfail(
-    reason=(
-        "GET /v1/chats/{id}/tool_approval/pending is not yet implemented. "
-        "The route handler get_chat_tool_approval_pending is absent from "
-        "primer/api/routers/tool_approval.py; FastAPI returns a plain "
-        '{"detail":"Not Found"} instead of the primer problem-details envelope. '
-        "Add the chat surface endpoints (pending + respond) to "
-        "make_tool_approval_router() to make this test pass."
-    ),
-    strict=True,
-)
 @pytest.mark.asyncio
 async def test_t0836_chats_tool_approval_pending_404_when_no_park(
     client: httpx.AsyncClient, unique_suffix: str,
