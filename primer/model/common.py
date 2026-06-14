@@ -31,13 +31,11 @@ class Identifiable(BaseModel):
 
     @model_validator(mode="after")
     def _assign_id(self) -> "Identifiable":
-        if self.id is None:
+        if not self.id:
             prefix = type(self)._id_prefix
             if prefix is None:
                 raise ValueError("id is required for this entity type")
             object.__setattr__(self, "id", f"{prefix}-{uuid4().hex[:12]}")
-        elif self.id == "":
-            raise ValueError("id must not be an empty string")
         return self
 
 

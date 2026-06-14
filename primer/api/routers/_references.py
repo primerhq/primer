@@ -99,8 +99,12 @@ def build_reference_block_hook(
             )
             page = await storage.find(predicate, OffsetPage(offset=0, length=1))
             if page.items:
+                # RFC7807 conflict envelope (consistent with every other
+                # error surface). The detail names the blocking child kind,
+                # count, and the first referencing id so the message is
+                # actionable; the error_code is carried as the message lead.
                 raise ConflictError(
-                    f"{check.child_kind} in use: {len(page.items)} "
+                    f"{check.error_code}: {len(page.items)} "
                     f"{check.child_kind}(s) reference {entity_id!r} "
                     f"(first: {page.items[0].id!r})"
                 )

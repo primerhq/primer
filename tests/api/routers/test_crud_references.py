@@ -14,13 +14,14 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from httpx import ASGITransport
 from pydantic import BaseModel
 
 from primer.api.errors import register_error_handlers
 from primer.api.routers._crud import make_crud_router
 from primer.api.routers._references import ReferenceCheck, build_reference_block_hook
+from primer.model.except_ import ConflictError
 from primer.model.storage import FieldRef, OffsetPage, OffsetPageResponse, Op, Predicate, Value
 
 
@@ -96,14 +97,12 @@ async def test_reference_check_blocks_when_child_exists() -> None:
     hook = build_reference_block_hook([check])
     parent = _Parent(id="p1")
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ConflictError) as exc_info:
         await hook(parent, _fake_request())
 
-    assert exc_info.value.status_code == 409
-    detail = exc_info.value.detail
-    assert detail["error"] == "in_use_by"
-    assert detail["child_kind"] == "child"
-    assert detail["count"] >= 1
+    msg = str(exc_info.value)
+    assert "in_use_by" in msg
+    assert "child" in msg
 
 
 @pytest.mark.asyncio
@@ -139,10 +138,10 @@ async def test_reference_check_custom_error_code() -> None:
     hook = build_reference_block_hook([check])
     parent = _Parent(id="p1")
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ConflictError) as exc_info:
         await hook(parent, _fake_request())
 
-    assert exc_info.value.detail["error"] == "blocked_by_channel"
+    assert "blocked_by_channel" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -175,10 +174,10 @@ async def test_first_failing_check_short_circuits() -> None:
     hook = build_reference_block_hook([check_a, check_b])
     parent = _Parent(id="p1")
 
-    with pytest.raises(HTTPException) as exc_info:
+    with pytest.raises(ConflictError) as exc_info:
         await hook(parent, _fake_request())
 
-    assert exc_info.value.detail["child_kind"] == "alpha"
+    assert "alpha" in str(exc_info.value)
 
 
 # ---------------------------------------------------------------------------
@@ -434,8 +433,12 @@ async def test_reference_check_blocks_delete_when_child_exists(
     """DELETE /v1/parents/p1 should return 409 because child c1 references p1."""
     resp = await references_client.delete("/v1/parents/p1")
     assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "in_use_by"
-    assert resp.json()["detail"]["child_kind"] == "child"
+    # RFC7807 conflict envelope (consistent with every other error surface);
+    # the detail string names the in_use_by code and the blocking child kind.
+    body = resp.json()
+    assert body["type"].endswith("/errors/conflict"), body
+    assert "in_use_by" in body["detail"]
+    assert "child" in body["detail"]
 
 
 @pytest.mark.asyncio
