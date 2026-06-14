@@ -35,8 +35,17 @@ class WorkspaceBackendFactory:
     """Construct a :class:`WorkspaceBackend` from a config entry."""
 
     @staticmethod
-    def create(config: WorkspaceProvider) -> WorkspaceBackend:
+    def create(
+        config: WorkspaceProvider,
+        *,
+        subprocess_timeout_seconds: float = 120.0,
+    ) -> WorkspaceBackend:
         """Dispatch on ``config.provider`` and build the matching backend.
+
+        ``subprocess_timeout_seconds`` is forwarded to
+        :class:`~primer.workspace.local.backend.LocalWorkspaceBackend` so
+        every git / init_command subprocess in the local backend is bounded
+        by the configured deadline.
 
         Raises :class:`ConfigError` when the provider enum is recognised
         but no backend has been wired yet for it (Container/Kubernetes
@@ -47,7 +56,10 @@ class WorkspaceBackendFactory:
                 raise ConfigError(
                     "provider='local' requires a LocalWorkspaceConfig"
                 )
-            return LocalWorkspaceBackend(root=Path(config.config.root_path))
+            return LocalWorkspaceBackend(
+                root=Path(config.config.root_path),
+                subprocess_timeout_seconds=subprocess_timeout_seconds,
+            )
         if config.provider == WorkspaceProviderType.CONTAINER:
             from primer.model.workspace import ContainerWorkspaceConfig
             from primer.workspace.container.backend import (

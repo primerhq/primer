@@ -140,6 +140,20 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    # --- Subprocess timeout ----------------------------------------------
+    subprocess_timeout_seconds: float = Field(
+        default=120.0,
+        description=(
+            "Maximum wall-clock seconds allowed for any git or init_command "
+            "subprocess spawned by the local workspace backend. "
+            "A hung ``git`` (e.g. waiting on index.lock or NFS) or a "
+            "runaway init_command will be killed after this deadline and "
+            "``SubprocessTimeoutError`` is raised, releasing the workspace "
+            "commit lock. Override via ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS`` "
+            "or ``subprocess_timeout_seconds:`` in config.yaml."
+        ),
+    )
+
     # --- Bootstrap -------------------------------------------------------
     auto_bootstrap: bool = Field(
         default=True,

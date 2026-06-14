@@ -327,7 +327,10 @@ def _make_lifespan(config: AppConfig):
         # The chat-channel warm task is deferred until AFTER the claim engine is
         # built (~app.state.claim_engine below) so warmed adapters receive it and
         # can wake the worker on inbound chat messages.
-        workspace_registry = WorkspaceRegistry(storage_provider)
+        workspace_registry = WorkspaceRegistry(
+            storage_provider,
+            subprocess_timeout_seconds=config.subprocess_timeout_seconds,
+        )
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
         # ``get_toolset('system')`` to it.

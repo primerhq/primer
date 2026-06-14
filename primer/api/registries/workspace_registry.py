@@ -39,6 +39,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _make_default_factory(
+    subprocess_timeout_seconds: float = 120.0,
+) -> "Callable[[WorkspaceProvider], WorkspaceBackend]":
+    """Return a backend factory that threads ``subprocess_timeout_seconds`` through."""
+    def _factory(provider: WorkspaceProvider) -> "WorkspaceBackend":  # pragma: no cover
+        from primer.workspace.factory import WorkspaceBackendFactory
+        return WorkspaceBackendFactory.create(
+            provider,
+            subprocess_timeout_seconds=subprocess_timeout_seconds,
+        )
+    return _factory
+
+
+# Back-compat shim: kept so existing test code that imports _default_factory
+# or passes factory=None still works (zero timeout argument -> default 120s).
 def _default_factory(
     provider: WorkspaceProvider,
 ) -> "WorkspaceBackend":  # pragma: no cover
@@ -60,9 +75,12 @@ class WorkspaceRegistry:
         storage_provider: "StorageProvider",
         *,
         factory: Callable[[WorkspaceProvider], "WorkspaceBackend"] | None = None,
+        subprocess_timeout_seconds: float = 120.0,
     ) -> None:
         self._sp = storage_provider
-        self._factory = factory or _default_factory
+        # If a custom factory is supplied, use it as-is; otherwise build a
+        # default factory that captures the configured subprocess timeout.
+        self._factory = factory or _make_default_factory(subprocess_timeout_seconds)
         self._cache: dict[str, "WorkspaceBackend"] = {}
         self._lock = asyncio.Lock()
 

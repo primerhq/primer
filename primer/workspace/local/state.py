@@ -31,6 +31,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
+from primer.model.except_ import SubprocessTimeoutError
 from primer.model.workspace_session import (
     AgentBinding,
     SessionInfo,
@@ -91,11 +92,18 @@ class LocalStateRepo:
     snapshots.
     """
 
-    def __init__(self, path: Path, *, workspace_id: str) -> None:
+    def __init__(
+        self,
+        path: Path,
+        *,
+        workspace_id: str,
+        subprocess_timeout_seconds: float = 120.0,
+    ) -> None:
         if not workspace_id:
             raise ValueError("workspace_id must be non-empty")
         self._path = Path(path)
         self._workspace_id = workspace_id
+        self._subprocess_timeout_seconds = subprocess_timeout_seconds
         self._commit_lock = asyncio.Lock()
         # session_id -> agent_id, populated on create_session and on
         # init scan. The commit-trailer assembler uses this so callers
@@ -589,7 +597,11 @@ class LocalStateRepo:
         *args: str,
         allow_empty_repo: bool = False,
     ) -> tuple[bytes, bytes]:
-        """Run ``git -C <path> <args...>`` and return raw bytes for stdout."""
+        """Run ``git -C <path> <args...>`` and return raw bytes for stdout.
+
+        Kills the subprocess and raises :class:`SubprocessTimeoutError` if it
+        does not complete within ``self._subprocess_timeout_seconds``.
+        """
         proc = await asyncio.create_subprocess_exec(
             "git",
             "-C",
@@ -598,7 +610,21 @@ class LocalStateRepo:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=self._subprocess_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            await proc.wait()
+            raise SubprocessTimeoutError(
+                f"git {' '.join(args)} timed out after "
+                f"{self._subprocess_timeout_seconds}s"
+            ) from exc
         if proc.returncode != 0:
             stderr_text = stderr.decode("utf-8", errors="replace")
             # ``git log`` on a brand-new repo with no commits exits 128

@@ -88,16 +88,24 @@ class LocalWorkspace(Workspace):
         root: Path,
         template: WorkspaceTemplate,
         env: dict[str, str],
+        subprocess_timeout_seconds: float = 120.0,
     ) -> "LocalWorkspace":
         """Build the on-disk pieces (state repo, tmp store, tools).
 
         ``root`` must already exist. Files / init_commands are NOT run
         here -- the provider does that before calling this constructor
         so it can decide ordering and surface init failures cleanly.
+
+        ``subprocess_timeout_seconds`` is forwarded to
+        :class:`LocalStateRepo` so git subprocesses are bounded.
         """
         state_path = root / template.state_path
         tmp_path = root / template.tmp_path
-        repo = LocalStateRepo(state_path, workspace_id=workspace_id)
+        repo = LocalStateRepo(
+            state_path,
+            workspace_id=workspace_id,
+            subprocess_timeout_seconds=subprocess_timeout_seconds,
+        )
         # Catch _GitCommandError + OSError so a malformed state_path
         # (deep nesting overflowing MAX_PATH, invalid filename chars,
         # permission denials, etc.) maps to a clean 4xx envelope

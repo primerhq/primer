@@ -202,3 +202,19 @@ class TurnConflictError(PrimerError):
     discards the in-progress turn output. Same scope as
     :class:`LeaseLostError`.
     """
+
+
+class SubprocessTimeoutError(PrimerError):
+    """A git or init-command subprocess exceeded the configured deadline.
+
+    Raised by :class:`primer.workspace.local.state.LocalStateRepo` and
+    :class:`primer.workspace.local.backend.LocalWorkspaceBackend` when a
+    ``git`` or ``init_command`` subprocess does not complete within
+    ``AppConfig.subprocess_timeout_seconds``.  The subprocess is killed
+    before this error is raised so the ``.git/index.lock`` commit lock is
+    always released.
+
+    Callers that want to distinguish a subprocess stall from other workspace
+    errors can catch this subclass specifically; catching
+    :class:`PrimerError` is also sufficient.
+    """
