@@ -1943,7 +1943,7 @@ async def test_t0372_status_created_filter_excludes_auto_started(
 
 
 # ============================================================================
-# T0374 — auto_start=false stays CREATED; explicit resume starts it
+# T0374 - auto_start=false stays CREATED; explicit resume starts it
 # ============================================================================
 
 

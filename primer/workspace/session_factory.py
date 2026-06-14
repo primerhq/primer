@@ -253,7 +253,7 @@ async def create_session(
     2. Fold ``graph_input`` into ``metadata['graph_input']`` for graph
        bindings.
     3. If ``auto_start``: flip to ``RUNNING``, stamp ``started_at``,
-       call ``scheduler.enqueue(sid)`` (best-effort — a broken
+       call ``scheduler.enqueue(sid)`` (best-effort - a broken
        scheduler must not strand the row), and upsert with the
        :class:`ClaimEngine` so the worker pool sees the row.
     4. If NOT ``auto_start``: the session stays in ``CREATED`` with no
@@ -304,7 +304,7 @@ async def create_session(
                 sid, exc,
             )
 
-    # Forward-compat ClaimEngine upsert — only when the session is
+    # Forward-compat ClaimEngine upsert - only when the session is
     # actually starting now (auto_start=True). When auto_start=False the
     # session stays in CREATED with no lease, so the worker never claims
     # it. The explicit-start path (POST .../resume) performs its own
