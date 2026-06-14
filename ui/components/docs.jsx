@@ -323,7 +323,10 @@ function WSP_DocsRightToc({ headings, activeAnchor }) {
                 e.preventDefault();
                 const target = document.getElementById(h.anchor);
                 if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
-                window.location.hash = `#${h.anchor}`;
+                // NOTE: do NOT write window.location.hash here. The app uses a
+                // hash router, so setting the hash to a bare "#<anchor>"
+                // replaces the route and lands on __notfound__. Smooth-scroll
+                // is enough; the route stays put.
               }}
               style={{
                 color: activeAnchor === h.anchor ? "var(--accent)" : "var(--text-2)",
