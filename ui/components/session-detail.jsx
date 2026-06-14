@@ -1008,73 +1008,108 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   const isRunning = session?.turn_status === "running" || session?.turn_status === "claimable";
 
   // WS lifecycle — reconnects on wid/sid change.
-  // Sends cursor=0 so the server replays the full session history then
-  // tails live. De-duplication handles overlap with prior replays.
+  // Initial connection uses cursor=0 so the server replays the full
+  // session history then tails live. De-duplication handles overlap.
+  //
+  // Reconnect: an unexpected close triggers exponential-backoff
+  // reconnect (1s -> 2s -> 4s ... 30s cap). Reconnections resume from
+  // the last received seq (latestSeq) so no frames are missed or
+  // replayed in full. Terminal close code 4404 does not reconnect.
   React.useEffect(() => {
     if (!wid || !sid) return;
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/v1/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/ws?cursor=0`;
-    let ws;
-    try {
-      ws = new WebSocket(url);
-    } catch {
-      setWsState("closed");
-      return;
-    }
-    wsRef.current = ws;
-    setWsState("connecting");
+    let intentional = false;
+    let backoffMs = 1000;
+    const MAX_BACKOFF_MS = 30000;
+    let reconnectTimer = null;
+    // Track the highest seq seen. Starts at 0 (full replay on first
+    // connect); updated on each frame so reconnects resume cleanly.
+    let latestSeq = 0;
 
-    ws.onopen = () => setWsState("open");
+    function connect() {
+      if (intentional) return;
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${proto}//${window.location.host}/v1/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/ws?cursor=${latestSeq}`;
+      let ws;
+      try {
+        ws = new WebSocket(url);
+      } catch {
+        setWsState("closed");
+        return;
+      }
+      wsRef.current = ws;
+      setWsState("connecting");
 
-    ws.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      if (!msg || typeof msg !== "object") return;
+      ws.onopen = () => {
+        setWsState("open");
+        backoffMs = 1000; // reset on successful connect
+      };
 
-      // Protocol-level error (no seq) — toast and bail.
-      if (msg.kind === "error" && typeof msg.seq !== "number") {
-        if (typeof pushToast === "function") {
-          pushToast({ kind: "error", title: msg.code || "Session WS error", detail: msg.message || "" });
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (!msg || typeof msg !== "object") return;
+
+        // Protocol-level error (no seq) — toast and bail.
+        if (msg.kind === "error" && typeof msg.seq !== "number") {
+          if (typeof pushToast === "function") {
+            pushToast({ kind: "error", title: msg.code || "Session WS error", detail: msg.message || "" });
+          }
+          return;
         }
-        return;
-      }
-      if (msg.kind === "pong") return;
+        if (msg.kind === "pong") return;
 
-      // Token-usage envelope (no seq). Drives the read-only header
-      // TokenMeter — the session WS surface mirrors the chats WS for
-      // this shape (`input_tokens` / `context_length`).
-      if (msg.kind === "usage" && typeof msg.seq !== "number") {
-        setUsage({
-          input_tokens: Number(msg.input_tokens) || 0,
-          output_tokens: Number(msg.output_tokens) || 0,
-          context_length: Number(msg.context_length) || 0,
-        });
-        return;
-      }
+        // Token-usage envelope (no seq). Drives the read-only header
+        // TokenMeter — the session WS surface mirrors the chats WS for
+        // this shape (`input_tokens` / `context_length`).
+        if (msg.kind === "usage" && typeof msg.seq !== "number") {
+          setUsage({
+            input_tokens: Number(msg.input_tokens) || 0,
+            output_tokens: Number(msg.output_tokens) || 0,
+            context_length: Number(msg.context_length) || 0,
+          });
+          return;
+        }
 
-      // Persisted frame — deduplicate and append.
-      if (typeof msg.seq === "number") {
-        // Flatten payload into top-level (mirrors chats.jsx approach).
-        const payload = msg.payload && typeof msg.payload === "object" ? msg.payload : {};
-        const frame = { ...payload, ...msg };
-        setMessages((prev) => {
-          if (prev.some((p) => p.seq === frame.seq)) return prev;
-          return [...prev, frame];
-        });
-      }
-    };
+        // Persisted frame — deduplicate and append.
+        if (typeof msg.seq === "number") {
+          if (msg.seq > latestSeq) latestSeq = msg.seq;
+          // Flatten payload into top-level (mirrors chats.jsx approach).
+          const payload = msg.payload && typeof msg.payload === "object" ? msg.payload : {};
+          const frame = { ...payload, ...msg };
+          setMessages((prev) => {
+            if (prev.some((p) => p.seq === frame.seq)) return prev;
+            return [...prev, frame];
+          });
+        }
+      };
 
-    ws.onclose = (ev) => {
-      setWsState("closed");
-      if (ev.code === 4404 && typeof pushToast === "function") {
-        pushToast({ kind: "error", title: "Session not found via WS", detail: ev.reason || sid });
-      }
-    };
+      ws.onclose = (ev) => {
+        wsRef.current = null;
+        setWsState("closed");
+        if (ev.code === 4404) {
+          if (typeof pushToast === "function") {
+            pushToast({ kind: "error", title: "Session not found via WS", detail: ev.reason || sid });
+          }
+          return;
+        }
+        // Unexpected close — reconnect with exponential backoff.
+        if (!intentional) {
+          reconnectTimer = setTimeout(() => {
+            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+            connect();
+          }, backoffMs);
+        }
+      };
 
-    ws.onerror = () => { /* onclose handles user-facing messaging */ };
+      ws.onerror = () => { /* onclose handles user-facing messaging and reconnect */ };
+    }
+
+    connect();
 
     return () => {
-      try { ws.close(); } catch { /* no-op */ }
+      intentional = true;
+      if (reconnectTimer != null) clearTimeout(reconnectTimer);
+      try { wsRef.current && wsRef.current.close(); } catch { /* no-op */ }
       wsRef.current = null;
     };
   }, [wid, sid]); // eslint-disable-line react-hooks/exhaustive-deps

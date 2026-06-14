@@ -725,148 +725,191 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   // streams NEW frames (no redundant full-history replay). The init
   // gate (`initialLoadedSeq != null`) tolerates an empty-chat or
   // failed-load fallback to cursor 0.
+  //
+  // Reconnect: an unexpected close (network blip, server restart)
+  // triggers exponential-backoff reconnect (1s -> 2s -> 4s ... 30s cap).
+  // Reconnection reuses the last received seq as the cursor so no
+  // frames are missed or duplicated. Terminal close codes (4404, 4410)
+  // do not reconnect.
   React.useEffect(() => {
     if (initialLoadedSeq == null) return;
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/v1/chats/${encodeURIComponent(cid)}/ws?cursor=${initialLoadedSeq}`;
-    let ws;
-    try {
-      ws = new WebSocket(url);
-    } catch (e) {
-      setWsState("closed");
-      return;
+    let intentional = false;
+    let backoffMs = 1000;
+    const MAX_BACKOFF_MS = 30000;
+    let reconnectTimer = null;
+    // Track the highest seq received in this effect's lifetime.
+    // Starts at initialLoadedSeq so the first connection opens with the
+    // correct cursor; updated by onmessage so reconnects resume from the
+    // last received frame.
+    let latestSeq = initialLoadedSeq;
+
+    function connect() {
+      if (intentional) return;
+      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const url = `${proto}//${window.location.host}/v1/chats/${encodeURIComponent(cid)}/ws?cursor=${latestSeq}`;
+      let ws;
+      try {
+        ws = new WebSocket(url);
+      } catch (e) {
+        setWsState("closed");
+        return;
+      }
+      wsRef.current = ws;
+      setWsState("connecting");
+
+      ws.onopen = () => {
+        setWsState("open");
+        backoffMs = 1000; // reset on successful connect
+      };
+
+      ws.onmessage = (ev) => {
+        let msg;
+        try { msg = JSON.parse(ev.data); } catch { return; }
+        if (!msg || typeof msg !== "object") return;
+
+        if (msg.kind === "error" && typeof msg.seq !== "number") {
+          // Protocol-level error frame (not a persisted row).
+          if (typeof pushToast === "function") {
+            pushToast({
+              kind: "error",
+              title: msg.code || "WebSocket error",
+              detail: msg.message || "",
+            });
+          }
+          return;
+        }
+        if (msg.kind === "pong") return;
+
+        // Token usage envelope (no seq). Emitted by the worker after each
+        // assistant turn. Snapshot drives the header TokenMeter pill.
+        if (msg.kind === "usage" && typeof msg.seq !== "number") {
+          setUsage({
+            input_tokens: Number(msg.input_tokens) || 0,
+            output_tokens: Number(msg.output_tokens) || 0,
+            context_length: Number(msg.context_length) || 0,
+          });
+          return;
+        }
+
+        // Compaction envelope (no seq). Server tells us a compaction
+        // pass just happened; surface in three places so the operator
+        // sees it: an in-stream marker row, a success toast, and an
+        // immediate TokenMeter update reflecting the new prompt size.
+        //
+        // Field names mirror the server envelope shape
+        // (tokens_before, tokens_after) per
+        // primer/api/routers/chats.py::_compaction_envelope.
+        //
+        // tokens_after IS the post-compaction context size — per
+        // primer/agent/compaction.py::_full_compact + _estimate_tokens,
+        // it is computed over the FULL new history (summary + retained
+        // tail), not just the summary payload. Pinning the meter to it
+        // is correct: that's the prompt the next assistant turn carries.
+        // Compaction envelope. The server translates the persisted
+        // compaction_marker row into this 'compaction' envelope and sends
+        // it WITH the row's seq (primer/api/routers/chats.py::
+        // _compaction_envelope). Handle it regardless of whether a seq is
+        // present so the marker, the TokenMeter update, and the toast all
+        // fire. Earlier code required a missing seq and so silently
+        // dropped every server-sent compaction (the meter never moved and
+        // no completion marker appeared).
+        if (msg.kind === "compaction") {
+          const beforeT = Number(msg.tokens_before) || 0;
+          const afterT = Number(msg.tokens_after) || 0;
+          const markerSeq = typeof msg.seq === "number"
+            ? msg.seq
+            : `compaction-${Date.now()}`;
+          // Clear the in-progress flag and append the completion marker
+          // (de-duped by seq against the cursor replay).
+          setCompactInFlight(false);
+          setMessages((prev) => prev.some((m) => m.seq === markerSeq)
+            ? prev
+            : [...prev, {
+                kind: "compaction_marker",
+                seq: markerSeq,
+                tokens_before: beforeT,
+                tokens_after: afterT,
+                reason: msg.reason || "",
+              }]);
+          // Update the context meter to the post-compaction prompt size so
+          // the top-right indicator reflects the smaller window immediately.
+          if (afterT > 0) {
+            setUsage((prev) => ({
+              ...prev,
+              input_tokens: afterT,
+            }));
+          }
+          if (typeof pushToast === "function") {
+            const saved = beforeT > 0 ? Math.max(0, beforeT - afterT) : 0;
+            pushToast({
+              kind: "success",
+              title: "Compaction complete",
+              detail: beforeT > 0
+                ? `${beforeT.toLocaleString()} -> ${afterT.toLocaleString()} tokens`
+                  + (saved > 0 ? ` (saved ${saved.toLocaleString()})` : "")
+                : null,
+            });
+          }
+          return;
+        }
+
+        // Any persisted row carries seq → append + advance cursor. We
+        // de-dupe against the initial REST replay because both sources
+        // may overlap (REST loaded seqs 1..N, WS replays seq>0).
+        if (typeof msg.seq === "number") {
+          if (msg.seq > latestSeq) latestSeq = msg.seq;
+          setMessages((prev) => {
+            if (prev.some((p) => p.seq === msg.seq)) return prev;
+            return [...prev, msg];
+          });
+          setLastSeq((prev) => (msg.seq > prev ? msg.seq : prev));
+          // The agent is now producing output (or finished); drop the
+          // thinking placeholder. user_message echoes from a previous
+          // turn don't reach here because we only get rows after the
+          // server processes our outbound frame.
+          if (msg.kind !== "user_message") {
+            setWaitingForReply(false);
+          }
+        }
+      };
+
+      ws.onclose = (ev) => {
+        wsRef.current = null;
+        setWsState("closed");
+        // Terminal codes: do not reconnect.
+        if (ev.code === 4404) {
+          if (typeof pushToast === "function") {
+            pushToast({ kind: "error", title: "Chat not found", detail: ev.reason || cid });
+          }
+          return;
+        }
+        if (ev.code === 4410) {
+          if (typeof pushToast === "function") {
+            pushToast({ kind: "warning", title: "Chat ended", detail: ev.reason || cid });
+          }
+          return;
+        }
+        // Unexpected close — reconnect with exponential backoff.
+        if (!intentional) {
+          reconnectTimer = setTimeout(() => {
+            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+            connect();
+          }, backoffMs);
+        }
+      };
+
+      ws.onerror = () => {
+        // Browsers report a generic ErrorEvent and then close — onclose
+        // handles user-facing messaging and reconnect scheduling.
+      };
     }
-    wsRef.current = ws;
-    setWsState("connecting");
 
-    ws.onopen = () => setWsState("open");
-
-    ws.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      if (!msg || typeof msg !== "object") return;
-
-      if (msg.kind === "error" && typeof msg.seq !== "number") {
-        // Protocol-level error frame (not a persisted row).
-        if (typeof pushToast === "function") {
-          pushToast({
-            kind: "error",
-            title: msg.code || "WebSocket error",
-            detail: msg.message || "",
-          });
-        }
-        return;
-      }
-      if (msg.kind === "pong") return;
-
-      // Token usage envelope (no seq). Emitted by the worker after each
-      // assistant turn. Snapshot drives the header TokenMeter pill.
-      if (msg.kind === "usage" && typeof msg.seq !== "number") {
-        setUsage({
-          input_tokens: Number(msg.input_tokens) || 0,
-          output_tokens: Number(msg.output_tokens) || 0,
-          context_length: Number(msg.context_length) || 0,
-        });
-        return;
-      }
-
-      // Compaction envelope (no seq). Server tells us a compaction
-      // pass just happened; surface in three places so the operator
-      // sees it: an in-stream marker row, a success toast, and an
-      // immediate TokenMeter update reflecting the new prompt size.
-      //
-      // Field names mirror the server envelope shape
-      // (tokens_before, tokens_after) per
-      // primer/api/routers/chats.py::_compaction_envelope.
-      //
-      // tokens_after IS the post-compaction context size — per
-      // primer/agent/compaction.py::_full_compact + _estimate_tokens,
-      // it is computed over the FULL new history (summary + retained
-      // tail), not just the summary payload. Pinning the meter to it
-      // is correct: that's the prompt the next assistant turn carries.
-      // Compaction envelope. The server translates the persisted
-      // compaction_marker row into this 'compaction' envelope and sends
-      // it WITH the row's seq (primer/api/routers/chats.py::
-      // _compaction_envelope). Handle it regardless of whether a seq is
-      // present so the marker, the TokenMeter update, and the toast all
-      // fire. Earlier code required a missing seq and so silently
-      // dropped every server-sent compaction (the meter never moved and
-      // no completion marker appeared).
-      if (msg.kind === "compaction") {
-        const beforeT = Number(msg.tokens_before) || 0;
-        const afterT = Number(msg.tokens_after) || 0;
-        const markerSeq = typeof msg.seq === "number"
-          ? msg.seq
-          : `compaction-${Date.now()}`;
-        // Clear the in-progress flag and append the completion marker
-        // (de-duped by seq against the cursor replay).
-        setCompactInFlight(false);
-        setMessages((prev) => prev.some((m) => m.seq === markerSeq)
-          ? prev
-          : [...prev, {
-              kind: "compaction_marker",
-              seq: markerSeq,
-              tokens_before: beforeT,
-              tokens_after: afterT,
-              reason: msg.reason || "",
-            }]);
-        // Update the context meter to the post-compaction prompt size so
-        // the top-right indicator reflects the smaller window immediately.
-        if (afterT > 0) {
-          setUsage((prev) => ({
-            ...prev,
-            input_tokens: afterT,
-          }));
-        }
-        if (typeof pushToast === "function") {
-          const saved = beforeT > 0 ? Math.max(0, beforeT - afterT) : 0;
-          pushToast({
-            kind: "success",
-            title: "Compaction complete",
-            detail: beforeT > 0
-              ? `${beforeT.toLocaleString()} -> ${afterT.toLocaleString()} tokens`
-                + (saved > 0 ? ` (saved ${saved.toLocaleString()})` : "")
-              : null,
-          });
-        }
-        return;
-      }
-
-      // Any persisted row carries seq → append + advance cursor. We
-      // de-dupe against the initial REST replay because both sources
-      // may overlap (REST loaded seqs 1..N, WS replays seq>0).
-      if (typeof msg.seq === "number") {
-        setMessages((prev) => {
-          if (prev.some((p) => p.seq === msg.seq)) return prev;
-          return [...prev, msg];
-        });
-        setLastSeq((prev) => (msg.seq > prev ? msg.seq : prev));
-        // The agent is now producing output (or finished); drop the
-        // thinking placeholder. user_message echoes from a previous
-        // turn don't reach here because we only get rows after the
-        // server processes our outbound frame.
-        if (msg.kind !== "user_message") {
-          setWaitingForReply(false);
-        }
-      }
-    };
-
-    ws.onclose = (ev) => {
-      setWsState("closed");
-      if (ev.code === 4404 && typeof pushToast === "function") {
-        pushToast({ kind: "error", title: "Chat not found", detail: ev.reason || cid });
-      } else if (ev.code === 4410 && typeof pushToast === "function") {
-        pushToast({ kind: "warning", title: "Chat ended", detail: ev.reason || cid });
-      }
-    };
-
-    ws.onerror = () => {
-      // Browsers report a generic ErrorEvent and then close — onclose
-      // does the user-facing toasting based on the close code.
-    };
+    connect();
 
     return () => {
-      try { ws.close(); } catch { /* no-op */ }
+      intentional = true;
+      if (reconnectTimer != null) clearTimeout(reconnectTimer);
+      try { wsRef.current && wsRef.current.close(); } catch { /* no-op */ }
       wsRef.current = null;
     };
   }, [cid, initialLoadedSeq]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -897,13 +940,15 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     return () => cancelAnimationFrame(raf);
   }, [lastSeq, waitingForReply]);
 
+  // Returns true if the frame was enqueued; false if the socket was not
+  // ready (user-facing toast fires on false so the text is preserved).
   const sendMessage = (text, atts) => {
     const ws = wsRef.current;
     if (!ws || ws.readyState !== 1) {
       if (typeof pushToast === "function") {
         pushToast({ kind: "error", title: "Not connected", detail: "WebSocket is not open" });
       }
-      return;
+      return false;
     }
     const frame = { kind: "user_message" };
     if (text) frame.content = text;
@@ -917,14 +962,19 @@ function ChatDetail({ chatId, onBack, pushToast }) {
     }
     ws.send(JSON.stringify(frame));
     setWaitingForReply(true);
+    return true;
   };
 
+  // Clear the composer and attachments only after a successful send so a
+  // failed send (WS not open) leaves the user's text intact.
   const onSubmitComposer = () => {
     const text = composer.trim();
     if (!text && attachments.length === 0) return;
-    sendMessage(text, attachments);
-    setComposer("");
-    setAttachments([]);
+    const sent = sendMessage(text, attachments);
+    if (sent) {
+      setComposer("");
+      setAttachments([]);
+    }
   };
 
   // Operator-triggered compaction. POSTs to the chat's compact
