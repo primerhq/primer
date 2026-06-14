@@ -7,12 +7,12 @@ section: reference
 
 Workspace providers, templates, and workspace instances make up the three-tier workspace surface under `/v1`. See the concept and feature pages for background.
 
-```ref:concepts/workspaces
-Workspace concept: providers, templates, instances, and the local/container/kubernetes backends.
+```ref:features/workspace-providers
+Workspace providers: the three backends (local, container, Kubernetes) and how to register them.
 ```
 
-```ref:features/workspaces
-Workspace feature guide: creating and managing workspaces from the console.
+```ref:features/workspace-templates
+Workspace templates: materialisation recipes, init commands, file sources, and lifecycle.
 ```
 
 ## Endpoints
