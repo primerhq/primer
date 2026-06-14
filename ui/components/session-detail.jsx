@@ -1049,7 +1049,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
         try { msg = JSON.parse(ev.data); } catch { return; }
         if (!msg || typeof msg !== "object") return;
 
-        // Protocol-level error (no seq) — toast and bail.
+        // Protocol-level error (no seq) - toast and bail.
         if (msg.kind === "error" && typeof msg.seq !== "number") {
           if (typeof pushToast === "function") {
             pushToast({ kind: "error", title: msg.code || "Session WS error", detail: msg.message || "" });
@@ -1059,7 +1059,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
         if (msg.kind === "pong") return;
 
         // Token-usage envelope (no seq). Drives the read-only header
-        // TokenMeter — the session WS surface mirrors the chats WS for
+        // TokenMeter - the session WS surface mirrors the chats WS for
         // this shape (`input_tokens` / `context_length`).
         if (msg.kind === "usage" && typeof msg.seq !== "number") {
           setUsage({
@@ -1070,7 +1070,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
           return;
         }
 
-        // Persisted frame — deduplicate and append.
+        // Persisted frame - deduplicate and append.
         if (typeof msg.seq === "number") {
           if (msg.seq > latestSeq) latestSeq = msg.seq;
           // Flatten payload into top-level (mirrors chats.jsx approach).
@@ -1092,7 +1092,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
           }
           return;
         }
-        // Unexpected close — reconnect with exponential backoff.
+        // Unexpected close - reconnect with exponential backoff.
         if (!intentional) {
           reconnectTimer = setTimeout(() => {
             backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);

@@ -136,7 +136,7 @@ function App() {
   const [toasts, setToasts] = React.useState([]);
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
 
-  // sessions is an empty array — page components (sessions-list.jsx,
+  // sessions is an empty array - page components (sessions-list.jsx,
   // session-detail.jsx, workers.jsx) all read from the live API directly.
   // window.MOCK.buildSessions / window.MOCK.WORKERS are confined to the
   // design canvas and must not initialise production state.

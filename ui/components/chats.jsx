@@ -800,7 +800,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
         // (tokens_before, tokens_after) per
         // primer/api/routers/chats.py::_compaction_envelope.
         //
-        // tokens_after IS the post-compaction context size — per
+        // tokens_after IS the post-compaction context size - per
         // primer/agent/compaction.py::_full_compact + _estimate_tokens,
         // it is computed over the FULL new history (summary + retained
         // tail), not just the summary payload. Pinning the meter to it
@@ -889,7 +889,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           }
           return;
         }
-        // Unexpected close — reconnect with exponential backoff.
+        // Unexpected close - reconnect with exponential backoff.
         if (!intentional) {
           reconnectTimer = setTimeout(() => {
             backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
@@ -899,7 +899,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       };
 
       ws.onerror = () => {
-        // Browsers report a generic ErrorEvent and then close — onclose
+        // Browsers report a generic ErrorEvent and then close - onclose
         // handles user-facing messaging and reconnect scheduling.
       };
     }
