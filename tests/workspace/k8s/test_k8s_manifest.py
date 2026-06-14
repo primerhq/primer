@@ -201,3 +201,81 @@ def test_assert_no_dangerous_keys_path_in_message() -> None:
     overlay = {"deeply": {"nested": {"hostPath": {"path": "/"}}}}
     with pytest.raises(ConfigError, match=r"deeply\.nested\.hostPath"):
         _assert_no_dangerous_keys(overlay, source="x")
+
+
+# ===========================================================================
+# list() -- cross-process / restart-durable enumeration via label selector
+# ===========================================================================
+
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+from primer.workspace.k8s.backend import KubernetesWorkspaceBackend
+
+
+def _sts_item(workspace_id: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        metadata=SimpleNamespace(
+            labels={
+                "primer.workspace.id": workspace_id,
+                "workspace-id": workspace_id,
+                "app.kubernetes.io/managed-by": "primer",
+            },
+        ),
+    )
+
+
+def _backend_with_apps(items: list) -> KubernetesWorkspaceBackend:
+    apps_v1 = MagicMock()
+    apps_v1.list_namespaced_stateful_set = AsyncMock(
+        return_value=SimpleNamespace(items=items),
+    )
+    backend = KubernetesWorkspaceBackend(
+        _provider_cfg(),
+        core_v1=MagicMock(),
+        apps_v1=apps_v1,
+        custom_objects=MagicMock(),
+    )
+    backend._initialised = True
+    return backend
+
+
+@pytest.mark.asyncio
+async def test_list_enumerates_statefulsets_by_label() -> None:
+    """list() maps live StatefulSets back to workspace ids -- workspaces
+    materialised by another process / a previous run are surfaced."""
+    backend = _backend_with_apps([_sts_item("ws-aaa"), _sts_item("ws-bbb")])
+    ids = sorted(await backend.list())
+    assert ids == ["ws-aaa", "ws-bbb"]
+    backend._apps_v1.list_namespaced_stateful_set.assert_awaited_once_with(
+        namespace="primer",
+        label_selector="app.kubernetes.io/managed-by=primer",
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_unions_in_memory_and_cluster() -> None:
+    """A workspace held in memory but not yet visible as an STS (mid-create)
+    is not dropped from the listing."""
+    backend = _backend_with_apps([_sts_item("ws-cluster")])
+    backend._workspaces["ws-in-mem"] = MagicMock()
+    ids = sorted(await backend.list())
+    assert ids == ["ws-cluster", "ws-in-mem"]
+
+
+@pytest.mark.asyncio
+async def test_list_falls_back_to_memory_on_cluster_error() -> None:
+    """A transient cluster query failure must not erase locally-known
+    workspaces."""
+    apps_v1 = MagicMock()
+    apps_v1.list_namespaced_stateful_set = AsyncMock(
+        side_effect=RuntimeError("apiserver unreachable"),
+    )
+    backend = KubernetesWorkspaceBackend(
+        _provider_cfg(), core_v1=MagicMock(), apps_v1=apps_v1,
+        custom_objects=MagicMock(),
+    )
+    backend._initialised = True
+    backend._workspaces["ws-local"] = MagicMock()
+    assert await backend.list() == ["ws-local"]

@@ -290,6 +290,140 @@ async def test_diagnostic_exec_delegates_to_sandbox(tmp_path: Path) -> None:
     assert captured["workdir"] == "/workspace"
 
 
+# ===========================================================================
+# Cross-process session rehydration (parity with LocalWorkspace.get_session)
+# ===========================================================================
+
+
+from primer.model.workspace_session import AgentBinding
+
+
+def _binding(agent_id: str = "ag-1") -> AgentBinding:
+    return AgentBinding(agent_id=agent_id, agent_name="Agent One")
+
+
+@pytest.mark.asyncio
+async def test_get_session_rehydrates_from_persisted_state(
+    tmp_path: Path,
+) -> None:
+    """A session created via one SandboxWorkspace wrapper is recoverable
+    via a *fresh* wrapper over the same sandbox -- simulating the API
+    process allocating the slot and the worker process re-attaching."""
+    sb = FakeSandbox(root=tmp_path)
+    ws_api = await SandboxWorkspace.materialise(
+        workspace_id="ws-rh", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    created = await ws_api.start_session(_binding(), id="sess-rh-1")
+    assert created.session_id == "sess-rh-1"
+
+    # Fresh wrapper over the SAME sandbox => empty in-memory registry, but
+    # the persisted slot lives in the sandbox state repo.
+    ws_worker = await SandboxWorkspace.materialise(
+        workspace_id="ws-rh", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    assert ws_worker._sessions == {}  # nothing cached yet
+    rehydrated = await ws_worker.get_session("sess-rh-1")
+    assert rehydrated is not None
+    assert rehydrated.session_id == "sess-rh-1"
+    assert rehydrated.agent_id == "ag-1"
+    # Second call returns the now-cached handle.
+    again = await ws_worker.get_session("sess-rh-1")
+    assert again is rehydrated
+
+
+@pytest.mark.asyncio
+async def test_get_session_uses_in_memory_fast_path(tmp_path: Path) -> None:
+    """When the slot is already cached, get_session returns it without
+    touching the state repo (the same object identity)."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-fast", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    created = await ws.start_session(_binding(), id="sess-fast-1")
+    got = await ws.get_session("sess-fast-1")
+    assert got is created
+
+
+@pytest.mark.asyncio
+async def test_get_session_missing_returns_none(tmp_path: Path) -> None:
+    """No persisted slot => None (mirrors LocalWorkspace.get_session)."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-miss", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    assert await ws.get_session("sess-does-not-exist") is None
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_rehydrates_all_persisted(tmp_path: Path) -> None:
+    """list_sessions surfaces every persisted session, even those created
+    by a different wrapper (the API/worker split)."""
+    sb = FakeSandbox(root=tmp_path)
+    ws_api = await SandboxWorkspace.materialise(
+        workspace_id="ws-la", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws_api.start_session(_binding("ag-a"), id="sess-la-1")
+    await ws_api.start_session(_binding("ag-b"), id="sess-la-2")
+
+    ws_worker = await SandboxWorkspace.materialise(
+        workspace_id="ws-la", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    infos = await ws_worker.list_sessions()
+    ids = sorted(i.session_id for i in infos)
+    assert ids == ["sess-la-1", "sess-la-2"]
+
+
+@pytest.mark.asyncio
+async def test_list_sessions_filters_after_rehydrate(tmp_path: Path) -> None:
+    """The agent_id / status filters apply to rehydrated sessions too."""
+    sb = FakeSandbox(root=tmp_path)
+    ws_api = await SandboxWorkspace.materialise(
+        workspace_id="ws-lf", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws_api.start_session(_binding("ag-x"), id="sess-lf-1")
+    await ws_api.start_session(_binding("ag-y"), id="sess-lf-2")
+
+    ws_worker = await SandboxWorkspace.materialise(
+        workspace_id="ws-lf", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    only_x = await ws_worker.list_sessions(agent_id="ag-x")
+    assert [i.session_id for i in only_x] == ["sess-lf-1"]
+
+
+@pytest.mark.asyncio
+async def test_remove_session_drops_in_memory_handle(tmp_path: Path) -> None:
+    """remove_session unbinds the cached handle (parity with local)."""
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-rm", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws.start_session(_binding(), id="sess-rm-1")
+    assert await ws.remove_session("sess-rm-1") is True
+    assert "sess-rm-1" not in ws._sessions
+    # No persisted slot was reaped in this test, so a rehydrating
+    # list_sessions would re-surface it -- remove_session only unbinds the
+    # cache, exactly like LocalWorkspace.remove_session.
+    assert await ws.remove_session("never-existed") is False
+
+
 @pytest.mark.asyncio
 async def test_diagnostic_exec_timeout_returns_minus_one(
     tmp_path: Path,

@@ -607,6 +607,40 @@ class SandboxStateRepo:
         self._agent_by_session.setdefault(session_id, binding.agent_id)
         return binding
 
+    async def list_session_ids(self) -> list[str]:
+        """Enumerate every session id persisted in the runtime state repo.
+
+        The ``.state`` tree is a runtime-managed git repo, so the canonical
+        way to discover sessions without raw filesystem access is the
+        ``state_history`` op: every session's ``attach`` commit (and every
+        subsequent turn commit) carries a ``Session:`` trailer. We collect
+        the distinct, non-empty session ids across the commit log.
+
+        This is the enumeration source :meth:`SandboxWorkspace.get_session`
+        and :meth:`SandboxWorkspace.list_sessions` use to rehydrate handles
+        that were created in another process (the API/worker split) or
+        before a platform restart -- the parallel to
+        :meth:`LocalStateRepo._scan_existing_sessions` on the local backend
+        (which scans ``sessions/`` on disk). Returns an empty list on an
+        exec-only sandbox that does not expose the state ops.
+        """
+        if not isinstance(self._sandbox, _StateCapableSandbox):
+            return []
+        sandbox = self._state_sandbox()
+        # A high limit so we don't miss sessions whose only commit is the
+        # initial attach buried under many turn commits from busier
+        # siblings. The history is bounded by workspace lifetime; the
+        # runtime returns newest-first.
+        raw_commits = await sandbox.state_history(limit=10_000)
+        seen: dict[str, None] = {}
+        for raw in raw_commits:
+            info = _map_commit_dict(raw)
+            sid = info.session_id
+            if sid and sid not in seen:
+                seen[sid] = None
+                self._agent_by_session.setdefault(sid, info.agent_id or "")
+        return list(seen)
+
     async def load_waiting_state(self, session_id: str) -> WaitingState | None:
         """Read ``sessions/<session_id>/waiting.json`` if present."""
         _validate_session_id(session_id)

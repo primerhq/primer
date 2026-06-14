@@ -724,7 +724,50 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         )
 
     async def list(self) -> list[str]:
-        return list(self._workspaces)
+        """Enumerate every workspace this backend manages.
+
+        Reads the live StatefulSets in the configured namespace (label
+        selector ``app.kubernetes.io/managed-by=primer``) and maps each one
+        back to its workspace id via its ``primer.workspace.id`` label.
+        This survives the API/worker process split and platform restarts:
+        a workspace materialised by another process (or a previous run of
+        this one) still appears, instead of only the in-memory handles this
+        process happens to hold -- bringing K8s ``list()`` to parity with
+        the container backend (which lists by container label) and the
+        local backend's on-disk durability.
+
+        Falls back to the in-memory set if the cluster query fails so a
+        transient API error does not erase locally-known workspaces.
+        """
+        try:
+            if not self._initialised:
+                await self.initialize()
+            assert self._apps_v1 is not None
+            resp = await self._apps_v1.list_namespaced_stateful_set(
+                namespace=self._config.namespace,
+                label_selector="app.kubernetes.io/managed-by=primer",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "KubernetesWorkspaceBackend.list: cluster query failed; "
+                "falling back to in-memory set: %s", exc,
+            )
+            return list(self._workspaces)
+        ids: dict[str, None] = {}
+        # Seed with in-memory handles so a workspace mid-create (STS not yet
+        # visible) is not dropped from the listing.
+        for wid in self._workspaces:
+            ids[wid] = None
+        for sts in getattr(resp, "items", []) or []:
+            metadata = getattr(sts, "metadata", None)
+            labels = getattr(metadata, "labels", None) or {}
+            wid = (
+                labels.get("primer.workspace.id")
+                or labels.get("workspace-id")
+            )
+            if wid:
+                ids[wid] = None
+        return list(ids)
 
     async def destroy(self, workspace_id: str) -> None:
         """Tear down a workspace's Pod, Service, Secret, STS and PVC.
