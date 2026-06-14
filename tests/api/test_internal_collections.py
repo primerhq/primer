@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import Any
+from unittest.mock import patch
 
 import httpx
 import pytest
@@ -62,6 +63,32 @@ from primer.model.provider import (
     SemanticSearchProviderType,
 )
 from primer.model.storage import OffsetPage, OffsetPageResponse
+
+
+# ===========================================================================
+# Module-level patch: suppress the real Docling/HuggingFace ingest path
+# ===========================================================================
+
+# _ingest_ai_docs() defaults to DoclingSplitter (HybridChunker backed by a
+# sentence-transformers BertTokenizer) + DoclingLoader (IBM DocumentConverter).
+# Both download ML models over :443 on a cold cache, causing the suite to hang
+# in CI or on a pristine machine.  The API-surface tests in this file only care
+# that the bootstrap lifecycle (status rows, subsystem attachment, collection
+# creation) works correctly -- not that AI-doc markdown is actually embedded.
+# We therefore stub _ingest_ai_docs to a coroutine that returns 0 immediately.
+# The behaviour under a real ingester_factory is covered exhaustively by
+# tests/test_internal_collections.py::TestAiDocsBootstrap.
+@pytest.fixture(autouse=True)
+def _stub_ingest_ai_docs():
+    async def _noop(self, emit, counts, **kwargs):
+        counts["docs"] = 0
+        return 0
+
+    with patch(
+        "primer.internal_collections.InternalCollectionsSubsystem._ingest_ai_docs",
+        new=_noop,
+    ):
+        yield
 
 
 # ===========================================================================
