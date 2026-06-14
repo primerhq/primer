@@ -1,19 +1,31 @@
-# Example config.yaml for `primer api --config config.yaml` and
-# `primer worker --config config.yaml`. Copy this to `config.yaml`
-# (which is gitignored by convention) and tweak.
+# config.example.yaml -- copy to config.yaml (gitignored) and adjust.
 #
-# Defaults match the compose service in this repo (run with `podman
-# compose up -d` or `docker compose up -d`), so the only
-# thing you typically change is the password.
+# Usage: uv run primer api --config config.yaml
+#
+# The CLI reads this file with yaml.safe_load and passes the resulting
+# dict to AppConfig(**data), so every top-level key must match an
+# AppConfig field. The old flat db_* keys (db_host, db_port, ...) are
+# silently ignored by AppConfig (extra="ignore"); omitting them here
+# prevents the silent-SQLite-fallback trap.
+#
+# Defaults below match the docker-compose.yml Postgres service, so the
+# only thing most developers change is the password.
 
 # --- Storage (Postgres) ----------------------------------------------------
-db_host: localhost
-db_port: 5432
-db_database: primer
-db_user: primer
-db_password: primer
-db_min_pool_size: 1
-db_max_pool_size: 10
+# AppConfig.db is a StorageProviderConfig: {provider, config: {...}}.
+# Omit this block to fall back to embedded SQLite at ~/.primer/db/data.sqlite
+# (single-developer use only; not suitable for the Postgres scheduler).
+db:
+  provider: postgres
+  config:
+    hostname: localhost
+    port: 5432
+    database: primer
+    username: primer
+    password: primer
+    pool:
+      min_size: 1
+      max_size: 25
 
 # --- HTTP server -----------------------------------------------------------
 host: 0.0.0.0
