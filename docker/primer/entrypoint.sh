@@ -6,6 +6,11 @@
 # primer CLI requires --config; this script lets us drive the config
 # entirely via env vars in compose without baking credentials into the
 # image.
+#
+# The db block uses the nested provider/config shape that AppConfig
+# (StorageProviderConfig) actually reads. The old flat db_host/db_port/...
+# keys are silently ignored by AppConfig (extra="ignore") and cause a
+# silent fallback to embedded SQLite.
 
 set -e
 
@@ -21,13 +26,14 @@ set -e
 : "${PRIMER_WORKER_CONCURRENCY:=4}"
 
 cat > /app/config.yaml <<EOF
-db_host: ${PRIMER_DB_HOST}
-db_port: ${PRIMER_DB_PORT}
-db_database: ${PRIMER_DB_DATABASE}
-db_user: ${PRIMER_DB_USER}
-db_password: ${PRIMER_DB_PASSWORD}
-db_min_pool_size: 1
-db_max_pool_size: 10
+db:
+  provider: postgres
+  config:
+    hostname: ${PRIMER_DB_HOST}
+    port: ${PRIMER_DB_PORT}
+    database: ${PRIMER_DB_DATABASE}
+    username: ${PRIMER_DB_USER}
+    password: ${PRIMER_DB_PASSWORD}
 
 host: ${PRIMER_HOST}
 port: ${PRIMER_PORT}

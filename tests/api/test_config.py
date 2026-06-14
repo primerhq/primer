@@ -6,6 +6,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from primer.api.config import AppConfig
@@ -22,6 +23,10 @@ from primer.model.scheduler import (
     SchedulerProviderType,
     WorkerConfig,
 )
+
+# Repo root resolved once; used by the config.example.yaml guard below.
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_CONFIG_EXAMPLE = _REPO_ROOT / "config.example.yaml"
 
 
 class TestZeroConfigDefaults:
@@ -146,3 +151,41 @@ class TestTomlConfigPath:
         monkeypatch.setenv("PRIMER_CONFIG_PATH", str(toml_path))
         cfg = AppConfig(log_level="info")
         assert cfg.log_level == "info"
+
+
+class TestConfigExampleYaml:
+    """Guard: config.example.yaml must parse through AppConfig without error.
+
+    This test exists to prevent config.example.yaml from drifting back to the
+    old flat ``db_*`` form that AppConfig silently ignores (extra="ignore"),
+    which causes a silent SQLite fallback instead of the intended Postgres
+    connection.
+    """
+
+    def test_config_example_parses_without_validation_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # Ensure no PRIMER_DB__* env vars bleed in from the test environment.
+        for var in ("PRIMER_DB__PROVIDER", "PRIMER_DB__CONFIG__HOSTNAME"):
+            monkeypatch.delenv(var, raising=False)
+
+        assert _CONFIG_EXAMPLE.exists(), (
+            f"config.example.yaml not found at {_CONFIG_EXAMPLE}"
+        )
+        data = yaml.safe_load(_CONFIG_EXAMPLE.read_text(encoding="utf-8"))
+        assert isinstance(data, dict), "config.example.yaml must be a YAML mapping"
+
+        # This must not raise ValidationError.
+        cfg = AppConfig(**data)
+
+        # The example file must specify a Postgres db, not fall through to
+        # the embedded-SQLite default (db=None).
+        assert cfg.db is not None, (
+            "config.example.yaml produced db=None (SQLite fallback). "
+            "The 'db:' block is missing or uses silently-ignored flat keys."
+        )
+        assert cfg.db.provider == StorageProviderType.POSTGRES, (
+            f"Expected db.provider='postgres', got {cfg.db.provider!r}. "
+            "Update config.example.yaml to use the correct nested db block."
+        )

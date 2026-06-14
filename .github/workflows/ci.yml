@@ -1,0 +1,100 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run narrowed unit sweep
+        run: |
+          uv run pytest tests/ -q \
+            --ignore=tests/distributed \
+            --ignore=tests/ui_e2e \
+            --ignore=tests/e2e \
+            --ignore=tests/integration \
+            --ignore=tests/llm \
+            --tb=short
+
+  docs-hygiene:
+    name: Docs hygiene
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run docs hygiene suite
+        run: |
+          uv run pytest tests/docs/ tests/user_docs/ -q --tb=short
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: uv sync --frozen
+
+      - name: Run unit sweep with coverage
+        run: |
+          uv run pytest tests/ -q \
+            --ignore=tests/distributed \
+            --ignore=tests/ui_e2e \
+            --ignore=tests/e2e \
+            --ignore=tests/integration \
+            --ignore=tests/llm \
+            --cov=primer \
+            --cov-report=term-missing:skip-covered \
+            --cov-report=xml:coverage.xml \
+            --tb=short
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
