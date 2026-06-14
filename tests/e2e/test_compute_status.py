@@ -2367,6 +2367,10 @@ async def test_t0498_graph_with_callable_router_create_clean(
         body = {
             "id": graph_id,
             "description": "T0498 callable router",
+            # callable routers may route to any node (including back
+            # to an earlier one) so the validator requires
+            # max_iterations to bound execution.
+            "max_iterations": 10,
             "nodes": [
                 {"kind": "begin", "id": "start"},
                 {"kind": "agent", "id": "n1", "agent_id": agent_id},

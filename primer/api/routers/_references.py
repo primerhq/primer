@@ -27,8 +27,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from fastapi import HTTPException, Request
+from fastapi import Request
 
+from primer.model.except_ import ConflictError
 from primer.model.storage import FieldRef, Op, Predicate, Value
 from primer.model.storage import OffsetPage
 
@@ -98,13 +99,10 @@ def build_reference_block_hook(
             )
             page = await storage.find(predicate, OffsetPage(offset=0, length=1))
             if page.items:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": check.error_code,
-                        "child_kind": check.child_kind,
-                        "count": len(page.items),
-                    },
+                raise ConflictError(
+                    f"{check.child_kind} in use: {len(page.items)} "
+                    f"{check.child_kind}(s) reference {entity_id!r} "
+                    f"(first: {page.items[0].id!r})"
                 )
 
     return _hook

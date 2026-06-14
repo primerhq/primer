@@ -61,6 +61,17 @@ async def _seed_agent(
     assert r.status_code == 201, f"seed agent failed: {r.text}"
 
 
+def _ws_headers(client: httpx.AsyncClient) -> list[tuple[str, str]]:
+    """Forward the authenticated client's session cookie onto the WS
+    handshake. The chat WS closes with 4401 unless the signed
+    ``primer_session`` cookie is present; the ``client`` fixture holds it in
+    its cookie jar after login."""
+    pairs = [f"{c.name}={c.value}" for c in client.cookies.jar]
+    if not pairs:
+        return []
+    return [("Cookie", "; ".join(pairs))]
+
+
 async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
     for url in urls:
         try:
@@ -76,17 +87,49 @@ async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
 
 @pytest.mark.asyncio
 async def test_t0766_chat_messages_after_seq_filter(
-    client: httpx.AsyncClient, unique_suffix: str,
+    client: httpx.AsyncClient, unique_suffix: str, mock_llm,
 ) -> None:
     """T0766 — GET /v1/chats/{id}/messages ?after_seq=N returns only
     rows with seq > N, ordered ascending. Defends the cursor-style
     filter implemented in
     [`primer/api/routers/chats.py`](../../primer/api/routers/chats.py).
+
+    Uses the session-scoped mock_llm fixture so the stub LLM server
+    returns a real streaming chat response (user_message + assistant_token
+    + done + usage = 4 WS frames per turn). Originally used a fake
+    ollama provider that produced no LLM response; the test always needs
+    the scripted stub to produce rows in a deterministic order.
     """
+    registry, mock_base_url = mock_llm
+    scenario = f"t766-{unique_suffix}"
+    # Scripted stub: emit "hello" text for any user message.
+    from tests._support.mock_llm import Rule
+    registry.register(scenario, [Rule(emit_text="hello")])
+
     pid = f"llm-t766-{unique_suffix}"
     aid = f"ag-t766-{unique_suffix}"
-    await _seed_llm_provider(client, pid)
-    await _seed_agent(client, aid, pid)
+    r = await client.post(
+        "/v1/llm_providers",
+        json={
+            "id": pid,
+            "provider": "openchat",
+            "models": [{"name": scenario, "context_length": 8192}],
+            "config": {"url": mock_base_url, "flavor": "lmstudio"},
+            "limits": {"max_concurrency": 4},
+        },
+    )
+    assert r.status_code == 201, f"seed LLM failed: {r.text}"
+    r = await client.post(
+        "/v1/agents",
+        json={
+            "id": aid,
+            "description": "t766 probe",
+            "model": {"provider_id": pid, "model_name": scenario},
+            "tools": [],
+            "system_prompt": ["probe"],
+        },
+    )
+    assert r.status_code == 201, f"seed agent failed: {r.text}"
     cleanup_urls = [f"/v1/agents/{aid}", f"/v1/llm_providers/{pid}"]
     chat_id: str | None = None
     try:
@@ -96,12 +139,9 @@ async def test_t0766_chat_messages_after_seq_filter(
         chat_id = r.json()["id"]
         cleanup_urls.insert(0, f"/v1/chats/{chat_id}")
 
-        # The runner stub appends 3 rows (user_message + assistant_token
-        # + done) per user_message. Drive the chat over WS once (which
-        # is the only public path to append) so we have rows seq=1..3.
-        # Then run a second turn for seq=4..6.
-        # Drive the chat via WS to append rows. base_url is the http
-        # URL of the live primer server; swap scheme to ws.
+        # The mock LLM appends 3 rows (user_message + assistant_token
+        # + done) per user_message; the WS also sends a usage frame after
+        # done. Drive the chat over WS twice to get seq 1..6.
         import json
         import websockets
 
@@ -111,10 +151,16 @@ async def test_t0766_chat_messages_after_seq_filter(
         )
         ws_url = f"{ws_origin}/v1/chats/{chat_id}/ws"
 
+        last_seq = [0]  # mutable cell so _send_one can update it
+
         async def _send_one(text: str) -> None:
-            async with websockets.connect(ws_url) as ws:
+            # Pass ?cursor=last_seq to skip replaying history from prior turns.
+            connect_url = f"{ws_url}?cursor={last_seq[0]}"
+            async with websockets.connect(
+                connect_url, additional_headers=_ws_headers(client),
+            ) as ws:
                 # Spec §6.4: drain the initial ``usage`` envelope first.
-                initial = json.loads(await ws.recv())
+                initial = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
                 assert initial["kind"] == "usage", initial
                 await ws.send(json.dumps(
                     {"kind": "user_message", "content": text}
@@ -122,12 +168,16 @@ async def test_t0766_chat_messages_after_seq_filter(
                 # Consume 4 messages (user + assistant + done + usage).
                 received: list[dict] = []
                 for _ in range(4):
-                    msg = await ws.recv()
+                    msg = await asyncio.wait_for(ws.recv(), timeout=10.0)
                     received.append(json.loads(msg))
                 # Ensure all 4 kinds arrived (defensive in case the
                 # runner's row ordering changes).
                 kinds = [m["kind"] for m in received]
                 assert "done" in kinds, f"got {kinds}, expected done"
+                # Track the highest seq so the next _send_one skips them.
+                for m in received:
+                    if m.get("seq") is not None:
+                        last_seq[0] = max(last_seq[0], m["seq"])
                 # Small settle delay so the runner's last storage write
                 # finishes before the WS close races it. The runner
                 # persists then yields; on done's send_json the runner
@@ -492,12 +542,15 @@ async def test_t0739_graph_callable_router_empty_registry_clean_fatal(
     try:
         # Graph with two agent nodes connected by a callable router
         # edge pointing at an unregistered callable_id.
+        # max_iterations is required by the validator whenever a
+        # callable router is present (it may route to any node).
         r = await client.post(
             "/v1/graphs",
             json={
                 "id": gid,
                 "description": "router fatal",
                 "entry_node_id": "begin",
+                "max_iterations": 10,
                 "nodes": [
                     {"id": "begin", "kind": "begin"},
                     {"id": "n1", "kind": "agent", "agent_id": aid},

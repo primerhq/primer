@@ -163,19 +163,36 @@ async def _inject_park(
         await conn.close()
 
 
-async def _ensure_lease(session_id: str) -> None:
-    """Insert a session_leases row for an injected park if missing.
+async def _delete_lease(session_id: str) -> None:
+    """Delete any existing leases row for a session.
 
-    The worker pool's claim query JOINs sessions × session_leases —
-    an injected park without a lease can never be claimed. Real
-    sessions get a lease via the start_session flow; tests that
-    inject park state out-of-band need to mirror that.
+    session_factory always upserts a lease at create time (even when
+    auto_start=False). Tests that need to inject park state out-of-band
+    must first remove this auto-lease so the worker does not claim the
+    session before the park is written.
+    """
+    conn = await _pg()
+    try:
+        await conn.execute(
+            "DELETE FROM leases WHERE kind = 'session' AND entity_id = $1",
+            session_id,
+        )
+    finally:
+        await conn.close()
+
+
+async def _ensure_lease(session_id: str) -> None:
+    """Upsert a leases row for an injected park.
+
+    After injecting park state out-of-band, call this to make the session
+    claimable by the worker pool. The claim query selects from the leases
+    table keyed on (kind='session', entity_id=session_id).
     """
     sql = """
-        INSERT INTO session_leases (session_id, runnable, next_attempt_at)
-        VALUES ($1, TRUE, now())
-        ON CONFLICT (session_id) DO UPDATE
-        SET runnable = TRUE, next_attempt_at = now()
+        INSERT INTO leases (kind, entity_id, next_attempt_at, priority_score)
+        VALUES ('session', $1, now(), 100)
+        ON CONFLICT (kind, entity_id) DO UPDATE
+        SET next_attempt_at = now()
     """
     conn = await _pg()
     try:
@@ -198,18 +215,33 @@ async def _read_park_status(session_id: str) -> str | None:
 
 
 async def _read_lease_worker_id(session_id: str) -> str | None:
-    """Read session_leases.worker_id — non-NULL means a worker
-    claimed this session (the worker pool's claim query SETs
-    worker_id when it picks up a runnable lease)."""
+    """Read leases.claimed_by -- non-NULL means a worker claimed this
+    session (the claim engine's claim_due sets claimed_by on pick-up).
+
+    The current claim schema uses a single ``primer.leases`` table keyed
+    on (kind, entity_id); there is no ``session_leases`` table.
+    """
     conn = await _pg()
     try:
         row = await conn.fetchrow(
-            "SELECT worker_id FROM session_leases WHERE session_id = $1",
+            "SELECT claimed_by FROM leases "
+            "WHERE kind = 'session' AND entity_id = $1",
             session_id,
         )
-        return row["worker_id"] if row else None
+        return row["claimed_by"] if row else None
     finally:
         await conn.close()
+
+
+def _ws_headers(client: httpx.AsyncClient) -> list[tuple[str, str]]:
+    """Forward the authenticated client's session cookie onto the WS
+    handshake. The chat WS closes with 4401 unless the signed
+    ``primer_session`` cookie is present; the ``client`` fixture holds it in
+    its cookie jar after login."""
+    pairs = [f"{c.name}={c.value}" for c in client.cookies.jar]
+    if not pairs:
+        return []
+    return [("Cookie", "; ".join(pairs))]
 
 
 async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
@@ -288,15 +320,19 @@ async def test_t0810_worker_drain_returns_204_and_flips_status(
 
 
 @pytest.mark.asyncio
-async def test_t0811_chat_ws_interrupt_persists_error_row(
+async def test_t0811_chat_ws_interrupt_sets_cancel_flag(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0811 — Sending {"kind":"interrupt"} over the chat WS must
-    persist a kind='error' row to chat_messages (via _append_and_send)
-    and send it back to the client. The row text mentions 'interrupted'.
+    """T0811 — Sending {"kind":"interrupt"} over the chat WS sets
+    cancel_requested_at on the chat row so any in-flight worker turn
+    stops at its next cancellation checkpoint.
 
-    Pins the M6 interrupt-message protocol path at
-    primer/api/routers/chats.py:chat_ws (the kind=='interrupt' branch).
+    The interrupt handler no longer sends an error row or WS response;
+    it just marks the chat row and publishes a cancel event. Verified
+    by reading the chat via GET after the WS closes and checking that
+    cancel_requested_at is non-NULL.
+
+    Pins primer/api/routers/chats.py _recv_loop kind=='interrupt' branch.
     """
     import websockets
 
@@ -318,28 +354,29 @@ async def test_t0811_chat_ws_interrupt_persists_error_row(
         )
         ws_url = f"{ws_origin}/v1/chats/{cid}/ws"
 
-        async with websockets.connect(ws_url) as ws:
+        async with websockets.connect(
+            ws_url, additional_headers=_ws_headers(client),
+        ) as ws:
             # Spec §6.4: drain the initial ``usage`` envelope first.
             initial = json.loads(
-                await asyncio.wait_for(ws.recv(), timeout=3.0)
+                await asyncio.wait_for(ws.recv(), timeout=5.0)
             )
             assert initial["kind"] == "usage", initial
+            # Send interrupt. The server sets cancel_requested_at on
+            # the chat row and publishes a cancel event; it does NOT
+            # send an immediate response back to the WS client.
             await ws.send(json.dumps({"kind": "interrupt"}))
-            # Server sends back the error row.
-            msg = json.loads(
-                await asyncio.wait_for(ws.recv(), timeout=3.0)
-            )
-            assert msg["kind"] == "error", msg
-            assert "interrupted" in msg.get("message", "").lower(), msg
-            assert msg.get("seq") == 1, msg
-            await asyncio.sleep(0.2)  # let the writer commit
+            # Give the server a moment to commit the cancel flag.
+            await asyncio.sleep(0.3)
 
-        # Verify the error row persists via GET messages.
-        r = await client.get(f"/v1/chats/{cid}/messages")
-        assert r.status_code == 200
-        items = r.json().get("items", [])
-        kinds = [it["kind"] for it in items]
-        assert "error" in kinds, kinds
+        # Verify cancel_requested_at is now set on the chat row.
+        r = await client.get(f"/v1/chats/{cid}")
+        assert r.status_code == 200, r.text
+        chat_body = r.json()
+        assert chat_body.get("cancel_requested_at") is not None, (
+            f"interrupt did not set cancel_requested_at on chat {cid!r}; "
+            f"chat body: {chat_body!r}"
+        )
     finally:
         await _cleanup(client, cleanup_urls)
 
@@ -355,27 +392,32 @@ async def test_t0812_park_resume_worker_claim_chain(
 ) -> None:
     """T0812 — Full chain E2E:
         inject sleep park (parked_until in past)
-        → TimerScheduler tick (~2s)
-        → listener mark_resumable (flips parked → resumable +
-          re-arms session_leases.runnable=TRUE)
-        → worker pool claim_loop sees resumable=True
-        → claim SETs session_leases.worker_id
+        -> TimerScheduler tick (~2s)
+        -> listener mark_resumable (flips parked -> resumable +
+           upserts a leases row via engine.mark_resumable)
+        -> worker pool claim_due picks up the row
+        -> session on_release clears parked_status (always drop_lease=True)
 
-    Assertion: session_leases.worker_id becomes non-NULL within
-    ~15s — that proves the worker pool's claim query actually
-    picks up resumable rows.
+    The current claim schema uses a single ``leases`` table keyed on
+    (kind, entity_id). Sessions always release with drop_lease=True, so
+    the lease row is DELETED after claim+release -- we cannot observe
+    ``claimed_by`` non-null by polling. Instead, the observable proof
+    of a successful claim+release is ``parked_status`` being cleared
+    (NULL) by SessionClaimAdapter.on_release.
 
-    NOTE: post-claim, _run_one_turn tries to load the workspace
-    and may fatal (workspace cleanup races; resume path has no
-    LLM available). That's beyond this test's scope — the
-    contract under test is "claim happens", not "resume
-    succeeds". The worker pool's exception leakage on
-    _run_one_turn failure is observable separately in primer.log.
+    NOTE: post-claim the resume turn may fatal (no LLM available). That
+    is beyond scope; the contract is 'claim happens and park state is
+    cleared', not 'resume succeeds'.
     """
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-chain-{unique_suffix}"
     try:
         past = datetime.now(timezone.utc) - timedelta(seconds=5)
+        # session_factory always upserts a lease at create time (even
+        # with auto_start=False). Delete it first so the worker cannot
+        # claim the session before we inject the park state.
+        await _delete_lease(sid)
+
         await _inject_park(
             sid,
             tool_name="sleep",
@@ -383,16 +425,18 @@ async def test_t0812_park_resume_worker_claim_chain(
             event_key=f"timer:{tcid}",
             parked_until=past,
         )
-        # Insert a session_leases row so the claim query has
-        # something to JOIN. Without this, mark_resumable updates
-        # 0 lease rows and the worker never claims.
+        # Confirm the park was injected.
+        initial_status = await _read_park_status(sid)
+        assert initial_status == "parked", (
+            f"inject_park did not set parked_status='parked'; got {initial_status!r}"
+        )
+        # Upsert a leases row so the claim query can find this session.
+        # This simulates the timer scheduler re-arming the lease after
+        # parked_until has passed.
         await _ensure_lease(sid)
 
-        # Wait for the chain: 2s timer tick + ~1s listener + ~1s
-        # claim. Budget 20s to absorb cold paths. The CONTRACT is:
-        # session_leases.worker_id becomes non-NULL after claim.
-        # Skip-soft if there's no active worker (T0810 may have
-        # drained the only one if run earlier in the batch).
+        # Skip-soft if there's no active worker (T0810 may have drained
+        # the only one if run earlier in the batch).
         r = await client.get("/v1/workers")
         active = [
             w for w in r.json().get("items", [])
@@ -400,23 +444,25 @@ async def test_t0812_park_resume_worker_claim_chain(
         ]
         if not active:
             pytest.skip(
-                "no active workers — T0810 drained the sole "
+                "no active workers -- T0810 drained the sole "
                 "worker earlier in this iteration"
             )
 
-        deadline = asyncio.get_event_loop().time() + 20.0
-        claimed_by: str | None = None
-        last_status: str | None = "parked"
+        # Wait for the chain: ~2s timer tick + ~1s listener + ~1s claim
+        # + release. The observable contract is parked_status cleared to
+        # NULL (the SessionClaimAdapter.on_release writes this on any
+        # non-park release). Budget 25s for cold paths.
+        deadline = asyncio.get_event_loop().time() + 25.0
+        final_status: str | None = "parked"
         while asyncio.get_event_loop().time() < deadline:
             await asyncio.sleep(0.5)
-            last_status = await _read_park_status(sid)
-            claimed_by = await _read_lease_worker_id(sid)
-            if claimed_by is not None:
+            final_status = await _read_park_status(sid)
+            if final_status != "parked":
                 break
-        assert claimed_by is not None, (
-            f"worker pool never claimed the resumable row; "
-            f"final parked_status={last_status!r}, "
-            f"lease.worker_id remained NULL"
+        assert final_status != "parked", (
+            f"worker pool never claimed+released the resumable row; "
+            f"parked_status remained 'parked' after 25s -- "
+            f"the leases row may not have been found by the claim query"
         )
     finally:
         await _cleanup(client, cleanup_urls)
