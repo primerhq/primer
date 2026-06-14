@@ -177,3 +177,78 @@ remaining count -> 0 (modulo infra-gated). This is the gate before declaring
 
 ## User-submitted tasks
 (Append new tasks here as the user submits them; same per-task format.)
+
+### user-1 remove-bug-reporter  [removal]
+Remove the in-app bug-reporter from UI + backend. Backend: delete
+`primer/api/routers/bugs.py`; remove its import + `include_router` in
+`primer/api/app.py` (~1515-1517); remove any bug-report Pydantic model and the
+bugs-directory config field (grep config.py); drop from MCP exposure if listed.
+UI: delete `ui/components/bug_reporter.jsx` and its mount (the report
+button/modal in `ui/components/chrome.jsx` or `ui/app.jsx`); remove any route in
+`ui/foundation/router.js`. Docs: delete
+`primer/user_docs/features/bug-reporter.md` + its `manifest.yaml` entry; scrub
+`docs/agents`/AGENTS.md refs. Leave on-disk bug files (~/.primer/bugs) untouched
+(user data). DoD: backend, UI, docs, unit+e2e tests removed/updated,
+regressions, primectl (remove any bugs command). CONFLICTS: touches app.jsx +
+router.js -> sequence with user-3 (also touches app.jsx/router), do not
+parallelize.
+
+### user-2 collection-search-config-ui  [feature exposure + mutability]
+The user Collection model ALREADY has `search: CollectionSearch | None` (mmr +
+cer) in `primer/model/collection.py` / `primer/model/search.py`; the backend
+supports MMR + cross-encoder rerank on user collections - it is just not in the
+UI. (a) Backend: ensure the Collection PUT permits updating `search` while
+`embedder` + `search_provider_id` remain create-bound/immutable (adjust the PUT
+validator if needed); search is a search-only change (no re-index). (b) UI
+(`ui/components/knowledge.jsx` create + edit collection dialogs): add an MMR
+toggle + `lambda_mult` + `fetch_k`; a cross-encoder toggle with a
+CrossEncoderProvider + model picker (mirror the embedder picker) + `top_n`. In
+the EDIT dialog, render the embedder provider/model READ-ONLY (locked); allow
+editing `search`. DoD: backend (PUT rules), UI (both dialogs), user docs
+(knowledge-collections) + agent docs (docs/agents/knowledge.md), unit tests (PUT
+search-updatable + embedder-immutable) + UI render test, e2e (create with
+mmr+cer; edit to change them; edit rejects embedder change), regressions,
+primectl N/A (generic CRUD passes search through). CONFLICTS: touches
+knowledge.jsx -> sequence with user-3 (also knowledge.jsx).
+
+### user-3 remove-entity-search-probe  [removal]
+Remove the "Entity search probe" = `SearchBenchPage` at `/knowledge/search` (a
+search bench over internal agents/graphs/tools). UI: delete the SearchBenchPage
+component (in `ui/components/knowledge.jsx` ~1591 and its render block in
+`ui/app.jsx` ~737-744); remove the `/knowledge/search` route
+(`ui/foundation/router.js:33`); remove the `collection-search` page-key mapping
+(`ui/app.jsx`:67) + URL builder (`ui/app.jsx`:374); remove the "Run a search"
+button on the IC page (`ui/components/internal-collections.jsx:348`). KEEP the
+per-collection "search" icon (user-collection search). Docs/tests: scrub refs;
+remove SearchBenchPage tests + ui_e2e refs. No backend change. DoD: UI, docs,
+tests, regressions. CONFLICTS: touches knowledge.jsx (with user-2) + app.jsx/
+router.js (with user-1) -> sequence after user-1 and user-2.
+
+### user-4 webhook-trigger  [new feature - largest]
+New `webhook` trigger type. Decisions (locked): capability-URL + optional HMAC;
+fire-and-forget 202; payload = body + metadata (headers/query/method); POST only.
+- Model (`primer/model/trigger.py`): add `TriggerKind.WEBHOOK` +
+  `WebhookTriggerConfig(kind="webhook")` with a server-minted unguessable
+  `token` and optional `hmac_secret: SecretStr | None`; add to the TriggerConfig
+  union. Mint token on create; support rotate + set/clear hmac via update.
+- Endpoint: public `POST /v1/webhooks/{token}` mounted OUTSIDE the auth
+  dependency. Resolve trigger by token (404 if none); 403 if disabled; if
+  hmac_secret set, verify `X-Primer-Signature` HMAC-SHA256 over the RAW body
+  (401 on mismatch). Build payload {body, filtered headers, query, method};
+  fire-and-forget -> 202 + delivery id. Guardrails: body-size cap, per-token
+  rate limit, never leak internal errors.
+- Firing: reuse the existing trigger->subscription dispatch (the path
+  scheduled/delayed triggers use); thread the webhook payload as the fire
+  context into each subscriber (agent/graph fresh-session initial input, chat
+  message, parked-session resume).
+- UI (`ui/components/` triggers page + create dialog): add "webhook" kind; after
+  create show the copyable webhook URL + optional HMAC secret field + a rotate
+  action.
+DoD: backend (model + endpoint + firing + token mgmt); system tools (webhook
+trigger creatable + URL readable via generic trigger CRUD; add a tool only if
+needed); UI; user docs (triggers) + agent docs (triggers-and-subscriptions) +
+dev doc (docs/dev/subsystems/triggers.md); unit tests (model; endpoint fire/
+dispatch, 404 bad token, 403 disabled, HMAC pass/fail, payload mapping); e2e
+(create webhook trigger + subscription -> POST webhook -> subscriber invoked);
+regressions; primectl (add a path if a dedicated webhook retrieval is warranted).
+Mostly independent of user-1/2/3 (own files); can run in parallel with them.
