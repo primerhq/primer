@@ -65,7 +65,7 @@ Use `search::search_graphs` the same way to find a multi-step graph instead of a
 You hold a concrete `toolset::tool` id (e.g. `workspaces::create_workspace_session`) and the slug of the doc that documents it (e.g. `sessions`).
 
 ## Gotchas
-- If a search returns `is_error` with `type: "subsystem-inactive"` (no embedder configured), fall back to `system::get_document_content` on a known slug; the capability index in `AGENTS.md` lists them.
+- If a search returns `is_error` with `type: "subsystem-inactive"` (no embedder configured), fall back to `system::get_document_content` on a known slug; the capability index in `skills/using-primer-over-mcp.md` lists them.
 - `search::search_ai_docs` returns chunks, not whole docs; always follow up with `system::get_document_content` for the full text.
 - `search_agents` / `search_graphs` search definitions, not running instances; to drive one, see `cookbook/create-and-run-a-session`.
 

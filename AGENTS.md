@@ -1,295 +1,173 @@
-# AGENTS.md - Primer for AI agents
+# AGENTS.md - Contributing to primer (for AI agents)
 
-Welcome. You're reading this because an MCP client connected you to a
-primer deployment. This document is the **one-page orientation**:
-what primer is, how the MCP contract works, and how to look up
-detail on any capability. The detail docs themselves live inside
-primer's `_internal_ai_docs` collection and are addressable through
-two MCP tools you'll learn about below.
+You are an AI agent working ON the primer codebase. This file is your contract
+for making changes. (If instead you were connected to a running primer
+deployment over MCP and want to USE it, read
+[skills/using-primer-over-mcp.md](skills/using-primer-over-mcp.md).)
 
 ---
 
-## 1. What primer is
+## 1. The working model: coordinator + parallel subagents
 
-Primer is a **multi-agent orchestration platform**. Its primary
-abstractions are:
+Development on this repo uses a coordinator/worker split:
 
-- **Agents** - LLM-backed workers with a system prompt, a tool set,
-  and an LLM provider. Each agent runs inside a context (a chat for
-  interactive turns; a session for headless work; a graph node for
-  multi-step orchestration).
-- **Workspaces** - isolated filesystems plus git-tracked state that
-  sessions run inside. The unit of execution isolation.
-- **Chats** - multi-turn human-in-the-loop conversations with an
-  agent. Each turn is worker-claimed; turns survive disconnects.
-- **Sessions** - long-running headless agent runs in a workspace.
-  Can pause, resume, and yield on external events.
-- **Graphs** - directed graphs of agents (and other node types) with
-  conditional routing. Run to completion in one invocation.
-- **Triggers and subscriptions** - event scheduling (delayed, cron,
-  channel) that dispatches to chats, fresh sessions, or parked
-  yielding tools.
-- **Collections and documents** - knowledge containers with
-  embedding-backed semantic search. Plus a parallel
-  **internal-collections** subsystem that auto-indexes primer's own
-  agents, graphs, tools, collections, and these very docs for
-  semantic discovery.
-- **Channels** - Slack/Telegram/Discord bridges that forward
-  `ask_user` prompts and tool-approval requests, and source
-  channel-driven triggers.
-- **Harnesses** - git-installed bundles of agents/graphs/etc., with
-  per-deployment overrides; install / sync / uninstall lifecycle.
+- The **main session is a coordinator**. It does design, planning, dispatch,
+  verification, and merge. It does NOT implement tasks directly.
+- Each task gets its **own branch off `main`** and its **own git worktree**, so
+  multiple workstreams proceed in parallel without colliding.
+- A **subagent implements the task** inside that worktree.
+- When the subagent reports done, the coordinator **critically verifies**
+  completeness and quality against the Definition of Done (section 4). If it
+  passes, the coordinator **merges the branch into `main`**. If not, the
+  coordinator **re-dispatches the subagent** with specific fix instructions and
+  re-verifies. Reviews are not rubber stamps: read the actual diff, run the
+  tests, and reject work that masks a problem instead of fixing it.
 
-These compose. A typical primer-driven workflow looks like: a
-**trigger** fires on a schedule, dispatches a fresh **session** in
-a **workspace**, the session runs an **agent** that calls tools (some
-of which require **tool approval**), the agent yields on `ask_user`,
-the prompt is **channel**-forwarded to Slack, the human replies, the
-session resumes, the agent finishes, the workspace persists the
-result. Everything in that flow has a corresponding doc you can pull
-in detail from.
+### Per-task git worktree flow
 
-## 2. The MCP contract you're talking to
-
-You're connected to primer's MCP endpoint at `/v1/mcp` over
-Streamable HTTP. Your auth is one of two things:
-
-- A **bearer token** (`Authorization: Bearer <plaintext>`). Tokens
-  carry a scope list; you need the `mcp` scope to reach this
-  endpoint. Tokens are operator-minted and revocable.
-- A **cookie session** (rare for external clients; mostly the
-  operator console). Cookies bypass scope checks.
-
-The tools you can call are exactly the intersection of three sets:
-
-- **Allowlist.** The operator's `McpExposure.allowed_tools` list.
-  Tools not in it are unreachable. If `tools/list` returns empty,
-  the operator hasn't enabled exposure or hasn't allowlisted
-  anything yet.
-- **Exposability.** Yielding tools (`ask_user`, `subscribe_to_trigger`,
-  `_approval`) are silently dropped - MCP has no pause/resume.
-  Session-bound workspace tools (e.g. `watch_files`) are dropped
-  too. Tools with `required` tool approval policies are silently
-  dropped (operator owns visibility decisions there).
-- **Scope.** Bearer tokens without `mcp` get 401 before they ever
-  see `tools/list`.
-
-Tool IDs are scoped: `<toolset_id>::<tool_id>` (e.g.
-`system::list_agents`, `search::search_ai_docs`,
-`workspaces::read_workspace_file`). The double-colon is reserved.
-
-Error envelopes from `tools/call`:
-
-```json
-{
-  "is_error": true,
-  "output": "{\"type\":\"<error-type>\",\"message\":\"<human-readable>\"}"
-}
+```bash
+# create the task branch + an isolated checkout (sibling dir)
+git worktree add -b feat/<task-slug> ../primer-<task-slug> main
+# ... subagent works and commits inside ../primer-<task-slug> ...
+# after verification, from the main checkout:
+git merge --no-ff feat/<task-slug>
+git worktree remove ../primer-<task-slug>
+git branch -d feat/<task-slug>
 ```
 
-Common error types: `tool-not-allowed`, `validation-error`,
-`subsystem-inactive`, `not-found`, `auth-error`, `tool-error`.
+The Agent tool's `isolation: "worktree"` option automates the create/cleanup of
+the per-task worktree; prefer it when dispatching an implementer.
 
-## 3. How to learn more - the documentation contract
-
-Primer's full feature documentation lives in the `_internal_ai_docs`
-reserved collection. Each capability has one document; the document
-id is its **slug** (lowercase, kebab-case). Two MCP tools give you
-access:
-
-- **`search::search_ai_docs`** - semantic search. Embeds your query
-  and returns ranked chunks (Markdown sections) of matching docs.
-  Each hit carries `document_id` (the slug), `chunk_id` (which
-  section), a similarity `score`, the `text` of the matched chunk,
-  and meta with the doc's title, summary, and full mcp_tools list.
-  Use this when you know what you want to do but not which doc
-  covers it.
-
-- **`system::get_document_content`** - fetch a doc by id. Returns
-  `{id, collection_id, name, content}`. The content is the full
-  Markdown source of the doc. Use this when search has identified
-  the relevant slug and you want the complete doc, not just a
-  matched chunk.
-
-Both tools are read-only and idempotent; calling them never changes
-primer state.
-
-The loop: call `search::search_ai_docs(query="<goal>")` for ranked doc
-chunks (each carries a `document_id`); fetch the full doc with
-`system::get_document_content(id="<document_id>", collection_id="_internal_ai_docs")`;
-then call the `toolset::tool` it documents. Each doc is structured
-Overview, Mental model, Lifecycle, MCP tools, Workflows (request AND
-response JSON), Gotchas, so skim the section you need.
-
-If `search::search_ai_docs` returns `is_error=true` with
-`subsystem-inactive`, the internal-collections subsystem hasn't
-been bootstrapped on this deployment. In that case, you can still
-read individual docs by their slug via `system::get_document_content`
-(passing `id=<slug>`, e.g. `id="agents"`) - the Document rows exist
-in storage regardless of bootstrap status; only the search index
-is gated.
-
-### Capability index
-
-Every entry below is one document in `_internal_ai_docs`. Fetch the
-full doc with
-`system::get_document_content(id="<slug>")`. Search for a topic with
-`search::search_ai_docs(query="<terms>")`.
-
-| Slug | What it covers |
-| --- | --- |
-| `agents` | Agent definition, system prompts, tool sets, LLM config, response formats, the turn-loop runtime, auto-compaction. |
-| `graphs` | Multi-step agent orchestration. Nodes (agent/task/subgraph/http/callable_router), edges (static/json_path/callable_router), supersteps, cycles. |
-| `workspaces` | Execution sandboxes. Workspace lifecycle, providers, templates, `.state/` and `.tmp/` layout, multi-session coordination, MCP file I/O tools. |
-| `sessions` | Long-running headless agent runs. Status enum (RUNNING/WAITING/PAUSED/ENDED), pause/resume/end controls, `waiting.json` contract. |
-| `chats` | Multi-turn conversations. Turn claim mechanics, message kinds, WS protocol, cursor reconnect, drain loop, cancellation, auto-compaction. |
-| `knowledge` | User-defined collections and documents. CRUD, content storage (`meta.content`), ingest pipeline status, `get_document_content`. |
-| `semantic-search` | Internal collections (`_internal_*`), the IC subsystem, the `search::*` toolset, including this doc collection itself. |
-| `triggers-and-subscriptions` | Event scheduling. Trigger kinds (delayed/scheduled/channel), subscription kinds (chat_message/agent_fresh_session/graph_fresh_session/parked_session), fire semantics, catch-up policy. |
-| `yielding` | The park/resume primitive. `Yielded` sentinel, parked state fields, event keys, timeout sweeper, cancellation; why yielding tools are invisible from MCP. |
-| `tool-approval` | Pre-dispatch gates on tool calls. Approval kinds (required/policy/llm), fail-closed semantics, supersession by new user turns, interaction with MCP exposure. |
-| `harnesses` | Git-installed entity bundles. Lifecycle (draft → ready → installed → outdated), fetch/install/sync/uninstall, managed entity guard. |
-| `channels` | Slack/Telegram/Discord adapters. ChannelProvider → Channel → WorkspaceChannelAssociation, forwarding flags, first-reply-wins, fire-and-forget posts. |
-| `mcp-exposure` | The MCP server endpoint itself. The `McpExposure` singleton, the allowlist, scope auth, hard-deny (none in v1), GZip bypass. |
-| `auth-and-tokens` | API tokens, scopes, cookie vs bearer, token minting, revocation, the `mcp` scope. |
-
-### Recipes by goal
-
-End-to-end recipes live under `cookbook/` slugs, fetched the same way
-(`system::get_document_content(id="cookbook/<slug>", collection_id="_internal_ai_docs")`).
-
-| Goal | Recipe slug |
-| --- | --- |
-| Run a headless agent over MCP | `cookbook/create-and-run-a-session` |
-| Find the right capability/tool/agent/graph | `cookbook/discover-a-capability` |
-| Run a multi-step graph and collect output | `cookbook/run-a-graph-and-collect-results` |
-| Handle a parked (waiting) session | `cookbook/monitor-and-resume-a-parked-session` |
-| Review PRs on a schedule | `cookbook/pr-reviewer-on-cron` |
-| Summarise documents periodically | `cookbook/scheduled-summariser` |
-| Daily incident digest | `cookbook/daily-incident-digest` |
-| Event-driven data pipeline | `cookbook/event-driven-data-pipeline` |
-| Workspace as a build environment | `cookbook/workspace-as-build-env` |
-| Multi-agent research graph | `cookbook/multi-agent-graph-research` |
-| Expose an internal tool over MCP | `cookbook/internal-tool-via-mcp` |
-| Slack question answerer | `cookbook/slack-question-answerer` |
-| Discord moderation helper | `cookbook/discord-moderation-helper` |
-| Telegram personal assistant | `cookbook/telegram-personal-assistant` |
-| Approval-gated deploy bot | `cookbook/approval-gated-deploy-bot` |
-
-### Quick-pick by goal
-
-- **"I want to find a tool that does X."** Call
-  `search::search_tools(query="<terms>")`. Returns ranked tool ids.
-- **"I want to find an agent that does X."** Call
-  `search::search_agents(query="<terms>")`.
-- **"I want to find a graph that does X."** Call
-  `search::search_graphs(query="<terms>")`.
-- **"How does X work?"** Call
-  `search::search_ai_docs(query="<terms>")`, then fetch the matched
-  doc with `system::get_document_content(id="<slug>")`.
-
-## 4. A minimal first-touch workflow
-
-If this is your first time on this primer deployment, this is the
-shortest path to understanding what's available:
-
-1. **List the tools you have.** Call `tools/list`. The shape of
-   that list - what's in the allowlist, what's missing - tells you
-   the operator's intent for your role.
-
-2. **Sanity-check the search subsystem.** Call:
-   ```json
-   {"tool": "search::search_ai_docs", "arguments": {"query": "overview", "top_k": 3}}
-   ```
-   If it returns hits, semantic search is live and you can navigate
-   the docs by topic. If it returns
-   `is_error=true type=subsystem-inactive`, fall back to fetching
-   docs by slug.
-
-3. **Enumerate the catalogue.** Brief picture of what's installed:
-   - `system::list_agents` - what agents are defined.
-   - `system::list_graphs` - what graphs are defined.
-   - `workspaces::list_workspaces` - what workspaces exist.
-   - `system::list_collections` - what knowledge is curated.
-
-4. **Read the docs relevant to the user's goal.** Pick from the
-   capability index. Don't read all 14 - read the 1-3 that match
-   the work the user has asked for.
-
-### Run an agent or graph over MCP
-
-Once you have picked an agent or graph (see the capability index and
-`cookbook/discover-a-capability`), you can run it end to end:
-
-1. `workspaces::create_workspace` (from a `template_id`) - returns the workspace id.
-2. `workspaces::create_workspace_session` with `binding` set to
-   `{"kind":"agent","agent_id":"..."}` or `{"kind":"graph","graph_id":"..."}`,
-   `initial_instructions` (or `graph_input`), and `auto_start: true` - returns the session id.
-3. Poll `workspaces::get_workspace_session` until `status` is `ended`
-   (`ended_reason: completed`). A `waiting` status means the agent parked on a
-   yielding tool; see `cookbook/monitor-and-resume-a-parked-session`.
-4. Read results with `workspaces::read_workspace_file`.
-5. Stop a run with `workspaces::cancel_workspace_session`; clean up with `workspaces::delete_workspace`.
-
-Full recipe: `cookbook/create-and-run-a-session`.
-
-## 5. Things primer can't do (yet)
-
-- **`system::search_collection`** - searching documents *within* a
-  user-defined collection - is a stub. Use
-  `system::find_collection_documents_by_meta` or read by id.
-- **Mid-graph yield/pause** - graphs run to completion in one
-  invocation. For human-in-the-loop multi-step work, use chats or
-  sessions with the `subscribe_to_trigger` yielding tool.
-- **Yielding tools over MCP** - `ask_user`, `subscribe_to_trigger`,
-  `_approval` are not exposed to MCP clients. Poll instead, or rely
-  on primer's own internal agents.
-- **Live document upload (multipart `POST /v1/documents` with
-  embedding)** - deferred. `POST /v1/documents` persists the row;
-  vectorising is a follow-up.
-
-These are visible blanks; mention them to your user when relevant
-rather than pretending the workaround is the intended path.
+Constraints that always hold: branch off `main`, never force-push `main`,
+conventional commit messages with NO `Co-Authored-By` footer, stage only the
+files a task touches (never `git add -A`).
 
 ---
 
-When in doubt: search the docs, then read the matched doc fully.
-Don't reason from the snippet alone - the Gotchas section at the
-bottom of each doc usually contains the one thing that catches
-people, and the snippet won't include it.
+## 2. Project setup and structure
+
+- **Stack:** Python 3.13, `uv`, FastAPI, asyncio, Postgres + pgvector, a
+  vanilla-React (JSX, no build step) console.
+- **Setup:** `uv sync`; Postgres via `docker compose up -d postgres`; run with
+  `uv run primer api` (starts the API plus an in-process worker). A dogfood
+  instance is expected to stay healthy on `:9000` between tasks.
+- **Layout:**
+  - `primer/<subsystem>/` - the backend, one package per subsystem: `api`,
+    `model`, `agent`, `chat`, `session`, `worker`, `claim`, `graph`,
+    `workspace`, `channel`, `toolset`, `llm`, `embedder`, `vector`, `trigger`,
+    `bus`, `mcp`, `harness`, `storage`, `bootstrap`, and more.
+  - `ui/` - the operator console (JSX components, `window`-exported pages,
+    a hash router).
+  - `primectl/` - the CLI client over the REST API.
+  - `tests/` - `tests/<subsystem>/` unit tests, `tests/e2e/` end-to-end against
+    a live server, `tests/ui_e2e/` Playwright, `tests/distributed/`,
+    `tests/docs/` hygiene.
+  - `docs/dev/` - the authoritative developer reference (architecture +
+    subsystems). `docs/agents/` - agent-usage docs served as internal AI docs.
+    `primer/user_docs/` - the operator-facing console docs.
+  - `skills/` - guidance for agents using a primer deployment (not contribution).
 
 ---
 
-## For contributors (developers and coding agents)
+## 3. Read before you change anything
 
-The two sections above orient MCP clients calling a running primer
-deployment. If instead you are modifying the primer codebase, the
-authoritative developer reference lives under `docs/dev/`:
+Start at [docs/dev/README.md](docs/dev/README.md) for the doc-set map and
+subsystem dependency graph, then read
+[docs/dev/CONTRIBUTING.md](docs/dev/CONTRIBUTING.md) (required reading order,
+PR conventions, common pitfalls).
 
-- Start at `docs/dev/README.md` for the doc-set conventions and the
-  subsystem dependency graph.
-- Read `docs/dev/CONTRIBUTING.md` before making any change. It carries
-  the required reading order, the five-track completeness checklist
-  (backend, frontend, MCP tools, tests, docs), the PR conventions, and
-  the common pitfalls.
-- `docs/dev/architecture/` documents the cross-cutting patterns
-  (storage, rest-api, claim-machine, worker-system, provider-pattern,
-  observability, auto-bootstrap). `docs/dev/subsystems/` documents each
-  feature and the patterns it consumes.
+Before changing a subsystem, read the cross-cutting patterns in
+[docs/dev/architecture/](docs/dev/architecture/) that it touches:
 
-Standing repo rules for any change:
+- [provider-pattern](docs/dev/architecture/provider-pattern.md) - the
+  discriminated-config + registry + factory shape used by every provider.
+- [storage](docs/dev/architecture/storage.md) - the `Storage[T]` abstraction,
+  lazy per-model tables, JSONB layout, and the query model.
+- [rest-api](docs/dev/architecture/rest-api.md) - `make_crud_router`, the six
+  CRUD ops, and the RFC7807 `ProblemDetails` error envelope every path returns.
+- [claim-machine](docs/dev/architecture/claim-machine.md) and
+  [worker-system](docs/dev/architecture/worker-system.md) - leases, claiming,
+  the park/resume model.
+- [observability](docs/dev/architecture/observability.md) and
+  [auto-bootstrap](docs/dev/architecture/auto-bootstrap.md).
 
-- Conventional commit messages. No `Co-Authored-By` footer.
-- No force-push to `main`.
-- The narrowed sweep stays green at every commit:
-  `uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm`.
-  It runs in parallel by default (`-n auto --dist loadscope` in `addopts`,
-  roughly 90 s instead of 7 min). Add `-n0` to run a single test serially.
-- No em dash characters anywhere in committed files (the
-  `tests/docs/` hygiene suite enforces this for `docs/dev/`).
-- Restart `uv run primer api` at the end of any code-changing task and
+Then read the matching `docs/dev/subsystems/<name>.md` for the feature you are
+working on.
+
+---
+
+## 4. Definition of Done
+
+A change is NOT complete until every applicable track below is done. The
+coordinator verifies each before merging. The detailed how-to for each track is
+in [docs/dev/CONTRIBUTING.md](docs/dev/CONTRIBUTING.md) section 2; this is the
+checklist.
+
+1. **Backend** - models in `primer/model/`, storage wiring, REST routes under
+   `primer/api/routers/` following the rest-api conventions, RFC7807 errors,
+   observability hooks.
+2. **UI** - implement or update the respective console components in `ui/`
+   (page component, route, sidebar entry, mobile adaptation, loading/error/empty
+   states, toasts). A backend feature with no console surface is incomplete.
+3. **System tools** - if the change adds new functionality, expose it as new
+   tools in the appropriate toolset under `primer/toolset/` (built with
+   `make_tool`, registered for internal-collection ingestion, callable over
+   `POST /v1/mcp`), so agents and MCP clients can use it.
+4. **Docs** - update BOTH the operator docs in `primer/user_docs/` AND the
+   agent-usage docs in `docs/agents/`, plus the dev docs in
+   `docs/dev/subsystems/` and `docs/dev/architecture/` as the change warrants.
+5. **Unit tests** - add or extend unit tests for new models, helpers, routes,
+   and components.
+6. **E2E tests** - add or extend end-to-end coverage under `tests/e2e/` (or
+   `tests/ui_e2e/`) for the user-visible flow.
+7. **Regressions** - run the suites, capture any regressions in existing tests,
+   and fix them. Do not merge with a red suite; do not weaken a test to hide a
+   real regression - fix the cause.
+8. **primectl** - if the change introduces a new API/endpoint, update the
+   `primectl` CLI so it stays in parity with the REST surface.
+
+If a track is genuinely not applicable, say so explicitly with a one-line
+reason rather than skipping it silently.
+
+---
+
+## 5. Running tests (read this - the e2e suite is CPU-exclusive)
+
+- **Narrowed unit sweep** (must stay green at every commit, parallel, ~90s):
+
+  ```bash
+  uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e \
+    --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
+  ```
+
+  Add `-n0` to run a single module serially while debugging.
+
+- **E2E suite saturates all CPU cores and must run EXCLUSIVELY.** Before any
+  e2e run, check for an already-running one and kill it first:
+
+  ```bash
+  pgrep -af "pytest tests/e2e" | grep -v pgrep   # kill any match before starting
+  ```
+
+  Never run two e2e runs at once. Bring the environment up with
+  `scripts/e2e/bringup.sh` (it reuses the shared dev Postgres on a separate
+  `primer_e2e` database). Do NOT run `scripts/e2e/teardown.sh` with volume
+  removal: it shares the Postgres container with the dogfood instance and will
+  wipe it. Run targeted e2e with `-n0` and `PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765`.
+
+- Some tests are environment-gated: real-LLM tests need a reachable LM Studio
+  (`LMSTUDIO_API_KEY` set; the provider must use `max_concurrency: 1` for a
+  single-request backend); the Kubernetes workspace tests need a live cluster.
+
+- After a code-changing task, restart the dogfood `uv run primer api` and
   confirm `/v1/health` returns 200.
 
-Bugs filed through the in-UI reporter land under `~/.primer/bugs/`. An
-open bug has `meta.json.status == "open"`; fixing one updates the meta
-with `status`, `fixed_at`, and `commit_sha`.
+---
+
+## 6. Hard rules
+
+- Never the em-dash character (U+2014) in committed files; the `tests/docs/`
+  hygiene suite enforces this for `docs/dev/` and `AGENTS.md`.
+- Every relative markdown link from `AGENTS.md` or `docs/dev/` must resolve.
+- Keep `AGENTS.md` and the architecture/subsystem docs in sync with the code:
+  the hygiene suite asserts the architecture and subsystem doc sets exist.
