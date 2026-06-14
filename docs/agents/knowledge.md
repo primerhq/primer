@@ -82,9 +82,20 @@ A `Collection`:
   `search::search_collections` embeds.
 - `embedder` - `{provider_id, model}`. Bound at create time; not
   changeable (changing the embedder would invalidate every existing
-  chunk's vector dimensions).
+  chunk's vector dimensions). PUT returns 422 if you attempt to
+  change either field.
 - `search_provider_id` - id of a `SemanticSearchProvider` row. Bound
   at create time; immutable for the same reason as `embedder`.
+- `search` - optional `CollectionSearch` with two sub-fields, both
+  independently optional and editable at any time without re-indexing:
+  - `mmr` - Maximal Marginal Relevance config: `lambda_mult` (float
+    0-1, default 0.5; 1.0 = pure relevance, 0.0 = max diversity) and
+    `fetch_k` (int or null; candidates fetched before MMR runs).
+  - `cer` - cross-encoder reranker config: `provider_id` (a
+    `CrossEncoderProvider` id), `model` (model name on that provider),
+    and `top_n` (int, default 100; candidates the reranker scores).
+  Set `search: null` to disable all retrieval augmentation and use
+  vanilla vector ranking.
 - `system` - true for the reserved internal collections; user
   collections are created with `system=false`. The CRUD layer
   refuses to delete system collections.
@@ -286,7 +297,10 @@ ships; the agent has to know the document id to read it back.
 - **Embedder and search_provider are immutable on a Collection.**
   Changing them would invalidate every existing vector record's
   dimensionality. To "switch embedder", create a new Collection and
-  re-ingest.
+  re-ingest. The PUT endpoint enforces this: attempting to change
+  `embedder.provider_id`, `embedder.model`, or `search_provider_id`
+  returns 422. The `search` field (MMR + cross-encoder config) IS
+  mutable at any time without re-indexing.
 - **Reserved ids start with `_internal_`.** `system::create_collection`
   rejects them with 422. The five internal collections are managed
   by the IC subsystem; don't try to CRUD them via these tools.

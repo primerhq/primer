@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from fastapi.exceptions import RequestValidationError
 
 from primer.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.search import CollectionCrossEncoder, CollectionSearch, MmrConfig
 
 
 _SSP_BODY = {
@@ -257,6 +259,117 @@ class TestSystemCollectionGuard:
             ),
         )
         assert resp.status_code == 201, resp.text
+
+
+class TestEmbedderImmutability:
+    """PUT /collections/{id} must reject changes to embedder fields."""
+
+    @pytest.mark.asyncio
+    async def test_provider_id_change_rejected(self) -> None:
+        from primer.api.routers.knowledge import _validate_embedder_immutable
+
+        existing = _collection(id="c1")
+        changed = _collection(
+            id="c1",
+            embedder=CollectionEmbedder(provider_id="other-provider", model="all-MiniLM-L6-v2"),
+        )
+        with pytest.raises(RequestValidationError) as exc_info:
+            await _validate_embedder_immutable(changed, existing, request=None)
+        errs = exc_info.value.errors()
+        locs = [tuple(e["loc"]) for e in errs]
+        assert ("body", "embedder", "provider_id") in locs
+
+    @pytest.mark.asyncio
+    async def test_model_change_rejected(self) -> None:
+        from primer.api.routers.knowledge import _validate_embedder_immutable
+
+        existing = _collection(id="c1")
+        changed = _collection(
+            id="c1",
+            embedder=CollectionEmbedder(provider_id="hf-1", model="other-model"),
+        )
+        with pytest.raises(RequestValidationError) as exc_info:
+            await _validate_embedder_immutable(changed, existing, request=None)
+        errs = exc_info.value.errors()
+        locs = [tuple(e["loc"]) for e in errs]
+        assert ("body", "embedder", "model") in locs
+
+    @pytest.mark.asyncio
+    async def test_unchanged_embedder_passes(self) -> None:
+        from primer.api.routers.knowledge import _validate_embedder_immutable
+
+        existing = _collection(id="c1")
+        same = _collection(id="c1", description="updated description")
+        # Must not raise.
+        await _validate_embedder_immutable(same, existing, request=None)
+
+    @pytest.mark.asyncio
+    async def test_search_update_with_mmr_allowed(self, client) -> None:
+        """PUT with changed search.mmr succeeds (search is mutable)."""
+        await client.post("/v1/ssp", json=_SSP_BODY)
+        coll = _collection(id="c-search").model_dump(mode="json")
+        created = await client.post("/v1/collections", json=coll)
+        assert created.status_code == 201, created.text
+
+        updated = {
+            **coll,
+            "search": {
+                "mmr": {"lambda_mult": 0.7, "fetch_k": 40},
+            },
+        }
+        put = await client.put("/v1/collections/c-search", json=updated)
+        assert put.status_code == 200, put.text
+        assert put.json()["search"]["mmr"]["lambda_mult"] == pytest.approx(0.7)
+        assert put.json()["search"]["mmr"]["fetch_k"] == 40
+
+    @pytest.mark.asyncio
+    async def test_search_update_with_cer_allowed(self, client) -> None:
+        """PUT with changed search.cer succeeds (search is mutable)."""
+        await client.post("/v1/ssp", json=_SSP_BODY)
+        coll = _collection(id="c-cer").model_dump(mode="json")
+        await client.post("/v1/collections", json=coll)
+
+        updated = {
+            **coll,
+            "search": {
+                "cer": {
+                    "provider_id": "ce-prov",
+                    "model": "BAAI/bge-reranker-v2-m3",
+                    "top_n": 50,
+                },
+            },
+        }
+        put = await client.put("/v1/collections/c-cer", json=updated)
+        assert put.status_code == 200, put.text
+        assert put.json()["search"]["cer"]["top_n"] == 50
+
+    @pytest.mark.asyncio
+    async def test_embedder_provider_change_rejected_via_route(self, client) -> None:
+        """PUT that changes embedder.provider_id must return 422."""
+        await client.post("/v1/ssp", json=_SSP_BODY)
+        coll = _collection(id="c-immutable").model_dump(mode="json")
+        await client.post("/v1/collections", json=coll)
+
+        bad = {
+            **coll,
+            "embedder": {"provider_id": "other", "model": "all-MiniLM-L6-v2"},
+        }
+        put = await client.put("/v1/collections/c-immutable", json=bad)
+        assert put.status_code == 422, put.text
+
+    @pytest.mark.asyncio
+    async def test_embedder_model_change_rejected_via_route(self, client) -> None:
+        """PUT that changes embedder.model must return 422."""
+        await client.post("/v1/ssp", json=_SSP_BODY)
+        coll = _collection(id="c-immutable-model").model_dump(mode="json")
+        await client.post("/v1/collections", json=coll)
+
+        bad = {
+            **coll,
+            "embedder": {"provider_id": "hf-1", "model": "different-model"},
+        }
+        put = await client.put("/v1/collections/c-immutable-model", json=bad)
+        assert put.status_code == 422, put.text
 
 
 class TestDocumentRouter:
