@@ -165,6 +165,7 @@ _MISC_TOOLSET_ID = "misc"
 _WEB_TOOLSET_ID = "web"
 _HARNESS_TOOLSET_ID = "harness"
 _TRIGGER_TOOLSET_ID = "trigger"
+_WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
 
 # Public: ids that are always resolvable by the live registry (built-in
 # providers), so external reference-integrity checks can skip the
@@ -177,6 +178,7 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _WEB_TOOLSET_ID,
     _HARNESS_TOOLSET_ID,
     _TRIGGER_TOOLSET_ID,
+    _WORKSPACE_EXT_TOOLSET_ID,
 })
 
 # ---------------------------------------------------------------------------
@@ -285,6 +287,7 @@ class ProviderRegistry:
         web_toolset_provider: ToolsetProvider | None = None,
         harness_toolset_provider: ToolsetProvider | None = None,
         trigger_toolset_provider: ToolsetProvider | None = None,
+        workspace_ext_toolset_provider: ToolsetProvider | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
     ) -> None:
@@ -332,9 +335,16 @@ class ProviderRegistry:
         self._harness_toolset_provider = harness_toolset_provider
         # Reserved id ``trigger`` resolves to the trigger management
         # toolset built at app startup. Agents can manage triggers /
-        # subscriptions and call the ``subscribe_to_trigger`` yielding
-        # tool through it.
+        # subscriptions through it. (The ``subscribe_to_trigger``
+        # yielding tool moved to the ``workspace_ext`` toolset.)
         self._trigger_toolset_provider = trigger_toolset_provider
+        # Reserved id ``workspace_ext`` resolves to the workspace-only
+        # yielding toolset built at app startup (sleep, watch_files,
+        # invoke_graph, subscribe_to_trigger). Special: an agent can bind
+        # it, but its tools are registered into the agent's tool context
+        # ONLY in a workspace session (filtered out on chats by the
+        # ToolExecutionManager resolution choke point).
+        self._workspace_ext_toolset_provider = workspace_ext_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -441,6 +451,13 @@ class ProviderRegistry:
             and toolset_id == _TRIGGER_TOOLSET_ID
         ):
             return self._trigger_toolset_provider
+        # Reserved id `workspace_ext` resolves to the always-on
+        # workspace-only yielding toolset built at app startup.
+        if (
+            self._workspace_ext_toolset_provider is not None
+            and toolset_id == _WORKSPACE_EXT_TOOLSET_ID
+        ):
+            return self._workspace_ext_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -509,6 +526,7 @@ class ProviderRegistry:
             _WEB_TOOLSET_ID,
             _HARNESS_TOOLSET_ID,
             _TRIGGER_TOOLSET_ID,
+            _WORKSPACE_EXT_TOOLSET_ID,
         ):
             return
         async with self._lock:

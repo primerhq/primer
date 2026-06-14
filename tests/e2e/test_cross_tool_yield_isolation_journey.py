@@ -108,12 +108,12 @@ async def test_t0854_cross_tool_yield_isolation_journey(
         # ----- 1. Drive three real parks ----------------------------
         sid_a, _, _ = await drive_park_on_tool(
             client, registry, base_url, suffix=f"a-{unique_suffix}",
-            tool="misc__ask_user",
+            tool="system__ask_user",
             tool_args={"prompt": secret_ask_prompt}, root=tmp_path,
         )
         sid_b, _, _ = await drive_park_on_tool(
             client, registry, base_url, suffix=f"b-{unique_suffix}",
-            tool="misc__sleep", tool_args={"seconds": 300.0}, root=tmp_path,
+            tool="workspace_ext__sleep", tool_args={"seconds": 300.0}, root=tmp_path,
         )
         sid_c, _, _ = await drive_park_on_tool(
             client, registry, base_url, suffix=f"c-{unique_suffix}",

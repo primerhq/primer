@@ -18,7 +18,9 @@ async def test_misc_tools_conform():
     async for tool in provider.list_tools():
         assert_tool_conforms(tool)
         count += 1
-    assert count == 7
+    # get_datetime, inform_user, uuid_v4, hash, calculate. (ask_user moved
+    # to ``system``; sleep moved to ``workspace_ext``.)
+    assert count == 5
 
 
 async def test_inform_user_registered_and_non_yielding():

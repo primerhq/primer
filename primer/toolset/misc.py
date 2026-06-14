@@ -13,8 +13,8 @@ Tool catalog
 
 * ``get_datetime`` — current date/time as ISO 8601 + Unix epoch.
   Optional ``timezone`` (IANA name, default UTC).
-* ``sleep`` — pause for ``seconds`` (0–300). Useful for polling and
-  deliberate pacing. Returns the actual elapsed time.
+* ``inform_user`` - push a one-way status message to the operator
+  (non-yielding); returns ``{delivered_to}``.
 * ``uuid_v4`` — generate one or more random UUIDs. Agents should
   reach for this whenever they need a stable identifier rather than
   fabricating one (LLM-generated "random" strings are low-entropy).
@@ -203,143 +203,6 @@ async def _sleep_handler(
         timeout=args.seconds,
         resume_metadata={
             "requested_seconds": args.seconds,
-        },
-    )
-
-
-# ===========================================================================
-# ask_user — second yielding tool (M3 of the yielding-tools feature).
-# See docs/superpowers/specs/2026-05-22-yielding-tools-design.md §8.2.
-#
-# Pauses the agent's turn until a human operator types a response via
-# the API surface (GET .../ask_user/pending + POST .../ask_user/respond).
-# The optional ``timeout_seconds`` falls back to the global yield cap
-# when omitted. The optional ``response_schema`` is surfaced to the
-# UI and validated server-side at POST time.
-# ===========================================================================
-
-
-class _AskUserArgs(BaseModel):
-    """Prompt the operator sees and shape of the expected reply."""
-
-    prompt: str = Field(
-        ...,
-        min_length=1,
-        max_length=8000,
-        description=(
-            "Question or instruction shown to the operator. Newlines "
-            "are preserved by the UI panel. Required."
-        ),
-    )
-    response_schema: dict[str, Any] | None = Field(
-        default=None,
-        description=(
-            "Optional JSON Schema the operator's response must satisfy. "
-            "Validated server-side at POST time; a violation is "
-            "surfaced inline in the UI without resuming the agent. "
-            "Omit for free-text responses."
-        ),
-    )
-    timeout_seconds: float | None = Field(
-        default=None,
-        gt=0.0,
-        description=(
-            "Optional per-call timeout. When omitted, falls back to "
-            "the global yield cap (default 60 minutes). If the "
-            "operator doesn't respond in time the resume hook returns "
-            "``{timed_out: true, elapsed_seconds: ...}`` so the agent "
-            "can decide whether to retry or proceed."
-        ),
-    )
-    files: list[str] | None = Field(
-        default=None,
-        description=(
-            "Optional workspace-relative file paths to attach to the prompt. "
-            "Each file is read from the session's workspace, stored, and sent "
-            "to the channel as media (image/document/audio) alongside the "
-            "prompt text. Ignored on the chat surface (no workspace)."
-        ),
-    )
-
-
-def ask_user_resume(
-    yield_metadata: dict[str, Any],
-    event_payload: Any,
-) -> ToolCallResult:
-    """Resume hook for ask_user — translate payload into tool result.
-
-    Three branches:
-
-    * real response (``{"response": <any>}`` from the POST endpoint) →
-      ``{"response": <any>}``
-    * :class:`YieldTimeout` from the sweeper → ``{"timed_out": true,
-      "elapsed_seconds": ...}``
-    * :class:`YieldCancelled` from the cancel-yielded-tool API →
-      ``{"cancelled": true, "reason": ..., "elapsed_seconds": ...}``
-
-    ``yield_metadata`` carries ``parked_at_iso`` (worker-injected) so
-    we can compute elapsed even if the event payload didn't include
-    it (defensive — both timeout and cancel synthesise elapsed
-    upstream via :func:`classify_resume_payload`, but the dataclass
-    instance is the source of truth).
-    """
-    from primer.model.yield_ import YieldCancelled, YieldTimeout  # avoid cycle
-
-    if isinstance(event_payload, YieldTimeout):
-        return _ok(
-            {
-                "timed_out": True,
-                "elapsed_seconds": event_payload.elapsed_seconds,
-            }
-        )
-    if isinstance(event_payload, YieldCancelled):
-        return _ok(
-            {
-                "cancelled": True,
-                "reason": event_payload.reason,
-                "elapsed_seconds": event_payload.elapsed_seconds,
-            }
-        )
-    # Real operator response from the POST endpoint.
-    response = (
-        event_payload.get("response")
-        if isinstance(event_payload, dict)
-        else None
-    )
-    return _ok({"response": response})
-
-
-async def _ask_user_handler(
-    arguments: dict[str, Any],
-    *,
-    ctx: ToolContext,
-) -> ToolCallResult | Yielded:
-    try:
-        args = _AskUserArgs.model_validate(arguments)
-    except ValidationError as exc:
-        return _err_from_validation(exc)
-
-    # Scope the event_key on (session_id|chat_id, tool_call_id). The session
-    # path (workspace sessions) uses session_id and PARKS; a chat has no
-    # session, so fall back to chat_id (the chat surface degrades a yield to a
-    # conversational turn rather than parking). Fail only when neither id exists.
-    scope_id = ctx.session_id or ctx.chat_id
-    if scope_id is None:
-        return _err(
-            "ask_user requires ctx.session_id or ctx.chat_id; the worker must "
-            "pass the live session or chat id when invoking yielding tools",
-            error_type="bad-request",
-        )
-
-    return Yielded(
-        tool_name="",  # filled in by the provider
-        event_key=f"ask_user:{scope_id}:{ctx.tool_call_id}",
-        timeout=args.timeout_seconds,
-        resume_metadata={
-            "prompt": args.prompt,
-            "response_schema": args.response_schema,
-            "tool_call_id": ctx.tool_call_id,
-            "files": args.files or None,
         },
     )
 
@@ -641,34 +504,6 @@ def build_misc_toolset(
             ),
             _get_datetime_handler,
         ),
-        "ask_user": (
-            make_tool(
-                id="ask_user",
-                toolset_id=toolset_id,
-                purpose=(
-                    "Ask the human operator a question and pause the agent's "
-                    "turn until they type a reply; returns ``{response: "
-                    "<any>}`` (or ``{timed_out}`` / ``{cancelled}``)."
-                ),
-                when=(
-                    "Use when you genuinely need human input (clarification, "
-                    "approval, a choice the agent cannot make autonomously); "
-                    "not for status updates, and not for waiting a fixed "
-                    "duration (use ``sleep``)."
-                ),
-                args_schema=_AskUserArgs.model_json_schema(),
-                examples=[
-                    ToolExample(
-                        args={"prompt": "Proceed with deploy?"},
-                        returns="operator's typed reply",
-                        note="yielding; worker released",
-                    ),
-                ],
-                yields=True,
-                requires_session=True,
-            ),
-            _ask_user_handler,
-        ),
         "inform_user": (
             make_tool(
                 id="inform_user",
@@ -693,32 +528,6 @@ def build_misc_toolset(
                 ],
             ),
             _inform_user_handler,
-        ),
-        "sleep": (
-            make_tool(
-                id="sleep",
-                toolset_id=toolset_id,
-                purpose=(
-                    "Pause this agent turn for ``seconds`` seconds "
-                    "(fractional allowed); returns ``{requested_seconds, "
-                    "elapsed_seconds}``."
-                ),
-                when=(
-                    "Use when you must wait a fixed duration (polling with "
-                    "backoff, deliberate pacing); not for waiting on a human "
-                    "(use ``ask_user``)."
-                ),
-                args_schema=_SleepArgs.model_json_schema(),
-                examples=[
-                    ToolExample(
-                        args={"seconds": 5},
-                        returns="resumes after 5s",
-                        note="yielding; worker released",
-                    ),
-                ],
-                yields=True,
-            ),
-            _sleep_handler,
         ),
         "uuid_v4": (
             make_tool(
@@ -811,7 +620,6 @@ def build_misc_toolset(
 from primer.worker.yield_resume_registry import register_resume_hook  # noqa: E402
 
 register_resume_hook("sleep", sleep_resume)
-register_resume_hook("ask_user", ask_user_resume)
 
 
 __all__ = ["MISC_TOOLSET_ID", "build_misc_toolset"]

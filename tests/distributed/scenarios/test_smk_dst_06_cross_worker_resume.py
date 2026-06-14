@@ -8,7 +8,7 @@ runs the genuine multi-process path:
 
   * 2 API processes + 2 worker processes against a shared Postgres
     (real ClaimEngine + Postgres LISTEN/NOTIFY event bus).
-  * A scripted ``misc__ask_user`` agent emits the yielding tool call;
+  * A scripted ``system__ask_user`` agent emits the yielding tool call;
     whichever worker claims the first turn runs it and the engine PARKS
     the session (drops the lease, writes the park columns).
   * The operator answers via a DIFFERENT API process
@@ -163,7 +163,7 @@ async def test_parked_session_resumes_cluster_wide(
 
     Flow:
       1. Stand up a loopback mock-LLM uvicorn server.
-      2. Via API#0: register a scripted ``misc__ask_user`` agent + a
+      2. Via API#0: register a scripted ``system__ask_user`` agent + a
          local workspace, and start a workspace agent session.
       3. Poll ``GET /v1/sessions/{sid}`` until ``parked_status ==
          'parked'``; capture ``initial_turn_no`` and the parking worker.
@@ -193,14 +193,14 @@ async def test_parked_session_resumes_cluster_wide(
         async with cluster.client(0) as c0:
             agent = await make_scripted_agent(
                 c0, registry, server.base_url,
-                suffix=suffix, scenario=scenario, tools=["misc__ask_user"],
+                suffix=suffix, scenario=scenario, tools=["system__ask_user"],
                 rules=[
                     # First turn: offered ask_user, no tool result yet ->
                     # emit the ask_user tool call, which PARKS the session.
                     Rule(
                         when_tool_offered="ask_user",
                         when_tool_result=False,
-                        emit_tool="misc__ask_user",
+                        emit_tool="system__ask_user",
                         emit_args={"prompt": prompt},
                     ),
                     # On resume (tool result present) -> terminating text.

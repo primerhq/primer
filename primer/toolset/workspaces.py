@@ -5,8 +5,8 @@ internal collections subsystem ingests its tools into the
 ``_internal_tools`` collection during bootstrap so agents can search
 for them.
 
-Tool catalog (27 tools)
------------------------
+Tool catalog
+------------
 
 Provider (CRUD minus update):
     list_workspace_providers, get_workspace_provider,
@@ -33,8 +33,9 @@ Files:
 Log:
     get_workspace_log
 
-Yielding (M4):
-    watch_files
+(The ``watch_files`` and ``invoke_graph`` yielding tools moved to the
+``workspace_ext`` reserved toolset; their handlers + resume hooks remain
+defined here and are imported by that module.)
 """
 
 from __future__ import annotations
@@ -1543,75 +1544,12 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="backend-error")
         return _ok({"commits": [c.model_dump(mode="json") for c in commits]})
 
-    # watch_files — yielding tool (M4). Suspends the agent's turn until
-    # one of the watched paths changes on disk. The matching watcher
-    # (primer/bus/watcher.py) polls mtimes and publishes change bursts.
-    name, entry = _tool(
-        "watch_files",
-        (
-            "Watch one or more workspace-relative paths and pause this "
-            "agent turn until something changes. YIELDING TOOL: "
-            "execution is suspended and the worker is released to "
-            "handle other sessions while the watcher polls. Files and "
-            "directories are both accepted; directories report "
-            "child-file changes. Optional ``timeout_seconds`` (falls "
-            "back to the global yield cap). Optional ``batch_window_ms`` "
-            "(default 250) coalesces bursts of changes into one wake. "
-            "Returns ``{timed_out: false, changes: [...]}`` on change, "
-            "``{timed_out: true, changes: []}`` on timeout, or "
-            "``{cancelled: true, ...}`` if the operator skipped the "
-            "yield. Each change carries ``{path, event_type "
-            "(created|modified|deleted), mtime_after}``."
-        ),
-        (
-            "Use when you must block until a watched path changes; not "
-            "for a one-shot listing (use ``list_workspace_files``). "
-            "Paths must be workspace-relative (no absolute, no ``..``)."
-        ),
-        _WatchFilesArgs,
-        _watch_files_handler,
-        examples=[
-            ToolExample(
-                args={"paths": ["src/main.py"]},
-                returns="{timed_out: false, changes: [...]}",
-                note="yielding; parks until a watched path changes",
-            ),
-            ToolExample(
-                args={"paths": ["src"], "timeout_seconds": 30, "batch_window_ms": 500},
-            ),
-        ],
-        yields=True,
-        requires_session=True,
-    )
-    registry[name] = entry
-
-    # invoke_graph - yielding tool (dynamic invocation). Runs another
-    # graph inside this session, namespaced under the session's state.
-    name, entry = _tool(
-        "invoke_graph",
-        (
-            "Run another graph inside the current workspace session and "
-            "get its output text. The invoked graph's state nests under "
-            "this session."
-        ),
-        (
-            "Use when you need to delegate a self-contained multi-step "
-            "workflow to a graph from within a session; for a single "
-            "agent use invoke_agent."
-        ),
-        _InvokeGraphArgs,
-        _invoke_graph_handler,
-        examples=[
-            ToolExample(
-                args={"graph_id": "graph-review", "input": "Review the diff."},
-                returns="{output: <graph output text>}",
-                note="runs a subgraph in this session; can park on HITL",
-            ),
-        ],
-        yields=True,
-        requires_session=True,
-    )
-    registry[name] = entry
+    # NOTE: ``watch_files`` and ``invoke_graph`` moved to the
+    # ``workspace_ext`` reserved toolset (context optimization: keep
+    # workspace-only yielding tools out of chat context). Their handlers,
+    # arg models, and the watch_files resume hook still live in this
+    # module and are imported by ``primer.toolset.workspace_ext``; only
+    # the tool descriptors were re-homed under the new toolset id.
 
     name, entry = _tool(
         "get_workspace_log",

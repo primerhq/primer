@@ -19,12 +19,25 @@ from primer.model.yield_ import (
     YieldTimeout,
     Yielded,
 )
-from primer.toolset.misc import build_misc_toolset
+from primer.api.registries import ProviderRegistry
+from primer.toolset.system import build_system_toolset
+from tests.toolset.test_system import _SP as _SystemSP
 
 
 @pytest.fixture
 def misc():
-    return build_misc_toolset()
+    # ask_user moved from the ``misc`` toolset to the ``system`` toolset.
+    # The fixture name is kept so the existing test bodies (which dispatch
+    # ``tool_name="ask_user"``) are unchanged.
+    sp = _SystemSP()
+    pr = ProviderRegistry(
+        sp,  # type: ignore[arg-type]
+        llm_factory=lambda p: object(),
+        embedder_factory=lambda p: object(),
+        cross_encoder_factory=lambda p: object(),
+        toolset_factory=lambda t: object(),
+    )
+    return build_system_toolset(storage_provider=sp, provider_registry=pr)
 
 
 @pytest.mark.asyncio
@@ -131,7 +144,7 @@ class TestAskUserResumeHook:
     """The resume hook produces the right ToolCallResult per payload."""
 
     async def test_resume_with_real_response(self):
-        from primer.toolset.misc import ask_user_resume
+        from primer.toolset.system import ask_user_resume
 
         meta = {
             "prompt": "What is your name?",
@@ -146,7 +159,7 @@ class TestAskUserResumeHook:
 
     async def test_resume_with_complex_response_value(self):
         # response may be any JSON-serialisable value (object, array, etc.)
-        from primer.toolset.misc import ask_user_resume
+        from primer.toolset.system import ask_user_resume
 
         meta = {
             "prompt": "Provide config",
@@ -160,7 +173,7 @@ class TestAskUserResumeHook:
         assert body["response"] == {"foo": "bar", "n": 7}
 
     async def test_resume_with_timeout(self):
-        from primer.toolset.misc import ask_user_resume
+        from primer.toolset.system import ask_user_resume
 
         meta = {
             "prompt": "?",
@@ -174,7 +187,7 @@ class TestAskUserResumeHook:
         assert body["elapsed_seconds"] == 42.5
 
     async def test_resume_with_cancelled(self):
-        from primer.toolset.misc import ask_user_resume
+        from primer.toolset.system import ask_user_resume
 
         meta = {
             "prompt": "?",
@@ -197,17 +210,26 @@ class TestAskUserResumeHook:
 
 
 @pytest.mark.asyncio
-async def test_ask_user_tool_is_registered():
-    """The tool is exposed via build_misc_toolset's tool catalog."""
-    misc = build_misc_toolset()
+async def test_ask_user_tool_is_registered(misc):
+    """The tool is exposed via build_system_toolset's tool catalog."""
     tool_names = {t.id async for t in misc.list_tools()}
     assert "ask_user" in tool_names
 
 
+@pytest.mark.asyncio
+async def test_ask_user_not_in_misc_toolset():
+    """ask_user moved out of the misc toolset."""
+    from primer.toolset.misc import build_misc_toolset
+
+    misc_provider = build_misc_toolset()
+    names = {t.id async for t in misc_provider.list_tools()}
+    assert "ask_user" not in names
+
+
 def test_ask_user_resume_hook_is_registered():
     """Import-time registration lets the worker look the hook up by name."""
-    # Importing misc triggers register_resume_hook("ask_user", ...).
-    import primer.toolset.misc  # noqa: F401
+    # Importing system triggers register_resume_hook("ask_user", ...).
+    import primer.toolset.system  # noqa: F401
     from primer.worker.yield_resume_registry import get_resume_hook
 
     hook = get_resume_hook("ask_user")

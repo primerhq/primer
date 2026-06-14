@@ -18,14 +18,7 @@ from primer.model.yield_ import (
     YieldToWorker,
     Yielded,
 )
-from primer.toolset.workspaces import build_workspaces_toolset
-
-
-class _NoopWorkspaceRegistry:
-    """The tool only needs the workspace_id from ctx; registry is unused."""
-
-    async def aclose(self):
-        return
+from primer.toolset.workspace_ext import build_workspace_ext_toolset
 
 
 class _NoopStorageProvider:
@@ -35,10 +28,10 @@ class _NoopStorageProvider:
 
 @pytest.fixture
 def workspaces_toolset():
-    return build_workspaces_toolset(
-        storage_provider=_NoopStorageProvider(),
-        workspace_registry=_NoopWorkspaceRegistry(),
-    )
+    # watch_files moved from the ``workspaces`` toolset to ``workspace_ext``;
+    # the handler reads workspace_id/session_id from ctx, so a no-op storage
+    # provider suffices.
+    return build_workspace_ext_toolset(storage_provider=_NoopStorageProvider())
 
 
 @pytest.mark.asyncio
@@ -231,12 +224,23 @@ class TestWatchFilesResumeHook:
 
 @pytest.mark.asyncio
 async def test_watch_files_tool_is_registered():
-    tk = build_workspaces_toolset(
+    tk = build_workspace_ext_toolset(storage_provider=_NoopStorageProvider())
+    names = {t.id async for t in tk.list_tools()}
+    assert "watch_files" in names
+    # And NOT in the workspaces toolset any more.
+    from primer.toolset.workspaces import build_workspaces_toolset
+
+    class _NoopWorkspaceRegistry:
+        async def aclose(self):
+            return
+
+    ws = build_workspaces_toolset(
         storage_provider=_NoopStorageProvider(),
         workspace_registry=_NoopWorkspaceRegistry(),
     )
-    names = {t.id async for t in tk.list_tools()}
-    assert "watch_files" in names
+    ws_names = {t.id async for t in ws.list_tools()}
+    assert "watch_files" not in ws_names
+    assert "invoke_graph" not in ws_names
 
 
 def test_watch_files_resume_hook_is_registered():

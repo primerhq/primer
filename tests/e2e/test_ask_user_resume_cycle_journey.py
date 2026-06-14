@@ -96,7 +96,7 @@ async def test_t0862_ask_user_park_respond_resume_clears_park_and_advances_turn(
     sid, _scenario, parked = await drive_park_on_tool(
         client, registry, base_url,
         suffix=unique_suffix,
-        tool="misc__ask_user",
+        tool="system__ask_user",
         tool_args={"prompt": prompt},
         root=tmp_path,
     )

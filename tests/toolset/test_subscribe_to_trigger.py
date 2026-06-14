@@ -48,11 +48,22 @@ def _delayed_create_args(slug: str, name: str) -> dict:
 
 @pytest.fixture
 def toolset(fake_storage_provider):
+    # Trigger CRUD (create/update/list) still lives in the trigger toolset.
     return build_trigger_toolset_provider(
         storage_provider=fake_storage_provider,
         claim_engine=None,
         event_bus=None,
     )
+
+
+@pytest.fixture
+def we_toolset(fake_storage_provider):
+    # ``subscribe_to_trigger`` moved to the ``workspace_ext`` toolset; it
+    # shares the same storage_provider so it reads the triggers the trigger
+    # toolset created and writes the parked_session Subscription.
+    from primer.toolset.workspace_ext import build_workspace_ext_toolset
+
+    return build_workspace_ext_toolset(storage_provider=fake_storage_provider)
 
 
 @pytest.fixture
@@ -72,9 +83,9 @@ def ctx() -> ToolContext:
 class TestUnknownTrigger:
     @pytest.mark.asyncio
     async def test_missing_trigger_returns_tool_error(
-        self, toolset, ctx, fake_storage_provider,
+        self, toolset, we_toolset, ctx, fake_storage_provider,
     ):
-        result = await toolset.call(
+        result = await we_toolset.call(
             tool_name="subscribe_to_trigger",
             arguments={"trigger_id": "tr-ghost"},
             ctx=ctx,
@@ -90,7 +101,7 @@ class TestUnknownTrigger:
 
     @pytest.mark.asyncio
     async def test_disabled_trigger_rejected(
-        self, toolset, ctx, fake_storage_provider,
+        self, toolset, we_toolset, ctx, fake_storage_provider,
     ):
         # Create then disable.
         created = await toolset.call(
@@ -103,7 +114,7 @@ class TestUnknownTrigger:
             arguments={"id": trigger_id, "enabled": False},
         )
 
-        result = await toolset.call(
+        result = await we_toolset.call(
             tool_name="subscribe_to_trigger",
             arguments={"trigger_id": trigger_id},
             ctx=ctx,
@@ -126,7 +137,7 @@ class TestUnknownTrigger:
 class TestSubscribeYields:
     @pytest.mark.asyncio
     async def test_subscribe_yields_and_persists_parked_session_sub(
-        self, toolset, ctx, fake_storage_provider,
+        self, toolset, we_toolset, ctx, fake_storage_provider,
     ):
         created = await toolset.call(
             tool_name="create",
@@ -135,7 +146,7 @@ class TestSubscribeYields:
         trigger_id = json.loads(created.output)["id"]
 
         with pytest.raises(YieldToWorker) as info:
-            await toolset.call(
+            await we_toolset.call(
                 tool_name="subscribe_to_trigger",
                 arguments={"trigger_id": trigger_id},
                 ctx=ctx,
@@ -175,7 +186,7 @@ class TestSubscribeYields:
 class TestChatOnlyRejected:
     @pytest.mark.asyncio
     async def test_no_session_id_returns_tool_error(
-        self, toolset, fake_storage_provider,
+        self, toolset, we_toolset, fake_storage_provider,
     ):
         created = await toolset.call(
             tool_name="create",
@@ -188,7 +199,7 @@ class TestChatOnlyRejected:
             session_id=None,  # chat-only invocation
             workspace_id=None,
         )
-        result = await toolset.call(
+        result = await we_toolset.call(
             tool_name="subscribe_to_trigger",
             arguments={"trigger_id": trigger_id},
             ctx=chat_ctx,

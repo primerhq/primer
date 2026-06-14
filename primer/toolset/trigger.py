@@ -18,12 +18,12 @@ Management tools (one-to-one with ``/v1/triggers/*`` endpoints):
 * ``trigger__update_subscription`` — partial sub update.
 * ``trigger__delete_subscription`` — delete a sub.
 
-Plus the yielding tool (Spec §9 / §11.2):
-
-* ``subscribe_to_trigger`` — park the calling session until the
-  trigger fires next. Resumes with the fire context as the tool
-  result. Persists a one-shot ``parked_session`` Subscription which
-  the matching dispatcher consumes on fire.
+The yielding tool ``subscribe_to_trigger`` (Spec §9 / §11.2) - park
+the calling session until the trigger fires next, resuming with the
+fire context as the tool result - has MOVED to the ``workspace_ext``
+reserved toolset (it parks a workspace session, so it is kept out of
+chat context). Its descriptor and handler factory remain defined in
+this module and are imported by ``primer.toolset.workspace_ext``.
 
 Each tool translates typed service exceptions to ``ToolCallResult`` error
 envelopes using the spec §14 error codes. Argument validation errors
@@ -862,10 +862,11 @@ def build_trigger_toolset_provider(
             TOOL_DELETE_SUB,
             _make_delete_sub_handler(storage_provider, claim_engine, event_bus),
         ),
-        "subscribe_to_trigger": (
-            TOOL_SUBSCRIBE,
-            _make_subscribe_handler(storage_provider),
-        ),
+        # NOTE: ``subscribe_to_trigger`` moved to the ``workspace_ext``
+        # reserved toolset (it parks a workspace session; keep it out of
+        # chat context). Its descriptor (TOOL_SUBSCRIBE) + handler factory
+        # (_make_subscribe_handler) remain defined in this module and are
+        # imported by ``primer.toolset.workspace_ext``.
     }
     logger.info(
         "trigger toolset assembled with %d tools (id=%s)",

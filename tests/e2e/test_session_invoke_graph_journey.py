@@ -1,6 +1,6 @@
-"""E2E: a workspace-session agent invokes a graph via ``workspaces__invoke_graph``.
+"""E2E: a workspace-session agent invokes a graph via ``workspace_ext__invoke_graph``.
 
-``workspaces__invoke_graph(graph_id, input)`` runs a target graph inside the
+``workspace_ext__invoke_graph(graph_id, input)`` runs a target graph inside the
 current workspace session (a child ``WorkspaceGraphExecutor`` namespaced under
 the session state) and returns ``{output: <text>}`` to the calling agent. It
 yields only on a HITL gate; the graph used here has none, so the call returns
@@ -14,7 +14,7 @@ using the scripted mock-LLM harness:
      copied verbatim from tests/e2e/test_smk_graphs.py::test_linear_run_and_
      turn_logs (begin/agent/end with ``output_template={{ nodes.step.text }}``),
      so the End-node output IS the marker.
-  2. A session agent bound to ``workspaces__invoke_graph``. On its first turn it
+  2. A session agent bound to ``workspace_ext__invoke_graph``. On its first turn it
      emits the invoke_graph tool call targeting the graph; once the tool result
      is present it emits its final reply ("SESSION-DONE-<unique>"). The
      ``when_tool_result=True`` rule is FIRST so the agent does not loop.
@@ -39,7 +39,7 @@ Why this is a working (non-skipped) test:
 Subsystems exercised:
   * local workspace + agent-bound session lifecycle (create -> resume ->
     terminal), mirroring tests/e2e/test_smk_graphs.py + runs.py helpers
-  * ``workspaces__invoke_graph`` tool: child WorkspaceGraphExecutor run inside
+  * ``workspace_ext__invoke_graph`` tool: child WorkspaceGraphExecutor run inside
     the session, output plumbed back as the agent's tool_result
   * the scripted ``when_tool_result=True`` continuation rule firing on that
     tool_result
@@ -103,11 +103,11 @@ async def test_session_invoke_graph_runs_child_graph_to_completion(
         client, registry, base_url,
         suffix=f"ig-caller-{unique_suffix}",
         scenario=f"scripted:ig-caller-{unique_suffix}",
-        tools=["workspaces__invoke_graph"],
+        tools=["workspace_ext__invoke_graph"],
         rules=[
             Rule(when_tool_result=True, emit_text=done_marker),
             Rule(
-                emit_tool="workspaces__invoke_graph",
+                emit_tool="workspace_ext__invoke_graph",
                 emit_args={"graph_id": gid, "input": "go"},
             ),
         ],

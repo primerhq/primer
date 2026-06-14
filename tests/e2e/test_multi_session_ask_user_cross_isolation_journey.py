@@ -94,11 +94,11 @@ async def test_t0866_multi_session_ask_user_cross_isolation_journey(
     # ----- 1. Drive two real ask_user parks -------------------------
     sid_a, _, parked_a = await drive_park_on_tool(
         client, registry, base_url, suffix=f"a-{unique_suffix}",
-        tool="misc__ask_user", tool_args={"prompt": prompt_a}, root=tmp_path,
+        tool="system__ask_user", tool_args={"prompt": prompt_a}, root=tmp_path,
     )
     sid_b, _, parked_b = await drive_park_on_tool(
         client, registry, base_url, suffix=f"b-{unique_suffix}",
-        tool="misc__ask_user", tool_args={"prompt": prompt_b}, root=tmp_path,
+        tool="system__ask_user", tool_args={"prompt": prompt_b}, root=tmp_path,
     )
     initial_turn_a = parked_a["turn_no"]
     initial_turn_b = parked_b["turn_no"]

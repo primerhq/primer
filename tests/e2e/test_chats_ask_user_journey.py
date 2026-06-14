@@ -21,7 +21,7 @@ WS user_message) drives the continuation turn.
 
 Two journeys in this module:
 
-  1. ask_user  - first turn emits ``misc__ask_user`` (prompt
+  1. ask_user  - first turn emits ``system__ask_user`` (prompt
      "Which env?"); the question is surfaced, ``pending_tool_call``
      is set with mode ``ask_user``, ``turn_status`` returns to
      ``idle``, and NO ``parked_*`` columns exist. The reply
@@ -216,10 +216,10 @@ async def test_chat_ask_user_softyield_and_resume(
 
     agent = await make_scripted_agent(
         client, registry, base_url,
-        suffix=suffix, scenario=scenario, tools=["misc__ask_user"],
+        suffix=suffix, scenario=scenario, tools=["system__ask_user"],
         rules=[
             # First turn (no tool_result yet): emit the ask_user call.
-            Rule(when_tool_result=False, emit_tool="misc__ask_user",
+            Rule(when_tool_result=False, emit_tool="system__ask_user",
                  emit_args={"prompt": question}),
             # Continuation (tool_result present): final text answer that
             # references the reply so we can assert the loop continued.

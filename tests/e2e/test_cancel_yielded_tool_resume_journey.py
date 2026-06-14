@@ -99,7 +99,7 @@ async def test_t0864_cancel_yielded_tool_publishes_and_resumes_session(
     sid, _scenario, parked = await drive_park_on_tool(
         client, registry, base_url,
         suffix=unique_suffix,
-        tool="misc__ask_user",
+        tool="system__ask_user",
         tool_args={"prompt": "What is your favourite colour?"},
         root=tmp_path,
     )

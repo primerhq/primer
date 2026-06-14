@@ -82,6 +82,7 @@ from primer.toolset.misc import build_misc_toolset
 from primer.toolset.search import build_search_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
+from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.toolset.web import build_web_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
 from primer.workspace.probe import WorkspaceProbeTask
@@ -952,6 +953,18 @@ def _make_lifespan(config: AppConfig):
         provider_registry._trigger_toolset_provider = trigger_toolset  # noqa: SLF001
         app.state.trigger_toolset = trigger_toolset
 
+        # Build the always-on ``workspace_ext`` toolset (workspace-only
+        # yielding tools: sleep, watch_files, invoke_graph,
+        # subscribe_to_trigger). Its tools are filtered out of chat tool
+        # contexts at the ToolExecutionManager resolution choke point.
+        workspace_ext_toolset = build_workspace_ext_toolset(
+            storage_provider=storage_provider,
+        )
+        provider_registry._workspace_ext_toolset_provider = (  # noqa: SLF001
+            workspace_ext_toolset
+        )
+        app.state.workspace_ext_toolset = workspace_ext_toolset
+
         # Process-local router for chat tick events. One bus subscription
         # per process feeds it; WS handlers subscribe per-chat.
         from primer.chat.tick_router import ChatTickRouter, Tick
@@ -1171,6 +1184,7 @@ def _make_lifespan(config: AppConfig):
                     "web": web_toolset,
                     "harness": harness_toolset,
                     "trigger": trigger_toolset,
+                    "workspace_ext": workspace_ext_toolset,
                 },
             )
             search_toolset = build_search_toolset(ic_subsystem)
@@ -2139,10 +2153,17 @@ def create_test_app(
             web_search_service=_test_ws_service,
             web_fetch_service=_test_wf_service,
         )
+    # Always-on workspace_ext toolset (workspace-only yielding tools).
+    workspace_ext_toolset = build_workspace_ext_toolset(
+        storage_provider=storage_provider,
+    )
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
     provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
     provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
+    provider_registry._workspace_ext_toolset_provider = (  # noqa: SLF001
+        workspace_ext_toolset
+    )
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
     app.state.workspace_registry = workspace_registry
@@ -2150,6 +2171,7 @@ def create_test_app(
     app.state.workspaces_toolset = workspaces_toolset
     app.state.misc_toolset = misc_toolset
     app.state.web_toolset = web_toolset
+    app.state.workspace_ext_toolset = workspace_ext_toolset
     app.state.semantic_search_registry = _test_ssp_registry
     # Artifact storage registry + reserved default (parity with the lifespan).
     from primer.api.registries.artifact_storage_registry import (

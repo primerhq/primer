@@ -14,11 +14,31 @@ from primer.toolset.internal import InternalToolsetProvider
 from primer.toolset.misc import build_misc_toolset
 
 
-def test_misc_yielding_tools_flagged() -> None:
-    provider = build_misc_toolset()
-    # ``sleep`` and ``ask_user`` both return ``ToolCallResult | Yielded``.
+class _SP:  # minimal storage_provider stub for build_workspace_ext_toolset
+    def get_storage(self, model):  # pragma: no cover - never dispatched here
+        return None
+
+
+def test_workspace_ext_yielding_tools_flagged() -> None:
+    from primer.toolset.workspace_ext import build_workspace_ext_toolset
+
+    provider = build_workspace_ext_toolset(storage_provider=_SP())
+    # ``sleep`` moved here from misc; both return ``ToolCallResult | Yielded``.
     assert provider.is_yielding("sleep") is True
+    assert provider.is_yielding("watch_files") is True
+    assert provider.is_yielding("invoke_graph") is True
+    assert provider.is_yielding("subscribe_to_trigger") is True
+
+
+def test_system_ask_user_flagged() -> None:
+    """``ask_user`` moved to the system toolset; still yields + session-bound."""
+    from primer.toolset.system import build_system_toolset
+
+    sp = _SystemSP()
+    pr = _system_registry(sp)
+    provider = build_system_toolset(storage_provider=sp, provider_registry=pr)
     assert provider.is_yielding("ask_user") is True
+    assert provider.requires_session("ask_user") is True
 
 
 def test_misc_non_yielding_tools_not_flagged() -> None:
@@ -28,24 +48,34 @@ def test_misc_non_yielding_tools_not_flagged() -> None:
     assert provider.is_yielding("get_datetime") is False
     assert provider.is_yielding("hash") is False
     assert provider.is_yielding("calculate") is False
+    # sleep + ask_user no longer live in misc.
+    assert provider.is_yielding("sleep") is False
+    assert provider.is_yielding("ask_user") is False
 
 
 def test_misc_session_free_tools_not_flagged() -> None:
-    """Plain misc tools don't read ``ctx.session_id``.
-
-    ``ask_user`` legitimately reads ``ctx.session_id`` (forms the
-    yield event key), so it IS flagged as session-bound — that's
-    fine because the yielding filter blocks it from MCP first.
-    """
+    """Plain misc tools don't read ``ctx.session_id``."""
     provider = build_misc_toolset()
-    for name in ("uuid_v4", "get_datetime", "hash", "calculate", "sleep"):
+    for name in ("uuid_v4", "get_datetime", "hash", "calculate"):
         assert provider.requires_session(name) is False
 
 
-def test_misc_ask_user_flagged_as_session_bound() -> None:
-    """``ask_user`` reads ``ctx.session_id`` — the introspection picks it up."""
-    provider = build_misc_toolset()
-    assert provider.requires_session("ask_user") is True
+def _system_registry(sp):
+    from primer.api.registries import ProviderRegistry
+
+    return ProviderRegistry(
+        sp,  # type: ignore[arg-type]
+        llm_factory=lambda p: object(),
+        embedder_factory=lambda p: object(),
+        cross_encoder_factory=lambda p: object(),
+        toolset_factory=lambda t: object(),
+    )
+
+
+def _SystemSP():
+    from tests.toolset.test_system import _SP as _SystemStorage
+
+    return _SystemStorage()
 
 
 def test_unknown_name_defaults_false() -> None:
