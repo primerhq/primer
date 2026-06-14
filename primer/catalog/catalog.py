@@ -22,7 +22,7 @@ Design highlights (see
   inputs by re-scoping when ``__`` is absent from ``tool.id``.
 * Embedded text is ``f"{entity.id}\\n\\n{entity.description}"``: the
   id appears first so machine-readable names with semantic content
-  (``code-reviewer``, ``web-search``) remain discoverable even when
+  (``code-reviewer``, ``web_search``) remain discoverable even when
   the description is generic.
 """
 

@@ -1244,7 +1244,7 @@ class ChatTurnRunner:
 
             # tool_call / tool_result: the model that rejected the turn
             # likely doesn't support tool use at all (e.g. text-only
-            # gemma rejecting a prior web__http-request from a model
+            # gemma rejecting a prior web__http_request from a model
             # swap). Flag the row as history-excluded so subsequent
             # turns rebuild a clean prompt. The row stays in storage so
             # the UI/replay can still render it as historical context.

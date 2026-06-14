@@ -12918,10 +12918,10 @@
         }
       },
       {
-        "id": "web__web-search",
+        "id": "web__web_search",
         "description": "Perform a web search and return up to ``count`` title/url/snippet results. Use for fact lookup, current events, or finding canonical documentation pages.",
         "input_schema": {
-          "description": "Arguments for the ``web-search`` tool.",
+          "description": "Arguments for the ``web_search`` tool.",
           "properties": {
             "query": {
               "description": "Free-text search query.",
@@ -12957,10 +12957,10 @@
         }
       },
       {
-        "id": "web__http-request",
+        "id": "web__http_request",
         "description": "Perform an HTTP request against ``url`` with the given ``method`` and optional ``headers`` / ``body``. Returns JSON with the response status, headers, and body. The body is truncated past the configured byte cap.",
         "input_schema": {
-          "description": "Arguments for the ``http-request`` tool.",
+          "description": "Arguments for the ``http_request`` tool.",
           "properties": {
             "url": {
               "description": "Absolute URL to fetch (http or https).",

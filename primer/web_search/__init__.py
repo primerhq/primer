@@ -1,5 +1,5 @@
 """Web search subsystem — the adapter ABC, concretes, registry, and
-service that back the ``web::web-search`` MCP tool.
+service that back the ``web__web_search`` MCP tool.
 
 The public surface re-exported here is what callers outside the
 package use: the ABC + result type + named exceptions for

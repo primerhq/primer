@@ -162,7 +162,7 @@ The agent should:
 ## Gotchas
 
 - **Hard-deny is empty in v1.** Earlier prototypes had a hardcoded
-  block on `system::call_tool` and `web::http-request`. That's been
+  block on `system::call_tool` and `web__http_request`. That's been
   removed - the operator owns exposure decisions. The constant
   `HARD_DENY` lives on as an empty `frozenset` for backward
   compatibility with importers. Tool dangerousness is a per-deployment

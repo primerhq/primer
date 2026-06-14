@@ -177,10 +177,10 @@ What an agent *does* see:
 
 ### Workflow 2 - operator wires up policy-based approval for HTTP requests to internal hosts
 
-**Goal.** Auto-allow `web::http-request` to `https://*.example.com`
+**Goal.** Auto-allow `web__http_request` to `https://*.example.com`
 but require human review for any other host.
 
-1. Operator picks toolset `web`, tool `http-request`, approval type
+1. Operator picks toolset `web`, tool `http_request`, approval type
    `policy`. Provides a Rego rule like
    `allow { input.arguments.url =~ "^https://[a-z0-9-]+\\.example\\.com" }`.
 2. The first call with `url=https://api.example.com/foo` is evaluated:

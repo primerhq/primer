@@ -104,8 +104,8 @@ class TestAgentStatus:
             )
         )
         body = _agent(tools=[
-            "web__http-request",
-            "web__web-search",
+            "web__http_request",
+            "web__web_search",
             "search__semantic_search",
             "system__list_files",
             "workspaces__create_workspace",

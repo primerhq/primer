@@ -2,11 +2,11 @@
 
 Three tools live here:
 
-* ``web-search`` — delegates to a :class:`WebSearchService` and returns
+* ``web_search`` — delegates to a :class:`WebSearchService` and returns
   a JSON-serialised ``[{title, url, snippet}, …]`` array.
-* ``web-fetch`` - delegates to a :class:`WebFetchService` and returns
+* ``web_fetch`` - delegates to a :class:`WebFetchService` and returns
   clean markdown of a page's main content with a title/source header.
-* ``http-request`` — wraps :class:`httpx.AsyncClient` and returns a
+* ``http_request`` — wraps :class:`httpx.AsyncClient` and returns a
   JSON-serialised ``{status, headers, body, truncated}`` object,
   capping the body at a configurable byte limit.
 
@@ -58,7 +58,7 @@ HttpMethod = Literal[
 
 
 class WebSearchArgs(BaseModel):
-    """Arguments for the ``web-search`` tool."""
+    """Arguments for the ``web_search`` tool."""
 
     query: str = Field(
         ...,
@@ -85,7 +85,7 @@ class WebSearchArgs(BaseModel):
 
 
 class HttpRequestArgs(BaseModel):
-    """Arguments for the ``http-request`` tool."""
+    """Arguments for the ``http_request`` tool."""
 
     url: HttpUrl = Field(
         ...,
@@ -119,7 +119,7 @@ class HttpRequestArgs(BaseModel):
 
 
 class WebFetchArgs(BaseModel):
-    """Arguments for the ``web-fetch`` tool."""
+    """Arguments for the ``web_fetch`` tool."""
 
     url: HttpUrl = Field(..., description="Absolute URL of the page to read (http or https).")
     max_chars: int | None = Field(
@@ -137,7 +137,7 @@ class WebFetchArgs(BaseModel):
 
 def make_web_search_descriptor(toolset_id: str) -> Tool:
     return make_tool(
-        id="web-search",
+        id="web_search",
         toolset_id=toolset_id,
         purpose=(
             "Search the public web and return up to ``count`` "
@@ -145,8 +145,8 @@ def make_web_search_descriptor(toolset_id: str) -> Tool:
         ),
         when=(
             "Use when you need fact lookup, current events, or to find canonical "
-            "documentation pages. To READ a result page, use ``web-fetch`` (not "
-            "``http-request``)."
+            "documentation pages. To READ a result page, use ``web_fetch`` (not "
+            "``http_request``)."
         ),
         args_schema=WebSearchArgs.model_json_schema(),
         examples=[
@@ -158,7 +158,7 @@ def make_web_search_descriptor(toolset_id: str) -> Tool:
 
 def make_http_request_descriptor(toolset_id: str) -> Tool:
     return make_tool(
-        id="http-request",
+        id="http_request",
         toolset_id=toolset_id,
         purpose=(
             "Perform an HTTP request against ``url`` and return JSON with "
@@ -167,7 +167,7 @@ def make_http_request_descriptor(toolset_id: str) -> Tool:
         when=(
             "Use when you need JSON/API endpoints, webhooks, or to inspect raw "
             "status/headers/bytes; NOT for reading human web pages (use "
-            "``web-fetch``). The body is truncated past the configured byte cap."
+            "``web_fetch``). The body is truncated past the configured byte cap."
         ),
         args_schema=HttpRequestArgs.model_json_schema(),
         examples=[
@@ -179,7 +179,7 @@ def make_http_request_descriptor(toolset_id: str) -> Tool:
 
 def make_web_fetch_descriptor(toolset_id: str) -> Tool:
     return make_tool(
-        id="web-fetch",
+        id="web_fetch",
         toolset_id=toolset_id,
         purpose=(
             "Fetch a URL and return clean markdown of the page's main content "
@@ -187,7 +187,7 @@ def make_web_fetch_descriptor(toolset_id: str) -> Tool:
         ),
         when=(
             "Use when you need to READ a web page or document. For JSON/API "
-            "endpoints or to inspect raw headers/bytes, use ``http-request`` "
+            "endpoints or to inspect raw headers/bytes, use ``http_request`` "
             "instead. Pass ``max_chars``/``max_lines`` to bound the output."
         ),
         args_schema=WebFetchArgs.model_json_schema(),
@@ -202,7 +202,7 @@ def make_web_fetch_descriptor(toolset_id: str) -> Tool:
 
 
 def make_web_search_handler(service: "WebSearchService") -> ToolHandler:
-    """Build the async handler for the ``web-search`` tool.
+    """Build the async handler for the ``web_search`` tool.
 
     Dispatches via the WebSearchService — the service consults the
     active config singleton, resolves the active provider (or walks
@@ -257,7 +257,7 @@ def make_http_request_handler(
     http_client: httpx.AsyncClient,
     response_body_byte_cap: int,
 ) -> ToolHandler:
-    """Build the async handler for the ``http-request`` tool.
+    """Build the async handler for the ``http_request`` tool.
 
     Closes over a shared :class:`httpx.AsyncClient` so connection
     pooling is preserved across calls, and over the byte cap so the
@@ -319,7 +319,7 @@ def make_http_request_handler(
 
 
 def make_web_fetch_handler(service: "WebFetchService") -> ToolHandler:
-    """Build the async handler for the ``web-fetch`` tool.
+    """Build the async handler for the ``web_fetch`` tool.
 
     Dispatches via the WebFetchService (active-config singleton -> provider /
     aggregated fallback), returns clean markdown with a small title/source

@@ -45,8 +45,8 @@ class TestSemanticHit:
     def test_round_trip(self) -> None:
         original = SemanticHit(
             entity_type=SemanticEntityType.TOOL,
-            entity_id="web__web-search",
-            text="web__web-search\n\nPerform a web search.",
+            entity_id="web__web_search",
+            text="web__web_search\n\nPerform a web search.",
             score=1.5,
         )
         rehydrated = SemanticHit.model_validate(original.model_dump())

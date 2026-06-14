@@ -1,6 +1,6 @@
 """WebSearchService — singleton dispatch + active-config cache.
 
-The service is the single object the ``web::web-search`` tool handler
+The service is the single object the ``web__web_search`` tool handler
 depends on. It reads the active-config singleton row (with a short
 TTL cache), then dispatches the search call:
 

@@ -1005,7 +1005,7 @@ class TestToolCallInternalToolset:
     @pytest.mark.asyncio
     async def test_toolcall_resolves_internal_toolset(self, tmp_path: Path) -> None:
         """A tool_call node naming an internal-toolset tool (e.g.
-        web__web-search, fake__echo) must resolve that toolset via the
+        web__web_search, fake__echo) must resolve that toolset via the
         executor's ``toolset_resolver`` and dispatch it, not fail with
         'unknown tool ...; not registered with any toolset or workspace'.
         Previously tool_call nodes built a workspace-only manager

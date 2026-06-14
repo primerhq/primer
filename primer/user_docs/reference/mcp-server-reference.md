@@ -61,7 +61,7 @@ mutate the allowlist even with the `mcp` scope.
 
 Tools are identified by their scoped id: `<toolset_id>__<tool_id>`
 (double underscore separator). Examples: `system__call_tool`,
-`misc__uuid_v4`, `web__web-search`.
+`misc__uuid_v4`, `web__web_search`.
 
 Only tools from the reserved built-in toolsets can be exposed. Tools
 from user-defined toolset rows are always denied with reason

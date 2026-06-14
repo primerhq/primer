@@ -3,7 +3,7 @@
 These drive the web-search subsystem for REAL against DuckDuckGo (the keyless
 backend the testconfig enables). The provider CRUD, the active-config singleton,
 the ``_test`` connectivity probe, and the always-on ``web`` toolset
-(``web__web-search``) are all exercised end to end; the DuckDuckGo HTTP backend
+(``web__web_search``) are all exercised end to end; the DuckDuckGo HTTP backend
 is never mocked.
 
 Because live web results are non-deterministic, the agent-driven journeys use a
@@ -39,7 +39,7 @@ pytestmark = [pytest.mark.asyncio, requires("web:duckduckgo")]
 
 # The always-on internal `web` toolset and its search tool's scoped wire id.
 _WEB_TOOLSET_ID = "web"
-_WEB_SEARCH_TOOL = "web-search"
+_WEB_SEARCH_TOOL = "web_search"
 _SCOPED_WEB_SEARCH = f"{_WEB_TOOLSET_ID}__{_WEB_SEARCH_TOOL}"
 
 # A stable query whose result set is unlikely to be empty on any given day.
@@ -94,7 +94,7 @@ async def _drive_web_search_agent(
     authed_client, mock_llm, *, suffix: str, tmp_path,
     safe_search: str = "moderate",
 ) -> tuple[str, dict]:
-    """Scripted agent emits one real ``web__web-search`` call, then terminates
+    """Scripted agent emits one real ``web__web_search`` call, then terminates
     once the live DuckDuckGo result flows back. Returns (session_id, final).
 
     The mock LLM is scripted so the tool call is deterministic; the DuckDuckGo
@@ -383,7 +383,7 @@ async def test_web_search_required_approval_park_resume_real_ddg(
         assert pend.status_code == 200, pend.text
         pj = pend.json()
         # The pending payload reports the tool by its scoped wire id
-        # (``web__web-search``); the policy itself keys on the bare tool name.
+        # (``web__web_search``); the policy itself keys on the bare tool name.
         assert pj.get("tool_name") in (_WEB_SEARCH_TOOL, _SCOPED_WEB_SEARCH), pj
         assert _WEB_SEARCH_TOOL in str(pj.get("tool_name", "")), pj
         assert pj.get("approval_type") in ("required", None), pj

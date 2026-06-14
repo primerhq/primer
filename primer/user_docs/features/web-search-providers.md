@@ -7,7 +7,7 @@ summary: Register web search providers (DuckDuckGo, Tavily, Firecrawl, Exa) and 
 
 ## Concept
 
-Primer agents can search the web through the `web::web-search` tool. Behind that tool is the web search subsystem: a registry of **web search providers** plus an **active configuration** that decides which provider (or ordered list of providers) handles every query.
+Primer agents can search the web through the `web__web_search` tool. Behind that tool is the web search subsystem: a registry of **web search providers** plus an **active configuration** that decides which provider (or ordered list of providers) handles every query.
 
 Four provider backends ship with Primer:
 
@@ -23,7 +23,7 @@ The **active configuration** controls how providers are used at runtime. It has 
 
 ```mermaid
 flowchart LR
-    tool["web::web-search tool"]
+    tool["web__web_search tool"]
     service["WebSearchService"]
     config["Active config\n(single or aggregated)"]
     p1["Provider 1\n(primary)"]

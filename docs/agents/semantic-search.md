@@ -206,13 +206,13 @@ wants but not the exact tool name.
 }
 ```
 
-2. Hits include `web::http-request` near the top with a high score.
+2. Hits include `web__http_request` near the top with a high score.
    Meta carries the toolset_id and the input_schema reference.
 3. Now the agent has the scoped id and can call it directly:
 
 ```json
 {
-  "tool": "web::http-request",
+  "tool": "web__http_request",
   "arguments": {"method": "GET", "url": "https://example.com"}
 }
 ```
