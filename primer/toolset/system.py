@@ -1873,7 +1873,7 @@ def build_system_toolset(
         )
 
     async def _invoke_agent_handler(
-        arguments: dict[str, Any],
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
     ) -> ToolCallResult:
         try:
             args = _InvokeAgentArgs.model_validate(arguments)
@@ -1886,6 +1886,11 @@ def build_system_toolset(
                     prompt=args.prompt,
                     storage_provider=storage_provider,
                     provider_registry=provider_registry,
+                    approval_resolver=approval_resolver,
+                    session_id=getattr(ctx, "session_id", None),
+                    workspace_id=getattr(ctx, "workspace_id", None),
+                    chat_id=getattr(ctx, "chat_id", None),
+                    invoke_tool_call_id=getattr(ctx, "tool_call_id", None),
                 )
         except InvocationDepthExceeded as exc:
             return _err(
