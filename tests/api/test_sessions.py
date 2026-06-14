@@ -1040,9 +1040,15 @@ async def test_claim_engine_upsert_on_create(
             await c.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
         except Exception:
             pass
+        # auto_start defaults to False (sessions are created inert and started
+        # explicitly); the claim-engine upsert is gated on auto_start=True, so
+        # request an auto-starting session to exercise the upsert wiring.
         resp = await c.post(
             "/v1/workspaces/ws-eng/sessions",
-            json={"binding": {"kind": "agent", "agent_id": "ag-eng"}},
+            json={
+                "binding": {"kind": "agent", "agent_id": "ag-eng"},
+                "auto_start": True,
+            },
         )
         assert resp.status_code == 201, resp.text
         sid = resp.json()["id"]
