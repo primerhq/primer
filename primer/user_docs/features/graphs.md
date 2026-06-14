@@ -23,7 +23,7 @@ flowchart TD
 
 ### Graph sessions
 
-A graph does not run by itself. You run a graph by creating a workspace session bound to the graph. The session carries the initial input, the workspace the agents can read and write, and the full run state across every superstep. Go to Sessions, create a new session, pick the graph as the target, supply any `graph_input` the graph expects, and submit. The worker picks up the session and drives the graph to completion.
+A graph does not run by itself. It runs as a workspace session bound to the graph: the session carries the initial input (`graph_input`), the workspace its agents can read and write, and the full run state across every superstep. A worker picks up the session and drives the graph to completion. You create that session only after the graph is built, so the actual steps come at the end of the walkthrough below; for now it is enough to know that "running a graph" means "starting a session on it."
 
 Per-node state is committed to the workspace's `.state/graphs/<session_id>/` tree after every superstep, so runs survive worker restarts and every turn is recoverable.
 
@@ -68,7 +68,7 @@ A legend at the bottom-left identifies edge styles. Drag any node to reposition 
 | Fan-in | `fan_in` | Waits for all parallel branches to finish and aggregates their outputs. |
 | Tool call | `tool_call` | Calls a platform tool directly without an agent turn. |
 
-See `ref:features/graph-node-types` for the full configuration of each kind.
+The graph node types page (linked at the end of this page) documents the full configuration of each kind.
 
 ### Adding and configuring a node
 
