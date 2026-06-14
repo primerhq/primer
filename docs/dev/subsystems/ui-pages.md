@@ -70,7 +70,6 @@ All page components live under `ui/components/` as self-invoking `<script type="
 | `/graphs[/:id]` | GraphsListPage / GraphDetailPage | `graphs.jsx` | `GET /v1/graphs`, `/v1/graphs/{id}/status`, `PUT /v1/graphs/{id}` |
 | `/knowledge/collections[/:id]` | CollectionsListPage / Detail | `knowledge.jsx` | `GET /v1/collections`, `/collections/{id}/documents`, `/collections/{id}/search` |
 | `/knowledge/documents[/:id]` | DocumentsListPage / Detail | `knowledge.jsx` | `GET /v1/documents`, `POST /v1/documents/_convert_file` |
-| `/knowledge/search` | SearchBenchPage | `knowledge.jsx` | `POST /v1/{agents,graphs,tools}/search`, `/v1/internal_collections/config` |
 | `/toolsets[/:id]` | ToolsetsListPage / ToolsetDetailPage | `toolsets.jsx` | `GET /v1/tools`, `/v1/toolsets/{id}/tools`, `/v1/tool_approval_policies` |
 | `/tools` | ToolsListPage | `toolsets.jsx` | `GET /v1/tools/catalogue`, `/v1/tool_approval_policies` |
 | `/providers/llm[/:id]` | LlmProvidersListPage / Detail | `providers.jsx` | `GET /v1/llm_providers`, `.../{id}/models`, `POST .../_discover_models` |

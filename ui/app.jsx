@@ -64,7 +64,6 @@ function App() {
     if (root === "knowledge") {
       if (path.startsWith("/knowledge/collections")) return "collections";
       if (path.startsWith("/knowledge/documents")) return "documents";
-      if (path.startsWith("/knowledge/search")) return "collection-search";
       return "collections";
     }
     if (root === "toolsets") {
@@ -371,7 +370,6 @@ function App() {
       health: "/health",
       collections: "/knowledge/collections",
       documents: (e) => e ? `/knowledge/documents?collection=${encodeURIComponent(e)}` : "/knowledge/documents",
-      "collection-search": (e) => e ? `/knowledge/search?collection=${encodeURIComponent(e)}` : "/knowledge/search",
       toolsets: "/toolsets",
       "toolset-detail": (e) => `/toolsets/${e}`,
       tools: "/tools",
@@ -709,7 +707,6 @@ function App() {
       <CollectionsPage
         pushToast={pushToast}
         onOpen={(cid) => navigate("documents", cid)}
-        onSearchCollection={(cid) => navigate("collection-search", cid)}
         onNavigate={navigate}
       />
     );
@@ -732,50 +729,6 @@ function App() {
         onClearFilter={() => setDocsFilterCollection("")}
       />
     );
-  } else if (page === "collection-search" && !docsFilterCollection) {
-    // No collection scoped — render the unscoped SearchBench so deep-linking
-    // to `#/knowledge/search` lands on the entity search probe page.
-    pageHeader = (
-      <>
-        <div>
-          <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>Knowledge</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Search</span>
-          </div>
-          <h1 className="page-title">Entity search probe</h1>
-          <div className="page-sub">Try a query against any collection or the internal agent index</div>
-        </div>
-      </>
-    );
-    pageBody = <SearchBench subsystemOn={subsystemOn} />;
-  } else if (page === "collection-search" && docsFilterCollection) {
-    const col = (window.COLLECTIONS_INDEX || []).find((c) => c.id === docsFilterCollection);
-    pageHeader = (
-      <>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="crumb">
-            <a onClick={() => navigate("collections")}>Collections</a>
-            <span className="sep">/</span>
-            <span className="mono" style={{ color: "var(--text)" }}>{docsFilterCollection}</span>
-            <span className="sep">/</span>
-            <span style={{ color: "var(--text)" }}>Search</span>
-          </div>
-          <h1 className="page-title">
-            Search <span className="mono" style={{ color: "var(--text-3)", fontSize: 18, fontWeight: 500 }}>· {docsFilterCollection}</span>
-          </h1>
-          {col && (
-            <div className="page-sub tabular">
-              <span className="mono">{col.docs.toLocaleString()}</span> docs ·
-              <span className="mono"> {col.chunks.toLocaleString()}</span> chunks ·
-              embedder <span className="mono">{col.embedding_provider}</span>
-            </div>
-          )}
-        </div>
-        <div className="page-actions">
-          <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("collections")}>Back to collections</Btn>
-        </div>
-      </>
-    );
-    pageBody = <SearchBench subsystemOn={subsystemOn} collectionId={docsFilterCollection} />;
   } else if (page === "graphs") {
     pageHeader = (
       <>
@@ -1224,7 +1177,6 @@ function App() {
           : page === "agent-detail" ? "agents"
           : page === "graph-detail" ? "graphs"
           : page === "ssp-detail" ? "semantic-search"
-          : page === "collection-search" ? "collections"
           : page === "chat-detail" ? "chats"
           : page === "channel-provider-detail" ? "channel-providers"
           : page === "toolset-detail" ? "toolsets"

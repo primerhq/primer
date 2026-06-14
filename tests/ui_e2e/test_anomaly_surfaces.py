@@ -7,10 +7,8 @@ its own test here. Setup creates the backend precondition via API
 Covers:
 * U0008 — T0711 anomaly banner on toolset detail Tools tab when an
   MCP-HTTP toolset points at an unreachable URL (server returns 500).
-* U0012 — IC subsystem-inactive banner on /knowledge/search when the
-  subsystem is OFF (no config row); sidebar IC pill reads "OFF".
 
-UI spec §5 documents both surfaces as required.
+UI spec §5 documents this surface as required.
 """
 
 from __future__ import annotations
@@ -95,52 +93,6 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
                 c.delete(f"/v1/toolsets/{toolset_id}")
             except Exception:  # noqa: BLE001
                 pass
-
-
-def test_u0012_knowledge_search_renders_ic_inactive_banner_when_ic_off(
-    page,
-    base_url: str,
-    console_url: str,
-) -> None:
-    """U0012 — When the IC subsystem is OFF (no config row),
-    /knowledge/search renders a page-level banner with a Configure
-    CTA, and the sidebar IC pill reads "OFF".
-
-    Priority 3 — anomaly surface. Setup ensures the IC config row
-    is absent via API DELETE (idempotent — 204 if existed, 404 if
-    not). The UI's /knowledge/search page reads
-    /v1/internal_collections/config; a 404 means subsystem OFF,
-    which triggers the documented banner.
-    """
-    # Ensure IC subsystem is OFF.
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        # DELETE is idempotent here — 204 or 404 are both fine.
-        c.delete("/v1/internal_collections/config")
-
-    page.goto(
-        console_url + "#/knowledge/search", wait_until="domcontentloaded",
-    )
-    page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
-
-    # The banner title is "Internal Collections subsystem is OFF" per
-    # knowledge.jsx:647 (UI spec §5).
-    page.get_by_text(
-        "Internal Collections subsystem is OFF", exact=False,
-    ).first.wait_for(state="visible", timeout=5_000)
-
-    # Configure CTA visible — clicking it would navigate to the IC
-    # subsystem page; we only assert presence here.
-    configure_btn = page.get_by_role("button", name="Configure").first
-    configure_btn.wait_for(state="visible", timeout=5_000)
-
-    # Sidebar IC pill reads OFF. The pill is a span with class
-    # nav-pill-off when subsystem is off.
-    off_pill = page.locator(".nav-pill-off").first
-    off_pill.wait_for(state="visible", timeout=5_000)
-    assert "OFF" in off_pill.inner_text(), (
-        f"sidebar IC pill expected to contain 'OFF'; "
-        f"got: {off_pill.inner_text()}"
-    )
 
 
 def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(

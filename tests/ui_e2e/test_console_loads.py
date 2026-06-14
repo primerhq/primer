@@ -34,7 +34,6 @@ _ROUTES: list[tuple[str, str]] = [
     ("#/graphs",                            "Graphs"),
     ("#/knowledge/collections",             "Collections"),
     ("#/knowledge/documents",               "Documents"),
-    ("#/knowledge/search",                  "Entity search probe"),
     ("#/toolsets",                          "User toolsets"),
     ("#/toolsets/builtin",                  "Built-in toolsets"),
     ("#/providers/llm",                     "LLM providers"),

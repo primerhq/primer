@@ -345,7 +345,6 @@ function ActiveCard({ config, onRefresh, pushToast }) {
               {" · "}<span className="mono">{config.embedding_provider_id}</span>/<span className="mono">{config.embedding_model}</span>
             </div>
           </div>
-          <Btn kind="ghost" icon="search" onClick={() => navigate("/knowledge/search")}>Run a search</Btn>
         </div>
       </div>
 
