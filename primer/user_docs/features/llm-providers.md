@@ -110,7 +110,7 @@ The following steps add an OpenRouter provider as an example. Steps are the same
 ```
 
 ```callout:note
-For Anthropic, Discover models currently returns the models you have already configured rather than a live catalogue: live discovery is not yet wired for the anthropic adapter (Anthropic does publish a list-models endpoint, so this is a gap we plan to close). For now, type the model slug directly (e.g. `claude-opus-4-5`) and set its `context_length`.
+For Anthropic, Discover models fetches the live catalogue from Anthropic's list-models endpoint. The endpoint does not return a per-model `context_length`, so each discovered model is seeded with a default you should set to the model's real context window (e.g. `200000` for the Claude 4 family).
 ```
 
 ```ref:features/agents

@@ -17,6 +17,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from anthropic import AsyncAnthropic
 from pydantic import BaseModel as PydanticBaseModel
 
@@ -68,6 +69,14 @@ import primer.observability.metrics as _metrics
 
 
 logger = logging.getLogger(__name__)
+
+ANTHROPIC_BASE_URL = "https://api.anthropic.com/v1"
+
+# Pinned API version for the bare-HTTP discovery probe. The anthropic
+# SDK sets this header itself for Messages calls; the discovery helper
+# uses a plain httpx client (see _discover_anthropic_models) and must
+# send it explicitly.
+ANTHROPIC_VERSION = "2023-06-01"
 
 
 def _part_to_anthropic_block(part: Part) -> dict[str, Any]:
@@ -767,3 +776,75 @@ class AnthropicLLM(LLM):
                 raise
             finally:
                 _metrics.llm_duration_seconds.labels(_provider_kind).observe(time.monotonic() - _t0)
+
+
+async def _discover_anthropic_models(
+    draft_config: AnthropicConfig,
+) -> list[dict[str, Any]]:
+    """Probe Anthropic's ``GET /v1/models`` with the draft credentials.
+
+    Used by the discovery REST route powering the UI's *Discover models*
+    button: the operator types an API key into the new-provider form,
+    the route calls this helper, and the response populates the model
+    picker. Unlike :meth:`AnthropicLLM.list_models` (which returns the
+    stored row's static list, anomaly T0025), this is a live probe.
+
+    Returns a list of dicts (one per upstream model) with:
+
+    - ``name``: the model id (e.g. ``claude-opus-4-5``).
+    - ``display_name``: human-readable name; defaults to ``name`` if
+      upstream omits.
+
+    Anthropic's ``/v1/models`` paginates via ``has_more`` + ``last_id``;
+    this helper follows the cursor until the catalogue is exhausted.
+    The response does not carry a per-model context window, so callers
+    seed a default the operator can override in the form.
+
+    Uses a plain :class:`httpx.AsyncClient` rather than the anthropic
+    SDK so the discovery path has no dependency on SDK model typing and
+    mirrors :func:`primer.llm.openrouter._discover_openrouter_models`.
+    Raises :class:`httpx.HTTPStatusError` on an auth/HTTP failure (e.g.
+    a bad key → 401); the REST route wraps it into a 4xx response.
+    """
+    headers = {
+        "x-api-key": (
+            draft_config.api_key.get_secret_value()
+            if draft_config.api_key is not None
+            else ""
+        ),
+        "anthropic-version": ANTHROPIC_VERSION,
+    }
+
+    out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    params: dict[str, Any] = {"limit": 1000}
+    async with httpx.AsyncClient(
+        base_url=ANTHROPIC_BASE_URL, headers=headers, timeout=30.0,
+    ) as client:
+        while True:
+            response = await client.get("/models", params=params)
+            response.raise_for_status()
+            payload = response.json()
+
+            for entry in payload.get("data") or []:
+                if not isinstance(entry, dict):
+                    continue
+                model_id = entry.get("id")
+                if not model_id or model_id in seen_ids:
+                    continue
+                seen_ids.add(model_id)
+                out.append({
+                    "name": model_id,
+                    "display_name": entry.get("display_name") or model_id,
+                })
+
+            if not payload.get("has_more"):
+                break
+            last_id = payload.get("last_id")
+            if not last_id:
+                # Defensive: has_more true but no cursor; stop rather
+                # than loop forever.
+                break
+            params["after_id"] = last_id
+
+    return out

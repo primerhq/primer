@@ -33,6 +33,7 @@ import httpx
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Request
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.llm.anthropic import _discover_anthropic_models
 from primer.llm.openrouter import _discover_openrouter_models
 
 from primer.api.deps import (
@@ -55,6 +56,7 @@ from primer.api.registries.provider_registry import (
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router
 from primer.model.provider import (
+    AnthropicConfig,
     CrossEncoderProvider,
     EmbeddingProvider,
     LLMProvider,
@@ -238,9 +240,9 @@ async def discover_llm_models(
     endpoint deliberately bypasses the adapter for discovery and calls
     the provider's native list endpoint directly.
 
-    Only ``ollama`` and ``openresponses`` expose a useful list-models
-    API. For ``anthropic`` and ``gemini`` the frontend should fall back
-    to a curated suggested-model list — those providers return 400 here.
+    ``ollama``, ``openresponses``, ``openrouter``, and ``anthropic``
+    expose a live list-models API. For ``gemini`` the frontend should
+    fall back to a curated suggested-model list (it returns 400 here).
     """
     # Validate the draft via the canonical model so config shape errors
     # surface cleanly. We never persist or run anything from the stub.
@@ -275,18 +277,39 @@ async def discover_llm_models(
                 f"{exc}",
             ) from exc
         result = {"models": catalogue}
+    elif body.provider == "anthropic":
+        try:
+            ant_draft = AnthropicConfig.model_validate(body.config)
+        except ValidationError as exc:
+            raise BadRequestError(
+                f"invalid Anthropic config: {exc}",
+            ) from exc
+        try:
+            catalogue = await _discover_anthropic_models(ant_draft)
+        except httpx.HTTPStatusError as exc:
+            raise BadRequestError(
+                f"Anthropic discover failed: HTTP {exc.response.status_code} "
+                f"{exc.response.text[:200]}",
+            ) from exc
+        except httpx.RequestError as exc:
+            # Connect / timeout / read errors that are not HTTP responses.
+            raise BadRequestError(
+                f"Anthropic discover network error: {type(exc).__name__}: "
+                f"{exc}",
+            ) from exc
+        result = {"models": catalogue}
     else:
         raise BadRequestError(
             f"live model discovery is not supported for provider "
             f"{body.provider!r}; populate the models list manually or "
             f"use the UI's 'Suggest models' fallback.",
         )
-    # Neither Ollama's /api/tags nor OpenAI's /v1/models exposes a
-    # per-model context window. LLMModel requires context_length, so
-    # seed a sane default the operator can override in the form.
-    # OpenRouter's catalogue carries context_length verbatim, so skip
-    # the default for that branch.
-    if body.provider in ("ollama", "openresponses"):
+    # Neither Ollama's /api/tags, OpenAI's /v1/models, nor Anthropic's
+    # /v1/models exposes a per-model context window. LLMModel requires
+    # context_length, so seed a sane default the operator can override
+    # in the form. OpenRouter's catalogue carries context_length
+    # verbatim, so skip the default for that branch.
+    if body.provider in ("ollama", "openresponses", "anthropic"):
         for m in result.get("models", []):
             m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
     return result
