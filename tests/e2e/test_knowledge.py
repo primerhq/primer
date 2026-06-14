@@ -439,12 +439,25 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
     Pinned in this test by creating the collection first.
     """
     collection_id = f"coll-t0204-{unique_suffix}"
+    ssp_id = f"ssp-t0204-{unique_suffix}"
     doc_ids = [f"doc-t0204-{unique_suffix}-{i:02d}" for i in range(5)]
     coll_created = False
+    ssp_created = False
     created_docs: list[str] = []
     try:
-        # Create the collection first (T0017 path: vector_store=null
-        # tolerated, embedder fields accepted)
+        # Create a lance SSP so search_provider_id can be supplied
+        ssp = await client.post(
+            "/v1/ssp",
+            json={
+                "id": ssp_id,
+                "provider": "lance",
+                "config": {"path": f"/tmp/lance-t0204-{unique_suffix}"},
+            },
+        )
+        assert ssp.status_code in (200, 201), ssp.text
+        ssp_created = True
+
+        # Create the collection first (search_provider_id now required)
         coll = await client.post(
             "/v1/collections",
             json={
@@ -454,6 +467,7 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
                     "provider_id": f"unused-emb-{unique_suffix}",
                     "model": "sentence-transformers/all-MiniLM-L6-v2",
                 },
+                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
@@ -497,6 +511,8 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
             await client.delete(f"/v1/documents/{did}")
         if coll_created:
             await client.delete(f"/v1/collections/{collection_id}")
+        if ssp_created:
+            await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -683,10 +699,23 @@ async def test_t0253_collection_documents_items_carry_collection_id(
     membership (not just access).
     """
     coll_id = f"coll-t0253-{unique_suffix}"
+    ssp_id = f"ssp-t0253-{unique_suffix}"
     doc_ids = [f"doc-t0253-{unique_suffix}-{i}" for i in range(3)]
     coll_created = False
+    ssp_created = False
     docs_created: list[str] = []
     try:
+        ssp = await client.post(
+            "/v1/ssp",
+            json={
+                "id": ssp_id,
+                "provider": "lance",
+                "config": {"path": f"/tmp/lance-t0253-{unique_suffix}"},
+            },
+        )
+        assert ssp.status_code in (200, 201), ssp.text
+        ssp_created = True
+
         coll = await client.post(
             "/v1/collections",
             json={
@@ -696,6 +725,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
                     "provider_id": f"unused-emb-{unique_suffix}",
                     "model": "sentence-transformers/all-MiniLM-L6-v2",
                 },
+                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
@@ -756,6 +786,8 @@ async def test_t0253_collection_documents_items_carry_collection_id(
             await client.delete(f"/v1/documents/{did}")
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
+        if ssp_created:
+            await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -774,6 +806,7 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
     referencing row is created first).
     """
     embedder_id = f"emb-t0264-{unique_suffix}"
+    ssp_id = f"ssp-t0264-{unique_suffix}"
     coll_id = f"coll-t0264-{unique_suffix}"
 
     pr = await client.post(
@@ -790,6 +823,16 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
     )
     assert pr.status_code == 201, pr.text
 
+    ssp_r = await client.post(
+        "/v1/ssp",
+        json={
+            "id": ssp_id,
+            "provider": "lance",
+            "config": {"path": f"/tmp/lance-t0264-{unique_suffix}"},
+        },
+    )
+    assert ssp_r.status_code == 201, ssp_r.text
+
     coll_created = False
     try:
         coll = await client.post(
@@ -801,6 +844,7 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
                     "provider_id": embedder_id,
                     "model": "sentence-transformers/all-MiniLM-L6-v2",
                 },
+                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
@@ -825,6 +869,7 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
     finally:
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
         # Provider already deleted
 
 
@@ -843,6 +888,18 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
     body; no stale-cache rejection.
     """
     coll_id = f"coll-t0270-{unique_suffix}"
+    ssp_id = f"ssp-t0270-{unique_suffix}"
+
+    ssp_r = await client.post(
+        "/v1/ssp",
+        json={
+            "id": ssp_id,
+            "provider": "lance",
+            "config": {"path": f"/tmp/lance-t0270-{unique_suffix}"},
+        },
+    )
+    assert ssp_r.status_code in (200, 201), ssp_r.text
+
     body_a = {
         "id": coll_id,
         "description": "first incarnation",
@@ -850,6 +907,7 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
             "provider_id": f"emb-a-{unique_suffix}",
             "model": "sentence-transformers/all-MiniLM-L6-v2",
         },
+        "search_provider_id": ssp_id,
     }
     body_b = {
         "id": coll_id,
@@ -858,6 +916,7 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
             "provider_id": f"emb-b-{unique_suffix}",
             "model": "sentence-transformers/all-mpnet-base-v2",
         },
+        "search_provider_id": ssp_id,
     }
 
     create_a = await client.post("/v1/collections", json=body_a)
@@ -884,6 +943,7 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
         ), row
     finally:
         await client.delete(f"/v1/collections/{coll_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -940,7 +1000,18 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
     responds cleanly (404 per T0204 pattern).
     """
     coll_id = f"coll-t0336-{unique_suffix}"
+    ssp_id = f"ssp-t0336-{unique_suffix}"
     doc_id = f"doc-t0336-{unique_suffix}"
+
+    ssp_r = await client.post(
+        "/v1/ssp",
+        json={
+            "id": ssp_id,
+            "provider": "lance",
+            "config": {"path": f"/tmp/lance-t0336-{unique_suffix}"},
+        },
+    )
+    assert ssp_r.status_code in (200, 201), ssp_r.text
 
     coll = await client.post(
         "/v1/collections",
@@ -951,6 +1022,7 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
                 "provider_id": f"unused-emb-{unique_suffix}",
                 "model": "sentence-transformers/all-MiniLM-L6-v2",
             },
+            "search_provider_id": ssp_id,
         },
     )
     assert coll.status_code in (200, 201), coll.text
@@ -984,6 +1056,7 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
         assert envelope.get("type") != "/errors/internal", listing.text
     finally:
         await client.delete(f"/v1/documents/{doc_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -1063,10 +1136,21 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
     their parent exists.
     """
     coll_id = f"coll-t0348-{unique_suffix}"
+    ssp_id = f"ssp-t0348-{unique_suffix}"
     prefix = f"doc-t0348-{unique_suffix}"
     real_docs = [f"{prefix}-real-{i}" for i in range(2)]
     orphan_docs = [f"{prefix}-orphan-{i}" for i in range(3)]
     all_docs = real_docs + orphan_docs
+
+    ssp_r = await client.post(
+        "/v1/ssp",
+        json={
+            "id": ssp_id,
+            "provider": "lance",
+            "config": {"path": f"/tmp/lance-t0348-{unique_suffix}"},
+        },
+    )
+    assert ssp_r.status_code in (200, 201), ssp_r.text
 
     coll = await client.post(
         "/v1/collections",
@@ -1077,6 +1161,7 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
                 "provider_id": f"unused-{unique_suffix}",
                 "model": "sentence-transformers/all-MiniLM-L6-v2",
             },
+            "search_provider_id": ssp_id,
         },
     )
     assert coll.status_code in (200, 201), coll.text
@@ -1144,6 +1229,7 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
         for did in created:
             await client.delete(f"/v1/documents/{did}")
         await client.delete(f"/v1/collections/{coll_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
