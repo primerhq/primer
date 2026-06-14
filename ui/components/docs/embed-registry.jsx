@@ -89,9 +89,15 @@
       props: { onNavigate: function () {}, pushToast: function () {} },
     },
     "graph-canvas": {
-      component: "GraphsPage",
+      // GraphDetail (exposed on window alongside GraphsPage) renders the
+      // single-graph editor whose centerpiece is the node/edge canvas
+      // (GR_GraphEditor -> GR_Canvas). GraphsPage is the LIST page and never
+      // shows the canvas, so the embed mounts the detail directly. graphId
+      // must match the GET /graphs/{id} key in the fixture. Node x/y are
+      // assigned client-side by primerVendor.autoLayout (server stores none).
+      component: "GraphDetail",
       fixtures: "graph-canvas",
-      props: { onOpen: function () {}, pushToast: function () {} },
+      props: { graphId: "docs-producer-judge", pushToast: function () {} },
     },
     "workers-stats": {
       component: "WorkersPage",
