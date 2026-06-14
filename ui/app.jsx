@@ -136,8 +136,11 @@ function App() {
   const [toasts, setToasts] = React.useState([]);
   const [newSessionOpen, setNewSessionOpen] = React.useState(false);
 
-  const [sessions, setSessions] = React.useState(() => window.MOCK.buildSessions(Date.now()));
-  const [workers, setWorkers] = React.useState(window.MOCK.WORKERS);
+  // sessions is an empty array - page components (sessions-list.jsx,
+  // session-detail.jsx, workers.jsx) all read from the live API directly.
+  // window.MOCK.buildSessions / window.MOCK.WORKERS are confined to the
+  // design canvas and must not initialise production state.
+  const [sessions] = React.useState([]);
 
   // Real-data overlay (Phase 2 wiring) — Topbar's worker pill, the
   // Dashboard tiles, and the Health page all depend on /v1/workers
@@ -270,29 +273,6 @@ function App() {
     { pollMs: 30000 }
   );
 
-  const [tick, setTick] = React.useState(0);
-
-  // Live tick — bump running sessions' last_turn_at + occasionally a turn count
-  React.useEffect(() => {
-    const id = setInterval(() => {
-      setTick((t) => t + 1);
-      setSessions((arr) =>
-        arr.map((s) => {
-          if (s.status === "running") {
-            const sinceLast = (Date.now() - s.last_turn_at.getTime()) / 1000;
-            let next = { ...s };
-            if (sinceLast > 8 + Math.random() * 8) {
-              next.last_turn_at = new Date();
-              next.turn_count = s.turn_count + 1;
-            }
-            return next;
-          }
-          return s;
-        })
-      );
-    }, 2000);
-    return () => clearInterval(id);
-  }, []);
 
   // Worker pool stats — source of truth for the topbar pill, dashboard
   // worker tile, and the workers-page subhead. Reads only the real
@@ -402,17 +382,7 @@ function App() {
     window.location.hash = "#" + url;
   };
 
-  const onPatchSession = (id, patch) => {
-    setSessions((arr) => arr.map((s) => s.id === id ? { ...s, ...patch, last_turn_at: patch.status === "running" && !s.last_turn_at ? new Date() : s.last_turn_at } : s));
-  };
-
-  const onPatchWorker = (id, patch) => {
-    setWorkers((arr) => arr.map((w) => w.id === id ? { ...w, ...patch } : w));
-  };
-
   const openSession = (id) => navigate("session-detail", id);
-
-  const currentSession = sessions.find((s) => s.id === currentSessionId);
 
   // Demo state shows error toast on mount
   React.useEffect(() => {
@@ -616,7 +586,7 @@ function App() {
         </>
       );
     }
-    pageBody = <ProvidersPage kind={page} sessions={sessions} pushToast={pushToast} />;
+    pageBody = <ProvidersPage kind={page} pushToast={pushToast} />;
   } else if (page === "toolsets") {
     pageHeader = (
       <>
@@ -737,7 +707,7 @@ function App() {
             <a onClick={() => navigate("dashboard")}>Compute</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Graphs</span>
           </div>
           <h1 className="page-title">Graphs</h1>
-          <div className="page-sub">Multi-agent flows · executor not yet shipped</div>
+          <div className="page-sub">Multi-agent flows · define, run, and inspect graph sessions</div>
         </div>
       </>
     );
@@ -767,7 +737,7 @@ function App() {
             <a onClick={() => navigate("dashboard")}>Compute</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Agents</span>
           </div>
           <h1 className="page-title">Agents</h1>
-          <div className="page-sub tabular">{window.MOCK.AGENTS.length} agents · 1 with unresolved references</div>
+          <div className="page-sub tabular">All agents registered on this instance</div>
         </div>
       </>
     );
@@ -841,7 +811,6 @@ function App() {
     pageBody = (
       <WorkspaceDetail
         workspaceId={currentWorkspaceId}
-        sessions={sessions}
         onOpenSession={(sid) => navigate("session-detail", sid)}
         onNavigate={navigate}
         pushToast={pushToast}
@@ -911,7 +880,7 @@ function App() {
         </div>
       </>
     );
-    pageBody = <HealthPage workerStats={workerStats} sessions={sessions} />;
+    pageBody = <HealthPage workerStats={workerStats} />;
   } else if (page === "workers") {
     pageHeader = (
       <>
@@ -1054,8 +1023,7 @@ function App() {
           </div>
           <h1 className="page-title">Sessions</h1>
           <div className="page-sub tabular">
-            <span className="mono" style={{ color: "var(--blue)" }}>● {sessions.filter((s) => s.status === "running" || s.status === "paused").length}</span> live ·{" "}
-            {counts.sessions} active · {sessions.length} total ·
+            {counts.sessions != null ? counts.sessions : "..."} sessions ·
             <span className="mono" style={{ marginLeft: 4, color: "var(--text-3)" }}>autorefresh every 3s</span>
           </div>
         </div>
@@ -1067,7 +1035,6 @@ function App() {
     );
     pageBody = (
       <SessionsList
-        sessions={sessions}
         onOpenSession={openSession}
         onNewSession={() => setNewSessionOpen(true)}
         demoState={tweaks.demoState === "empty" ? "empty" : tweaks.demoState === "loading" ? "loading" : tweaks.demoState === "error-list" ? "error" : null}

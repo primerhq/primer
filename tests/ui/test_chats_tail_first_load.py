@@ -55,12 +55,28 @@ def test_old_full_history_loop_is_gone() -> None:
 
 def test_websocket_uses_lastseq_cursor() -> None:
     src = _src()
-    assert "ws?cursor=${initialLoadedSeq}" in src, (
-        "WS must open with the tail's lastSeq as cursor, not 0"
+    # The WS must open with the tail's last seq as cursor. The reconnect
+    # implementation tracks a `latestSeq` variable (initialised to
+    # initialLoadedSeq) so both the first connect and any reconnect
+    # resume from the correct position.
+    has_cursor = (
+        "ws?cursor=${initialLoadedSeq}" in src
+        or "ws?cursor=${latestSeq}" in src
+    )
+    assert has_cursor, (
+        "WS URL must carry cursor=${initialLoadedSeq} (or cursor=${latestSeq} "
+        "when the backoff-reconnect pattern is used) so the server only "
+        "streams NEW frames after the tail fetch lands"
     )
     assert "initialLoadedSeq == null" in src or "initialLoadedSeq != null" in src, (
         "WS open must be gated on the initial REST load completing"
     )
+    # Reconnect variant: latestSeq must be initialised to initialLoadedSeq.
+    if "latestSeq" in src:
+        assert "latestSeq = initialLoadedSeq" in src, (
+            "latestSeq must be seeded from initialLoadedSeq so the first "
+            "connect uses the tail's highest seq as the cursor"
+        )
 
 
 def test_load_older_paginates_via_before_seq() -> None:
