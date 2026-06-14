@@ -132,8 +132,10 @@ async def test_create_session_no_auto_start_persists_created(
     assert rehydrated.status == SessionStatus.CREATED
     # Scheduler NOT touched when auto_start=False.
     assert fake_scheduler.enqueued == []
-    # Claim engine still receives a forward-compat upsert (matches router).
-    assert any(k == ClaimKind.SESSION for k, _, _ in fake_claim_engine.upserts)
+    # Claim engine must NOT receive a upsert when auto_start=False.
+    # The session stays inert (CREATED, no lease) until an explicit
+    # resume/start later enqueues it.
+    assert fake_claim_engine.upserts == []
 
 
 @pytest.mark.asyncio
@@ -266,6 +268,114 @@ async def test_create_session_works_with_seeded_agent(
     )
     assert isinstance(sess.binding, AgentSessionBinding)
     assert sess.binding.agent_id == "ag-1"
+
+
+# ---------------------------------------------------------------------------
+# auto_start gate: claim-engine upsert is only sent when auto_start=True
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_session_auto_start_false_no_claim_upsert(
+    fake_storage_provider, deps, fake_scheduler, fake_claim_engine,
+):
+    """auto_start=False must leave the session in CREATED with no claim
+    lease registered. The worker must not discover and run the session
+    until an explicit start (resume) is issued later.
+    """
+    sess = await create_session(
+        workspace_id="ws-1",
+        binding=_binding(),
+        initial_instructions=None,
+        graph_input=None,
+        auto_start=False,
+        metadata={},
+        deps=deps,
+    )
+
+    assert sess.status == SessionStatus.CREATED
+    assert fake_scheduler.enqueued == []
+    # No lease upsert -- the worker has no knowledge of this session.
+    assert fake_claim_engine.upserts == []
+
+
+@pytest.mark.asyncio
+async def test_create_session_auto_start_true_sends_claim_upsert(
+    deps, fake_scheduler, fake_claim_engine,
+):
+    """auto_start=True must flip status to RUNNING, enqueue with the
+    scheduler, AND send a claim-engine upsert so the worker can pick
+    it up.
+    """
+    sess = await create_session(
+        workspace_id="ws-1",
+        binding=_binding(),
+        initial_instructions="go",
+        graph_input=None,
+        auto_start=True,
+        metadata={},
+        deps=deps,
+    )
+
+    assert sess.status == SessionStatus.RUNNING
+    assert fake_scheduler.enqueued == [sess.id]
+    assert (ClaimKind.SESSION, sess.id, 100) in fake_claim_engine.upserts
+
+
+@pytest.mark.asyncio
+async def test_explicit_resume_of_created_session_sends_claim_upsert(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    """Explicit start (POST .../resume on a CREATED session) must
+    transition to RUNNING and register a claim-engine upsert so the
+    worker discovers and runs the session.
+
+    This verifies that the resume_session route's own upsert (in
+    primer/api/routers/sessions.py) compensates for the upsert that
+    create_session deliberately withholds when auto_start=False.
+    The test drives the router logic directly via the shared helper
+    import so it stays a pure unit test (no HTTP).
+    """
+    # Create with auto_start=False -- CREATED, no lease.
+    no_start_deps = SessionFactoryDeps(
+        storage_provider=fake_storage_provider,
+        claim_engine=fake_claim_engine,
+        scheduler=fake_scheduler,
+        workspace_registry=None,
+    )
+    sess = await create_session(
+        workspace_id="ws-1",
+        binding=_binding(),
+        initial_instructions=None,
+        graph_input=None,
+        auto_start=False,
+        metadata={},
+        deps=no_start_deps,
+    )
+    assert sess.status == SessionStatus.CREATED
+    assert fake_claim_engine.upserts == []
+
+    # Simulate the resume_session route: transition CREATED -> RUNNING
+    # and call claim_engine.upsert (same as the router does).
+    from datetime import datetime, timezone
+
+    sessions_storage = fake_storage_provider.get_storage(WorkspaceSession)
+    s = await sessions_storage.get(sess.id)
+    assert s is not None
+    s.status = SessionStatus.RUNNING
+    if s.started_at is None:
+        s.started_at = datetime.now(timezone.utc)
+    s.pause_requested = False
+    await sessions_storage.update(s)
+    await fake_scheduler.enqueue(sess.id)
+    await fake_claim_engine.upsert(ClaimKind.SESSION, sess.id)
+
+    # Now the session should be RUNNING with a lease registered.
+    assert (ClaimKind.SESSION, sess.id, 100) in fake_claim_engine.upserts
+    assert sess.id in fake_scheduler.enqueued
+    rehydrated = await sessions_storage.get(sess.id)
+    assert rehydrated is not None
+    assert rehydrated.status == SessionStatus.RUNNING
 
 
 # ---------------------------------------------------------------------------

@@ -1943,6 +1943,101 @@ async def test_t0372_status_created_filter_excludes_auto_started(
 
 
 # ============================================================================
+# T0374 - auto_start=false stays CREATED; explicit resume starts it
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_t0374_auto_start_false_stays_created_resume_starts(
+    client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
+) -> None:
+    """T0374 -- auto_start=false: session stays CREATED after create
+    (no turn is run); POST .../resume transitions it to non-CREATED and
+    a worker eventually picks it up.
+
+    Verifies the claim-engine gate: with auto_start=false no lease is
+    registered at create time, so the session remains inert. The resume
+    route re-registers the lease and enqueues the session.
+    """
+    env = await _full_setup(client, unique_suffix, tmp_path)
+    workspace_id: str | None = None
+    session_id: str | None = None
+    try:
+        ws = await client.post(
+            "/v1/workspaces", json={"template_id": env["tpl_id"]},
+        )
+        assert ws.status_code == 201, ws.text
+        workspace_id = ws.json()["id"]
+
+        # 1. Create with auto_start=false.
+        sess = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={
+                "binding": {"kind": "agent", "agent_id": env["agent_id"]},
+                "auto_start": False,
+            },
+        )
+        assert sess.status_code == 201, sess.text
+        session_id = sess.json()["id"]
+
+        # 2. Immediately after create the session must be CREATED.
+        # Poll briefly (up to 2 s) to confirm no worker touched it.
+        still_created = True
+        for _ in range(10):
+            r = await client.get(f"/v1/sessions/{session_id}")
+            assert r.status_code == 200, r.text
+            if r.json().get("status") != "created":
+                still_created = False
+                break
+            await asyncio.sleep(0.2)
+
+        assert still_created, (
+            "auto_start=false session left CREATED without an explicit "
+            f"resume -- status after polling: "
+            f"{(await client.get(f'/v1/sessions/{session_id}')).json().get('status')!r}"
+        )
+
+        # 3. Explicit resume must transition the session out of CREATED.
+        resume = await client.post(
+            f"/v1/workspaces/{workspace_id}/sessions/{session_id}/resume",
+        )
+        assert resume.status_code == 200, resume.text
+        assert resume.json()["status"] != "created", (
+            f"resume response still shows 'created': {resume.json()!r}"
+        )
+
+        # 4. Within a few seconds the worker should pick it up and move
+        # it further (running -> ended or similar). The key guarantee is
+        # that it left CREATED after the resume.
+        observed_non_created = False
+        final_envelope: dict = {}
+        for _ in range(30):
+            r = await client.get(f"/v1/sessions/{session_id}")
+            assert r.status_code == 200, r.text
+            final_envelope = r.json()
+            assert final_envelope.get("type") != "/errors/internal", (
+                f"session leaked /errors/internal: {final_envelope!r}"
+            )
+            if final_envelope["status"] != "created":
+                observed_non_created = True
+                break
+            await asyncio.sleep(0.2)
+
+        assert observed_non_created, (
+            "session never left CREATED after explicit resume -- "
+            f"final status: {final_envelope.get('status')!r}"
+        )
+    finally:
+        if session_id and workspace_id:
+            await client.post(
+                f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
+            )
+        if workspace_id is not None:
+            await client.delete(f"/v1/workspaces/{workspace_id}")
+        await _teardown_setup(client, env)
+
+
+# ============================================================================
 # T0373 — Session metadata accepts deeply nested dict (3 levels)
 # ============================================================================
 

@@ -253,10 +253,13 @@ async def create_session(
     2. Fold ``graph_input`` into ``metadata['graph_input']`` for graph
        bindings.
     3. If ``auto_start``: flip to ``RUNNING``, stamp ``started_at``,
-       and call ``scheduler.enqueue(sid)`` (best-effort — a broken
-       scheduler must not strand the row).
-    4. Always upsert with the :class:`ClaimEngine` so the worker pool
-       sees the row (forward-compat; no-op when not wired).
+       call ``scheduler.enqueue(sid)`` (best-effort - a broken
+       scheduler must not strand the row), and upsert with the
+       :class:`ClaimEngine` so the worker pool sees the row.
+    4. If NOT ``auto_start``: the session stays in ``CREATED`` with no
+       lease registered. The worker never claims it until the caller
+       later calls the resume route (POST .../resume), which performs
+       its own upsert.
 
     Returns the persisted (and possibly auto-started) session row.
 
@@ -301,9 +304,12 @@ async def create_session(
                 sid, exc,
             )
 
-    # Forward-compat ClaimEngine upsert — matches what the REST router
-    # has always done. No-op when ``claim_engine is None``.
-    if deps.claim_engine is not None:
+    # Forward-compat ClaimEngine upsert - only when the session is
+    # actually starting now (auto_start=True). When auto_start=False the
+    # session stays in CREATED with no lease, so the worker never claims
+    # it. The explicit-start path (POST .../resume) performs its own
+    # upsert when the operator later transitions the row to RUNNING.
+    if auto_start and deps.claim_engine is not None:
         try:
             await deps.claim_engine.upsert(ClaimKind.SESSION, sid)
         except Exception as exc:  # noqa: BLE001
