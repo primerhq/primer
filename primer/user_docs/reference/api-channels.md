@@ -183,7 +183,7 @@ import httpx
 r = httpx.get("https://your-host/v1/channel_providers/slack-main",
               headers={"Authorization": f"Bearer {token}"})
 got = r.json()
-# got["config"]["bot_token"] is redacted -- never the raw value
+# got["config"]["bot_token"] is redacted; never the raw value
 --- javascript
 const r = await fetch("/v1/channel_providers/slack-main", {
   headers: {"Authorization": `Bearer ${token}`}

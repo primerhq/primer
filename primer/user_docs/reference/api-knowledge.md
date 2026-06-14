@@ -555,7 +555,7 @@ const boot = await fetch("/v1/internal_collections/bootstrap", {
   method: "POST",
   headers: { "Authorization": `Bearer ${token}` },
 });
-// boot.status === 202 -- poll status
+// boot.status === 202; poll status
 ```
 
 Bootstrap `202` response body:

@@ -193,7 +193,7 @@ r = client.post(
     json={"name": "ci-token", "scopes": []},
 )
 assert r.status_code == 201
-token_plaintext = r.json()["plaintext"]  # save this -- never shown again
+token_plaintext = r.json()["plaintext"]  # save this; never shown again
 --- javascript
 const r = await fetch("/v1/auth/tokens", {
   method: "POST",
@@ -202,7 +202,7 @@ const r = await fetch("/v1/auth/tokens", {
   body: JSON.stringify({name: "ci-token", scopes: []})
 })
 const {plaintext, id} = await r.json()
-// Save plaintext immediately -- never retrievable again
+// Save plaintext immediately; never retrievable again
 ```
 
 **Errors:** `403` if the caller authenticated with a bearer token, `409 token_name_conflict` if a token with the same name already exists, `422 token_expires_in_past` if `expires_at` is in the past.

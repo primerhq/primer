@@ -501,9 +501,9 @@ All error responses use RFC 7807 problem details:
 # }
 --- python
 # Catch via r.raise_for_status() or inspect r.json()["type"]:
-# "/errors/not-found"        -- resource does not exist
-# "/errors/conflict"         -- illegal state transition (e.g. resume on ended)
-# "/errors/validation-error" -- request body failed schema validation
+# "/errors/not-found"        : resource does not exist
+# "/errors/conflict"         : illegal state transition (e.g. resume on ended)
+# "/errors/validation-error" : request body failed schema validation
 --- javascript
 // On error, r.ok === false and r.json() returns:
 // { type: "/errors/not-found", title: "...", status: 404, detail: "..." }

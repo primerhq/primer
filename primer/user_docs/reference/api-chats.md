@@ -308,9 +308,9 @@ All error responses use RFC 7807 problem details:
 # }
 --- python
 # Inspect r.json()["type"] after a non-2xx response:
-# "/errors/not-found"        -- chat or agent does not exist
-# "/errors/conflict"         -- illegal state transition (e.g. DELETE on ended chat)
-# "/errors/validation-error" -- missing required field (e.g. no agent_id)
+# "/errors/not-found"        : chat or agent does not exist
+# "/errors/conflict"         : illegal state transition (e.g. DELETE on ended chat)
+# "/errors/validation-error" : missing required field (e.g. no agent_id)
 --- javascript
 // On error, r.ok === false and r.json() returns:
 // { type: "/errors/not-found", title: "...", status: 404, detail: "..." }

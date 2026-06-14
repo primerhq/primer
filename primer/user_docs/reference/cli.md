@@ -13,7 +13,7 @@ the full flag list:
 ```code-tabs:bash
 --- bash
 uv run primer --help
-# Primer microagents framework -- API + worker entrypoints.
+# Primer microagents framework: API + worker entrypoints.
 #
 # commands:
 #   api      Serve the HTTP API (and an in-process worker by default)
@@ -36,7 +36,7 @@ uv run primer api
 uv run primer api --config /etc/primer/config.yaml
 uv run primer api -c /etc/primer/config.yaml
 
-# API only -- pair with a dedicated `primer worker` process.
+# API only; pair with a dedicated `primer worker` process.
 uv run primer api --no-worker
 ```
 
