@@ -85,7 +85,7 @@ uv run primer worker -c /etc/primer/config.yaml
 
 ## primer init
 
-Runs first-time bootstrap. Idempotent -- rows that already exist are
+Runs first-time bootstrap. Idempotent: rows that already exist are
 skipped. Pass `--force` to re-run the bootstrap even when the
 completion marker is already set (useful for partially-failed runs).
 

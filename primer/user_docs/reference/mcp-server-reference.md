@@ -18,7 +18,7 @@ allowlist at `PUT /v1/mcp_exposure`.
 |---|---|
 | Path | `/v1/mcp` |
 | Protocol | MCP StreamableHTTP (stateful sessions, SSE-based) |
-| Auth | Bearer token -- see Auth section below |
+| Auth | Bearer token (see Auth section below) |
 
 The endpoint does not speak stdio. External clients must connect over
 HTTP to the running `primer api` process.

@@ -53,13 +53,13 @@ The pair `(toolset_id, tool_name)` must be unique. A duplicate returns `409 /err
 
 **Approval strategies:**
 
-`required` -- gate trips unconditionally; every call waits for an operator decision:
+`required`: gate trips unconditionally; every call waits for an operator decision:
 
 ```json
 {"type": "required"}
 ```
 
-`policy` -- evaluate a Rego policy source. The policy must declare `package primer.tool_approval` and expose a boolean `required` key (and an optional `reason` string). The source is compile-tested server-side at create/update time; malformed Rego returns `422` and never persists:
+`policy`: evaluate a Rego policy source. The policy must declare `package primer.tool_approval` and expose a boolean `required` key (and an optional `reason` string). The source is compile-tested server-side at create/update time; malformed Rego returns `422` and never persists:
 
 ```json
 {
@@ -68,7 +68,7 @@ The pair `(toolset_id, tool_name)` must be unique. A duplicate returns `409 /err
 }
 ```
 
-`llm` -- delegate to an LLM judge. The `provider_id` must reference an existing LLMProvider row and `model` must be in that provider's `models` list; both are validated server-side at create/update time:
+`llm`: delegate to an LLM judge. The `provider_id` must reference an existing LLMProvider row and `model` must be in that provider's `models` list; both are validated server-side at create/update time:
 
 ```json
 {

@@ -40,7 +40,7 @@ Create the build agent and bind the tools it needs.
    - **Name**: `rust-1.83`
    - **Provider**: your Docker provider
    - **Base image**: `rust:1.83-slim`
-   - **TTL**: 20 (minutes) -- long enough for a full build cycle,
+   - **TTL**: 20 (minutes), long enough for a full build cycle,
      short enough to avoid idle accumulation
    - **Environment variables**: add `CARGO_TERM_COLOR=never` so
      test output is plain text
@@ -107,7 +107,7 @@ timestamped record of every build artifact the agent touched.
 
 ```callout:warning
 The Docker provider runs builds in containers. Resource caps (CPU,
-memory) come from the template -- not from the agent configuration.
+memory) come from the template, not from the agent configuration.
 A build that needs more memory than the template allows will fail
 silently and the agent sees a truncated test output. Match the
 caps to the heaviest crate you build.

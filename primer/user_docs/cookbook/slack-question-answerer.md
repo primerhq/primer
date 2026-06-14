@@ -53,7 +53,7 @@ that are not obvious from the platform error message.
 2. Select the provider you just created.
 3. Enter the Slack channel ID (e.g. `C0123ABC456`) in the **External
    ID** field. You can find the channel ID by right-clicking the channel
-   name in Slack and choosing **Copy link** -- it is the last path
+   name in Slack and choosing **Copy link**; it is the last path
    segment.
 4. Add a label such as `#ops-help` for display purposes.
 5. Click **Create channel**.
@@ -95,7 +95,7 @@ The agent needs a workspace to run in.
 
 Knowledge collections are bound to agents via the agent's tool
 configuration. Confirm the collection search tool appears in the
-agent's **Tools** tab under the `system` toolset -- if the collection
+agent's **Tools** tab under the `system` toolset; if the collection
 named `company-docs` is indexed it will appear as a searchable source
 on the agent's next session.
 

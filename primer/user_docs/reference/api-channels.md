@@ -56,7 +56,7 @@ Configure channel providers in the console.
 
 Token fields are write-only: the API accepts them on POST/PUT but returns redacted placeholders on GET. Raw token values never appear in responses.
 
-**Slack config** -- requires Socket Mode enabled on the Slack app:
+**Slack config**: requires Socket Mode enabled on the Slack app:
 
 | Field | Required | Description |
 |-------|----------|-------------|

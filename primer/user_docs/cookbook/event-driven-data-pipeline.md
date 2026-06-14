@@ -66,7 +66,7 @@ need to change either, delete the collection and re-ingest all documents.
 ### 3. Create the webhook trigger
 
 1. Open **Triggers** in the left nav and click **Create trigger**.
-2. In Step 1, select **Scheduled** or **Delayed** -- for a webhook, choose
+2. In Step 1, select **Scheduled** or **Delayed**; for a webhook, choose
    the kind that matches your upstream dispatch pattern.
 
 ```callout:info

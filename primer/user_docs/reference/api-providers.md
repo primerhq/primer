@@ -71,7 +71,7 @@ Configure an agent to use a provider.
 
 ### LLM stream timeout
 
-`limits.request_timeout_seconds` is a per-event inactivity timeout, not a total-generation cap. A long but progressing response is not killed -- only a complete stall (no new event arriving) triggers it. The default 300 s covers most real-world runs. For local servers such as LM Studio on slower hardware you can lower this (e.g. 60 s) for faster failure detection; raise or disable (`null`) for very large models that have long gaps between tokens.
+`limits.request_timeout_seconds` is a per-event inactivity timeout, not a total-generation cap. A long but progressing response is not killed; only a complete stall (no new event arriving) triggers it. The default 300 s covers most real-world runs. For local servers such as LM Studio on slower hardware you can lower this (e.g. 60 s) for faster failure detection; raise or disable (`null`) for very large models that have long gaps between tokens.
 
 ### Create an LLM provider
 

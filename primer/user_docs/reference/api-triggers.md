@@ -71,7 +71,7 @@ Create and manage triggers in the console.
 | `kind` | yes | Must be `"scheduled"` |
 | `cron` | yes | Standard 5-field cron expression |
 | `timezone` | no | IANA timezone name; default `"UTC"` |
-| `catchup` | no | `"one"` (default), `"all"`, or `"none"` -- controls missed-fire catch-up behavior |
+| `catchup` | no | `"one"` (default), `"all"`, or `"none"`: controls missed-fire catch-up behavior |
 
 ## Create a trigger
 
@@ -282,12 +282,12 @@ const {skipped, results} = await r.json()
 | `config` | yes | SubConfig | Discriminated subscription config (see kinds below) |
 | `description` | no | string | Optional description (max 2000 chars) |
 | `enabled` | no | boolean | Default `true`; disabled subscriptions are skipped on fire |
-| `parallelism` | no | string | `"skip"` (default) -- behavior when a prior fire's action is still running |
+| `parallelism` | no | string | `"skip"` (default): behavior when a prior fire's action is still running |
 | `payload_template` | no | string or null | Jinja-style template rendered into the action payload |
 
 **Subscription kinds:**
 
-`agent_fresh_session` -- start a new agent session when the trigger fires:
+`agent_fresh_session`: start a new agent session when the trigger fires:
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -295,7 +295,7 @@ const {skipped, results} = await r.json()
 | `workspace_id` | yes | Id of the workspace to run the session in |
 | `agent_id` | yes | Id of the agent to run |
 
-`graph_fresh_session` -- start a new graph run:
+`graph_fresh_session`: start a new graph run:
 
 | Field | Required | Description |
 |-------|----------|-------------|
@@ -303,14 +303,14 @@ const {skipped, results} = await r.json()
 | `workspace_id` | yes | Id of the workspace |
 | `graph_id` | yes | Id of the graph |
 
-`chat_message` -- post a message into a chat:
+`chat_message`: post a message into a chat:
 
 | Field | Required | Description |
 |-------|----------|-------------|
 | `kind` | yes | `"chat_message"` |
 | `chat_id` | yes | Id of the target chat |
 
-`parked_session` -- resume a session parked on `subscribe_to_trigger`. Created automatically by the engine when an agent calls the `trigger__subscribe_to_trigger` yielding tool; rarely created directly via REST:
+`parked_session`: resume a session parked on `subscribe_to_trigger`. Created automatically by the engine when an agent calls the `trigger__subscribe_to_trigger` yielding tool; rarely created directly via REST:
 
 | Field | Required | Description |
 |-------|----------|-------------|
