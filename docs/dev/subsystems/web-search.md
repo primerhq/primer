@@ -14,7 +14,7 @@ external search engine. It covers four concerns:
   routes through.
 - The **`WebSearchService`**, which reads the active-config singleton, resolves the
   provider, and dispatches the query (walking the fallback chain on failure).
-- The **`web::web-search` MCP tool** (and its sibling `web::http-request`),
+- The **`web__web_search` MCP tool** (and its sibling `web__http_request`),
   exposed through the built-in internal `web` toolset that agents call.
 
 The `web` toolset is built by a factory at app lifespan and stamped on
@@ -28,7 +28,7 @@ A `WebSearchProvider` row describes one backend (a provider-type enum plus a
 discriminated config that may carry an API key). The `ActiveWebSearchConfig`
 singleton names which provider rows are live: in single mode it points at one
 `provider_id`; in aggregated mode it holds an ordered `provider_ids` list tried as
-a priority fallback chain. The `web::web-search` tool dispatches every call through
+a priority fallback chain. The `web__web_search` tool dispatches every call through
 the `WebSearchService`, which consults the active config, resolves each named
 provider to a live `WebSearchAdapter` via the `WebSearchRegistry`, and runs the
 query.
@@ -41,7 +41,7 @@ erDiagram
     WebSearchService ||--|| ActiveWebSearchConfig : "reads singleton (5s TTL)"
     WebSearchService ||--|| WebSearchRegistry : "resolves adapters"
     WebSearchRegistry ||--o{ WebSearchAdapter : "caches one per row id"
-    WebSearchTool ||--|| WebSearchService : "web::web-search delegates"
+    WebSearchTool ||--|| WebSearchService : "web__web_search delegates"
 ```
 
 The entities:
@@ -60,7 +60,7 @@ The entities:
 - `WebSearchRegistry` (`primer/api/registries/web_search_registry.py`) caches one
   `WebSearchAdapter` per provider row id.
 - `WebSearchService` (`primer/web_search/service.py`) is the single dispatch object
-  the `web::web-search` tool handler depends on.
+  the `web__web_search` tool handler depends on.
 
 ## 3. Architecture patterns implemented
 
@@ -84,8 +84,8 @@ The entities:
 - **Storage abstraction.** Provider rows and the active-config singleton persist
   through the generic `Storage[T]` interface; the registry and service take the
   per-type `Storage` handle (not the `StorageProvider`) at construction.
-- **Adjacent subsystem.** The `web` internal toolset (the `web::web-search` and
-  `web::http-request` tools and their `InternalToolsetProvider` wiring) is built at
+- **Adjacent subsystem.** The `web` internal toolset (the `web__web_search` and
+  `web__http_request` tools and their `InternalToolsetProvider` wiring) is built at
   lifespan and registered through the harness; see [harness.md](harness.md).
 
 ## 4. Code layout
@@ -136,12 +136,12 @@ The entities:
   `provider_ids` (`min_length=1`) with a `field_validator` that dedupes while
   preserving order, so `['A','B','A']` persists as `['A','B']`.
 - `SearchHit` (`primer/web_search/adapter.py`): `title`, `url`, `snippet`
-  (defaults to empty). Wire-shape locked: it is exactly what the `web::web-search`
+  (defaults to empty). Wire-shape locked: it is exactly what the `web__web_search`
   tool serialises.
 - `WebSearchArgs` (`primer/toolset/web/tools.py`): `query` (`min_length=1`),
   `count` (default 5, `ge=1`, `le=25`), `safe_search`
   (`Literal['off','moderate','strict']`, default `moderate`).
-- `HttpRequestArgs` (sibling `http-request` tool): `url` (`HttpUrl`), `method`
+- `HttpRequestArgs` (sibling `http_request` tool): `url` (`HttpUrl`), `method`
   (HTTP verb literal, default `GET`), optional `headers` (`dict[str, str]`),
   optional `body` (str), `timeout_seconds` (default 30.0, `gt=0`, `le=300`).
 - `RESERVED_WEB_SEARCH_IDS = {'DuckDuckGo'}` gates the router create / delete
@@ -151,7 +151,7 @@ The entities:
 
 ## 6. Lifecycle
 
-A web search call enters through the `web::web-search` tool handler, which
+A web search call enters through the `web__web_search` tool handler, which
 validates `WebSearchArgs` and delegates to `WebSearchService.search`. The service
 resolves the cached active config (5s TTL), then in single mode routes to one
 adapter (errors propagate) or in aggregated mode walks `provider_ids` in priority
@@ -163,7 +163,7 @@ swallowed.
 
 ```mermaid
 sequenceDiagram
-    participant Tool as web::web-search handler
+    participant Tool as web__web_search handler
     participant Service as WebSearchService
     participant Storage as Storage[ActiveWebSearchConfig]
     participant Registry as WebSearchRegistry
@@ -243,8 +243,8 @@ REST (`primer/api/routers/web_search.py`, all under `/v1`):
   calls `service.invalidate_active_config()`.
 
 Agent-facing tools: the `web` internal toolset (`build_web_toolset`,
-`primer/toolset/web/__init__.py`) exposes `web::web-search` (delegating to the
-`WebSearchService`) and `web::http-request` (an `httpx.AsyncClient`-backed fetch
+`primer/toolset/web/__init__.py`) exposes `web__web_search` (delegating to the
+`WebSearchService`) and `web__http_request` (an `httpx.AsyncClient`-backed fetch
 that returns `{status, headers, body, truncated}` with the body capped at 1 MB by
 default).
 
@@ -276,7 +276,7 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
 - **`SearchHit` wire contract**: every adapter normalises its engine's result keys
   into `SearchHit(title, url, snippet)` (DDG `href`/`body`, Tavily `content`,
   Firecrawl `description`, Exa `text`). No new fields may be added without bumping
-  the `web::web-search` tool's wire schema.
+  the `web__web_search` tool's wire schema.
 - **Registry race contract**: `WebSearchRegistry.get` constructs outside the lock;
   concurrent gets for the same id may build twice but only one wins the cache and
   the loser is `aclose()`-ed (failure is logged, non-fatal).
@@ -310,24 +310,24 @@ Python: `WebSearchAdapter`, `SearchHit`, the named exceptions (re-exported from
   called on a successful PUT.
 - `tests/api/test_web_search_bootstrap.py` covers bootstrap idempotency: fresh
   storage gets the DDG row plus the single-mode singleton pointing at it,
-  re-running does not error or overwrite, and the `web::web-search` wire shape is
+  re-running does not error or overwrite, and the `web__web_search` wire shape is
   unchanged post-bootstrap.
 - `tests/toolset/web/test_factory.py` and `tests/toolset/web/test_tools.py` cover
   the toolset: `list_tools` yielding exactly two ids, dispatch through a fake
   `WebSearchService`, the required `web_search_service` kwarg, the
   `WebSearchProviderError` vs `WebSearchUnavailable` envelope wording, the
-  `http-request` round-trip and body truncation, and the zero-byte-cap rejection.
+  `http_request` round-trip and body truncation, and the zero-byte-cap rejection.
 
 ## 11. Historical decisions
 
 - **The default web-search backend shipped as DuckDuckGo via the keyless `ddgs` package, with the sync call wrapped in `asyncio.to_thread`.** Why: Bing Web Search retired and Brave dropped its free tier in 2025, leaving DDG as the only no-key, pure-Python option that needs no headless browser. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
 - **The internal toolset was built by a factory rather than a config row, and `InternalToolsetProvider` took a defensive copy of its registry at construction.** Why: it removed the failure mode where deleting a config row would un-register the tools, making the `web` toolset immutable from the caller's perspective. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
 - **Tool-level failures returned `ToolCallResult(is_error=True)` while argument-validation failures raised `BadRequestError`.** Why: transient upstream errors should let the LLM react on the next turn rather than crash the executor, while programmer-visible misuse should bubble up through the registry. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
-- **The `http-request` response body was hard-capped at a default 1 MB with a boolean `truncated` field rather than an inline marker.** Why: tools driven by LLMs can be coaxed into pulling arbitrarily large bodies, so a fixed byte cap was the cheapest memory-safety defence. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
+- **The `http_request` response body was hard-capped at a default 1 MB with a boolean `truncated` field rather than an inline marker.** Why: tools driven by LLMs can be coaxed into pulling arbitrarily large bodies, so a fixed byte cap was the cheapest memory-safety defence. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
 - **No SSRF / private-IP guard was added for v1.** Why: the framework targets trusted-agent contexts, so ringfencing was documented as deliberately out of scope for a follow-up. Spec: docs/superpowers/specs/2026-05-08-web-toolset-design.md.
 - **The hard-coded DuckDuckGo backend was promoted into a `WebSearchAdapter` ABC with a per-row `WebSearchRegistry`, making web search a first-class peer of the LLM and embedder provider subsystems.** Why: the registry pattern composes uniformly across provider types, so the same per-row cache / invalidate / aclose discipline applies. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **Aggregated mode used failure-only fallback with explicit priority ordering rather than quota counters or load-balancing.** Why: the simplest correct model of "primary plus fallbacks" is to try the next provider when one errors, and explicit ordering is clearer for operators. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **The reserved DuckDuckGo provider row and the active-config singleton were auto-bootstrapped at lifespan in that order (DDG first, then the singleton referencing it).** Why: the singleton's reference validation runs at write time, and seeding both makes web search work zero-config and idempotent across restarts. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **The active-config singleton used a 5-second TTL on the service's read cache.** Why: it is the safety net for multi-process deployments where the PUT route's in-process `invalidate_active_config()` call does not reach every worker. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
-- **The `web::web-search` tool's wire schema (id, description, args schema, result shape) was kept bit-identical through the provider-model migration.** Why: MCP clients already calling the tool keep working without modification while the dispatch internals moved behind the service. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
+- **The `web__web_search` tool's wire schema (id, description, args schema, result shape) was kept bit-identical through the provider-model migration.** Why: MCP clients already calling the tool keep working without modification while the dispatch internals moved behind the service. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 - **Two extra adapters (Firecrawl and Exa) shipped beyond the spec's Tavily-only roster, and the `WebSearchRegistry` factory parameter became optional defaulting to `default_web_search_factory`.** Why: the additional keyed backends rounded out the provider roster and the default factory removed boilerplate at every construction site. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.

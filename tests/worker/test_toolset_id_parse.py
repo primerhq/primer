@@ -15,7 +15,7 @@ def test_three_segment_harness_id_keeps_full_toolset_id():
 
 
 def test_two_segment_id_still_works():
-    assert _toolset_ids_from_scoped(["web__http-request"]) == ["web"]
+    assert _toolset_ids_from_scoped(["web__http_request"]) == ["web"]
 
 
 def test_bare_name_skipped():
@@ -30,5 +30,5 @@ def test_compute_extraction_uses_last_separator():
         return tool_id
 
     assert _extract("acme__assistant__search") == "acme__assistant"
-    assert _extract("web__http-request") == "web"
+    assert _extract("web__http_request") == "web"
     assert _extract("bare_name") == "bare_name"

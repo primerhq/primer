@@ -128,7 +128,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         # out from under the still-running parent graph.
         self._owns_session_lifecycle = owns_session_lifecycle
         # Resolves a toolset_id -> ToolsetProvider so a tool_call node can
-        # invoke internal-toolset tools (web__web-search, system__...), not
+        # invoke internal-toolset tools (web__web_search, system__...), not
         # just workspace tools. None -> tool_call reaches workspace tools only.
         self._toolset_resolver = toolset_resolver
         # Approval resolver so a gated tool_call node fires the approval gate
@@ -352,7 +352,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         scoped id (``toolset__bare``); when it names a non-workspace
         toolset and a ``toolset_resolver`` is wired, that toolset's
         provider is resolved and registered so internal-toolset tools
-        (``web__web-search``, ``system__...``) dispatch -- otherwise the
+        (``web__web_search``, ``system__...``) dispatch -- otherwise the
         manager only carries workspace tools. When neither a manager nor
         a workspace_session is available the call raises so the ToolCall
         fails with ``tool_execution_failed`` rather than hanging.

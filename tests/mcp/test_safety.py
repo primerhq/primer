@@ -3,7 +3,7 @@
 HARD_DENY is now empty: the operator owns the exposure decision.
 This file pins that the runtime constraints (yielding tools, workspace
 tools that need an AgentSession) still filter, and that previously
-hard-denied tools (``system__call_tool``, ``web__http-request``) are
+hard-denied tools (``system__call_tool``, ``web__http_request``) are
 now exposable when the operator opts them in.
 """
 
@@ -51,8 +51,8 @@ def test_previously_hard_denied_call_tool_now_exposable() -> None:
 
 
 def test_previously_hard_denied_http_request_now_exposable() -> None:
-    """``web__http-request`` was hard-denied; now the operator opts in."""
-    tool = _make_tool("web", "http-request")
+    """``web__http_request`` was hard-denied; now the operator opts in."""
+    tool = _make_tool("web", "http_request")
     ok, reason = is_exposable(tool, provider=_StubProvider())
     assert ok is True
     assert reason is None

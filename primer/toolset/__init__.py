@@ -7,7 +7,7 @@ The framework also ships **built-in internal toolsets** assembled from
 the Python implementation here. They are immutable (no config row to
 delete) and constructed by per-toolset factories:
 
-* :func:`build_web_toolset` — ``web-search`` + ``http-request``.
+* :func:`build_web_toolset` — ``web_search`` + ``http_request``.
 """
 
 from primer.toolset.internal import InternalToolsetProvider

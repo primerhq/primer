@@ -81,7 +81,7 @@ level** (there is no `config` wrapper).
 - **`tool_call`** - invokes a tool directly, no LLM. Fields: `tool_id`
   (scoped `toolset_id__bare_name` - workspace tools use the `workspace`
   scope, e.g. `workspace__write` / `workspace__exec`; internal toolsets
-  use their own, e.g. `web__web-search`, `system__call_tool`),
+  use their own, e.g. `web__web_search`, `system__call_tool`),
   `arguments` (an object whose
   **string leaves are each Jinja-rendered** against the context;
   non-string leaves pass through), or `arguments_template` (a
@@ -479,7 +479,7 @@ rendered from the planner's structured output; the non-string
       {"id": "plan", "kind": "agent", "agent_id": "planner",
        "input_template": "Pick one web search query that answers: {{ initial_input.question }}",
        "response_format": {"type": "object", "properties": {"query": {"type": "string"}}}},
-      {"id": "search", "kind": "tool_call", "tool_id": "web__web-search",
+      {"id": "search", "kind": "tool_call", "tool_id": "web__web_search",
        "arguments": {"query": "{{ nodes.plan.parsed.query }}", "max_results": 5}},
       {"id": "write", "kind": "agent", "agent_id": "writer",
        "input_template": "Answer using these results:\n{{ nodes.search.text }}\n\nQuestion: {{ initial_input.question }}"},

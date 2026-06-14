@@ -406,9 +406,9 @@ class TestIndex:
         catalog, _, vstore, _ = _make_catalog()
         await catalog.initialize()
         # Tool already scoped (came from ToolExecutionManager).
-        scoped_tool = _tool("web__web-search", toolset_id="web")
+        scoped_tool = _tool("web__web_search", toolset_id="web")
         await catalog.index(SemanticEntityType.TOOL, scoped_tool)
-        assert "web__web-search" in vstore._records["_catalog_tools"]
+        assert "web__web_search" in vstore._records["_catalog_tools"]
 
     @pytest.mark.asyncio
     async def test_index_tool_composes_scope_when_bare(self) -> None:
@@ -416,9 +416,9 @@ class TestIndex:
         await catalog.initialize()
         # Tool given with bare id (defence-in-depth: caller bypassing
         # ToolExecutionManager during a backfill, etc.).
-        bare_tool = _tool("web-search", toolset_id="web")
+        bare_tool = _tool("web_search", toolset_id="web")
         await catalog.index(SemanticEntityType.TOOL, bare_tool)
-        assert "web__web-search" in vstore._records["_catalog_tools"]
+        assert "web__web_search" in vstore._records["_catalog_tools"]
 
     @pytest.mark.asyncio
     async def test_index_validates_entity_type_matches(self) -> None:

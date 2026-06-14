@@ -1606,7 +1606,7 @@ class WorkerPool:
         graph_input = (session.metadata or {}).get("graph_input")
 
         # Resolve a toolset_id -> provider so tool_call nodes can invoke
-        # internal-toolset tools (web__web-search, system__...), not just
+        # internal-toolset tools (web__web_search, system__...), not just
         # workspace tools. Mirrors the agent path's per-toolset resolution.
         async def toolset_resolver(toolset_id: str):
             return await self._provider_registry.get_toolset(toolset_id)

@@ -3,14 +3,14 @@
 Construct with :func:`build_web_toolset`; the returned
 :class:`InternalToolsetProvider` exposes three tools:
 
-* ``web-search`` — dispatches through a
+* ``web_search`` — dispatches through a
   :class:`~primer.web_search.service.WebSearchService` (which consults
   the active-config singleton and routes to the appropriate adapter
   via the :class:`WebSearchRegistry`).
-* ``web-fetch`` - dispatches through a
+* ``web_fetch`` - dispatches through a
   :class:`~primer.web_fetch.service.WebFetchService` to fetch a URL and
   return clean markdown of the page's main content.
-* ``http-request`` — backed by :class:`httpx.AsyncClient`.
+* ``http_request`` — backed by :class:`httpx.AsyncClient`.
 
 The toolset is "internal" in two senses:
 
@@ -63,8 +63,8 @@ def build_web_toolset(
 ) -> InternalToolsetProvider:
     """Construct the always-on ``web`` toolset.
 
-    Wires the web-search tool to the supplied WebSearchService (which
-    itself routes through the active-config singleton); the http-request
+    Wires the web_search tool to the supplied WebSearchService (which
+    itself routes through the active-config singleton); the http_request
     tool to a long-lived :class:`httpx.AsyncClient`.
 
     Callers MUST supply ``web_search_service``. The previous ``backend``
@@ -76,41 +76,41 @@ def build_web_toolset(
     ----------
     web_search_service
         :class:`~primer.web_search.service.WebSearchService` the
-        ``web-search`` handler delegates to. Required.
+        ``web_search`` handler delegates to. Required.
     toolset_id
         Wire id stamped onto every :class:`Tool` descriptor and used by
         the :class:`ToolExecutionManager` to route calls back here.
         Defaults to ``"web"``.
     http_client
-        Optional :class:`httpx.AsyncClient` used by the ``http-request``
+        Optional :class:`httpx.AsyncClient` used by the ``http_request``
         tool. When ``None``, the factory constructs a default async
         client. Callers running long-lived applications should pass a
         shared client and manage its lifecycle (``await client.aclose()``).
     response_body_byte_cap
-        Maximum bytes returned in ``http-request`` response bodies;
+        Maximum bytes returned in ``http_request`` response bodies;
         anything past the cap is truncated and ``"truncated": true``
         is set in the result. Defaults to 1 MB.
 
     Returns
     -------
     InternalToolsetProvider
-        A ready-to-register provider with ``web-search`` and
-        ``http-request`` tools wired in.
+        A ready-to-register provider with ``web_search`` and
+        ``http_request`` tools wired in.
     """
     chosen_client: httpx.AsyncClient = (
         http_client if http_client is not None else httpx.AsyncClient(timeout=30.0)
     )
 
     registry: dict[str, tuple] = {
-        "web-search": (
+        "web_search": (
             make_web_search_descriptor(toolset_id),
             make_web_search_handler(web_search_service),
         ),
-        "web-fetch": (
+        "web_fetch": (
             make_web_fetch_descriptor(toolset_id),
             make_web_fetch_handler(web_fetch_service),
         ),
-        "http-request": (
+        "http_request": (
             make_http_request_descriptor(toolset_id),
             make_http_request_handler(
                 http_client=chosen_client,

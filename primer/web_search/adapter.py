@@ -23,7 +23,7 @@ SafeSearchLevel = Literal["off", "moderate", "strict"]
 class SearchHit(BaseModel):
     """One result returned from a web search.
 
-    Wire-shape locked: this is what the `web::web-search` tool
+    Wire-shape locked: this is what the `web__web_search` tool
     serialises into its result envelope, and must round-trip with
     the existing tool's output schema. No new fields without bumping
     the tool's wire contract.

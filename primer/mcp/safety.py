@@ -14,7 +14,7 @@ There is intentionally no policy-level denylist. The operator
 chose to enable MCP, chose which tools to expose, and authenticated
 the caller with a bearer token they minted themselves. They get to
 choose the risk. (Earlier versions of this module hard-denied
-``system__call_tool`` (meta-dispatcher) and ``web__http-request``
+``system__call_tool`` (meta-dispatcher) and ``web__http_request``
 (SSRF surface); both were paternalistic and have been removed —
 operators can opt in to either if they understand the implications.)
 

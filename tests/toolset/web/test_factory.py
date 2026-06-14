@@ -73,7 +73,7 @@ class TestFactory:
             assert isinstance(ts, InternalToolsetProvider)
             tools = [t async for t in ts.list_tools()]
             ids = sorted(t.id for t in tools)
-            assert ids == ["http-request", "web-fetch", "web-search"]
+            assert ids == ["http_request", "web_fetch", "web_search"]
             for t in tools:
                 assert t.toolset_id == "web"
         finally:
@@ -107,7 +107,7 @@ class TestFactory:
         )
         try:
             result = await ts.call(
-                tool_name="web-search",
+                tool_name="web_search",
                 arguments={"query": "what", "count": 1},
             )
             assert not result.is_error
@@ -129,7 +129,7 @@ class TestFactory:
         )
         try:
             result = await ts.call(
-                tool_name="http-request",
+                tool_name="http_request",
                 arguments={"url": "https://example.com/"},
             )
             assert not result.is_error

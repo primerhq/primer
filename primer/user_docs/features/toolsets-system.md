@@ -29,7 +29,7 @@ flowchart LR
     Bindings --> MCPTS[my-mcp-server]
     SystemTS --> T1[list_sessions]
     SystemTS --> T2[create_agent]
-    WebTS --> T3[web-search]
+    WebTS --> T3[web_search]
     MCPTS --> T4[company_query]
 ```
 
@@ -42,7 +42,7 @@ Primer ships eight built-in toolsets that are always available without registrat
 | Toolset | What it covers |
 |---|---|
 | `system` | Full CRUD over every platform entity (agents, graphs, collections, providers, toolsets, channels, workspaces, triggers, approval policies). Plus meta-tools: `list_toolset_tools`, `call_tool`, `invoke_agent`, `switch_to_agent`, and the yielding `ask_user` (chat-capable; soft-yields on a chat surface). |
-| `web` | Web search (`web-search`), raw HTTP fetch (`web-fetch`, `http-request`). Requires a web search provider to be configured for `web-search`. |
+| `web` | Web search (`web_search`), raw HTTP fetch (`web_fetch`, `http_request`). Requires a web search provider to be configured for `web_search`. |
 | `workspaces` | The orchestration toolset: manage workspaces from the outside (provider, template, workspace, and session CRUD, plus remote file and log tools). Bound explicitly, like any toolset, by agents that orchestrate other workspaces and sessions. (Separately, the in-workspace access tools `ls`, `read`, `write`, `edit`, `glob`, `grep`, and `exec` are auto-registered with every agent that runs in a workspace session; those are not part of this toolset. See the Workspace toolset page.) |
 | `misc` | Portable stateless utilities: `get_datetime`, `inform_user`, `uuid_v4`, `hash`, `calculate`. |
 | `search` | Semantic search over internal collections: `search_agents`, `search_graphs`, `search_collections`, `search_tools`, `search_ai_docs`. These tools are only enabled when the internal search subsystem (internal collections) is enabled and active; until then they are unavailable. |
@@ -100,9 +100,7 @@ Tools are not configured on a "toolsets" page. They are bound per agent, on the 
 
 ### Tool id syntax
 
-When referencing a tool by its full scoped id (for example, in MCP exposure allowlists or policy configurations), the convention is `toolset_id__tool_id`, using double underscores as a separator; for example `system__invoke_agent`, `system__ask_user`, `search__search_agents`.
-
-Tool ids are being standardized to all-underscores (`toolset_id__tool_id`). The `web` toolset is the current exception: its bare tool names still use hyphens (`web-search`, `web-fetch`, `http-request`), so their scoped ids are `web__web-search`, `web__web-fetch`, `web__http-request`.
+When referencing a tool by its full scoped id (for example, in MCP exposure allowlists or policy configurations), the convention is `toolset_id__tool_id`, using double underscores as a separator; for example `system__invoke_agent`, `system__ask_user`, `search__search_agents`, `web__web_search`.
 
 ## Walkthrough: explore a toolset from the console
 

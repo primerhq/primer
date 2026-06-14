@@ -120,7 +120,7 @@ class TestArgValidation:
 class TestDescriptors:
     def test_web_search_descriptor_has_correct_id_and_toolset(self) -> None:
         t = make_web_search_descriptor("web")
-        assert t.id == "web-search"
+        assert t.id == "web_search"
         assert t.toolset_id == "web"
         # JSON schema describes the args model.
         props = t.args_schema.get("properties", {})
@@ -130,7 +130,7 @@ class TestDescriptors:
 
     def test_http_request_descriptor_has_correct_id_and_toolset(self) -> None:
         t = make_http_request_descriptor("web")
-        assert t.id == "http-request"
+        assert t.id == "http_request"
         assert t.toolset_id == "web"
         props = t.args_schema.get("properties", {})
         assert {"url", "method", "headers", "body", "timeout_seconds"}.issubset(
