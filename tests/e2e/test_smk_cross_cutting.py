@@ -244,12 +244,12 @@ async def test_subscribe_to_trigger_park_resume(
     try:
         # ----- Drive a real turn until the session parks on the tool -----
         # The agent (built by drive_park_on_tool) is offered
-        # ``trigger__subscribe_to_trigger``, emits the call which yields +
+        # ``workspace_ext__subscribe_to_trigger``, emits the call which yields +
         # parks, and on the synthesised tool result emits terminating text.
         sid, _scenario, parked = await drive_park_on_tool(
             authed_client, registry, base_url,
             suffix=unique_suffix,
-            tool="trigger__subscribe_to_trigger",
+            tool="workspace_ext__subscribe_to_trigger",
             tool_args={"trigger_id": trigger_id},
             root=tmp_path,
         )

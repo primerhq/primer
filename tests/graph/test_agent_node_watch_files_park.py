@@ -1,5 +1,5 @@
 """Guard the Quickstart Step 6 claim: a graph agent node that calls
-workspaces__watch_files is parked (not failed), and resumes to completion
+workspace_ext__watch_files is parked (not failed), and resumes to completion
 when the watch-files tool result is delivered (modelling: file written ->
 watch_files resume hook delivers the change as the tool result -> graph ends).
 
@@ -32,7 +32,7 @@ def _agent():
 
 
 class _YieldingLLM:
-    """Simulates the watcher agent calling workspaces__watch_files and parking."""
+    """Simulates the watcher agent calling workspace_ext__watch_files and parking."""
     async def list_models(self): return ["m"]
 
     def stream(self, **kw) -> AsyncIterator[StreamEvent]:

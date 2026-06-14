@@ -186,7 +186,7 @@ async def test_t0790_timer_scheduler_republishes_due_timer_park(
     sid, _, _ = await drive_park_on_tool(
         client, registry, base_url,
         suffix=unique_suffix,
-        tool="misc__sleep",
+        tool="workspace_ext__sleep",
         tool_args={"seconds": 1.0},
         root=tmp_path,
     )

@@ -43,7 +43,7 @@ async def drive_park_on_tool(
     """Run a real turn until the session parks on ``tool``.
 
     Builds a scripted agent whose first turn emits a single tool call
-    to ``tool`` (a yielding tool, e.g. ``misc__ask_user``) and, after
+    to ``tool`` (a yielding tool, e.g. ``system__ask_user``) and, after
     the tool result comes back on resume, emits a terminating text
     reply. Starts the session and polls until ``parked_status`` is
     ``parked``.

@@ -44,7 +44,7 @@ async def test_parked_session_turn_no_does_not_climb(
     sid, _scenario, parked = await drive_park_on_tool(
         client, registry, base_url,
         suffix=unique_suffix,
-        tool="misc__ask_user",
+        tool="system__ask_user",
         tool_args={"prompt": "no-loop probe: please wait"},
         root=tmp_path,
     )
