@@ -534,6 +534,39 @@ class WorkerPool:
                     outcome = await self._resume_engine_session(engine_lease, session_row)
             else:
                 outcome = await run_one_session_turn(engine_lease, deps)
+        except asyncio.CancelledError:
+            # Preempt: the heartbeat loop hard-cancelled this turn because
+            # the lease was lost (see _heartbeat_loop -> scope.cancel). Two
+            # causes are indistinguishable from the CancelledError alone:
+            #   (a) a REST cancel set cancel_requested=True and dropped the
+            #       lease -> the session must converge to ENDED/cancelled,
+            #       otherwise the normal-turn path leaves it stuck RUNNING
+            #       (the graceful in-stream cancel only wins under a fast
+            #       LLM; a slow completion is killed here first), or
+            #   (b) a genuine lease STEAL/expiry: another worker legitimately
+            #       took over (cancel_requested is False). We MUST NOT end the
+            #       session in that case or we corrupt the multi-worker
+            #       handoff -- the owning worker drives it to terminal.
+            # Disambiguate on the FRESH row's cancel_requested, end only on
+            # (a), and ALWAYS re-raise so _run_engine still logs/cleans up.
+            try:
+                if self._storage is not None:
+                    session_storage = self._storage.get_storage(WorkspaceSession)
+                    fresh = await session_storage.get(sid)
+                    if (
+                        fresh is not None
+                        and fresh.cancel_requested
+                        and fresh.status != SessionStatus.ENDED
+                    ):
+                        outcome = await self._end_session(fresh, reason="cancelled")
+            except Exception:
+                # A storage error here must not mask task cancellation;
+                # mirror dispatch.py's failure-isolation pattern: log and
+                # fall through to the re-raise below.
+                logger.exception(
+                    "preempt-cancel convergence for session %s failed", sid,
+                )
+            raise
         except Exception:
             logger.exception(
                 "run_one_session_turn for session %s raised unexpectedly",
