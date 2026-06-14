@@ -7,8 +7,8 @@ summary: REST endpoints to create, fire, and manage triggers and subscriptions f
 
 Triggers are named event sources (one-shot delayed or recurring cron) that fire subscriptions, which in turn post chat messages, start fresh agent or graph sessions, or resume parked sessions. A running agent can also park itself on a trigger via `subscribe_to_trigger` and resume automatically when the trigger fires.
 
-```ref:concepts/triggers-and-subscriptions
-The park/resume model and subscription kinds.
+```ref:features/triggers
+The park/resume model, subscription kinds, and webhook setup.
 ```
 
 ```ref:features/triggers

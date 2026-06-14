@@ -6,7 +6,7 @@ summary: Publish a company-internal toolset to claude.ai's connector so remote a
 difficulty: advanced
 time_minutes: 30
 tags: [mcp, agents, internal-collections]
-prerequisites: [features/mcp-server, features/auth-and-tokens]
+prerequisites: [features/mcp-server]
 features: [mcp, agent, internal-collections]
 ---
 

@@ -11,8 +11,8 @@ Authentication in Primer uses session cookies (for interactive and operator flow
 Agents and the sessions that authenticated requests drive.
 ```
 
-```ref:features/auth-and-tokens
-Manage tokens in the console.
+```ref:features/mcp-server
+Manage tokens in the console and connect MCP clients.
 ```
 
 ## Endpoints
