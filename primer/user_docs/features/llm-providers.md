@@ -9,7 +9,7 @@ summary: Register and configure LLM providers (anthropic, openai, gemini, ollama
 
 An LLM provider is a named connection from primer to a chat or completion backend. Every agent and chat turn in primer routes through exactly one provider row; the row tells primer which API to call, how to authenticate, which model identifiers are allowed, and how many concurrent requests are permitted at once.
 
-Primer uses a provider-pattern: adapters for each backend implement a shared streaming interface, so the agent loop never imports a vendor SDK directly. A provider row is just configuration (one entry in the registry), and the adapter is built from it lazily when a first turn arrives. Editing a row rebuilds the adapter without restarting the server.
+Primer uses a provider-pattern: adapters for each backend implement a shared streaming interface, and the agent loop only ever talks to that interface. The agent never depends on which backend is behind it (each vendor SDK lives inside its adapter plugin), so swapping or editing a provider changes the adapter, not the agent. A provider row is just configuration (one entry in the registry), and the adapter is built from it lazily when a first turn arrives. Editing a row rebuilds the adapter without restarting the server.
 
 Six LLM provider types ship today:
 
@@ -82,9 +82,9 @@ A unique handle you choose, for example `anthropic-prod` or `openrouter-free`. A
 A list of model identifiers the provider is allowed to serve. Each entry has:
 
 - `name`: the provider-side model slug (e.g. `claude-opus-4-5`, `gpt-4o-mini`, `meta-llama/llama-3.1-8b-instruct:free`). Agents that request a model not in this list receive a `ModelNotFoundError`.
-- `context_length`: the maximum token budget the model accepts per request. Primer uses this for capacity planning but does not enforce it directly; the upstream provider enforces its own limit.
+- `context_length`: the model's usable context window, in tokens. Primer uses this to drive automatic compaction: when a conversation's live history approaches this budget (around 90 percent), primer summarizes the older turns to stay within the window. Set it to the model's real context length so compaction fires at the right point; if it is too low, history is compacted too early, and if it is too high, a turn can overflow the model's actual limit.
 
-Use **Discover models** (available for Ollama and OpenRouter) to populate this list automatically from the upstream catalogue.
+Use **Discover models** (available for every provider type) to populate this list automatically from the upstream catalogue. Discovery fills in the model names; set a valid `context_length` for each model you keep (see above).
 
 ### Limits
 
@@ -101,7 +101,7 @@ The following steps add an OpenRouter provider as an example. Steps are the same
 4. Enter a provider ID such as `openrouter-free`.
 5. Paste your OpenRouter API key into the `api_key` field. The base URL is hard-coded and pre-filled.
 6. Optionally fill in `app_name` so your usage shows up on the OpenRouter leaderboard.
-7. Click **Discover models** to fetch the current catalogue. Choose one or more models from the list (for a free tier, look for the `:free` suffix, such as `meta-llama/llama-3.1-8b-instruct:free`).
+7. Click **Discover models** to fetch the current catalogue. Choose one or more models from the list (for a free tier, look for the `:free` suffix, such as `meta-llama/llama-3.1-8b-instruct:free`), and set a valid `context_length` for each one. For `meta-llama/llama-3.1-8b-instruct`, use `131072` (its 128K window).
 8. Set `max_concurrency` to match your plan; `5` is a safe starting point for a free key.
 9. Leave `request_timeout_seconds` at the default `300` unless you have a reason to change it.
 10. Click **Save**.
@@ -110,7 +110,7 @@ The following steps add an OpenRouter provider as an example. Steps are the same
 ```
 
 ```callout:tip
-For Anthropic, the console falls back to a curated suggested-model list because Anthropic has no list-models API. Type the model slug directly (e.g. `claude-opus-4-5`) rather than using Discover models.
+For Anthropic, Discover models returns a curated suggested-model list rather than a live catalogue, because Anthropic has no list-models API. Pick from that list or type the model slug directly (e.g. `claude-opus-4-5`), and set its `context_length`.
 ```
 
 ## What happens after

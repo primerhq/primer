@@ -7,7 +7,7 @@ summary: "Start and use a chat: create a conversation with an agent, send messag
 
 ## What a chat is
 
-A chat is an interactive, multi-turn conversation bound to a single agent. It is the right surface when a human (or another agent) keeps the loop going turn by turn: you send a message, the agent responds, you reply, and this continues indefinitely on the same persistent message log.
+A chat is an interactive, multi-turn conversation that starts with an agent. You are not locked to that agent: you can switch the active agent at any point (see Switching the agent below), and the full conversation history carries across the switch. A chat is the right surface when a human (or another agent) keeps the loop going turn by turn: you send a message, the agent responds, you reply, and this continues indefinitely on the same persistent message log.
 
 Unlike a session (which runs headless under a scheduler and does work autonomously), a chat waits for the next human message before starting a new turn.
 
@@ -27,7 +27,7 @@ sequenceDiagram
     participant Agent
 
     User->>Chat: user message
-    Chat->>Chat: persist message; mark claimable
+    Chat->>Chat: persist message, mark claimable
     Worker->>Chat: claim turn
     Agent->>Worker: stream reply + tool calls
     loop tool round-trips
@@ -48,9 +48,9 @@ The log is the source of truth. Live streaming is advisory: the client receives 
 
 ### Compaction
 
-A chat's message log grows with every turn. When token usage approaches the model's context limit, primer automatically compacts the oldest turns into a single summary message. The original rows are kept in the log for audit and replay, but the next turn's prompt is assembled from the summary plus the recent turns only.
+A chat's message log grows with every turn. When the live history approaches the model's context window, primer automatically compacts the older turns into a single summary message and records a `compaction_marker` row. The original rows stay in the log so the console can still display and replay the full history, but from that point on the agent only ever works from the compacted view. Every turn (including after you refresh the page or switch the agent) assembles the model's context from the latest summary plus the turns recorded after the marker, never the full pre-compaction log. In other words, reloading or switching agents never re-expands the conversation back to its full token cost: the model always sees the compacted history.
 
-Compaction happens automatically at the start of each turn when the context is near capacity. The result appears in the message log as a `compaction_marker` row. You can also trigger a manual compaction pass by clicking the compress icon next to the token meter in the chat header.
+Compaction runs automatically at the start of a turn once the live history reaches about 90 percent of the model's context budget (the budget is the model's `context_length` minus a reserve held back for the response). You can also trigger a manual compaction pass at any time by clicking the compress icon next to the token meter in the chat header.
 
 The compaction behaviour can be tuned per-agent using the **Compaction prompt** field on the agent's Advanced tab.
 

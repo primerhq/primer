@@ -7,11 +7,16 @@ summary: "Create and configure agents: pair a model with tools and a system prom
 
 ## What an agent is
 
-An agent is a reusable definition that tells primer how to drive an LLM on your behalf. It has three parts:
+An agent is a reusable definition that tells primer how to drive an LLM on your behalf. It has three core parts:
 
 - **Model binding**: which LLM provider and model to use.
 - **System prompt**: the fixed instruction block prepended to every turn.
 - **Tool allowlist**: the specific tools the agent may call, chosen from the available toolsets and MCP servers.
+
+Two optional settings tune its behavior:
+
+- **Temperature**: overrides the model's output randomness for this agent. Leave it unset to use the provider's default.
+- **Compaction prompt**: custom instructions for how the conversation is summarized when it nears the model's context window. Leave it unset to use the framework default.
 
 The definition is stateless. The conversation transcript, the workspace filesystem the agent reads and writes, the channel it replies into: all of that lives elsewhere. Multiple chats, sessions, or graph nodes can invoke the same agent simultaneously without sharing memory.
 
@@ -135,7 +140,7 @@ Sessions started after an edit pick up the new definition. Any session already i
 
 An agent can invoke other agents and graphs as part of its own turn. Three tools cover the patterns; bind them from the Tools tab.
 
-### invoke_agent (run a subagent)
+### `invoke_agent` (run a subagent)
 
 `system__invoke_agent` runs another agent once on a prompt and returns its text. The call is blocking and stateless: the subagent sees its own system prompt plus the prompt you pass, not the caller's conversation, and nothing is persisted as a separate chat or session.
 
@@ -148,7 +153,7 @@ Use it to delegate a self-contained subtask to a specialist and fold the result 
 
 The subagent's tool surface excludes yielding tools (ask_user, approval gates, invoke_graph): a subagent runs inline and cannot pause for a human. Nested invocations are capped by a depth limit (default 8, configurable via `PRIMER_MAX_INVOCATION_DEPTH`) so a cycle of agents calling each other cannot recurse forever.
 
-### switch_to_agent (hand off the chat)
+### `switch_to_agent` (hand off the chat)
 
 `system__switch_to_agent` hands the current chat off to another agent and ends the current turn. Unlike `invoke_agent`, it does not return a value: the chat's agent changes and the new agent runs the handoff prompt as the next turn, with the full prior conversation as shared context.
 
@@ -159,7 +164,7 @@ The subagent's tool surface excludes yielding tools (ask_user, approval gates, i
 
 This is the tool-driven equivalent of the agent dropdown in the chat header. It is chat-only: a workspace session has no single conversation to retarget, so the tool returns an error there.
 
-### invoke_graph (run a graph in the session)
+### `invoke_graph` (run a graph in the session)
 
 `workspaces__invoke_graph` runs another graph inside the current workspace session and returns its output. The invoked graph's state nests under the session's state tree.
 
@@ -169,10 +174,6 @@ This is the tool-driven equivalent of the agent dropdown in the chat header. It 
 | `input` | The graph input |
 
 `invoke_graph` is a workspace-session tool: it requires a session and is not available in plain chats. It supports full human-in-the-loop: if the invoked graph hits an approval node or an agent that asks the user, the session parks and resumes when the human replies.
-
-## Checking agent health
-
-The detail page shows a status panel at the top. It calls `GET /v1/agents/{id}/status` and reports whether the bound provider and toolsets all resolve. A red banner lists specific issues blocking new sessions.
 
 ## What happens after creation
 
