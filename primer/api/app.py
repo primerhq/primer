@@ -1518,11 +1518,6 @@ def _mount_routers(
     # router itself rejects bearer-token PUTs); reads pass through.
     from primer.api.routers.mcp_exposure import mcp_exposure_router
     app.include_router(mcp_exposure_router, prefix=prefix, dependencies=auth_dep)
-    # Bug reporter — write-only POST that saves reports to disk.
-    # Cookie-gated like everything else under /v1 so casual scrapers
-    # can't drop files in the configured bugs/ directory.
-    from primer.api.routers.bugs import bugs_router
-    app.include_router(bugs_router, prefix=prefix, dependencies=auth_dep)
     # Instrumentation endpoints — only mounted when the env var is set.
     # Public to keep the distributed test harness simple; the env var
     # itself is the access gate.
@@ -2191,7 +2186,6 @@ def create_test_app(
         "trigger-create",
         "worker-stats",
         "api-token-create",
-        "bug-reporter-modal",
     ]
     app.state.user_docs_embeds = _test_embed_ids
     _test_user_docs_service.set_embeds_manifest(_test_embed_ids)
