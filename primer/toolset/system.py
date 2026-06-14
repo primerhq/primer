@@ -27,8 +27,11 @@ Plus entity-specific operations:
   ``refresh_collection``.
 * Document extras — ``get_document_content``, ``put_document``.
 
-Total: ~75 tools. ``search_collection`` and ``refresh_collection`` are
-stubbed with ``is_error=True`` until the SearchService pipeline lands.
+Total: ~75 tools. ``search_collection`` runs real semantic search over
+a collection's indexed document contents (same embedder + vector-store
+path the console / ``POST /v1/collections/{id}/search`` route uses).
+``refresh_collection`` is stubbed with ``is_error=True`` until the
+SearchService ingestion pipeline lands.
 
 Cascade invalidation
 --------------------
@@ -1180,6 +1183,8 @@ class _CollectionIdArgs(BaseModel):
 def _collection_extras(
     *,
     storage_provider: "StorageProvider",
+    provider_registry: "ProviderRegistry",
+    semantic_search_registry: "SemanticSearchRegistry | None" = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     collections = storage_provider.get_storage(Collection)
     documents = storage_provider.get_storage(Document)
@@ -1289,42 +1294,97 @@ def _collection_extras(
         _find_by_meta,
     )
 
-    # ---- search_collection (deferred — stubbed) -----------------------
+    # ---- search_collection --------------------------------------------
     async def _search(arguments: dict[str, Any]) -> ToolCallResult:
         try:
-            _CollectionSearchArgs.model_validate(arguments)
+            args = _CollectionSearchArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        return _err(
-            "semantic search requires the SearchService pipeline "
-            "(embedder + vector store + optional cross-encoder) which "
-            "is not yet wired in the API layer; use "
-            "``find_collection_documents_by_meta`` for metadata "
-            "filtering or ``find_documents`` for predicate search "
-            "until then.",
-            error_type="not-implemented",
+        if semantic_search_registry is None:
+            return _err(
+                "semantic search is unavailable: no SemanticSearchRegistry "
+                "wired into this process; use "
+                "``find_collection_documents_by_meta`` for metadata "
+                "filtering instead.",
+                error_type="unavailable",
+            )
+        coll = await collections.get(args.collection_id)
+        if coll is None:
+            return _err(
+                f"Collection {args.collection_id!r} does not exist",
+                error_type="not-found",
+            )
+        # Mirror POST /v1/collections/{id}/search (the console / SSP path):
+        # vectorise the query with the collection's OWN embedder so query
+        # and index vectors share dimensionality + metric, then run the
+        # similarity search against the collection's vector store, resolved
+        # via the collection's search_provider_id.
+        from primer.model.chat import TextPart
+        from primer.model.except_ import BadRequestError
+
+        try:
+            embedder = await provider_registry.get_embedder(
+                coll.embedder.provider_id
+            )
+            response = await embedder.embed(
+                model=coll.embedder.model,
+                inputs=[TextPart(text=args.query)],
+            )
+            vector = list(response.embeddings[0].vector)
+            store = await semantic_search_registry.get_store(
+                coll.search_provider_id
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="provider-error")
+        # SSP registration is lazy: a collection with Document rows but no
+        # indexed vectors yet is unknown to the store catalogue and search
+        # raises BadRequestError("...is not registered..."). Treat that as
+        # "nothing indexed yet" -> empty hits (matches the REST route).
+        try:
+            hits = await store.search(args.collection_id, vector, args.top_k)
+        except BadRequestError as exc:
+            if "is not registered" not in str(exc):
+                return _err_from_primer(exc, error_type="search-error")
+            hits = []
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="search-error")
+        return _ok(
+            {
+                "hits": [
+                    {
+                        "document_id": h.record.document_id,
+                        "chunk_id": h.record.chunk_id,
+                        "score": h.score,
+                        "text": h.record.text,
+                        "meta": h.record.meta,
+                    }
+                    for h in hits
+                ],
+            }
         )
 
     out["search_collection"] = (
         make_tool(
             id="search_collection",
             toolset_id=SYSTEM_TOOLSET_ID,
-            purpose="Run semantic / hybrid search over a collection.",
+            purpose="Run semantic search over a collection's document contents.",
             when=(
                 "Use when you want free-text relevance ranking over "
                 "document content; for exact metadata matching use "
-                "``find_collection_documents_by_meta`` instead."
+                "``find_collection_documents_by_meta`` instead. Returns "
+                "ranked chunk hits ``{document_id, chunk_id, score, text, "
+                "meta}`` scoped to the collection."
             ),
             args_schema=_CollectionSearchArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={"collection_id": "kb-1", "query": "onboarding"},
-                    returns="ranked hits once the pipeline lands",
-                    note=(
-                        "STUB: returns ``is_error=true`` "
-                        "``type=not-implemented`` until the SearchService "
-                        "pipeline (embedder + vector store + optional "
-                        "cross-encoder) is wired in the API layer."
+                    returns=(
+                        "``{'hits': [{document_id, chunk_id, score, text, "
+                        "meta}, ...]}`` ranked most-relevant first; an empty "
+                        "list when nothing is indexed yet"
                     ),
                 )
             ],
@@ -1796,7 +1856,13 @@ def build_system_toolset(
     registry[name] = entry
 
     # ---- Collection / Document extras --------------------------------
-    registry.update(_collection_extras(storage_provider=storage_provider))
+    registry.update(
+        _collection_extras(
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
+        )
+    )
     registry.update(_document_extras(storage_provider=storage_provider))
 
     # ---- Dynamic invocation: invoke_agent ----------------------------

@@ -130,14 +130,11 @@ Results show the document ID, chunk ID, score, text, and metadata for each hit. 
 The console search above is for operators. An agent reaches collections and documents through tools instead. Add the ones it needs on the agent's Tools tab, then it can:
 
 - **Find the right collection**: `search__search_collections` runs a semantic search over your collection *definitions* and returns the collections whose description best matches a query. It is part of the `search` toolset, which is only available when internal collections are enabled.
+- **Search a collection's contents**: `system__search_collection` runs a semantic search over a collection's indexed document *contents* and returns ranked chunk hits (`document_id`, `chunk_id`, `score`, `text`, `meta`), most relevant first. It uses the collection's own embedder and vector store, the same path the operator search bench above uses.
 - **Find documents in a collection**: `system__list_collection_documents` lists a collection's documents, and `system__find_collection_documents_by_meta` filters them by metadata fields.
 - **Read a document**: `system__get_document_content` returns a document's full text by `document_id`.
 
-A typical flow is: call `search__search_collections` to locate a knowledge base, list or metadata-filter its documents, then call `get_document_content` on the ones the task needs.
-
-```callout:note
-Agent-driven semantic search over a collection's document *contents* (`system__search_collection`) is not yet wired to the search pipeline and currently returns a not-implemented error; use `find_collection_documents_by_meta` for now. The operator search bench above is unaffected.
-```
+A typical flow is: call `search__search_collections` to locate a knowledge base, `system__search_collection` to pull the most relevant chunks (or metadata-filter its documents), then call `get_document_content` on the ones the task needs.
 
 ```ref:features/embedding-providers
 ```
