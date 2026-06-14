@@ -314,3 +314,123 @@ Mostly independent of user-1/2/3 (own files); can run in parallel with them.
   LM Studio). Otherwise keep draining the queue.
 - DONE: when the queue drains, run task 21 (env-e2e + full serial e2e) as the
   final gate, then report.
+
+---
+
+# Documentation refactor (concepts -> features merge)
+
+GLOBAL DESIGN (applies to every doc-* task):
+- Merge Concepts into Features. New Features section = the ordered slug list
+  below. Delete the Concepts section; fold each concept into the intro of its
+  Feature page. Fold `troubleshooting` into Reference. Drop `bug-reporter`.
+- PAGE TEMPLATE for every Features page: (1) Concept - plain, user-friendly
+  language; (2) Configuration - the console form + every knob explained;
+  (3) Walkthrough(s) - apply the config step-by-step, UI-centric; (4) What
+  happens after - the resulting behavior/outcome. End with `ref:` links.
+- Visuals: real-component `embed:` where a fixture fits (reuse the 17 existing +
+  the new fixtures doc-foundation pre-creates); ASCII mockups where embedding is
+  impractical (e.g. external provider UIs); `mermaid` for concepts/flows. Use
+  the getting-started pages (introduction, quickstart) as the reference template.
+- Lint: PRIMER_USER_DOCS_STRICT=1; frontmatter (slug,title,section,summary);
+  refs + embed ids resolve; NO em-dash U+2014.
+
+## doc-foundation  [FIRST; blocks all doc content pages; dep: user-1 merged]
+Restructure `primer/user_docs/manifest.yaml`: delete the `concepts` section;
+rebuild the `features` section as the ordered slug list below; add
+`troubleshooting` to the `reference` section; remove `bug-reporter`. Create a
+valid STUB `.md` (frontmatter + a one-line placeholder body) for every NEW slug
+so the manifest + lint pass. Pre-create the new embed fixtures + registry
+entries (so content tasks need not touch registry.json/embed-registry.jsx):
+embedding-provider (ProvidersPage kind=embedding), ssp (SSPListPage),
+cross-encoder-provider (ProvidersPage kind=cross_encoder/rerank), web-search
+(WebSearchPage), workspace-provider-create (WorkspacesPage/providers),
+channel-provider-create (ChannelProvidersPage), harness (HarnessesPage),
+mcp-exposure (MC_McpPage), approvals (ApprovalsPage), toolsets (ToolsetsPage),
+collection-create (CollectionsPage). Add a one-page authoring-template note
+under `primer/user_docs/_meta/`. DoD: docs structure + stubs + fixtures + lint
+green. After this, each content page is its own .md (parallel).
+
+## Content pages (each = one task; PAGE TEMPLATE above; mostly parallel after
+## doc-foundation; the only shared files - registry.json/embed-registry.jsx -
+## are pre-done by doc-foundation, so content tasks edit ONLY their own .md)
+
+- doc-llm-providers `features/llm-providers`: multiple LLM providers (anthropic,
+  openai, openchat, gemini, ollama, openrouter) + concurrency (max_concurrency)
+  + request_timeout_seconds. embeds: llm-provider-openrouter.
+- doc-agents `features/agents`: creation, tool selection, system prompt,
+  temperature, auto-compaction + compaction_prompt, jinja templating in prompts.
+  embeds: agents-page, quickstart-agents.
+- doc-chats `features/chats`: creation, invocation, compaction, agent switching,
+  attaching files. embeds: chat-stream, chat-agent-switch.
+- doc-toolsets-system `features/toolsets-system`: each reserved/system toolset
+  class (system, search, workspaces, misc, web, harness, trigger) + how to
+  explore the tools (list_toolset_tools, search_tools). embeds: toolsets.
+- doc-toolsets-mcp `features/toolsets-mcp`: registering MCP toolsets via stdio
+  AND http transports. embeds: toolsets/mcp.
+- doc-toolsets-approvals `features/toolsets-approvals`: required, policy (Rego),
+  and LLM-judge approvals. embeds: approvals. (related code: chat-approval-pending)
+- doc-embedding-providers `features/embedding-providers`: all embedding providers
+  (huggingface, openai, gemini). embeds: embedding-provider.
+- doc-ssp `features/semantic-search-providers`: all SSPs (pgvector,
+  pgvectorscale, lance) + halfvec. embeds: ssp.
+- doc-collections `features/collections-and-documents` [dep: user-2]: create
+  collections incl. MMR + cross-encoder variants; ingest plaintext + file upload;
+  search. embeds: collection-list, collection-create.
+- doc-cross-encoder `features/cross-encoder-providers`: registering cross-encoder
+  providers. embeds: cross-encoder-provider.
+- doc-internal-collections `features/internal-collections` [dep: user-3]: config
+  + bootstrapping, CDC, exploring ICs under the collections page. embeds:
+  internal-collections-enable, collection-list.
+- doc-workspace-providers `features/workspace-providers`: local, docker,
+  kubernetes + all config variations. embeds: workspace-provider-create.
+- doc-workspace-templates `features/workspace-templates`: template creation,
+  recipe examples covering features per provider, ending with workspace creation.
+  embeds: workspace-template-form, workspaces.
+- doc-sessions `features/sessions`: creating sessions, statuses, turns. embeds:
+  sessions-list, session-detail.
+- doc-workspace-toolset `features/workspace-toolset`: the workspaces toolset
+  (read/write/edit/glob/grep/ls/exec) + use. embeds/mockup + mermaid.
+- doc-yielding-tools `features/yielding-tools`: yielding tools (ask_user,
+  subscribe_to_trigger, watch_files) + an example in a session (park/resume).
+  embeds: session-detail + mermaid.
+- doc-graphs `features/graphs`: graph concept, creation, execution, the canvas.
+  embeds: graph-canvas.
+- doc-graph-nodes `features/graph-node-types`: every node kind (begin, end,
+  agent, graph, fan_out, fan_in, tool_call) - role + config each. mermaid per shape.
+- doc-graph-templating `features/graph-templating` [VERY DETAILED]: node input
+  templating; ALL template data available per node type (nodes.<id>.text/.parsed,
+  iteration, fanout_index/fanout_item, etc.); worked examples. code-tabs + mermaid.
+- doc-web-search `features/web-search-providers`: all providers (duckduckgo,
+  tavily, firecrawl, exa) + the aggregated fallback chain. embeds: web-search.
+- doc-channel-providers `features/channel-providers`: each provider + the
+  provider-END setup in detail (telegram BotFather, slack app config, discord
+  application) as mockups; single-type vs multi-type channels. embeds:
+  channel-provider-create + ASCII mockups of external UIs.
+- doc-channels `features/channels`: channel registration, chat enablement,
+  per-provider interactions (/agent, /new). embeds: channels + mermaid.
+- doc-channel-association `features/channel-workspace-association`: associating a
+  channel with a workspace; example interaction via yielding tools; per-provider
+  specifics. embeds: workspaces (association) + mermaid round-trip.
+- doc-triggers `features/triggers` [dep: user-4]: scheduled, cron, AND webhook
+  triggers; subscription via yielding tools (subscribe_to_trigger). embeds:
+  trigger-create.
+- doc-harnesses `features/harnesses`: harness structure, templating, inbound +
+  outbound harnesses, syncing. embeds: harness.
+- doc-mcp-server `features/mcp-server`: API tokens + MCP server endpoint
+  enablement (McpExposure allowlist, scopes). embeds: api-token-create, mcp-exposure.
+- doc-workers `features/workers`: backend architecture - how workers + leases
+  work in detail (claim machine, heartbeat, park/resume). embeds: workers-stats +
+  mermaid; ref docs/dev/architecture/{worker-system,claim-machine}.
+
+## Conflict map + priority additions for docs
+- doc-foundation: depends on user-1 (both touch manifest + bug-reporter doc);
+  run user-1 first, then doc-foundation. doc-foundation BLOCKS all doc content
+  pages (they need its stubs + pre-created fixtures + manifest slots).
+- After doc-foundation merges, content pages are pairwise file-disjoint (each its
+  own features/<slug>.md; registry pre-done) -> safe to run at high concurrency,
+  ideal filler to keep the cap saturated alongside code tasks.
+- Cross-deps: doc-collections after user-2; doc-triggers after user-4;
+  doc-internal-collections after user-3.
+- Priority: slot doc-foundation right after user-1; let content pages fill
+  parallel slots throughout (low-risk, disjoint). The dep-gated pages
+  (collections/triggers/internal-collections) wait for their code dep to merge.
