@@ -2,139 +2,143 @@
 slug: workspace-toolset
 title: Workspace toolset
 section: features
-summary: "The workspaces toolset: 27 tools an agent uses to manage providers, templates, workspaces, sessions, files, and logs from inside a session."
+summary: "The workspace tools (ls, read, write, edit, glob, grep, exec) auto-registered with any agent that runs in a workspace session, plus the separate workspaces orchestration toolset."
 ---
 
 ## What the workspace toolset is
 
-The `workspaces` toolset is a built-in, always-available toolset that gives agents programmatic access to every workspace resource: provider and template CRUD, workspace materialisation, session lifecycle, file I/O, and the state-repo log. It is the counterpart to the console's Workspaces UI.
+When an agent runs inside a workspace session, primer automatically registers a fixed set of workspace tools with it. You do not add these on the agent's Tools tab and you cannot remove them: any agent that executes in a workspace gets them, because their whole purpose is to grant that agent access to its workspace.
 
-Agents use it to act headlessly: spawn a workspace, start a child session inside it, steer that session mid-run, read its output files, and tear it down when finished. This is the pattern behind meta-agents that orchestrate other agents.
+These tools operate on the **current session's workspace**, its filesystem and a shell. They are the same tools whether the workspace runs on the local filesystem, a container, or a Kubernetes pod: the backend differs but the tool surface is identical.
 
-The toolset exposes 27 tools organised into five groups, each prefixed `workspaces__`:
+There are seven of them, and they use short, conventional names (no `workspace` prefix):
 
-| Group | Tool count | What it covers |
+| Tool | What it does |
+|---|---|
+| `ls` | List a directory |
+| `read` | Read a file with line offset/limit paging |
+| `write` | Create or replace a file |
+| `edit` | Replace a substring in a file |
+| `glob` | Find files by glob pattern |
+| `grep` | Search file contents by regex |
+| `exec` | Run a shell command |
+
+```callout:note
+These seven are the inside view: how an agent acts within the workspace it is running in. They are different from the reserved `workspaces` toolset (covered at the end of this page), which an agent binds explicitly to manage workspaces, templates, and sessions from the outside.
+```
+
+## The seven workspace tools
+
+### `ls`
+
+Lists a directory inside the workspace.
+
+- `path` (default `.`): directory relative to the workspace root.
+- `show_hidden` (default false): include dotfiles.
+- `recursive` (default false) and `max_depth`: walk subdirectories, optionally bounded.
+
+Output is one line per entry as `<type> <size> <name>`, where type is `f`, `d`, or `l` (file, directory, symlink), sorted alphabetically.
+
+### `read`
+
+Reads a file with offset/limit paging, the same shape coding assistants use, so large or truncated files can be read in pages.
+
+- `path` (required): file relative to the workspace root.
+- `offset` (default 0): line number to start from.
+- `limit` (default 2000): maximum lines to return.
+
+Output is the requested lines prefixed with line numbers. Binary files return a stable summary (`<binary file: ...>`) rather than raw bytes.
+
+### `write`
+
+Creates or replaces a file.
+
+- `path` (required), `content` (required), `mode` (optional octal, default 0644).
+- `force` (default false): bypass the read-before-write guard.
+
+`write` enforces a **read-before-write** rule: it refuses to overwrite an existing file the agent has not `read` during the current session, unless `force=true` is passed. Creating a new file is always allowed. This mirrors the safety rule coding assistants use to avoid clobbering content the agent has not actually seen.
+
+### `edit`
+
+A targeted string-replace edit, the workhorse for incremental changes.
+
+- `path` (required), `old_string` (required, the exact substring to replace), `new_string` (required).
+- `replace_all` (default false): replace every occurrence; otherwise `old_string` must be unique in the file.
+
+It errors clearly when `old_string` is not found, or is non-unique without `replace_all`.
+
+### `glob`
+
+Finds files by glob pattern.
+
+- `pattern` (required, e.g. `src/**/*.py`), `path` (default `.`), plus `limit` and `offset` for paging.
+
+Returns matching paths, newest first.
+
+### `grep`
+
+Searches file contents by regular expression (uses ripgrep when available, with a Python fallback).
+
+- `pattern` (required regex), `path` (default `.`), and `glob` to filter which files are searched.
+- `output_mode`: `files_with_matches` (default), `content`, or `count`.
+- `case_insensitive`, `multiline`, `context` (lines of context around a match), and `head_limit`.
+
+In `content` mode it emits `<path>:<lineno>:<text>`; in `count` mode, `<path>:<count>`.
+
+### `exec`
+
+Runs a shell command in the workspace. This is what lets an agent build, test, run scripts, use git, install packages, and generally do real work, not just file edits.
+
+- `command` (required): a command line passed to a shell.
+- `workdir` (default `.`): working directory relative to the workspace root.
+- `timeout_ms` (default 120000): a hard timeout.
+- `background` (default false): return immediately with a process handle instead of blocking.
+- `description` (required): a one-line description of what the command does.
+
+In the foreground it returns the exit code, then stdout, then stderr (truncated by the standard output policy). In the background it returns a process id and an output path; the agent reads the streaming output through the regular `read` tool, and backgrounded processes are reaped when the workspace closes.
+
+```callout:warning
+`exec` gives the agent a real shell inside the workspace sandbox. Scope what a workspace agent can reach through its workspace template and the backend you run it on (a throwaway local directory, a container, or a Kubernetes pod), and gate sensitive operations with an approval policy if needed.
+```
+
+## The `workspaces` orchestration toolset
+
+Everything above is the *inside* view. There is also a separate, reserved `workspaces` toolset that gives an agent the *outside* view: it manages workspace resources programmatically (provider and template CRUD, workspace materialisation, session lifecycle, remote file I/O, and the state-repo log). Unlike the seven tools above, it is **not** auto-registered: an agent binds it explicitly on its Tools tab, the same way it binds any other toolset. Its scoped ids carry the `workspaces__` prefix.
+
+Agents bind it to act as meta-agents: spawn a workspace, start a child session inside it, steer that session mid-run, read its output files, and tear it down when finished.
+
+It exposes these tool groups:
+
+| Group | Tools | What it covers |
 |---|---|---|
-| Providers | 4 | Register and remove backend configurations |
-| Templates | 5 | Define materialisation recipes |
+| Providers | 4 | Register, list, get, and remove backend configurations |
+| Templates | 5 | Define and manage materialisation recipes |
 | Workspaces | 4 | Materialise, inspect, and destroy workspaces |
-| Sessions | 7 | Create, control, and inspect workspace sessions |
-| Files | 5 | Read, write, list, inspect, and delete files |
+| Sessions | 7 | Create, control, steer, and inspect workspace sessions |
+| Files | 5 | Read, write, list, inspect, and delete files in a workspace by id |
 | Log | 1 | Fetch workspace state-repo history |
-| Yielding | 2 | watch_files (parks), invoke_graph (parks on HITL) |
+| Yielding | 2 | `watch_files` (parks), `invoke_graph` (parks on a human-in-the-loop step) |
 
 The two yielding tools (`watch_files`, `invoke_graph`) require a workspace session context and are excluded from the MCP surface.
 
-```ref:features/workspace-providers
-The console UI for workspace providers and templates, plus which backends are available.
+```callout:note
+The `workspaces` file tools (`list_workspace_files`, `read_workspace_file`, `write_workspace_file`, ...) act on any workspace by id from the outside; they are distinct from the seven `ls`/`read`/`write`/... tools above, which act on the agent's own workspace. Bind the `workspaces` toolset only when an agent needs to manage workspaces other than the one it runs in.
 ```
 
-```ref:features/sessions
-The session lifecycle that workspace sessions follow.
+### Walkthrough: spawn a child session and read its output
+
+1. Give your orchestrator agent the **workspaces** toolset on its Tools tab.
+2. Start a session with the orchestrator agent. In the initial instructions, give it a task like "Create a session for agent code-reviewer on workspace ws-1, wait for it to finish, and read the output file report.md."
+3. The agent calls `workspaces__create_workspace_session` with `workspace_id="ws-1"`, `binding={"kind": "agent", "agent_id": "code-reviewer"}`, and `auto_start=true`.
+4. It polls `workspaces__get_workspace_session` until `status` reaches `ended`.
+5. It calls `workspaces__read_workspace_file` with `workspace_id="ws-1"` and `path="report.md"` to retrieve the result.
+
+```embed:agents-page
 ```
-
-## Configuration
-
-To make the workspace toolset available to an agent:
-
-1. Open **Agents** and select the agent.
-2. Go to the **Tools** tab.
-3. Click **Add toolset** and select **workspaces**.
-4. Save the agent.
-
-The full toolset is enabled by default. To limit the agent to specific tools, select individual tools rather than the full toolset.
-
-```embed:toolsets
-```
-
-## Walkthrough: spawn a child session and read its output
-
-1. Create a workspace using the console or via `workspaces__create_workspace` from another agent session.
-2. Give your orchestrator agent the **workspaces** toolset.
-3. Start a session with the orchestrator agent. In the initial instructions, give it a task like "Create a session for agent code-reviewer on workspace ws-1, wait for it to finish, and read the output file report.md."
-4. The agent calls `workspaces__create_workspace_session` with `workspace_id="ws-1"`, `binding={"kind": "agent", "agent_id": "code-reviewer"}`, and `auto_start=true`.
-5. The agent polls with `workspaces__get_workspace_session` until `status` reaches `ended`.
-6. The agent calls `workspaces__read_workspace_file` with `workspace_id="ws-1"` and `path="report.md"` to retrieve the result.
-
-```embed:workspaces
-```
-
-```embed:session-detail
-```
-
-## Tool reference
-
-### Provider tools
-
-These tools manage `WorkspaceProvider` rows (the persisted backend configuration entries). The Update operation is intentionally absent; to change a provider configuration, delete and recreate.
-
-**`workspaces__list_workspace_providers`**: List configured providers with pagination. Returns `items`, `length`, `total` (offset mode), and `next_cursor` (cursor mode).
-
-**`workspaces__get_workspace_provider`**: Fetch one provider by id. Returns `type=not-found` when missing.
-
-**`workspaces__create_workspace_provider`**: Register a new backend. Body shape is the full `WorkspaceProvider` schema with a `provider` discriminator (`local`, `container`, or `kubernetes`) and matching `config`. Example:
-
-```json
-{
-  "entity": {
-    "id": "local-1",
-    "provider": "local",
-    "config": {"kind": "local"}
-  }
-}
-```
-
-**`workspaces__delete_workspace_provider`**: Remove a provider by id. Cascades to drop its cached backend instance from the registry.
-
-### Template tools
-
-Templates are the materialisation recipes. A template references a `provider_id` and carries backend config (image, resources, env vars, init commands, initial files).
-
-**`workspaces__list_workspace_templates`**: List templates with pagination.
-
-**`workspaces__get_workspace_template`**: Fetch one template by id.
-
-**`workspaces__create_workspace_template`**: Create a new recipe. Body must reference an existing `provider_id`. Example:
-
-```json
-{
-  "entity": {
-    "id": "py-base",
-    "description": "Python base image",
-    "provider_id": "local-1",
-    "backend": {"kind": "local"}
-  }
-}
-```
-
-**`workspaces__update_workspace_template`**: Replace an existing template in place. The body `id` must match the path `id`. Existing materialised workspaces are NOT re-materialised; only future creates see the updated recipe.
-
-**`workspaces__delete_workspace_template`**: Remove a template. Existing workspaces that referenced it keep their snapshot `template_id` but the row no longer resolves.
-
-### Workspace tools
-
-These tools materialise and destroy live workspaces.
-
-**`workspaces__list_workspaces`**: List persisted workspace rows with pagination.
-
-**`workspaces__get_workspace`**: Fetch one workspace row by id.
-
-**`workspaces__create_workspace`**: Materialise a new workspace from a template. Looks up the template, calls the matching backend to create the live instance, and persists a `Workspace` row. Optional `overrides` layer per-instantiation env vars, files, and init commands on top of the template. Example:
-
-```json
-{
-  "template_id": "py-base",
-  "overrides": {"env": {"DEBUG": "1"}}
-}
-```
-
-**`workspaces__delete_workspace`**: Destroy a workspace, freeing both the backend resources and the persisted row. Not for retiring the template (use `delete_workspace_template`).
 
 ### Session tools
 
-These tools start, control, inspect, and stop workspace sessions. A session binds a workspace to either an agent or a graph.
-
-**`workspaces__create_workspace_session`**: Start a session. Required fields:
+A session binds a workspace to either an agent or a graph. `workspaces__create_workspace_session` starts one with these fields:
 
 | Field | Description |
 |---|---|
@@ -142,71 +146,27 @@ These tools start, control, inspect, and stop workspace sessions. A session bind
 | `binding` | `{"kind": "agent", "agent_id": "..."}` or `{"kind": "graph", "graph_id": "..."}`. |
 | `initial_instructions` | Optional instructions injected before the first turn. |
 | `auto_start` | Default `true`. When `false` the session is created in `CREATED` status and waits for an explicit resume. |
-| `graph_input` | Required when `binding.kind == "graph"`. Passed as the graph's input. |
+| `graph_input` | Required when `binding.kind == "graph"`; passed as the graph input. |
 | `parent_session_id` | Optional; links this session to a parent for graph hierarchy tracking. |
 
-```json
-{
-  "workspace_id": "ws-1",
-  "binding": {"kind": "agent", "agent_id": "code-reviewer"},
-  "initial_instructions": "Review the diff in diff.patch and write findings to report.md",
-  "auto_start": true
-}
-```
+The rest control a live session: `cancel_workspace_session` (hard-cancel), `pause_workspace_session` / `resume_workspace_session` (operator-level halt between turns), `steer_workspace_session` (append a steering instruction the agent sees on its next turn), `list_workspace_sessions`, and `get_workspace_session` (returns `{info, status}`).
 
-**`workspaces__cancel_workspace_session`**: Hard-cancel a session. A created or paused session ends immediately; a running one is preempted at the next safe point. Not for a temporary halt (use `pause_workspace_session`). Returns `{status: "ended", ended_reason: "cancelled"}`.
+### Provider, template, and workspace tools
 
-**`workspaces__list_workspace_sessions`**: List sessions on a workspace, paginated. Returns `SessionInfo` objects and a `total` count.
+These mirror the console's Workspaces UI: `create_workspace_provider` / `list_workspace_providers` / `get_workspace_provider` / `delete_workspace_provider`; `create_workspace_template` / `update_workspace_template` / the matching list/get/delete; and `create_workspace` / `delete_workspace` / `list_workspaces` / `get_workspace`. See the workspace providers and templates pages for the field shapes.
 
-**`workspaces__get_workspace_session`**: Get session state: `{info, status}` where `info` is the `SessionInfo` and `status` is the current lifecycle state (`running` / `waiting` / `paused` / `ended`).
+### Remote file and log tools
 
-**`workspaces__pause_workspace_session`**: Request that a running session pause at the next safe point. The session status transitions to `PAUSED`. Not to be confused with yielding (which happens inside a turn); pause is an operator-level halt between turns.
-
-**`workspaces__resume_workspace_session`**: Request that a paused session resume. Returns `type=conflict` when the session is not currently paused.
-
-**`workspaces__steer_workspace_session`**: Append a steering user instruction to a running session. The agent sees it on its next turn. Use this to nudge a live agent mid-run without stopping it.
-
-### File tools
-
-**`workspaces__list_workspace_files`**: List files at a path (default: root) with pagination. `recursive=true` walks the whole tree. Each item is a `FileEntry` (path, kind, size_bytes, modified_at). Example:
-
-```json
-{"workspace_id": "ws-1", "path": "src", "recursive": true}
-```
-
-**`workspaces__get_workspace_file_info`**: Fetch the `FileEntry` for a single path (file, directory, or symlink). Returns `type=not-found` when missing; `type=bad-request` on path-escape attempts.
-
-**`workspaces__read_workspace_file`**: Read a file's content. `encoding=text` (default) returns UTF-8 decoded content. `encoding=base64` returns raw bytes as base64; use this for binary files. Returns `{path, encoding, content, size_bytes}`.
-
-**`workspaces__write_workspace_file`**: Create or overwrite a file. `encoding=text` (default) writes UTF-8. `encoding=base64` decodes the content from base64 before writing. Creates parent directories as needed. Refuses to write inside reserved `.state/` or `.tmp/` trees.
-
-**`workspaces__delete_workspace_file`**: Delete a file or empty directory. Refuses to delete the workspace root or paths inside `.state/` or `.tmp/`.
-
-### Log tool
-
-**`workspaces__get_workspace_log`**: Fetch up to `limit` recent commits from the workspace's `.state` git repository, newest first. Each commit carries parsed `X-Primer-*` trailers (workspace, session, agent, op, tool, call) for structured rendering. Use this to inspect a workspace's turn history.
-
-### Yielding tools
-
-These two tools require a workspace session context and are excluded from the MCP surface.
-
-**`workspaces__watch_files`**: Parks the agent turn until one or more workspace-relative paths change on disk. See the Yielding tools page for full semantics, parameters, and resume behaviour.
-
-**`workspaces__invoke_graph`**: Runs a named graph inside the current session and returns its output text. Parks the calling session on any human-in-the-loop step inside the graph run (ask_user, tool approval). See the Yielding tools page.
-
-```ref:features/yielding-tools
-Full semantics of watch_files, invoke_graph, and how a session parks and resumes.
-```
-
+`list_workspace_files`, `get_workspace_file_info`, `read_workspace_file`, `write_workspace_file`, and `delete_workspace_file` operate on a workspace named by `workspace_id` (text or base64 content), refusing paths inside the reserved `.state/` and `.tmp/` trees. `get_workspace_log` fetches recent commits from the workspace's `.state` git repository, each carrying parsed `X-Primer-*` trailers (workspace, session, agent, op, tool, call).
 
 ```ref:features/workspace-providers
-Provider types (local, container, Kubernetes) and how to set them up.
+Workspace backends (local, container, kubernetes) and how a workspace is materialised.
 ```
 
 ```ref:features/sessions
-Session lifecycle states and the ask_user / approval surfaces.
+Workspace sessions: how an agent run is bound to a workspace.
 ```
 
 ```ref:features/yielding-tools
-The two yielding workspace tools in detail.
+watch_files, invoke_graph, and the park-resume protocol.
 ```

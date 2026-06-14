@@ -16,8 +16,11 @@ Three concepts share the workspace namespace; knowing them up front prevents
 confusion:
 
 - **Provider**: the backend configuration: which runtime (local filesystem,
-  container daemon, Kubernetes cluster) and how to reach it. One provider per
-  backend per installation.
+  container daemon, Kubernetes cluster) and how to reach it. Each provider is
+  an id-keyed row (like an LLM provider), and you can register as many as you
+  want, including several of the same backend type. For example, two
+  Kubernetes providers can point at two different clusters, or two container
+  providers at two different Docker daemons.
 - **Template**: the materialisation recipe that references a provider:
   which image or base path, environment variables, initial files, and init
   commands. Many templates can reference one provider.
