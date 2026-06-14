@@ -66,7 +66,7 @@ stateDiagram-v2
 
 **RUNNING**: a worker holds a lease and a turn is in flight. Within RUNNING, a session can temporarily park when a tool yields (waiting for a trigger, an external event, or an approval decision); parking releases the worker lease so no compute is consumed while the session waits.
 
-**WAITING**: the agent reached a stopping point and needs external input, either because it asked a question (via `misc__ask_user`) or because an approval gate tripped. The session stays in WAITING until you provide a response via the API.
+**WAITING**: the agent reached a stopping point and needs external input, either because it asked a question (via `system__ask_user`) or because an approval gate tripped. The session stays in WAITING until you provide a response via the API.
 
 **PAUSED**: an operator requested suspension. The session resumes on demand.
 

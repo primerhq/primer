@@ -117,9 +117,10 @@ It exposes these tool groups:
 | Sessions | 7 | Create, control, steer, and inspect workspace sessions |
 | Files | 5 | Read, write, list, inspect, and delete files in a workspace by id |
 | Log | 1 | Fetch workspace state-repo history |
-| Yielding | 2 | `watch_files` (parks), `invoke_graph` (parks on a human-in-the-loop step) |
 
-The two yielding tools (`watch_files`, `invoke_graph`) require a workspace session context and are excluded from the MCP surface.
+```callout:note
+The workspace-session **yielding** tools (`sleep`, `watch_files`, `invoke_graph`, `subscribe_to_trigger`) no longer live in the `workspaces` toolset. They moved to the separate reserved `workspace_ext` toolset (scoped ids `workspace_ext__watch_files`, `workspace_ext__invoke_graph`, and so on). Like `workspaces`, `workspace_ext` is bound explicitly on an agent's Tools tab, but its tools are registered only when the agent runs in a workspace session and are suppressed when the agent is invoked on a chat. See the Yielding tools page.
+```
 
 ```callout:note
 The `workspaces` file tools (`list_workspace_files`, `read_workspace_file`, `write_workspace_file`, ...) act on any workspace by id from the outside; they are distinct from the seven `ls`/`read`/`write`/... tools above, which act on the agent's own workspace. Bind the `workspaces` toolset only when an agent needs to manage workspaces other than the one it runs in.

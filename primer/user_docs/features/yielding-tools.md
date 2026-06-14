@@ -11,7 +11,7 @@ Some tool calls are not instant computations. They are waits:
 
 - `ask_user` waits for a person to type a reply.
 - `subscribe_to_trigger` waits for a scheduled time or an incoming event.
-- `misc__sleep` waits for a duration.
+- `sleep` waits for a duration.
 - `watch_files` waits for a filesystem change.
 - A tool approval gate waits for an operator decision.
 
@@ -45,11 +45,11 @@ Each yielding tool registers an event key when it parks. Common keys look like:
 
 | Event key pattern | Yielding tool |
 |---|---|
-| `ask_user:{scope_id}:{call_id}` | `misc__ask_user` |
-| `trigger:{trigger_id}` | `trigger__subscribe_to_trigger` |
+| `ask_user:{scope_id}:{call_id}` | `system__ask_user` |
+| `trigger:{trigger_id}` | `workspace_ext__subscribe_to_trigger` |
 | `tool_approval:{session_or_chat_id}:{call_id}` | Tool approval gate |
-| `timer:{call_id}` | `misc__sleep` |
-| `watch:{session_id}:{call_id}` | `workspaces__watch_files` |
+| `timer:{call_id}` | `workspace_ext__sleep` |
+| `watch:{session_id}:{call_id}` | `workspace_ext__watch_files` |
 
 When the awaited event fires (the user replies, the trigger ticks, the operator approves, the file changes), the platform publishes a message on that event key. The event listener picks it up, finds the matching parked row, and marks it resumable. From that moment the session is eligible to be claimed by any available worker.
 
@@ -57,19 +57,23 @@ When a worker claims the resumed session, it rehydrates the `ParkedState` blob (
 
 ## Which tools yield
 
-### misc__ask_user
+`ask_user` lives in the `system` toolset (chat-capable). The other four yielding tools (`sleep`, `watch_files`, `invoke_graph`, `subscribe_to_trigger`) live in the `workspace_ext` toolset and run only in workspace sessions; see the suppression note at the end of this section.
+
+### system__ask_user
 
 Asks the user (or the channel the session is bound to) a question and parks until a reply arrives. The reply is injected as the tool result. If no reply arrives within the configured timeout, the tool result indicates a timeout. If the operator cancels the yield via the console, the result indicates cancellation.
 
+On a chat surface `ask_user` **soft-yields**: instead of parking the chat, it degrades to a conversational turn, asking the question as an ordinary assistant message and consuming the user's next reply as the tool result. In a workspace session it parks the session as described above.
+
 Use `ask_user` when the agent needs a human decision before it can continue. Unlike `inform_user`, which sends a one-way message without parking, `ask_user` suspends the session entirely until a reply is received.
 
-### misc__sleep
+### workspace_ext__sleep
 
 Parks the session for a fixed number of seconds (0 to 300). A background sweeper publishes the timer event when the duration elapses. Zero-second sleeps short-circuit without parking. Fractional values are accepted.
 
 Use `sleep` for polling loops, rate-limit backoffs, or any pattern where an agent must wait a known duration before retrying.
 
-### trigger__subscribe_to_trigger
+### workspace_ext__subscribe_to_trigger
 
 Parks the session until a named trigger fires, then resumes with the fire context (trigger id, slug, kind, fired-at timestamp, and a deterministic fire id) as the tool result. The `parked_session` subscription that wakes the session is written before the park takes effect, so a trigger fire that races the park still finds the subscription and wakes the session correctly.
 
@@ -89,7 +93,7 @@ sequenceDiagram
     Session->>Agent: resume with fire context as tool result
 ```
 
-### workspaces__watch_files
+### workspace_ext__watch_files
 
 Parks the session until one or more workspace-relative paths change on disk. A background watcher polls file modification times and publishes a coalesced change burst on the event bus. On resume, the tool result carries a `changes` list where each entry includes the `path`, `event_type` (created / modified / deleted), and `mtime_after`.
 
@@ -103,11 +107,15 @@ Parameters:
 
 Use `watch_files` when an agent must block until an external process writes or modifies a file in the workspace, for example waiting for a build output, a generated report, or another agent's write.
 
-### workspaces__invoke_graph
+### workspace_ext__invoke_graph
 
 Runs a named graph inside the current workspace session and returns its output text. The invoked graph's state nests under the calling session. This tool is classified as yielding because graph runs that involve human-in-the-loop steps (ask_user, tool approval gates) park the calling session while those gates are open.
 
 Use `invoke_graph` when you need to delegate a self-contained multi-step workflow to a graph from within a session.
+
+### The `workspace_ext` toolset and chat suppression
+
+The four tools above (`sleep`, `watch_files`, `invoke_graph`, `subscribe_to_trigger`) live in the reserved `workspace_ext` toolset. It is **not** auto-registered: an agent binds `workspace_ext` explicitly on its Tools tab, the same way it binds any other toolset. But binding alone is not enough. These tools are registered with the model **only when the agent runs in a workspace session**. When the same agent is invoked on a **chat**, the `workspace_ext` tools are suppressed (not registered in the model's tool context) even though the toolset is bound. This keeps these heavy yielding tools (file watches, nested graph runs, multi-day trigger waits) out of chat context, where they have no workspace to act on and no park primitive to rely on. `ask_user` is the exception that is chat-capable, which is why it lives in `system`, not `workspace_ext`.
 
 ### system__switch_to_agent (chat-only)
 
@@ -128,7 +136,7 @@ Creating triggers and subscriptions, and how subscribe_to_trigger parks a sessio
 ```
 
 ```ref:features/toolsets-system
-The misc, system, trigger, and workspaces toolsets where yielding tools live.
+The system and workspace_ext toolsets where yielding tools live.
 ```
 
 ```ref:features/workers
@@ -139,9 +147,8 @@ How the worker pool and claim engine pick up parked sessions when they become re
 
 Yielding tools do not require separate configuration. To make a tool available to an agent, add its toolset to the agent's tool list:
 
-- `misc__ask_user`, `misc__sleep`: add the **misc** toolset or select individual tools.
-- `trigger__subscribe_to_trigger`: add the **trigger** toolset.
-- `workspaces__watch_files`, `workspaces__invoke_graph`: add the **workspaces** toolset; these tools are only available inside workspace sessions.
+- `system__ask_user`: add the **system** toolset or select it as an individual tool. Works on both chats and workspace sessions (soft-yields on a chat).
+- `workspace_ext__sleep`, `workspace_ext__watch_files`, `workspace_ext__invoke_graph`, `workspace_ext__subscribe_to_trigger`: add the **workspace_ext** toolset. These tools are registered only when the agent runs in a workspace session; they are suppressed when the agent is invoked on a chat.
 - Tool approval policies: configure under the **Approvals** page; the gate is active for any session that calls the matching tool.
 
 ```embed:approvals
@@ -149,7 +156,7 @@ Yielding tools do not require separate configuration. To make a tool available t
 
 ## Walkthrough: using ask_user in a session
 
-1. Open **Agents** and create or edit an agent. On the tools tab, add the **misc** toolset (or enable `ask_user` as an individual tool).
+1. Open **Agents** and create or edit an agent. On the tools tab, add the **system** toolset (or enable `ask_user` as an individual tool).
 2. Open **Workspaces**, open a workspace, and start a new session bound to that agent.
 3. Give the agent a task that it cannot complete without a human decision, for example: "Decide which of these two filenames you prefer and create the file."
 4. Watch the session status. When the agent calls `ask_user`, the status changes to **Waiting**. The console shows the pending question.

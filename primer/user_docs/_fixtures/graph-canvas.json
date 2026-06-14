@@ -12684,7 +12684,7 @@
         }
       },
       {
-        "id": "workspaces__watch_files",
+        "id": "workspace_ext__watch_files",
         "description": "Watch one or more workspace-relative paths and pause this agent turn until something changes. YIELDING TOOL \u2014 execution is suspended; the worker is released to handle other sessions while the watcher polls. Files and directories are both accepted; directories report child-file changes. Optional ``timeout_seconds`` (falls back to the global yield cap). Optional ``batch_window_ms`` (default 250) coalesces bursts of changes into one wake. Returns ``{timed_out: false, changes: [...]}`` on change, ``{timed_out: true, changes: []}`` on timeout, or ``{cancelled: true, ...}`` if the operator skipped the yield. Each change carries ``{path, event_type (created|modified|deleted), mtime_after}``.",
         "input_schema": {
           "description": "Workspace-relative paths to watch + polling/coalescing controls.",
@@ -12779,7 +12779,7 @@
         }
       },
       {
-        "id": "misc__ask_user",
+        "id": "system__ask_user",
         "description": "Ask the human operator a question and pause the agent's turn until they respond. YIELDING TOOL \u2014 the agent's execution is suspended while the operator types; the worker is released to handle other sessions in the meantime. Use this when you genuinely need human input (clarification, approval, a choice the agent can't make autonomously) \u2014 do not use it for status updates or progress reports. Optional ``timeout_seconds`` (falls back to the global yield cap). Optional ``response_schema`` (JSON Schema validated server-side). Returns ``{response: <any>}`` on operator reply, ``{timed_out: true, elapsed_seconds}`` on timeout, or ``{cancelled: true, reason, elapsed_seconds}`` if the operator skipped the prompt.",
         "input_schema": {
           "description": "Prompt the operator sees and shape of the expected reply.",
@@ -12828,7 +12828,7 @@
         }
       },
       {
-        "id": "misc__sleep",
+        "id": "workspace_ext__sleep",
         "description": "Pause this agent turn for ``seconds`` seconds (fractional allowed). YIELDING TOOL \u2014 the agent's execution is suspended for the requested duration; the worker is released to handle other sessions in the meantime. Useful for polling external state with backoff or for deliberate pacing. Returns ``{requested_seconds, elapsed_seconds}``. If the operator cancels the yield mid-sleep, the result additionally includes ``cancelled: true``.",
         "input_schema": {
           "description": "How long to pause the calling agent's turn for.",
