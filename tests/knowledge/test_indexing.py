@@ -62,8 +62,14 @@ class _Emb:
         self._dim = dim
 
     async def embed(self, *, model, inputs):
+        # Contract: one embedding per input, in input order. The batched
+        # index_document passes up to _EMBED_BATCH_SIZE chunks per call.
+        dim = self._dim
+        vecs = [type("V", (), {"vector": [0.1] * dim})() for _ in inputs]
+
         class _R:
-            embeddings = [type("V", (), {"vector": [0.1] * self._dim})()]
+            embeddings = vecs
+
         return _R()
 
 
@@ -170,6 +176,97 @@ class TestIndexDocument:
         assert store.created == ("kb-1", 3)
         assert len(store.puts) == 0  # no chunks stored
         assert ("kb-1", "doc-1") in store.deleted  # old chunks cleared
+
+
+class _OrderedEmb:
+    """Embedder that returns a distinct, input-derived vector per input so we
+    can assert each chunk's record carries the embedding for THAT chunk in
+    order (batching must preserve input order)."""
+
+    def __init__(self, dim: int = 4):
+        self._dim = dim
+        self.batch_sizes: list[int] = []
+
+    async def embed(self, *, model, inputs):
+        self.batch_sizes.append(len(inputs))
+        dim = self._dim
+        # First component encodes the input text length so vectors differ.
+        vecs = [
+            type("V", (), {"vector": [float(len(p.text))] + [0.0] * (dim - 1)})()
+            for p in inputs
+        ]
+
+        class _R:
+            embeddings = vecs
+
+        return _R()
+
+
+class TestBatchEmbedEquivalence:
+    @pytest.mark.asyncio
+    async def test_records_line_up_with_chunks_in_order(self):
+        """Each chunk's record carries the embedding produced for that chunk,
+        in chunk order -- identical to the old per-chunk loop."""
+        store = _Store()
+        emb = _OrderedEmb(dim=4)
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=emb)
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        # Three chunks of distinct lengths so the per-chunk vector differs.
+        # Each pair sums past the 1500-char target so they never pack.
+        chunks = ["a" * 900, "b" * 800, "c" * 1000]
+        n = await index_document(
+            document=_document(text="\n\n".join(chunks)),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+        )
+        assert n == 3
+        # chunk_id is the positional index, text is the chunk, and the vector's
+        # encoded length matches the chunk length -> correct chunk<->vector
+        # pairing preserved through the batch.
+        for idx, rec in enumerate(store.puts):
+            assert rec.chunk_id == str(idx)
+            assert rec.vector[0] == float(len(rec.text))
+
+    @pytest.mark.asyncio
+    async def test_batches_across_the_batch_boundary(self):
+        """More than _EMBED_BATCH_SIZE chunks are split into multiple embed
+        calls, but every chunk is still indexed exactly once, in order."""
+        from primer.knowledge.indexing import _EMBED_BATCH_SIZE
+
+        store = _Store()
+        emb = _OrderedEmb(dim=4)
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=emb)
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        # Build 70 distinct chunks (> 2 * 32) by hard-splitting one long
+        # paragraph (chunk_text splits on _CHUNK_TARGET_CHARS boundaries).
+        from primer.knowledge.indexing import _CHUNK_TARGET_CHARS
+
+        n_chunks = 70
+        text = "x" * (_CHUNK_TARGET_CHARS * n_chunks)
+        n = await index_document(
+            document=_document(text=text),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+        )
+        assert n == n_chunks
+        assert len(store.puts) == n_chunks
+        # chunk ids are the dense 0..n-1 range, in order.
+        assert [r.chunk_id for r in store.puts] == [str(i) for i in range(n_chunks)]
+        # The chunk embeds (after the single probe call) were batched at
+        # _EMBED_BATCH_SIZE, not one-per-chunk.
+        chunk_batches = emb.batch_sizes[1:]  # index 0 is the probe (1 input)
+        assert chunk_batches[0] == _EMBED_BATCH_SIZE
+        assert sum(chunk_batches) == n_chunks
+        # ceil(70/32) = 3 chunk-embed calls + 1 probe = 4 total.
+        assert len(emb.batch_sizes) == 4
 
 
 class _StatefulStore:
@@ -387,10 +484,13 @@ class TestBackfill:
 
         class _FlakyEmb:
             async def embed(self, *, model, inputs):
-                if "boom" in inputs[0].text:
+                if any("boom" in p.text for p in inputs):
                     raise PrimerError("embedder exploded")
                 class _R:
-                    embeddings = [type("V", (), {"vector": [0.1, 0.2, 0.3]})()]
+                    embeddings = [
+                        type("V", (), {"vector": [0.1, 0.2, 0.3]})()
+                        for _ in inputs
+                    ]
                 return _R()
 
         reg = AsyncMock()
