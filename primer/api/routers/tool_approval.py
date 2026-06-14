@@ -129,7 +129,14 @@ def _validation_error(*, field_path: str, message: str) -> RequestValidationErro
 
 
 class ToolApprovalPendingResponse(BaseModel):
-    """Response payload for GET .../tool_approval/pending."""
+    """Response payload for GET .../tool_approval/pending.
+
+    ``status`` is always ``"pending"`` from this endpoint: a parked
+    session/chat is, by definition, still awaiting a decision. The field
+    is part of the envelope so the Approvals records view can sort a
+    unified records list by status. Resolved (``approved``/``rejected``)
+    records are NOT persisted today, so they never surface here.
+    """
 
     tool_call_id: str
     tool_name: str
@@ -140,6 +147,7 @@ class ToolApprovalPendingResponse(BaseModel):
     gate_reason: str | None = None
     parked_at: str
     timeout_at: str | None = None
+    status: Literal["pending", "approved", "rejected"] = "pending"
 
 
 class ToolApprovalRespondBody(BaseModel):

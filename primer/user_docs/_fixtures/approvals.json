@@ -2,8 +2,8 @@
   "POST /sessions/find": {
     "kind": "offset",
     "offset": 0,
-    "length": 2,
-    "total": 2,
+    "length": 3,
+    "total": 3,
     "items": [
       {
         "id": "ses-7f2a1c",
@@ -11,6 +11,10 @@
       },
       {
         "id": "ses-3d9b04",
+        "parked_status": "parked"
+      },
+      {
+        "id": "ses-91ab55",
         "parked_status": "parked"
       }
     ]
@@ -26,8 +30,9 @@
     "policy_id": "guard-prod-exec",
     "approval_type": "policy",
     "gate_reason": "exec against prod-workspace requires operator sign-off",
-    "parked_at": "2026-06-14T09:31:00+00:00",
-    "timeout_at": "2026-06-14T10:31:00+00:00"
+    "parked_at": "2026-06-14T09:44:00+00:00",
+    "timeout_at": "2026-06-14T10:44:00+00:00",
+    "status": "pending"
   },
   "GET /sessions/ses-3d9b04/tool_approval/pending": {
     "tool_call_id": "call_d4e5f6",
@@ -39,8 +44,24 @@
     "policy_id": "guard-delete-agent",
     "approval_type": "required",
     "gate_reason": null,
-    "parked_at": "2026-06-14T09:44:12+00:00",
-    "timeout_at": "2026-06-14T10:44:12+00:00"
+    "parked_at": "2026-06-14T09:31:12+00:00",
+    "timeout_at": "2026-06-14T10:31:12+00:00",
+    "status": "approved"
+  },
+  "GET /sessions/ses-91ab55/tool_approval/pending": {
+    "tool_call_id": "call_g7h8i9",
+    "tool_name": "exec",
+    "toolset_id": "workspaces",
+    "arguments": {
+      "workspace_id": "prod-workspace",
+      "command": "DROP TABLE billing"
+    },
+    "policy_id": "judge-shell-commands",
+    "approval_type": "llm",
+    "gate_reason": "destructive command flagged by the LLM judge",
+    "parked_at": "2026-06-14T09:12:40+00:00",
+    "timeout_at": "2026-06-14T10:12:40+00:00",
+    "status": "rejected"
   },
   "GET /chats?limit=200": {
     "kind": "offset",
@@ -49,47 +70,5 @@
     "total": 0,
     "items": []
   },
-  "GET /tool_approval_policies?limit=200": {
-    "kind": "offset",
-    "offset": 0,
-    "length": 3,
-    "total": 3,
-    "items": [
-      {
-        "id": "guard-delete-agent",
-        "toolset_id": "system",
-        "tool_name": "delete_agent",
-        "enabled": true,
-        "approval": {
-          "type": "required"
-        },
-        "timeout_seconds": 3600
-      },
-      {
-        "id": "guard-prod-exec",
-        "toolset_id": "workspaces",
-        "tool_name": "exec",
-        "enabled": true,
-        "approval": {
-          "type": "policy",
-          "policy": "package primer.approval\n\ndefault required := false\n\nrequired if {\n\tinput.tool_name == \"exec\"\n\tinput.arguments.workspace_id == \"prod-workspace\"\n}\n"
-        },
-        "timeout_seconds": null
-      },
-      {
-        "id": "judge-shell-commands",
-        "toolset_id": "workspaces",
-        "tool_name": "exec",
-        "enabled": false,
-        "approval": {
-          "type": "llm",
-          "provider_id": "primary-llm",
-          "model": "claude-haiku-4-5",
-          "prompt": "Decide if this shell command is safe to run. Set required=true for destructive or production-targeting commands."
-        },
-        "timeout_seconds": 900
-      }
-    ]
-  },
-  "_note": "Pending tab: two parked sessions each with a tool_approval/pending record (Rego-gated exec + required delete_agent). Policies tab: required, Rego, and LLM-judge configurations."
+  "_note": "Records view: three parked sessions, one per status (pending exec gate, approved delete_agent, rejected exec). The status field drives the badge and the by-status sort. Resolved (approved/rejected) records are not persisted live; they are shown here to demonstrate the all-status view. Approval configuration is per tool on the Tools page, so there is no Policies fixture."
 }

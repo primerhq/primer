@@ -58,6 +58,9 @@ async def test_get_session_pending_returns_payload(client, app):
     assert j["arguments"] == {"id": "ws-x"}
     assert j["policy_id"] == "p1"
     assert j["approval_type"] == "required"
+    # A parked source is always pending: the records view sorts on this
+    # field; resolved records are not persisted so they never appear here.
+    assert j["status"] == "pending"
 
 
 @pytest.mark.asyncio
