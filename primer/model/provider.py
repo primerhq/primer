@@ -439,6 +439,22 @@ class Limits(BaseModel):
         ...,
         description="Maximum number of in-flight requests allowed at once.",
     )
+    request_timeout_seconds: float | None = Field(
+        default=300.0,
+        ge=0.0,
+        description=(
+            "Per-event inactivity timeout in seconds for LLM streaming calls. "
+            "If no event arrives from the provider within this window the stream "
+            "is aborted and the turn fails cleanly, releasing the concurrency "
+            "slot. This is a stall timeout (no new event received) -- not a "
+            "total-generation cap, so long but progressing responses are not "
+            "interrupted. Set to None to disable. "
+            "LM Studio note: LM Studio can stall mid-generation on large models "
+            "or low-memory hardware; the default 300 s covers most real runs. "
+            "Lower it (e.g. 60) if you want faster failure detection at the "
+            "cost of killing slower generations."
+        ),
+    )
 
 
 class LLMProvider(Identifiable):

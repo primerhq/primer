@@ -13,6 +13,7 @@ and SSE-chunk translation live in :mod:`primer.llm._openai_compat`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -26,6 +27,7 @@ from pydantic import BaseModel
 from primer.common.openai_errors import classify_openai_exception
 from primer.int.coordinator import RateLimiter
 from primer.int.llm import LLM
+from primer.llm._timeout import _iter_with_timeout
 from primer.llm._openai_compat import (
     _build_sampling_params,
     _build_usage,
@@ -122,6 +124,7 @@ class OpenChatLLM(LLM):
         self._rate_limiter = rate_limiter
         self._rate_limit_key = f"llm:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
+        self._request_timeout_seconds = provider.limits.request_timeout_seconds
         self._trace_llm_io = trace_llm_io
 
         logger.info(
@@ -131,6 +134,7 @@ class OpenChatLLM(LLM):
                 "flavor": provider.config.flavor.value,
                 "models": [m.name for m in provider.models],
                 "max_concurrency": provider.limits.max_concurrency,
+                "request_timeout_seconds": provider.limits.request_timeout_seconds,
             },
         )
 
@@ -257,9 +261,28 @@ class OpenChatLLM(LLM):
 
                 state = _StreamState()
                 try:
-                    async for raw in sdk_stream:
+                    async for raw in _iter_with_timeout(
+                        sdk_stream, self._request_timeout_seconds
+                    ):
                         for event in _translate_chunk(raw, state):
                             yield event
+                except asyncio.TimeoutError as exc:
+                    from primer.model.except_ import ProviderTimeoutError
+                    timeout_val = self._request_timeout_seconds
+                    logger.error(
+                        "OpenChat stream timed out (no event in %.1f s)",
+                        timeout_val,
+                        extra={
+                            "provider_id": self._provider.id,
+                            "model": model,
+                        },
+                    )
+                    raise ProviderTimeoutError(
+                        f"OpenChat stream stalled: no event received within "
+                        f"{timeout_val} s (provider_id={self._provider.id!r}, "
+                        f"model={model!r})",
+                        code="stream_timeout",
+                    ) from exc
                 except Exception as exc:
                     err = classify_openai_exception(exc)
                     logger.error(

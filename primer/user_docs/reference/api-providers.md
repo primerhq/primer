@@ -67,6 +67,11 @@ Configure an agent to use a provider.
 | `models` | yes | Non-empty list of `{"name": string, "context_length": integer}` entries |
 | `config` | yes | Provider-specific connection config (discriminated by `provider`). API keys are accepted in write requests but masked on read. |
 | `limits.max_concurrency` | yes | Max simultaneous in-flight requests (integer > 0) |
+| `limits.request_timeout_seconds` | no | Per-event inactivity timeout for streaming calls (float, default 300.0). If no event arrives from the provider within this window the stream is aborted and the turn fails cleanly. Set to `null` to disable. See [LLM stream timeout](#llm-stream-timeout) for guidance. |
+
+### LLM stream timeout
+
+`limits.request_timeout_seconds` is a per-event inactivity timeout, not a total-generation cap. A long but progressing response is not killed -- only a complete stall (no new event arriving) triggers it. The default 300 s covers most real-world runs. For local servers such as LM Studio on slower hardware you can lower this (e.g. 60 s) for faster failure detection; raise or disable (`null`) for very large models that have long gaps between tokens.
 
 ### Create an LLM provider
 
