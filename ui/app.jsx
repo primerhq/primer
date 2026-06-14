@@ -1192,8 +1192,6 @@ function App() {
         <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
           <window.DocsPage section={params.section} slug={params.slug} pushToast={pushToast} />
         </div>
-        {/* Floating bug reporter still available on full-page views */}
-        <window.BG_BugButton pushToast={pushToast} />
         <div className="toast-stack">
           {toasts.map((t) => (
             <div key={t.id} className={`toast toast-${t.kind || "info"}`}>
@@ -1285,10 +1283,6 @@ function App() {
           </div>
         ))}
       </div>
-
-      {/* Floating bug reporter — bottom-left, always-on once the
-          operator is past <AuthGate>. */}
-      <window.BG_BugButton pushToast={pushToast} />
 
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onNavigate={navigate} sessions={sessions} docs={docsListForPalette} />}
 

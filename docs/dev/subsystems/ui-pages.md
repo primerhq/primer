@@ -92,7 +92,7 @@ All page components live under `ui/components/` as self-invoking `<script type="
 | `/health` | HealthPage | `health.jsx` | `GET /v1/health` |
 | `/docs[/:section[/:slug]]` | DocsPage | `docs.jsx` | `GET /v1/user_docs/manifest`, `/v1/user_docs/{slug}` |
 
-Supporting files not directly routed: `approvals.jsx` also exports the shared `ApprovalBanner` consumed by `session-detail.jsx` and `chats.jsx`; `workspaces/shared.jsx` exports the form-row and list-editor helpers (`WorkspacePairListEditor`, `WorkspaceEnvPairEditor`, `WorkspaceFileRowEditor`, and siblings) reused by the workspace, template, and provider modals; `bug_reporter.jsx`, `auth.jsx`, `harness_form.jsx`, and `harness_outbound_builder.jsx` are mounted by the chrome or other pages rather than by a route. The full route-to-page-name table lives in `ui/foundation/router.js`; the path-to-page-name derivation that picks the `window.*` component lives in `ui/app.jsx`.
+Supporting files not directly routed: `approvals.jsx` also exports the shared `ApprovalBanner` consumed by `session-detail.jsx` and `chats.jsx`; `workspaces/shared.jsx` exports the form-row and list-editor helpers (`WorkspacePairListEditor`, `WorkspaceEnvPairEditor`, `WorkspaceFileRowEditor`, and siblings) reused by the workspace, template, and provider modals; `auth.jsx`, `harness_form.jsx`, and `harness_outbound_builder.jsx` are mounted by the chrome or other pages rather than by a route. The full route-to-page-name table lives in `ui/foundation/router.js`; the path-to-page-name derivation that picks the `window.*` component lives in `ui/app.jsx`.
 
 ## 5. Data model
 

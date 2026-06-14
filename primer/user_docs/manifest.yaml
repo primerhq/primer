@@ -42,7 +42,6 @@ sections:
       - mcp-server
       - workers-and-health
       - auth-and-tokens
-      - bug-reporter
   - id: cookbook
     title: Cookbook
     icon: code

@@ -85,16 +85,6 @@ async def test_openapi_and_console_served(client):
     assert console.status_code == 200
 
 
-@smk("SMK-FND-07")
-async def test_bug_capture(authed_client):
-    r = await authed_client.post(
-        "/v1/bugs",
-        json={"description": "smk bug capture probe", "page_url": "http://x/#/test"},
-    )
-    assert r.status_code == 201, r.text
-    assert r.json().get("id")
-
-
 @smk("SMK-FND-02", status="partial")
 async def test_bootstrap_status_queryable(authed_client):
     # Full first-boot seeding needs auto_bootstrap on; on the hermetic server
