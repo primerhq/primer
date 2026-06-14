@@ -29,8 +29,15 @@ Style mirrors :mod:`primer.worker.yield_runtime`: plain dataclasses with
 
 from __future__ import annotations
 
+import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any
+
+from primer.model.chat import ToolCallPart, ToolResultPart
+from primer.model.yield_ import YieldToWorker
+from primer.worker.yield_resume_registry import get_resume_hook
+from primer.worker.yield_runtime import classify_approval_payload
 
 
 # ===========================================================================
@@ -298,13 +305,70 @@ async def apply_leaf(
 ) -> "FrameOutcome":
     """Apply a resume ``payload`` to the leaf yield inside ``inner_frame``.
 
-    STUB - filled by a later task. Resolves the leaf (the innermost yielding
-    tool / approval gate) with ``payload`` and returns the resulting
-    :class:`FrameOutcome` for the innermost frame, which the resume walk then
-    threads up the stack.
+    Resolves the leaf - the innermost yielding tool or approval gate - with
+    ``payload`` and returns either:
+
+    * a :class:`ToolResultPart` carrying the resolved tool result (which the
+      resume walk threads back into ``inner_frame`` as the result for its
+      pending tool call), or
+    * a :class:`Reparked` when an *approved* tool re-dispatch itself raises a
+      fresh :class:`YieldToWorker` (the leaf becomes a new park to resolve).
+
+    Two leaf shapes are handled, mirroring the flat-session resume paths in
+    :mod:`primer.worker.yield_runtime` (``_resume_tool_approval``) and
+    :mod:`primer.worker.pool` (the yielding-tool hook dispatch):
+
+    ``_approval`` leaf
+        Classify ``payload`` via :func:`classify_approval_payload`. On
+        ``approved`` rebuild the original :class:`ToolCallPart` from
+        ``leaf.resume_metadata["original_call"]`` and re-dispatch it through
+        the innermost host's tool manager with ``bypass_approval=True``; if
+        that raises :class:`YieldToWorker` return a :class:`Reparked`. On any
+        non-approved decision synthesise the fail-closed error result.
+
+    yielding-tool leaf (``ask_user`` / ``sleep`` / ``watch_files`` /
+    ``subscribe_to_trigger``)
+        Look up the tool's resume hook by name, run it (awaiting if it returns
+        a coroutine), and wrap its output in a :class:`ToolResultPart` keyed by
+        the innermost frame's pending ``tool_call_id``.
     """
-    raise NotImplementedError(
-        "apply_leaf is a stub; implemented in a later task"
+    if leaf.tool_name == "_approval":
+        original_raw = (leaf.resume_metadata or {}).get("original_call") or {}
+        original_call = ToolCallPart(
+            id=original_raw.get("id", "unknown"),
+            name=original_raw.get("name", "unknown"),
+            arguments=original_raw.get("arguments") or {},
+        )
+        decision, reason = classify_approval_payload(payload)
+        if decision == "approved":
+            tool_manager = await services.build_subagent_toolmanager(
+                inner_frame.context
+            )
+            try:
+                return await tool_manager.execute(
+                    original_call, bypass_approval=True
+                )
+            except YieldToWorker as yld:
+                return Reparked(new_yield=yld)
+        return ToolResultPart(
+            id=original_call.id,
+            output=json.dumps({
+                "rejected": True,
+                "reason": reason or "(no reason supplied)",
+                "tool_name": original_call.name,
+                "arguments": original_call.arguments,
+            }),
+            error=True,
+        )
+
+    hook = get_resume_hook(leaf.tool_name)
+    hook_result = hook(leaf.resume_metadata, payload)
+    if asyncio.iscoroutine(hook_result):
+        hook_result = await hook_result
+    return ToolResultPart(
+        id=inner_frame.tool_call_id,
+        output=hook_result.output,
+        error=hook_result.is_error,
     )
 
 
