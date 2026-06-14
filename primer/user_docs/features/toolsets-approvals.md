@@ -56,20 +56,23 @@ Approval configurations are additive and reversible. A configuration can be disa
 ```embed:approvals
 ```
 
-The Approvals page has two tabs: **Pending** and **Policies**. The Policies tab is where you define when a tool call must stop and wait for a decision. Pending shows every parked tool call waiting for a response right now. The page polls automatically every five seconds.
+The Approvals page is a single **records** view. It lists every approval record drawn from the live sources, with controls to sort **by time** and **by status**, and a status badge on each row (pending, approved, rejected). It polls automatically every five seconds. There is no global "Policies" tab: approval gates are configured **per tool**, not in a shared list, so the page links you to the Tools page when you want to add or edit a gate.
+
+```callout:note
+Only **pending** records are persisted and queryable today. A pending record is a tool call currently parked on a gate. Resolved (approved/rejected) records are not retained after the decision is made, so the live records view shows pending records only. The view still renders and sorts by status so that resolved records slot in unchanged once they are persisted; the embed above shows all three statuses to illustrate the full view.
+```
 
 ### Creating an approval configuration
 
-The simplest possible gate is the `required` strategy: pick the tool, set the approval type to required, and save. From that point every matching call stops for a manual decision.
+Approval gates live with the tool they protect, on the **Tools** page (left nav, under Toolsets). The simplest possible gate is the `required` strategy: find the tool, add a required gate, and save. From that point every matching call stops for a manual decision.
 
-1. Open **Approvals** in the left nav and click the **Policies** tab.
-2. Click **New policy** (top-right of the tab bar).
-3. Set the approval type to **Required**.
-4. Enter a unique **id** (for example, `approve-stripe-refund`).
-5. Pick the **toolset** from the dropdown or type a custom toolset id.
-6. Enter the **tool name** (for example, `delete_agent`).
-7. Optionally set a **timeout** in seconds. If omitted, the global yield cap applies.
-8. Click **Create policy**. The new row appears in the Policies table with the toggle enabled.
+1. Open the **Tools** page in the left nav.
+2. Find the tool you want to gate (use the search and filter controls). The **Approval** column shows the current gate, or a dash if there is none.
+3. Click **Add** in that tool's row (it reads **Edit** if a gate already exists). The configuration modal opens pre-filled with the tool's toolset and tool name.
+4. Set the approval type to **Required**.
+5. Enter a unique **id** (for example, `approve-stripe-refund`).
+6. Optionally set a **timeout** in seconds. If omitted, the global yield cap applies.
+7. Click **Create policy**. The tool's Approval column now shows the gate.
 
 That is the minimal configuration required to make a tool gated. The other two strategies (Rego and LLM judge) replace the manual hold with an automated decision, and are documented below.
 
@@ -158,7 +161,7 @@ If the judge call fails, the gate fails closed: a failed verdict blocks the tool
 
 ### Editing or disabling a configuration
 
-In the Policies table each row has an **edit** (pencil) button and a **delete** (trash) button. Click edit to reopen the modal with all fields pre-filled. The **id** field is locked after creation; every other field is editable. Use the **Enabled** toggle in the row to pause a configuration without deleting it.
+On the **Tools** page, a gated tool's row shows its gate in the **Approval** column and an **Edit** button. Click **Edit** to reopen the configuration modal with all fields pre-filled. The **id** field is locked after creation; every other field is editable. To pause a gate without deleting it, edit the configuration and clear the **Enabled** toggle; re-enable it later from the same modal. Deleting the configuration removes the gate entirely and returns the tool's Approval column to a dash.
 
 ```callout:warning
 Deleting a configuration that currently has parked sessions does not auto-resolve those sessions. The parked calls stay parked until you decide them manually, then the session continues.
@@ -168,16 +171,16 @@ Deleting a configuration that currently has parked sessions does not auto-resolv
 
 This walkthrough puts a required approval on `system__delete_agent` so no agent can delete another agent without an operator sign-off.
 
-1. Open **Approvals** and go to the **Policies** tab.
-2. Click **New policy**.
-3. Set **id** to `guard-delete-agent`, **type** to `Required`, **toolset** to `system`, **tool name** to `delete_agent`.
+1. Open the **Tools** page and find the `delete_agent` row in the `system` toolset.
+2. Click **Add** in that row. The configuration modal opens with **toolset** set to `system` and **tool name** set to `delete_agent`.
+3. Set **id** to `guard-delete-agent` and **type** to `Required`.
 4. Set **timeout** to `3600` (one hour) so parked calls do not block indefinitely.
-5. Click **Create policy**.
+5. Click **Create policy**. The tool's Approval column now shows the gate.
 
 Now, the next time any agent calls `system__delete_agent`:
 
 1. The call parks. The agent's turn pauses.
-2. The call appears on the **Pending** tab.
+2. The call appears in the **Approvals** records view with a **pending** badge. Sort by status to bring pending records to the top.
 3. You review the call arguments (which agent id is about to be deleted, which session triggered the call).
 4. Click **Approve** to release the call; the session resumes and the delete executes.
 5. Or click **Reject**, type a reason, and click **Send rejection**. The agent receives a clean error and can decide how to proceed.

@@ -35,8 +35,9 @@ function ApprovalsPage({ pushToast, onNavigate }) {
   const { useResource, useViewport, apiFetch } = window.primerApi;
   // eslint-disable-next-line no-unused-vars
   const { isMobile } = useViewport();
-  const [tab, setTab] = React.useState("pending");
-  const [showNew, setShowNew] = React.useState(false);
+  // Records sort controls. "time" | "status"; "desc" | "asc".
+  const [sortBy, setSortBy] = React.useState("time");
+  const [sortDir, setSortDir] = React.useState("desc");
 
   // Parked sessions — sessions in parked_status="parked" state. Each row
   // may or may not be parked on tool_approval (could be ask_user, sleep,
@@ -60,101 +61,163 @@ function ApprovalsPage({ pushToast, onNavigate }) {
     { pollMs: 5000 },
   );
 
-  const policies = useResource(
-    "approvals:policies",
-    // GET /tool_approval_policies caps limit at 200 (per openapi). Use the
-    // max; the policy list is operator-curated and unlikely to exceed it.
-    (signal) => apiFetch("GET", "/tool_approval_policies?limit=200", null, { signal }),
-    {},
-  );
-
   const sessionRows = (parkedSessions.data?.items ?? []);
   const chatRows = (parkedChats.data?.items ?? []).filter((c) => c.parked_status === "parked");
 
-  // The Pending list is built by combining per-row tool_approval/pending
-  // fetches. Each row renders a <PendingRow> that does its own useResource
-  // and renders nothing on 404. Reusing the same cache keys as the
-  // ApprovalBanner (tool-approval:session:${id}) — handy for invalidation.
-  const totalParked = sessionRows.length + chatRows.length;
-  const policiesCount = (policies.data?.items ?? []).length;
-
+  // The records list is built by combining per-row tool_approval/pending
+  // fetches. Each row renders an <AP_RecordRow> that does its own
+  // useResource and renders nothing on 404. Reusing the same cache keys
+  // as the ApprovalBanner (tool-approval:session:${id}) - handy for
+  // invalidation.
+  //
+  // NOTE (backend gap): the only queryable source of approval records is
+  // the set of currently-parked sessions/chats, which are all "pending".
+  // Resolved (approved/rejected) records are not persisted anywhere, so
+  // the live list only ever contains pending records. The view is built
+  // to render any status (each record carries `status`) and to sort by
+  // time + status, so it is ready for resolved records once they are
+  // persisted; until then it is honestly labelled "pending only".
   return (
     <div className="col" style={{ gap: 14 }}>
+      <AP_ConfigHint onNavigate={onNavigate} />
       <div className="panel">
-        <div style={{ display: "flex", borderBottom: "1px solid var(--border)", padding: "0 12px" }}>
-          {[
-            { id: "pending", label: "Pending", icon: "warn-circle", count: totalParked },
-            { id: "policies", label: "Policies", icon: "settings", count: policiesCount },
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              style={{
-                background: "none", border: "none",
-                padding: "10px 14px", cursor: "pointer",
-                color: tab === t.id ? "var(--text)" : "var(--text-3)",
-                fontSize: 12.5, fontWeight: tab === t.id ? 600 : 400,
-                borderBottom: tab === t.id ? "2px solid var(--accent)" : "2px solid transparent",
-                marginBottom: -1,
-                display: "inline-flex", alignItems: "center", gap: 6,
-              }}
-              data-testid={`approvals-tab-${t.id}`}
+        <div
+          style={{
+            display: "flex", alignItems: "center", gap: 10,
+            borderBottom: "1px solid var(--border)", padding: "10px 14px",
+          }}
+        >
+          <Icon name="list" size={14} style={{ color: "var(--text-3)" }} />
+          <span style={{ fontSize: 12.5, fontWeight: 600 }}>Approval records</span>
+          <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 }}>
+            <span className="muted text-sm">sort</span>
+            <select
+              className="select"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              style={{ fontSize: 12 }}
+              data-testid="approvals-sort-by"
             >
-              <Icon name={t.icon} size={13} />
-              {t.label}
-              {t.count > 0 && <span className="count" style={{ marginLeft: 4 }}>{t.count}</span>}
-            </button>
-          ))}
-          {tab === "policies" && (
-            <div style={{ marginLeft: "auto", padding: 6 }}>
-              <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)}>New policy</Btn>
-            </div>
-          )}
+              <option value="time">by time</option>
+              <option value="status">by status</option>
+            </select>
+            <Btn
+              size="sm"
+              kind="ghost"
+              icon={sortDir === "desc" ? "chevron-down" : "chevron-up"}
+              onClick={() => setSortDir((d) => (d === "desc" ? "asc" : "desc"))}
+              title={sortDir === "desc" ? "descending" : "ascending"}
+              data-testid="approvals-sort-dir"
+            >
+              {sortDir === "desc" ? "newest" : "oldest"}
+            </Btn>
+          </div>
         </div>
 
         <div style={{ padding: 0 }}>
-          {tab === "pending" && (
-            <AP_PendingPanel
-              sessions={sessionRows}
-              chats={chatRows}
-              loading={(parkedSessions.loading && !parkedSessions.data) || (parkedChats.loading && !parkedChats.data)}
-              error={parkedSessions.error || parkedChats.error}
-              onNavigate={onNavigate}
-              pushToast={pushToast}
-            />
-          )}
-          {tab === "policies" && (
-            <AP_PoliciesTable
-              policies={policies.data?.items ?? []}
-              loading={policies.loading && !policies.data}
-              error={policies.error}
-              pushToast={pushToast}
-            />
-          )}
+          <AP_RecordsPanel
+            sessions={sessionRows}
+            chats={chatRows}
+            sortBy={sortBy}
+            sortDir={sortDir}
+            loading={(parkedSessions.loading && !parkedSessions.data) || (parkedChats.loading && !parkedChats.data)}
+            error={parkedSessions.error || parkedChats.error}
+            onNavigate={onNavigate}
+            pushToast={pushToast}
+          />
         </div>
       </div>
-
-      {showNew && (
-        <AP_NewPolicyModal
-          onClose={() => setShowNew(false)}
-          pushToast={pushToast}
-        />
-      )}
     </div>
   );
 }
 
 // =============================================================
-// Pending tab
+// Config hint - approval configuration is per-tool, on the Tools page
 // =============================================================
 
-function AP_PendingPanel({ sessions, chats, loading, error, onNavigate, pushToast }) {
+function AP_ConfigHint({ onNavigate }) {
+  return (
+    <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 10 }} data-testid="approvals-config-hint">
+      <Icon name="settings" size={14} style={{ color: "var(--text-3)" }} />
+      <span className="muted text-sm">
+        Approval gates are configured <strong style={{ color: "var(--text)" }}>per tool</strong>.
+        Add or edit one from the{" "}
+        <a
+          style={{ color: "var(--accent)", cursor: "pointer" }}
+          onClick={() => onNavigate && onNavigate("tools")}
+          data-testid="approvals-config-link"
+        >
+          Tools page
+        </a>
+        .
+      </span>
+    </div>
+  );
+}
+
+// =============================================================
+// Records view - all available approval records, sortable
+// =============================================================
+
+// Build the comparator for the records list. Time sorts on parked_at;
+// status sorts on a fixed rank (pending first, then approved, rejected)
+// so the most actionable rows lead. `dir` flips both.
+const AP_STATUS_RANK = { pending: 0, approved: 1, rejected: 2 };
+
+// Inline status badge for a record. Pending=amber, approved=green,
+// rejected=red. Keeps the records list scannable by status.
+function AP_StatusBadge({ status }) {
+  const s = status || "pending";
+  const color = s === "approved" ? "var(--green)" : s === "rejected" ? "var(--red)" : "var(--amber)";
+  return (
+    <span
+      className="pill"
+      style={{ background: "var(--bg-2)", color, border: "1px solid var(--border)", fontSize: 9.5 }}
+      data-testid={`approval-record-status-${s}`}
+    >
+      <span className="dot" style={{ background: color }}></span>
+      {s}
+    </span>
+  );
+}
+
+function AP_recordCompare(a, b, sortBy, sortDir) {
+  let cmp;
+  if (sortBy === "status") {
+    const ra = AP_STATUS_RANK[a.status] ?? 99;
+    const rb = AP_STATUS_RANK[b.status] ?? 99;
+    cmp = ra - rb;
+    if (cmp === 0) cmp = new Date(b.parked_at || 0) - new Date(a.parked_at || 0);
+  } else {
+    cmp = new Date(b.parked_at || 0) - new Date(a.parked_at || 0);
+  }
+  return sortDir === "asc" ? -cmp : cmp;
+}
+
+function AP_RecordsPanel({ sessions, chats, sortBy, sortDir, loading, error, onNavigate, pushToast }) {
+  // Each source row resolves its own pending record asynchronously. We
+  // collect them into a shared store so the panel can sort across all
+  // rows. `onRecord(key, record|null)` reports a resolved record (or
+  // null on 404 / non-approval park).
+  const [records, setRecords] = React.useState({});
+  const onRecord = React.useCallback((key, record) => {
+    setRecords((prev) => {
+      if (record == null) {
+        if (!(key in prev)) return prev;
+        const next = { ...prev };
+        delete next[key];
+        return next;
+      }
+      return { ...prev, [key]: record };
+    });
+  }, []);
+
   if (error) {
     return (
       <div className="panel-body">
         <Banner
           kind="error"
-          title={error.title || "Couldn't load pending approvals"}
+          title={error.title || "Couldn't load approval records"}
           detail={error.detail || error.message}
           requestId={error.requestId}
         />
@@ -164,44 +227,59 @@ function AP_PendingPanel({ sessions, chats, loading, error, onNavigate, pushToas
   if (loading) {
     return (
       <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>
-        Loading pending approvals…
+        Loading approval records…
       </div>
     );
   }
-  // Per-row pending fetches render nothing on 404 (different yield tool
-  // or no approval parked). The empty-state below is what shows when
-  // there are zero parked sessions+chats; rows with no approval pending
-  // collapse silently inside <PendingRow>.
-  if (sessions.length === 0 && chats.length === 0) {
-    return (
-      <div className="empty" data-testid="approvals-pending-empty">
-        <div className="ico-wrap"><Icon name="check-circle" size={22} /></div>
-        <div className="head">No pending approvals</div>
-        <div className="sub">When a tool call hits a policy gate, it'll show up here. Polling every 5s across all sessions + chats.</div>
-      </div>
-    );
-  }
+
+  // Sources whose pending fetch resolved to a real approval record.
+  const sources = [
+    ...sessions.map((s) => ({ key: `session:${s.id}`, scope: "sessions", id: s.id })),
+    ...chats.map((c) => ({ key: `chats:${c.id}`, scope: "chats", id: c.id })),
+  ];
+  const resolved = sources
+    .map((src) => ({ src, record: records[src.key] }))
+    .filter((r) => r.record)
+    .sort((a, b) => AP_recordCompare(a.record, b.record, sortBy, sortDir));
+
   return (
     <div>
-      {sessions.map((s) => (
-        <AP_PendingRow key={`session:${s.id}`} scope="sessions" id={s.id} parent={s} onNavigate={onNavigate} pushToast={pushToast} />
+      {/* Hidden fetchers: one per parked source. They report up via
+          onRecord and render nothing themselves - the sorted rows below
+          are the visible surface. */}
+      {sources.map((src) => (
+        <AP_RecordFetcher key={src.key} recordKey={src.key} scope={src.scope} id={src.id} onRecord={onRecord} />
       ))}
-      {chats.map((c) => (
-        <AP_PendingRow key={`chats:${c.id}`} scope="chats" id={c.id} parent={c} onNavigate={onNavigate} pushToast={pushToast} />
-      ))}
+      {resolved.length === 0 ? (
+        <div className="empty" data-testid="approvals-records-empty">
+          <div className="ico-wrap"><Icon name="check-circle" size={22} /></div>
+          <div className="head">No approval records</div>
+          <div className="sub">
+            Pending records appear here when a tool call hits a gate. Resolved (approved/rejected)
+            records are not retained. Polling every 5s across all sessions + chats.
+          </div>
+        </div>
+      ) : (
+        resolved.map(({ src, record }) => (
+          <AP_RecordRow
+            key={src.key}
+            scope={src.scope}
+            id={src.id}
+            record={record}
+            onNavigate={onNavigate}
+            pushToast={pushToast}
+          />
+        ))
+      )}
     </div>
   );
 }
 
-function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
-  const { useResource, useMutation, useViewport, apiFetch } = window.primerApi;
-  const { isMobile } = useViewport();
-  const [rejecting, setRejecting] = React.useState(false);
-  const [reason, setReason] = React.useState("");
-  const [sheetOpen, setSheetOpen] = React.useState(false);
-
-  // Reuse the same cache key as the banner so a respond from either
-  // surface refetches the other.
+// Headless fetcher: resolves the pending record for one parked source
+// and reports it (or null) to the parent. Keeps the parent's sort logic
+// pure while each source still does its own poll/cache.
+function AP_RecordFetcher({ recordKey, scope, id, onRecord }) {
+  const { useResource, apiFetch } = window.primerApi;
   const cacheKey = `tool-approval:${scope === "sessions" ? "session" : "chat"}:${id}`;
   const pending = useResource(
     cacheKey,
@@ -213,6 +291,29 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
     ),
     { pollMs: 5000, deps: [id] },
   );
+
+  React.useEffect(() => {
+    if (pending.error?.status === 404) { onRecord(recordKey, null); return; }
+    if (!pending.data) return;
+    // Default status to "pending": a parked source is awaiting a
+    // decision. The field is forwarded as-is so the view renders any
+    // status the backend ever supplies.
+    onRecord(recordKey, { ...pending.data, status: pending.data.status || "pending" });
+  }, [pending.data, pending.error?.status, recordKey]);
+
+  return null;
+}
+
+function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
+  const { useMutation, useViewport, apiFetch } = window.primerApi;
+  const { isMobile } = useViewport();
+  const [rejecting, setRejecting] = React.useState(false);
+  const [reason, setReason] = React.useState("");
+  const [sheetOpen, setSheetOpen] = React.useState(false);
+
+  // Reuse the same cache key as the banner so a respond from either
+  // surface refetches the other.
+  const cacheKey = `tool-approval:${scope === "sessions" ? "session" : "chat"}:${id}`;
 
   const respond = useMutation(
     (body) => apiFetch(
@@ -231,13 +332,10 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
     },
   );
 
-  // 404 means "not parked on approval" (could be ask_user, sleep, etc.)
-  // — render nothing. Keep the row mounted so the poll runs and a new
-  // approval that lands later picks up.
-  if (pending.error?.status === 404) return null;
-  if (!pending.data) return null;
-
-  const a = pending.data;
+  const a = record;
+  // Only pending records expose Approve/Reject; resolved records are
+  // read-only (and, given the backend gap, never appear live).
+  const isPending = (a.status || "pending") === "pending";
   const parkedSec = a.parked_at ? AP_ageSec(a.parked_at) : null;
   const timeoutSec = a.timeout_at ? Math.max(0, (new Date(a.timeout_at).getTime() - Date.now()) / 1000) : null;
 
@@ -266,7 +364,7 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
               <Card
                 title={a.tool_name}
                 subtitle={`${scope === "chats" ? "chat" : "session"} · ${id}`}
-                pill={<StatusPill status="paused" />}
+                pill={isPending ? <StatusPill status="paused" /> : <AP_StatusBadge status={a.status} />}
                 meta={parkedSecLabel}
                 onClick={() => setSheetOpen(true)}
               />
@@ -278,7 +376,14 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
           onClose={() => { setSheetOpen(false); setRejecting(false); setReason(""); }}
           title="Review approval"
           footer={
-            !rejecting ? (
+            !isPending ? (
+              <button
+                className="btn touch-target"
+                onClick={() => setSheetOpen(false)}
+              >
+                Close
+              </button>
+            ) : !rejecting ? (
               <>
                 <button
                   className="btn touch-target"
@@ -349,6 +454,7 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
           <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
             <span className="mono" style={{ fontSize: 14, fontWeight: 600 }}>{a.tool_name}</span>
             {a.toolset_id && <span className="muted text-sm mono">· {a.toolset_id}</span>}
+            <AP_StatusBadge status={a.status} />
             {a.approval_type && (
               <span className="pill pill-paused" style={{ fontSize: 9.5 }}>
                 <span className="dot"></span>{a.approval_type}
@@ -380,6 +486,7 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
               {JSON.stringify({ arguments: a.arguments }, null, 2)}
             </div>
           )}
+          {isPending && (
           <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
             {!rejecting ? (
               <>
@@ -429,6 +536,7 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
               </>
             )}
           </div>
+          )}
         </div>
       </div>
     </div>
@@ -436,159 +544,9 @@ function AP_PendingRow({ scope, id, parent, onNavigate, pushToast }) {
 }
 
 // =============================================================
-// Policies tab
-// =============================================================
-
-function AP_PoliciesTable({ policies, loading, error, pushToast }) {
-  const { useMutation, apiFetch } = window.primerApi;
-  const [confirmDelete, setConfirmDelete] = React.useState(null);
-  const [editing, setEditing] = React.useState(null);
-
-  const updatePolicy = useMutation(
-    ({ pid, body }) => apiFetch("PUT", `/tool_approval_policies/${encodeURIComponent(pid)}`, body),
-    {
-      invalidates: ["approvals:policies"],
-      onSuccess: () => pushToast && pushToast({ kind: "success", title: "Policy updated" }),
-      onError: AP_toastErr(pushToast, "Update failed"),
-    },
-  );
-  const deletePolicy = useMutation(
-    (pid) => apiFetch("DELETE", `/tool_approval_policies/${encodeURIComponent(pid)}`),
-    {
-      invalidates: ["approvals:policies"],
-      onSuccess: () => pushToast && pushToast({ kind: "warning", title: "Policy deleted" }),
-      onError: AP_toastErr(pushToast, "Delete failed"),
-    },
-  );
-
-  if (error) {
-    return (
-      <div className="panel-body">
-        <Banner
-          kind="error"
-          title={error.title || "Couldn't load policies"}
-          detail={error.detail || error.message}
-          requestId={error.requestId}
-        />
-      </div>
-    );
-  }
-  if (loading) {
-    return (
-      <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>
-        Loading policies…
-      </div>
-    );
-  }
-  if (policies.length === 0) {
-    return (
-      <div className="empty" data-testid="approvals-policies-empty">
-        <div className="ico-wrap"><Icon name="settings" size={22} /></div>
-        <div className="head">No approval policies yet</div>
-        <div className="sub">Create one to gate tool calls (required, Rego policy, or LLM judge).</div>
-      </div>
-    );
-  }
-  const onToggle = (p) => updatePolicy.mutate({ pid: p.id, body: { ...p, enabled: !p.enabled } });
-
-  return (
-    <table className="tbl" data-testid="approvals-policies-table">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Type</th>
-          <th>Toolset</th>
-          <th>Tool</th>
-          <th style={{ textAlign: "right" }}>Timeout</th>
-          <th style={{ width: 90 }}>Enabled</th>
-          <th style={{ width: 60, textAlign: "right" }}></th>
-        </tr>
-      </thead>
-      <tbody>
-        {policies.map((p) => {
-          const type = p.approval?.type || "—";
-          const typeColor = type === "required" ? "var(--amber)" : type === "policy" ? "var(--blue)" : type === "llm" ? "var(--violet)" : "var(--text-3)";
-          return (
-            <tr key={p.id} data-testid={`approvals-policy-row-${p.id}`}>
-              <td className="mono">{p.id}</td>
-              <td>
-                <span className="pill" style={{ background: "var(--bg-2)", color: typeColor, border: "1px solid var(--border)" }}>
-                  <span className="dot" style={{ background: typeColor }}></span>
-                  {type}
-                </span>
-              </td>
-              <td className="mono muted text-sm">{p.toolset_id}</td>
-              <td className="mono text-sm">{p.tool_name}</td>
-              <td className="mono num tabular muted">{p.timeout_seconds != null ? `${p.timeout_seconds}s` : "—"}</td>
-              <td>
-                <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
-                  <input
-                    type="checkbox"
-                    checked={!!p.enabled}
-                    disabled={updatePolicy.loading}
-                    onChange={() => onToggle(p)}
-                    data-testid={`approvals-policy-enabled-${p.id}`}
-                  />
-                  <span className="muted text-sm">{p.enabled ? "on" : "off"}</span>
-                </label>
-              </td>
-              <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
-                <Btn
-                  size="sm"
-                  kind="ghost"
-                  icon="edit"
-                  onClick={() => setEditing(p)}
-                  title="Edit policy"
-                  data-testid={`approvals-policy-edit-${p.id}`}
-                />
-                <Btn
-                  size="sm"
-                  kind="ghost"
-                  icon="trash"
-                  disabled={deletePolicy.loading}
-                  onClick={() => setConfirmDelete(p)}
-                  title="Delete policy"
-                  data-testid={`approvals-policy-delete-${p.id}`}
-                />
-              </td>
-            </tr>
-          );
-        })}
-      </tbody>
-      {editing && (
-        <AP_NewPolicyModal
-          existing={editing}
-          pushToast={pushToast}
-          onClose={() => setEditing(null)}
-        />
-      )}
-      {confirmDelete && (
-        <Modal
-          title={`Delete policy ${confirmDelete.id}?`}
-          danger
-          onClose={() => setConfirmDelete(null)}
-          footer={
-            <>
-              <Btn kind="ghost" onClick={() => setConfirmDelete(null)}>Cancel</Btn>
-              <Btn
-                kind="danger"
-                icon="trash"
-                onClick={() => { const id = confirmDelete.id; setConfirmDelete(null); deletePolicy.mutate(id); }}
-              >
-                Delete
-              </Btn>
-            </>
-          }
-        >
-          This will permanently remove the policy <span className="mono">{confirmDelete.id}</span>. Sessions currently parked on this policy stay parked until decided.
-        </Modal>
-      )}
-    </table>
-  );
-}
-
-// =============================================================
-// New-policy modal — Required/Policy/LLM tabbed create
+// Approval configuration modal - Required/Policy/LLM create + edit.
+// Surfaced per-tool from the Tools page (toolsets.jsx); the global
+// Approvals page no longer carries a "Policies" tab.
 // =============================================================
 
 function AP_NewPolicyModal({ onClose, pushToast, existing }) {
