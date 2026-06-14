@@ -405,7 +405,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
       : kind === "scheduled"
         ? (!!cron && !!timezone && !!catchup)
         : kind === "webhook"
-          ? true  // No config required — server mints the token
+          ? true  // No config required - server mints the token
           : false
   );
   const step3Valid = !TR_validateSlug(slug) && !!name;
@@ -421,7 +421,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
       return { kind: "delayed", fire_at: fireAtIso };
     }
     if (kind === "webhook") {
-      // Token is server-minted — omit from payload (or send empty string).
+      // Token is server-minted - omit from payload (or send empty string).
       // hmac_secret can be set after creation via PUT.
       return { kind: "webhook" };
     }
@@ -476,7 +476,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
   const stepTitle = step === 1
     ? "Create trigger — Step 1: Kind"
     : step === 2
-      ? `Create trigger — Step 2: ${kind === "delayed" ? "Delay" : kind === "scheduled" ? "Schedule" : "Webhook"}`
+      ? `Create trigger - Step 2: ${kind === "delayed" ? "Delay" : kind === "scheduled" ? "Schedule" : "Webhook"}`
       : "Create trigger — Step 3: Details";
 
   return (
@@ -1984,7 +1984,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
 }
 
 // ============================================================================
-// TR_HmacSecretDialog — set or update the HMAC secret on a webhook trigger.
+// TR_HmacSecretDialog - set or update the HMAC secret on a webhook trigger.
 //
 // The server stores the secret verbatim (inside the config JSONB). This
 // dialog lets the operator enter a new secret and PUT it via the standard
