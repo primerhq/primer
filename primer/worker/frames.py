@@ -34,6 +34,7 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from primer.graph.invoke_graph import resume_invoke_graph
 from primer.model.chat import ToolCallPart, ToolResultPart
 from primer.model.yield_ import YieldToWorker
 from primer.worker.yield_resume_registry import get_resume_hook
@@ -214,12 +215,37 @@ class GraphFrame:
     async def resume(self, child_result: Any, services: Any) -> "FrameOutcome":
         """Resume this child graph with a completed child's result.
 
-        STUB - filled by a later task. Rehydrates the graph executor from
-        ``checkpoint``, feeds ``child_result`` in, drives it forward, and
-        returns a :class:`Completed` or :class:`Reparked` outcome.
+        Rehydrates the child graph executor (``services.resolve_graph`` +
+        ``services.build_child_graph_executor``), wraps ``child_result`` as a
+        tool-role :class:`~primer.model.chat.Message`, and delegates to
+        :func:`~primer.graph.invoke_graph.resume_invoke_graph` to deliver it to
+        the parked node and drive the graph forward.
+
+        Returns a :class:`Reparked` if the graph raised a fresh yield, else a
+        :class:`Completed` carrying a :class:`ToolResultPart` (keyed by this
+        frame's ``tool_call_id``) whose JSON ``output`` wraps the graph's final
+        text under an ``"output"`` key.
         """
-        raise NotImplementedError(
-            "GraphFrame.resume is a stub; implemented in a later task"
+        from primer.model.chat import Message
+
+        graph = await services.resolve_graph(self.graph_id)
+        child = await services.build_child_graph_executor(graph, self.gsid)
+        agent_tool_result = Message(role="tool", parts=[child_result])
+        out, repark = await resume_invoke_graph(
+            child=child,
+            checkpoint=self.checkpoint,
+            payload=None,
+            resumed_tcid=self.tool_call_id,
+            agent_tool_result=agent_tool_result,
+        )
+        if repark is not None:
+            return Reparked(new_yield=repark)
+        return Completed(
+            value=ToolResultPart(
+                id=self.tool_call_id,
+                output=json.dumps({"output": out}),
+                error=False,
+            )
         )
 
 
