@@ -16,6 +16,17 @@
     "quickstart-agents",
     "chat-agent-switch",
     "internal-collections-enable",
-    "quickstart-graph"
+    "quickstart-graph",
+    "embedding-provider",
+    "ssp",
+    "cross-encoder-provider",
+    "web-search",
+    "workspace-provider-create",
+    "channel-provider-create",
+    "harness",
+    "mcp-exposure",
+    "approvals",
+    "toolsets",
+    "collection-create"
   ]
 }

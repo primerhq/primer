@@ -1,7 +1,7 @@
 ---
 slug: troubleshooting
 title: Troubleshooting
-section: concepts
+section: reference
 summary: How to reason about the four most common failure patterns -- a stuck run, an inaccessible tool, an unreachable provider, and a workspace that failed to materialise.
 ---
 

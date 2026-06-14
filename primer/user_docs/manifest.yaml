@@ -6,46 +6,42 @@ sections:
     docs:
       - introduction
       - quickstart
-  - id: concepts
-    title: Concepts
-    icon: graph
-    order: 2
-    docs:
-      - what-is-an-agent
-      - sessions
-      - chats
-      - workspaces
-      - toolsets-and-tools
-      - triggers-and-subscriptions
-      - tool-approval
-      - yielding-and-claims
-      - troubleshooting
   - id: features
     title: Features
     icon: tools
-    order: 3
+    order: 2
     docs:
+      - llm-providers
       - agents
-      - agents-advanced
-      - graphs
-      - sessions
       - chats
-      - harnesses
-      - workspaces
-      - knowledge-collections
-      - knowledge-documents
-      - semantic-search
+      - toolsets-system
+      - toolsets-mcp
+      - toolsets-approvals
+      - embedding-providers
+      - semantic-search-providers
+      - collections-and-documents
+      - cross-encoder-providers
       - internal-collections
+      - workspace-providers
+      - workspace-templates
+      - sessions
+      - workspace-toolset
+      - yielding-tools
+      - graphs
+      - graph-node-types
+      - graph-templating
+      - web-search-providers
+      - channel-providers
       - channels
+      - channel-workspace-association
       - triggers
-      - tool-approval
+      - harnesses
       - mcp-server
-      - workers-and-health
-      - auth-and-tokens
+      - workers
   - id: cookbook
     title: Cookbook
     icon: code
-    order: 4
+    order: 3
     docs:
       - scheduled-summariser
       - slack-question-answerer
@@ -61,7 +57,7 @@ sections:
   - id: reference
     title: Reference
     icon: doc
-    order: 5
+    order: 4
     docs:
       - rest-api-overview
       - api-agents
@@ -81,3 +77,4 @@ sections:
       - mcp-server-reference
       - cli
       - env-vars
+      - troubleshooting

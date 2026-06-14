@@ -137,6 +137,69 @@
       fixtures: "quickstart-graph",
       props: { onOpen: function () {}, pushToast: function () {} },
     },
+    "embedding-provider": {
+      component: "ProvidersPage",
+      fixtures: "embedding-provider",
+      props: { kind: "embedding", pushToast: function () {} },
+    },
+    "ssp": {
+      component: "SSPListPage",
+      fixtures: "ssp",
+      props: { pushToast: function () {} },
+    },
+    "cross-encoder-provider": {
+      // ProvidersPage selects the cross_encoder_providers endpoint when
+      // kind is "rerank" (also accepts "cross_encoder").
+      component: "ProvidersPage",
+      fixtures: "cross-encoder-provider",
+      props: { kind: "rerank", pushToast: function () {} },
+    },
+    "web-search": {
+      component: "WebSearchPage",
+      fixtures: "web-search",
+      props: { pushToast: function () {} },
+    },
+    "workspace-provider-create": {
+      // The workspace providers list/create lives in WorkspaceProvidersPage
+      // (ui/components/workspaces/providers.jsx); WorkspacesPage embeds it.
+      component: "WorkspaceProvidersPage",
+      fixtures: "workspace-provider-create",
+      props: { pushToast: function () {} },
+    },
+    "channel-provider-create": {
+      component: "ChannelProvidersPage",
+      fixtures: "channel-provider-create",
+      props: { onNavigate: function () {}, pushToast: function () {} },
+    },
+    "harness": {
+      component: "HarnessesPage",
+      fixtures: "harness",
+      props: { pushToast: function () {} },
+    },
+    "mcp-exposure": {
+      component: "MC_McpPage",
+      fixtures: "mcp-exposure",
+      props: { pushToast: function () {} },
+    },
+    "approvals": {
+      component: "ApprovalsPage",
+      fixtures: "approvals",
+      props: { onOpen: function () {}, pushToast: function () {} },
+    },
+    "toolsets": {
+      component: "ToolsetsPage",
+      fixtures: "toolsets",
+      props: { onOpen: function () {}, pushToast: function () {} },
+    },
+    "collection-create": {
+      component: "CollectionsPage",
+      fixtures: "collection-create",
+      props: {
+        pushToast: function () {},
+        onOpen: function () {},
+        onNavigate: function () {},
+      },
+    },
   };
 
   window.DocsEmbedRegistry = REGISTRY;

@@ -1,0 +1,16 @@
+{
+  "GET /cross_encoder_providers?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "hf-reranker",
+        "provider": "huggingface",
+        "model": "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        "config": {}
+      }
+    ]
+  }
+}
