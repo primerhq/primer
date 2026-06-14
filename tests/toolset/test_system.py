@@ -570,15 +570,18 @@ class TestCollectionExtras:
         assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
-    async def test_search_collection_returns_not_implemented(
+    async def test_search_collection_unavailable_without_registry(
         self, system_toolset
     ) -> None:
+        # The default fixture wires no SemanticSearchRegistry, so search
+        # degrades to ``unavailable`` (no longer the old not-implemented
+        # stub). The wired path is covered in TestSearchCollectionWired.
         result = await system_toolset.call(
             tool_name="search_collection",
             arguments={"collection_id": "kb-1", "query": "anything", "top_k": 5},
         )
         assert result.is_error
-        assert json.loads(result.output)["type"] == "not-implemented"
+        assert json.loads(result.output)["type"] == "unavailable"
 
     @pytest.mark.asyncio
     async def test_refresh_collection_returns_not_implemented_when_collection_exists(
@@ -1031,3 +1034,252 @@ class TestExtras:
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"
+
+
+# ===========================================================================
+# FIX B: search_collection wired to the SearchService (embedder + store)
+# ===========================================================================
+
+
+class _FakeEmbedder:
+    """Embedder stub: returns a fixed vector regardless of input."""
+
+    def __init__(self, vector: list[float]) -> None:
+        self._vector = vector
+
+    async def embed(self, *, model, inputs, output_dimensions=None, config=None):
+        from primer.model.embedding import EmbedResponse, Embedding
+
+        return EmbedResponse(
+            model=model,
+            embeddings=[Embedding(index=0, vector=self._vector)],
+        )
+
+
+class _FakeVectorStore:
+    """In-memory vector store returning preset ranked hits."""
+
+    def __init__(self, results) -> None:
+        self._results = results
+        self.calls: list[tuple] = []
+
+    async def search(self, collection_id, vector, k):
+        self.calls.append((collection_id, list(vector), k))
+        return self._results[:k]
+
+
+class _FakeSSR:
+    """SemanticSearchRegistry duck-type exposing get_store."""
+
+    def __init__(self, store) -> None:
+        self._store = store
+
+    async def get_store(self, ssp_id):
+        return self._store
+
+
+def _ranked_hits():
+    from primer.model.vector import EmbeddingRecord, SearchResult
+
+    return [
+        SearchResult(
+            record=EmbeddingRecord(
+                collection_id="kb-1",
+                document_id="doc-1",
+                chunk_id="c0",
+                text="onboarding starts on day one",
+                vector=[0.1, 0.2, 0.3, 0.4],
+                meta={"source": "handbook"},
+            ),
+            score=0.91,
+        ),
+        SearchResult(
+            record=EmbeddingRecord(
+                collection_id="kb-1",
+                document_id="doc-2",
+                chunk_id="c0",
+                text="benefits enrolment window",
+                vector=[0.5, 0.6, 0.7, 0.8],
+                meta={"source": "hr"},
+            ),
+            score=0.42,
+        ),
+    ]
+
+
+class TestSearchCollectionWired:
+    @pytest.fixture
+    def store(self):
+        return _FakeVectorStore(_ranked_hits())
+
+    @pytest.fixture
+    def wired_toolset(self, sp: _SP, store: _FakeVectorStore):
+        # Real ProviderRegistry but with an embedder factory that yields
+        # the _FakeEmbedder so get_embedder returns something with .embed.
+        registry = ProviderRegistry(
+            sp,  # type: ignore[arg-type]
+            llm_factory=lambda p: object(),
+            embedder_factory=lambda p: _FakeEmbedder([0.1, 0.2, 0.3, 0.4]),
+            cross_encoder_factory=lambda p: object(),
+            toolset_factory=lambda t: object(),
+        )
+        provider = build_system_toolset(
+            storage_provider=sp,  # type: ignore[arg-type]
+            provider_registry=registry,
+            semantic_search_registry=_FakeSSR(store),  # type: ignore[arg-type]
+        )
+        registry._system_toolset_provider = provider  # type: ignore[attr-defined]
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_returns_ranked_hits(self, wired_toolset, store) -> None:
+        # Seed the embedding provider + collection so the handler can
+        # resolve the collection's embedder and search_provider_id.
+        await wired_toolset.call(
+            tool_name="create_embedding_provider",
+            arguments={"entity": _emb().model_dump(mode="json")},
+        )
+        await wired_toolset.call(
+            tool_name="create_collection",
+            arguments={"entity": _collection().model_dump(mode="json")},
+        )
+        result = await wired_toolset.call(
+            tool_name="search_collection",
+            arguments={"collection_id": "kb-1", "query": "onboarding", "top_k": 5},
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        # No longer the not-implemented sentinel.
+        assert "type" not in body
+        hits = body["hits"]
+        assert [h["document_id"] for h in hits] == ["doc-1", "doc-2"]
+        assert hits[0]["score"] == 0.91
+        assert hits[0]["text"] == "onboarding starts on day one"
+        assert hits[0]["chunk_id"] == "c0"
+        assert hits[0]["meta"] == {"source": "handbook"}
+        # The store was searched, scoped to the collection.
+        assert store.calls and store.calls[0][0] == "kb-1"
+
+    @pytest.mark.asyncio
+    async def test_unknown_collection_returns_not_found(
+        self, wired_toolset
+    ) -> None:
+        result = await wired_toolset.call(
+            tool_name="search_collection",
+            arguments={"collection_id": "missing", "query": "x"},
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "not-found"
+
+
+# ===========================================================================
+# FIX A: call_tool enforces the approval gate (parks instead of bypassing)
+# ===========================================================================
+
+
+def _required_policy(toolset_id: str, tool_name: str):
+    from primer.model.tool_approval import (
+        RequiredApprovalConfig,
+        ToolApprovalPolicy,
+    )
+
+    return ToolApprovalPolicy(
+        id="tap-1",
+        toolset_id=toolset_id,
+        tool_name=tool_name,
+        enabled=True,
+        approval=RequiredApprovalConfig(),
+    )
+
+
+def _ctx(tool_call_id="call-1", session_id="sess-1", chat_id=None):
+    from primer.model.yield_ import ToolContext
+
+    return ToolContext(
+        tool_call_id=tool_call_id,
+        session_id=session_id,
+        workspace_id="ws-1",
+        chat_id=chat_id,
+    )
+
+
+class TestCallToolApprovalGate:
+    @pytest.mark.asyncio
+    async def test_gated_inner_tool_yields_for_approval(
+        self, system_toolset, sp: _SP
+    ) -> None:
+        from primer.model.tool_approval import ToolApprovalPolicy
+        from primer.model.yield_ import YieldToWorker
+
+        # Configure an approval policy for the INNER tool call_tool targets.
+        await sp.get_storage(ToolApprovalPolicy).create(
+            _required_policy(SYSTEM_TOOLSET_ID, "get_llm_provider")
+        )
+        # Seed the inner tool's data so a bypass would actually succeed
+        # (proves the yield is the gate, not a missing row).
+        await system_toolset.call(
+            tool_name="create_llm_provider",
+            arguments={"entity": _llm().model_dump(mode="json")},
+        )
+
+        with pytest.raises(YieldToWorker) as exc_info:
+            await system_toolset.call(
+                tool_name="call_tool",
+                arguments={
+                    "toolset_id": SYSTEM_TOOLSET_ID,
+                    "tool_name": "get_llm_provider",
+                    "arguments": {"id": "anthropic-1"},
+                },
+                ctx=_ctx(),
+            )
+        yielded = exc_info.value.yielded
+        assert yielded.tool_name == "_approval"
+        assert yielded.event_key == "tool_approval:sess-1:call-1"
+        meta = yielded.resume_metadata
+        # Resume re-dispatches the inner tool via its owning toolset.
+        assert meta["via_call_tool"]["toolset_id"] == SYSTEM_TOOLSET_ID
+        assert meta["original_call"]["name"] == "get_llm_provider"
+        assert meta["original_call"]["arguments"] == {"id": "anthropic-1"}
+
+    @pytest.mark.asyncio
+    async def test_non_gated_inner_tool_dispatches_normally(
+        self, system_toolset
+    ) -> None:
+        # No policy stored -> call_tool dispatches the inner tool unchanged.
+        await system_toolset.call(
+            tool_name="create_llm_provider",
+            arguments={"entity": _llm().model_dump(mode="json")},
+        )
+        result = await system_toolset.call(
+            tool_name="call_tool",
+            arguments={
+                "toolset_id": SYSTEM_TOOLSET_ID,
+                "tool_name": "get_llm_provider",
+                "arguments": {"id": "anthropic-1"},
+            },
+            ctx=_ctx(),
+        )
+        assert not result.is_error, result.output
+        assert json.loads(result.output)["id"] == "anthropic-1"
+
+    @pytest.mark.asyncio
+    async def test_gated_tool_without_park_surface_fails_closed(
+        self, system_toolset, sp: _SP
+    ) -> None:
+        # No session/chat to park onto (ctx is None) -> the gate must NOT
+        # be bypassed; the call fails closed with approval-required.
+        from primer.model.tool_approval import ToolApprovalPolicy
+
+        await sp.get_storage(ToolApprovalPolicy).create(
+            _required_policy(SYSTEM_TOOLSET_ID, "get_llm_provider")
+        )
+        result = await system_toolset.call(
+            tool_name="call_tool",
+            arguments={
+                "toolset_id": SYSTEM_TOOLSET_ID,
+                "tool_name": "get_llm_provider",
+                "arguments": {"id": "anthropic-1"},
+            },
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "approval-required"
