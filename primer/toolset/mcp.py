@@ -1,14 +1,13 @@
 """MCP-protocol :class:`ToolsetProvider` implementation.
 
-Connects to an MCP server over stdio (subprocess; long-lived session
-held for the provider's lifetime) or HTTP (streamable-http transport;
-one short-lived session per call). Both transports share the
+Connects to an MCP server over stdio (subprocess; per-dispatch lifetime,
+started and closed around each dispatch) or HTTP (streamable-http
+transport; one short-lived session per call). Both transports share the
 request-translation logic in this file.
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -62,11 +61,17 @@ logger = logging.getLogger(__name__)
 class McpToolsetProvider(ToolsetProvider):
     """MCP-protocol tool source.
 
-    Stdio servers run as a long-lived subprocess (lazy-started on first
-    call, kept alive for the provider's lifetime, terminated by
-    :meth:`aclose`). HTTP servers open a short-lived
-    ``streamable_http`` session per call (cheap; the SDK has no
-    long-lived equivalent for stateless HTTP MCP).
+    Stdio servers run as a per-dispatch subprocess: the subprocess and
+    MCP session are started at the beginning of a dispatch (a single
+    :meth:`call` / :meth:`list_tools` / task operation) and torn down
+    when that dispatch finishes -- even on error. They are NOT kept
+    alive for the provider's lifetime. This avoids stranding a live
+    subprocess on one worker that cannot serve a call landing on
+    another worker, at the cost of re-running the init handshake per
+    dispatch (accepted; within one dispatch the session is reused).
+    HTTP servers open a short-lived ``streamable_http`` session per
+    call (cheap; the SDK has no long-lived equivalent for stateless
+    HTTP MCP).
 
     The ``oauth`` constructor argument and :meth:`complete_oauth` method
     are accepted unconditionally so sub-project #10 can wire OAuth in
@@ -86,7 +91,7 @@ class McpToolsetProvider(ToolsetProvider):
         allowed_stdio_commands: frozenset[str] | None = None,
     ) -> None:
         """``allowed_stdio_commands``: when set, ``stdio_cfg.command[0]``
-        must match one of these strings exactly or :meth:`_ensure_stdio_session`
+        must match one of these strings exactly or :meth:`_open_session`
         raises :class:`ConfigError`. ``None`` (the default) means no
         allowlist is enforced -- the caller has decided either that all
         Toolset rows are operator-trusted or that the auth layer
@@ -99,11 +104,6 @@ class McpToolsetProvider(ToolsetProvider):
         self._client_name = client_name
         self._client_version = client_version
         self._allowed_stdio_commands = allowed_stdio_commands
-
-        # Stdio long-lived state. Populated lazily on first use.
-        self._stdio_lock = asyncio.Lock()
-        self._stdio_session: ClientSession | None = None
-        self._stdio_exit_stack: AsyncExitStack | None = None
 
         # Cache of MCP tool names that advertise task-style execution.
         # Populated as a side-effect of ``list_tools`` so subsequent
@@ -303,32 +303,42 @@ class McpToolsetProvider(ToolsetProvider):
         await self._oauth.complete_oauth(code=code, state_id=state)
 
     async def aclose(self) -> None:
-        """Tear down any long-lived stdio subprocess. No-op for HTTP."""
-        async with self._stdio_lock:
-            if self._stdio_exit_stack is not None:
-                await self._stdio_exit_stack.aclose()
-                self._stdio_exit_stack = None
-                self._stdio_session = None
+        """No-op: stdio subprocesses are per-dispatch and already closed.
+
+        Both transports now close their subprocess / session at the end
+        of each dispatch (see :meth:`_open_session`), so there is no
+        long-lived state to tear down here. Retained for interface
+        compatibility with callers that close providers explicitly.
+        """
+        return None
 
     # ---------- session management ---------------------------------------
 
     @asynccontextmanager
     async def _open_session(self, *, principal: str | None = None):
-        """Yield a ready :class:`mcp.ClientSession` for one operation.
+        """Yield a ready :class:`mcp.ClientSession` for one dispatch.
 
-        Stdio: returns the single long-lived session (starting it on
-        first call). HTTP: opens a fresh session per call. ``principal``
-        is forwarded into the OAuth flow for HTTP transports; passing it
-        as a parameter (rather than via an instance field) closes the
-        race where two concurrent requests would clobber each other's
-        principal.
+        Stdio: starts a fresh subprocess + session at the start of the
+        ``with`` block and tears it down (subprocess terminated, pipes
+        closed, async contexts exited) when the block exits, even on
+        error. The subprocess is local to this dispatch -- concurrent
+        dispatches each get their own subprocess, so there is no shared
+        cached session to stomp. HTTP: opens a fresh session per call.
+        ``principal`` is forwarded into the OAuth flow for HTTP
+        transports; passing it as a parameter (rather than via an
+        instance field) closes the race where two concurrent requests
+        would clobber each other's principal.
 
         Subclasses may override this entirely (used in tests to inject a
         pre-built session over in-memory streams).
         """
         if self._config.transport == TransportType.STDIO:
-            session = await self._ensure_stdio_session()
-            yield session
+            stack = AsyncExitStack()
+            session = await self._enter_stdio_session(stack)
+            try:
+                yield session
+            finally:
+                await stack.aclose()
             return
 
         if self._config.transport == TransportType.HTTP:
@@ -379,58 +389,61 @@ class McpToolsetProvider(ToolsetProvider):
 
         raise ConfigError(f"unknown transport {self._config.transport!r}")
 
-    async def _ensure_stdio_session(self) -> ClientSession:
-        async with self._stdio_lock:
-            if self._stdio_session is not None:
-                return self._stdio_session
+    async def _enter_stdio_session(self, stack: AsyncExitStack) -> ClientSession:
+        """Start a per-dispatch stdio subprocess + initialised session.
 
-            assert isinstance(self._config.config, StdioConfig)
-            stdio_cfg: StdioConfig = self._config.config
-            # Allowlist enforcement: when an operator-supplied allowlist
-            # is in effect, refuse to launch any binary not on it.
-            if self._allowed_stdio_commands is not None:
-                if stdio_cfg.command[0] not in self._allowed_stdio_commands:
-                    raise ConfigError(
-                        f"toolset {self._toolset_id!r}: stdio command "
-                        f"{stdio_cfg.command[0]!r} is not in the allowlist; "
-                        "set `allowed_stdio_commands` on the registry / "
-                        "AppConfig to permit it."
-                    )
-            params = StdioServerParameters(
-                command=stdio_cfg.command[0],
-                args=list(stdio_cfg.command[1:]),
-                env=dict(stdio_cfg.env) if stdio_cfg.env else None,
-            )
-
-            stack = AsyncExitStack()
-            try:
-                read, write = await stack.enter_async_context(stdio_client(params))
-                session = await stack.enter_async_context(ClientSession(read, write))
-                await session.initialize()
-            except FileNotFoundError as exc:
-                await stack.aclose()
+        The subprocess and session are registered on ``stack`` so the
+        caller (``_open_session``) tears them down when the dispatch
+        finishes. No session is cached on the provider -- every dispatch
+        launches and closes its own subprocess. On any failure during
+        setup the stack is closed here so a half-built subprocess never
+        leaks.
+        """
+        assert isinstance(self._config.config, StdioConfig)
+        stdio_cfg: StdioConfig = self._config.config
+        # Allowlist enforcement: when an operator-supplied allowlist
+        # is in effect, refuse to launch any binary not on it.
+        if self._allowed_stdio_commands is not None:
+            if stdio_cfg.command[0] not in self._allowed_stdio_commands:
                 raise ConfigError(
                     f"toolset {self._toolset_id!r}: stdio command "
-                    f"{stdio_cfg.command[0]!r} could not be launched "
-                    f"(executable not found on PATH)"
-                ) from exc
-            except PermissionError as exc:
-                await stack.aclose()
-                raise ConfigError(
-                    f"toolset {self._toolset_id!r}: stdio command "
-                    f"{stdio_cfg.command[0]!r} could not be launched "
-                    f"(permission denied)"
-                ) from exc
-            except Exception:
-                await stack.aclose()
-                raise
+                    f"{stdio_cfg.command[0]!r} is not in the allowlist; "
+                    "set `allowed_stdio_commands` on the registry / "
+                    "AppConfig to permit it."
+                )
+        params = StdioServerParameters(
+            command=stdio_cfg.command[0],
+            args=list(stdio_cfg.command[1:]),
+            env=dict(stdio_cfg.env) if stdio_cfg.env else None,
+        )
 
-            self._stdio_exit_stack = stack
-            self._stdio_session = session
-            logger.info(
-                "Started stdio MCP subprocess for toolset %r", self._toolset_id
-            )
-            return session
+        try:
+            read, write = await stack.enter_async_context(stdio_client(params))
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+        except FileNotFoundError as exc:
+            await stack.aclose()
+            raise ConfigError(
+                f"toolset {self._toolset_id!r}: stdio command "
+                f"{stdio_cfg.command[0]!r} could not be launched "
+                f"(executable not found on PATH)"
+            ) from exc
+        except PermissionError as exc:
+            await stack.aclose()
+            raise ConfigError(
+                f"toolset {self._toolset_id!r}: stdio command "
+                f"{stdio_cfg.command[0]!r} could not be launched "
+                f"(permission denied)"
+            ) from exc
+        except Exception:
+            await stack.aclose()
+            raise
+
+        logger.info(
+            "Started per-dispatch stdio MCP subprocess for toolset %r",
+            self._toolset_id,
+        )
+        return session
 
     # ---------- translation ----------------------------------------------
 
