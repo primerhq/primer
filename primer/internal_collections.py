@@ -450,6 +450,16 @@ class InternalCollectionsSubsystem:
         logger.info("ic bootstrap: collections=%d", counts["collections"])
 
         logger.info("ic bootstrap: phase=ingest_tools")
+        # The tool catalog is fully re-derived from the live toolset
+        # registry on every bootstrap. Upserting on top of the existing
+        # collection would orphan docs whose scoped id changed (a tool
+        # moved to another toolset or was renamed), so search_tools would
+        # keep returning dead ids. Drop + recreate the tools collection
+        # for a clean rebuild. Dimension is already validated above by the
+        # _ensure_collection loop, so recreating here cannot mismatch.
+        tools_coll = INTERNAL_COLLECTION_IDS["tool"]
+        await store.drop_collection(tools_coll)
+        await self._ensure_collection(store, tools_coll, embed_dim)
         counts["tools"] = await self._ingest_tools_with_progress(
             "ingest_tools", _emit, counts,
         )

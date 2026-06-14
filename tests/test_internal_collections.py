@@ -119,6 +119,12 @@ class _FakeVectorStore:
             if key[0] == collection_id and key[1] == document_id:
                 del self.records[key]
 
+    async def drop_collection(self, collection_id):
+        self.collections.pop(collection_id, None)
+        for key in list(self.records.keys()):
+            if key[0] == collection_id:
+                del self.records[key]
+
     async def search(self, collection_id, vector, k):
         self.searches.append((collection_id, list(vector), k))
         from primer.model.vector import SearchResult
@@ -368,6 +374,54 @@ class TestBootstrap:
         tools_coll = INTERNAL_COLLECTION_IDS["tool"]
         assert (tools_coll, "system::foo", "0") in store.records
         assert (tools_coll, "system::bar", "0") in store.records
+        await subsystem.aclose()
+
+    @pytest.mark.asyncio
+    async def test_rebootstrap_purges_renamed_tool_docs(
+        self, cfg, sp, pr, ssr, store
+    ) -> None:
+        """A re-bootstrap must not leave orphaned tool docs behind when a
+        tool's scoped id changes (moved to a new toolset or renamed). The
+        tools collection is fully regenerated from the live registry, so
+        bootstrap drops + recreates it rather than upserting on top of the
+        stale catalog."""
+        from primer.model.chat import Tool
+
+        class _RenamingProvider:
+            def __init__(self) -> None:
+                self.names = ("foo", "bar")
+
+            async def list_tools(self, principal=None):
+                for tn in self.names:
+                    yield Tool(
+                        id=tn,
+                        toolset_id="system",
+                        description=f"{tn} description",
+                        args_schema={"type": "object"},
+                    )
+
+        provider = _RenamingProvider()
+        subsystem = build_subsystem(
+            config=cfg,
+            storage_provider=sp,  # type: ignore[arg-type]
+            provider_registry=pr,  # type: ignore[arg-type]
+            semantic_search_registry=ssr,  # type: ignore[arg-type]
+            toolset_providers={"system": provider},
+        )
+        tools_coll = INTERNAL_COLLECTION_IDS["tool"]
+
+        await subsystem.bootstrap()
+        assert (tools_coll, "system::bar", "0") in store.records
+
+        # "bar" is renamed to "baz" (e.g. moved to another toolset); the
+        # live registry no longer yields the old id.
+        provider.names = ("foo", "baz")
+        await subsystem.bootstrap()
+
+        assert (tools_coll, "system::foo", "0") in store.records
+        assert (tools_coll, "system::baz", "0") in store.records
+        # The stale id must be gone, not orphaned alongside the new one.
+        assert (tools_coll, "system::bar", "0") not in store.records
         await subsystem.aclose()
 
     @pytest.mark.asyncio
