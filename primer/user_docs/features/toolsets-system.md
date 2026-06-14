@@ -1,8 +1,8 @@
 ---
 slug: toolsets-system
-title: System toolsets
+title: Toolsets & tools
 section: features
-summary: The seven reserved system toolsets (system, search, workspaces, misc, web, harness, trigger) and how to explore their tools from the console or an agent.
+summary: The seven reserved toolsets (system, search, workspaces, misc, web, harness, trigger) and how to explore their tools from the console or an agent.
 ---
 
 ## Concept
@@ -43,24 +43,29 @@ Primer ships seven built-in toolsets that are always available without registrat
 |---|---|
 | `system` | Full CRUD over every platform entity (agents, graphs, collections, providers, toolsets, channels, workspaces, triggers, approval policies). Plus meta-tools: `list_toolset_tools`, `call_tool`, `invoke_agent`, `switch_to_agent`. |
 | `web` | Web search (`web-search`), raw HTTP fetch (`web-fetch`, `http-request`). Requires a web search provider to be configured for `web-search`. |
-| `workspaces` | Read, write, edit, glob, grep, and exec within a workspace sandbox. |
+| `workspaces` | Read, write, edit, glob, grep, and exec within a workspace sandbox. Auto-registered with every agent that runs in a workspace session: you do not bind these tools by hand on the agent. Any agent executing in a workspace session automatically has the `workspaces__*` tools available. |
 | `misc` | Portable stateless utilities: `get_datetime`, `sleep`, `ask_user`, `inform_user`, `uuid_v4`, `hash`, `calculate`. |
-| `search` | Semantic search over internal collections: `search_agents`, `search_graphs`, `search_collections`, `search_tools`, `search_ai_docs`. Active only when the internal collections subsystem is bootstrapped. |
+| `search` | Semantic search over internal collections: `search_agents`, `search_graphs`, `search_collections`, `search_tools`, `search_ai_docs`. These tools are only enabled when the internal search subsystem (internal collections) is enabled and active; until then they are unavailable. |
 | `trigger` | Manage triggers and subscriptions. Includes the yielding tool `subscribe_to_trigger`, which parks the calling session until a trigger fires. |
 | `harness` | Lifecycle management for harnesses (`harness__list`, `harness__get`, `harness__register`, `harness__fetch`, `harness__install`, `harness__sync`, `harness__uninstall`, `harness__update`, `harness__update_overrides`). |
 
 ### Yielding tools
 
-Several built-in tools are marked as **yielding**: when called, they park the run and release the worker rather than blocking. The worker picks up the session again when the triggering event arrives. Yielding tools require a workspace session (they do not work in chat-only contexts, with the exception of `ask_user` which degrades to a conversational turn on a chat surface).
+Yielding tools are a first-class concept that makes event-driven agentic AI possible. When an agent calls a yielding tool, the current turn is **paused and parked**: it does not hold a connection open and it does not block a worker. The run is resumed later, when the awaited event fires (a human answers a question, an approver makes a decision, a watched file changes, a trigger fires). This lets a single agent wait on real-world events for seconds, minutes, or days without consuming a worker the whole time.
 
 Key yielding tools:
 
-| Tool | Yields on |
+| Tool | Resumes when |
 |---|---|
-| `misc__sleep` | A timer event after N seconds |
-| `misc__ask_user` | An operator reply via the pending questions queue |
-| `trigger__subscribe_to_trigger` | The named trigger firing |
-| `system__switch_to_agent` | Chat-only: hands the conversation off to another agent |
+| `misc__ask_user` | A human answers via the pending questions queue (degrades to a conversational turn on a chat surface) |
+| The tool-approval gate | An approver makes an approve/reject decision |
+| `workspaces__watch_files` | A watched file changes |
+| `trigger__subscribe_to_trigger` | The named trigger fires |
+| `misc__sleep` | A timer event after N seconds elapses |
+
+### Switching agents
+
+`system__switch_to_agent` is **not** a yielding tool: it does not wait for an external event. It is a chat **handoff**. Calling it ends the current turn and the named agent takes over the **same chat** on the next turn. Use it to transfer control of a conversation from one agent to another (for example, escalating to a specialist agent) rather than to wait on an event.
 
 ### Exploring the tool catalog from an agent
 
@@ -73,9 +78,9 @@ This is the **search-and-invoke pattern**: an agent searches for a tool by descr
 
 ## Configuration
 
-Toolset bindings are set on the agent, not on the toolset itself. The toolset just exists; the agent declares which toolsets it uses.
+Tools are not configured on a "toolsets" page. They are bound per agent, on the agent's Tools tab (Agents > the agent > Tools). The toolset just exists; each agent declares which toolsets (and optionally which individual tools) it uses.
 
-```embed:toolsets
+```embed:agents-page
 ```
 
 ### Binding toolsets
@@ -89,9 +94,9 @@ Toolset bindings are set on the agent, not on the toolset itself. The toolset ju
 
 ### Tool id syntax
 
-When referencing a tool by its full scoped id (for example, in MCP exposure allowlists or policy configurations), the convention is `toolset_id__tool_name`, using double underscores as a separator; for example `system__invoke_agent`, `misc__ask_user`, `search__search_agents`.
+When referencing a tool by its full scoped id (for example, in MCP exposure allowlists or policy configurations), the convention is `toolset_id__tool_id`, using double underscores as a separator; for example `system__invoke_agent`, `misc__ask_user`, `search__search_agents`.
 
-The `web` toolset uses hyphens in its bare tool names (`web-search`, `web-fetch`, `http-request`), so their scoped ids are `web__web-search`, `web__web-fetch`, `web__http-request`.
+Tool ids are being standardized to all-underscores (`toolset_id__tool_id`). The `web` toolset is the current exception: its bare tool names still use hyphens (`web-search`, `web-fetch`, `http-request`), so their scoped ids are `web__web-search`, `web__web-fetch`, `web__http-request`.
 
 ## Walkthrough: explore a toolset from the console
 
@@ -104,15 +109,6 @@ This walkthrough discovers what tools the `misc` toolset exposes, then calls one
 5. Ask: "Now call `get_datetime` for me." The agent calls `system__call_tool` with `{"toolset_id": "misc", "tool_name": "get_datetime", "arguments": {}}` and returns the current timestamp.
 
 The same pattern works for any registered toolset, built-in or MCP.
-
-## What happens after
-
-Once toolsets are bound:
-
-- The agent's system prompt sees only the bound tools' schemas. A `system` binding exposes roughly 75 tools covering all platform entities; binding only the subset you need keeps the context smaller.
-- The `search` toolset becomes available as soon as internal collections are bootstrapped (a one-time setup step in Settings). Until then, its tools return a `subsystem-inactive` error.
-- The `trigger` toolset's `subscribe_to_trigger` tool parks the calling session until the trigger fires. No polling required; the worker is released while the session waits.
-- Adding or removing toolset bindings takes effect on the next session or chat turn; runs already in flight are not interrupted.
 
 ```ref:features/toolsets-mcp
 Register external tools via MCP toolsets (stdio and HTTP).
