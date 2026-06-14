@@ -78,6 +78,59 @@ async def list_exposed_tools(
     return out
 
 
+async def _enforce_approval_gate(
+    *,
+    scoped_id: str,
+    toolset_id: str,
+    bare_name: str,
+    arguments: dict,
+    principal: str | None,
+    deps: ExposureDeps,
+) -> None:
+    """Refuse the call if the tool's effective approval policy is required.
+
+    Reuses the agent/session approval engine
+    (:class:`primer.agent.approval.ApprovalResolver` +
+    :func:`evaluate_approval_gate`) so MCP can never run a tool the
+    operator gated. Raises :class:`NotExposed` with
+    ``reason="approval_required"`` when the verdict requires approval.
+
+    The resolver is normally wired by the lifespan; when it is absent
+    (``deps.approval_resolver is None`` -- only in narrow non-dispatch
+    test setups) we skip, mirroring the agent path which no-ops when no
+    resolver is configured.
+    """
+    from datetime import datetime, timezone
+
+    from primer.agent.approval import (
+        ApprovalContext,
+        evaluate_approval_gate,
+    )
+
+    resolver = getattr(deps, "approval_resolver", None)
+    if resolver is None:
+        return
+    policy = await resolver.find(toolset_id=toolset_id, tool_name=bare_name)
+    if policy is None or not policy.enabled:
+        return
+    ctx = ApprovalContext(
+        tool_name=bare_name,
+        toolset_id=toolset_id,
+        arguments=arguments or {},
+        agent_id=None,
+        session_id=None,
+        chat_id=None,
+        requested_at=datetime.now(timezone.utc),
+    )
+    verdict = await evaluate_approval_gate(
+        policy=policy,
+        context=ctx,
+        provider_registry=deps.provider_registry,
+    )
+    if verdict.required:
+        raise NotExposed(scoped_id, reason="approval_required")
+
+
 async def invoke_exposed(
     *,
     scoped_id: str,
@@ -99,13 +152,28 @@ async def invoke_exposed(
     OTel + Prometheus instrumentation stays unified with the
     agent-driven path.
 
+    Approval gate
+    -------------
+    A tool whose effective :class:`ToolApprovalPolicy` resolves to
+    ``required`` is REFUSED here (``reason="approval_required"``) rather
+    than dispatched: MCP v1 has no park/resume surface to collect a human
+    (or LLM-judge / Rego) decision, so running it unconditionally would
+    silently bypass the very gate the operator configured. We reuse the
+    same :class:`primer.agent.approval.ApprovalResolver` +
+    :func:`evaluate_approval_gate` the agent/session path uses, and the
+    engine fails closed, so a broken judge/policy still refuses rather
+    than leaks. The check is re-run on every call (like the allowlist /
+    exposability checks) so a policy edit takes effect immediately.
+
     Raises
     ------
     NotExposed
         Endpoint disabled, scoped id not in allowlist, scoped id
         malformed, provider missing, target tool missing from the
-        provider's catalogue, or :func:`is_exposable` rejected the
-        tool. The ``reason`` attribute differentiates the cause.
+        provider's catalogue, :func:`is_exposable` rejected the tool, or
+        the tool's effective approval policy is ``required``
+        (``reason="approval_required"``). The ``reason`` attribute
+        differentiates the cause.
     """
     exposure = await get_exposure(deps)
     if not exposure.enabled or scoped_id not in set(exposure.allowed_tools):
@@ -136,6 +204,14 @@ async def invoke_exposed(
     ok, reason = is_exposable(tool, provider=provider)
     if not ok:
         raise NotExposed(scoped_id, reason=reason)
+    await _enforce_approval_gate(
+        scoped_id=scoped_id,
+        toolset_id=toolset_id,
+        bare_name=bare_name,
+        arguments=arguments,
+        principal=principal,
+        deps=deps,
+    )
     return await invoke_one(
         provider=provider,
         tool_name=bare_name,

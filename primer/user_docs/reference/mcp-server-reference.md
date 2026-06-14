@@ -75,6 +75,12 @@ Additional constraints applied before a tool can be allowlisted:
 - **Workspace tools that require an active agent session** are denied
   (`needs_session`).
 
+A tool whose effective approval policy is `required` can be
+allowlisted, but it is **refused at `tools/call`** (MCP has no surface
+to collect an approval), so calls against it fail as not exposed. To
+make it callable over MCP, disable or delete the approval policy
+first.
+
 ## Listing tools
 
 Connect an MCP client to `/v1/mcp` and issue `tools/list`:

@@ -241,6 +241,123 @@ async def test_invoke_allowed_returns_result(
     }]
 
 
+# ---- approval-gate enforcement (security: MCP has no human-park) -----------
+
+
+def _deps_with_resolver(storage, registry) -> ExposureDeps:
+    """Build ExposureDeps wired with a live ApprovalResolver.
+
+    The production lifespan always supplies the resolver; this mirrors
+    that so the dispatch-time approval gate is exercised.
+    """
+    from primer.agent.approval import ApprovalResolver
+    from primer.model.tool_approval import ToolApprovalPolicy
+
+    resolver = ApprovalResolver(
+        storage=storage.get_storage(ToolApprovalPolicy),
+    )
+    return ExposureDeps(
+        storage_provider=storage,
+        provider_registry=registry,
+        approval_resolver=resolver,
+    )
+
+
+async def _seed_required_policy(
+    storage, *, toolset_id: str, tool_name: str, enabled: bool = True,
+) -> None:
+    from datetime import datetime, timezone
+
+    from primer.model.tool_approval import (
+        RequiredApprovalConfig,
+        ToolApprovalPolicy,
+    )
+
+    await storage.get_storage(ToolApprovalPolicy).create(
+        ToolApprovalPolicy(
+            toolset_id=toolset_id,
+            tool_name=tool_name,
+            enabled=enabled,
+            approval=RequiredApprovalConfig(),
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_invoke_approval_required_blocks(
+    fake_storage_provider, fake_provider_registry_with_tools,
+) -> None:
+    """An allowlisted tool with an effective ``required`` policy must be
+    REFUSED at dispatch (MCP has no park/resume surface), never run."""
+    deps = _deps_with_resolver(
+        fake_storage_provider, fake_provider_registry_with_tools,
+    )
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+    await _seed_required_policy(
+        fake_storage_provider, toolset_id="misc", tool_name="uuid_v4",
+    )
+
+    with pytest.raises(NotExposed) as excinfo:
+        await invoke_exposed(
+            scoped_id="misc__uuid_v4", arguments={},
+            principal=None, deps=deps,
+        )
+    assert excinfo.value.reason == "approval_required"
+    # The tool MUST NOT have executed.
+    provider = await fake_provider_registry_with_tools.get_toolset("misc")
+    assert provider.calls == []
+
+
+@pytest.mark.asyncio
+async def test_invoke_disabled_policy_does_not_block(
+    fake_storage_provider, fake_provider_registry_with_tools,
+) -> None:
+    """A policy with ``enabled=False`` is stored but skipped; the tool runs."""
+    deps = _deps_with_resolver(
+        fake_storage_provider, fake_provider_registry_with_tools,
+    )
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+    await _seed_required_policy(
+        fake_storage_provider, toolset_id="misc", tool_name="uuid_v4",
+        enabled=False,
+    )
+
+    result = await invoke_exposed(
+        scoped_id="misc__uuid_v4", arguments={},
+        principal=None, deps=deps,
+    )
+    assert isinstance(result, ToolCallResult)
+    assert result.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_invoke_no_policy_runs_with_resolver(
+    fake_storage_provider, fake_provider_registry_with_tools,
+) -> None:
+    """With a resolver wired but no matching policy, the tool runs normally."""
+    deps = _deps_with_resolver(
+        fake_storage_provider, fake_provider_registry_with_tools,
+    )
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+
+    result = await invoke_exposed(
+        scoped_id="misc__uuid_v4", arguments={},
+        principal=None, deps=deps,
+    )
+    assert isinstance(result, ToolCallResult)
+    assert result.is_error is False
+
+
 # ---- build_mcp_server smoke ------------------------------------------------
 
 

@@ -48,15 +48,24 @@ def _utcnow() -> datetime:
 
 @dataclass
 class ExposureDeps:
-    """Bundle the two collaborators the service needs.
+    """Bundle the collaborators the service needs.
 
     Defined as a dataclass so callers (the router, tests) can construct
     the dependency bag explicitly without threading kwargs through every
     helper.
+
+    ``approval_resolver`` is the singleton
+    :class:`primer.agent.approval.ApprovalResolver` wired in the
+    lifespan. The dispatch path (:func:`invoke_exposed`) consults it to
+    refuse approval-gated tools, which MCP v1 cannot park for a human
+    decision. It is optional (``None``) only for the few callers that
+    never dispatch (the CRUD router, exposure-listing tests); the
+    production lifespan always supplies it.
     """
 
     storage_provider: Any
     provider_registry: Any
+    approval_resolver: Any = None
 
 
 class ToolUnknown(Exception):

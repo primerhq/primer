@@ -424,3 +424,32 @@ async def test_ws_ping_pong(app, seeded_workspace_id):
             ws.send_json({"kind": "ping"})
             pong = ws.receive_json()
             assert pong == {"kind": "pong"}
+
+
+# ===========================================================================
+# Test 7: 4401 when the handshake carries no auth (auth enabled in test app)
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_ws_4401_without_auth(app, seeded_workspace_id):
+    """An unauthenticated WS handshake must be closed with code 4401.
+
+    The test app has auth enabled; connecting WITHOUT logging in (no
+    signed session cookie) must trip ``require_auth_ws`` and close the
+    socket with the WS-spec 4401 code BEFORE any session resolution.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    wid = seeded_workspace_id
+    sid = "s-noauth-1"
+    await _seed_session(app, wid, sid)
+
+    with SyncTestClient(app) as sclient:
+        # Deliberately do NOT call _auth_sync_client: no cookie is sent.
+        with pytest.raises(WebSocketDisconnect) as excinfo:
+            with sclient.websocket_connect(
+                f"/v1/workspaces/{wid}/sessions/{sid}/ws?cursor=0"
+            ) as ws:
+                ws.receive_json()
+    assert excinfo.value.code == 4401

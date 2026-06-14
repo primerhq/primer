@@ -71,11 +71,17 @@ client-side; the operator has to act.
 
 Tool approval policies are **incompatible with MCP exposure** by
 design. Approval pauses the call mid-flight waiting for an operator
-nod; MCP has no mechanism for the client to wait. The exposure check
-includes a hard block on any tool whose approval policy is
-`required` - those never appear in `tools/list` even if explicitly
-allowlisted. To expose a tool that previously had an approval
-requirement, the operator drops the policy first.
+(or LLM-judge / Rego) decision; MCP v1 has no mechanism for the client
+to wait. So an allowlisted tool whose effective approval policy
+resolves to `required` is **refused at `tools/call`**: the dispatch
+path consults the same approval resolver the agent runtime uses, and
+when the verdict is `required` it returns the tool as not exposed
+(method-not-found on the wire) instead of running it. This is enforced
+at call time, not at list time, so the tool may still appear in
+`tools/list` but every call against it is blocked. The check is
+re-evaluated on every call, so toggling or deleting the policy takes
+effect immediately. To make such a tool actually callable over MCP,
+the operator drops or disables the approval policy first.
 
 ## Lifecycle and states
 
@@ -139,10 +145,10 @@ The agent sees `tools/call` return:
 }
 ```
 
-What it means: this scoped id is not on the operator's allowlist. The
-operator either (a) hasn't added it, (b) had it but removed it, or
-(c) the tool's approval policy was just set to `required` and it was
-auto-removed.
+What it means: this scoped id is not currently callable. The operator
+either (a) hasn't added it to the allowlist, (b) had it but removed
+it, or (c) the tool has an effective approval policy of `required`, so
+it is refused at call time (approvals can't be collected over MCP).
 
 The agent should:
 1. Call `tools/list` to see what *is* available - there may be a
@@ -161,11 +167,15 @@ The agent should:
   `HARD_DENY` lives on as an empty `frozenset` for backward
   compatibility with importers. Tool dangerousness is a per-deployment
   judgment now.
-- **Approval-gated tools are silently invisible**, not noisily blocked.
+- **Approval-gated tools are refused at call time, not hidden.**
   If the operator adds a tool to `allowed_tools` and *also* sets an
-  approval policy on it, `tools/list` will not emit it. From the
-  agent's side, the tool simply doesn't exist. There's no error
-  surface that says "this tool is gated".
+  enabled approval policy whose verdict is `required`, the tool may
+  still appear in `tools/list`, but every `tools/call` against it is
+  refused (returned as not exposed / method-not-found). The refusal is
+  intentionally indistinguishable from a non-allowlisted tool on the
+  wire so the allowlist's shape is not leaked; the real reason is in
+  the audit log. From the agent's side, treat such a tool as
+  uncallable and do not retry.
 - **Yielding tools are also invisible.** The agent will not see
   `trigger::subscribe_to_trigger`, `misc::ask_user`, etc. Those
   primitives are unavailable outside of primer's own agent runtime.
