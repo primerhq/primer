@@ -59,6 +59,20 @@ class _InMemoryStorage(Generic[_T]):
 
     async def list(self, page, *, order_by=None):
         items = list(self._data.values())
+        # Honor order_by (additive; mirrors find) so endpoints that list +
+        # order, e.g. tool_approval/records by decided_at desc, get a stable
+        # ordered page as the real sqlite/postgres backends would.
+        if order_by:
+            for ob in reversed(order_by):
+                field = ob.field
+                desc = ob.direction == "desc"
+                items.sort(
+                    key=lambda e, f=field: (
+                        _resolve_field(e, f) is None,
+                        _resolve_field(e, f) if _resolve_field(e, f) is not None else 0,
+                    ),
+                    reverse=desc,
+                )
         if isinstance(page, OffsetPage):
             sliced = items[page.offset : page.offset + page.length]
             return OffsetPageResponse(

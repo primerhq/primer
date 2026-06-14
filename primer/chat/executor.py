@@ -265,6 +265,7 @@ class ChatTurnRunner:
         message_storage: Storage[ChatMessage],
         cancel_event: asyncio.Event | None = None,
         artifact_storage: object | None = None,
+        approval_record_storage: object | None = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -273,6 +274,10 @@ class ChatTurnRunner:
         self._chats = chat_storage
         self._messages = message_storage
         self._cancel_event = cancel_event
+        # Optional storage for durable resolved tool-approval records. When
+        # wired, an approval resolved on the chat surface (operator yes/no, or
+        # a cancel-while-awaiting) writes a ToolApprovalRecord. None -> skip.
+        self._approval_records = approval_record_storage
         # Optional artifact store: when a tool returns media (MCP image/audio),
         # convert + store it so the tool_result row carries media parts the
         # channel relay can forward. None -> tool media is not surfaced.
@@ -716,7 +721,10 @@ class ChatTurnRunner:
                 + ". Approve? (yes/no)"
             )
             pending = {"tool_call_id": tool_call_id, "mode": "approval",
-                       "original_call": original}
+                       "original_call": original,
+                       "policy_id": meta.get("policy_id"),
+                       "approval_type": meta.get("approval_type"),
+                       "gate_reason": meta.get("gate_reason")}
         elif y.tool_name == "ask_user":
             prompt = meta.get("prompt") or ""
             pending = {"tool_call_id": tool_call_id, "mode": "ask_user",
@@ -744,14 +752,34 @@ class ChatTurnRunner:
         # re-read the old agent_id from storage and clobber our own change).
         await self._chats.update(chat)
 
+    async def _write_chat_approval_record(
+        self, *, chat: Chat, pending: dict, decision: str, reason: str | None,
+    ) -> None:
+        """Persist a resolved approval decision for a chat gate (best-effort)."""
+        from primer.agent.approval_record import (
+            record_from_chat_pending,
+            write_approval_record,
+        )
+        record = record_from_chat_pending(
+            pending=pending,
+            decision=decision,
+            reason=reason,
+            chat_id=chat.id,
+            agent_id=getattr(chat, "agent_id", None),
+            requested_at=getattr(chat, "created_at", None),
+        )
+        await write_approval_record(self._approval_records, record)
+
     async def abandon_pending(self, chat: Chat, pending: dict) -> None:
         """Abandon a pending (awaiting-input) tool call on cancel. Delegates to
-        the shared helper so the switch endpoint can reuse the same logic."""
+        the shared helper so the switch endpoint can reuse the same logic. The
+        helper records the cancellation when the gate is an approval."""
         from primer.chat.pending import abandon_pending_rows
         await abandon_pending_rows(
             chat, pending=pending, messages=self._messages, chats=self._chats,
             result_text="cancelled by user",
             terminal_reason="cancel_while_awaiting_input",
+            approval_records=self._approval_records,
         )
 
     # Tokens that read as an affirmative approval. Matched case-folded
@@ -787,6 +815,15 @@ class ChatTurnRunner:
             has_neg = any(t in self._NEGATIVE for t in tokens)
             has_aff = any(t in self._AFFIRMATIVE for t in tokens)
             approved = has_aff and not has_neg
+            # Persist the resolved decision (exactly once) BEFORE acting on it,
+            # so the operator's verdict is durable even if the re-dispatch
+            # itself later errors. reply_text is the operator's free-text reason.
+            await self._write_chat_approval_record(
+                chat=chat,
+                pending=pending,
+                decision="approved" if approved else "rejected",
+                reason=None if approved else reply_text,
+            )
             if approved:
                 original = pending.get("original_call") or {}
                 call = ToolCallPart(

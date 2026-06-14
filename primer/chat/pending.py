@@ -40,10 +40,30 @@ async def abandon_pending_rows(
     chats: Any,
     result_text: str,
     terminal_reason: str,
+    approval_records: Any | None = None,
 ) -> None:
     """Append a rejected ``tool_result`` + terminal ``cancelled`` row for the
     pending gate and clear ``chat.pending_tool_call``. Persists the chat once,
-    preserving externally-updated ``cancel_requested_at`` + ``agent_id``."""
+    preserving externally-updated ``cancel_requested_at`` + ``agent_id``.
+
+    When the abandoned gate is an approval and ``approval_records`` storage is
+    supplied, persist a ``cancelled`` :class:`ToolApprovalRecord` (best-effort)
+    so the resolved decision survives. This is the single chokepoint for every
+    cancel/abandon path, so the record is written exactly once."""
+    if approval_records is not None and pending.get("mode") == "approval":
+        from primer.agent.approval_record import (
+            record_from_chat_pending,
+            write_approval_record,
+        )
+        record = record_from_chat_pending(
+            pending=pending,
+            decision="cancelled",
+            reason=result_text,
+            chat_id=chat.id,
+            agent_id=getattr(chat, "agent_id", None),
+            requested_at=getattr(chat, "created_at", None),
+        )
+        await write_approval_record(approval_records, record)
     await _append_row(chat, kind="tool_result", messages=messages, payload={
         "id": pending.get("tool_call_id"),
         "name": str(pending.get("mode") or ""),
