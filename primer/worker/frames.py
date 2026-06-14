@@ -159,13 +159,36 @@ class AgentFrame:
     async def resume(self, child_result: Any, services: Any) -> "FrameOutcome":
         """Resume this agent turn with a completed child's result.
 
-        STUB - filled by a later task. Feeds ``child_result`` back into the
-        agent's tool loop (as the resolved tool result for ``tool_call_id``),
-        re-runs the turn, and returns a :class:`Completed` or :class:`Reparked`
-        outcome depending on whether the turn finished or raised a fresh yield.
+        Delegates to ``services.resume_subagent`` - which rehydrates the
+        subagent's mid-flight ``llm_messages``, appends ``child_result`` as the
+        resolved tool result for this frame's pending ``tool_call_id``, and
+        re-runs the turn. On a clean finish it returns the subagent's final
+        assistant text; if the turn raises a fresh nested yield it re-raises
+        :class:`~primer.model.yield_.YieldToWorker` (with a new ``AgentFrame``
+        already prepended).
+
+        Returns a :class:`Reparked` if the subagent re-yielded, else a
+        :class:`Completed` carrying a :class:`ToolResultPart` (keyed by this
+        frame's ``tool_call_id``) whose JSON ``output`` wraps the final text
+        under an ``"output"`` key.
         """
-        raise NotImplementedError(
-            "AgentFrame.resume is a stub; implemented in a later task"
+        try:
+            text = await services.resume_subagent(
+                agent_id=self.agent_id,
+                context=self.context,
+                llm_messages=self.llm_messages,
+                child_result=child_result,
+                depth=self.depth,
+                invoke_tool_call_id=self.tool_call_id,
+            )
+        except YieldToWorker as yld:
+            return Reparked(new_yield=yld)
+        return Completed(
+            value=ToolResultPart(
+                id=self.tool_call_id,
+                output=json.dumps({"output": text}),
+                error=False,
+            )
         )
 
 
