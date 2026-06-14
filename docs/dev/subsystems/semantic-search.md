@@ -93,41 +93,41 @@ The entities:
 
 ## 4. Code layout
 
-- `primer/model/provider.py` -- `SemanticSearchProviderType`,
+- `primer/model/provider.py`: `SemanticSearchProviderType`,
   `SemanticSearchProvider`, the config classes (`PgVectorConfig`,
   `PgVectorScaleConfig`, `LanceConfig`), the retained internal
   `VectorStoreProviderType` / `VectorStoreProviderConfig` adapter shapes, and the
   `CrossEncoderProvider` family (`CrossEncoderProviderType`,
   `HuggingFaceCrossEncoderConfig`, `CrossEncoderModel`).
-- `primer/model/search.py` -- `MmrConfig`, `CollectionCrossEncoder`, and the
+- `primer/model/search.py`: `MmrConfig`, `CollectionCrossEncoder`, and the
   umbrella `CollectionSearch` per-collection toggle.
-- `primer/int/vector_store.py` -- the `VectorStore` ABC.
-- `primer/int/cross_encoder.py` -- the `CrossEncoder` ABC.
-- `primer/vector/factory.py` -- `VectorStoreProviderFactory.create` dispatches on
+- `primer/int/vector_store.py`: the `VectorStore` ABC.
+- `primer/int/cross_encoder.py`: the `CrossEncoder` ABC.
+- `primer/vector/factory.py`: `VectorStoreProviderFactory.create` dispatches on
   the backend enum (lazy imports keep `lancedb` off the pgvector cold path).
-- `primer/vector/pgvector.py`, `primer/vector/lance.py` -- the two shipped
+- `primer/vector/pgvector.py`, `primer/vector/lance.py`: the two shipped
   backends.
-- `primer/cross_encoder/huggingface.py` -- the local `HuggingFaceCrossEncoder`.
-- `primer/search/searcher.py` -- `CollectionSearcher`, the vector -> CER -> MMR
+- `primer/cross_encoder/huggingface.py`: the local `HuggingFaceCrossEncoder`.
+- `primer/search/searcher.py`: `CollectionSearcher`, the vector -> CER -> MMR
   orchestrator.
-- `primer/api/registries/semantic_search_registry.py` -- `SemanticSearchRegistry`.
-- `primer/api/registries/provider_registry.py` -- cross-encoder cache + factory,
+- `primer/api/registries/semantic_search_registry.py`: `SemanticSearchRegistry`.
+- `primer/api/registries/provider_registry.py`: cross-encoder cache + factory,
   and the reserved-id sets (`RESERVED_SSP_IDS = {'lance'}`,
   `RESERVED_CROSS_ENCODER_IDS = {'huggingface-ce'}`).
-- `primer/api/routers/semantic_search.py` -- `/v1/ssp` CRUD.
-- `primer/api/routers/providers.py` -- `CrossEncoderProvider` CRUD.
-- `primer/api/routers/knowledge.py` -- `POST /v1/collections/{id}/search`.
-- `primer/catalog/catalog.py`, `primer/catalog/types.py` -- the lower-layer
+- `primer/api/routers/semantic_search.py`: `/v1/ssp` CRUD.
+- `primer/api/routers/providers.py`: `CrossEncoderProvider` CRUD.
+- `primer/api/routers/knowledge.py`: `POST /v1/collections/{id}/search`.
+- `primer/catalog/catalog.py`, `primer/catalog/types.py`: the lower-layer
   `SemanticCatalog` (exercised by its own unit tests).
-- `primer/internal_collections.py` -- the live `InternalCollectionsSubsystem`
+- `primer/internal_collections.py`: the live `InternalCollectionsSubsystem`
   (CDC worker, bootstrap state machine, AI-docs ingest, `search` /
   `search_ai_docs`).
-- `primer/model/internal.py` -- `InternalCollectionsConfig`,
+- `primer/model/internal.py`: `InternalCollectionsConfig`,
   `InternalCollectionsBootstrapStatus`, `INTERNAL_COLLECTION_IDS`,
   `AI_DOCS_COLLECTION_ID`.
-- `primer/api/routers/internal_collections.py` -- the activation / bootstrap /
+- `primer/api/routers/internal_collections.py`: the activation / bootstrap /
   search REST surface.
-- `primer/toolset/search.py` -- the agent-facing `search` internal toolset.
+- `primer/toolset/search.py`: the agent-facing `search` internal toolset.
 
 ## 5. Data model
 
@@ -142,7 +142,7 @@ The entities:
   created with pgvector's `halfvec` column type (half precision, up to 4000
   dimensions) instead of the standard `vector` type (max 2000); enable it for
   embedding models above 2000 dims, e.g. `text-embedding-3-large` (3072). The
-  flag only affects collections created while it is on -- existing collections
+  flag only affects collections created while it is on; existing collections
   keep their original type (tracked per collection, see section 7).
 - `Collection`: `search_provider_id` (required, `min_length=1`, immutable after
   create), `system: bool`, `harness_id`, plus the embedder reference and optional
@@ -266,13 +266,13 @@ via `POST /v1/ssp`.
 
 REST:
 
-- `/v1/ssp` -- `SemanticSearchProvider` CRUD via `make_crud_router`
+- `/v1/ssp`: `SemanticSearchProvider` CRUD via `make_crud_router`
   (`primer/api/routers/semantic_search.py`). `DELETE` returns 409 when a
   `Collection` still references the SSP; `POST` / `DELETE` on the reserved id
   `lance` return 409 / 403; `POST /v1/ssp/{id}/invalidate` returns 204.
-- `/v1/cross_encoder_providers` -- `CrossEncoderProvider` CRUD plus
+- `/v1/cross_encoder_providers`: `CrossEncoderProvider` CRUD plus
   `GET /v1/cross_encoder_providers/{id}/models` (`primer/api/routers/providers.py`).
-- `POST /v1/collections/{id}/search` -- document search; resolves the store via
+- `POST /v1/collections/{id}/search`: document search; resolves the store via
   `SemanticSearchRegistry.get_store(coll.search_provider_id)` and calls
   `VectorStore.search` directly. Note: this path does not yet run
   `CollectionSearcher`, so per-collection `Collection.search` (MMR / CER) toggles

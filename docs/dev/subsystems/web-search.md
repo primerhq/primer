@@ -90,35 +90,35 @@ The entities:
 
 ## 4. Code layout
 
-- `primer/model/web_search.py` -- `WebSearchProviderType`, the four config classes
+- `primer/model/web_search.py`: `WebSearchProviderType`, the four config classes
   (`DuckDuckGoConfig`, `TavilyConfig`, `FirecrawlConfig`, `ExaConfig`), the
   `WebSearchProviderConfig` discriminated union, the `WebSearchProvider` row, the
   `WebSearchMode` / `SingleProviderConfig` / `AggregatedProviderConfig` /
   `ActiveWebSearchConfig` singleton family, and the constants
   `RESERVED_WEB_SEARCH_IDS = {'DuckDuckGo'}` and
   `ACTIVE_WEB_SEARCH_CONFIG_ID = '_active_web_search_config'`.
-- `primer/web_search/adapter.py` -- the `WebSearchAdapter` ABC, `SearchHit`,
+- `primer/web_search/adapter.py`: the `WebSearchAdapter` ABC, `SearchHit`,
   `SafeSearchLevel`, and the named exceptions `WebSearchUnavailable` /
   `WebSearchProviderError`.
-- `primer/web_search/__init__.py` -- public re-exports (`SafeSearchLevel`,
+- `primer/web_search/__init__.py`: public re-exports (`SafeSearchLevel`,
   `SearchHit`, `WebSearchAdapter`, the two exceptions).
-- `primer/web_search/duckduckgo.py` -- `DuckDuckGoAdapter` (keyless, wraps the
+- `primer/web_search/duckduckgo.py`: `DuckDuckGoAdapter` (keyless, wraps the
   `ddgs` library).
 - `primer/web_search/tavily.py`, `primer/web_search/firecrawl.py`,
-  `primer/web_search/exa.py` -- the three keyed REST adapters.
-- `primer/web_search/service.py` -- `WebSearchService`.
-- `primer/api/registries/web_search_registry.py` -- `WebSearchRegistry` and
+  `primer/web_search/exa.py`: the three keyed REST adapters.
+- `primer/web_search/service.py`: `WebSearchService`.
+- `primer/api/registries/web_search_registry.py`: `WebSearchRegistry` and
   `default_web_search_factory`.
-- `primer/api/routers/web_search.py` -- the CRUD router, the `_test` / `_types`
+- `primer/api/routers/web_search.py`: the CRUD router, the `_test` / `_types`
   helpers router, and the singleton GET / PUT router.
-- `primer/toolset/web/__init__.py` -- `build_web_toolset` factory.
-- `primer/toolset/web/tools.py` -- `WebSearchArgs` / `HttpRequestArgs`, the
+- `primer/toolset/web/__init__.py`: `build_web_toolset` factory.
+- `primer/toolset/web/tools.py`: `WebSearchArgs` / `HttpRequestArgs`, the
   descriptor factories, and the async handlers.
-- `primer/toolset/internal.py` -- `InternalToolsetProvider` (the immutable static
+- `primer/toolset/internal.py`: `InternalToolsetProvider` (the immutable static
   registry the `web` toolset is built on).
-- `primer/api/app.py` -- `_bootstrap_web_search` plus the lifespan wiring that
+- `primer/api/app.py`: `_bootstrap_web_search` plus the lifespan wiring that
   constructs the registry, service, and toolset.
-- `ui/components/web_search.jsx`, `ui/app.jsx` -- the `/web-search` console page.
+- `ui/components/web_search.jsx`, `ui/app.jsx`: the `/web-search` console page.
 
 ## 5. Data model
 
@@ -225,20 +225,20 @@ it.
 
 REST (`primer/api/routers/web_search.py`, all under `/v1`):
 
-- `/v1/web_search_providers` -- `WebSearchProvider` CRUD via `make_crud_router`.
+- `/v1/web_search_providers`: `WebSearchProvider` CRUD via `make_crud_router`.
   `POST` at the reserved id `DuckDuckGo` returns 409; `DELETE` on it returns 403;
   `DELETE` of a row referenced by the active config returns 409 (`cascade_blocked`,
   `referenced_by=_active_web_search_config`); `on_update` / `on_delete` invalidate
   the registry.
-- `POST /v1/web_search_providers/_test` -- builds a transient adapter from a draft,
+- `POST /v1/web_search_providers/_test`: builds a transient adapter from a draft,
   runs `search(query='primer', count=1, safe_search='moderate')`, returns
   `{ok, hits}` or `{ok=false, error}`.
-- `GET /v1/web_search_providers/_types` -- returns the per-type `config_fields`
+- `GET /v1/web_search_providers/_types`: returns the per-type `config_fields`
   map for the UI form. The helpers router mounts before the CRUD router so these
   literal paths beat the `{id}` catch-all.
-- `GET /v1/web_search_active_config` -- reads the singleton; returns 503
+- `GET /v1/web_search_active_config`: reads the singleton; returns 503
   `subsystem_not_bootstrapped` if missing (never lazy-creates).
-- `PUT /v1/web_search_active_config` -- validates every referenced provider id
+- `PUT /v1/web_search_active_config`: validates every referenced provider id
   exists (422 `unknown_provider_ids` with the bad-id list otherwise), writes, then
   calls `service.invalidate_active_config()`.
 
