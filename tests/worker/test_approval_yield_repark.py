@@ -2,16 +2,16 @@
 
 When an approval gate sits on a yielding tool the park is two-phase:
 
-* Phase 1 — the session parks for the operator's approval decision
+* Phase 1 - the session parks for the operator's approval decision
   (``tool_name='_approval'``).
-* Phase 2 — once APPROVED, ``_resume_tool_approval`` re-dispatches the
+* Phase 2 - once APPROVED, ``_resume_tool_approval`` re-dispatches the
   real tool with ``bypass_approval=True``; if that tool is a yielding
   tool it raises :class:`YieldToWorker` a second time. The resume path
   must RE-PARK on the tool's real event key (not synthesise a fail-closed
   error tool_result), and resume to completion when the real event fires.
 
 A REJECT still short-circuits to a clean error tool_result (the tool
-never runs) — the existing fail-closed behaviour.
+never runs) - the existing fail-closed behaviour.
 
 Driven end-to-end through ``WorkerPool._run_engine_session`` with a real
 InMemoryClaimEngine + SessionClaimAdapter so the on_release park-column
@@ -227,7 +227,7 @@ async def test_approved_yielding_tool_reparks_then_resumes(monkeypatch):
 
     # The approved tool was re-dispatched with bypass_approval (it yielded).
     assert len(tm.calls) == 1
-    # No error tool_result was injected — the session re-parked instead.
+    # No error tool_result was injected - the session re-parked instead.
     assert fake_executor.injected == []
 
     row = await session_storage.get(sid)
@@ -254,7 +254,7 @@ async def test_approved_yielding_tool_reparks_then_resumes(monkeypatch):
     await session_storage.update(row2)
 
     # A fresh executor for the continuation (real tool has no tool_manager
-    # call this time — it goes through the resume hook).
+    # call this time - it goes through the resume hook).
     fake_executor2 = _RecordingExecutor(tool_manager=tm)
     monkeypatch.setattr(
         pool, "_build_agent_executor",
@@ -292,7 +292,7 @@ async def test_rejected_yielding_tool_short_circuits_clean_error(monkeypatch):
     engine = _build_engine(session_storage)
     pool = _build_pool(storage_provider, engine)
 
-    # If execute() were ever called, it would yield — assert it is NOT.
+    # If execute() were ever called, it would yield - assert it is NOT.
     real_event = Yielded(tool_name=real_tool_name, event_key=f"timer:{tool_call_id}")
     tm = _YieldingToolManager(yielded=real_event, tool_call_id=tool_call_id)
     fake_executor = _RecordingExecutor(tool_manager=tm)
@@ -332,6 +332,6 @@ async def test_rejected_yielding_tool_short_circuits_clean_error(monkeypatch):
 
     row = await session_storage.get(sid)
     assert row is not None
-    # NOT re-parked — the continuation turn runs (park cleared).
+    # NOT re-parked - the continuation turn runs (park cleared).
     assert row.parked_status is None
     assert row.status != SessionStatus.ENDED

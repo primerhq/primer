@@ -1,13 +1,13 @@
-"""Approval gate on a *yielding* tool_call node — two-phase park.
+"""Approval gate on a *yielding* tool_call node - two-phase park.
 
 When a ToolCall node's underlying tool is BOTH approval-gated AND a
 yielding tool, the park is two-phase:
 
-* Phase 1 — the call parks for the operator's approval decision.
-* Phase 2 — once APPROVED, the bypassed re-dispatch runs the real tool,
+* Phase 1 - the call parks for the operator's approval decision.
+* Phase 2 - once APPROVED, the bypassed re-dispatch runs the real tool,
   which itself yields for its own event (timer/file/graph/human). The
   resume drain must NOT swallow this second :class:`YieldToWorker` as a
-  node failure — it must RE-PARK on the new event key.
+  node failure - it must RE-PARK on the new event key.
 
 A REJECT still short-circuits to ``tool_execution_failed`` (the tool
 never runs), which :mod:`tests.graph.test_toolcall_approval_reject`
@@ -144,7 +144,7 @@ async def test_approved_yielding_toolcall_reparks_on_real_event() -> None:
         executor2.resume_from_checkpoint(payload)
     )
 
-    # Phase 2: the resume RE-PARKED on the tool's real event key — no
+    # Phase 2: the resume RE-PARKED on the tool's real event key - no
     # failure event, no tool_execution_failed node output.
     assert repark is not None, "approved yielding tool should re-park, not error"
     assert repark.yielded.event_key == "timer:tc-sleep"
