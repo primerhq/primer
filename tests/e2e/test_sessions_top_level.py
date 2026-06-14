@@ -14,17 +14,44 @@ the worker pool never has to actually process a turn.
 from __future__ import annotations
 
 import asyncio
+import os
 from pathlib import Path
 
 import httpx
 import pytest
 
 
+# The lifecycle tests below need a real agent turn to converge to a terminal
+# state within their poll windows; they do not assert on LLM content. By
+# default they use a (placeholder-keyed) anthropic provider, which is what CI
+# runs with a real ANTHROPIC_API_KEY in the env. For local runs against an
+# OpenAI-compatible backend (e.g. LM Studio), set PRIMER_E2E_LLM_BASE_URL (the
+# OpenAI base, ending in /v1), PRIMER_E2E_LLM_MODEL, and the key in
+# PRIMER_E2E_LLM_API_KEY (never hardcode a token). When the base URL is set the
+# helpers below emit an `openchat` provider pointed at that endpoint instead.
+def _llm_model_name() -> str:
+    if os.environ.get("PRIMER_E2E_LLM_BASE_URL"):
+        return os.environ.get("PRIMER_E2E_LLM_MODEL", "google/gemma-4-e4b")
+    return "claude-sonnet-4-6"
+
+
 def _llm_body(entity_id: str) -> dict:
+    base_url = os.environ.get("PRIMER_E2E_LLM_BASE_URL")
+    if base_url:
+        return {
+            "id": entity_id,
+            "provider": "openchat",
+            "models": [{"name": _llm_model_name(), "context_length": 32_768}],
+            "config": {
+                "url": base_url,
+                "api_key": os.environ.get("PRIMER_E2E_LLM_API_KEY", ""),
+            },
+            "limits": {"max_concurrency": 1},
+        }
     return {
         "id": entity_id,
         "provider": "anthropic",
-        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "models": [{"name": _llm_model_name(), "context_length": 200_000}],
         "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 1},
     }
@@ -34,7 +61,7 @@ def _agent_body(entity_id: str, *, provider_id: str) -> dict:
     return {
         "id": entity_id,
         "description": "test agent",
-        "model": {"provider_id": provider_id, "model_name": "claude-sonnet-4-6"},
+        "model": {"provider_id": provider_id, "model_name": _llm_model_name()},
         "tools": [],
     }
 
