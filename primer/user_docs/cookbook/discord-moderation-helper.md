@@ -27,7 +27,7 @@ Configure a Discord provider and create a channel before following
 this recipe.
 ```
 
-```ref:features/tool-approval
+```ref:features/toolsets-approvals
 Approval policies gate specific tool calls behind a manual or
 automated decision.
 ```
