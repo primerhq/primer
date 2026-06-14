@@ -130,14 +130,15 @@ Lists sessions across all workspaces with optional filtering.
 | Param | Type | Notes |
 |-------|------|-------|
 | `workspace_id` | string | Filter to one workspace |
-| `agent_id` | string | Filter to one agent binding |
+| `agent_id` | string | Filter to sessions with a matching agent binding; graph-bound sessions are never returned |
+| `graph_id` | string | Filter to sessions with a matching graph binding; agent-bound sessions are never returned |
 | `status` | string | One of `created`, `running`, `waiting`, `paused`, `ended` |
 | `parent_session_id` | string | Direct-parent filter (non-transitive) |
 | `order_by` | string | e.g. `created_at:asc` or `created_at:desc` |
 | `limit` | integer | Page size |
 | `offset` | integer | Page offset |
 
-All filter params combine with AND semantics. A missing agent produces an empty list, not a 404.
+All filter params combine with AND semantics. A missing graph or agent produces an empty list, not a 404.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -252,7 +253,7 @@ const r = await fetch("/v1/sessions/find", {
 const result = await r.json();
 ```
 
-**Cursor mode:** pass `"page": {"kind": "cursor", "cursor": null, "length": 25}` for the first page. Subsequent pages use `cursor` from the `next_cursor` field in the response.
+**Cursor mode:** pass `"page": {"kind": "cursor", "cursor": null, "length": 25}` for the first page. Subsequent pages use `cursor` from the `next_cursor` field in the response. Cursor pagination is stable and complete: every matching session appears exactly once across the full walk, even when multiple sessions share the same timestamp. The cursor always includes the session `id` as a stable tiebreaker, so rows with identical sort-key values are never skipped or duplicated at page boundaries.
 
 **Response: 200** - For offset pages: `{"kind": "offset", "items": [...], "total": N}`. For cursor pages: `{"kind": "cursor", "items": [...], "next_cursor": "..."}` (null `next_cursor` means last page).
 

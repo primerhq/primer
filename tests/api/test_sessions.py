@@ -1218,3 +1218,143 @@ async def test_claim_engine_upsert_on_resume(
     assert (ClaimKind.SESSION, sid) in engine.upserted, (
         f"Expected engine.upsert(SESSION, {sid!r}) on resume but got: {engine.upserted!r}"
     )
+
+
+# ===========================================================================
+# graph_id filter - GET /v1/sessions?graph_id=<id>
+# ===========================================================================
+
+
+async def test_top_level_list_sessions_filtered_by_graph_id(
+    sessions_client, seeded_workspace, seeded_graph, app,
+):
+    """``?graph_id=`` filters sessions by ``binding.graph_id`` (nested-JSON path).
+
+    Only graph-bound sessions with the matching graph_id are returned;
+    sessions bound to a different graph or to an agent are excluded.
+    """
+    # A second graph so we can confirm cross-graph exclusion.
+    second_graph = await seeded_graph(id="gr-other")
+
+    r1 = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "graph", "graph_id": seeded_graph.id}},
+    )
+    r2 = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "graph", "graph_id": second_graph.id}},
+    )
+    assert r1.status_code == 201, r1.text
+    assert r2.status_code == 201, r2.text
+    sid_target = r1.json()["id"]
+    sid_other = r2.json()["id"]
+
+    resp = await sessions_client.get(
+        f"/v1/sessions?graph_id={seeded_graph.id}"
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {s["id"] for s in resp.json()["items"]}
+    assert sid_target in ids, (
+        f"session bound to graph {seeded_graph.id!r} missing from filter result"
+    )
+    assert sid_other not in ids, (
+        f"session bound to graph {second_graph.id!r} should be excluded"
+    )
+
+
+async def test_top_level_list_sessions_graph_id_missing_returns_empty(
+    sessions_client,
+):
+    """``?graph_id=`` with a non-existent id returns 200 with empty items list.
+
+    Narrowing semantics: no match is not an error.
+    """
+    resp = await sessions_client.get("/v1/sessions?graph_id=no-such-graph-xyz")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "items" in body
+    assert body["items"] == [], (
+        f"filter by missing graph_id should yield empty list, got: {body['items']!r}"
+    )
+
+
+async def test_top_level_list_sessions_graph_id_excludes_agent_sessions(
+    sessions_client, seeded_workspace, seeded_agent, seeded_graph,
+):
+    """``?graph_id=`` does not match agent-bound sessions."""
+    agent_sess = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    graph_sess = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "graph", "graph_id": seeded_graph.id}},
+    )
+    assert agent_sess.status_code == 201, agent_sess.text
+    assert graph_sess.status_code == 201, graph_sess.text
+    sid_agent = agent_sess.json()["id"]
+    sid_graph = graph_sess.json()["id"]
+
+    resp = await sessions_client.get(
+        f"/v1/sessions?graph_id={seeded_graph.id}"
+    )
+    assert resp.status_code == 200, resp.text
+    ids = {s["id"] for s in resp.json()["items"]}
+    assert sid_graph in ids
+    assert sid_agent not in ids, (
+        "agent-bound session must not appear in graph_id-filtered results"
+    )
+
+
+# ===========================================================================
+# Cursor pagination - POST /v1/sessions/find with kind=cursor
+# ===========================================================================
+
+
+async def test_find_sessions_cursor_pagination_covers_all_once(
+    sessions_client, seeded_workspace, seeded_graph,
+):
+    """Cursor walk over POST /v1/sessions/find visits every session exactly once.
+
+    Seeds 5 graph-bound sessions then walks with page length 2 (3 pages:
+    2+2+1). Verifies complete coverage with no duplicates.
+    """
+    seeded_ids: list[str] = []
+    for i in range(5):
+        r = await sessions_client.post(
+            f"/v1/workspaces/{seeded_workspace.id}/sessions",
+            json={"binding": {"kind": "graph", "graph_id": seeded_graph.id}},
+        )
+        assert r.status_code == 201, r.text
+        seeded_ids.append(r.json()["id"])
+
+    predicate = {
+        "kind": "predicate",
+        "op": "=",
+        "left": {"kind": "field", "name": "binding.graph_id"},
+        "right": {"kind": "value", "value": seeded_graph.id},
+    }
+
+    seen_ids: list[str] = []
+    cursor: str | None = None
+    for _ in range(10):  # safety bound
+        body = {
+            "predicate": predicate,
+            "page": {"kind": "cursor", "cursor": cursor, "length": 2},
+        }
+        resp = await sessions_client.post("/v1/sessions/find", json=body)
+        assert resp.status_code == 200, resp.text
+        page = resp.json()
+        items = page.get("items", [])
+        seen_ids.extend(item["id"] for item in items)
+        cursor = page.get("next_cursor")
+        if not cursor:
+            break
+
+    assert sorted(seen_ids) == sorted(seeded_ids), (
+        f"cursor walk did not cover each session exactly once. "
+        f"seeded={sorted(seeded_ids)!r}, seen={sorted(seen_ids)!r}"
+    )
+    assert len(seen_ids) == len(set(seen_ids)), (
+        f"duplicates in cursor walk: {seen_ids!r}"
+    )

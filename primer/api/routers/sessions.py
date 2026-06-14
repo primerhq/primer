@@ -483,6 +483,18 @@ async def list_sessions(
             ),
         ),
     ] = None,
+    graph_id: Annotated[
+        str | None,
+        Query(
+            description=(
+                "Filter by binding.graph_id. Only matches sessions whose "
+                "binding kind is 'graph'; agent-bound sessions never "
+                "satisfy this filter. Translated by the storage layer to "
+                "a nested-JSON path lookup; backends that cannot express "
+                "such paths reject the request with 400."
+            ),
+        ),
+    ] = None,
     sessions=Depends(get_session_storage),
 ):
     """List sessions across workspaces, optionally filtered.
@@ -533,6 +545,17 @@ async def list_sessions(
                 left=FieldRef(name="last_worker_id"),
                 op=Op.EQ,
                 right=Value(value=worker_id),
+            )
+        )
+    if graph_id is not None:
+        # Nested JSONB path; the Postgres backend translates this to
+        # ``data->'binding'->>'graph_id'``. Backends that cannot express
+        # nested paths will reject the predicate with 400.
+        filters.append(
+            Predicate(
+                left=FieldRef(name="binding.graph_id"),
+                op=Op.EQ,
+                right=Value(value=graph_id),
             )
         )
     if filters:
