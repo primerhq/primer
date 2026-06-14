@@ -164,10 +164,15 @@ function TR_TriggersPage({ triggerId }) {
 // TR_TriggerList
 // ============================================================================
 
+// Page size for the triggers list table pager. Mirrors the windowing
+// pattern used by the provider model picker (PAGE_SIZE = 50).
+const TR_PAGE_SIZE = 25;
+
 function TR_TriggerList() {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const [createOpen, setCreateOpen] = React.useState(false);
+  const [page, setPage] = React.useState(0);
 
   const list = useResource(
     "triggers:list",
@@ -176,6 +181,20 @@ function TR_TriggerList() {
   );
 
   const items = list.data?.items ?? [];
+
+  // Client-side windowing - the list endpoint returns the full set, so we
+  // slice locally and expose Prev/Next controls for visual parity with the
+  // other paginated console list pages.
+  const total = items.length;
+  const pages = Math.max(1, Math.ceil(total / TR_PAGE_SIZE));
+  const safePage = Math.min(page, pages - 1);
+  const start = safePage * TR_PAGE_SIZE;
+  const rows = items.slice(start, start + TR_PAGE_SIZE);
+
+  // Clamp back into range if the set shrinks (delete) under us.
+  React.useEffect(() => {
+    if (page > pages - 1) setPage(pages - 1);
+  }, [page, pages]);
 
   const onCreated = (trigger) => {
     setCreateOpen(false);
@@ -222,11 +241,61 @@ function TR_TriggerList() {
       {items.length > 0 && (
         <div
           data-testid="triggers-grid"
-          style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 12 }}
+          className="panel"
+          style={{ padding: 0, overflow: "hidden" }}
         >
-          {items.map((t) => (
-            <TR_TriggerCard key={t.id} trigger={t} onOpen={() => navigate("/triggers/" + t.id)} />
-          ))}
+          <table className="table" data-testid="triggers-table" style={{ width: "100%", fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th style={{ textAlign: "left", padding: "8px 12px" }}>Name</th>
+                <th style={{ textAlign: "left", padding: "8px 12px" }}>Kind</th>
+                <th style={{ textAlign: "left", padding: "8px 12px" }}>Schedule</th>
+                <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
+                <th style={{ textAlign: "left", padding: "8px 12px" }}>Next fire</th>
+                <th style={{ textAlign: "left", padding: "8px 12px" }}>Created</th>
+                <th style={{ textAlign: "right", padding: "8px 12px" }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((t) => (
+                <TR_TriggerRow
+                  key={t.id}
+                  trigger={t}
+                  onOpen={() => navigate("/triggers/" + t.id)}
+                  onChanged={list.refetch}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {total > 0 && pages > 1 && (
+        <div
+          data-testid="triggers-pager"
+          style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}
+        >
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="chevron-left"
+            onClick={() => setPage(Math.max(0, safePage - 1))}
+            disabled={safePage === 0}
+          >
+            Prev
+          </Btn>
+          <span className="muted text-sm">
+            Page {safePage + 1} of {pages} · {total} {total === 1 ? "trigger" : "triggers"}
+          </span>
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="chevron-right"
+            onClick={() => setPage(Math.min(pages - 1, safePage + 1))}
+            disabled={safePage >= pages - 1}
+          >
+            Next
+          </Btn>
         </div>
       )}
 
@@ -240,87 +309,144 @@ function TR_TriggerList() {
   );
 }
 
+// Short human label for a trigger's schedule/detail, keyed on kind:
+//   delayed   -> the fire_at instant
+//   scheduled -> "cron · timezone"
+//   webhook   -> "webhook" (the URL lives on the detail page)
+function TR_scheduleLabel(trigger) {
+  const cfg = trigger?.config || {};
+  // Reuse the shared empty placeholder (TR_relTime(null)) so the glyph
+  // matches the rest of the page without re-typing the placeholder here.
+  const dash = TR_relTime(null);
+  if (cfg.kind === "delayed") return cfg.fire_at || dash;
+  if (cfg.kind === "scheduled") {
+    return cfg.cron ? `${cfg.cron}${cfg.timezone ? " · " + cfg.timezone : ""}` : dash;
+  }
+  if (cfg.kind === "webhook") return "webhook";
+  return dash;
+}
+
 // ============================================================================
-// TR_TriggerCard
+// TR_TriggerRow - one row of the triggers list table.
+//
+// Replaces the former card. Mirrors the AT_TokenRow pattern: click the row
+// to open the detail page, with inline Fire-now / Delete actions that stop
+// propagation. Edit and the webhook URL reveal live on the detail page,
+// reached via the row click - parity with how api_tokens routes edit-like
+// affordances through the detail surface.
 // ============================================================================
 
-function TR_TriggerCard({ trigger, onOpen }) {
+function TR_TriggerRow({ trigger, onOpen, onChanged }) {
+  const { apiFetch } = window.primerApi;
   const kind = trigger?.config?.kind || "—";
-  const subsCount = Array.isArray(trigger?.subscriptions)
-    ? trigger.subscriptions.length
-    : (typeof trigger?.subscription_count === "number" ? trigger.subscription_count : null);
   const enabled = !!trigger.enabled;
+  const [busy, setBusy] = React.useState(false);
+
+  const stop = (e) => { e.stopPropagation(); };
+
+  const fireNow = async (e) => {
+    e.stopPropagation();
+    setBusy(true);
+    try {
+      await apiFetch("POST", "/triggers/" + encodeURIComponent(trigger.id) + "/fire_now", {});
+      onChanged && onChanged();
+    } catch (_err) { /* surfaced on the detail page; row stays put */ }
+    finally { setBusy(false); }
+  };
+
+  const remove = async (e) => {
+    e.stopPropagation();
+    if (!window.confirm(`Delete trigger ${trigger.name || trigger.slug}? This cascades to its subscriptions and cannot be undone.`)) return;
+    setBusy(true);
+    try {
+      await apiFetch("DELETE", "/triggers/" + encodeURIComponent(trigger.id));
+      onChanged && onChanged();
+    } catch (_err) { /* ignore - detail page surfaces errors */ }
+    finally { setBusy(false); }
+  };
+
   return (
-    <div
-      className="panel"
-      data-testid={`trigger-card-${trigger.id}`}
-      style={{ cursor: "pointer", transition: "border-color 0.15s" }}
+    <tr
+      data-testid={`trigger-row-${trigger.id}`}
       onClick={onOpen}
-      onMouseEnter={(e) => e.currentTarget.style.borderColor = "var(--accent)"}
-      onMouseLeave={(e) => e.currentTarget.style.borderColor = ""}
+      style={{ borderTop: "1px solid var(--border)", cursor: "pointer" }}
     >
-      <div className="panel-body" style={{ padding: "12px 14px" }}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 6 }}>
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontWeight: 600, fontSize: 13.5, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {trigger.name || trigger.slug}
-            </div>
-            <div className="mono muted text-sm" style={{ fontSize: 11 }}>{trigger.slug}</div>
-          </div>
-          <span
-            className="pill pill-paused"
-            title={`Trigger kind: ${kind}`}
-            style={{ fontSize: 10.5 }}
-          >
-            {kind}
-          </span>
-          <span
-            className={`pill ${enabled ? "pill-claimed" : "pill-ended"}`}
-            title={enabled ? "Trigger is enabled" : "Trigger is disabled"}
-            style={{ fontSize: 10.5 }}
-          >
-            {enabled ? "enabled" : "disabled"}
-          </span>
-        </div>
-
-        {trigger.description && (
-          <div className="muted text-sm" style={{ marginBottom: 6, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {trigger.description}
-          </div>
-        )}
-
-        <div className="muted text-sm" style={{ fontSize: 11.5, display: "flex", flexWrap: "wrap", gap: 10 }}>
-          <span title={trigger.next_fire_at || ""}>
-            <span style={{ color: "var(--text-3)" }}>next </span>
-            <span className="mono">{TR_relTime(trigger.next_fire_at)}</span>
-          </span>
-          <span title={trigger.last_fired_at || ""}>
-            <span style={{ color: "var(--text-3)" }}>last </span>
-            <span className="mono">{TR_relTime(trigger.last_fired_at)}</span>
-          </span>
-          {subsCount != null && (
-            <span>
-              <span style={{ color: "var(--text-3)" }}>· </span>
-              {subsCount} {subsCount === 1 ? "subscription" : "subscriptions"}
-            </span>
-          )}
-        </div>
-
+      <td style={{ padding: "8px 12px" }}>
+        <div style={{ fontWeight: 600 }}>{trigger.name || trigger.slug}</div>
+        <div className="mono muted text-sm" style={{ fontSize: 11 }}>{trigger.slug}</div>
         {trigger.last_fire_error && (
-          <div style={{ marginTop: 6 }}>
-            <span
-              className="pill pill-failed"
-              title={typeof trigger.last_fire_error === "string"
-                ? trigger.last_fire_error
-                : JSON.stringify(trigger.last_fire_error)}
-              style={{ fontSize: 10.5 }}
-            >
-              last fire error
-            </span>
-          </div>
+          <span
+            className="pill pill-failed"
+            title={typeof trigger.last_fire_error === "string"
+              ? trigger.last_fire_error
+              : JSON.stringify(trigger.last_fire_error)}
+            style={{ fontSize: 10.5, marginTop: 4, display: "inline-block" }}
+          >
+            last fire error
+          </span>
         )}
-      </div>
-    </div>
+      </td>
+      <td style={{ padding: "8px 12px" }}>
+        <span className="pill pill-paused" title={`Trigger kind: ${kind}`} style={{ fontSize: 10.5 }}>
+          {kind}
+        </span>
+      </td>
+      <td style={{ padding: "8px 12px" }}>
+        <span className="mono" style={{ fontSize: 11, wordBreak: "break-word" }}>
+          {TR_scheduleLabel(trigger)}
+        </span>
+      </td>
+      <td style={{ padding: "8px 12px" }}>
+        <span
+          className={`pill ${enabled ? "pill-claimed" : "pill-ended"}`}
+          title={enabled ? "Trigger is enabled" : "Trigger is disabled"}
+          style={{ fontSize: 10.5 }}
+        >
+          {enabled ? "enabled" : "disabled"}
+        </span>
+      </td>
+      <td style={{ padding: "8px 12px" }} title={trigger.next_fire_at || ""}>
+        <span className="mono">{TR_relTime(trigger.next_fire_at)}</span>
+      </td>
+      <td style={{ padding: "8px 12px" }} title={trigger.created_at || ""}>
+        <span className="mono">{TR_relTime(trigger.created_at)}</span>
+      </td>
+      <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }} onClick={stop}>
+        <Btn
+          size="sm"
+          kind="ghost"
+          icon="zap"
+          disabled={busy}
+          onClick={fireNow}
+          title="Fire this trigger immediately, bypassing the schedule"
+          data-testid={`trigger-row-fire-${trigger.id}`}
+        >
+          Fire now
+        </Btn>
+        <Btn
+          size="sm"
+          kind="ghost"
+          icon="edit"
+          disabled={busy}
+          onClick={(e) => { e.stopPropagation(); onOpen(); }}
+          title="Open the trigger to edit it"
+          data-testid={`trigger-row-edit-${trigger.id}`}
+        >
+          Edit
+        </Btn>
+        <Btn
+          size="sm"
+          kind="danger"
+          icon="trash"
+          disabled={busy}
+          onClick={remove}
+          title="Delete this trigger"
+          data-testid={`trigger-row-delete-${trigger.id}`}
+        >
+          Delete
+        </Btn>
+      </td>
+    </tr>
   );
 }
 
@@ -2076,7 +2202,7 @@ function TR_HmacSecretDialog({ triggerId, onClose, onSaved }) {
 
 window.TR_TriggersPage = TR_TriggersPage;
 window.TR_TriggerList = TR_TriggerList;
-window.TR_TriggerCard = TR_TriggerCard;
+window.TR_TriggerRow = TR_TriggerRow;
 window.TR_TriggerDetail = TR_TriggerDetail;
 window.TR_TriggerEditDialog = TR_TriggerEditDialog;
 window.TR_SubscriptionsPanel = TR_SubscriptionsPanel;
