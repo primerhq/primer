@@ -73,17 +73,16 @@ def parked_state(yielded_sleep: Yielded, t0: datetime) -> ParkedState:
 class TestParkedStateRoundTrip:
     def test_minimal_roundtrip(self, parked_state: ParkedState):
         round_tripped = ParkedState.from_jsonable(parked_state.to_jsonable())
-        # A park with no explicit continuation stack reconstructs into the
-        # single-frame back-compat shim (see ParkedState.from_jsonable), so
-        # the non-frames fields must match identically while ``frames`` is
-        # synthesised to one agent frame.
+        # A non-graph park with no explicit continuation stack carries NO
+        # nested-invocation frames: the session's own turn lives in
+        # ``llm_messages``, not a frame, so the back-compat shim reconstructs an
+        # EMPTY stack (see ParkedState.from_jsonable).
         assert round_tripped.yielded == parked_state.yielded
         assert round_tripped.llm_messages == parked_state.llm_messages
         assert round_tripped.turn_no == parked_state.turn_no
         assert round_tripped.started_at == parked_state.started_at
         assert round_tripped.graph_checkpoint == parked_state.graph_checkpoint
-        assert len(round_tripped.frames) == 1
-        assert round_tripped.frames[0].kind == "agent"
+        assert round_tripped.frames == []
 
     def test_roundtrip_with_resume_event_payload(self, parked_state: ParkedState):
         resumed = ParkedState(
@@ -99,8 +98,7 @@ class TestParkedStateRoundTrip:
         assert round_tripped.llm_messages == resumed.llm_messages
         assert round_tripped.turn_no == resumed.turn_no
         assert round_tripped.started_at == resumed.started_at
-        assert len(round_tripped.frames) == 1
-        assert round_tripped.frames[0].kind == "agent"
+        assert round_tripped.frames == []
 
     def test_unknown_schema_version_raises_loudly(self, parked_state: ParkedState):
         blob = parked_state.to_jsonable()

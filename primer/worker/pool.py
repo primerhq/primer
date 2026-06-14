@@ -714,8 +714,7 @@ class WorkerPool:
           * fail-closed   -> _end_session(reason='failed') (drop_lease=True).
         """
         import json
-        from primer.int.claim import ReleaseOutcome
-        from primer.model.chat import Message, ToolResultPart
+        from primer.model.chat import ToolResultPart
 
         sid = session.id
         blob = session.parked_state or {}
@@ -757,6 +756,55 @@ class WorkerPool:
         executor_or_driver = await self._build_agent_executor(session, workspace)
         executor = getattr(executor_or_driver, "_executor", executor_or_driver)
         tool_manager = getattr(executor, "_tool_manager", None)
+
+        # Unified nested-yield continuation: a non-empty frame stack means the
+        # leaf yield was raised INSIDE a nested invoke_agent invocation (the
+        # session's own turn is NOT a frame - it lives in ``parked.llm_messages``
+        # and is resumed by the shared inject tail below). Walk the frames to
+        # resolve the leaf and unwind the chain into a single tool_result, then
+        # fall through to the SAME inject/continue tail the per-tool_name path
+        # uses. An empty stack routes to the existing switch UNCHANGED, which
+        # preserves the persist-approvals decision-record writes and the
+        # invoke_graph regression until task 5.1 migrates them.
+        if parked.frames:
+            from primer.worker.continuation import Repark, resume_continuation
+
+            services = self._build_invocation_services(
+                session, workspace, executor, tool_manager,
+            )
+            try:
+                outcome = await resume_continuation(
+                    parked.frames,
+                    parked.yielded,
+                    resume_payload.payload,
+                    services,
+                )
+            except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
+                logger.exception(
+                    "resume: continuation walk for session %s raised;"
+                    " synthesising error tool_result", sid,
+                )
+                tool_result_part = ToolResultPart(
+                    id=parked.tool_call_id or "unknown",
+                    output=json.dumps({
+                        "rejected": True,
+                        "reason": (
+                            f"continuation resume failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                        "tool_name": parked.yielded.tool_name,
+                    }),
+                    error=True,
+                )
+            else:
+                if isinstance(outcome, Repark):
+                    # A frame (or the leaf re-dispatch) raised a fresh yield
+                    # mid-unwind -> re-park the reconstructed stack + new leaf.
+                    return self._repark_continuation(session, parked, outcome)
+                tool_result_part = outcome.tool_result
+            return await self._inject_resume_and_continue(
+                session, executor, parked, tool_result_part,
+            )
 
         tool_name = parked.yielded.tool_name
         try:
@@ -822,6 +870,25 @@ class WorkerPool:
                 error=True,
             )
 
+        return await self._inject_resume_and_continue(
+            session, executor, parked, tool_result_part,
+        )
+
+    async def _inject_resume_and_continue(
+        self, session, executor, parked, tool_result_part,
+    ):
+        """Inject the resolved tool_result into the parked turn + continue.
+
+        Shared tail for BOTH the per-tool_name resume switch and the new
+        nested-yield continuation walk: rehydrate the parked turn's assistant
+        history, append the resolved ``tool_result_part`` as a tool message,
+        persist them via ``inject_resume_messages``, and return the
+        keep-the-lease continuation outcome (the next claim runs the
+        continuation LLM turn). On persist failure it fails the session.
+        """
+        from primer.int.claim import ReleaseOutcome
+        from primer.model.chat import Message
+
         rehydrated_assistant = [Message.model_validate(m) for m in parked.llm_messages]
         tool_result_msg = Message(role="tool", parts=[tool_result_part])
         try:
@@ -830,13 +897,122 @@ class WorkerPool:
             )
         except Exception:
             logger.exception(
-                "resume: persist failed for session %s - ending failed", sid,
+                "resume: persist failed for session %s - ending failed",
+                session.id,
             )
             return await self._end_session(session, reason="failed")
 
         # Continuation: clear park (on_release) + keep the lease so the next
         # claim runs the continuation LLM turn.
         return ReleaseOutcome(success=True, drop_lease=False)
+
+    def _build_invocation_services(self, session, workspace, executor, tool_manager):
+        """Build the :class:`InvocationServices` bundle the continuation walk
+        drives nested invocations through.
+
+        Binds the worker's storage / provider-registry / approval-resolver into
+        thin closures over :func:`primer.agent.invoke.build_subagent_toolmanager`
+        and :func:`primer.agent.invoke.resume_subagent` (the same deps the worker
+        wires a normal turn with), and threads the session's
+        :class:`GraphInvocationServices` (off the tool_manager, exactly as
+        :meth:`_resume_invoke_graph` reads it) for the graph-frame callables.
+        The walk only ever calls these as ``services.<name>(...)``.
+        """
+        from primer.agent.invoke import (
+            build_subagent_toolmanager as _build_subagent_toolmanager,
+            resume_subagent as _resume_subagent,
+        )
+        from primer.worker.continuation import InvocationServices
+
+        storage_provider = self._storage
+        provider_registry = self._provider_registry
+        approval_resolver = self._approval_resolver
+
+        async def build_subagent_toolmanager(context):
+            return await _build_subagent_toolmanager(
+                context,
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                approval_resolver=approval_resolver,
+            )
+
+        async def resume_subagent(
+            *, agent_id, context, llm_messages, child_result, depth,
+            invoke_tool_call_id,
+        ):
+            return await _resume_subagent(
+                agent_id=agent_id,
+                context=context,
+                llm_messages=llm_messages,
+                child_result=child_result,
+                depth=depth,
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                approval_resolver=approval_resolver,
+                invoke_tool_call_id=invoke_tool_call_id,
+            )
+
+        # Graph callables come off the session's GraphInvocationServices, which
+        # the agent's tool_manager carries (set by _build_agent_executor); the
+        # GraphFrame path that uses them only lands once task 5.1 migrates
+        # invoke_graph onto the continuation walk. Bind defensively so an
+        # absent bundle yields a clear error rather than an AttributeError.
+        graph_services = getattr(tool_manager, "_graph_services", None)
+
+        async def resolve_graph(graph_id):
+            if graph_services is None:
+                raise RuntimeError("graph services unavailable for this session")
+            return await graph_services.resolve_graph(graph_id)
+
+        async def build_child_graph_executor(graph, gsid):
+            if graph_services is None:
+                raise RuntimeError("graph services unavailable for this session")
+            return await graph_services.build_child_executor(graph=graph, gsid=gsid)
+
+        return InvocationServices(
+            build_subagent_toolmanager=build_subagent_toolmanager,
+            resume_subagent=resume_subagent,
+            resolve_graph=resolve_graph,
+            build_child_graph_executor=build_child_graph_executor,
+        )
+
+    def _repark_continuation(self, session, parked, outcome):
+        """Re-park an AGENT session whose nested continuation re-yielded.
+
+        A frame's resume (or the leaf re-dispatch) raised a fresh yield
+        mid-unwind: the continuation walk returns a :class:`Repark` carrying the
+        reconstructed (root-first) frame stack + the new innermost leaf. Persist
+        a fresh :class:`ParkedState` whose ``frames`` is the reconstructed stack
+        and whose ``yielded`` is the new leaf, preserving the SESSION turn's
+        ``llm_messages`` + ``tool_call_id`` so the eventual completion pairs
+        correctly. Mirrors :meth:`_repark_invoke_graph_outcome` for the
+        ParkRequest / ReleaseOutcome shape + timeout handling.
+        """
+        from datetime import timedelta
+        from primer.int.claim import ParkRequest, ReleaseOutcome
+
+        leaf = outcome.leaf
+        now = datetime.now(timezone.utc)
+        timeout = leaf.timeout if leaf.timeout is not None else 3600.0
+        new_parked = ParkedState(
+            yielded=leaf,
+            llm_messages=parked.llm_messages,
+            turn_no=session.turn_no,
+            started_at=now,
+            tool_call_id=parked.tool_call_id,
+            frames=list(outcome.frames),
+        )
+        return ReleaseOutcome(
+            success=True,
+            drop_lease=True,
+            park=ParkRequest(
+                parked_state=new_parked.to_jsonable(),
+                parked_event_key=leaf.event_key,
+                parked_event_keys=getattr(leaf, "event_keys", None),
+                parked_until=now + timedelta(seconds=timeout),
+                parked_at=now,
+            ),
+        )
 
     async def _resume_graph_engine(self, session, parked):
         """Resume a graph-bound session parked at a ToolCall approval.

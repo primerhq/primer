@@ -272,6 +272,12 @@ class YieldToWorker(Exception):
         # callers that raise directly leave it for the executor to
         # fill in.
         self.llm_messages: list | None = llm_messages
+        # Unified nested-yield continuation stack. ALWAYS present (defaults
+        # to an empty list) so callers can read/append ``yld.frames``
+        # unconditionally. A nested invocation that re-raises this yield
+        # (run_subagent / resume_subagent) prepends its own AgentFrame onto
+        # this list; a session that yields directly leaves it empty.
+        self.frames: list = []
 
 
 __all__ = [

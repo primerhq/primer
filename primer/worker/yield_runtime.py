@@ -158,8 +158,6 @@ class ParkedState:
             )
         # Lazy import: frames.py imports from this module (cycle avoidance).
         from primer.worker.frames import (
-            AgentFrame,
-            AgentResumeContext,
             GraphFrame,
             frames_from_jsonable,
         )
@@ -176,37 +174,26 @@ class ParkedState:
         raw_frames = data.get("frames")
         if raw_frames:
             frames = frames_from_jsonable(raw_frames)
-        else:
-            # Back-compat shim: an OLD park (and every pre-unification
-            # invoke_graph park) has no ``frames`` key. Reconstruct a
-            # single-frame continuation stack so resume code can treat all
-            # parks uniformly. The leaf stays ``yielded``.
+        elif yielded.tool_name == "invoke_graph" or graph_checkpoint is not None:
+            # Back-compat shim for a pre-unification invoke_graph park: it has
+            # no ``frames`` key, so reconstruct the single GraphFrame the
+            # invoke_graph resume path expects. (This branch is kept until
+            # task 5.1 migrates invoke_graph onto the continuation walk.)
             md = yielded.resume_metadata or {}
-            if yielded.tool_name == "invoke_graph" or graph_checkpoint is not None:
-                frames = [
-                    GraphFrame(
-                        graph_id=md.get("graph_id"),
-                        gsid=md.get("sub_gsid"),
-                        checkpoint=graph_checkpoint,
-                        tool_call_id=md.get("child_tcid") or tool_call_id,
-                    )
-                ]
-            else:
-                frames = [
-                    AgentFrame(
-                        agent_id=None,
-                        llm_messages=llm_messages,
-                        tool_call_id=tool_call_id,
-                        depth=0,
-                        context=AgentResumeContext(
-                            session_id=None,
-                            workspace_id=None,
-                            chat_id=None,
-                            principal=None,
-                            tools=[],
-                        ),
-                    )
-                ]
+            frames = [
+                GraphFrame(
+                    graph_id=md.get("graph_id"),
+                    gsid=md.get("sub_gsid"),
+                    checkpoint=graph_checkpoint,
+                    tool_call_id=md.get("child_tcid") or tool_call_id,
+                )
+            ]
+        else:
+            # An OLD agent park (or a session that yielded directly) carries
+            # NO nested-invocation frames: the session's own turn lives in
+            # ``llm_messages``, not in a frame. Shim to an EMPTY stack so the
+            # resume path routes through the existing per-tool_name switch.
+            frames = []
 
         return cls(
             yielded=yielded,

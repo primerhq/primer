@@ -12,13 +12,16 @@ def test_frames_roundtrip_through_parkedstate():
     back = ParkedState.from_jsonable(ps.to_jsonable())
     assert len(back.frames) == 1 and back.frames[0].kind == "agent"
 
-def test_legacy_park_without_frames_shims_to_one_agent_frame():
+def test_legacy_park_without_frames_shims_to_empty():
+    # A legacy agent park (or a session that yielded directly) has no nested
+    # invoke_agent frames: the session's own turn lives in llm_messages, not a
+    # frame. It must shim to an EMPTY stack so resume routes through the
+    # existing per-tool_name switch.
     blob = ParkedState(yielded=_leaf(), llm_messages=[{"role": "assistant", "parts": []}],
                        turn_no=1, started_at=datetime.now(timezone.utc), tool_call_id="c1").to_jsonable()
     blob.pop("frames", None)
     back = ParkedState.from_jsonable(blob)
-    assert len(back.frames) == 1 and back.frames[0].kind == "agent"
-    assert back.frames[0].llm_messages == [{"role": "assistant", "parts": []}]
+    assert back.frames == []
 
 def test_legacy_invoke_graph_park_shims_to_one_graph_frame():
     blob = ParkedState(yielded=Yielded(tool_name="invoke_graph", event_key="tool_approval:ses:c1",
