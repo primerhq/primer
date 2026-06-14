@@ -334,18 +334,40 @@ class HarnessSweeper(_BackgroundTask):
 # storage by the claim adapter, not to the scheduler's _sessions dict.
 
 
-async def _find_due_timer_keys(session_storage: Storage) -> list[str]:
-    """Find ``timer:*`` parked event_keys whose deadline is due."""
-    now = datetime.now(timezone.utc)
+# Window size for the parked-session sweeps. Both sweeps must consider
+# EVERY parked session, not just the first 200 -- a fixed cap silently
+# left parks beyond it stuck (a timer never woken, a deadline never
+# timed out). We page through all parked rows; only one window is held
+# in storage per round-trip so memory stays bounded.
+_PARKED_PAGE_SIZE = 200
+
+
+async def _iter_parked_sessions(session_storage: Storage):
+    """Yield every session with ``parked_status == 'parked'``, paging through
+    all rows so nothing past a single fixed cap is dropped."""
     predicate = Predicate(
         left=FieldRef(name="parked_status"),
         op=Op.EQ,
         right=Value(value="parked"),
     )
-    page = await session_storage.find(predicate, OffsetPage(length=200))
+    offset = 0
+    while True:
+        page = await session_storage.find(
+            predicate, OffsetPage(offset=offset, length=_PARKED_PAGE_SIZE)
+        )
+        for sess in page.items:
+            yield sess
+        if len(page.items) < _PARKED_PAGE_SIZE:
+            break
+        offset += _PARKED_PAGE_SIZE
+
+
+async def _find_due_timer_keys(session_storage: Storage) -> list[str]:
+    """Find ``timer:*`` parked event_keys whose deadline is due (all rows)."""
+    now = datetime.now(timezone.utc)
     return [
         sess.parked_event_key
-        for sess in page.items
+        async for sess in _iter_parked_sessions(session_storage)
         if (
             sess.parked_event_key is not None
             and sess.parked_event_key.startswith("timer:")
@@ -356,22 +378,16 @@ async def _find_due_timer_keys(session_storage: Storage) -> list[str]:
 
 
 async def _find_expired_non_timer_keys(session_storage: Storage) -> list[str]:
-    """Find non-``timer:`` parked event_keys whose deadline elapsed.
+    """Find non-``timer:`` parked event_keys whose deadline elapsed (all rows).
 
     These are the parks whose external event never fired -- the
     sweeper publishes a timeout marker so the resume hook produces
     a YieldTimeout result.
     """
     now = datetime.now(timezone.utc)
-    predicate = Predicate(
-        left=FieldRef(name="parked_status"),
-        op=Op.EQ,
-        right=Value(value="parked"),
-    )
-    page = await session_storage.find(predicate, OffsetPage(length=200))
     return [
         sess.parked_event_key
-        for sess in page.items
+        async for sess in _iter_parked_sessions(session_storage)
         if (
             sess.parked_event_key is not None
             and not sess.parked_event_key.startswith("timer:")
