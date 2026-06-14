@@ -397,6 +397,19 @@ async def _resume_tool_approval(
     decision, reason = classify_approval_payload(payload)
 
     if decision == "approved":
+        # ``system__call_tool`` parks the INNER (toolset_id, tool_name) it
+        # was asked to meta-dispatch, which is not necessarily part of the
+        # agent's registered tool surface - so it cannot be re-routed
+        # through ``tool_manager.execute``. Re-dispatch it directly via the
+        # owning toolset provider, mirroring how the call_tool handler does
+        # it. ``via_call_tool`` carries the inner toolset id + principal.
+        via = metadata.get("via_call_tool")
+        if via is not None:
+            return await _resume_call_tool_dispatch(
+                via=via,
+                original_call=original_call,
+                tool_manager=tool_manager,
+            )
         return await tool_manager.execute(original_call, bypass_approval=True)
 
     return ToolResultPart(
@@ -408,6 +421,57 @@ async def _resume_tool_approval(
             "arguments": original_call.arguments,
         }),
         error=True,
+    )
+
+
+async def _resume_call_tool_dispatch(
+    *,
+    via: dict[str, Any],
+    original_call: ToolCallPart,
+    tool_manager: Any,
+) -> ToolResultPart:
+    """Dispatch an approved ``call_tool`` inner tool via its toolset provider.
+
+    The inner tool was gated through ``system__call_tool``; on approval we
+    invoke it the same way the call_tool handler would (resolve the owning
+    toolset provider from the registry, then ``provider.call(...)``) rather
+    than routing it through the agent's tool surface (which may not list it).
+    Fails closed to an error ToolResultPart if the registry/provider is
+    unavailable.
+    """
+    registry = getattr(tool_manager, "_provider_registry", None)
+    toolset_id = via.get("toolset_id")
+    if registry is None or not toolset_id:
+        return ToolResultPart(
+            id=original_call.id,
+            output=json.dumps({
+                "is_error": True,
+                "reason": "call_tool resume: provider registry unavailable",
+                "tool_name": original_call.name,
+            }),
+            error=True,
+        )
+    try:
+        provider = await registry.get_toolset(toolset_id)
+        result = await provider.call(
+            tool_name=original_call.name,
+            arguments=original_call.arguments,
+            principal=via.get("principal"),
+        )
+    except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
+        return ToolResultPart(
+            id=original_call.id,
+            output=json.dumps({
+                "is_error": True,
+                "reason": f"call_tool resume failed: {type(exc).__name__}: {exc}",
+                "tool_name": original_call.name,
+            }),
+            error=True,
+        )
+    return ToolResultPart(
+        id=original_call.id,
+        output=result.output,
+        error=result.is_error,
     )
 
 

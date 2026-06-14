@@ -1031,3 +1031,116 @@ class TestExtras:
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"
+
+
+# ===========================================================================
+# FIX A: call_tool enforces the approval gate (parks instead of bypassing)
+# ===========================================================================
+
+
+def _required_policy(toolset_id: str, tool_name: str):
+    from primer.model.tool_approval import (
+        RequiredApprovalConfig,
+        ToolApprovalPolicy,
+    )
+
+    return ToolApprovalPolicy(
+        id="tap-1",
+        toolset_id=toolset_id,
+        tool_name=tool_name,
+        enabled=True,
+        approval=RequiredApprovalConfig(),
+    )
+
+
+def _ctx(tool_call_id="call-1", session_id="sess-1", chat_id=None):
+    from primer.model.yield_ import ToolContext
+
+    return ToolContext(
+        tool_call_id=tool_call_id,
+        session_id=session_id,
+        workspace_id="ws-1",
+        chat_id=chat_id,
+    )
+
+
+class TestCallToolApprovalGate:
+    @pytest.mark.asyncio
+    async def test_gated_inner_tool_yields_for_approval(
+        self, system_toolset, sp: _SP
+    ) -> None:
+        from primer.model.tool_approval import ToolApprovalPolicy
+        from primer.model.yield_ import YieldToWorker
+
+        # Configure an approval policy for the INNER tool call_tool targets.
+        await sp.get_storage(ToolApprovalPolicy).create(
+            _required_policy(SYSTEM_TOOLSET_ID, "get_llm_provider")
+        )
+        # Seed the inner tool's data so a bypass would actually succeed
+        # (proves the yield is the gate, not a missing row).
+        await system_toolset.call(
+            tool_name="create_llm_provider",
+            arguments={"entity": _llm().model_dump(mode="json")},
+        )
+
+        with pytest.raises(YieldToWorker) as exc_info:
+            await system_toolset.call(
+                tool_name="call_tool",
+                arguments={
+                    "toolset_id": SYSTEM_TOOLSET_ID,
+                    "tool_name": "get_llm_provider",
+                    "arguments": {"id": "anthropic-1"},
+                },
+                ctx=_ctx(),
+            )
+        yielded = exc_info.value.yielded
+        assert yielded.tool_name == "_approval"
+        assert yielded.event_key == "tool_approval:sess-1:call-1"
+        meta = yielded.resume_metadata
+        # Resume re-dispatches the inner tool via its owning toolset.
+        assert meta["via_call_tool"]["toolset_id"] == SYSTEM_TOOLSET_ID
+        assert meta["original_call"]["name"] == "get_llm_provider"
+        assert meta["original_call"]["arguments"] == {"id": "anthropic-1"}
+
+    @pytest.mark.asyncio
+    async def test_non_gated_inner_tool_dispatches_normally(
+        self, system_toolset
+    ) -> None:
+        # No policy stored -> call_tool dispatches the inner tool unchanged.
+        await system_toolset.call(
+            tool_name="create_llm_provider",
+            arguments={"entity": _llm().model_dump(mode="json")},
+        )
+        result = await system_toolset.call(
+            tool_name="call_tool",
+            arguments={
+                "toolset_id": SYSTEM_TOOLSET_ID,
+                "tool_name": "get_llm_provider",
+                "arguments": {"id": "anthropic-1"},
+            },
+            ctx=_ctx(),
+        )
+        assert not result.is_error, result.output
+        assert json.loads(result.output)["id"] == "anthropic-1"
+
+    @pytest.mark.asyncio
+    async def test_gated_tool_without_park_surface_fails_closed(
+        self, system_toolset, sp: _SP
+    ) -> None:
+        # No session/chat to park onto (ctx is None) -> the gate must NOT
+        # be bypassed; the call fails closed with approval-required.
+        from primer.model.tool_approval import ToolApprovalPolicy
+
+        await sp.get_storage(ToolApprovalPolicy).create(
+            _required_policy(SYSTEM_TOOLSET_ID, "get_llm_provider")
+        )
+        result = await system_toolset.call(
+            tool_name="call_tool",
+            arguments={
+                "toolset_id": SYSTEM_TOOLSET_ID,
+                "tool_name": "get_llm_provider",
+                "arguments": {"id": "anthropic-1"},
+            },
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "approval-required"

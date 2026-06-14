@@ -45,10 +45,16 @@ import json
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError, create_model
 
+from primer.agent.approval import (
+    ApprovalContext,
+    ApprovalResolver,
+    evaluate_approval_gate,
+)
 from primer.agent.invoke import (
     InvocationDepthExceeded,
     invocation_depth_guard,
@@ -90,7 +96,7 @@ from primer.model.workspace import (
     Workspace,
     WorkspaceChannelLink,
 )
-from primer.model.yield_ import ToolContext, Yielded
+from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -985,12 +991,101 @@ def _list_toolset_tools_tool(
 
 def _call_tool_tool(
     registry: "ProviderRegistry",
+    approval_resolver: "ApprovalResolver | None" = None,
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
-    async def _handler(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _handler(
+        arguments: dict[str, Any], *, ctx: ToolContext | None = None,
+    ) -> ToolCallResult | Yielded:
         try:
             args = _CallToolArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+
+        # Approval gate - enforced BEFORE dispatch so a gated tool invoked
+        # through this meta-dispatch path cannot bypass the operator's
+        # ToolApprovalPolicy. Mirrors the agent-loop dispatch gate
+        # (primer.agent.tool_manager): resolve the policy for the INNER
+        # (toolset_id, tool_name), evaluate it, and on a "required" verdict
+        # park for approval by yielding ``_approval`` exactly as the agent
+        # loop does. The resume path re-dispatches the inner tool via its
+        # owning toolset provider (see _resume_call_tool_dispatch) on
+        # approve, or returns an error on reject/timeout/cancel.
+        #
+        # ``ctx`` is None only when there is no session/chat to park onto
+        # (e.g. an out-of-loop dispatch). Without a park surface we cannot
+        # safely run a gated tool, so fail closed with an error rather than
+        # bypass the gate.
+        if approval_resolver is not None and ctx is None:
+            policy = await approval_resolver.find(
+                toolset_id=args.toolset_id, tool_name=args.tool_name,
+            )
+            if policy is not None and policy.enabled:
+                return _err(
+                    f"tool {args.tool_name!r} in toolset "
+                    f"{args.toolset_id!r} requires approval but there is "
+                    "no session or chat to park for it; invoke it through "
+                    "an agent session or chat.",
+                    error_type="approval-required",
+                )
+        if approval_resolver is not None and ctx is not None:
+            policy = await approval_resolver.find(
+                toolset_id=args.toolset_id, tool_name=args.tool_name,
+            )
+            if policy is not None and policy.enabled:
+                approval_ctx = ApprovalContext(
+                    tool_name=args.tool_name,
+                    toolset_id=args.toolset_id,
+                    arguments=args.arguments or {},
+                    agent_id=None,
+                    session_id=ctx.session_id,
+                    chat_id=ctx.chat_id,
+                    requested_at=datetime.now(UTC),
+                )
+                verdict = await evaluate_approval_gate(
+                    policy=policy,
+                    context=approval_ctx,
+                    provider_registry=registry,
+                )
+                if verdict.required:
+                    session_or_chat = (
+                        ctx.session_id or ctx.chat_id or "unknown"
+                    )
+                    # Raise YieldToWorker directly (rather than returning a
+                    # Yielded sentinel) so the parked tool_name stays
+                    # ``_approval``: the InternalToolsetProvider would
+                    # otherwise re-stamp a returned Yielded with this tool's
+                    # own name (``call_tool``), and the worker resume path
+                    # keys the approval re-dispatch on ``_approval``. This is
+                    # exactly how the agent loop parks for approval.
+                    raise YieldToWorker(
+                        Yielded(
+                            tool_name="_approval",
+                            event_key=(
+                                f"tool_approval:{session_or_chat}:"
+                                f"{ctx.tool_call_id}"
+                            ),
+                            timeout=policy.timeout_seconds,
+                            resume_metadata={
+                                "policy_id": policy.id,
+                                "approval_type": policy.approval.type.value,
+                                "gate_reason": verdict.reason,
+                                # Inner call re-dispatched via the owning
+                                # toolset provider on approve (not the agent
+                                # tool surface, which may not list this tool).
+                                "via_call_tool": {
+                                    "toolset_id": args.toolset_id,
+                                    "principal": args.principal,
+                                },
+                                "original_call": {
+                                    "id": ctx.tool_call_id,
+                                    "name": args.tool_name,
+                                    "arguments": args.arguments or {},
+                                },
+                            },
+                        ),
+                        tool_call_id=ctx.tool_call_id,
+                    )
+
         try:
             provider = await registry.get_toolset(args.toolset_id)
         except NotFoundError as exc:
@@ -1021,7 +1116,9 @@ def _call_tool_tool(
                 "``list_toolset_tools`` and want to execute it without "
                 "going through the dedicated agent toolset wiring. The "
                 "dispatched tool's own ``output`` and ``is_error`` are "
-                "passed through unchanged so you can act on them."
+                "passed through unchanged so you can act on them. If the "
+                "dispatched tool has an approval policy, this call parks "
+                "for approval just like a normal agent tool call."
             ),
             args_schema=_CallToolArgs.model_json_schema(),
             examples=[
@@ -1034,6 +1131,7 @@ def _call_tool_tool(
                     returns="the dispatched tool's output and is_error",
                 )
             ],
+            yields=True,
         ),
         _handler,
     )
@@ -1686,9 +1784,16 @@ def build_system_toolset(
         registry[name] = entry
 
     # ---- Toolset extras ---------------------------------------------
-    for builder in (_list_toolset_tools_tool, _call_tool_tool):
-        name, entry = builder(provider_registry)
-        registry[name] = entry
+    # Build a ToolApprovalPolicy resolver so call_tool's meta-dispatch
+    # path enforces the same approval gate the agent loop applies; without
+    # this a gated tool invoked via system__call_tool would run unguarded.
+    approval_resolver = ApprovalResolver(
+        storage=storage_provider.get_storage(ToolApprovalPolicy),
+    )
+    name, entry = _list_toolset_tools_tool(provider_registry)
+    registry[name] = entry
+    name, entry = _call_tool_tool(provider_registry, approval_resolver)
+    registry[name] = entry
 
     # ---- Collection / Document extras --------------------------------
     registry.update(_collection_extras(storage_provider=storage_provider))
