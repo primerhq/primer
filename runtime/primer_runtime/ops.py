@@ -20,6 +20,20 @@ import stat as _stat_mod
 from primer_runtime.protocol import ErrorCode
 
 
+def _subprocess_timeout() -> float:
+    """Read the global subprocess deadline from ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS``.
+
+    Defaults to 120 seconds, matching the API-side ``AppConfig`` default.
+    The API server injects this env var into workspace pods/containers via
+    the same ``PRIMER_*`` env-var convention used for other runtime knobs.
+    """
+    raw = os.environ.get("PRIMER_SUBPROCESS_TIMEOUT_SECONDS", "")
+    try:
+        return float(raw) if raw else 120.0
+    except ValueError:
+        return 120.0
+
+
 # ---------------------------------------------------------------------------
 # Git-state helpers (ported from primer.workspace.local.state -- do NOT
 # import primer.*; the runtime package is self-contained)
@@ -89,7 +103,12 @@ async def _run_git(state_dir: str, *args: str, allow_empty_repo: bool = False) -
 
     Raises :class:`OpError` (EINTERNAL) on non-zero exit unless ``allow_empty_repo``
     is True and git exits 128 complaining about an empty repo.
+
+    Kills the subprocess and raises :class:`OpError` (EINTERNAL) if the
+    process exceeds the deadline read from ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS``
+    (default 120 s).
     """
+    timeout = _subprocess_timeout()
     proc = await asyncio.create_subprocess_exec(
         "git",
         "-C",
@@ -98,7 +117,21 @@ async def _run_git(state_dir: str, *args: str, allow_empty_repo: bool = False) -
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout_bytes, stderr_bytes = await proc.communicate()
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(),
+            timeout=timeout,
+        )
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise OpError(
+            ErrorCode.EINTERNAL,
+            f"git {' '.join(args)} timed out after {timeout}s",
+        )
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     if proc.returncode != 0:
@@ -365,17 +398,33 @@ async def _ensure_state_repo(state_dir: str) -> None:
     Idempotent: if the repo is already initialised this is a fast no-op
     (stat only).  Called at the start of every mutating state op so that
     callers do not need a separate initialisation step.
+
+    All git subprocesses are bounded by the deadline from
+    ``PRIMER_SUBPROCESS_TIMEOUT_SECONDS``; a hung ``git init`` or ``git
+    config`` raises :class:`OpError` (EINTERNAL) and kills the process.
     """
     git_dir = os.path.join(state_dir, ".git")
     if os.path.isdir(git_dir):
         return
+    timeout = _subprocess_timeout()
     os.makedirs(state_dir, exist_ok=True)
     proc = await asyncio.create_subprocess_exec(
         "git", "-C", state_dir, "init", "--initial-branch=main",
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    _, stderr_bytes = await proc.communicate()
+    try:
+        _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    except asyncio.TimeoutError:
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            pass
+        await proc.wait()
+        raise OpError(
+            ErrorCode.EINTERNAL,
+            f"git init timed out after {timeout}s",
+        )
     if proc.returncode != 0:
         stderr = stderr_bytes.decode("utf-8", errors="replace")
         raise OpError(
@@ -392,7 +441,18 @@ async def _ensure_state_repo(state_dir: str) -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        await proc2.communicate()
+        try:
+            await asyncio.wait_for(proc2.communicate(), timeout=timeout)
+        except asyncio.TimeoutError:
+            try:
+                proc2.kill()
+            except ProcessLookupError:
+                pass
+            await proc2.wait()
+            raise OpError(
+                ErrorCode.EINTERNAL,
+                f"git config timed out after {timeout}s",
+            )
 
 
 async def state_commit(args: dict, workspace_root: str) -> dict:

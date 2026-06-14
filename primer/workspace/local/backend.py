@@ -24,12 +24,13 @@ import asyncio
 import logging
 import os
 import shutil
+import signal
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from primer.int.workspace import Workspace, WorkspaceBackend
-from primer.model.except_ import BadRequestError, NotFoundError
+from primer.model.except_ import BadRequestError, NotFoundError, SubprocessTimeoutError
 from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
@@ -62,8 +63,14 @@ class LocalWorkspaceBackend(WorkspaceBackend):
     re-discovery on restart is a future enhancement.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        subprocess_timeout_seconds: float = 120.0,
+    ) -> None:
         self._root = Path(root)
+        self._subprocess_timeout_seconds = subprocess_timeout_seconds
         self._workspaces: dict[str, LocalWorkspace] = {}
         self._lock = asyncio.Lock()
         self._initialised = False
@@ -134,6 +141,7 @@ class LocalWorkspaceBackend(WorkspaceBackend):
                 root=ws_root,
                 template=template,
                 env=env_str,
+                subprocess_timeout_seconds=self._subprocess_timeout_seconds,
             )
         except Exception:
             # Roll back the partially-built workspace directory so a
@@ -188,6 +196,7 @@ class LocalWorkspaceBackend(WorkspaceBackend):
                 root=ws_root,
                 template=template,
                 env=env_str,
+                subprocess_timeout_seconds=self._subprocess_timeout_seconds,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning(
@@ -277,8 +286,29 @@ class LocalWorkspaceBackend(WorkspaceBackend):
             env=proc_env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
         )
-        stdout, stderr = await proc.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=self._subprocess_timeout_seconds,
+            )
+        except asyncio.TimeoutError as exc:
+            # Kill the entire process group so child processes spawned by
+            # the shell (e.g. a "sleep" inside "apt-get install") don't
+            # keep the pipes open and cause proc.wait() to hang.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, OSError):
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except asyncio.TimeoutError:
+                pass
+            raise SubprocessTimeoutError(
+                f"init_command timed out after "
+                f"{self._subprocess_timeout_seconds}s: {command!r}"
+            ) from exc
         if proc.returncode != 0:
             raise BadRequestError(
                 f"init command failed (rc={proc.returncode}): {command!r}\n"

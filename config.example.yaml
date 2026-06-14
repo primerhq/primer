@@ -51,6 +51,13 @@ worker:
   base_backoff_seconds: 2.0
   max_backoff_seconds: 300.0
 
+# --- Subprocess timeout (git + init_command) --------------------------------
+# Maximum seconds to wait for any git or init_command subprocess spawned by
+# the local workspace backend. A hung git (index.lock / NFS stall) or runaway
+# init_command is killed after this deadline and SubprocessTimeoutError is
+# raised (releasing the commit lock). Override via PRIMER_SUBPROCESS_TIMEOUT_SECONDS.
+# subprocess_timeout_seconds: 120.0
+
 # --- MCP stdio safety (recommended for multi-tenant) ----------------------
 # mcp_stdio_allowed_commands:
 #   - python

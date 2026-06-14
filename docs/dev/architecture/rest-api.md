@@ -26,6 +26,7 @@ classDiagram
         +auth AuthConfig
         +auto_bootstrap bool
         +mcp_stdio_allowed_commands list
+        +subprocess_timeout_seconds float
     }
     class make_crud_router {
         +model_cls type
