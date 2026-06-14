@@ -544,3 +544,50 @@ async def test_executor_error_transitions_to_ended_failed(
     row = await storage.get(seeded_session.id)
     assert row.status == SessionStatus.ENDED
     assert row.ended_reason == "failed"
+
+
+@pytest.mark.asyncio
+async def test_executor_error_plus_write_failure_still_ends_session(
+    seeded_session: WorkspaceSession,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """Failure isolation: LLM raises AND workspace IO also raises on the
+    error-record write.  The session MUST still transition to ENDED/failed
+    and the lease MUST be dropped (drop_lease=True).
+
+    Pre-fix the secondary IOError escaped the except block before
+    _transition_session_status ran, leaving the session stuck RUNNING
+    with no lease (t0539/t0630/t0649/t0679).
+    """
+
+    class _BrokenWorkspaceIO:
+        """IO that always raises on append - simulates disk/mount failure."""
+
+        async def append_message_line(self, session_id: str, line: bytes) -> None:
+            raise OSError("disk full")
+
+    broken_io = _BrokenWorkspaceIO()
+    fake_executor = FakeExecutor([RuntimeError("llm exploded")])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=broken_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    # Lease must always be dropped, even when the error-record write failed.
+    assert outcome.drop_lease is True
+
+    # Session must have transitioned to ENDED/failed, not left RUNNING.
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row is not None
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "failed"
