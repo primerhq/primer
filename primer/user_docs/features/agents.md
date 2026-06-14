@@ -36,11 +36,11 @@ flowchart TD
     B --> C{Tool calls?}
     C -->|yes| D[Approval gate]
     D -->|approved| E[Dispatch tools]
-    D -->|parked| F[Yield -- wait for operator]
+    D -->|parked| F[Yield, wait for operator]
     E --> G[Feed results back]
     G --> B
     F -->|operator decides| E
-    C -->|no| H[Persist turn -- done]
+    C -->|no| H[Persist turn, done]
 ```
 
 Context grows with every round-trip. When it approaches the model's context limit, primer automatically compacts the oldest turns into a summary message so the agent can keep working without losing its broader intent.
