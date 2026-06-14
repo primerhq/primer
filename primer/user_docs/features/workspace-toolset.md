@@ -198,11 +198,6 @@ These two tools require a workspace session context and are excluded from the MC
 Full semantics of watch_files, invoke_graph, and how a session parks and resumes.
 ```
 
-## What happens after
-
-Once an agent has the workspace toolset, it can manage the full workspace lifecycle without operator involvement. A meta-agent can create providers and templates, materialise workspaces from them, start child sessions with different agent or graph bindings, steer those sessions mid-run, poll them to completion, read their file output, and clean up the workspace when done. This is the dogfooding pattern: an agent that builds and runs other agents inside isolated environments.
-
-The workspace toolset is the same surface the REST API exposes; every tool corresponds to a REST endpoint. Anything the console does in the Workspaces section can be done by an agent via this toolset.
 
 ```ref:features/workspace-providers
 Provider types (local, container, Kubernetes) and how to set them up.

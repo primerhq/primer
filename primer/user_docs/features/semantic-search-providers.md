@@ -92,11 +92,6 @@ Follow the same steps, choose **lance** as the provider type, and supply an abso
 
 If you rotate database credentials or want to force the server to re-open a connection, click **Invalidate** next to the provider row (or send `POST /v1/ssp/{id}/invalidate`). The cached adapter is closed and rebuilt on the next request. No vector data is lost.
 
-## What happens after
-
-Once an SSP is registered, it appears in the **Semantic search provider** dropdown when you create a collection. That binding is permanent: all document chunks for that collection are written to, and searched from, that backend for the lifetime of the collection.
-
-The reserved `lance` row is always available out of the box. Its row cannot be deleted (returns 403) and its id cannot be reused by a new provider row (returns 409). All other SSPs can be deleted once no collection references them.
 
 ```ref:features/embedding-providers
 ```

@@ -130,11 +130,6 @@ Cancel is immediate and irreversible. If the agent was mid-write (writing a file
 
 On the session detail, use the retry control to rewind the transcript to a specific turn and re-run from that point. This is useful when a tool failure caused the agent to go off-track and you want to re-run without starting a new session from scratch.
 
-## What happens after
-
-Once a session ends, its transcript remains readable in the detail view. The workspace files the agent wrote persist in the workspace and are accessible to other sessions and tools. You can inspect `messages.jsonl` and `turns.jsonl` directly in the workspace's `.state/` directory if you need a raw audit trail.
-
-Sessions started against the same agent definition pick up any changes made to the agent after the session began; the agent's model and tools are resolved fresh at the start of each turn. A long-running session that was in-flight when you edited the agent picks up the new definition at the next turn boundary.
 
 ```ref:features/agents
 Agent creation, tool selection, and system prompt configuration.

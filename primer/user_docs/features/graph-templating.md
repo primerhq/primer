@@ -233,13 +233,6 @@ flowchart LR
     W --> E([End\nnodes.writer.text])
 ```
 
-## What happens after
-
-Templates run at node dispatch time, not at graph-definition save time. A template error at dispatch time sets `ended_detail='template_error'` and terminates the graph.
-
-A missing-attribute error (referencing a node that has not yet run, or mistyping an attribute name) raises with `StrictUndefined` and surfaces as a `template_error`. Reference only nodes that are upstream of the current node in the topology.
-
-For conditional edges, `BranchCondition` predicates evaluate the source node's `parsed` dict (not a template). The `path` field uses dot-and-bracket notation independent of Jinja2: `parsed.decision`, `results[0].score`. See `ref:features/graphs` for the full branch-condition operator reference.
 
 ```ref:features/graphs
 Creating and running graphs from the console.

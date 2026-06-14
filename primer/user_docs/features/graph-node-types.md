@@ -190,13 +190,6 @@ flowchart LR
     FI --> E([End])
 ```
 
-## What happens after
-
-After a graph run completes:
-
-- Each node's final output lives at `nodes.<node_id>` in the `GraphContext`. Templates in later nodes can read it.
-- Fan-out aggregator lists at `nodes.<target_id>` preserve index order. An instance that failed under `collect` has `NodeOutput.error` set; a successful instance has it `None`.
-- The session `ended_detail` records any non-completion code: `begin_input_invalid`, `end_output_invalid`, `template_error`, `routing_failed`, `max_iterations_exceeded`, `fanout_source_invalid`, `fanin_upstream_failed`, `tool_output_invalid`, `tool_execution_failed`.
 
 ```ref:features/graphs
 How to create and run a graph from the console.

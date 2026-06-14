@@ -162,22 +162,6 @@ The workspace enters the `running` phase once the provider materialises the
 sandbox. For local workspaces this is nearly instant. For container and
 Kubernetes workspaces it takes a few seconds while the runtime starts.
 
-## What happens after
-
-Once a workspace is running, agents can use it as their execution environment.
-Bind a session to the workspace (either from the Sessions page or via the
-workspace toolset) and the agent gains access to the seven workspace tools:
-`ls`, `read`, `write`, `edit`, `glob`, `grep`, and `exec`. Every file write
-the agent makes is committed to the `.state/` repo.
-
-Overrides passed at workspace create time layer on top of the template: the env
-dict merges with the template env (override wins on collision), the files list
-extends the template files, and the init commands extend the template init
-commands. This lets automation create per-run workspaces with different inputs
-without duplicating templates.
-
-The **Log** tab on the workspace detail page shows the git commit log for the
-`.state/` repo so you can see exactly what changed turn by turn.
 
 ```ref:features/workspace-providers
 Provider types (local, container, Kubernetes) and how to register them.

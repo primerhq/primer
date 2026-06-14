@@ -120,13 +120,6 @@ Drain a worker before a planned restart or scale-down so in-flight sessions comp
 
 A draining worker accepts no new claims. Once all in-flight sessions complete the worker exits. Calling Drain on an already-draining worker is a no-op.
 
-## What happens after
-
-Once a worker drains and exits, the remaining workers absorb new claims. Sessions that were in flight complete on their current worker before drain; sessions that were parked are unaffected (they hold no lease) and resume on any available worker when their event fires.
-
-If all workers are busy and a new session is created, it enters the claim queue with `turn_status = claimable`. It waits there until a worker finishes a turn and the next claim sweep picks it up. Sessions are never lost: the queue is durable, not in-memory.
-
-If a worker crashes mid-turn, the lease TTL eventually expires and the claim engine makes the session claimable again. Another worker re-runs the turn from the most recent checkpoint. For yielding-tool parks the `ParkedState` blob is already in storage before the lease is released, so a crash during a park loses no history.
 
 ```ref:features/yielding-tools
 How yielding tools park a session, release the lease, and queue the session for resume.

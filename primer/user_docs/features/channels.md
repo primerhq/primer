@@ -92,14 +92,6 @@ Channels support inbound and outbound media:
 - **Inbound:** photos, documents, and audio sent by users arrive as media parts attached to the chat message. The agent can process them.
 - **Outbound:** media produced by tools (files written to a workspace, images returned from a tool result) are forwarded to the channel when the session gate fires.
 
-## What happens after
-
-Once a channel exists and is associated with a workspace:
-
-- Sessions that call `ask_user` or trigger a tool approval gate post a message to the channel automatically. The session parks and waits for a reply.
-- Sessions that call `inform_user` post a one-way message to the channel with no park.
-- Replies on the channel (text response or button click for approvals) resume the parked session. First response wins; later replies on the same thread are ignored.
-- If chat is enabled, non-command messages from the room start or continue a chat with the default agent and relay the response back.
 
 ```ref:features/channel-providers
 Set up the provider credentials before creating channels.

@@ -100,15 +100,6 @@ Discord Developer Portal  https://discord.com/developers/applications
 
 After creating a provider, return to the **Channels** tab to add the specific rooms (channel IDs) that belong to this provider.
 
-## What happens after
-
-With a provider created, you can:
-
-- Add channels that belong to it (each channel is one room or chat ID on the platform).
-- Associate a workspace with a channel so session gates forward to that room.
-- Configure per-room chat settings (default agent, relay mode) directly on each channel.
-
-There is no live-connection test exposed in the console. The adapter initialises and connects when the first channel belonging to the provider is used (lazy connection). If the credentials are wrong, the first dispatch or inbound message will log an error.
 
 ```ref:features/channels
 Create channels and bind them to workspaces.

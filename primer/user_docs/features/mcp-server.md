@@ -120,20 +120,6 @@ claude mcp add --transport streamable-http <your-primer-origin>/v1/mcp
 
 Supply the bearer token when prompted, or add it manually to `~/.claude/claude_mcp_config.json`.
 
-## What happens after
-
-Once the endpoint is enabled and the allowlist is saved, connecting MCP clients receive the exact tools in the allowlist via `tools/list`. The names are the scoped ids (`toolset_id__tool_id`) to avoid collisions between toolsets.
-
-When a client calls a tool (`tools/call`), primer:
-
-1. Checks the allowlist. If the tool is not allowed, the client receives a `method-not-found` error.
-2. Re-checks exposability. Yielding tools and session-context tools are refused even if they somehow appear in the allowlist.
-3. Checks for an approval requirement. Approval-gated tools are refused with an error rather than parking for a human decision.
-4. Dispatches to the toolset handler and returns the result.
-
-The principal (the authenticated token's owner) and the tool call are logged for audit. The `updated_at` field on the exposure record changes every time the allowlist or enabled flag is saved, so the routing cache invalidates and the next `tools/list` returns the current set.
-
-API tokens expire automatically when the expiry date passes. Revoked or expired tokens receive a 401 on all requests. The token row remains in the list for audit but the Revoke button becomes disabled.
 
 ```ref:features/toolsets-mcp
 Mount external MCP servers as toolsets so primer's agents can call them.

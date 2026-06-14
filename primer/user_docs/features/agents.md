@@ -175,15 +175,6 @@ This is the tool-driven equivalent of the agent dropdown in the chat header. It 
 
 `invoke_graph` is a workspace-session tool: it requires a session and is not available in plain chats. It supports full human-in-the-loop: if the invoked graph hits an approval node or an agent that asks the user, the session parks and resumes when the human replies.
 
-## What happens after creation
-
-Once created, an agent can be used in any of three surfaces:
-
-- **Chats**: open a chat bound to the agent for interactive, multi-turn conversation.
-- **Sessions**: create a workspace session bound to the agent for headless, autonomous work.
-- **Graph nodes**: reference the agent by id in a graph node definition to include it in a pipeline.
-
-Changes to the agent definition take effect at the start of the next turn. Long-running sessions that are already underway continue with the definition that was in place when they started.
 
 ```ref:features/chats
 Creating chats, the agent switcher, and streaming.

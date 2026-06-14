@@ -96,13 +96,6 @@ Agents running in-flight pick up the new provider within 5 seconds.
 
 If Tavily is unavailable or returns an error, the service automatically retries with DuckDuckGo before surfacing an error to the agent.
 
-## What happens after
-
-Once the active configuration is saved, every `web::web-search` call from any agent routes through it. The tool accepts a `query`, an optional `count` (1-25, default 5), and an optional `safe_search` level (`off`, `moderate`, `strict`; default `moderate`).
-
-Safe search handling differs per backend: DuckDuckGo passes the full three-tier setting; Tavily collapses it to a boolean (`off -> false`, `moderate`/`strict -> true`); Firecrawl and Exa have no safe-search support and silently ignore the setting.
-
-The companion `web::http-request` tool (always available, no configuration required) lets agents fetch a specific URL directly. Response bodies are capped at 1 MB by default.
 
 ```ref:features/toolsets-system
 ```

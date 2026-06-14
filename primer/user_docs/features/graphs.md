@@ -136,15 +136,6 @@ flowchart LR
 
 The session detail view shows per-node status updating as each superstep runs.
 
-## What happens after
-
-Once the graph runs:
-
-- The session moves to `ended` with `ended_reason='completed'` when the ready set drains naturally (every reachable End node fired).
-- The session moves to `ended` with `ended_reason='failed'` if a node fails, a template renders incorrectly, a route cannot be resolved, or `max_iterations` is hit. The `ended_detail` field carries the specific code.
-- Every node's output is accessible at `nodes.<node_id>.text` and `nodes.<node_id>.parsed` for the next turn of any downstream template.
-- The workspace's `.state/graphs/` tree holds per-node message history and graph-level state, browsable with `git log`.
-- The session detail view shows the run status and per-node progress. Turn logs are available at `GET /v1/graphs/{id}/runs/{run_id}/turn_log` and per-node at `.../nodes/{node_id}/turn_log`.
 
 ```ref:features/graph-node-types
 Every node kind: configuration fields, behavior, and examples.

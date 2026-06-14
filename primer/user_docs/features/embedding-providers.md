@@ -94,13 +94,6 @@ When you later create a collection and choose this provider, the model weights a
 The built-in `huggingface` provider row (id `huggingface`) is created automatically on first boot. You can use it directly without adding a new row, or add separate rows if you want to register different models with different concurrency limits.
 ```
 
-## What happens after
-
-Once an embedding provider row is saved:
-
-- Knowledge collections can select it as their embedding backend. Documents ingested into that collection are encoded by this provider.
-- The internal collections subsystem uses the provider you choose during its setup step. Changing the provider after bootstrap requires re-ingesting the internal catalogue.
-- If you edit the provider row (change the token, add a model, adjust limits), primer rebuilds the adapter automatically.
 
 ```ref:features/semantic-search-providers
 The vector store backend that receives the embeddings.

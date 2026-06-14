@@ -151,19 +151,6 @@ After creating a webhook trigger:
 
 Click **Fire now** on the trigger detail page to dispatch all enabled subscriptions immediately, outside the normal schedule. The status panel shows the fire id and subscription count dispatched. Use this to test subscriptions after setting them up.
 
-## What happens after
-
-Once configured, primer handles the rest automatically.
-
-**Time-based triggers** (delayed and scheduled) are picked up by the claim engine. A worker claims the trigger lease when `next_fire_at` arrives, dispatches all enabled subscriptions, and advances `next_fire_at` for the next tick. A delayed trigger disables itself after firing. A scheduled trigger with `catchup=all` will replay up to 64 missed fires after a disabled window.
-
-**Webhook triggers** fire immediately when the POST arrives at `/v1/webhooks/{token}`. The 202 response is returned before subscriptions complete. The delivery id in the response body can be used to correlate the fire to downstream events.
-
-**Fresh-session subscriptions** read the live agent or graph definition at fire time, not at subscription creation time. This means you can hot-fix an agent and the fix takes effect on the next fire without touching the subscription.
-
-**`parked_session` subscriptions** are one-shot: the dispatcher deletes the row after a successful wake. The running agent receives the fire context as the `subscribe_to_trigger` tool result and continues its turn.
-
-The fire context flows as a dict through every subscription: `trigger_id`, `trigger_slug`, `kind`, `fired_at`, `scheduled_for`, `fire_id`. Payload templates render this context via Jinja2 into a string delivered to the target. One subscription failing does not block the others.
 
 ```mermaid
 flowchart LR

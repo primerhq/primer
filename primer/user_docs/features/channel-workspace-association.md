@@ -103,15 +103,6 @@ The `allowed_agents` and `allow_agent_switch` settings live on the channel's cha
 
 These settings are on the channel itself, not on the association, because they describe what is allowed for that room regardless of which workspace sessions are currently forwarding to it.
 
-## What happens after
-
-With an association in place:
-
-- Agent sessions that park on `ask_user` post a conversational prompt to the channel. The human's reply text becomes the tool result and the session continues.
-- Tool approval gates post an "Approve / Reject" message with buttons. The human's button click sets `decision` to `"Approve"` or `"Reject"` and the session continues.
-- `inform_user` calls post a one-way message with no park (no reply is expected or collected).
-- Each of these creates a `ChannelCorrelation` row. The row is the routing truth: it survives API restarts and lets any worker process the inbound reply, not just the one that dispatched the gate.
-- If a second reply arrives after the first resumes the session (or if two humans click buttons simultaneously), the duplicate is silently dropped. The `mark_resumable` flip is atomic and first-wins.
 
 ```ref:features/channels
 Channel rooms, chat config, and in-channel commands.
