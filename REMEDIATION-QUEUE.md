@@ -32,6 +32,12 @@ primectl. Mark a track N/A with a one-line reason.
   override) bounds git + init_command + runtime ops subprocesses; kills process
   group on breach + SubprocessTimeoutError + lock release; +13 unit (567
   workspace + 55 runtime green) - MERGED 357c7abb
+- user-4 webhook-trigger - TriggerKind.WEBHOOK + WebhookTriggerConfig (minted
+  token, optional HMAC); public POST /v1/webhooks/{token} (HMAC verify, body/rate
+  limits, fire-and-forget 202); rotate_token endpoint; console wizard+detail;
+  +30 unit +8 e2e (108 blast-radius green); coordinator fixed 4 added em-dashes
+  in triggers.jsx - MERGED de1d1d86 (e2e deferred to final gate; concerns: in-proc
+  rate limiter not multi-worker; e2e needs anon_client fixture - verify at gate)
 
 ## Pending tasks
 
@@ -280,9 +286,10 @@ Mostly independent of user-1/2/3 (own files); can run in parallel with them.
 | user-2-collection-ui | (merged) | - | a066c650 | merged 704f6a73 |
 | chat-approval-pending | (merged) | - | ae527ce0 | merged 70ee7f63 |
 | git-timeout | (merged) | - | a15f02c9 | merged 357c7abb |
-| user-4-webhook | feat/user-4-webhook | primer-user-4-webhook | ada35505 | in-flight |
-| sessions-filter | feat/sessions-filter | primer-sessions-filter | (dispatching) | in-flight |
-| auth | feat/auth | primer-auth | (dispatching) | in-flight |
+| user-4-webhook | (merged) | - | ada35505 | merged de1d1d86 |
+| sessions-filter | feat/sessions-filter | primer-sessions-filter | a67a3a88 | in-flight |
+| auth | feat/auth | primer-auth | a9387770 | in-flight (app.py conflict expected at merge) |
+| auto-start | feat/auto-start | primer-auto-start | (dispatching) | in-flight |
 | _all others_ | - | - | - | pending |
 
 ## Conflict map (concurrent tasks MUST NOT share a hot file)
