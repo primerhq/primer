@@ -12,7 +12,7 @@ from primer.knowledge.indexing import (
     index_document,
 )
 from primer.model.collection import Collection, CollectionEmbedder, Document
-from primer.model.except_ import PrimerError
+from primer.model.except_ import ConflictError, DimensionMismatchError, PrimerError
 from primer.model.storage import OffsetPage, OffsetPageResponse
 
 
@@ -164,7 +164,11 @@ class TestIndexDocument:
             semantic_search_registry=ssr,
         )
         assert n == 0
-        assert store.created is None  # no chunks, no registration
+        # The dim-mismatch probe registers the collection (dim=3) even for
+        # empty documents so a subsequent non-empty ingest gets the same
+        # registration path and a mismatch surfaces early.
+        assert store.created == ("kb-1", 3)
+        assert len(store.puts) == 0  # no chunks stored
         assert ("kb-1", "doc-1") in store.deleted  # old chunks cleared
 
 
@@ -403,3 +407,114 @@ class TestBackfill:
         )
         assert n == 1
         assert any(p.document_id == "ok" for p in store.puts)
+
+
+class _MismatchStore(_Store):
+    """Vector store that already has a collection registered at a DIFFERENT dim.
+
+    ``create_collection`` raises ConflictError (matching the pgvector backend)
+    when the requested dimension differs from the stored one.
+    """
+
+    def __init__(self, stored_dim: int, collection_id: str = "kb-1"):
+        super().__init__()
+        self._stored_dim = stored_dim
+        self._stored_id = collection_id
+        # Pre-register so the first create_collection raises.
+        self._registered.add(collection_id)
+
+    async def create_collection(self, cid, *, dimensions, distance="cosine"):
+        if cid == self._stored_id and dimensions != self._stored_dim:
+            raise ConflictError(
+                f"collection {cid!r} already exists with "
+                f"dimensions={self._stored_dim}, distance='cosine'; "
+                f"requested dimensions={dimensions}, distance='cosine'"
+            )
+        await super().create_collection(cid, dimensions=dimensions, distance=distance)
+
+
+class TestDimensionMismatchDetection:
+    """DimensionMismatchError is raised BEFORE embedding any chunks."""
+
+    @pytest.mark.asyncio
+    async def test_mismatch_raises_before_embedding_chunks(self):
+        """A 384-dim embedder against a 768-dim collection must raise 422 early."""
+        store = _MismatchStore(stored_dim=768)
+        embed_call_count = 0
+
+        class _CountingEmb:
+            async def embed(self, *, model, inputs):
+                nonlocal embed_call_count
+                embed_call_count += 1
+                # Return 384-dim vectors (mismatch vs stored 768).
+                class _R:
+                    embeddings = [type("V", (), {"vector": [0.1] * 384})()]
+                return _R()
+
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_CountingEmb())
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        with pytest.raises(DimensionMismatchError) as exc_info:
+            await index_document(
+                document=_document(text="some text to index"),
+                collection=_collection(),
+                provider_registry=reg,
+                semantic_search_registry=ssr,
+            )
+
+        err = exc_info.value
+        assert err.embedder_dim == 384
+        assert err.collection_dim == 768
+        assert err.collection_id == "kb-1"
+        # Only the probe embed ran -- no chunk embedding happened.
+        assert embed_call_count == 1
+        # No chunks were stored.
+        assert store.puts == []
+
+    @pytest.mark.asyncio
+    async def test_matching_dims_proceeds_normally(self):
+        """When embedder dim matches collection stored dim, indexing succeeds."""
+        store = _MismatchStore(stored_dim=3)  # same as _Emb default
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_Emb(dim=3))
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        n = await index_document(
+            document=_document(text="short text"),
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+        )
+        assert n == 1
+        assert len(store.puts) == 1
+
+    @pytest.mark.asyncio
+    async def test_mismatch_error_carries_422_status(self):
+        """DimensionMismatchError.status_code is 422."""
+        store = _MismatchStore(stored_dim=768)
+
+        class _384Emb:
+            async def embed(self, *, model, inputs):
+                class _R:
+                    embeddings = [type("V", (), {"vector": [0.1] * 384})()]
+                return _R()
+
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_384Emb())
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        with pytest.raises(DimensionMismatchError) as exc_info:
+            await index_document(
+                document=_document(text="text"),
+                collection=_collection(),
+                provider_registry=reg,
+                semantic_search_registry=ssr,
+            )
+
+        assert exc_info.value.status_code == 422
+        assert "re-ingest" in exc_info.value.message.lower() or \
+               "re-index" in exc_info.value.message.lower()

@@ -19,10 +19,11 @@ document until indexing succeeds on a later update.
 from __future__ import annotations
 
 import logging
+import re as _re
 
 from primer.model.chat import TextPart
 from primer.model.collection import Collection, Document
-from primer.model.except_ import PrimerError
+from primer.model.except_ import ConflictError, DimensionMismatchError, PrimerError
 from primer.model.vector import EmbeddingRecord
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,19 @@ logger = logging.getLogger(__name__)
 # split on character boundaries so one huge block still embeds.
 _CHUNK_TARGET_CHARS = 1500
 _CHUNK_HARD_CAP = 3000
+
+
+def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
+    """Extract the stored vector dimension from a ConflictError message.
+
+    All backends embed the stored dimension as ``dimensions=<N>`` in their
+    ConflictError text. Returns ``fallback`` when the pattern is absent.
+    """
+    # Match the FIRST "dimensions=<N>" occurrence -- that is the stored dim.
+    m = _re.search(r"dimensions=(\d+)", conflict_message)
+    if m:
+        return int(m.group(1))
+    return fallback
 
 
 def _document_text(doc: Document) -> str:
@@ -117,6 +131,42 @@ async def index_document(
         collection.search_provider_id
     )
 
+    # Probe the embedder's output dimensionality with a single cheap call
+    # BEFORE embedding all chunks. This lets us detect a mismatch between
+    # the embedder and the vector store's stored collection dimension early
+    # -- without wasting a full embedding pass on a batch that cannot be
+    # stored. We register (or validate) the collection in the store now so
+    # that a ConflictError (dim mismatch) surfaces here, not after work.
+    probe_response = await embedder.embed(
+        model=collection.embedder.model,
+        inputs=[TextPart(text="dimensionality probe")],
+    )
+    if not probe_response.embeddings:
+        raise PrimerError(
+            f"embedder returned no embedding for dimensionality probe "
+            f"(collection {collection.id!r})"
+        )
+    probe_dim = len(probe_response.embeddings[0].vector)
+    try:
+        await store.create_collection(collection.id, dimensions=probe_dim)
+    except ConflictError as exc:
+        # The collection is already registered in the store with a different
+        # dimension. Parse the stored dim from the ConflictError message
+        # produced by all store backends ("dimensions=<N>" in the message).
+        stored_dim = _parse_stored_dim(str(exc), fallback=0)
+        raise DimensionMismatchError(
+            f"Embedder output dimension ({probe_dim}) does not match the "
+            f"vector store dimension ({stored_dim}) recorded for collection "
+            f"{collection.id!r}. The collection was indexed with a different "
+            f"embedding model. To fix: delete all documents from this "
+            f"collection, then re-create it with the correct embedder, and "
+            f"re-ingest the documents.",
+            embedder_dim=probe_dim,
+            collection_dim=stored_dim,
+            collection_id=collection.id,
+            cause=exc,
+        ) from exc
+
     # Embed FIRST, before touching the existing chunks. If the embedder
     # fails (transient error, missing key), we must not have already
     # deleted the document's old chunks: the replace below only runs once
@@ -159,8 +209,9 @@ async def index_document(
     try:
         await store.delete(collection.id, document.id)
     except PrimerError:
-        # The collection may not be registered yet (first ingest); the
-        # create_collection below handles registration.
+        # Tolerate stores that raise on delete when the collection has no
+        # prior rows (some backends signal an unregistered collection this
+        # way). The probe's create_collection above already registered it.
         pass
 
     if not chunks:
@@ -168,8 +219,8 @@ async def index_document(
         # cleared any prior chunks, which is the intended replace-with-empty.
         return 0
 
-    # Register the collection in the store (idempotent) using the actual
-    # embedding dimensionality, then upsert every chunk.
+    # Idempotent: the probe already registered the collection above.
+    # Calling again is a no-op for all compliant backends.
     await store.create_collection(
         collection.id, dimensions=len(records[0].vector)
     )

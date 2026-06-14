@@ -23,7 +23,12 @@ from primer.internal_collections import (
 )
 from primer.model.agent import Agent, AgentModel
 from primer.model.collection import Collection, CollectionEmbedder
-from primer.model.except_ import ConfigError, ConflictError, NotFoundError
+from primer.model.except_ import (
+    ConfigError,
+    ConflictError,
+    DimensionMismatchError,
+    NotFoundError,
+)
 from primer.model.internal import (
     INTERNAL_COLLECTIONS_CONFIG_ID,
     IngestFailure,
@@ -364,6 +369,48 @@ class TestBootstrap:
         assert (tools_coll, "system::foo", "0") in store.records
         assert (tools_coll, "system::bar", "0") in store.records
         await subsystem.aclose()
+
+    @pytest.mark.asyncio
+    async def test_bootstrap_raises_dimension_mismatch_error_when_store_has_different_dim(
+        self, cfg, sp, pr, ssr
+    ) -> None:
+        """Bootstrap raises DimensionMismatchError (422) when the vector store
+        already has an internal collection at a different dimension than the
+        active embedder produces."""
+
+        class _MismatchStore(_FakeVectorStore):
+            """Store where every internal collection was already created at dim=9999."""
+
+            async def create_collection(self, collection_id, *, dimensions, distance="cosine"):
+                # Simulate the store already holding this collection at a
+                # different dimension by raising ConflictError (same message
+                # format as the pgvector backend).
+                if collection_id in INTERNAL_COLLECTION_IDS.values():
+                    raise ConflictError(
+                        f"collection {collection_id!r} already exists with "
+                        f"dimensions=9999, distance='cosine'; "
+                        f"requested dimensions={dimensions}, distance='cosine'"
+                    )
+                await super().create_collection(
+                    collection_id, dimensions=dimensions, distance=distance
+                )
+
+        mismatch_ssr = _FakeSSR(_MismatchStore())
+        subsystem = build_subsystem(
+            config=cfg,
+            storage_provider=sp,
+            provider_registry=pr,
+            semantic_search_registry=mismatch_ssr,
+        )
+        with pytest.raises(DimensionMismatchError) as exc_info:
+            await subsystem.bootstrap()
+
+        err = exc_info.value
+        assert err.status_code == 422
+        # The stored dim comes from the ConflictError message.
+        assert err.collection_dim == 9999
+        # The embedder dim is 4 (the _FakeEmbedder default).
+        assert err.embedder_dim == 4
 
 
 # ===========================================================================
