@@ -1,0 +1,17 @@
+{
+  "GET /channel_providers?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
+  },
+  "GET /channels?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
+  },
+  "_note": "channel_providers empty-valid: registering a provider requires live platform credentials (telegram bot token, slack app, discord application)"
+}

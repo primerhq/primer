@@ -1,0 +1,31 @@
+{
+  "POST /sessions/find": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
+  },
+  "GET /chats?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
+  },
+  "GET /tool_approval_policies?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "require-exec",
+        "name": "Require approval for exec",
+        "enabled": true,
+        "mode": "required"
+      }
+    ]
+  },
+  "_note": "parked sessions/chats empty-valid: pending approvals require a live parked session"
+}

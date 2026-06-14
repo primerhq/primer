@@ -1,0 +1,17 @@
+{
+  "GET /embedding_providers?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 1,
+    "total": 1,
+    "items": [
+      {
+        "id": "hf-minilm",
+        "provider": "huggingface",
+        "model": "sentence-transformers/all-MiniLM-L6-v2",
+        "dimensions": 384,
+        "config": {}
+      }
+    ]
+  }
+}

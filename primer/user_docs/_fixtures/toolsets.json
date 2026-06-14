@@ -1,0 +1,38 @@
+{
+  "GET /tools": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 3,
+    "total": 3,
+    "items": [
+      {
+        "id": "system",
+        "builtin": true,
+        "available": true,
+        "tagline": "Invoke agents and graphs from inside a session",
+        "tools": ["system__invoke_agent", "system__invoke_graph", "system__switch_to_agent"]
+      },
+      {
+        "id": "search",
+        "builtin": true,
+        "available": true,
+        "tagline": "Query knowledge collections",
+        "tools": ["search__search_collection", "search__list_collections"]
+      },
+      {
+        "id": "workspaces",
+        "builtin": true,
+        "available": true,
+        "tagline": "Read, write, and run commands in a workspace",
+        "tools": ["workspaces__read_file", "workspaces__write_file", "workspaces__exec"]
+      }
+    ]
+  },
+  "GET /tool_approval_policies?limit=200": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 0,
+    "total": 0,
+    "items": []
+  }
+}
