@@ -9,7 +9,7 @@ summary: Package a working set of agents, graphs, collections, and toolsets into
 
 A harness is a git repository that ships a bundle of primer entities - agents, graphs, collections, documents, and toolsets - as a single versioned artifact. Installing a harness creates all those entities in one operation. Updating to a new commit is a two-step Fetch and Sync.
 
-Think of a harness as "Helm for primer": your configuration becomes a versioned artifact that a teammate or customer can drop into their own primer instance and run immediately. The upstream repo is the source of truth; the installed entities on disk follow it.
+Think of a harness as a "Helm chart for primer": a packaged, versioned bundle (like a Helm chart) that a teammate or customer can drop into their own primer instance and run immediately. The upstream repo is the source of truth; the installed entities on disk follow it.
 
 Harnesses solve two problems:
 
@@ -94,6 +94,88 @@ Each group shows the entity ids. Locally-modified entities are flagged. A Sync r
 ```callout:warning
 Uninstall removes the harness record and all unmodified managed entities. This cannot be undone. Entities you edited after install appear in the confirmation dialog - you decide whether to keep or delete them.
 ```
+
+## Building an outbound harness
+
+Everything above describes the *inbound* direction: installing a packaged bundle someone else published. The *outbound* direction is the other half - authoring your own harness from the live entities in your instance and pushing it to a git repo so others can install it.
+
+An outbound harness has `direction: outbound`. Instead of pulling entities out of a repo, it tracks a set of your existing agents, graphs, toolsets, and collections, renders them into bundle templates, and commits the result to a remote ref.
+
+```mermaid
+flowchart LR
+    A[Author selects live entities] --> B[Build renders bundle]
+    B --> C[Push commits to git ref]
+    C --> D[Consumer registers inbound]
+    D --> E[Consumer installs]
+```
+
+### What an outbound bundle packages
+
+A build assembles a self-contained bundle in the configured repo and ref:
+
+| Artifact | Contents |
+|---|---|
+| `harness.yaml` | Bundle metadata: name, slug, description, and the tracked-entity manifest. |
+| `templates/<template_name>.yaml` | One file per tracked entity. The live entity is exported, system-managed fields are stripped, and each override mapping replaces a value with a `{{ overrides.<path> }}` token. |
+| `overrides.schema.json` | A composed JSON Schema derived from every override mapping. This becomes the consumer's overrides form at install time. |
+| `bundle_hash` | A stable hash over the whole rendered set, used to detect drift between the live entities and the last push. |
+
+### Tracked entities and override mappings
+
+Each tracked entity records:
+
+| Field | Notes |
+|---|---|
+| **kind** | One of `agent`, `graph`, `toolset`, `collection`, `document`. |
+| **source_id** | The id of the live entity to export. |
+| **template_name** | The bundle filename (without extension). Must be unique within the harness. |
+| **overrides** | A list of override mappings. Each maps a field in the exported entity (a JSON pointer, `field_path`) to an `override_path` in the consumer's overrides, optionally with a picker `widget` and a default value. |
+
+Templatizing a field turns a hard-coded value (for example, a specific LLM provider id) into a slot the consumer fills in when they install. A mapping with `override_path: llm.provider_id` and `widget: llm-provider-picker` renders an LLM-provider dropdown on the consumer's install form, so a bundle authored against your provider installs cleanly against theirs.
+
+Entities already managed by an *inbound* harness cannot be tracked outbound - they are owned by their upstream bundle and appear greyed out in the picker.
+
+### Building one from the console
+
+1. Navigate to **Harnesses** and click **Build outbound**. The four-step builder opens.
+2. **Metadata.** Enter name, slug (checked for uniqueness as you type), description, the destination Git URL and ref, an optional subpath, and a git token with push access (stored encrypted).
+3. **Entities.** Pick the agents, graphs, toolsets, and collections to track. Give each a unique `template_name` - this becomes its filename in the bundle.
+4. **Templatize.** For each tracked entity the builder renders its JSON tree. Click **Templatize** on any field to make it configurable: set the `override_path` and optionally choose a picker widget. Existing mappings show as badges you can click to remove.
+5. **Link & push.** Review the summary and tracked-entity list. Tick **Push now after build** to commit immediately, or leave it unticked to build (compute the bundle and check for drift) without pushing yet. Click **Create**.
+
+```
+Build outbound harness - Step 4: Link & push
+┌────────────────────────────────────────────────┐
+│ Summary                                         │
+│   Name        My outbound harness               │
+│   Slug        my-outbound-harness               │
+│   Direction   outbound                          │
+│   Git URL     https://github.com/org/bundle     │
+│   Ref         main                              │
+│   Tracked     2 entities                        │
+├────────────────────────────────────────────────┤
+│ Tracked entities                                │
+│   agent       agent-main          1 mapping     │
+│   toolset     search-tools        0 mappings    │
+├────────────────────────────────────────────────┤
+│ [x] Push now after build                        │
+│                          [ Cancel ]  [ Create ] │
+└────────────────────────────────────────────────┘
+```
+
+The builder creates the harness with `direction: outbound`, enqueues a **build**, and (if you ticked the box) a **push**. It polls until each operation finishes, surfacing any error inline.
+
+### Re-building, pushing, and drift
+
+From an outbound harness's detail page:
+
+- **Check drift** enqueues a build that re-renders the tracked entities and recomputes the bundle hash. If your live entities have changed since the last push, the harness moves to **OUTDATED** and a drift indicator appears next to the affected tracked entities.
+- **Edit tracked entities** re-opens the builder at the Templatize step so you can add or remove tracked entities and mappings.
+- **Push** commits the rendered bundle and pushes it to the remote ref. It is enabled when the harness is **DRAFT** or **OUTDATED**. The **Last push** panel records the commit SHA, timestamp, and bundle hash.
+
+### How a consumer installs your outbound harness
+
+The repo your build pushes to is an ordinary inbound bundle. A consumer registers it exactly like any other harness: they point **Register from git** at your Git URL and ref, fetch it, fill in the overrides your mappings declared (rendered from `overrides.schema.json`), and install. The two directions meet at the git repo - you publish to it, they consume from it.
 
 
 ```ref:features/agents
