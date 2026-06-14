@@ -616,6 +616,11 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   const [maxConcurrency, setMaxConcurrency] = React.useState(
     existing?.limits?.max_concurrency ?? 1
   );
+  const [requestTimeoutSeconds, setRequestTimeoutSeconds] = React.useState(
+    existing?.limits?.request_timeout_seconds !== undefined
+      ? String(existing.limits.request_timeout_seconds ?? "")
+      : "300"
+  );
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   // Whenever the provider type changes, re-seed config defaults + wipe the
@@ -768,7 +773,12 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
       provider,
       config: cleanConfig(),
       models: cleanModels(),
-      limits: { max_concurrency: Number(maxConcurrency) || 1 },
+      limits: {
+        max_concurrency: Number(maxConcurrency) || 1,
+        ...(requestTimeoutSeconds !== "" && requestTimeoutSeconds !== null
+          ? { request_timeout_seconds: requestTimeoutSeconds === "null" ? null : Number(requestTimeoutSeconds) }
+          : {}),
+      },
     };
     try { await create.mutate(body); } catch (_e) { /* handled in onError */ }
   };
@@ -920,6 +930,35 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
           style={{ width: 120 }}
         />
         {fieldErrors["body.limits.max_concurrency"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.limits.max_concurrency"]}</div>}
+      </div>
+
+      <div className="field">
+        <label className="field-label">
+          Stream inactivity timeout <span className="hint">seconds; blank or 0 to disable</span>
+        </label>
+        <input
+          className="input"
+          type="number"
+          min="0"
+          step="1"
+          value={requestTimeoutSeconds}
+          onChange={(e) => setRequestTimeoutSeconds(e.target.value)}
+          style={{ width: 120 }}
+          placeholder="300"
+        />
+        <div className="field-help">
+          Maximum seconds to wait for the next streamed event from the provider.
+          If no event arrives within this window the stream is aborted and the
+          turn fails cleanly (slot released). This is a per-event stall timeout,
+          not a total-generation cap -- long but progressing responses are not
+          killed. Default 300 s. LM Studio / local models: lower to 60 s for
+          faster failure detection if your hardware is fast enough.
+        </div>
+        {fieldErrors["body.limits.request_timeout_seconds"] && (
+          <div className="field-help" style={{ color: "var(--red)" }}>
+            {fieldErrors["body.limits.request_timeout_seconds"]}
+          </div>
+        )}
       </div>
     </Modal>
   );

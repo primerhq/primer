@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from primer.common.google_errors import classify_google_exception
 from primer.int.llm import LLM
+from primer.llm._timeout import _iter_with_timeout
 from primer.llm._tokenizer.gemini import count_tokens_gemini
 from primer.model.except_ import (
     ConfigError,
@@ -744,6 +745,7 @@ class GeminiLLM(LLM):
         self._rate_limiter = rate_limiter
         self._rate_limit_key = f"llm:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
+        self._request_timeout_seconds = provider.limits.request_timeout_seconds
         self._trace_llm_io = trace_llm_io
 
         logger.info(
@@ -752,6 +754,7 @@ class GeminiLLM(LLM):
                 "provider_id": provider.id,
                 "models": [m.name for m in provider.models],
                 "max_concurrency": provider.limits.max_concurrency,
+                "request_timeout_seconds": provider.limits.request_timeout_seconds,
             },
         )
 
@@ -886,12 +889,31 @@ class GeminiLLM(LLM):
                     tokens_out = 0
                     state = _StreamState()
                     try:
-                        async for chunk in sdk_stream:
+                        async for chunk in _iter_with_timeout(
+                            sdk_stream, self._request_timeout_seconds
+                        ):
                             for ev in _translate_chunk(chunk, state, model_name=model):
                                 if isinstance(ev, Usage):
                                     tokens_in = ev.input_tokens
                                     tokens_out = ev.output_tokens
                                 yield ev
+                    except asyncio.TimeoutError as exc:
+                        from primer.model.except_ import ProviderTimeoutError
+                        timeout_val = self._request_timeout_seconds
+                        logger.error(
+                            "Gemini stream timed out (no event in %.1f s)",
+                            timeout_val,
+                            extra={
+                                "provider_id": self._provider.id,
+                                "model": model,
+                            },
+                        )
+                        raise ProviderTimeoutError(
+                            f"Gemini stream stalled: no event received within "
+                            f"{timeout_val} s (provider_id={self._provider.id!r}, "
+                            f"model={model!r})",
+                            code="stream_timeout",
+                        ) from exc
                     except Exception as exc:
                         err = classify_google_exception(exc)
                         logger.error(

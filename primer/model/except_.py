@@ -100,8 +100,20 @@ class ServerError(ProviderError):
     """Provider encountered an internal error (5xx)."""
 
 
+class ProviderTimeoutError(ProviderError):
+    """LLM stream stalled: no event received within the configured window.
+
+    Raised by adapters when ``Limits.request_timeout_seconds`` expires
+    without a new event arriving from the upstream provider. The turn
+    fails cleanly (the concurrency slot is released) so the worker can
+    accept the next queued request. Callers that want to distinguish a
+    stall from an ordinary provider error can catch this subclass
+    specifically; catching :class:`ProviderError` is also sufficient.
+    """
+
+
 class NetworkError(PrimerError):
-    """Network-level failure — connection refused, DNS failure, timeout.
+    """Network-level failure -- connection refused, DNS failure, timeout.
 
     Distinct from :class:`ProviderError` because no response was received;
     the failure is below the application protocol layer.

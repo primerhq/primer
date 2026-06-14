@@ -28,6 +28,7 @@ from pydantic import BaseModel
 from primer.common.openai_errors import classify_openai_exception
 from primer.int.llm import LLM
 from primer.llm._openai_common import build_sampling_params as _build_sampling_params_impl
+from primer.llm._timeout import _iter_with_timeout
 from primer.model.except_ import (
     ConfigError,
     ModelNotFoundError,
@@ -826,6 +827,7 @@ class OpenResponsesLLM(LLM):
         self._rate_limiter = rate_limiter
         self._rate_limit_key = f"llm:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
+        self._request_timeout_seconds = provider.limits.request_timeout_seconds
         self._trace_llm_io = trace_llm_io
 
         logger.info(
@@ -835,6 +837,7 @@ class OpenResponsesLLM(LLM):
                 "flavor": provider.config.flavor.value,
                 "models": [m.name for m in provider.models],
                 "max_concurrency": provider.limits.max_concurrency,
+                "request_timeout_seconds": provider.limits.request_timeout_seconds,
             },
         )
 
@@ -970,12 +973,31 @@ class OpenResponsesLLM(LLM):
                     tokens_out = 0
                     state = _StreamState()
                     try:
-                        async for raw in sdk_stream:
+                        async for raw in _iter_with_timeout(
+                            sdk_stream, self._request_timeout_seconds
+                        ):
                             for event in _translate_event(raw, state):
                                 if isinstance(event, Usage):
                                     tokens_in = event.input_tokens
                                     tokens_out = event.output_tokens
                                 yield event
+                    except asyncio.TimeoutError as exc:
+                        from primer.model.except_ import ProviderTimeoutError
+                        timeout_val = self._request_timeout_seconds
+                        logger.error(
+                            "OpenResponses stream timed out (no event in %.1f s)",
+                            timeout_val,
+                            extra={
+                                "provider_id": self._provider.id,
+                                "model": model,
+                            },
+                        )
+                        raise ProviderTimeoutError(
+                            f"OpenResponses stream stalled: no event received within "
+                            f"{timeout_val} s (provider_id={self._provider.id!r}, "
+                            f"model={model!r})",
+                            code="stream_timeout",
+                        ) from exc
                     except Exception as exc:
                         err = classify_openai_exception(exc)
                         logger.error(
