@@ -7,7 +7,7 @@ summary: REST endpoints for user registration, session login/logout, status prob
 
 Authentication in Primer uses session cookies (for interactive and operator flows) and bearer tokens (for programmatic access). Registration is a one-time bootstrap step that locks after the first user is created.
 
-```ref:concepts/what-is-an-agent
+```ref:features/agents
 Agents and the sessions that authenticated requests drive.
 ```
 

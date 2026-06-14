@@ -149,8 +149,8 @@ The Step 6 graph parks on a real file watch to show how a run suspends and resum
 
 You have seen all the major building blocks: an LLM provider, two agents, a shared chat with an agent switch, a semantic router backed by internal collections, a workspace session that writes a file, and a graph with a park-resume loop. The guides below go deeper on each piece.
 
-```ref:concepts/what-is-an-agent
-How an agent turn actually runs.
+```ref:features/agents
+How an agent turn actually runs and every configuration field.
 ```
 
 ```ref:features/harnesses

@@ -29,7 +29,7 @@ Build the canvas, add nodes and edges, wire conditional branches,
 and run the pipeline.
 ```
 
-```ref:features/agents-advanced
+```ref:features/agents
 Fine-grained tool binding and the turn loop -- relevant for
 scoping each agent to only the tools it needs.
 ```

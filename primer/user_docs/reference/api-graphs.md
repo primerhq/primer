@@ -7,7 +7,7 @@ summary: REST endpoints to create, list, update, delete, and validate directed a
 
 A graph is a directed network of typed nodes connected by static or conditional edges. The executor walks nodes in Pregel-style supersteps; each node produces output that downstream nodes consume via Jinja2 templates. Every graph must have exactly one `begin` node and at least one `end` node.
 
-```ref:concepts/what-is-an-agent
+```ref:features/agents
 Agents that graph nodes reference.
 ```
 

@@ -7,10 +7,8 @@ section: reference
 
 Chats are user-driven conversations with a single agent, persisted as top-level entities (not nested under a workspace). Each chat runs over a WebSocket stream and can park mid-turn on yielding tools, including the `_approval` gate.
 
-```ref:concepts/chats
-```
-
 ```ref:features/chats
+Turn mechanics, the agent switcher, compaction, and streaming.
 ```
 
 ## Endpoints

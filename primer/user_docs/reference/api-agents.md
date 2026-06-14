@@ -7,8 +7,8 @@ summary: REST endpoints to create, list, update, and delete agents.
 
 An agent is a named, model-backed entity that carries a system prompt, a tool list, and optional compaction instructions. Agents are referenced by id when starting sessions or chats.
 
-```ref:concepts/what-is-an-agent
-What an agent is and why.
+```ref:features/agents
+What an agent is, the turn loop, and how agents relate to chats and sessions.
 ```
 
 ```ref:features/agents
