@@ -13,8 +13,18 @@ connection via :meth:`subscribe`, register an asyncpg ``add_listener``
 callback that pushes received payloads into a queue, and iterate the
 queue as :class:`Event` instances.
 
+The subscriber connection is supervised by a reconnect loop that
+mirrors the scheduler's LISTEN reconnect (see
+:meth:`primer.scheduler.postgres.PostgresScheduler._watch_channel`):
+if the dedicated connection drops, the loop re-acquires a connection
+from the pool, re-registers the LISTEN callback, and resumes pushing
+events. NOTIFY messages emitted while a subscriber is reconnecting are
+lost (postgres LISTEN/NOTIFY is not durable); this matches the
+scheduler's best-effort wake-up contract -- the worker's claim loop is
+the safety net for any missed resume signal.
+
 Multiple subscribers on the same channel each receive every event
-(broadcast — postgres' default LISTEN/NOTIFY semantics).
+(broadcast -- postgres' default LISTEN/NOTIFY semantics).
 """
 
 from __future__ import annotations
@@ -40,25 +50,39 @@ existing scheduler wake-up traffic doesn't double-trigger yield
 resumes."""
 
 
-class _PostgresSubscription(EventSubscription):
-    """One subscriber connection + queue.
+DEFAULT_LISTEN_RECONNECT_SECONDS = 2.0
+"""Backoff between LISTEN reconnect attempts. Mirrors the scheduler's
+``PostgresSchedulerConfig.listen_reconnect_seconds`` default (2.0s)."""
 
-    Holds an asyncpg connection from the bus's pool with a LISTEN
-    on the yield events channel. The asyncpg ``add_listener``
-    callback pushes the decoded Event onto an asyncio.Queue. Iteration
-    drains the queue; close releases the connection.
+
+class _PostgresSubscription(EventSubscription):
+    """One subscriber: a supervised LISTEN connection + queue.
+
+    A background task acquires an asyncpg connection from the bus's
+    pool, registers a LISTEN on the yield events channel, and keeps it
+    alive across drops via a reconnect loop (mirrors
+    :meth:`primer.scheduler.postgres.PostgresScheduler._watch_channel`).
+    The asyncpg ``add_listener`` callback pushes the decoded Event onto
+    an asyncio.Queue. Iteration drains the queue; close cancels the
+    supervisor and releases the connection.
     """
 
     def __init__(
         self,
-        conn,
-        queue: asyncio.Queue,
-        release: callable,
+        *,
+        acquire,
+        release,
+        reconnect_seconds: float,
+        on_reconnect=None,
     ) -> None:
-        self._conn = conn
-        self._queue = queue
+        self._acquire = acquire
         self._release = release
+        self._reconnect_seconds = reconnect_seconds
+        self._on_reconnect = on_reconnect
+        self._queue: asyncio.Queue = asyncio.Queue()
+        self._conn = None
         self._closed = False
+        self._supervisor: asyncio.Task | None = None
 
     def __aiter__(self) -> "_PostgresSubscription":
         return self
@@ -75,21 +99,18 @@ class _PostgresSubscription(EventSubscription):
         if self._closed:
             return
         self._closed = True
-        # Drop the listener + release the connection back to the pool.
-        try:
-            await self._conn.remove_listener(
-                YIELD_EVENTS_CHANNEL, self._on_notify,
-            )
-        except Exception:  # noqa: BLE001 — best-effort on shutdown
-            pass
-        try:
-            await self._release(self._conn)
-        except Exception:  # noqa: BLE001
-            pass
+        # Stop the supervisor; it drops the listener + releases the
+        # connection in its finally block.
+        if self._supervisor is not None:
+            self._supervisor.cancel()
+            try:
+                await self._supervisor
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
         await self._queue.put(None)
 
     def _on_notify(self, _conn, _pid, _channel, payload):
-        """asyncpg listener callback — push decoded Event into queue."""
+        """asyncpg listener callback -- push decoded Event into queue."""
         try:
             obj = json.loads(payload)
             event = Event(
@@ -99,12 +120,96 @@ class _PostgresSubscription(EventSubscription):
             )
         except Exception:  # noqa: BLE001
             logger.warning(
-                "PostgresEventBus: malformed NOTIFY payload %r — dropped",
+                "PostgresEventBus: malformed NOTIFY payload %r -- dropped",
                 payload,
             )
             return
-        # put_nowait is fine — the queue is unbounded.
+        # put_nowait is fine -- the queue is unbounded.
         self._queue.put_nowait(event)
+
+    async def _safe_release(self, conn) -> None:
+        """Release the LISTEN connection back to the pool; log + swallow
+        failures so a release error doesn't mask the original cause."""
+        if conn is None:
+            return
+        try:
+            await conn.remove_listener(YIELD_EVENTS_CHANNEL, self._on_notify)
+        except Exception:  # noqa: BLE001 -- best-effort on a dropped conn
+            pass
+        try:
+            await self._release(conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "PostgresEventBus LISTEN pool.release failed: %s -- "
+                "connection may leak",
+                exc,
+            )
+
+    async def _run(self) -> None:
+        """Supervise the LISTEN connection, reconnecting on drop.
+
+        Mirrors PostgresScheduler._watch_channel's ``_iter`` loop:
+        acquire + LISTEN, then block on a sentinel that the connection's
+        termination listener trips; on any drop, release, back off, and
+        loop to reconnect.
+        """
+        first_attempt = True
+        try:
+            while not self._closed:
+                try:
+                    conn = await self._acquire()
+                    await conn.add_listener(YIELD_EVENTS_CHANNEL, self._on_notify)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "PostgresEventBus LISTEN reconnect: %s", exc,
+                    )
+                    if not first_attempt and self._on_reconnect is not None:
+                        self._on_reconnect()
+                    first_attempt = False
+                    await asyncio.sleep(self._reconnect_seconds)
+                    continue
+                if not first_attempt and self._on_reconnect is not None:
+                    self._on_reconnect()
+                first_attempt = False
+                self._conn = conn
+
+                # Block until the connection drops. asyncpg fires
+                # termination listeners when the server connection is
+                # lost; we wake the supervisor via a private event and
+                # reconnect. A healthy connection simply parks here.
+                dropped: asyncio.Event = asyncio.Event()
+
+                def _on_termination(_conn) -> None:
+                    dropped.set()
+
+                try:
+                    conn.add_termination_listener(_on_termination)
+                except Exception:  # noqa: BLE001 -- not all conns expose this
+                    pass
+
+                try:
+                    await dropped.wait()
+                except asyncio.CancelledError:
+                    self._conn = None
+                    await self._safe_release(conn)
+                    raise
+                # Connection dropped -- release, back off, reconnect.
+                logger.warning(
+                    "PostgresEventBus LISTEN dropped -- reconnecting",
+                )
+                self._conn = None
+                await self._safe_release(conn)
+                await asyncio.sleep(self._reconnect_seconds)
+        finally:
+            # On close/cancel, ensure the live connection is released.
+            if self._conn is not None:
+                await self._safe_release(self._conn)
+                self._conn = None
+
+    def _start(self) -> None:
+        self._supervisor = asyncio.create_task(self._run())
 
 
 class PostgresEventBus(EventBus):
@@ -116,14 +221,22 @@ class PostgresEventBus(EventBus):
     via :meth:`PostgresStorageProvider.pool.acquire`.
     """
 
-    def __init__(self, storage: "PostgresStorageProvider") -> None:
+    def __init__(
+        self,
+        storage: "PostgresStorageProvider",
+        *,
+        reconnect_seconds: float = DEFAULT_LISTEN_RECONNECT_SECONDS,
+    ) -> None:
         self._storage = storage
+        self._reconnect_seconds = reconnect_seconds
         self._closed = False
         # Track live subscriptions so aclose can drop them.
         self._subs: list[_PostgresSubscription] = []
+        # Metric: number of LISTEN reconnects across all subscriptions.
+        self._listen_reconnects_total: int = 0
 
     async def initialize(self) -> None:
-        # Nothing to set up — the pool is owned by the storage
+        # Nothing to set up -- the pool is owned by the storage
         # provider and was initialised at app startup.
         return None
 
@@ -155,37 +268,31 @@ class PostgresEventBus(EventBus):
     def subscribe(self) -> _PostgresSubscription:
         if self._closed:
             raise RuntimeError("subscribe on closed PostgresEventBus")
-        # asyncpg add_listener requires a dedicated connection;
-        # acquire from the pool and remember the release callback.
-        # Note: subscribe() is sync to match the EventBus interface;
-        # the actual asyncpg acquire happens on the first __anext__
-        # via a lazy initialise path. To keep the impl simple we
-        # use a sentinel queue and a task that does the acquire.
-        queue: asyncio.Queue = asyncio.Queue()
+
+        def _bump_reconnects() -> None:
+            self._listen_reconnects_total += 1
 
         sub = _PostgresSubscription(
-            conn=None,  # populated by the init task below
-            queue=queue,
+            acquire=self._storage.pool.acquire,
             release=self._storage.pool.release,
+            reconnect_seconds=self._reconnect_seconds,
+            on_reconnect=_bump_reconnects,
         )
-
-        async def _init() -> None:
-            try:
-                conn = await self._storage.pool.acquire()
-                sub._conn = conn
-                await conn.add_listener(
-                    YIELD_EVENTS_CHANNEL, sub._on_notify,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "PostgresEventBus: subscribe init failed: %s", exc,
-                )
-                await queue.put(None)
-
-        # Schedule the init on the running loop.
-        asyncio.create_task(_init())
+        sub._start()
         self._subs.append(sub)
         return sub
+
+    def metrics_snapshot(self) -> dict[str, Any]:
+        """Process-local bus counters.
+
+        ``primer_yield_bus_listen_reconnects_total`` mirrors the
+        scheduler's ``primer_scheduler_listen_reconnects_total`` so the
+        two LISTEN supervisors expose comparable reconnect telemetry."""
+        return {
+            "primer_yield_bus_listen_reconnects_total": (
+                self._listen_reconnects_total
+            ),
+        }
 
 
 __all__ = ["PostgresEventBus", "YIELD_EVENTS_CHANNEL"]
