@@ -243,3 +243,15 @@ tests/ui_e2e/.state/
 tests/testconfig.yaml
 # local channel/test credentials (never commit)
 .credentials
+.superpowers/
+
+# Coordinator planning / review / findings docs - working notes only, never
+# committed (same rule as docs/superpowers/). Kept on disk for the session.
+REMEDIATION-QUEUE.md
+CRITICAL-REVIEW-*.md
+progress.md
+config.local.yaml
+MARKETING-*.md
+MARKETING.md
+OSS-*.md
+LAUNCH-*.md
