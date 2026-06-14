@@ -56,7 +56,7 @@ MISC_TOOLSET_ID = "misc"
 
 
 # ===========================================================================
-# Helpers — uniform OK / error wrapping (``_ok`` / ``_err`` are the shared
+# Helpers - uniform OK / error wrapping (``_ok`` / ``_err`` are the shared
 # toolset result builders, imported above from ``primer.toolset._helpers``).
 # ===========================================================================
 

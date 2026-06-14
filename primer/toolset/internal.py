@@ -75,7 +75,7 @@ class InternalToolsetProvider(ToolsetProvider):
         # Cache: which tools yield (park the turn) and which require an
         # AgentSession. Both are declared explicitly at the ``make_tool``
         # call site via the ``yields`` / ``requires_session`` flags (which
-        # replaced the old handler source/annotation introspection — see
+        # replaced the old handler source/annotation introspection - see
         # :func:`primer.toolset._describe.make_tool`). Surfaced via
         # :meth:`is_yielding` and :meth:`requires_session`; the MCP server
         # endpoint uses them to filter the exposable tool set.

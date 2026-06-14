@@ -62,7 +62,7 @@ def test_classification_reads_explicit_flags_not_handler_source() -> None:
     """The provider reads ``Tool.yields`` / ``Tool.requires_session``.
 
     The handler here is a plain no-op whose source contains neither
-    ``Yielded`` nor ``ctx.session_id`` — the OLD getsource/annotation
+    ``Yielded`` nor ``ctx.session_id`` - the OLD getsource/annotation
     heuristics would classify it as non-yielding and session-free. With
     the explicit flags set on the Tool, the provider must report it as
     yielding + session-bound, proving classification comes from the
