@@ -101,7 +101,7 @@ Next, create a small **brief-writer** agent and give it the tool `workspaces__wr
 ```embed:session-detail
 ```
 
-```ref:features/workspaces
+```ref:features/workspace-providers
 Workspace providers, templates, and the file tools.
 ```
 

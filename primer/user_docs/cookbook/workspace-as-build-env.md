@@ -20,7 +20,7 @@ repo, runs `cargo test`, and reports the result.
 - Access to the container image `rust:1.83-slim` from the Docker
   daemon the provider uses.
 
-```ref:features/workspaces
+```ref:features/workspace-providers
 Register a provider, create a template, and understand the
 workspace lifecycle before following this recipe.
 ```
