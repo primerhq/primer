@@ -82,6 +82,27 @@ is blocked. Two known shapes:
 
 The operator reads this to decide what to respond with.
 
+## auto_start and explicit start
+
+Every session is created with `status=CREATED`. The `auto_start` flag
+on `workspaces::create_workspace_session` (REST: `POST
+/v1/workspaces/{id}/sessions`) controls whether the session begins
+running immediately or stays inert until explicitly started.
+
+- **`auto_start=true` (MCP tool default)**: the session transitions to
+  `RUNNING`, the scheduler enqueues it, and a worker picks it up as
+  soon as one is free. The create call returns `status=running`.
+- **`auto_start=false` (REST API default)**: the session stays in
+  `CREATED` with no lease registered. No worker will claim or run it.
+  The session remains inert indefinitely until you explicitly start it
+  with `workspaces::resume_workspace_session` (REST: `POST
+  .../sessions/{id}/resume`). That call transitions `CREATED -> RUNNING`
+  and registers the lease so a worker picks it up.
+
+Use `auto_start=false` when you need to set something up between
+creating the session and letting a worker run it, or when you want to
+create sessions in batches and start them on demand.
+
 ## Lifecycle and states
 
 `Session.status` transitions:
@@ -223,6 +244,11 @@ Returns `status="waiting"`, `parked_status="parked"`,
 
 ## Gotchas
 
+- **`auto_start=false` leaves the session truly inert.** No worker
+  will touch it until you call resume. There is no polling or timeout
+  that will auto-start it. If you create a session with
+  `auto_start=false` and never resume it, it stays `CREATED` forever
+  (until cancelled or deleted).
 - **`waiting.json` is the contract.** It's how operators
   (and external automation) learn why a session is parked. Don't
   assume; read it. The shape is documented per yield type.
