@@ -779,14 +779,29 @@ def _make_lifespan(config: AppConfig):
                     SessionStatus as _SessionStatus,
                     WorkspaceSession as _WorkspaceSession,
                 )
+                from primer.storage.q import Q as _Q
 
                 _session_storage = storage_provider.get_storage(_WorkspaceSession)
+                # Only LIVE (non-ENDED) sessions can still need work. Pushing
+                # the filter into the query (instead of list()-ing every row
+                # and dropping ENDED in Python) keeps recovery from loading the
+                # entire session history into memory at scale -- and the new
+                # B-tree index on sessions.status keeps the scan cheap. The
+                # IN-set mirrors "every status except ENDED" so a future status
+                # is recovered (fail-safe) rather than silently dropped.
+                _live_statuses = [
+                    s.value for s in _SessionStatus if s != _SessionStatus.ENDED
+                ]
+                _live_predicate = (
+                    _Q(_WorkspaceSession).where_in("status", _live_statuses).build()
+                )
                 _recovered_running = 0
                 _recovered_other = 0
                 _offset = 0
                 while True:
-                    _page = await _session_storage.list(
-                        _OffsetPage(offset=_offset, length=200)
+                    _page = await _session_storage.find(
+                        _live_predicate,
+                        _OffsetPage(offset=_offset, length=200),
                     )
                     _items = list(_page.items)
                     for _sess in _items:

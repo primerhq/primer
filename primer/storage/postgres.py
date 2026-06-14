@@ -23,6 +23,18 @@ predicate scans fast; ``WHERE`` fragments produced by
 :mod:`primer.storage._predicate` use ``data->>'field'`` paths that
 remain index-friendly when combined with that GIN.
 
+A GIN over ``jsonb_path_ops`` does NOT, however, help the scalar
+``data->>'field' = $1`` equality fragments the predicate translator
+emits. A small set of fields queried on hot paths therefore gets a
+dedicated B-tree expression index on the extracted scalar (see
+``_HOT_FIELD_INDEXES``): ``apitoken.token_hash`` (bearer auth, every
+request), ``sessions.status`` (recovery + live-session sweeps), and
+``channel.(provider_id, external_id)`` (inbound routing). They are
+created with plain ``CREATE INDEX IF NOT EXISTS`` in the transactional
+table-create path, not ``CONCURRENTLY`` (which cannot run in a
+transaction); see ``_HOT_FIELD_INDEXES`` for the lock tradeoff on
+pre-existing large tables.
+
 Pagination supports both styles required by :class:`primer.int.Storage`:
 
 * :class:`primer.model.storage.OffsetPage` -> SQL ``LIMIT/OFFSET`` plus
@@ -368,6 +380,76 @@ class PostgresStorageProvider(StorageProvider):
 _table_ensured: set[tuple[int, type[BaseModel]]] = set()
 
 
+# ---------------------------------------------------------------------------
+# Hot-field expression indexes
+# ---------------------------------------------------------------------------
+#
+# The per-table GIN index keeps containment-style scans fast, but a GIN over
+# ``data jsonb_path_ops`` does NOT accelerate the scalar ``data->>'field' = $1``
+# equality fragments that ``_PredicateTranslator`` emits -- those still fall
+# back to a sequential scan. A handful of fields are queried on hot paths and
+# benefit from a dedicated B-tree expression index on the extracted scalar:
+#
+#   * ``apitoken.token_hash``        -- looked up on EVERY bearer-authenticated
+#                                       request (auth middleware ``_find_by_hash``).
+#   * ``sessions.status``            -- scanned by startup recovery + the
+#                                       parked/live-session sweeps.
+#   * ``channel.provider_id`` +
+#     ``channel.external_id``        -- channel binding / inbound-routing lookup
+#                                       keyed by ``(provider_id, external_id)``.
+#
+# These mirror the JSONB expression-index style already used for the
+# ``channelcorrelation`` UNIQUE index in ``primer.channel.correlation`` --
+# ``((data->>'field'))`` -- and are created with plain
+# ``CREATE INDEX IF NOT EXISTS`` (NOT ``CONCURRENTLY``) inside the same
+# transactional ``_ensure_table`` block as the base table + GIN index.
+#
+# Why plain, not CONCURRENTLY: ``CREATE INDEX CONCURRENTLY`` cannot run inside
+# a transaction block, and the table-create path here is deliberately
+# transactional (table + indexes commit atomically, which is also what the
+# cold-start race handling in ``primer.storage._ddl`` relies on). On a fresh
+# table the index build is instant and takes no meaningful lock because the
+# table is empty. The tradeoff: applying one of these indexes for the first
+# time to an ALREADY-LARGE pre-existing table takes a brief ``ACCESS
+# EXCLUSIVE``-equivalent lock for the duration of the build. For a large
+# production table, pre-create the index out-of-band with
+# ``CREATE INDEX CONCURRENTLY IF NOT EXISTS`` (same name + expression) before
+# the upgrade; the ``IF NOT EXISTS`` here then becomes a no-op. See
+# ``docs/dev/architecture/storage.md``.
+#
+# Keyed by table name (post ``_table_name_for`` mapping, so the session model
+# lands under ``sessions``). Each entry is ``(index_suffix, unique, expr)``
+# where the final index name is ``<table>_<suffix>``.
+_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
+    "apitoken": [
+        ("token_hash_uniq", True, "((data->>'token_hash'))"),
+    ],
+    "sessions": [
+        ("status", False, "((data->>'status'))"),
+    ],
+    "channel": [
+        (
+            "provider_external",
+            False,
+            "((data->>'provider_id'), (data->>'external_id'))",
+        ),
+    ],
+}
+
+
+def _hot_field_index_ddl(table: str, qualified: str) -> list[str]:
+    """Return the ``CREATE INDEX IF NOT EXISTS`` statements for *table*'s hot
+    fields (empty when the table has none registered)."""
+    out: list[str] = []
+    for suffix, unique, expr in _HOT_FIELD_INDEXES.get(table, ()):
+        kind = "UNIQUE INDEX" if unique else "INDEX"
+        out.append(
+            f'CREATE {kind} IF NOT EXISTS "{table}_{suffix}" '
+            f"ON {qualified} {expr}"
+        )
+    return out
+
+
 class PostgresStorage(Storage[ModelT]):
     """Per-model :class:`Storage` handle backed by a JSONB table."""
 
@@ -401,11 +483,18 @@ class PostgresStorage(Storage[ModelT]):
             f'"{self._table}_data_gin" '
             f'ON {self._qualified} USING gin (data jsonb_path_ops)'
         )
+        # Plain (non-CONCURRENTLY) B-tree expression indexes on the hot
+        # equality fields for this table, if any. Created in the same
+        # transaction as the base table so they commit atomically and
+        # tolerate the cold-start race the same way the GIN index does.
+        ddl_hot = _hot_field_index_ddl(self._table, self._qualified)
         try:
             async with self._provider.pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.execute(ddl_table)
                     await conn.execute(ddl_index)
+                    for ddl in ddl_hot:
+                        await conn.execute(ddl)
         except CONCURRENT_CREATE_RACE as exc:
             # Concurrent-creation race (see primer.storage._ddl): another
             # process won the race and created the table + index atomically
