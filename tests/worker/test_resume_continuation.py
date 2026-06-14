@@ -1,9 +1,10 @@
 """Tests for the pure ``resume_continuation`` continuation walk.
 
-These exercise the unwind logic in isolation, using *fake* frames (objects
-with an async ``resume`` returning ``Completed``/``Reparked``) and a
-monkeypatched ``apply_leaf``. No pool / storage / frame-rehydration wiring
-is involved - this is the pure walk (Task 3.3a).
+These exercise the unwind logic in isolation, using *fake* frames. The
+innermost frame resolves its OWN leaf via ``resume_leaf`` (returning a
+``Completed``/``Reparked`` directly); the outer frames are driven via
+``resume``. No pool / storage / frame-rehydration wiring is involved -
+this is the pure walk.
 """
 
 from __future__ import annotations
@@ -13,7 +14,6 @@ from typing import Any
 
 import pytest
 
-import primer.worker.continuation as cont
 from primer.model.chat import ToolResultPart
 from primer.worker.continuation import (
     Deliver,
@@ -31,16 +31,27 @@ from primer.worker.frames import Completed, Reparked
 
 @dataclass
 class FakeFrame:
-    """A frame whose ``resume`` returns a pre-scripted outcome and records args."""
+    """A frame whose ``resume``/``resume_leaf`` return pre-scripted outcomes.
 
-    outcome: Any
+    ``resume_outcome`` is what ``resume`` returns (outer frames); when the
+    frame is the innermost, ``leaf_outcome`` is what ``resume_leaf`` returns.
+    Both record their received args for assertions.
+    """
+
+    resume_outcome: Any = None
+    leaf_outcome: Any = None
     received: Any = None
     received_services: Any = None
+    leaf_received: Any = None
 
     async def resume(self, child_result: Any, services: Any) -> Any:
         self.received = child_result
         self.received_services = services
-        return self.outcome
+        return self.resume_outcome
+
+    async def resume_leaf(self, leaf: Any, payload: Any, services: Any) -> Any:
+        self.leaf_received = (leaf, payload, services)
+        return self.leaf_outcome
 
 
 @dataclass
@@ -61,6 +72,7 @@ def _services() -> InvocationServices:
         resume_subagent=lambda *a, **k: None,
         resolve_graph=lambda *a, **k: None,
         build_child_graph_executor=lambda *a, **k: None,
+        graph_agent_tool_result=lambda *a, **k: None,
     )
 
 
@@ -70,43 +82,33 @@ def _services() -> InvocationServices:
 
 
 @pytest.mark.asyncio
-async def test_unwind_two_frames_delivers(monkeypatch):
-    leaf_result = _trp("leaf")
+async def test_unwind_two_frames_delivers():
     inner_done = _trp("inner-done")
     outer_done = _trp("outer-done")
 
-    inner = FakeFrame(outcome=Completed(value=inner_done))
-    outer = FakeFrame(outcome=Completed(value=outer_done))
+    # innermost resolves its leaf -> Completed(inner_done)
+    inner = FakeFrame(leaf_outcome=Completed(value=inner_done))
+    outer = FakeFrame(resume_outcome=Completed(value=outer_done))
     frames = [outer, inner]
 
-    async def fake_apply_leaf(inner_frame, leaf, payload, services):
-        assert inner_frame is inner  # innermost
-        return leaf_result
-
-    monkeypatch.setattr(cont, "apply_leaf", fake_apply_leaf)
-
-    out = await resume_continuation(frames, leaf=object(), payload={}, services=_services())
+    leaf = object()
+    out = await resume_continuation(frames, leaf=leaf, payload={}, services=_services())
 
     assert isinstance(out, Deliver)
     assert out.tool_result.output == "outer-done"
-    # inner.resume got the leaf result; outer.resume got inner's result.
-    assert inner.received is leaf_result
+    # inner.resume_leaf got the leaf; outer.resume got inner's result.
+    assert inner.leaf_received[0] is leaf
     assert outer.received is inner_done
 
 
 @pytest.mark.asyncio
-async def test_repark_midunwind_preserves_outer_frames(monkeypatch):
-    f0 = FakeFrame(outcome=Completed(value=_trp("f0")))  # never resumed
+async def test_repark_midunwind_preserves_outer_frames():
+    f0 = FakeFrame(resume_outcome=Completed(value=_trp("f0")))  # never resumed
     NF = object()
     NL = object()
-    f1 = FakeFrame(outcome=Reparked(new_yield=FakeYield(frames=[NF], yielded=NL)))
-    f2 = FakeFrame(outcome=Completed(value=_trp("f2-done")))
+    f1 = FakeFrame(resume_outcome=Reparked(new_yield=FakeYield(frames=[NF], yielded=NL)))
+    f2 = FakeFrame(leaf_outcome=Completed(value=_trp("f2-done")))
     frames = [f0, f1, f2]
-
-    async def fake_apply_leaf(inner_frame, leaf, payload, services):
-        return _trp("leaf")
-
-    monkeypatch.setattr(cont, "apply_leaf", fake_apply_leaf)
 
     out = await resume_continuation(frames, leaf=object(), payload={}, services=_services())
 
@@ -118,44 +120,33 @@ async def test_repark_midunwind_preserves_outer_frames(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_apply_leaf_repark_at_innermost(monkeypatch):
-    f0 = FakeFrame(outcome=Completed(value=_trp("f0")))
-    f1 = FakeFrame(outcome=Completed(value=_trp("f1")))
-    frames = [f0, f1]
+async def test_resume_leaf_repark_at_innermost():
+    f0 = FakeFrame(resume_outcome=Completed(value=_trp("f0")))
     NF = object()
     NL = object()
-
-    async def fake_apply_leaf(inner_frame, leaf, payload, services):
-        return Reparked(new_yield=FakeYield(frames=[NF], yielded=NL))
-
-    monkeypatch.setattr(cont, "apply_leaf", fake_apply_leaf)
+    f1 = FakeFrame(leaf_outcome=Reparked(new_yield=FakeYield(frames=[NF], yielded=NL)))
+    frames = [f0, f1]
 
     out = await resume_continuation(frames, leaf=object(), payload={}, services=_services())
 
     assert isinstance(out, Repark)
     assert out.frames == [f0, NF]
     assert out.leaf is NL
-    # Neither frame was resumed - we re-parked at the leaf.
+    # The outer frame was never resumed - we re-parked at the leaf.
     assert f0.received is None
-    assert f1.received is None
 
 
 @pytest.mark.asyncio
-async def test_single_frame_delivers(monkeypatch):
-    only = FakeFrame(outcome=Completed(value=_trp("done")))
+async def test_single_frame_delivers():
+    only = FakeFrame(leaf_outcome=Completed(value=_trp("done")))
     frames = [only]
-    leaf_result = _trp("leaf")
 
-    async def fake_apply_leaf(inner_frame, leaf, payload, services):
-        return leaf_result
-
-    monkeypatch.setattr(cont, "apply_leaf", fake_apply_leaf)
-
-    out = await resume_continuation(frames, leaf=object(), payload={}, services=_services())
+    leaf = object()
+    out = await resume_continuation(frames, leaf=leaf, payload={}, services=_services())
 
     assert isinstance(out, Deliver)
     assert out.tool_result.output == "done"
-    assert only.received is leaf_result
+    assert only.leaf_received[0] is leaf
 
 
 @pytest.mark.asyncio

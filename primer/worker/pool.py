@@ -969,11 +969,18 @@ class WorkerPool:
                 raise RuntimeError("graph services unavailable for this session")
             return await graph_services.build_child_executor(graph=graph, gsid=gsid)
 
+        async def graph_agent_tool_result(checkpoint, tcid, payload):
+            # Reuse the worker's own helper (the same call _resume_invoke_graph
+            # makes) so a GraphFrame leaf resolves an agent-node ask_user answer
+            # identically to the flat invoke_graph resume path.
+            return await self._graph_agent_tool_result(checkpoint, tcid, payload)
+
         return InvocationServices(
             build_subagent_toolmanager=build_subagent_toolmanager,
             resume_subagent=resume_subagent,
             resolve_graph=resolve_graph,
             build_child_graph_executor=build_child_graph_executor,
+            graph_agent_tool_result=graph_agent_tool_result,
         )
 
     def _repark_continuation(self, session, parked, outcome):

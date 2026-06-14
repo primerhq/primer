@@ -156,6 +156,24 @@ class AgentFrame:
             context=AgentResumeContext.from_jsonable(data["context"]),
         )
 
+    async def resume_leaf(
+        self, leaf: Any, payload: Any, services: Any
+    ) -> "FrameOutcome":
+        """Resolve this frame's OWN leaf when it is the innermost frame.
+
+        The leaf belongs to this subagent's own tool call (an approval gate or
+        a yielding tool it raised), so it is resolved via :func:`apply_leaf`
+        against this frame's tool context. If that re-dispatch itself re-parks
+        (an approved gated tool raised a fresh yield) the :class:`Reparked` is
+        propagated verbatim. Otherwise ``apply_leaf`` returned the resolved
+        :class:`~primer.model.chat.ToolResultPart` for the leaf, which is
+        threaded straight into :meth:`resume` to continue the subagent turn.
+        """
+        leaf_result = await apply_leaf(self, leaf, payload, services)
+        if not isinstance(leaf_result, ToolResultPart):  # it's a Reparked
+            return leaf_result
+        return await self.resume(leaf_result, services)
+
     async def resume(self, child_result: Any, services: Any) -> "FrameOutcome":
         """Resume this agent turn with a completed child's result.
 
@@ -233,6 +251,47 @@ class GraphFrame:
             gsid=data["gsid"],
             checkpoint=dict(data.get("checkpoint") or {}),
             tool_call_id=data["tool_call_id"],
+        )
+
+    async def resume_leaf(
+        self, leaf: Any, payload: Any, services: Any
+    ) -> "FrameOutcome":
+        """Resolve this graph's OWN leaf when it is the innermost frame.
+
+        The leaf belongs to a node INSIDE this child graph, so only the graph's
+        own resume can resolve it: rehydrate the child executor
+        (``services.resolve_graph`` + ``services.build_child_graph_executor``),
+        compute the node's ``agent_tool_result`` from the raw ``payload`` via
+        ``services.graph_agent_tool_result`` (None for approval/verdict leaves),
+        and hand BOTH the raw ``payload`` and that ``agent_tool_result`` to
+        :func:`resume_invoke_graph` (mirroring the pool's
+        ``_resume_invoke_graph``).
+
+        Returns a :class:`Reparked` if the child graph raised a fresh yield,
+        else a :class:`Completed` carrying a :class:`ToolResultPart` (keyed by
+        this frame's ``tool_call_id``) whose JSON ``output`` wraps the graph's
+        final text under an ``"output"`` key.
+        """
+        graph = await services.resolve_graph(self.graph_id)
+        child = await services.build_child_graph_executor(graph, self.gsid)
+        agent_tool_result = await services.graph_agent_tool_result(
+            self.checkpoint, self.tool_call_id, payload
+        )
+        out, repark = await resume_invoke_graph(
+            child=child,
+            checkpoint=self.checkpoint,
+            payload=payload,
+            resumed_tcid=self.tool_call_id,
+            agent_tool_result=agent_tool_result,
+        )
+        if repark is not None:
+            return Reparked(new_yield=repark)
+        return Completed(
+            value=ToolResultPart(
+                id=self.tool_call_id,
+                output=json.dumps({"output": out}),
+                error=False,
+            )
         )
 
     async def resume(self, child_result: Any, services: Any) -> "FrameOutcome":

@@ -5,10 +5,12 @@ When a yield (an approval gate or a yielding tool) is raised inside a
 as a :mod:`primer.worker.frames` stack plus a leaf yield. On resume, this
 module owns the **pure walk** that:
 
-1. resolves the leaf at the innermost frame's tool context
-   (:func:`primer.worker.frames.apply_leaf`), then
-2. unwinds the frame stack innermost -> outermost, threading each frame's
-   completed result up into its parent as the resolved child result.
+1. lets the innermost frame resolve its OWN leaf polymorphically
+   (:meth:`primer.worker.frames.AgentFrame.resume_leaf` via ``apply_leaf``,
+   :meth:`primer.worker.frames.GraphFrame.resume_leaf` via the child graph's
+   own resume), then
+2. unwinds the rest of the frame stack innermost -> outermost, threading each
+   frame's completed result up into its parent as the resolved child result.
 
 The walk produces exactly one of two outcomes:
 
@@ -33,7 +35,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from primer.model.chat import ToolResultPart
-from primer.worker.frames import apply_leaf
 
 
 # ===========================================================================
@@ -66,12 +67,18 @@ class InvocationServices:
     build_child_graph_executor
         Build a child graph executor from a resolved graph + child
         graph-session id, for resuming a parked :class:`GraphFrame`.
+    graph_agent_tool_result
+        Compute the ``agent_tool_result`` Message an agent-node leaf inside a
+        child graph continues from (from the child checkpoint + tool_call_id +
+        raw payload), or ``None`` for approval/verdict leaves. Used by
+        :meth:`~primer.worker.frames.GraphFrame.resume_leaf`.
     """
 
     build_subagent_toolmanager: Callable[..., Any]
     resume_subagent: Callable[..., Any]
     resolve_graph: Callable[..., Any]
     build_child_graph_executor: Callable[..., Any]
+    graph_agent_tool_result: Callable[..., Any]
 
 
 # ===========================================================================
@@ -128,14 +135,19 @@ async def resume_continuation(
     """
     assert frames, "resume_continuation requires a non-empty frame stack"
 
-    # 1. Resolve the leaf at the innermost frame.
-    result = await apply_leaf(frames[-1], leaf, payload, services)
-    if not isinstance(result, ToolResultPart):  # it's a Reparked
-        ny = result.new_yield
+    # 1. The innermost frame resolves its OWN leaf polymorphically: an
+    #    AgentFrame defers to apply_leaf (then continues its subagent turn),
+    #    a GraphFrame defers to the child graph's own resume. Either returns a
+    #    Completed (the leaf answer / final value) or a Reparked.
+    inner = frames[-1]
+    outcome = await inner.resume_leaf(leaf, payload, services)
+    if not outcome.completed:  # Reparked
+        ny = outcome.new_yield
         return Repark(frames=list(frames[:-1]) + list(ny.frames or []), leaf=ny.yielded)
+    result = outcome.value
 
-    # 2. Unwind innermost -> outermost.
-    for i in range(len(frames) - 1, -1, -1):
+    # 2. Unwind the REST: innermost-but-one -> outermost.
+    for i in range(len(frames) - 2, -1, -1):
         outcome = await frames[i].resume(result, services)
         if not outcome.completed:  # Reparked
             ny = outcome.new_yield
