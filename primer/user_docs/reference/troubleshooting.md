@@ -151,8 +151,8 @@ The error appears on the workspace entity and in the platform logs.
 In all cases the workspace entity records a status and a last-error field.
 The platform also logs the specific failure at the point it occurs.
 
-```ref:features/workers-and-health
-The workers and health view shows current worker capacity, in-flight runs,
+```ref:features/workers
+The workers view shows current worker capacity, in-flight runs,
 and the parked-run breakdown that helps distinguish an approval backlog
 from a provider outage.
 ```

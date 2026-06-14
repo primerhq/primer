@@ -137,7 +137,7 @@ flowchart LR
 Node and edge kinds, routers, and fan-out.
 ```
 
-```ref:concepts/yielding-and-claims
+```ref:features/yielding-tools
 Why a tool call can suspend a run and how it resumes.
 ```
 
