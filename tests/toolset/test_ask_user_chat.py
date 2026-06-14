@@ -9,7 +9,7 @@ from primer.model.yield_ import Yielded, ToolContext
 
 @pytest.mark.asyncio
 async def test_ask_user_yields_for_chat():
-    from primer.toolset.misc import _ask_user_handler
+    from primer.toolset.system import _ask_user_handler
     ctx = ToolContext(tool_call_id="tc1", session_id=None, workspace_id=None, chat_id="chat-1")
     result = await _ask_user_handler({"prompt": "Which env?"}, ctx=ctx)
     assert isinstance(result, Yielded)
@@ -19,7 +19,7 @@ async def test_ask_user_yields_for_chat():
 
 @pytest.mark.asyncio
 async def test_ask_user_session_path_unchanged():
-    from primer.toolset.misc import _ask_user_handler
+    from primer.toolset.system import _ask_user_handler
     ctx = ToolContext(tool_call_id="tc1", session_id="sess-1", workspace_id="w1")
     result = await _ask_user_handler({"prompt": "Which env?"}, ctx=ctx)
     assert isinstance(result, Yielded)
@@ -28,7 +28,7 @@ async def test_ask_user_session_path_unchanged():
 
 @pytest.mark.asyncio
 async def test_ask_user_errors_when_no_id():
-    from primer.toolset.misc import _ask_user_handler
+    from primer.toolset.system import _ask_user_handler
     ctx = ToolContext(tool_call_id="tc1", session_id=None, workspace_id=None, chat_id=None)
     result = await _ask_user_handler({"prompt": "x"}, ctx=ctx)
     assert not isinstance(result, Yielded)  # error result, not a Yielded

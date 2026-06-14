@@ -109,7 +109,7 @@ class TestAgentStatus:
             "search__semantic_search",
             "system__list_files",
             "workspaces__create_workspace",
-            "misc__sleep",
+            "workspace_ext__sleep",
             "harness__list",
         ]).model_dump(mode="json")
         await client.post("/v1/agents", json=body)

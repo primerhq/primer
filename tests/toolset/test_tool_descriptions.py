@@ -40,6 +40,10 @@ from primer.toolset.search import SEARCH_TOOLSET_ID, build_search_toolset
 from primer.toolset.harness import HARNESS_TOOLSET_ID, build_harness_toolset_provider
 from primer.toolset.trigger import TRIGGER_TOOLSET_ID, build_trigger_toolset_provider
 from primer.toolset.workspaces import WORKSPACES_TOOLSET_ID, build_workspaces_toolset
+from primer.toolset.workspace_ext import (
+    WORKSPACE_EXT_TOOLSET_ID,
+    build_workspace_ext_toolset,
+)
 from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
 from primer.toolset import build_web_toolset
 
@@ -100,6 +104,9 @@ def _build_providers():
             storage_provider=workspaces_sp,
             workspace_registry=workspace_registry,
         ),
+        build_workspace_ext_toolset(
+            storage_provider=_FakeStorageProvider(),
+        ),
         build_system_toolset(
             storage_provider=system_sp,  # type: ignore[arg-type]
             provider_registry=system_pr,
@@ -134,6 +141,7 @@ async def test_every_internal_toolset_conforms():
         HARNESS_TOOLSET_ID,
         TRIGGER_TOOLSET_ID,
         WORKSPACES_TOOLSET_ID,
+        WORKSPACE_EXT_TOOLSET_ID,
         SYSTEM_TOOLSET_ID,
         "web",
     }

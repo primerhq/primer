@@ -61,6 +61,14 @@ logger = logging.getLogger(__name__)
 
 WORKSPACE_TOOLSET_ID = "workspace"
 
+# Reserved toolset whose tools are workspace-session-only. An agent may
+# bind it like any other toolset, but its tools are registered into the
+# agent's live tool context ONLY when the agent runs in a workspace
+# session. On a CHAT (chat_id set, no workspace session) they are dropped
+# at resolution time so they never enter the chat's context window - the
+# whole point of the workspace_ext toolset (context optimization).
+WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
+
 # Tool ids surfaced to the LLM are scoped as ``toolset_id<sep>bare_name`` so
 # tools with colliding bare names across different toolsets stay
 # distinguishable. The separator is ``__`` (two underscores) — chosen
@@ -209,9 +217,30 @@ class ToolExecutionManager:
             if self._catalogue is not None:
                 return list(self._catalogue)
             catalogue: list[Tool] = []
+            # The ``workspace_ext`` toolset is special: its tools are
+            # registered into the agent's tool context ONLY inside a
+            # workspace session. On a chat (no workspace session) they are
+            # suppressed even if the agent bound them, so the high-token
+            # workspace-only yielding tools never enter chat context. The
+            # chat path constructs this manager with ``chat_id`` set and no
+            # ``workspace_session``; the workspace path always has a
+            # ``workspace_session``. We key on the session being absent so
+            # any non-session caller (chats and bare managers) gets the
+            # filter - these tools require a session to function anyway.
+            suppress_workspace_ext = self._workspace_session is None
             # Toolset-provider tools (each provider yields tools by their
             # bare name; we scope on the way out).
             for toolset_id, provider in self._toolsets.items():
+                if (
+                    suppress_workspace_ext
+                    and toolset_id == WORKSPACE_EXT_TOOLSET_ID
+                ):
+                    # Drop the whole workspace_ext toolset from the visible
+                    # catalogue in a chat context. The routing table is also
+                    # left unpopulated for these ids, so a model that somehow
+                    # references one gets the standard "not registered"
+                    # rejection in ``_execute_inner``.
+                    continue
                 async for t in provider.list_tools(principal=principal):
                     if _SCOPE_SEPARATOR in t.id:
                         raise ConfigError(
@@ -658,4 +687,9 @@ async def invoke_one(
             )
 
 
-__all__ = ["ToolExecutionManager", "WORKSPACE_TOOLSET_ID", "invoke_one"]
+__all__ = [
+    "ToolExecutionManager",
+    "WORKSPACE_TOOLSET_ID",
+    "WORKSPACE_EXT_TOOLSET_ID",
+    "invoke_one",
+]

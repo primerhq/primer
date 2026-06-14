@@ -81,7 +81,7 @@ class TestCatalogue:
             "create_subscription",
             "update_subscription",
             "delete_subscription",
-            "subscribe_to_trigger",
+            # subscribe_to_trigger moved to the workspace_ext toolset.
         }
         assert names == expected
 
@@ -387,9 +387,10 @@ class TestToolExecutionManagerIntegration:
         scoped_ids = {t.id for t in catalogue}
         # The manager scopes bare ids: bare "list" -> "trigger__list", etc.
         assert "trigger__list" in scoped_ids
-        assert "trigger__subscribe_to_trigger" in scoped_ids
-        # All 12 tools should be present.
-        assert len(scoped_ids) == 12
+        # subscribe_to_trigger moved to the workspace_ext toolset.
+        assert "trigger__subscribe_to_trigger" not in scoped_ids
+        # The 11 management tools should be present.
+        assert len(scoped_ids) == 11
 
 
 @pytest.mark.asyncio
@@ -399,4 +400,4 @@ async def test_trigger_tools_conform(toolset) -> None:
     async for tool in toolset.list_tools():
         assert_tool_conforms(tool)
         count += 1
-    assert count == 12
+    assert count == 11

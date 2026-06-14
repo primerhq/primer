@@ -37,6 +37,18 @@ from primer.worker.yield_resume_registry import (
 # ===========================================================================
 
 
+class _YieldSP:
+    """Minimal storage_provider stub for build_workspace_ext_toolset.
+
+    The ``sleep`` handler reads nothing from storage; only the
+    ``subscribe_to_trigger`` handler does, and these tests never dispatch
+    it, so a no-op ``get_storage`` suffices.
+    """
+
+    def get_storage(self, model):  # pragma: no cover - never dispatched here
+        return None
+
+
 def _make_tool(toolset_id: str, name: str) -> Tool:
     return Tool(
         id=name,
@@ -213,8 +225,8 @@ class TestSleepToolE2E:
     async def test_zero_seconds_short_circuits(self):
         # Sleep with seconds=0 returns directly without yielding —
         # there's nothing to wait for.
-        from primer.toolset.misc import build_misc_toolset
-        provider = build_misc_toolset()
+        from primer.toolset.workspace_ext import build_workspace_ext_toolset
+        provider = build_workspace_ext_toolset(storage_provider=_YieldSP())
         result = await provider.call(
             tool_name="sleep",
             arguments={"seconds": 0.0},
@@ -226,8 +238,8 @@ class TestSleepToolE2E:
         assert body == {"requested_seconds": 0.0, "elapsed_seconds": 0.0}
 
     async def test_nonzero_seconds_yields(self):
-        from primer.toolset.misc import build_misc_toolset
-        provider = build_misc_toolset()
+        from primer.toolset.workspace_ext import build_workspace_ext_toolset
+        provider = build_workspace_ext_toolset(storage_provider=_YieldSP())
         ctx = ToolContext(tool_call_id="tc-z", session_id="s", workspace_id="w")
         with pytest.raises(YieldToWorker) as info:
             await provider.call(
@@ -284,8 +296,8 @@ class TestSleepToolE2E:
         # Sleep's pydantic schema enforces ge=0.0; the existing
         # 300s cap was removed (it's now the global cap), so very
         # large values are accepted at the validation layer.
-        from primer.toolset.misc import build_misc_toolset
-        provider = build_misc_toolset()
+        from primer.toolset.workspace_ext import build_workspace_ext_toolset
+        provider = build_workspace_ext_toolset(storage_provider=_YieldSP())
         ctx = ToolContext(tool_call_id="tc-x", session_id="s", workspace_id="w")
         result = await provider.call(
             tool_name="sleep",
@@ -298,8 +310,8 @@ class TestSleepToolE2E:
         # Removal of the 300s cap means a 1-hour sleep yields cleanly
         # at the tool layer; the worker pool's global cap (M2)
         # bounds total wait.
-        from primer.toolset.misc import build_misc_toolset
-        provider = build_misc_toolset()
+        from primer.toolset.workspace_ext import build_workspace_ext_toolset
+        provider = build_workspace_ext_toolset(storage_provider=_YieldSP())
         ctx = ToolContext(tool_call_id="tc-l", session_id="s", workspace_id="w")
         with pytest.raises(YieldToWorker) as info:
             await provider.call(

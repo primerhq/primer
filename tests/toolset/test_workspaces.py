@@ -388,14 +388,14 @@ class TestCatalog:
     async def test_toolset_id_and_count(self, toolset) -> None:
         assert WORKSPACES_TOOLSET_ID == "workspaces"
         names = [t.id async for t in toolset.list_tools()]
-        # 24 original + watch_files (yielding-tools M4) +
-        # create_workspace_session + cancel_workspace_session
-        # (session-tools) + invoke_graph (dynamic invocation) = 28.
-        assert len(names) == 28
-        assert "watch_files" in names
+        # 28 minus watch_files + invoke_graph (both moved to the
+        # ``workspace_ext`` toolset) = 26.
+        assert len(names) == 26
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names
-        assert "invoke_graph" in names
+        # watch_files + invoke_graph moved to workspace_ext.
+        assert "watch_files" not in names
+        assert "invoke_graph" not in names
 
     @pytest.mark.asyncio
     async def test_every_tool_has_clear_description(self, toolset) -> None:
@@ -489,10 +489,8 @@ class TestBootstrapIngestsWorkspacesTools:
             for doc_id in ingested_ids
             if doc_id.startswith("workspaces::")
         }
-        # 24 original + watch_files (yielding-tools M4) +
-        # create_workspace_session + cancel_workspace_session
-        # (session-tools) + invoke_graph (dynamic invocation) = 28.
-        assert len(ws_ingested) == 28
+        # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26.
+        assert len(ws_ingested) == 26
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",

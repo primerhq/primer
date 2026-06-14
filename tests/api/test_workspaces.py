@@ -1404,14 +1404,13 @@ class TestWorkspacesToolsetRegistration:
             "get_workspace_log",
         ):
             assert name in names, f"missing {name}"
-        # 24 original + watch_files (yielding-tools M4) +
-        # create_workspace_session + cancel_workspace_session (session-tools) +
-        # set_workspace_channel_association + clear_workspace_channel_association
-        # (channel-association redesign, added to workspace toolset) = 28.
-        assert len(names) == 28
-        assert "watch_files" in names
+        # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26.
+        assert len(names) == 26
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names
+        # watch_files + invoke_graph moved to the workspace_ext toolset.
+        assert "watch_files" not in names
+        assert "invoke_graph" not in names
 
     @pytest.mark.asyncio
     async def test_create_provider_via_toolset(self, app, pr) -> None:
