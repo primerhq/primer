@@ -41,6 +41,14 @@ primectl. Mark a track N/A with a one-line reason.
 - sessions-filter - implement graph_id filter on GET /v1/sessions (binding.graph_id
   EQ); /find cursor already had a stable id tiebreaker so pinned by regression test
   (not changed); +4 unit (36 green); greens e2e t0321+t0180 - MERGED c3269e8c
+- auto-start - gate claim-engine upsert + lease on auto_start=True so auto_start=False
+  stays CREATED/inert until explicit resume (which upserts itself); +3 unit, fixed a
+  test that encoded the bug (698 green) - MERGED 8b43feaf
+- auth (SECURITY) - GAP1 require_auth on POST /workers/{id}/drain (GET stays public);
+  GAP2 WS 4401 already enforced, pinned by test; GAP3 enforce approval policy at MCP
+  dispatch (invoke_exposed) - approval-required tools now refused (fail-closed) over
+  MCP; +unit (117 green) - MERGED into main (5c31ad87). CONTRACT NOTE: approval-required
+  tools now return method-not-found at MCP tools/call (was: ran unconditionally)
 
 ## Pending tasks
 
@@ -291,9 +299,10 @@ Mostly independent of user-1/2/3 (own files); can run in parallel with them.
 | git-timeout | (merged) | - | a15f02c9 | merged 357c7abb |
 | user-4-webhook | (merged) | - | ada35505 | merged de1d1d86 |
 | sessions-filter | (merged) | - | a67a3a88 | merged c3269e8c |
-| auth | feat/auth | primer-auth | a9387770 | in-flight (app.py conflict expected at merge) |
-| auto-start | feat/auto-start | primer-auto-start | ad97f6ad | in-flight |
-| dim-mismatch | feat/dim-mismatch | primer-dim-mismatch | (dispatching) | in-flight |
+| auth | (merged) | - | a9387770 | merged 5c31ad87 (app.py auto-merged clean) |
+| auto-start | (merged) | - | ad97f6ad | merged 8b43feaf |
+| dim-mismatch | feat/dim-mismatch | primer-dim-mismatch | ad57b181 | in-flight |
+| user-1-bug-reporter | feat/user-1-bug-reporter | primer-user-1-bug-reporter | (dispatching) | in-flight |
 | _all others_ | - | - | - | pending |
 
 ## Conflict map (concurrent tasks MUST NOT share a hot file)
