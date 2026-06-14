@@ -63,23 +63,44 @@ def _origin(url: str) -> str:
     return urlunparse((p.scheme, p.netloc, "", "", "", ""))
 
 
+def _protected_resource_urls(mcp_url: str) -> list[str]:
+    """Candidate RFC 9728 protected-resource metadata URLs, in priority order.
+
+    RFC 9728 section 3.1 inserts ``/.well-known/oauth-protected-resource``
+    between the host and the resource's path component, so a resource at
+    ``https://host/mcp`` advertises its metadata at
+    ``https://host/.well-known/oauth-protected-resource/mcp`` -- NOT at the
+    bare origin. (The bare-origin form is only correct for a resource with
+    no path.) We try the spec's path-aware form first, then fall back to the
+    origin form for servers that only serve the doc there.
+    """
+    origin = _origin(mcp_url)
+    urls: list[str] = []
+    path = urlparse(mcp_url).path.rstrip("/")
+    if path:
+        urls.append(f"{origin}/.well-known/oauth-protected-resource{path}")
+    urls.append(f"{origin}/.well-known/oauth-protected-resource")
+    return urls
+
+
 async def _fetch_protected_resource(
     mcp_url: str, http: httpx.AsyncClient
 ) -> dict | None:
-    url = _origin(mcp_url) + "/.well-known/oauth-protected-resource"
-    try:
-        resp = await http.get(url)
-    except httpx.HTTPError:
-        return None
-    if resp.status_code != 200:
-        return None
-    try:
-        data = resp.json()
-    except ValueError:
-        return None
-    if not isinstance(data, dict) or "authorization_servers" not in data:
-        return None
-    return data
+    for url in _protected_resource_urls(mcp_url):
+        try:
+            resp = await http.get(url)
+        except httpx.HTTPError:
+            continue
+        if resp.status_code != 200:
+            continue
+        try:
+            data = resp.json()
+        except ValueError:
+            continue
+        if not isinstance(data, dict) or "authorization_servers" not in data:
+            continue
+        return data
+    return None
 
 
 async def _fetch_auth_server_metadata(

@@ -85,7 +85,7 @@ class TestAuthorize:
     async def test_no_token_raises_auth_required(
         self, http_client: httpx.AsyncClient
     ) -> None:
-        respx.get("https://mcp.example/.well-known/oauth-protected-resource").mock(
+        respx.get("https://mcp.example/.well-known/oauth-protected-resource/mcp").mock(
             return_value=httpx.Response(200, json=_PROTECTED_RESOURCE_DOC)
         )
         respx.get("https://idp.example/.well-known/oauth-authorization-server").mock(
@@ -114,7 +114,7 @@ class TestAuthorize:
                 },
             )
         )
-        respx.get("https://mcp.example/.well-known/oauth-protected-resource").mock(
+        respx.get("https://mcp.example/.well-known/oauth-protected-resource/mcp").mock(
             return_value=httpx.Response(200, json=_PROTECTED_RESOURCE_DOC)
         )
         respx.get("https://idp.example/.well-known/oauth-authorization-server").mock(
@@ -139,7 +139,7 @@ class TestAuthorize:
         respx.post("https://idp.example/token").mock(
             return_value=httpx.Response(400, json={"error": "invalid_grant"})
         )
-        respx.get("https://mcp.example/.well-known/oauth-protected-resource").mock(
+        respx.get("https://mcp.example/.well-known/oauth-protected-resource/mcp").mock(
             return_value=httpx.Response(200, json=_PROTECTED_RESOURCE_DOC)
         )
         respx.get("https://idp.example/.well-known/oauth-authorization-server").mock(
@@ -163,7 +163,7 @@ class TestCompleteOAuth:
     async def test_round_trip_caches_token(
         self, http_client: httpx.AsyncClient
     ) -> None:
-        respx.get("https://mcp.example/.well-known/oauth-protected-resource").mock(
+        respx.get("https://mcp.example/.well-known/oauth-protected-resource/mcp").mock(
             return_value=httpx.Response(200, json=_PROTECTED_RESOURCE_DOC)
         )
         respx.get("https://idp.example/.well-known/oauth-authorization-server").mock(
@@ -201,7 +201,7 @@ class TestCompleteOAuth:
     async def test_token_endpoint_4xx_raises_authentication_error(
         self, http_client: httpx.AsyncClient
     ) -> None:
-        respx.get("https://mcp.example/.well-known/oauth-protected-resource").mock(
+        respx.get("https://mcp.example/.well-known/oauth-protected-resource/mcp").mock(
             return_value=httpx.Response(200, json=_PROTECTED_RESOURCE_DOC)
         )
         respx.get("https://idp.example/.well-known/oauth-authorization-server").mock(

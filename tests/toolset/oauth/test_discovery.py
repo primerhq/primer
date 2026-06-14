@@ -73,7 +73,7 @@ class TestNegotiate:
         )
 
         version, metadata = await negotiate(
-            mcp_url="https://mcp.example/mcp",
+            mcp_url="https://mcp.example",
             forced=None,
             http=http_client,
         )
@@ -92,7 +92,7 @@ class TestNegotiate:
         )
 
         version, metadata = await negotiate(
-            mcp_url="https://mcp.example/mcp",
+            mcp_url="https://mcp.example",
             forced=None,
             http=http_client,
         )
@@ -111,7 +111,7 @@ class TestNegotiate:
         )
 
         version, metadata = await negotiate(
-            mcp_url="https://mcp.example/mcp",
+            mcp_url="https://mcp.example",
             forced="2025-06-18",
             http=http_client,
         )
@@ -129,10 +129,108 @@ class TestNegotiate:
         )
         with pytest.raises(BadRequestError):
             await negotiate(
-                mcp_url="https://mcp.example/mcp",
+                mcp_url="https://mcp.example",
                 forced=None,
                 http=http_client,
             )
+
+
+class TestProtectedResourcePathSuffix:
+    """RFC 9728 section 3.1: the protected-resource metadata for a resource
+    with a path component lives at the path-suffixed well-known URL, not at
+    the bare origin. Regression guard for the MCP python-sdk simple-auth
+    server, which serves the doc ONLY at the path-suffixed location.
+    """
+
+    @respx.mock
+    async def test_path_suffixed_protected_resource_is_discovered(
+        self, http_client: httpx.AsyncClient
+    ) -> None:
+        # Origin form 404s; the spec-compliant path-suffixed form serves it.
+        origin_route = respx.get(
+            "https://mcp.example/.well-known/oauth-protected-resource"
+        ).mock(return_value=httpx.Response(404))
+        suffixed_route = respx.get(
+            "https://mcp.example/.well-known/oauth-protected-resource/mcp"
+        ).mock(return_value=httpx.Response(200, json=_PROTECTED_RESOURCE_DOC))
+        respx.get("https://idp.example/.well-known/oauth-authorization-server").mock(
+            return_value=httpx.Response(200, json=_AUTH_SERVER_DOC)
+        )
+
+        version, metadata = await negotiate(
+            mcp_url="https://mcp.example/mcp",
+            forced=None,
+            http=http_client,
+        )
+        assert version in ("2025-06-18", "2025-11-25")
+        assert str(metadata.token_endpoint) == "https://idp.example/token"
+        # The path-suffixed form must be tried (and is tried first, so the
+        # origin form need not even be reached -- but tolerate either order).
+        assert suffixed_route.called
+
+    @respx.mock
+    async def test_path_suffixed_tried_before_origin(
+        self, http_client: httpx.AsyncClient
+    ) -> None:
+        # When the path-suffixed form serves the doc, primer uses it without
+        # needing the origin form at all.
+        suffixed_route = respx.get(
+            "https://mcp.example/.well-known/oauth-protected-resource/mcp"
+        ).mock(return_value=httpx.Response(200, json=_PROTECTED_RESOURCE_DOC))
+        respx.get("https://idp.example/.well-known/oauth-authorization-server").mock(
+            return_value=httpx.Response(200, json=_AUTH_SERVER_DOC)
+        )
+        version, _ = await negotiate(
+            mcp_url="https://mcp.example/mcp",
+            forced="2025-06-18",
+            http=http_client,
+        )
+        assert version == "2025-06-18"
+        assert suffixed_route.call_count == 1
+
+    @respx.mock
+    async def test_origin_form_still_works_when_only_origin_serves_it(
+        self, http_client: httpx.AsyncClient
+    ) -> None:
+        # Path-suffixed form 404s; origin form serves it -> fallback holds.
+        respx.get(
+            "https://mcp.example/.well-known/oauth-protected-resource/mcp"
+        ).mock(return_value=httpx.Response(404))
+        origin_route = respx.get(
+            "https://mcp.example/.well-known/oauth-protected-resource"
+        ).mock(return_value=httpx.Response(200, json=_PROTECTED_RESOURCE_DOC))
+        respx.get("https://idp.example/.well-known/oauth-authorization-server").mock(
+            return_value=httpx.Response(200, json=_AUTH_SERVER_DOC)
+        )
+        version, _ = await negotiate(
+            mcp_url="https://mcp.example/mcp",
+            forced="2025-06-18",
+            http=http_client,
+        )
+        assert version == "2025-06-18"
+        assert origin_route.called
+
+    @respx.mock
+    async def test_no_path_component_uses_origin_only(
+        self, http_client: httpx.AsyncClient
+    ) -> None:
+        # A resource with no path advertises at the bare origin; there is no
+        # path-suffixed candidate to try.
+        from primer.toolset.oauth.discovery import _protected_resource_urls
+
+        urls = _protected_resource_urls("https://mcp.example")
+        assert urls == [
+            "https://mcp.example/.well-known/oauth-protected-resource"
+        ]
+
+    def test_url_candidate_order_for_pathed_resource(self) -> None:
+        from primer.toolset.oauth.discovery import _protected_resource_urls
+
+        urls = _protected_resource_urls("https://mcp.example/mcp")
+        assert urls == [
+            "https://mcp.example/.well-known/oauth-protected-resource/mcp",
+            "https://mcp.example/.well-known/oauth-protected-resource",
+        ]
 
 
 class TestBuildAuthorizationUrl:
@@ -348,7 +446,7 @@ class TestDiscoveryEdgeCases:
             return_value=httpx.Response(200, json=_AUTH_SERVER_DOC)
         )
         version, _ = await negotiate(
-            mcp_url="https://mcp.example/mcp",
+            mcp_url="https://mcp.example",
             forced=None,
             http=http_client,
         )
@@ -365,7 +463,7 @@ class TestDiscoveryEdgeCases:
             return_value=httpx.Response(200, json=_AUTH_SERVER_DOC)
         )
         version, _ = await negotiate(
-            mcp_url="https://mcp.example/mcp",
+            mcp_url="https://mcp.example",
             forced=None,
             http=http_client,
         )
@@ -382,7 +480,7 @@ class TestDiscoveryEdgeCases:
             return_value=httpx.Response(200, json=_AUTH_SERVER_DOC)
         )
         version, _ = await negotiate(
-            mcp_url="https://mcp.example/mcp",
+            mcp_url="https://mcp.example",
             forced=None,
             http=http_client,
         )
@@ -400,7 +498,7 @@ class TestDiscoveryEdgeCases:
         )
         with pytest.raises(BadRequestError):
             await negotiate(
-                mcp_url="https://mcp.example/mcp",
+                mcp_url="https://mcp.example",
                 forced=None,
                 http=http_client,
             )
@@ -417,7 +515,7 @@ class TestDiscoveryEdgeCases:
         )
         with pytest.raises(BadRequestError):
             await negotiate(
-                mcp_url="https://mcp.example/mcp",
+                mcp_url="https://mcp.example",
                 forced=None,
                 http=http_client,
             )
@@ -431,7 +529,7 @@ class TestDiscoveryEdgeCases:
         )
         with pytest.raises(BadRequestError):
             await negotiate(
-                mcp_url="https://mcp.example/mcp",
+                mcp_url="https://mcp.example",
                 forced="2025-03-26",
                 http=http_client,
             )
@@ -445,7 +543,7 @@ class TestDiscoveryEdgeCases:
         )
         with pytest.raises(BadRequestError):
             await negotiate(
-                mcp_url="https://mcp.example/mcp",
+                mcp_url="https://mcp.example",
                 forced="2025-06-18",
                 http=http_client,
             )
@@ -461,7 +559,7 @@ class TestDiscoveryEdgeCases:
         )
         with pytest.raises(BadRequestError):
             await negotiate(
-                mcp_url="https://mcp.example/mcp",
+                mcp_url="https://mcp.example",
                 forced="2025-06-18",
                 http=http_client,
             )
@@ -478,7 +576,7 @@ class TestDiscoveryEdgeCases:
         )
         with pytest.raises(BadRequestError):
             await negotiate(
-                mcp_url="https://mcp.example/mcp",
+                mcp_url="https://mcp.example",
                 forced="2025-06-18",
                 http=http_client,
             )
