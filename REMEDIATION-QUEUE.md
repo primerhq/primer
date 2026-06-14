@@ -38,6 +38,9 @@ primectl. Mark a track N/A with a one-line reason.
   +30 unit +8 e2e (108 blast-radius green); coordinator fixed 4 added em-dashes
   in triggers.jsx - MERGED de1d1d86 (e2e deferred to final gate; concerns: in-proc
   rate limiter not multi-worker; e2e needs anon_client fixture - verify at gate)
+- sessions-filter - implement graph_id filter on GET /v1/sessions (binding.graph_id
+  EQ); /find cursor already had a stable id tiebreaker so pinned by regression test
+  (not changed); +4 unit (36 green); greens e2e t0321+t0180 - MERGED c3269e8c
 
 ## Pending tasks
 
@@ -287,9 +290,10 @@ Mostly independent of user-1/2/3 (own files); can run in parallel with them.
 | chat-approval-pending | (merged) | - | ae527ce0 | merged 70ee7f63 |
 | git-timeout | (merged) | - | a15f02c9 | merged 357c7abb |
 | user-4-webhook | (merged) | - | ada35505 | merged de1d1d86 |
-| sessions-filter | feat/sessions-filter | primer-sessions-filter | a67a3a88 | in-flight |
+| sessions-filter | (merged) | - | a67a3a88 | merged c3269e8c |
 | auth | feat/auth | primer-auth | a9387770 | in-flight (app.py conflict expected at merge) |
-| auto-start | feat/auto-start | primer-auto-start | (dispatching) | in-flight |
+| auto-start | feat/auto-start | primer-auto-start | ad97f6ad | in-flight |
+| dim-mismatch | feat/dim-mismatch | primer-dim-mismatch | (dispatching) | in-flight |
 | _all others_ | - | - | - | pending |
 
 ## Conflict map (concurrent tasks MUST NOT share a hot file)
