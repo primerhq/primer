@@ -1509,6 +1509,10 @@ def _mount_routers(
     # Triggers REST router (Spec §10).
     from primer.api.routers.triggers import triggers_router
     app.include_router(triggers_router, dependencies=auth_dep)
+    # Webhook inbound endpoint -- mounted WITHOUT auth so external callers
+    # can POST to it. The token in the URL path is the capability credential.
+    from primer.api.routers.webhooks import webhooks_router
+    app.include_router(webhooks_router)
     # MCP exposure CRUD — Spec §10. Cookie-gated for writes (the
     # router itself rejects bearer-token PUTs); reads pass through.
     from primer.api.routers.mcp_exposure import mcp_exposure_router

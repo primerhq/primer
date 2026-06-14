@@ -115,6 +115,35 @@ function TR_defaultFireAtLocal() {
   );
 }
 
+// Build the full webhook URL from a trigger object.
+// Uses window.location.origin so it adapts to the deployment URL.
+function TR_webhookUrl(trigger) {
+  if (!trigger || trigger.config?.kind !== "webhook") return null;
+  const token = trigger.config?.token;
+  if (!token) return null;
+  const origin = (typeof window !== "undefined" && window.location?.origin) || "";
+  return `${origin}/v1/webhooks/${token}`;
+}
+
+// Copy text to clipboard + flash a brief toast.
+function TR_CopyButton({ text, label, testId }) {
+  const [copied, setCopied] = React.useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (_e) {
+      // Fallback: select the text.
+    }
+  };
+  return (
+    <Btn size="sm" kind="ghost" icon={copied ? "check" : "copy"} onClick={copy} data-testid={testId}>
+      {copied ? "Copied!" : (label || "Copy")}
+    </Btn>
+  );
+}
+
 // ============================================================================
 // TR_TriggersPage — router shim
 // ============================================================================
@@ -180,8 +209,9 @@ function TR_TriggerList() {
           <div className="ico-wrap"><Icon name="clock" size={22} /></div>
           <div className="head">No triggers configured</div>
           <div className="sub">
-            Triggers fire on a delay or cron schedule and dispatch to subscriptions
-            (chat messages, fresh agent sessions, fresh graph sessions).
+            Triggers fire on a delay, cron schedule, or inbound webhook POST
+            and dispatch to subscriptions (chat messages, fresh agent sessions,
+            fresh graph sessions).
           </div>
           <div className="actions">
             <Btn kind="primary" icon="plus" onClick={() => setCreateOpen(true)}>Create trigger</Btn>
@@ -321,6 +351,11 @@ const TR_KIND_OPTIONS = [
     label: "Scheduled",
     help: "Recurring cron expression evaluated in a chosen timezone.",
   },
+  {
+    value: "webhook",
+    label: "Webhook",
+    help: "Event-driven. Fires when an HTTP POST arrives at the generated URL.",
+  },
 ];
 
 function TR_CreateTriggerDialog({ onClose, onCreated }) {
@@ -363,11 +398,15 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
     }
   };
 
-  const step1Valid = kind === "delayed" || kind === "scheduled";
+  const step1Valid = kind === "delayed" || kind === "scheduled" || kind === "webhook";
   const step2Valid = (
     kind === "delayed"
       ? !!fireAtLocal
-      : (kind === "scheduled" ? (!!cron && !!timezone && !!catchup) : false)
+      : kind === "scheduled"
+        ? (!!cron && !!timezone && !!catchup)
+        : kind === "webhook"
+          ? true  // No config required - server mints the token
+          : false
   );
   const step3Valid = !TR_validateSlug(slug) && !!name;
 
@@ -380,6 +419,11 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
       const dt = new Date(fireAtLocal);
       const fireAtIso = isNaN(dt.getTime()) ? fireAtLocal : dt.toISOString();
       return { kind: "delayed", fire_at: fireAtIso };
+    }
+    if (kind === "webhook") {
+      // Token is server-minted - omit from payload (or send empty string).
+      // hmac_secret can be set after creation via PUT.
+      return { kind: "webhook" };
     }
     return {
       kind: "scheduled",
@@ -432,7 +476,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
   const stepTitle = step === 1
     ? "Create trigger — Step 1: Kind"
     : step === 2
-      ? `Create trigger — Step 2: ${kind === "delayed" ? "Delay" : "Schedule"}`
+      ? `Create trigger - Step 2: ${kind === "delayed" ? "Delay" : kind === "scheduled" ? "Schedule" : "Webhook"}`
       : "Create trigger — Step 3: Details";
 
   return (
@@ -561,6 +605,30 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
                 <option key={opt.value} value={opt.value}>{opt.label}</option>
               ))}
             </select>
+          </div>
+        </div>
+      )}
+
+      {step === 2 && kind === "webhook" && (
+        <div data-testid="tr-step-webhook">
+          <div className="field-help muted text-sm" style={{ marginBottom: 12 }}>
+            The server will generate a unique, unguessable URL for this webhook.
+            You can optionally add an HMAC secret for signature verification after
+            the trigger is created.
+          </div>
+          <div className="field">
+            <div
+              className="panel"
+              style={{ background: "var(--surface-1)", padding: "10px 14px", borderRadius: 4 }}
+            >
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <Icon name="info" size={13} />
+                <span className="muted text-sm">
+                  A secure token will be minted on create. The webhook URL will
+                  be shown on the trigger detail page.
+                </span>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -1073,6 +1141,10 @@ function TR_TriggerDetail({ id }) {
   const [fireError, setFireError] = React.useState(null);
   const [fireResult, setFireResult] = React.useState(null);
   const [subDialog, setSubDialog] = React.useState(null); // {mode:"create"|"edit", sub?}
+  // Webhook-specific state
+  const [rotateBusy, setRotateBusy] = React.useState(false);
+  const [rotateError, setRotateError] = React.useState(null);
+  const [hmacDialogOpen, setHmacDialogOpen] = React.useState(false);
 
   const refetchAll = React.useCallback(() => {
     detail.refetch();
@@ -1117,6 +1189,21 @@ function TR_TriggerDetail({ id }) {
       setDeleteError(err);
     } finally {
       setDeleteBusy(false);
+    }
+  };
+
+  const rotateToken = async () => {
+    if (!window.confirm("Rotate the webhook token? The old URL will stop working immediately.")) return;
+    setRotateBusy(true);
+    setRotateError(null);
+    try {
+      await apiFetch("POST", "/triggers/" + encodeURIComponent(id) + "/rotate_token", {});
+      refetchAll();
+    } catch (err) {
+      const msg = (err && (err.message || err.title)) || "Rotate failed";
+      setRotateError(msg);
+    } finally {
+      setRotateBusy(false);
     }
   };
 
@@ -1213,6 +1300,73 @@ function TR_TriggerDetail({ id }) {
                 <dd className="mono">{t.config?.catchup || "—"}</dd>
               </>
             )}
+            {kind === "webhook" && (() => {
+              const whUrl = TR_webhookUrl(t);
+              const hasHmac = !!t.config?.hmac_secret;
+              return (
+                <>
+                  <dt>Webhook URL</dt>
+                  <dd style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span className="mono" style={{ wordBreak: "break-all", fontSize: 11 }} data-testid="webhook-url">
+                      {whUrl || "(loading…)"}
+                    </span>
+                    {whUrl && <TR_CopyButton text={whUrl} label="Copy URL" testId="copy-webhook-url-btn" />}
+                  </dd>
+                  <dt>HMAC secret</dt>
+                  <dd style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span className={hasHmac ? "pill pill-claimed" : "muted text-sm"} style={{ fontSize: 10.5 }}>
+                      {hasHmac ? "configured" : "not set"}
+                    </span>
+                    <Btn
+                      size="sm"
+                      kind="ghost"
+                      icon="edit"
+                      onClick={() => setHmacDialogOpen(true)}
+                      data-testid="set-hmac-btn"
+                    >
+                      {hasHmac ? "Update" : "Set"}
+                    </Btn>
+                    {hasHmac && (
+                      <Btn
+                        size="sm"
+                        kind="ghost"
+                        icon="trash"
+                        onClick={async () => {
+                          if (!window.confirm("Clear the HMAC secret? Requests will no longer be verified.")) return;
+                          try {
+                            await apiFetch(
+                              "PUT",
+                              "/triggers/" + encodeURIComponent(id),
+                              { config: { kind: "webhook", hmac_secret: null } },
+                            );
+                            refetchAll();
+                          } catch (_e) { /* ignore */ }
+                        }}
+                        data-testid="clear-hmac-btn"
+                      >
+                        Clear
+                      </Btn>
+                    )}
+                  </dd>
+                  <dt>Token</dt>
+                  <dd style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <Btn
+                      size="sm"
+                      kind="ghost"
+                      icon="refresh"
+                      onClick={rotateToken}
+                      disabled={rotateBusy}
+                      data-testid="rotate-token-btn"
+                    >
+                      {rotateBusy ? "Rotating…" : "Rotate token"}
+                    </Btn>
+                    {rotateError && (
+                      <span className="muted text-sm" style={{ color: "var(--red)" }}>{rotateError}</span>
+                    )}
+                  </dd>
+                </>
+              );
+            })()}
             {t.description && (
               <>
                 <dt>Description</dt>
@@ -1222,6 +1376,15 @@ function TR_TriggerDetail({ id }) {
           </dl>
         </div>
       </div>
+
+      {/* HMAC secret dialog (webhook only) */}
+      {hmacDialogOpen && kind === "webhook" && (
+        <TR_HmacSecretDialog
+          triggerId={id}
+          onClose={() => setHmacDialogOpen(false)}
+          onSaved={() => { setHmacDialogOpen(false); refetchAll(); }}
+        />
+      )}
 
       {/* Status panel */}
       <div className="panel" data-testid="trigger-status-panel">
@@ -1821,6 +1984,93 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
 }
 
 // ============================================================================
+// TR_HmacSecretDialog - set or update the HMAC secret on a webhook trigger.
+//
+// The server stores the secret verbatim (inside the config JSONB). This
+// dialog lets the operator enter a new secret and PUT it via the standard
+// trigger update route.
+// ============================================================================
+
+function TR_HmacSecretDialog({ triggerId, onClose, onSaved }) {
+  const { apiFetch } = window.primerApi;
+  const [secret, setSecret] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  const mountedRef = React.useRef(true);
+  React.useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const submit = async () => {
+    if (!secret.trim()) { setError({ message: "Secret cannot be empty" }); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(
+        "PUT",
+        "/triggers/" + encodeURIComponent(triggerId),
+        { config: { kind: "webhook", hmac_secret: secret } },
+      );
+      if (!mountedRef.current) return;
+      onSaved();
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const msg = (err && (err.message || err.title)) || "Save failed";
+      setError({ message: msg });
+    } finally {
+      if (mountedRef.current) setBusy(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Set HMAC secret"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn kind="primary" icon="check" onClick={submit} disabled={busy || !secret.trim()}>
+            {busy ? "Saving…" : "Save secret"}
+          </Btn>
+        </>
+      }
+    >
+      <div data-testid="tr-hmac-dialog">
+        <div className="field-help muted text-sm" style={{ marginBottom: 10 }}>
+          When set, every inbound webhook request must include a
+          <span className="mono"> X-Primer-Signature: sha256=&lt;hex&gt;</span> header
+          computed as HMAC-SHA256 over the raw request body using this secret.
+          Requests without a valid signature are rejected 401.
+        </div>
+        <div className="field">
+          <label className="field-label" htmlFor="tr-hmac-secret">HMAC secret</label>
+          <input
+            id="tr-hmac-secret"
+            type="password"
+            className="input mono"
+            value={secret}
+            onChange={(e) => setSecret(e.target.value)}
+            placeholder="Enter a strong secret…"
+            style={{ width: "100%" }}
+            autoComplete="new-password"
+            data-testid="tr-hmac-secret-input"
+          />
+          <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+            Use a long random string. This value is stored server-side and
+            never returned in API responses after creation.
+          </div>
+        </div>
+        {error && (
+          <Banner kind="error" title="Save failed" detail={error.message || ""} />
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
@@ -1832,3 +2082,4 @@ window.TR_TriggerEditDialog = TR_TriggerEditDialog;
 window.TR_SubscriptionsPanel = TR_SubscriptionsPanel;
 window.TR_SubscriptionDialog = TR_SubscriptionDialog;
 window.TR_CreateTriggerDialog = TR_CreateTriggerDialog;
+window.TR_HmacSecretDialog = TR_HmacSecretDialog;

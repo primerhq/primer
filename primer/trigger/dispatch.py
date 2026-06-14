@@ -53,6 +53,7 @@ async def fire_trigger(
     trigger_id: str,
     scheduled_for: datetime | None,
     deps: DispatchDeps,
+    extra_context: dict | None = None,
 ) -> FireResult:
     """Fire a single trigger: load enabled subs, dispatch each.
 
@@ -61,6 +62,11 @@ async def fire_trigger(
     The trigger row's ``last_fired_at`` is bumped to ``fired_at`` and
     ``last_fire_error`` is set to a JSON blob describing the first
     failure (if any) or cleared on success.
+
+    ``extra_context`` is merged into the fire_context AFTER the source
+    builds its base dict. This lets the webhook inbound endpoint inject
+    ``webhook_body``, ``webhook_headers``, ``webhook_query``, and
+    ``webhook_method`` without the source needing request-level coupling.
     """
     triggers_storage = deps.storage_provider.get_storage(Trigger)
     trigger = await triggers_storage.get(trigger_id)
@@ -72,6 +78,8 @@ async def fire_trigger(
     fire_context = source.build_fire_context(
         trigger, fired_at=fired_at, scheduled_for=scheduled_for,
     )
+    if extra_context:
+        fire_context.update(extra_context)
     # fire_id is keyed on the LOGICAL fire instant (the scheduled tick
     # when present) so an at-least-once redelivery of the same tick
     # resolves to the same token and is deduped below. One-off / event

@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from primer.trigger.sources.delayed import DelayedSource
 from primer.trigger.sources.scheduled import ScheduledSource
+from primer.trigger.sources.webhook import WebhookSource
 
 
 SOURCES: dict[str, object] = {
     "delayed": DelayedSource(),
     "scheduled": ScheduledSource(),
+    "webhook": WebhookSource(),
 }
 
 

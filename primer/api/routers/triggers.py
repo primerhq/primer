@@ -66,6 +66,7 @@ from primer.trigger.service import (
     get_trigger,
     list_subscriptions,
     list_triggers,
+    rotate_webhook_token,
     update_subscription,
     update_trigger,
 )
@@ -256,6 +257,29 @@ async def delete_trigger_endpoint(
     except TriggerNotFound as exc:
         _raise_code(404, "trigger_not_found", str(exc))
     return JSONResponse(status_code=204, content=None)
+
+
+@triggers_router.post(
+    "/{trigger_id}/rotate_token",
+    summary="Rotate the webhook token for a webhook trigger",
+)
+async def rotate_token_endpoint(
+    trigger_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+    claim_engine=Depends(get_claim_engine),
+    event_bus=Depends(get_event_bus),
+) -> JSONResponse:
+    deps = _deps(sp, claim_engine, event_bus)
+    try:
+        trigger = await rotate_webhook_token(trigger_id=trigger_id, deps=deps)
+    except TriggerNotFound as exc:
+        _raise_code(404, "trigger_not_found", str(exc))
+    except ValueError as exc:
+        _raise_code(422, "not_a_webhook_trigger", str(exc))
+    return JSONResponse(
+        status_code=200,
+        content=trigger.model_dump(mode="json"),
+    )
 
 
 @triggers_router.post(

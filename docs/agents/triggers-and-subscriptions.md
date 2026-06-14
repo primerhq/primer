@@ -1,7 +1,7 @@
 ---
 slug: triggers-and-subscriptions
 title: Triggers and subscriptions
-summary: Event-scheduling primitive - time-based or channel-driven triggers fire payloads to chats, fresh sessions, or parked-yield tools.
+summary: Event-scheduling primitive - time-based, webhook, or channel-driven triggers fire payloads to chats, fresh sessions, or parked-yield tools.
 related: [yielding, chats, sessions, channels]
 mcp_tools:
   - trigger::list
@@ -33,8 +33,17 @@ gets a message", "ping me when the cron deadline passes".
 There are three trigger kinds and four subscription kinds. The
 trigger kinds determine **how** firing happens; the subscription
 kinds determine **what** the fire dispatches to. The cartesian
-product is fully supported - any trigger can be subscribed to by
-any kind of subscription.
+product is fully supported - any trigger kind can be subscribed to
+by any subscription kind.
+
+**Trigger kinds at a glance:**
+- `delayed` - one-shot, fires at a UTC timestamp.
+- `scheduled` - recurring cron expression with timezone and catch-up policy.
+- `webhook` - event-driven; fires when an authenticated HTTP POST arrives
+  at the generated `POST /v1/webhooks/{token}` URL (no auth required on
+  that endpoint; the token is the credential). The fire context includes
+  `webhook_body`, `webhook_headers`, `webhook_query`, and `webhook_method`
+  so payload templates can forward the inbound data to agents.
 
 Triggers and subscriptions are both regular CRUD entities - they
 have list/get/create/update/delete tools in both the `system`
@@ -46,12 +55,13 @@ trigger-specific extras like `fire_now`). For most agent code the
 
 A `Trigger` row:
 - `id` - operator-chosen identifier.
-- `kind` - `delayed | scheduled | channel`. Determines the fire
-  mechanism.
+- `kind` - `delayed | scheduled | webhook | channel`. Determines the
+  fire mechanism.
 - `config` - discriminated union keyed by kind. For `delayed`:
   `{fire_at: <timestamp>}`. For `scheduled`: `{cron: "<5-field>",
-  catch_up: "one|all|none"}`. For `channel`: `{channel_id: "...",
-  filter: {...}}`.
+  catch_up: "one|all|none"}`. For `webhook`:
+  `{token: "<32-hex-server-minted>", hmac_secret: "<optional>"}`.
+  For `channel`: `{channel_id: "...", filter: {...}}`.
 - `payload_template` - a Jinja2 template rendered with the fire's
   context. Produces the body that subscribers receive.
 - `enabled` - bool. Disabled triggers don't fire.
@@ -262,6 +272,70 @@ off the `triage-incident` agent.
 `parallelism: queue` means every matching message produces its own
 session even if a prior triage is still running.
 
+### Workflow 3 - inbound webhook fires a fresh agent session
+
+**Goal.** Any HTTP client can POST to a URL and trigger the `process-event` agent.
+
+1. Create the trigger (no `token` needed - the server mints one):
+
+```json
+{
+  "tool": "trigger::create",
+  "arguments": {
+    "slug": "process-event-hook",
+    "name": "Process event webhook",
+    "config": {"kind": "webhook"},
+    "enabled": true
+  }
+}
+```
+
+The response includes `config.token` (32 hex chars). Build the inbound URL:
+`POST https://your-primer-host/v1/webhooks/{config.token}`
+
+2. Subscribe a fresh session per fire (use `webhook_body` in the template):
+
+```json
+{
+  "tool": "trigger::create_subscription",
+  "arguments": {
+    "trigger_id": "<id from step 1>",
+    "config": {
+      "kind": "agent_fresh_session",
+      "agent_id": "process-event",
+      "workspace_id": "ws-main"
+    },
+    "payload_template": "Process this event payload: {{ webhook_body }}",
+    "parallelism": "queue",
+    "enabled": true
+  }
+}
+```
+
+3. Send an inbound webhook (from any HTTP client, no auth):
+
+```bash
+curl -X POST https://your-primer-host/v1/webhooks/{token} \
+  -H "Content-Type: application/json" \
+  -d '{"event": "order.placed", "order_id": "123"}'
+# Returns: {"delivery_id": "fire-...", "status": "accepted"}
+```
+
+4. To add HMAC verification, update the trigger:
+
+```json
+{
+  "tool": "trigger::update",
+  "arguments": {
+    "id": "<trigger id>",
+    "config": {"kind": "webhook", "hmac_secret": "my-strong-secret"}
+  }
+}
+```
+
+Callers must then include `X-Primer-Signature: sha256=<hmac-sha256-hex>`.
+To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops working immediately).
+
 ## Gotchas
 
 - **Per-subscription parallelism is independent of trigger
@@ -282,8 +356,9 @@ session even if a prior triage is still running.
 - **`payload_template` runs Jinja2 against a fire-time context.**
   The context dict varies by kind: scheduled gets `scheduled_for`,
   channel gets `channel_message`, delayed gets nothing beyond the
-  trigger metadata. Template errors are per-sub: a bad template
-  fails this one sub without taking down the others.
+  trigger metadata, webhook gets `webhook_body`, `webhook_headers`,
+  `webhook_query`, and `webhook_method`. Template errors are per-sub:
+  a bad template fails this one sub without taking down the others.
 - **`channel` triggers depend on the `ChannelInbox`.** No
   ChannelProvider configured + no Channel rows → channel triggers
   never fire. Operators see this as "trigger created but never

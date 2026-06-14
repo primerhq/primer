@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from primer.model.common import Identifiable
 
@@ -20,6 +20,7 @@ from primer.model.common import Identifiable
 class TriggerKind(str, Enum):
     DELAYED = "delayed"
     SCHEDULED = "scheduled"
+    WEBHOOK = "webhook"
     # CHANNEL = "channel"   # future
 
 
@@ -35,8 +36,33 @@ class ScheduledTriggerConfig(BaseModel):
     catchup: Literal["one", "all", "none"] = "one"
 
 
+class WebhookTriggerConfig(BaseModel):
+    """Configuration for a webhook trigger.
+
+    ``token`` is a server-minted unguessable URL token (32 hex chars). It
+    is included verbatim in the public webhook URL
+    ``POST /v1/webhooks/{token}`` and must NEVER be logged in full.
+
+    On create, ``token`` may be omitted or empty -- the service always mints
+    a fresh cryptographically random token. On update (rotate), the service
+    replaces whatever is stored.
+
+    ``hmac_secret`` is optional. When set the caller must include a
+    ``X-Primer-Signature`` header carrying ``HMAC-SHA256(secret, raw_body)``
+    as a lowercase hex digest; requests that fail HMAC verification are
+    rejected 401.
+    """
+
+    kind: Literal["webhook"] = "webhook"
+    # Empty string is the caller-facing "please mint me a token" sentinel.
+    # The service ALWAYS replaces this with a server-minted value before
+    # persisting. Stored tokens are always exactly 32 hex chars.
+    token: str = Field(default="", max_length=64)
+    hmac_secret: SecretStr | None = None
+
+
 TriggerConfig = Annotated[
-    DelayedTriggerConfig | ScheduledTriggerConfig,
+    DelayedTriggerConfig | ScheduledTriggerConfig | WebhookTriggerConfig,
     Field(discriminator="kind"),
 ]
 
@@ -136,4 +162,5 @@ __all__ = [
     "Trigger",
     "TriggerConfig",
     "TriggerKind",
+    "WebhookTriggerConfig",
 ]
