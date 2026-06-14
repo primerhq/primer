@@ -9,6 +9,8 @@ yielding tools (``sleep``, ``ask_user``, ``watch_files``,
 
 from __future__ import annotations
 
+from primer.model.chat import Tool, ToolCallResult
+from primer.toolset.internal import InternalToolsetProvider
 from primer.toolset.misc import build_misc_toolset
 
 
@@ -50,6 +52,47 @@ def test_unknown_name_defaults_false() -> None:
     provider = build_misc_toolset()
     assert provider.is_yielding("does_not_exist") is False
     assert provider.requires_session("does_not_exist") is False
+
+
+async def _noop_handler(arguments):  # pragma: no cover - never dispatched here
+    return ToolCallResult(output="{}", is_error=False)
+
+
+def test_classification_reads_explicit_flags_not_handler_source() -> None:
+    """The provider reads ``Tool.yields`` / ``Tool.requires_session``.
+
+    The handler here is a plain no-op whose source contains neither
+    ``Yielded`` nor ``ctx.session_id`` — the OLD getsource/annotation
+    heuristics would classify it as non-yielding and session-free. With
+    the explicit flags set on the Tool, the provider must report it as
+    yielding + session-bound, proving classification comes from the
+    flags, not from introspecting the handler.
+    """
+    flagged = Tool(
+        id="flagged_tool",
+        toolset_id="t",
+        description="x",
+        args_schema={"type": "object"},
+        yields=True,
+        requires_session=True,
+    )
+    plain = Tool(
+        id="plain_tool",
+        toolset_id="t",
+        description="x",
+        args_schema={"type": "object"},
+    )
+    provider = InternalToolsetProvider(
+        toolset_id="t",
+        registry={
+            "flagged_tool": (flagged, _noop_handler),
+            "plain_tool": (plain, _noop_handler),
+        },
+    )
+    assert provider.is_yielding("flagged_tool") is True
+    assert provider.requires_session("flagged_tool") is True
+    assert provider.is_yielding("plain_tool") is False
+    assert provider.requires_session("plain_tool") is False
 
 
 def test_base_class_default_is_false() -> None:

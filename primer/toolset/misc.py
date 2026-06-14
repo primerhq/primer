@@ -45,6 +45,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._describe import make_tool
+from primer.toolset._helpers import err as _err, ok_json as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -55,21 +56,9 @@ MISC_TOOLSET_ID = "misc"
 
 
 # ===========================================================================
-# Helpers — uniform OK / error wrapping (mirrors system.py)
+# Helpers — uniform OK / error wrapping (``_ok`` / ``_err`` are the shared
+# toolset result builders, imported above from ``primer.toolset._helpers``).
 # ===========================================================================
-
-
-def _ok(payload: Any) -> ToolCallResult:
-    return ToolCallResult(
-        output=json.dumps(payload, default=str), is_error=False,
-    )
-
-
-def _err(message: str, *, error_type: str = "tool-error") -> ToolCallResult:
-    return ToolCallResult(
-        output=json.dumps({"type": error_type, "message": message}),
-        is_error=True,
-    )
 
 
 def _err_from_validation(exc: ValidationError) -> ToolCallResult:
@@ -675,6 +664,8 @@ def build_misc_toolset(
                         note="yielding; worker released",
                     ),
                 ],
+                yields=True,
+                requires_session=True,
             ),
             _ask_user_handler,
         ),
@@ -725,6 +716,7 @@ def build_misc_toolset(
                         note="yielding; worker released",
                     ),
                 ],
+                yields=True,
             ),
             _sleep_handler,
         ),

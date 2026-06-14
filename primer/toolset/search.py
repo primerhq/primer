@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field, ValidationError
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.except_ import ConfigError, PrimerError, NotFoundError
 from primer.toolset._describe import make_tool
+from primer.toolset._helpers import err as _err, ok_json as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -58,17 +59,6 @@ class _SearchArgs(BaseModel):
         ge=1,
         le=100,
         description="Maximum number of hits to return (1-100, default 10).",
-    )
-
-
-def _ok(payload: Any) -> ToolCallResult:
-    return ToolCallResult(output=json.dumps(payload, default=str), is_error=False)
-
-
-def _err(message: str, *, error_type: str = "tool-error") -> ToolCallResult:
-    return ToolCallResult(
-        output=json.dumps({"type": error_type, "message": message}),
-        is_error=True,
     )
 
 

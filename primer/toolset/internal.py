@@ -72,11 +72,13 @@ class InternalToolsetProvider(ToolsetProvider):
         # the introspection cost per call. A True entry tells
         # dispatch to inject the context kwarg.
         self._handler_takes_ctx: dict[str, bool] = {}
-        # Cache: which handlers yield (return-type annotation includes
-        # ``Yielded``) and which require AgentSession (source reads
-        # ``ctx.session_id``). Surfaced via :meth:`is_yielding` and
-        # :meth:`requires_session` — the MCP server endpoint uses them
-        # to filter the exposable tool set.
+        # Cache: which tools yield (park the turn) and which require an
+        # AgentSession. Both are declared explicitly at the ``make_tool``
+        # call site via the ``yields`` / ``requires_session`` flags (which
+        # replaced the old handler source/annotation introspection — see
+        # :func:`primer.toolset._describe.make_tool`). Surfaced via
+        # :meth:`is_yielding` and :meth:`requires_session`; the MCP server
+        # endpoint uses them to filter the exposable tool set.
         self._yielding_names: set[str] = set()
         self._session_names: set[str] = set()
         for name, (tool, handler) in self._registry.items():
@@ -86,27 +88,26 @@ class InternalToolsetProvider(ToolsetProvider):
                     f"but provider toolset_id={toolset_id!r}"
                 )
             self._handler_takes_ctx[name] = _handler_takes_ctx(handler)
-            if _handler_is_yielding(handler):
+            if tool.yields:
                 self._yielding_names.add(name)
-            if _handler_requires_session(handler):
+            if tool.requires_session:
                 self._session_names.add(name)
 
     def is_yielding(self, tool_name: str) -> bool:
-        """Return True iff ``tool_name``'s handler can yield.
+        """Return True iff ``tool_name`` can yield (park the agent turn).
 
-        Derived at construction time from the handler's return-type
-        annotation — a handler annotated to return :class:`Yielded`
-        (alongside :class:`ToolCallResult`) is treated as yielding.
-        Unknown names return ``False``.
+        Read at construction time from the tool's explicit ``yields``
+        flag (declared at the ``make_tool`` call site). Unknown names
+        return ``False``.
         """
         return tool_name in self._yielding_names
 
     def requires_session(self, tool_name: str) -> bool:
-        """Return True iff ``tool_name``'s handler needs an AgentSession.
+        """Return True iff ``tool_name`` needs a live AgentSession.
 
-        Derived at construction time from the handler's source code —
-        a handler that reads ``ctx.session_id`` is treated as
-        session-bound. Unknown names return ``False``.
+        Read at construction time from the tool's explicit
+        ``requires_session`` flag (declared at the ``make_tool`` call
+        site). Unknown names return ``False``.
         """
         return tool_name in self._session_names
 
@@ -193,58 +194,3 @@ def _handler_takes_ctx(handler: ToolHandler) -> bool:
         # them as legacy (no ctx).
         return False
     return "ctx" in sig.parameters
-
-
-def _handler_is_yielding(handler: ToolHandler) -> bool:
-    """Introspect a handler's return-type annotation for ``Yielded``.
-
-    A handler is treated as yielding when its return annotation
-    mentions :class:`Yielded` (typically as part of a union, e.g.
-    ``ToolCallResult | Yielded``). The check looks at both the
-    resolved object identity (``Yielded`` is in the annotation's
-    args) and a textual fallback so it still works on string-form
-    annotations under ``from __future__ import annotations``.
-
-    The MCP server endpoint uses this to filter out tools whose
-    pause/resume semantics it cannot honour over a stateless
-    request/response transport.
-    """
-    try:
-        sig = inspect.signature(handler)
-    except (TypeError, ValueError):
-        return False
-    ann = sig.return_annotation
-    if ann is inspect.Signature.empty:
-        return False
-    # Stringified annotation (PEP 563 / `from __future__ import annotations`).
-    if isinstance(ann, str):
-        return "Yielded" in ann
-    # Direct reference.
-    if ann is Yielded:
-        return True
-    # Union / parameterised type: look at args.
-    args = getattr(ann, "__args__", ())
-    if any(a is Yielded for a in args):
-        return True
-    # Final textual fallback — covers exotic typing constructs.
-    return "Yielded" in repr(ann)
-
-
-def _handler_requires_session(handler: ToolHandler) -> bool:
-    """Introspect a handler's source for ``ctx.session_id`` reads.
-
-    A handler that reads ``ctx.session_id`` is treated as requiring
-    an :class:`AgentSession` — i.e. it only works inside an agent
-    loop where the worker injects a live session id via
-    :class:`ToolContext`. The MCP server endpoint uses this to
-    exclude such tools from its exposable set.
-
-    Falls back to ``False`` when the source isn't accessible (lambdas,
-    C-backed callables, partials without ``__wrapped__``); those are
-    rare in the internal registry and safe to expose by default.
-    """
-    try:
-        src = inspect.getsource(handler)
-    except (TypeError, OSError):
-        return False
-    return "ctx.session_id" in src

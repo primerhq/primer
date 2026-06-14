@@ -647,6 +647,28 @@ class Tool(Describeable):
             "excluded from serialization (not sent over the wire)."
         ),
     )
+    yields: bool = Field(
+        default=False,
+        exclude=True,
+        description=(
+            "True iff the tool's handler can park the agent turn (raises "
+            "YieldToWorker). Declared explicitly at the make_tool call site. "
+            "Consumed by InternalToolsetProvider.is_yielding and the MCP "
+            "exposure guard (yielding tools can't round-trip over MCP v1). "
+            "In-memory metadata only; excluded from serialization."
+        ),
+    )
+    requires_session: bool = Field(
+        default=False,
+        exclude=True,
+        description=(
+            "True iff the tool's handler needs a live AgentSession (reads "
+            "ctx.session_id). Declared explicitly at the make_tool call site. "
+            "Consumed by InternalToolsetProvider.requires_session and the MCP "
+            "exposure guard. In-memory metadata only; excluded from "
+            "serialization."
+        ),
+    )
 
 
 ToolChoice = Literal["auto", "required", "none"] | str

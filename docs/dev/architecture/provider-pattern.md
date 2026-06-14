@@ -142,7 +142,7 @@ Embedder adapters (`primer/embedder/`): `OpenAIEmbedder` (flavor-routed OpenAI /
 
 Cross-encoder adapters (`primer/cross_encoder/`): `HuggingFaceCrossEncoder`, a third model family that landed after the shared-architecture spec and is held to the same no-local-semaphore invariant.
 
-Toolset providers (`primer/toolset/`): `InternalToolsetProvider` (over a static registry; introspects each handler for `ctx` injection, yielding return annotation, and `ctx.session_id` reads) and `McpToolsetProvider` (long-lived stdio `ClientSession` under an `asyncio.Lock`, fresh `streamablehttp_client` per HTTP call, optional `PrimerOAuthHandler` preflight, `allowed_stdio_commands` allowlist enforcement, and the MCP 2025-11-25 tools/tasks extension). The MCP OAuth subsystem lives under `primer/toolset/oauth/`; see `docs/dev/subsystems/model-providers.md`.
+Toolset providers (`primer/toolset/`): `InternalToolsetProvider` (over a static registry; introspects each handler for `ctx` injection, and reads each tool's explicit `yields` / `requires_session` flags — declared at the `make_tool` call site — to answer `is_yielding` / `requires_session`) and `McpToolsetProvider` (long-lived stdio `ClientSession` under an `asyncio.Lock`, fresh `streamablehttp_client` per HTTP call, optional `PrimerOAuthHandler` preflight, `allowed_stdio_commands` allowlist enforcement, and the MCP 2025-11-25 tools/tasks extension). The MCP OAuth subsystem lives under `primer/toolset/oauth/`; see `docs/dev/subsystems/model-providers.md`.
 
 Vector-store providers (`primer/vector/`): `PgVectorStoreProvider`, `PgVectorScaleStoreProvider`, `LanceVectorStoreProvider`. Constructed via `VectorStoreProviderFactory.create`.
 

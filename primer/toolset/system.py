@@ -57,6 +57,7 @@ from primer.agent.invoke import (
 from primer.model.agent import Agent
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
+from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.collection import Collection, Document
 from primer.model.common import Identifiable
 from primer.model.except_ import (
@@ -108,31 +109,6 @@ SYSTEM_TOOLSET_ID = "system"
 # ===========================================================================
 # Helpers — JSON encoding + uniform error wrapping
 # ===========================================================================
-
-
-def _to_json(payload: Any) -> str:
-    if isinstance(payload, BaseModel):
-        return payload.model_dump_json()
-    if isinstance(payload, list):
-        return json.dumps(
-            [
-                p.model_dump(mode="json") if isinstance(p, BaseModel) else p
-                for p in payload
-            ],
-            default=str,
-        )
-    return json.dumps(payload, default=str)
-
-
-def _ok(payload: Any) -> ToolCallResult:
-    return ToolCallResult(output=_to_json(payload), is_error=False)
-
-
-def _err(message: str, *, error_type: str = "tool-error") -> ToolCallResult:
-    return ToolCallResult(
-        output=json.dumps({"type": error_type, "message": message}),
-        is_error=True,
-    )
 
 
 def _err_from_primer(exc: PrimerError, *, error_type: str) -> ToolCallResult:
@@ -1694,6 +1670,8 @@ def build_system_toolset(
                     note="chat-only; ends the turn",
                 ),
             ],
+            yields=True,
+            requires_session=True,
         ),
         _switch_to_agent_handler,
     )

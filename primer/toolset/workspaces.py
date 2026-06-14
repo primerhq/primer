@@ -66,6 +66,7 @@ from primer.model.workspace import (
 from primer.model.workspace_session import SessionBinding
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._describe import make_tool
+from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 
@@ -83,31 +84,6 @@ WORKSPACES_TOOLSET_ID = "workspaces"
 # ===========================================================================
 # JSON / error helpers
 # ===========================================================================
-
-
-def _to_json(payload: Any) -> str:
-    if isinstance(payload, BaseModel):
-        return payload.model_dump_json()
-    if isinstance(payload, list):
-        return json.dumps(
-            [
-                p.model_dump(mode="json") if isinstance(p, BaseModel) else p
-                for p in payload
-            ],
-            default=str,
-        )
-    return json.dumps(payload, default=str)
-
-
-def _ok(payload: Any) -> ToolCallResult:
-    return ToolCallResult(output=_to_json(payload), is_error=False)
-
-
-def _err(message: str, *, error_type: str = "tool-error") -> ToolCallResult:
-    return ToolCallResult(
-        output=json.dumps({"type": error_type, "message": message}),
-        is_error=True,
-    )
 
 
 def _err_from_validation(exc: ValidationError) -> ToolCallResult:
@@ -386,6 +362,9 @@ def _tool(
     args_cls: type[BaseModel],
     handler: ToolHandler,
     examples: list[ToolExample],
+    *,
+    yields: bool = False,
+    requires_session: bool = False,
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
     return name, (
         make_tool(
@@ -395,6 +374,8 @@ def _tool(
             when=when,
             args_schema=args_cls.model_json_schema(),
             examples=examples,
+            yields=yields,
+            requires_session=requires_session,
         ),
         handler,
     )
@@ -1599,6 +1580,8 @@ def build_workspaces_toolset(
                 args={"paths": ["src"], "timeout_seconds": 30, "batch_window_ms": 500},
             ),
         ],
+        yields=True,
+        requires_session=True,
     )
     registry[name] = entry
 
@@ -1625,6 +1608,8 @@ def build_workspaces_toolset(
                 note="runs a subgraph in this session; can park on HITL",
             ),
         ],
+        yields=True,
+        requires_session=True,
     )
     registry[name] = entry
 
