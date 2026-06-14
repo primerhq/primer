@@ -7,11 +7,16 @@ import base64
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
+import respx
 from pydantic import SecretStr
 
 from primer.llm.anthropic import (
+    ANTHROPIC_BASE_URL,
+    ANTHROPIC_VERSION,
     AnthropicLLM,
+    _discover_anthropic_models,
     _messages_to_anthropic,
     _part_to_anthropic_block,
 )
@@ -1161,3 +1166,98 @@ class TestCountTokens:
         call_kwargs = mock_count.await_args.kwargs
         assert call_kwargs["model"] == "claude-opus-4-7"
         assert call_kwargs["messages"] == msgs
+
+
+class TestDiscoverHelper:
+    """``_discover_anthropic_models`` live-probes ``GET /v1/models``."""
+
+    @respx.mock
+    async def test_parses_data_ids_and_headers(self) -> None:
+        route = respx.get(f"{ANTHROPIC_BASE_URL}/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "type": "model",
+                            "id": "claude-opus-4-5",
+                            "display_name": "Claude Opus 4.5",
+                        },
+                        {
+                            "type": "model",
+                            "id": "claude-sonnet-4-5",
+                            "display_name": "Claude Sonnet 4.5",
+                        },
+                    ],
+                    "has_more": False,
+                    "first_id": "claude-opus-4-5",
+                    "last_id": "claude-sonnet-4-5",
+                },
+            ),
+        )
+        out = await _discover_anthropic_models(
+            AnthropicConfig(api_key=SecretStr("sk-ant-abc")),
+        )
+        assert [m["name"] for m in out] == [
+            "claude-opus-4-5",
+            "claude-sonnet-4-5",
+        ]
+        assert out[0]["display_name"] == "Claude Opus 4.5"
+
+        # The probe hits /v1/models with the auth + version headers the
+        # adapter uses for Messages calls.
+        req = route.calls.last.request
+        assert req.url.path == "/v1/models"
+        assert req.headers["x-api-key"] == "sk-ant-abc"
+        assert req.headers["anthropic-version"] == ANTHROPIC_VERSION
+
+    @respx.mock
+    async def test_follows_pagination_cursor(self) -> None:
+        responses = [
+            httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "claude-opus-4-5"}],
+                    "has_more": True,
+                    "last_id": "claude-opus-4-5",
+                },
+            ),
+            httpx.Response(
+                200,
+                json={
+                    "data": [{"id": "claude-haiku-4-5"}],
+                    "has_more": False,
+                    "last_id": "claude-haiku-4-5",
+                },
+            ),
+        ]
+        route = respx.get(f"{ANTHROPIC_BASE_URL}/models").mock(
+            side_effect=responses,
+        )
+        out = await _discover_anthropic_models(
+            AnthropicConfig(api_key=SecretStr("sk-ant-abc")),
+        )
+        assert [m["name"] for m in out] == [
+            "claude-opus-4-5",
+            "claude-haiku-4-5",
+        ]
+        # display_name falls back to the id when upstream omits it.
+        assert out[0]["display_name"] == "claude-opus-4-5"
+        # Two calls: the second carries the after_id cursor.
+        assert len(route.calls) == 2
+        assert "after_id=claude-opus-4-5" in str(route.calls[1].request.url)
+
+    @respx.mock
+    async def test_4xx_raises_http_status_error(self) -> None:
+        respx.get(f"{ANTHROPIC_BASE_URL}/models").mock(
+            return_value=httpx.Response(
+                401,
+                json={"error": {"type": "authentication_error",
+                                "message": "invalid x-api-key"}},
+            ),
+        )
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            await _discover_anthropic_models(
+                AnthropicConfig(api_key=SecretStr("sk-ant-bad")),
+            )
+        assert exc_info.value.response.status_code == 401
