@@ -434,3 +434,37 @@ green. After this, each content page is its own .md (parallel).
 - Priority: slot doc-foundation right after user-1; let content pages fill
   parallel slots throughout (low-risk, disjoint). The dep-gated pages
   (collections/triggers/internal-collections) wait for their code dep to merge.
+
+---
+
+# Open-source launch (approved strategy)
+Positioning: "Primer - orchestrate fleets of small, context-optimized agents
+that rival a single frontier model; run capable agents on your own hardware."
+Balanced goals (awareness + adoption + design-partners), all audiences,
+Apache-2.0, ~7-day runway. Lean into the honest thesis-under-test framing.
+
+- marketing-strategy `docs/OPEN-SOURCE-LAUNCH-STRATEGY.md`: write the full doc -
+  positioning; 7-day phase plan (repo readiness -> assets/content -> soft
+  pre-launch -> coordinated launch day -> sustain); per-asset claude-designer
+  briefs (logo/wordmark, OG card, layered architecture diagram, 60-90s demo
+  video + GIFs); channel playbook (Show HN timing, r/LocalLLaMA + r/selfhosted,
+  X thread, Product Hunt, Lobste.rs, dev.to); the metric dashboard (HN
+  rank/points, stars + stars/day, X impressions, Reddit upvotes, GH referral
+  traffic; quickstart completions, Docker pulls, opt-in active instances; Discord
+  members, issues/PRs, design-partner signups); risks + mitigations; and copy
+  DRAFTS for Show HN, the launch blog, Reddit posts, the X thread. DoD: docs only.
+- oss-prep (SUPERSEDES `delivery`): Apache-2.0 LICENSE + source headers; real
+  README (hero, demo GIF, quickstart, architecture, badges); CODE_OF_CONDUCT.md;
+  SECURITY.md; `.github/` (issue + PR templates, FUNDING, a CI workflow running
+  the narrowed sweep + doc hygiene + coverage); fix `config.example.yaml` to the
+  nested db form; scan git history + tree for secrets / internal-only refs.
+  Gate: a newcomer can clone -> run in <10 min. DoD: docs/build/CI; verify config
+  parses; no backend behavior change.
+- launch-assets [dep: marketing-strategy + oss-prep]: execute the claude-designer
+  briefs from the strategy doc (produce the logo, OG/social card, architecture
+  diagram, demo GIF/video) and finalize the launch copy. DoD: assets + copy
+  committed under e.g. `docs/launch/` or `assets/`.
+
+Priority: marketing-strategy can run early (docs-only, independent); oss-prep
+early (independent, supersedes `delivery` - drop `delivery`); launch-assets after
+both. All three are file-disjoint from the code/doc tasks.
