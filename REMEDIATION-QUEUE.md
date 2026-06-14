@@ -25,6 +25,13 @@ primectl. Mark a track N/A with a one-line reason.
   create/edit dialogs; embedder provider/model locked on edit (422 via
   _validate_embedder_immutable); +8 unit +8 e2e; 204 unit green - MERGED 704f6a73
   (e2e KNW-SC-01..08 deferred to the final e2e gate)
+- chat-approval-pending - GET /v1/chats/{id}/tool_approval/pending registered
+  (mirrors session handler, RFC7807 404); un-xfails e2e t0836; +4 unit (54
+  green) - MERGED 70ee7f63 (e2e t0836 deferred to the final e2e gate)
+- git-timeout - global AppConfig.subprocess_timeout_seconds (120s, env/yaml
+  override) bounds git + init_command + runtime ops subprocesses; kills process
+  group on breach + SubprocessTimeoutError + lock release; +13 unit (567
+  workspace + 55 runtime green) - MERGED 357c7abb
 
 ## Pending tasks
 
@@ -271,9 +278,11 @@ Mostly independent of user-1/2/3 (own files); can run in parallel with them.
 | llm-timeout | (merged) | - | - | merged 40357e2a |
 | failure-isolation | (merged) | - | a107c6a7 | merged 75a7d08f |
 | user-2-collection-ui | (merged) | - | a066c650 | merged 704f6a73 |
+| chat-approval-pending | (merged) | - | ae527ce0 | merged 70ee7f63 |
+| git-timeout | (merged) | - | a15f02c9 | merged 357c7abb |
 | user-4-webhook | feat/user-4-webhook | primer-user-4-webhook | ada35505 | in-flight |
-| git-timeout | feat/git-timeout | primer-git-timeout | a15f02c9 | in-flight |
-| chat-approval-pending | feat/chat-approval-pending | primer-chat-approval-pending | ae527ce0 | in-flight |
+| sessions-filter | feat/sessions-filter | primer-sessions-filter | (dispatching) | in-flight |
+| auth | feat/auth | primer-auth | (dispatching) | in-flight |
 | _all others_ | - | - | - | pending |
 
 ## Conflict map (concurrent tasks MUST NOT share a hot file)
