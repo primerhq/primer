@@ -245,6 +245,9 @@ tests/testconfig.yaml
 .credentials
 .superpowers/
 
+# Local dogfood deployment config (internal-only; never ship in a public repo).
+dogfood/
+
 # Coordinator planning / review / findings docs - working notes only, never
 # committed (same rule as docs/superpowers/). Kept on disk for the session.
 REMEDIATION-QUEUE.md
