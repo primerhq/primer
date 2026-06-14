@@ -11,15 +11,15 @@ Primer agents can search the web through the `web::web-search` tool. Behind that
 
 Four provider backends ship with Primer:
 
-- **DuckDuckGo** -- keyless, zero-configuration. Primer auto-creates a reserved `DuckDuckGo` row and points the active configuration at it on first boot, so web search works immediately without any API keys.
-- **Tavily** -- a search API designed for LLM agents. Requires a Tavily API key.
-- **Firecrawl** -- a crawl-and-extract service. Requires a Firecrawl API key.
-- **Exa** -- a neural search API. Requires an Exa API key.
+- **DuckDuckGo**: keyless, zero-configuration. Primer auto-creates a reserved `DuckDuckGo` row and points the active configuration at it on first boot, so web search works immediately without any API keys.
+- **Tavily**: a search API designed for LLM agents. Requires a Tavily API key.
+- **Firecrawl**: a crawl-and-extract service. Requires a Firecrawl API key.
+- **Exa**: a neural search API. Requires an Exa API key.
 
 The **active configuration** controls how providers are used at runtime. It has two modes:
 
-- **Single** -- route every query to one named provider. This is the default out of the box (pointing at DuckDuckGo).
-- **Aggregated** -- try an ordered list of providers. If the first provider fails (quota, transient error, or misconfiguration), the service moves to the next. Only when every provider in the list fails does the tool return an error to the agent.
+- **Single**: route every query to one named provider. This is the default out of the box (pointing at DuckDuckGo).
+- **Aggregated**: try an ordered list of providers. If the first provider fails (quota, transient error, or misconfiguration), the service moves to the next. Only when every provider in the list fails does the tool return an error to the agent.
 
 ```mermaid
 flowchart LR
@@ -98,7 +98,7 @@ If Tavily is unavailable or returns an error, the service automatically retries 
 
 ## What happens after
 
-Once the active configuration is saved, every `web::web-search` call from any agent routes through it. The tool accepts a `query`, an optional `count` (1--25, default 5), and an optional `safe_search` level (`off`, `moderate`, `strict`; default `moderate`).
+Once the active configuration is saved, every `web::web-search` call from any agent routes through it. The tool accepts a `query`, an optional `count` (1-25, default 5), and an optional `safe_search` level (`off`, `moderate`, `strict`; default `moderate`).
 
 Safe search handling differs per backend: DuckDuckGo passes the full three-tier setting; Tavily collapses it to a boolean (`off -> false`, `moderate`/`strict -> true`); Firecrawl and Exa have no safe-search support and silently ignore the setting.
 

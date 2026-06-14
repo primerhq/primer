@@ -7,7 +7,7 @@ summary: How the worker pool and claim engine run sessions, handle heartbeats, p
 
 ## What workers are
 
-A **worker** is the process (or process thread) that actually executes an agent turn. When a session becomes runnable -- either newly started or resumed after a park -- a worker claims it from the queue, runs one turn end to end, and releases the lease when done. Multiple workers run in parallel; each handles up to its configured capacity of sessions concurrently.
+A **worker** is the process (or process thread) that actually executes an agent turn. When a session becomes runnable (either newly started or resumed after a park), a worker claims it from the queue, runs one turn end to end, and releases the lease when done. Multiple workers run in parallel; each handles up to its configured capacity of sessions concurrently.
 
 The **claim engine** (sometimes called the scheduler) is the background loop that continuously polls for runnable sessions and assigns them to free worker slots. The claim engine and the worker pool together form the runtime that keeps work moving.
 
@@ -31,10 +31,10 @@ The lease TTL is at least twice the heartbeat interval by design. A single misse
 
 A session carries two orthogonal axes of state:
 
-- **`status`** (`CREATED` / `RUNNING` / `WAITING` / `PAUSED` / `ENDED`) -- the operator-visible lifecycle.
-- **`parked_status`** (`parked` / `resumable` / absent) -- the internal park state, only set while `status = RUNNING`.
+- **`status`** (`CREATED` / `RUNNING` / `WAITING` / `PAUSED` / `ENDED`): the operator-visible lifecycle.
+- **`parked_status`** (`parked` / `resumable` / absent): the internal park state, only set while `status = RUNNING`.
 
-When a yielding tool fires, the turn raises a `YieldToWorker` signal. The worker catches it, snapshots the in-progress message history and park metadata into a `ParkedState` blob, and releases the lease with `drop_lease=False` -- meaning the session stays as the worker's charge but the lease row is cleared from the claim pool. The claim predicate excludes rows where `parked_status IS NOT NULL`, so no other worker will pick up the session while it waits.
+When a yielding tool fires, the turn raises a `YieldToWorker` signal. The worker catches it, snapshots the in-progress message history and park metadata into a `ParkedState` blob, and releases the lease with `drop_lease=False` (meaning the session stays as the worker's charge but the lease row is cleared from the claim pool). The claim predicate excludes rows where `parked_status IS NOT NULL`, so no other worker will pick up the session while it waits.
 
 ```mermaid
 stateDiagram-v2
@@ -107,7 +107,7 @@ The worker pool is configured at startup. Key parameters (set in the primer conf
 | Lease TTL | (platform default) | How long a held lease stays valid without a heartbeat. Must be at least twice the heartbeat interval. |
 | Heartbeat interval | (platform default) | How often a running worker refreshes its lease expiry. |
 
-## Walkthrough -- draining a worker
+## Walkthrough: draining a worker
 
 Drain a worker before a planned restart or scale-down so in-flight sessions complete cleanly without being re-claimed mid-turn.
 

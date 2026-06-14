@@ -17,9 +17,9 @@ This design keeps the integration surface clean: the operator registers an MCP s
 
 Primer supports two MCP transports.
 
-**stdio** -- primer launches the MCP server as a subprocess and speaks MCP over its standard input and output. The subprocess is started on the first tool call and kept alive for the provider's lifetime. Useful for local or containerised MCP servers where you have binary access. The command and its arguments are specified as an argv list; environment variables can be injected as key-value pairs.
+**stdio**: primer launches the MCP server as a subprocess and speaks MCP over its standard input and output. The subprocess is started on the first tool call and kept alive for the provider's lifetime. Useful for local or containerised MCP servers where you have binary access. The command and its arguments are specified as an argv list; environment variables can be injected as key-value pairs.
 
-**HTTP (streamable)** -- primer connects to a remote MCP endpoint over the streamable-HTTP transport. A new HTTP session is opened for each tool call (the MCP SDK has no long-lived equivalent for stateless HTTP MCP). Useful for hosted or remote MCP servers. Supports static headers (for example, an `Authorization` header) and an optional OAuth 2.1 (PKCE) flow for servers that return a 401 on unauthenticated requests.
+**HTTP (streamable)**: primer connects to a remote MCP endpoint over the streamable-HTTP transport. A new HTTP session is opened for each tool call (the MCP SDK has no long-lived equivalent for stateless HTTP MCP). Useful for hosted or remote MCP servers. Supports static headers (for example, an `Authorization` header) and an optional OAuth 2.1 (PKCE) flow for servers that return a 401 on unauthenticated requests.
 
 ```mermaid
 flowchart LR
@@ -79,7 +79,7 @@ To register an MCP toolset:
 
 After saving the MCP toolset, go to the agent's **Tools** tab and add it to the toolset list. The agent can then select individual tools from the MCP server or take all of them.
 
-## Walkthrough -- register a local MCP server
+## Walkthrough: register a local MCP server
 
 This walkthrough registers the GitHub MCP server as a stdio toolset and binds it to an agent.
 
@@ -95,7 +95,7 @@ This walkthrough registers the GitHub MCP server as a stdio toolset and binds it
 
 The agent calls the GitHub MCP server's `list_pull_requests` tool (or equivalent) through primer and returns the results.
 
-### Walkthrough -- register a remote HTTP MCP server
+### Walkthrough: register a remote HTTP MCP server
 
 1. Open **Toolsets** and click **New toolset**.
 2. Set **id** to `remote-mcp` and **provider** to `mcp`.
@@ -117,5 +117,5 @@ The seven built-in toolsets and how to explore tools with list_toolset_tools and
 ```
 
 ```ref:features/mcp-server
-Primer as an MCP server -- exposing a curated subset of its own tools to external clients.
+Primer as an MCP server: exposing a curated subset of its own tools to external clients.
 ```

@@ -89,7 +89,7 @@ The template form collects the following fields:
 
 ### Backend fields by provider type
 
-**Local backend** -- requires no additional config beyond selecting a local
+**Local backend**: requires no additional config beyond selecting a local
 provider. The workspace root is a subdirectory under the provider's
 `root_path`.
 
@@ -117,12 +117,12 @@ provider. The workspace root is a subdirectory under the provider's
 The `files` field is a list of `FileMount` entries, each with a `destination`
 path and a `source` discriminated by kind:
 
-- `inline` -- content supplied directly in the template
-- `url` -- fetched from an HTTP URL at materialisation time
-- `document` -- a primer knowledge document referenced by id
-- `secret` -- a named secret resolved from the platform secret store
+- `inline`: content supplied directly in the template
+- `url`: fetched from an HTTP URL at materialisation time
+- `document`: a primer knowledge document referenced by id
+- `secret`: a named secret resolved from the platform secret store
 
-## Walkthrough -- create a template and materialise a workspace
+## Walkthrough: create a template and materialise a workspace
 
 1. Open **Workspaces** in the left nav.
 2. Click **New workspace**. If no templates exist, click **Create a template
@@ -148,8 +148,8 @@ path and a `source` discriminated by kind:
 5. Click **New workspace** again (or from the template list, click **Create
    workspace from this template**).
 6. In the modal:
-   - **Name** (optional) -- a human-readable label like `research-sandbox`.
-   - **Template** -- select the template you just created.
+   - **Name** (optional): a human-readable label like `research-sandbox`.
+   - **Template**: select the template you just created.
 7. Click **Create**. The console navigates to the new workspace detail page.
 
 ```callout:info
