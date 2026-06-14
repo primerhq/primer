@@ -2923,12 +2923,37 @@ async def test_t0429_graph_bound_session_terminates_via_fatal_path(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
     """T0429 — Graph-bound session must reach a terminal state and
-    not get stuck in RUNNING after resume. The graph executor is now
-    fully implemented; the session may end with ended_reason in
-    {"completed", "failed", "cancelled"} depending on whether the
-    placeholder Anthropic provider completes the agent turn or the
-    worker surfaces an error. The hard pin is: converges to ENDED
-    within 30s and never surfaces /errors/internal.
+    not get stuck in RUNNING after resume.
+
+    The graph executor is now fully implemented. For THIS graph
+    (begin -> agent(n1) -> end) the session-row ended_reason is
+    DETERMINISTICALLY "completed". Rationale (static trace through
+    the worker + graph executor):
+      * The agent node n1 makes a real Anthropic call with the bogus
+        "sk-test-placeholder" key, so the LLM turn raises an auth
+        error. _BaseGraphExecutor._stream_node catches that
+        BaseException (primer/graph/base.py:1597) and packages it as
+        a _NodeDone(error=...) -- it never re-raises out of invoke().
+      * The superstep loop marks the node FAILED, sets any_failed,
+        breaks, and writes the GRAPH state.json with
+        ended_reason="failed" (primer/graph/base.py:1151-1159,
+        1234-1243). The generator still returns NORMALLY.
+      * _GraphTurnDriver.invoke() just drains that stream, so the
+        worker sees a clean completion and reports the fixed
+        last_done_reason="graph_ended" sentinel
+        (primer/worker/pool.py:1716-1735).
+      * dispatch reaches the clean-completion path (step 6) and maps
+        "graph_ended" -> (ENDED, "completed")
+        (primer/session/dispatch.py:485, 607).
+    So the SESSION ROW is "completed" even though the graph's own
+    state.json is "failed" -- the worker driver does not surface
+    node-level failures. "failed" on the session row would require
+    invoke() ITSELF to raise (e.g. _build_graph_executor config
+    error), which cannot happen for this well-formed graph on a
+    LocalWorkspace; "cancelled" cannot happen with no cancel in
+    flight. We pin "completed" exactly so a future regression that
+    lets a node failure escape to the worker (flipping the row to
+    "failed") is CAUGHT instead of silently accepted.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     graph_id = f"graph-t0429-{unique_suffix}"
@@ -2988,12 +3013,14 @@ async def test_t0429_graph_bound_session_terminates_via_fatal_path(
             f"graph-bound session did not converge to terminal in 30s "
             f"(stuck-in-RUNNING regression?): {final!r}"
         )
-        # Graph executor is implemented; session may end with
-        # "completed" (agent turn ran to end node) or "failed"
-        # (worker hit an internal error). Either is acceptable;
-        # the hard pin is convergence to ENDED within 30s.
-        assert final.get("ended_reason") in ("completed", "failed", "cancelled"), (
-            f"graph-bound session ended with unexpected ended_reason: {final!r}"
+        # Deterministic: node-level failures are swallowed by the
+        # graph executor and the worker reports "graph_ended" ->
+        # the session row is "completed". A "failed"/"cancelled"
+        # here is a real behaviour change (see docstring) and must
+        # fail the test, not be waved through.
+        assert final.get("ended_reason") == "completed", (
+            f"graph-bound session must end 'completed' (graph executor "
+            f"maps graph_ended -> completed); got {final!r}"
         )
     finally:
         if session_id is not None and workspace_id is not None:
@@ -3018,10 +3045,19 @@ async def test_t0432_graph_session_cancel_during_fatal_converges_cleanly(
 ) -> None:
     """T0432 — Race a cancel against the worker's transient RUNNING
     state on a graph-bound session. The graph executor is now
-    implemented; the session may end "completed" (agent traversed to
-    end node), "failed" (worker error), or "cancelled" (cancel landed
-    first). Any terminal outcome is acceptable; what is NOT is
-    sticking in RUNNING or surfacing /errors/internal anywhere.
+    implemented; the only two terminal outcomes are:
+      * "cancelled" -- the cancel landed first (the worker ended the
+        session before claiming it: primer/worker/pool.py:531-532) or
+        the cancel-watcher fired mid-stream (dispatch step 5b,
+        primer/session/dispatch.py:454-474); or
+      * "completed" -- the graph drained to its end node before the
+        cancel was observed, mapping graph_ended -> completed
+        (primer/session/dispatch.py:485, 607).
+    "failed" is NOT reachable: node-level failures (the bogus-key auth
+    error on the agent node) are swallowed inside the graph executor
+    and never re-raise to the worker (see T0429 docstring). What is
+    also NOT acceptable is sticking in RUNNING or surfacing
+    /errors/internal anywhere.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     graph_id = f"graph-t0432-{unique_suffix}"
@@ -3093,11 +3129,14 @@ async def test_t0432_graph_session_cancel_during_fatal_converges_cleanly(
         assert final.get("status") == "ended", (
             f"session stuck after cancel-during-fatal race: {final!r}"
         )
-        # ended_reason is "completed" (graph ran to end node before cancel
-        # was processed), "failed" (worker hit an internal error), or
-        # "cancelled" (cancel landed first). All are valid.
-        assert final.get("ended_reason") in ("completed", "failed", "cancelled"), (
-            f"unexpected ended_reason: {final!r}"
+        # ended_reason is "completed" (graph drained to its end node
+        # before the cancel was observed) or "cancelled" (cancel landed
+        # first / fired mid-stream). "failed" is NOT reachable here --
+        # node failures are swallowed by the graph executor -- so a
+        # "failed" row signals a real behaviour change and must fail.
+        assert final.get("ended_reason") in ("completed", "cancelled"), (
+            f"unexpected ended_reason (expected completed|cancelled, "
+            f"never failed): {final!r}"
         )
         # ended_at must be populated
         assert final.get("ended_at") is not None, final
@@ -3125,9 +3164,12 @@ async def test_t0433_top_level_get_reflects_fatal_ended_reason(
     """T0433 — When a graph-bound session terminates, the row's
     `ended_reason` must be visible on the top-level GET
     /v1/sessions/{id} read. The graph executor is now implemented;
-    the session may end "completed" (traversed to end node), "failed"
-    (worker error), or "cancelled". The hard pin is that the row is
-    in ENDED and the top-level GET returns the field.
+    for THIS graph (begin -> agent(n1) -> end) the session-row
+    ended_reason is DETERMINISTICALLY "completed" -- the agent node's
+    bogus-key auth failure is swallowed by the graph executor and the
+    worker reports the "graph_ended" sentinel (see T0429 docstring for
+    the full static trace). The hard pin is that the row is ENDED and
+    the top-level GET returns ended_reason="completed".
 
     Documented divergence: the NESTED route
     /v1/workspaces/{wid}/sessions/{sid} returns `{info, status}`
@@ -3192,12 +3234,9 @@ async def test_t0433_top_level_get_reflects_fatal_ended_reason(
             client, session_id=session_id, timeout_s=30.0,
         )
         assert top_final.get("status") == "ended", top_final
-        # Graph executor is now implemented; ended_reason may be
-        # "completed", "failed", or "cancelled" -- all are valid
-        # terminal outcomes.
-        assert top_final.get("ended_reason") in (
-            "completed", "failed", "cancelled"
-        ), top_final
+        # Deterministic: graph executor maps graph_ended -> completed
+        # on the session row (node failures are swallowed internally).
+        assert top_final.get("ended_reason") == "completed", top_final
         assert top_final.get("ended_at") is not None, top_final
         # Binding round-trips through top-level GET
         binding = top_final.get("binding", {})
@@ -3223,16 +3262,13 @@ async def test_t0433_top_level_get_reflects_fatal_ended_reason(
             assert envelope.get("type") == "/errors/not-found", envelope
         else:
             # Future-proof branch: when the nested handler learns to
-            # read graph-bound rows from storage, it must reach ENDED.
-            # ended_reason may differ between nested (in-memory workspace
-            # state) and top-level (DB) due to known impl drift -- both
-            # must be valid terminal reasons, not that they agree.
+            # read graph-bound rows from storage, it must reach ENDED
+            # and -- reading the same DB row the top-level GET reads --
+            # report the same deterministic "completed" reason.
             nested_body = nested.json()
             info = nested_body.get("info", {})
             assert nested_body.get("status") == top_final["status"]
-            assert info.get("ended_reason") in (
-                "completed", "failed", "cancelled"
-            ), info
+            assert info.get("ended_reason") == "completed", info
     finally:
         if session_id is not None and workspace_id is not None:
             await client.post(
