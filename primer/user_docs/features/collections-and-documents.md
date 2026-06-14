@@ -9,14 +9,14 @@ summary: Create knowledge collections with a fixed embedder and SSP, ingest plai
 
 A **collection** is a named container of documents that you can search by meaning. Every collection has an embedding model and a semantic search provider (SSP) chosen at creation time. When you add a document to a collection, Primer splits the document text into overlapping chunks, passes each chunk through the embedding model to produce a dense vector, and stores those vectors in the collection's SSP. At search time, the query is embedded with the same model and the SSP returns the chunks whose vectors are nearest in meaning.
 
-A **document** is a piece of text you add to a collection. It has an ID, a name, free-form metadata (a JSON object), and a text payload. The payload is split into chunks on ingest -- the chunks, not the document as a whole, are what the vector index holds and returns as search results.
+A **document** is a piece of text you add to a collection. It has an ID, a name, free-form metadata (a JSON object), and a text payload. The payload is split into chunks on ingest; the chunks, not the document as a whole, are what the vector index holds and returns as search results.
 
 Two decisions are fixed at create time and cannot be changed afterward:
 
-- **Embedder** (provider + model) -- all chunks in a collection must live in the same vector space. Changing the embedder would invalidate the existing index.
-- **Semantic search provider** -- chunks are written to the chosen backend. Migrating them to a different backend would require reindexing all documents.
+- **Embedder** (provider + model): all chunks in a collection must live in the same vector space. Changing the embedder would invalidate the existing index.
+- **Semantic search provider**: chunks are written to the chosen backend. Migrating them to a different backend would require reindexing all documents.
 
-Other collection settings -- description, MMR diversification, and cross-encoder reranking -- can be updated at any time.
+Other collection settings (description, MMR diversification, and cross-encoder reranking) can be updated at any time.
 
 ## Configuration
 
@@ -34,7 +34,7 @@ Other collection settings -- description, MMR diversification, and cross-encoder
 
 ### MMR diversification
 
-MMR (Maximal Marginal Relevance) diversifies search results so near-duplicate chunks do not all surface together. It is cheap -- pure linear algebra over the candidate pool -- and adds essentially no latency for pools under a few hundred chunks.
+MMR (Maximal Marginal Relevance) diversifies search results so near-duplicate chunks do not all surface together. It is cheap (pure linear algebra over the candidate pool) and adds essentially no latency for pools under a few hundred chunks.
 
 | Field | Default | Notes |
 |---|---|---|
@@ -82,18 +82,18 @@ The cross-encoder needs a relevance-rich pool, so it runs before MMR. MMR then d
 ```embed:collection-create
 ```
 
-The collection row is created. The vector index for this collection does not exist yet in the backend -- the SSP creates it lazily when the first document is ingested.
+The collection row is created. The vector index for this collection does not exist yet in the backend; the SSP creates it lazily when the first document is ingested.
 
 ### Add a document
 
 1. Open the collection and click **Documents**.
 2. Click **Add document**.
 3. Enter a document ID (or leave blank to auto-generate) and a name.
-4. Paste the document text directly, or upload a file. Supported upload formats include PDF, DOCX, HTML, and Markdown -- Primer converts them to text before splitting.
+4. Paste the document text directly, or upload a file. Supported upload formats include PDF, DOCX, HTML, and Markdown; Primer converts them to text before splitting.
 5. Optionally add metadata as a JSON object (e.g. `{"source": "manual", "version": "2"}`). Metadata is stored with every chunk and can be used for filtering.
 6. Click **Save**.
 
-Primer splits the document into overlapping chunks, embeds each chunk, and writes the vectors to the SSP. Progress is synchronous -- the save button returns once indexing is complete.
+Primer splits the document into overlapping chunks, embeds each chunk, and writes the vectors to the SSP. Progress is synchronous; the save button returns once indexing is complete.
 
 **Tip:** You can also drop multiple files at once in the upload area to queue them as a batch.
 

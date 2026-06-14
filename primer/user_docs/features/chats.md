@@ -2,14 +2,14 @@
 slug: chats
 title: Chats
 section: features
-summary: Start and use a chat -- create a conversation with an agent, send messages, watch token streaming, switch the agent mid-conversation, attach files, and approve gated tool calls.
+summary: "Start and use a chat: create a conversation with an agent, send messages, watch token streaming, switch the agent mid-conversation, attach files, and approve gated tool calls."
 ---
 
 ## What a chat is
 
 A chat is an interactive, multi-turn conversation bound to a single agent. It is the right surface when a human (or another agent) keeps the loop going turn by turn: you send a message, the agent responds, you reply, and this continues indefinitely on the same persistent message log.
 
-Unlike a session -- which runs headless under a scheduler and does work autonomously -- a chat waits for the next human message before starting a new turn.
+Unlike a session (which runs headless under a scheduler and does work autonomously), a chat waits for the next human message before starting a new turn.
 
 ```callout:tip
 Pick chat for interactive back-and-forth. Pick session for autonomous, long-running work where the agent should proceed without waiting.
@@ -77,8 +77,8 @@ A chat's agent is not locked at creation time. You can switch the agent mid-conv
 1. Go to **Chats** in the left nav. The list shows every existing chat thread with its bound agent, status pill, message count, and creation time.
 
 2. Click **New chat** (top-right of the filter bar). A modal opens:
-   - **Agent** -- select the agent this chat is bound to. You must have at least one agent before you can create a chat.
-   - **Initial instructions** (optional) -- free-text guidance sent ahead of the first user message.
+   - **Agent**: select the agent this chat is bound to. You must have at least one agent before you can create a chat.
+   - **Initial instructions** (optional): free-text guidance sent ahead of the first user message.
 
 3. Click **Create chat**. The console navigates to the streaming view for the new chat.
 
@@ -98,7 +98,7 @@ A chat's agent is not locked at creation time. You can switch the agent mid-conv
 7. Scroll up at any time to load older messages. The console pages backward through the message log without losing your scroll position.
 
 ```callout:info
-If the WebSocket drops mid-turn, the agent keeps running. When you reconnect, the console replays every message that arrived during the gap -- nothing is lost. The Send button is re-enabled once the socket is back to live.
+If the WebSocket drops mid-turn, the agent keeps running. When you reconnect, the console replays every message that arrived during the gap; nothing is lost. The Send button is re-enabled once the socket is back to live.
 ```
 
 ## Switching the agent
@@ -128,7 +128,7 @@ When the agent calls a tool covered by a `required` approval policy, the turn pa
 If you send a new message while an approval is pending, a warning banner appears explaining that the server will auto-reject the parked tool call when your new message arrives. Confirm with **Send and reject** or cancel.
 
 ```callout:warning
-Rejection is not a retry. The agent receives a rejection result and decides how to continue on its own. If you want the tool to run, approve it -- do not send a new message first.
+Rejection is not a retry. The agent receives a rejection result and decides how to continue on its own. If you want the tool to run, approve it; do not send a new message first.
 ```
 
 ## What happens after

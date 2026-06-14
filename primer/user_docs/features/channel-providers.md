@@ -11,9 +11,9 @@ A channel provider is a credential set for one messaging platform. It tells prim
 
 Three provider kinds are supported:
 
-- **Telegram** -- a single bot token (one bot per provider). Telegram delivers messages via long polling; no public webhook URL is required.
-- **Slack** -- a Slack app installed in one Slack workspace. Primer uses Socket Mode, so the app does not need a public-facing URL either. Two tokens are required.
-- **Discord** -- a Discord application bot installed in one or more servers. The bot connects via the Discord Gateway and can optionally handle direct messages.
+- **Telegram**: a single bot token (one bot per provider). Telegram delivers messages via long polling; no public webhook URL is required.
+- **Slack**: a Slack app installed in one Slack workspace. Primer uses Socket Mode, so the app does not need a public-facing URL either. Two tokens are required.
+- **Discord**: a Discord application bot installed in one or more servers. The bot connects via the Discord Gateway and can optionally handle direct messages.
 
 Each primer instance can have many providers, one per platform connection. A single provider can own multiple channels (for example, one Slack provider can own several Slack channel IDs).
 
@@ -65,7 +65,7 @@ The app token and bot token have distinct prefixes and are not interchangeable. 
 
 | Field | Required | Notes |
 |---|---|---|
-| `bot_token` | yes | Bot token from the Discord Developer Portal (at least 30 characters). Do not include the `Bot ` prefix -- primer adds it internally. |
+| `bot_token` | yes | Bot token from the Discord Developer Portal (at least 30 characters). Do not include the `Bot ` prefix; primer adds it internally. |
 | `enable_dms` | no | Whether the bot requests the `dm_messages` intent so it can read direct messages. Default `true`. Set to `false` for guild-only deployments. |
 
 ```callout:warning
