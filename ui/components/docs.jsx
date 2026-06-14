@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Banner */
+/* global React, Icon, Btn, Banner, ThemeToggle */
 
 // In-UI documentation page. Two-column layout: left nav (260px) +
 // fluid article + optional right TOC (200px). See
@@ -117,6 +117,17 @@ function WSP_DocsLeftNav({ sections, currentSection, currentSlug, searchQuery, s
       padding: "14px 0",
       minHeight: 0,
     }}>
+      <div style={{
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        padding: "0 12px 8px",
+      }}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: "var(--text-2)" }}>
+          Documentation
+        </span>
+        <ThemeToggle />
+      </div>
       <div style={{ padding: "0 12px 12px" }}>
         <input
           className="input"

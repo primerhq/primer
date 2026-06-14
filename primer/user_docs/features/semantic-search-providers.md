@@ -88,9 +88,11 @@ The provider row is saved and the backend runs `CREATE EXTENSION IF NOT EXISTS v
 
 Follow the same steps, choose **lance** as the provider type, and supply an absolute path on a filesystem where Primer has write access. The directory is created on first use.
 
-### Invalidate a provider
+### Edit or invalidate a provider
 
-If you rotate database credentials or want to force the server to re-open a connection, click **Invalidate** next to the provider row (or send `POST /v1/ssp/{id}/invalidate`). The cached adapter is closed and rebuilt on the next request. No vector data is lost.
+The connection fields (hostname, port, database, username, password) are mutable. To repoint a provider or update rotated credentials, click **Edit** on the provider row, change the fields, and save: the cached adapter is rebuilt with the new settings on the next request, so the change takes effect without a restart.
+
+**Invalidate** is a separate action that forces a fresh connection *without* a config change. Click **Invalidate** next to the provider row (or send `POST /v1/ssp/{id}/invalidate`) when the existing connection has gone stale (for example, the database was restarted or a pooled connection dropped) but the stored settings are still correct. The cached adapter is closed and rebuilt on the next request. Either way, no vector data is lost.
 
 
 ```ref:features/embedding-providers

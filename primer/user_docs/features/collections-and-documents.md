@@ -120,11 +120,24 @@ Deleting a document removes its row and its chunks from the vector store. The ch
 ### Search a collection
 
 1. Open the collection and click the **Search** button.
-2. Enter a query and optionally adjust **k** (the number of results, 1--100).
+2. Enter a query and optionally adjust **k** (the number of results, 1-100).
 3. Click **Search**.
 
 Results show the document ID, chunk ID, score, text, and metadata for each hit. If a cross-encoder is configured on the collection, the score column reflects the cross-encoder logit (higher = more relevant); otherwise it reflects the raw vector similarity from the SSP.
 
+## Using collections from an agent
+
+The console search above is for operators. An agent reaches collections and documents through tools instead. Add the ones it needs on the agent's Tools tab, then it can:
+
+- **Find the right collection**: `search__search_collections` runs a semantic search over your collection *definitions* and returns the collections whose description best matches a query. It is part of the `search` toolset, which is only available when internal collections are enabled.
+- **Find documents in a collection**: `system__list_collection_documents` lists a collection's documents, and `system__find_collection_documents_by_meta` filters them by metadata fields.
+- **Read a document**: `system__get_document_content` returns a document's full text by `document_id`.
+
+A typical flow is: call `search__search_collections` to locate a knowledge base, list or metadata-filter its documents, then call `get_document_content` on the ones the task needs.
+
+```callout:note
+Agent-driven semantic search over a collection's document *contents* (`system__search_collection`) is not yet wired to the search pipeline and currently returns a not-implemented error; use `find_collection_documents_by_meta` for now. The operator search bench above is unaffected.
+```
 
 ```ref:features/embedding-providers
 ```
