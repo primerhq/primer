@@ -27,7 +27,7 @@ research, and durable to-do lists that survive across app restarts.
 1. Open Telegram and start a chat with `@BotFather`.
 2. Send `/newbot` and follow the prompts to name the bot and choose a
    username ending in `bot`.
-3. Copy the bot token that BotFather sends -- it looks like
+3. Copy the bot token that BotFather sends; it looks like
    `1234567890:ABCDefGhIJKlmNoPQRstUVWxyz`.
 
 ### 2. Add a Telegram channel provider

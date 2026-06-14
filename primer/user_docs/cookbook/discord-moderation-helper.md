@@ -111,8 +111,8 @@ approval.
 ## Gotchas
 
 ```callout:danger
-A pattern that matches every message -- including the moderator
-bot's own output -- creates a loop. Either scope the channel
+A pattern that matches every message (including the moderator
+bot's own output) creates a loop. Either scope the channel
 association to exclude the bot's user ID, or instruct the agent in
 its system prompt to skip messages where the author is itself.
 ```

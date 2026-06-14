@@ -44,7 +44,7 @@ runs reads as inconsistent to PR authors.
 3. Fill in:
    - **Name**: `pr-review-template`
    - **Provider**: your configured workspace provider
-   - **TTL**: set to at least 60 minutes -- a batch of PRs can take a
+   - **TTL**: set to at least 60 minutes; a batch of PRs can take a
      while to review
    - **Init command**: any first-run setup needed (e.g. cloning the
      repo, installing tools)
@@ -69,12 +69,12 @@ runs reads as inconsistent to PR authors.
 ### 3. Create a scheduled trigger
 
 1. Open **Triggers** and click **Create trigger**.
-2. **Kind** -- choose **Scheduled**.
-3. **Config** -- enter cron expression `0 * * * *` (top of every UTC
+2. **Kind**: choose **Scheduled**.
+3. **Config**: enter cron expression `0 * * * *` (top of every UTC
    hour). Select an appropriate IANA timezone. Set **Catchup policy**
    to `skip` so missed ticks during downtime do not cause a burst of
    review runs.
-4. **Details** -- name it `pr-review-hourly`. Click **Create**.
+4. **Details**: name it `pr-review-hourly`. Click **Create**.
 
 ```embed:trigger-create
 ```
@@ -86,7 +86,7 @@ On the trigger detail page, click **Add subscription**.
 1. Choose kind **agent_fresh_session**.
 2. Select the `pr-review-template` workspace and the `pr-reviewer`
    agent.
-3. Set **Parallelism** to `skip` -- if a review run is still in flight
+3. Set **Parallelism** to `skip`: if a review run is still in flight
    when the next tick arrives, skip the tick rather than stacking
    another run.
 4. Click **Add subscription**.

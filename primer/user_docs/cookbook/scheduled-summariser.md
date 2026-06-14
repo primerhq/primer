@@ -41,12 +41,12 @@ after the fact.
 
 Open **Triggers** in the left nav and click **Create trigger**.
 
-1. **Kind** -- choose **Scheduled**.
-2. **Config** -- enter the cron expression `0 5 * * 1-5` (5:00 AM UTC,
+1. **Kind**: choose **Scheduled**.
+2. **Config**: enter the cron expression `0 5 * * 1-5` (5:00 AM UTC,
    which is 9:00 AM Asia/Dubai on weekdays). Select your IANA timezone
    from the dropdown. Set **Catchup policy** to `one` so a single
    missed tick after downtime fires once on recovery.
-3. **Details** -- name the trigger `weekday-summary`. Click **Create**.
+3. **Details**: name the trigger `weekday-summary`. Click **Create**.
 
 ```embed:trigger-create
 ```
@@ -82,7 +82,7 @@ When the agent finishes the summary it issues an `ask_user` prompt.
 Because the workspace association has **Forward ask_user** enabled, the
 prompt is delivered to the bound Slack channel. The message looks like:
 
-> *weekday-summary* -- Approve yesterday's summary?
+> *weekday-summary*: Approve yesterday's summary?
 > [Approve] [Reject]
 
 Click **Approve** and the session moves to `completed`. Clicking
@@ -102,7 +102,7 @@ approval times out or the agent returns an error.
 - The Slack channel provider needs the `chat:write` and `chat:read`
   scopes. The OAuth flow surfaces this during provider setup.
 - Cron expressions are evaluated in the timezone you select in the
-  wizard. Double-check the IANA timezone dropdown -- it pre-seeds from
+  wizard. Double-check the IANA timezone dropdown; it pre-seeds from
   your browser locale.
 
 ## Automate this
