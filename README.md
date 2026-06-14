@@ -129,3 +129,15 @@ docker compose up -d postgres
 uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e \
   --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
 ```
+
+See `CONTRIBUTING.md` for the full contributor guide and
+`CODE_OF_CONDUCT.md` for community expectations.
+
+## Security
+
+Please report vulnerabilities privately. See `SECURITY.md`.
+
+## License
+
+Primer is licensed under the Apache License 2.0. See the `LICENSE` file for the
+full text.

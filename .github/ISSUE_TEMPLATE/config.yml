@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Question or discussion
+    url: https://github.com/<org>/primer/discussions
+    about: Ask a question or start a discussion instead of opening an issue.
+  - name: Security report
+    url: https://github.com/<org>/primer/security/advisories/new
+    about: Report a vulnerability privately (do not open a public issue).
