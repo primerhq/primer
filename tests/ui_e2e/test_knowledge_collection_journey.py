@@ -14,10 +14,7 @@ Pages traversed:
      submit → assert modal closes, success toast, row appears.
   3. /knowledge/documents — assert the empty-state (no documents
      ingested yet) since we just created the collection.
-  4. /knowledge/search — assert the search bench page renders. With
-     no IC subsystem bootstrap + no documents, the search itself
-     wouldn't return real hits; we just pin that the page loads.
-  5. Back to /knowledge/collections — verify our collection still
+  4. Back to /knowledge/collections - verify our collection still
      appears (no churn between page transitions).
 
 Avoids LM-Studio + IC-bootstrap so the test runs anywhere.
@@ -156,16 +153,7 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         # we don't pin the exact empty-state copy (could vary by run
         # if a prior test left a stray document).
 
-        # ===== 4. /knowledge/search — search bench page renders ===========
-        page.goto(
-            f"{console_url}#/knowledge/search",
-            wait_until="domcontentloaded",
-        )
-        page.locator("h1.page-title").first.wait_for(
-            state="visible", timeout=10_000,
-        )
-
-        # ===== 5. Back to /knowledge/collections — row still present ======
+        # ===== 4. Back to /knowledge/collections - row still present ======
         page.goto(
             f"{console_url}#/knowledge/collections",
             wait_until="domcontentloaded",

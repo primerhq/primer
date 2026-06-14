@@ -104,7 +104,6 @@
       props: {
         pushToast: function () {},
         onOpen: function () {},
-        onSearchCollection: function () {},
         onNavigate: function () {},
       },
     },

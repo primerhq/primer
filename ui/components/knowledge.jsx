@@ -1,6 +1,6 @@
 /* global React, Icon, Btn, StatusPill, Modal, Banner, CardList, Card, Fab, relativeTime */
 
-// Knowledge: Collections + Documents + SearchBench wired to the real API.
+// Knowledge: Collections + Documents wired to the real API.
 // The Designer's mock-data scaffold was replaced in Phase 2 — every fetch
 // goes through window.primerApi.{apiFetch, useResource, useMutation,
 // useRouter}. Cache-key convention follows other components:
@@ -9,14 +9,10 @@
 //   collections:embedding-providers — GET /embedding_providers?limit=200
 //   documents:list:${collectionId}  — GET /documents (filter by collection)
 //   collection-docs-count:${id}     — per-collection doc count probe
-//   knowledge:ic-config             — GET /internal_collections/config
-//                                      (404 → OFF, mirrors toolsets.jsx)
 //
 // Babel-standalone shares the global scope across <script> tags so every
 // top-level binding in this file is prefixed with KN_ to avoid name clashes
 // with other components (TS_*, AG_*, WS_*, etc.).
-
-const KN_SEARCH_TARGETS = ["agents", "graphs", "tools"];
 
 function _knToastErr(pushToast, fallbackTitle) {
   return (err) => {
@@ -30,22 +26,11 @@ function _knToastErr(pushToast, fallbackTitle) {
   };
 }
 
-// 404 → null suppression for IC config (mirrors toolsets.jsx).
-async function _knFetchIcConfig(signal) {
-  const { apiFetch } = window.primerApi;
-  try {
-    return await apiFetch("GET", "/internal_collections/config", null, { signal });
-  } catch (err) {
-    if (err && err.status === 404) return null;
-    throw err;
-  }
-}
-
 // ============================================================================
 // Collections page
 // ============================================================================
 
-function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) {
+function CollectionsPage({ pushToast, onOpen, onNavigate }) {
   const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
@@ -180,7 +165,6 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
               if (typeof onOpen === "function") onOpen(sel.id);
               else navigate("/knowledge/documents", { collection: sel.id });
             }}
-            onSearchCollection={onSearchCollection}
             onNavigate={onNavigate}
           />
         )}
@@ -211,7 +195,7 @@ function CollectionsPage({ pushToast, onOpen, onSearchCollection, onNavigate }) 
   );
 }
 
-function KN_CollectionDetail({ c, pushToast, onOpenDocs, onSearchCollection, onNavigate, embedProviders, sspProviders, cerProviders }) {
+function KN_CollectionDetail({ c, pushToast, onOpenDocs, onNavigate, embedProviders, sspProviders, cerProviders }) {
   const { useResource, apiFetch } = window.primerApi;
   const isSystem = !!c.system;
   const isManaged = !!c.harness_id;
@@ -1794,263 +1778,6 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
 }
 
 // ============================================================================
-// Search bench — entity search probe across agents/graphs/tools
-// ============================================================================
-//
-// Per-collection search lives inline on the Collection detail panel
-// (KN_CollectionSearchPanel). What lives here is the "find entries by
-// description" probe — same shape as agents/graphs/tools — exposed via
-// the renamed "Entity search probe" sidebar entry.
-//
-// `subsystemOn` may be passed as a prop (from app.jsx tweaks) but we also
-// probe the real /v1/internal_collections/config so the banner reflects
-// the live API state when no prop is provided.
-
-function SearchBench({ subsystemOn: subsystemOnProp, collectionId }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
-  const { navigate } = useRouter();
-
-  // Source the toast push from the primerApi namespace (toast.js publishes
-  // window.primerApi.toastPush) so this works whether or not app.jsx forwards
-  // a pushToast prop into SearchBench.
-  const pushToast = window.primerApi?.toastPush || (() => {});
-
-  const ic = useResource("knowledge:ic-config", _knFetchIcConfig, { pollMs: 30000 });
-  // subsystemOn: prefer the live IC probe when it has resolved; fall back to
-  // the app-level tweak. ic.data === null after the 404 path means OFF;
-  // ic.data being an object means ON.
-  const liveOn = ic.error == null ? (ic.data != null) : false;
-  const subsystemOn = subsystemOnProp != null ? !!subsystemOnProp : liveOn;
-
-  const [target, setTarget] = React.useState(KN_SEARCH_TARGETS[0]);
-  const [query, setQuery] = React.useState("");
-  const [topK, setTopK] = React.useState(5);
-
-  const [results, setResults] = React.useState(null);
-  const [latencyMs, setLatencyMs] = React.useState(null);
-
-  // Scoped mode: caller pinned a specific collection. We always POST to
-  // /collections/{id}/search in that case (target picker is hidden).
-  const isScoped = !!collectionId;
-
-  const search = useMutation(
-    async (body) => {
-      const t0 = performance.now();
-      const path = isScoped
-        ? `/collections/${encodeURIComponent(collectionId)}/search`
-        : `/${target}/search`;
-      const result = await apiFetch("POST", path, body);
-      return { result, wallMs: performance.now() - t0 };
-    },
-    {
-      onSuccess: ({ result, wallMs }) => {
-        setResults(result.hits || []);
-        setLatencyMs(Math.round(wallMs));
-      },
-      onError: (err) => {
-        setResults(null);
-        if (err?.status === 503) {
-          pushToast({
-            kind: "warning",
-            title: "Subsystem inactive",
-            detail: "Bootstrap Internal Collections to enable search.",
-            requestId: err.requestId,
-          });
-        } else {
-          pushToast({
-            kind: "error",
-            title: err?.title || "Search failed",
-            detail: err?.detail || err?.message,
-            requestId: err?.requestId,
-          });
-        }
-      },
-    },
-  );
-
-  const run = () => {
-    if (!query.trim()) return;
-    search.mutate({ query, top_k: topK });
-  };
-
-  return (
-    <div className="col" style={{ gap: 14 }}>
-      {!subsystemOn && (
-        <Banner
-          kind="error"
-          title="Internal Collections subsystem is OFF"
-          detail="All /search routes return 503 until the subsystem is configured and bootstrapped."
-          actions={
-            <Btn
-              size="sm"
-              kind="primary"
-              icon="settings"
-              onClick={() => navigate("/subsystems/internal-collections")}
-            >Configure</Btn>
-          }
-        />
-      )}
-
-      <div className="panel">
-        <div className="panel-h">
-          <Icon name="search" size={13} className="muted" />
-          <span>Query</span>
-          <span className="sub">· POST /v1/{isScoped ? `collections/${collectionId}` : target}/search</span>
-          <div className="right">
-            <span className="mono text-sm" style={{ color: subsystemOn ? "var(--green)" : "var(--text-3)" }}>
-              ● {subsystemOn ? "subsystem ON" : "subsystem OFF"}
-            </span>
-          </div>
-        </div>
-        <div className="panel-body">
-          {!isScoped && (
-            <div className="chip-group" style={{ marginBottom: 10 }}>
-              {KN_SEARCH_TARGETS.map((t) => (
-                <span
-                  key={t}
-                  className={`chip ${target === t ? "active" : ""}`}
-                  onClick={() => setTarget(t)}
-                  style={{ cursor: "pointer" }}
-                >
-                  <Icon name={t === "agents" ? "agent" : t === "graphs" ? "graph" : "tools"} size={11} />
-                  <span>/{t}/search</span>
-                </span>
-              ))}
-            </div>
-          )}
-          <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
-            <textarea
-              className="textarea"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              rows={2}
-              style={{ flex: 1, fontFamily: "inherit", fontSize: 13 }}
-              placeholder="Natural-language query… (Enter to run · Shift+Enter for newline)"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  run();
-                }
-              }}
-            />
-            <Btn
-              kind="primary"
-              icon="search"
-              disabled={!subsystemOn || !query.trim() || search.loading}
-              onClick={run}
-            >
-              {search.loading ? "Searching…" : "Search"}
-            </Btn>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 10, fontSize: 12 }}>
-            {isScoped && (
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="muted">collection</span>
-                <span className="mono" style={{ color: "var(--text)" }}>{collectionId}</span>
-              </div>
-            )}
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <span className="muted">top_k</span>
-              <input
-                className="input"
-                type="number"
-                value={topK}
-                onChange={(e) => setTopK(Math.max(1, Math.min(50, +e.target.value)))}
-                min={1}
-                max={50}
-                style={{ width: 60 }}
-              />
-            </div>
-            <span className="muted text-sm">Backend silently ignores extra `filter`/`mmr` body fields (T0174).</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Results */}
-      <div className="panel">
-        <div className="panel-h">
-          <Icon name="list" size={13} className="muted" />
-          <span>Results</span>
-          {results && (
-            <>
-              <span className="sub">· {results.length} hit{results.length === 1 ? "" : "s"}</span>
-              {latencyMs != null && <span className="sub">· <span className="mono" style={{ color: "var(--accent)" }}>{latencyMs}ms</span></span>}
-            </>
-          )}
-        </div>
-        <div className="panel-body" style={{ padding: 0 }}>
-          {search.loading ? (
-            <div style={{ padding: 24, textAlign: "center", color: "var(--text-3)" }}>
-              <Icon name="zap" size={18} style={{ color: "var(--accent)" }} />
-              <div className="mt-2">Embedding query & running vector search…</div>
-            </div>
-          ) : results == null ? (
-            <div style={{ padding: 36, textAlign: "center", color: "var(--text-4)", fontSize: 13 }}>
-              Enter a query above and click <kbd style={{ background: "var(--bg-2)", border: "1px solid var(--border)", padding: "1px 5px", borderRadius: 4, fontFamily: "IBM Plex Mono" }}>Search</kbd>
-              <span className="muted text-sm">{" "}(Enter)</span>
-            </div>
-          ) : results.length === 0 ? (
-            <div style={{ padding: 24, textAlign: "center", color: "var(--text-3)" }}>No matches.</div>
-          ) : (
-            <div>
-              {results.map((r, i) => (
-                <KN_SearchResult key={(r.document_id || r.chunk_id || i) + "-" + i} r={r} rank={i + 1} />
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function KN_SearchResult({ r, rank }) {
-  const [open, setOpen] = React.useState(false);
-  return (
-    <div style={{ borderBottom: "1px solid var(--border)", padding: "10px 14px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <div style={{ width: 24, textAlign: "center", color: "var(--text-3)" }} className="mono num tabular">{rank}</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="mono" style={{ fontSize: 12.5, fontWeight: 500 }}>{r.document_id || r.chunk_id || "(unnamed)"}</div>
-          <div className="muted text-sm mono" style={{ fontSize: 11.5 }}>
-            {r.chunk_id && r.document_id ? "chunk " + r.chunk_id : ""}
-          </div>
-        </div>
-        {r.score != null && (
-          <div>
-            <div className="mono tabular" style={{ fontSize: 14, fontWeight: 600, color: "var(--accent)", textAlign: "right" }}>{Number(r.score).toFixed(3)}</div>
-            <div className="muted text-sm mono" style={{ fontSize: 10.5, textAlign: "right" }}>score</div>
-          </div>
-        )}
-        <button className="icon-btn" onClick={() => setOpen(!open)}>
-          <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
-        </button>
-      </div>
-      {r.text && (
-        <div style={{ marginTop: 8, paddingLeft: 34, fontSize: 12, color: "var(--text-2)", lineHeight: 1.5 }}>
-          <KN_Highlight text={r.text} />
-        </div>
-      )}
-      {open && r.meta && (
-        <div style={{ paddingLeft: 34, marginTop: 8 }}>
-          <div className="muted text-sm mono mb-2">meta:</div>
-          <div className="code-block">{JSON.stringify(r.meta, null, 2)}</div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function KN_Highlight({ text }) {
-  // Highlight **bolded** terms — backend convention for query-matched
-  // spans (when present in the snippet).
-  const parts = String(text).split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((p, i) => p.startsWith("**") ? (
-    <span key={i} style={{ background: "var(--accent-dim)", color: "var(--accent)", padding: "0 2px", borderRadius: 2 }}>{p.slice(2, -2)}</span>
-  ) : <span key={i}>{p}</span>);
-}
-
-// ============================================================================
 // Shared empty state
 // ============================================================================
 
@@ -2067,4 +1794,3 @@ function KN_EmptyState({ ico, head, sub, cta }) {
 
 window.CollectionsPage = CollectionsPage;
 window.DocumentsPage = DocumentsPage;
-window.SearchBench = SearchBench;
