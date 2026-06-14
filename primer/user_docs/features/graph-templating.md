@@ -2,12 +2,12 @@
 slug: graph-templating
 title: Graph templating
 section: features
-summary: How Jinja2 templates in graph nodes access the shared GraphContext -- initial input, upstream node outputs, iteration counter, and fan-out scope variables.
+summary: How Jinja2 templates in graph nodes access the shared GraphContext (initial input, upstream node outputs, iteration counter, and fan-out scope variables).
 ---
 
 ## What graph templating is
 
-Every node in a graph can carry a Jinja2 template that the executor renders just before the node runs. Rendering produces a string -- the user-role message that seeds an agent turn, the final output of an End node, or the aggregated text from a Fan-in node.
+Every node in a graph can carry a Jinja2 template that the executor renders just before the node runs. Rendering produces a string: the user-role message that seeds an agent turn, the final output of an End node, or the aggregated text from a Fan-in node.
 
 Templates read from a shared `GraphContext` that the executor builds and extends as nodes complete. The context holds the graph's initial input, all completed node outputs, and the current iteration counter. Templates can reference any completed upstream node by its id.
 
@@ -27,8 +27,8 @@ Every template has these variables in scope:
 
 `NodeOutput` has two attributes you will access most often:
 
-- `nodes.<id>.text` -- the node's raw string output (an agent's last assistant turn, or a rendered template).
-- `nodes.<id>.parsed` -- the `json.loads` of `text` when the node had `response_format` or `output_schema` set; `None` otherwise.
+- `nodes.<id>.text`: the node's raw string output (an agent's last assistant turn, or a rendered template).
+- `nodes.<id>.parsed`: the `json.loads` of `text` when the node had `response_format` or `output_schema` set; `None` otherwise.
 
 ### Where templates appear
 
@@ -188,7 +188,7 @@ When `output_schema` is set, the rendered string must parse as valid JSON confor
 
 ### Tool-call argument templates
 
-The Tool-call node accepts two forms. The `arguments` dict is the ergonomic default -- string leaves are each rendered as a mini-template:
+The Tool-call node accepts two forms. The `arguments` dict is the ergonomic default; string leaves are each rendered as a mini-template:
 
 ```json
 {
@@ -197,7 +197,7 @@ The Tool-call node accepts two forms. The `arguments` dict is the ergonomic defa
 }
 ```
 
-When you need to produce a dynamic argument structure -- a variable-length list, a conditionally present key -- use `arguments_template` instead. This shadows `arguments` entirely and must render to a valid JSON string:
+When you need to produce a dynamic argument structure (a variable-length list, a conditionally present key), use `arguments_template` instead. This shadows `arguments` entirely and must render to a valid JSON string:
 
 ```
 {
@@ -209,7 +209,7 @@ When you need to produce a dynamic argument structure -- a variable-length list,
 }
 ```
 
-## Walkthrough -- chaining two nodes
+## Walkthrough: chaining two nodes
 
 This walkthrough shows the minimal template chain: a `researcher` agent feeds its output to a `writer` agent.
 

@@ -2,14 +2,14 @@
 slug: graphs
 title: Graphs
 section: features
-summary: Wire agents into a multi-step directed graph -- define nodes and edges on the visual canvas, then run the graph as a workspace session.
+summary: Wire agents into a multi-step directed graph, define nodes and edges on the visual canvas, then run the graph as a workspace session.
 ---
 
 ## What a graph is
 
-A graph is a directed, potentially cyclic workflow made up of nodes connected by edges. Each node is a unit of work -- an agent turn, a direct tool call, or a data-shaping operation like fan-out or aggregation. Edges carry the result of one node into the next.
+A graph is a directed, potentially cyclic workflow made up of nodes connected by edges. Each node is a unit of work: an agent turn, a direct tool call, or a data-shaping operation like fan-out or aggregation. Edges carry the result of one node into the next.
 
-The key idea is that a graph encodes structure instead of squeezing multi-step reasoning into a single long prompt. When work splits cleanly into stages -- research, then critique, then rewrite -- a graph makes those stages explicit, each with its own agent, its own tools, and its own context window.
+The key idea is that a graph encodes structure instead of squeezing multi-step reasoning into a single long prompt. When work splits cleanly into stages (research, then critique, then rewrite) a graph makes those stages explicit, each with its own agent, its own tools, and its own context window.
 
 Primer's graph engine runs a Pregel-style superstep loop: it computes the set of nodes ready to run, executes all of them concurrently, records each node's output into a shared context, evaluates outgoing edges to compute the next frontier, and repeats until the ready set drains, a cap is hit, or a failure terminates the run.
 
@@ -39,9 +39,9 @@ Use a single agent for one continuous conversation. Graphs are overhead when the
 
 1. Go to **Graphs** in the left nav and click **New graph**.
 2. Fill in the modal:
-   - **ID** (optional) -- a short slug like `blog-pipeline`. Leave blank and the backend generates one.
-   - **Description** -- a one-line label shown in the list view.
-   - **Seed agent** -- the agent that seeds the first worker node. The console creates a minimal skeleton: `Begin -> agent -> End`.
+   - **ID** (optional): a short slug like `blog-pipeline`. Leave blank and the backend generates one.
+   - **Description**: a one-line label shown in the list view.
+   - **Seed agent**: the agent that seeds the first worker node. The console creates a minimal skeleton: `Begin -> agent -> End`.
 3. Click **Create**. The canvas opens immediately.
 
 ### The canvas
@@ -51,8 +51,8 @@ Use a single agent for one continuous conversation. Graphs are overhead when the
 
 The canvas shows nodes on a dot-grid. Edges appear as arrows between them:
 
-- Solid arrows -- static edges, always followed.
-- Dashed arrows -- conditional edges (carry a JSON-path router) or implicit fan-out wiring shown for reference only.
+- Solid arrows: static edges, always followed.
+- Dashed arrows: conditional edges (carry a JSON-path router) or implicit fan-out wiring shown for reference only.
 
 A legend at the bottom-left identifies edge styles. Drag any node to reposition it; the canvas snaps to an 8-pixel grid. Click **Auto-layout** to reset all positions to a left-to-right computed arrangement.
 
@@ -75,11 +75,11 @@ See `ref:features/graph-node-types` for the full configuration of each kind.
 1. Click **Add node** in the toolbar and pick a kind from the dropdown.
 2. The new node appears on the canvas and is immediately selected.
 3. The right-hand side panel opens. Fill in the fields:
-   - **Agent node** -- pick an agent from the dropdown, or click **+ New** to create one inline. Optionally override the `input_template`.
-   - **End node** -- set the `output_template`. May be left blank.
-   - **Fan-out node** -- add one or more specs (`broadcast`, `map`, or `tee`), each pointing to a target node id.
-   - **Fan-in node** -- set the `aggregate_template`.
-   - **Tool call node** -- pick a tool id and supply arguments as JSON.
+   - **Agent node**: pick an agent from the dropdown, or click **+ New** to create one inline. Optionally override the `input_template`.
+   - **End node**: set the `output_template`. May be left blank.
+   - **Fan-out node**: add one or more specs (`broadcast`, `map`, or `tee`), each pointing to a target node id.
+   - **Fan-in node**: set the `aggregate_template`.
+   - **Tool call node**: pick a tool id and supply arguments as JSON.
 4. To rename a node, edit the **ID** field. All edges referencing that node update automatically.
 5. To delete a node, click **Delete node**. All edges touching it are removed.
 
@@ -99,18 +99,18 @@ Fan-out nodes must have no outgoing edges in the edge list. Their downstream tar
 
 ### `max_iterations`
 
-Any graph whose edges can form a cycle must set `max_iterations` -- a positive integer cap on how many supersteps the executor runs before it terminates the run with `ended_detail='max_iterations_exceeded'`. The canvas validator enforces this: a graph with a cycle and no `max_iterations` is a hard violation that blocks Save.
+Any graph whose edges can form a cycle must set `max_iterations`, a positive integer cap on how many supersteps the executor runs before it terminates the run with `ended_detail='max_iterations_exceeded'`. The canvas validator enforces this: a graph with a cycle and no `max_iterations` is a hard violation that blocks Save.
 
 ### Validate and save
 
 The canvas runs local topology checks as you edit:
 
-- **Hard violations** (red) -- block Save. Examples: missing Begin, End not reachable from Begin, duplicate node ids, broken edge endpoints, Fan-out with real outgoing edges, cyclic graph without `max_iterations`.
-- **Warnings** (amber) -- do not block Save. Examples: orphan nodes, Tool-call referencing a tool not in the catalogue.
+- **Hard violations** (red): block Save. Examples: missing Begin, End not reachable from Begin, duplicate node ids, broken edge endpoints, Fan-out with real outgoing edges, cyclic graph without `max_iterations`.
+- **Warnings** (amber): do not block Save. Examples: orphan nodes, Tool-call referencing a tool not in the catalogue.
 
 When the banner is clear (or shows only warnings), click **Save**. An "unsaved changes" label appears whenever the draft differs from the last saved version. Click **Discard** to revert.
 
-## Walkthrough -- a producer-judge loop
+## Walkthrough: a producer-judge loop
 
 This walkthrough builds the producer-judge loop from the quickstart: a draft-writer feeds a completeness-judge that either loops back or accepts the draft.
 

@@ -2,7 +2,7 @@
 slug: sessions
 title: Sessions
 section: features
-summary: Start, monitor, and control sessions -- create a run, watch turns stream in, inspect lifecycle status, and pause, resume, or cancel headless agent work.
+summary: "Start, monitor, and control sessions: create a run, watch turns stream in, inspect lifecycle status, and pause, resume, or cancel headless agent work."
 ---
 
 ## What a session is
@@ -28,7 +28,7 @@ Sessions run headless under a scheduler. Chats are interactive: each chat turn w
 
 ### Turns
 
-A turn is one cycle through the agent loop: the worker claims the session, runs the model, dispatches any tool calls, and persists the results. Each turn produces an ordered list of messages -- assistant text, tool calls, and tool results -- appended to `messages.jsonl` inside the workspace.
+A turn is one cycle through the agent loop: the worker claims the session, runs the model, dispatches any tool calls, and persists the results. Each turn produces an ordered list of messages (assistant text, tool calls, and tool results) appended to `messages.jsonl` inside the workspace.
 
 A per-turn audit log (`turns.jsonl`) records a structured boundary event on every start, completion, failure, yield, and resume, so you can trace exactly what happened during each turn without replaying the full message history.
 
@@ -62,15 +62,15 @@ stateDiagram-v2
     }
 ```
 
-**CREATED** -- the row exists but no worker has been told to run it yet. This is the state when `auto_start=false` on create. The session stays in CREATED until you explicitly resume it.
+**CREATED**: the row exists but no worker has been told to run it yet. This is the state when `auto_start=false` on create. The session stays in CREATED until you explicitly resume it.
 
-**RUNNING** -- a worker holds a lease and a turn is in flight. Within RUNNING, a session can temporarily park when a tool yields (waiting for a trigger, an external event, or an approval decision); parking releases the worker lease so no compute is consumed while the session waits.
+**RUNNING**: a worker holds a lease and a turn is in flight. Within RUNNING, a session can temporarily park when a tool yields (waiting for a trigger, an external event, or an approval decision); parking releases the worker lease so no compute is consumed while the session waits.
 
-**WAITING** -- the agent reached a stopping point and needs external input, either because it asked a question (via `misc__ask_user`) or because an approval gate tripped. The session stays in WAITING until you provide a response via the API.
+**WAITING**: the agent reached a stopping point and needs external input, either because it asked a question (via `misc__ask_user`) or because an approval gate tripped. The session stays in WAITING until you provide a response via the API.
 
-**PAUSED** -- an operator requested suspension. The session resumes on demand.
+**PAUSED**: an operator requested suspension. The session resumes on demand.
 
-**ENDED** -- terminal. Ended sessions carry a reason: `completed`, `failed`, `cancelled`, `workspace_lost`, or `force_deleted`.
+**ENDED**: terminal. Ended sessions carry a reason: `completed`, `failed`, `cancelled`, `workspace_lost`, or `force_deleted`.
 
 ### The auto_start flag
 
@@ -87,7 +87,7 @@ All three controls are durable. If the API process restarts between the request 
 
 - **Pause**: holds the session at the next turn boundary. The worker releases the slot. The session moves to PAUSED. Use this to inspect state before the next turn runs.
 - **Resume**: reverses a pause or activates a CREATED session. The session re-enters the queue and a worker picks it up at the next turn.
-- **Cancel**: moves the session to ENDED immediately at the next turn boundary. Any in-flight tool call receives a cancellation error. The transcript is preserved and readable after cancellation. Cancel is terminal -- sessions cannot be restarted after they end.
+- **Cancel**: moves the session to ENDED immediately at the next turn boundary. Any in-flight tool call receives a cancellation error. The transcript is preserved and readable after cancellation. Cancel is terminal; sessions cannot be restarted after they end.
 
 ## Walkthrough: start and monitor a session
 
@@ -118,7 +118,7 @@ The detail view shows:
 
 - **Header strip**: session id, bound agent, current status, and elapsed time.
 - **Transcript pane**: turns stream in as they land. Each turn shows the role (user / assistant / tool), content, and timestamp.
-- **Footer**: for sessions in `waiting` or `paused` state, the footer shows the reason the session stopped -- typically the event key the agent yielded on. Use this to diagnose where the session is blocked.
+- **Footer**: for sessions in `waiting` or `paused` state, the footer shows the reason the session stopped, typically the event key the agent yielded on. Use this to diagnose where the session is blocked.
 
 Three operator controls appear in the session detail header: **Pause**, **Resume**, and **Cancel**.
 
@@ -134,7 +134,7 @@ On the session detail, use the retry control to rewind the transcript to a speci
 
 Once a session ends, its transcript remains readable in the detail view. The workspace files the agent wrote persist in the workspace and are accessible to other sessions and tools. You can inspect `messages.jsonl` and `turns.jsonl` directly in the workspace's `.state/` directory if you need a raw audit trail.
 
-Sessions started against the same agent definition pick up any changes made to the agent after the session began -- the agent's model and tools are resolved fresh at the start of each turn. A long-running session that was in-flight when you edited the agent picks up the new definition at the next turn boundary.
+Sessions started against the same agent definition pick up any changes made to the agent after the session began; the agent's model and tools are resolved fresh at the start of each turn. A long-running session that was in-flight when you edited the agent picks up the new definition at the next turn boundary.
 
 ```ref:features/agents
 Agent creation, tool selection, and system prompt configuration.

@@ -63,7 +63,7 @@ Once the subsystem is active, the SSP, embedding provider, and embedding model
 are locked. Cross-encoder and MMR settings remain editable at any time via
 **Update config** without requiring a re-bootstrap.
 
-## Walkthrough -- activate internal collections
+## Walkthrough: activate internal collections
 
 1. Navigate to **Internal Collections** in the sidebar.
 2. If the subsystem is inactive, the page shows "Internal Collections is not
@@ -73,10 +73,10 @@ are locked. Cross-encoder and MMR settings remain editable at any time via
 ```
 
 3. In the Configure modal, fill in the required fields:
-   - **Semantic Search provider** -- pick an existing SSP, or follow the link
+   - **Semantic Search provider**: pick an existing SSP, or follow the link
      to create one. The local `lance` provider works without any API key.
-   - **Embedding provider** -- pick an existing embedding provider.
-   - **Embedding model** -- select the model from the provider's list.
+   - **Embedding provider**: pick an existing embedding provider.
+   - **Embedding model**: select the model from the provider's list.
 4. Optionally enable **MMR diversification** and set the lambda. Optionally
    enable a **Cross-encoder reranker** and pick its provider and model.
 5. Click **Save**. The page transitions to the configured state with a warning
@@ -112,7 +112,7 @@ description. The search tools are:
 | `search__search_ai_docs` | Primer's own AI-facing documentation |
 
 Combine `search__search_agents` with `system__invoke_agent` to build a router
-agent that finds the right specialist and calls it -- the full agent catalogue
+agent that finds the right specialist and calls it; the full agent catalogue
 stays out of the router's context and is only consulted at query time.
 
 ### Update config and re-bootstrap

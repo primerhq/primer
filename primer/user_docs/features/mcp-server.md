@@ -48,7 +48,7 @@ The dialog switches to a one-time reveal:
 ```
 
 7. Click **Copy token** to copy the plaintext to your clipboard.
-8. Click **I have saved it -- close** once you have stored the value.
+8. Click **I have saved it, close** once you have stored the value.
 
 The token is never shown again. If you lose it, revoke it and create a new one.
 
