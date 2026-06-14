@@ -77,6 +77,12 @@ The approval state lives on the session's parked-status fields:
 metadata embedded in the yield captures the original tool call. The
 worker picks all this back up when the resume event arrives.
 
+For chats the park mechanism is different: instead of a parked-state
+blob, the approval is recorded in `chat.pending_tool_call` with
+`mode="approval"` and the original call's `id`, `name`, and `arguments`.
+The chat does not suspend a worker slot; the pending approval waits for
+the next conversational turn (or an operator respond call).
+
 ## Lifecycle and states
 
 A policy itself has no lifecycle beyond `enabled / disabled`. The
@@ -101,6 +107,40 @@ A policy itself has no lifecycle beyond `enabled / disabled`. The
 - **cancelled (rejected).** Operator explicitly cancels the pending
   approval from the console. Same effect as rejected but with reason
   "cancelled by operator".
+
+## Pending-approval HTTP endpoints
+
+Operators (and channel bridges) can query which approval is currently
+waiting on a session or chat:
+
+```
+GET /v1/sessions/{session_id}/tool_approval/pending
+GET /v1/chats/{chat_id}/tool_approval/pending
+```
+
+Both return 200 with the same envelope when an approval is pending:
+
+```json
+{
+  "tool_call_id": "tc-abc",
+  "tool_name": "delete_workspace",
+  "arguments": {"id": "ws-1"},
+  "policy_id": "p-required",
+  "approval_type": "required",
+  "gate_reason": "destructive operation",
+  "parked_at": "2026-06-14T10:00:00+00:00",
+  "timeout_at": "2026-06-14T10:10:00+00:00"
+}
+```
+
+Both return 404 `/errors/not-found` (RFC 7807) if the session/chat does
+not exist or is not currently waiting on an `_approval` gate. To respond
+(sessions only today; chat approval is resolved via user reply):
+
+```
+POST /v1/sessions/{session_id}/tool_approval/respond
+Body: {"tool_call_id": "tc-abc", "decision": "approved"|"rejected", "reason": "..."}
+```
 
 ## MCP tools
 

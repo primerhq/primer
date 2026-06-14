@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from primer.api.deps import (
     get_approval_resolver,
+    get_chat_storage,
     get_event_bus,
     get_provider_registry,
     get_session_storage,
@@ -197,6 +198,44 @@ def _build_pending_response(
     )
 
 
+def _chat_approval_pending_or_404(chat: Any, id_str: str) -> dict:
+    """Return the pending_tool_call dict when the chat has a pending approval.
+
+    Raises :class:`NotFoundError` if:
+    * the chat is None (doesn't exist),
+    * it has no pending_tool_call, or
+    * the pending_tool_call is not in approval mode.
+    """
+    if chat is None:
+        raise NotFoundError(f"{id_str!r} does not exist")
+    pending: dict | None = getattr(chat, "pending_tool_call", None)
+    if not pending or pending.get("mode") != "approval":
+        raise NotFoundError(f"{id_str!r} has no pending tool_approval")
+    return pending
+
+
+def _build_chat_pending_response(
+    pending: dict, chat: Any
+) -> ToolApprovalPendingResponse:
+    """Construct the pending-response envelope from a chat pending_tool_call."""
+    original: dict = pending.get("original_call") or {}
+    tool_call_id: str = pending.get("tool_call_id") or original.get("id") or ""
+    return ToolApprovalPendingResponse(
+        tool_call_id=tool_call_id,
+        tool_name=original.get("name", ""),
+        arguments=original.get("arguments") or {},
+        policy_id=pending.get("policy_id"),
+        approval_type=pending.get("approval_type"),
+        gate_reason=pending.get("gate_reason"),
+        parked_at=(
+            chat.created_at.isoformat()
+            if getattr(chat, "created_at", None) is not None
+            else ""
+        ),
+        timeout_at=None,
+    )
+
+
 async def _publish_decision(
     *,
     sess: Any,
@@ -301,6 +340,23 @@ def make_tool_approval_router() -> APIRouter:
             event_bus=event_bus,
         )
         return {"status": "accepted"}
+
+    # -----------------------------------------------------------------------
+    # Tool-approval pending for chats
+    # -----------------------------------------------------------------------
+
+    @router.get(
+        "/chats/{chat_id}/tool_approval/pending",
+        response_model=ToolApprovalPendingResponse,
+        responses=common_responses(404, 500),
+    )
+    async def get_chat_tool_approval_pending(
+        chat_id: Annotated[str, Path()],
+        chat_storage=Depends(get_chat_storage),
+    ) -> ToolApprovalPendingResponse:
+        chat = await chat_storage.get(chat_id)
+        pending = _chat_approval_pending_or_404(chat, chat_id)
+        return _build_chat_pending_response(pending, chat)
 
     return router
 
