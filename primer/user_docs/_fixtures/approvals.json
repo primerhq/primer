@@ -2,19 +2,11 @@
   "POST /sessions/find": {
     "kind": "offset",
     "offset": 0,
-    "length": 3,
-    "total": 3,
+    "length": 1,
+    "total": 1,
     "items": [
       {
         "id": "ses-7f2a1c",
-        "parked_status": "parked"
-      },
-      {
-        "id": "ses-3d9b04",
-        "parked_status": "parked"
-      },
-      {
-        "id": "ses-91ab55",
         "parked_status": "parked"
       }
     ]
@@ -34,35 +26,6 @@
     "timeout_at": "2026-06-14T10:44:00+00:00",
     "status": "pending"
   },
-  "GET /sessions/ses-3d9b04/tool_approval/pending": {
-    "tool_call_id": "call_d4e5f6",
-    "tool_name": "delete_agent",
-    "toolset_id": "system",
-    "arguments": {
-      "agent_id": "weekly-digest"
-    },
-    "policy_id": "guard-delete-agent",
-    "approval_type": "required",
-    "gate_reason": null,
-    "parked_at": "2026-06-14T09:31:12+00:00",
-    "timeout_at": "2026-06-14T10:31:12+00:00",
-    "status": "approved"
-  },
-  "GET /sessions/ses-91ab55/tool_approval/pending": {
-    "tool_call_id": "call_g7h8i9",
-    "tool_name": "exec",
-    "toolset_id": "workspaces",
-    "arguments": {
-      "workspace_id": "prod-workspace",
-      "command": "DROP TABLE billing"
-    },
-    "policy_id": "judge-shell-commands",
-    "approval_type": "llm",
-    "gate_reason": "destructive command flagged by the LLM judge",
-    "parked_at": "2026-06-14T09:12:40+00:00",
-    "timeout_at": "2026-06-14T10:12:40+00:00",
-    "status": "rejected"
-  },
   "GET /chats?limit=200": {
     "kind": "offset",
     "offset": 0,
@@ -70,5 +33,50 @@
     "total": 0,
     "items": []
   },
-  "_note": "Records view: three parked sessions, one per status (pending exec gate, approved delete_agent, rejected exec). The status field drives the badge and the by-status sort. Resolved (approved/rejected) records are not persisted live; they are shown here to demonstrate the all-status view. Approval configuration is per tool on the Tools page, so there is no Policies fixture."
+  "GET /tool_approval/records": {
+    "kind": "offset",
+    "offset": 0,
+    "length": 2,
+    "total": 2,
+    "items": [
+      {
+        "id": "tool-approval-record-aa01",
+        "tool_name": "delete_agent",
+        "toolset_id": "system",
+        "arguments": {
+          "agent_id": "weekly-digest"
+        },
+        "tool_call_id": "call_d4e5f6",
+        "session_id": "ses-3d9b04",
+        "chat_id": null,
+        "requested_at": "2026-06-14T09:31:12+00:00",
+        "decided_at": "2026-06-14T09:33:05+00:00",
+        "decision": "approved",
+        "reason": null,
+        "policy_id": "guard-delete-agent",
+        "approval_type": "required",
+        "gate_reason": null
+      },
+      {
+        "id": "tool-approval-record-bb02",
+        "tool_name": "exec",
+        "toolset_id": "workspaces",
+        "arguments": {
+          "workspace_id": "prod-workspace",
+          "command": "DROP TABLE billing"
+        },
+        "tool_call_id": "call_g7h8i9",
+        "session_id": "ses-91ab55",
+        "chat_id": null,
+        "requested_at": "2026-06-14T09:12:40+00:00",
+        "decided_at": "2026-06-14T09:14:20+00:00",
+        "decision": "rejected",
+        "reason": "destructive: refused by operator",
+        "policy_id": "judge-shell-commands",
+        "approval_type": "llm",
+        "gate_reason": "destructive command flagged by the LLM judge"
+      }
+    ]
+  },
+  "_note": "Records view: one live pending session (exec gate against prod) plus two durable resolved records from /tool_approval/records (approved delete_agent, rejected exec). The status/decision field drives the badge and the by-status sort. Resolved decisions are now persisted; only pending rows expose Approve/Reject. Approval configuration is per tool on the Tools page, so there is no Policies fixture."
 }

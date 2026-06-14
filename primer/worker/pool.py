@@ -35,6 +35,7 @@ from primer.worker.turn import _CancelScope
 from primer.worker.yield_resume_registry import get_resume_hook
 from primer.worker.yield_runtime import (
     _resume_tool_approval,
+    classify_approval_payload,
     classify_resume_payload,
     ParkedState,
 )
@@ -609,6 +610,98 @@ class WorkerPool:
         # drop_lease=True so the ended session is not re-claimed.
         return ReleaseOutcome(success=True, drop_lease=True)
 
+    async def _write_approval_record_for_session(
+        self, *, session, blob: dict, payload,
+    ) -> None:
+        """Persist the resolved approval decision for a session park.
+
+        Best-effort: a write failure is logged and swallowed so the resume
+        proceeds. Shared by the agent and graph resume paths via the same
+        parked-state blob shape.
+        """
+        from primer.agent.approval_record import (
+            record_from_parked_blob,
+            write_approval_record,
+        )
+        from primer.model.tool_approval import ToolApprovalRecord
+
+        decision, reason = classify_approval_payload(payload)
+        record = record_from_parked_blob(
+            blob=blob,
+            decision=decision,
+            reason=reason,
+            agent_id=getattr(session.binding, "agent_id", None),
+            session_id=session.id,
+            requested_at=session.parked_at,
+        )
+        storage = (
+            self._storage.get_storage(ToolApprovalRecord)
+            if self._storage is not None
+            else None
+        )
+        await write_approval_record(storage, record)
+
+    async def _write_approval_record_for_graph(
+        self, *, session, checkpoint: dict, tcid, payload,
+    ) -> None:
+        """Persist the resolved approval decision for a graph tool-call gate.
+
+        The gated call's metadata lives on the checkpoint's
+        ``pending_agent_yields`` entry for ``tcid``. We reshape it into the
+        ``parked_state`` blob form so the shared builder applies. Best-effort:
+        a missing entry or write failure is logged + swallowed.
+        """
+        from primer.agent.approval_record import (
+            record_from_parked_blob,
+            write_approval_record,
+        )
+        from primer.model.tool_approval import ToolApprovalRecord
+
+        # Two gate shapes resolve here. An agent-node ``_approval`` yield lives
+        # in ``pending_agent_yields`` and carries its own resume_metadata. A
+        # tool-call-node gate lives in ``pending_toolcalls`` and its
+        # ``original_call`` (tool_id + arguments) is denormalised into
+        # ``pending_dispatch``. Either way, reshape into the parked_state blob
+        # form the shared builder expects. A tcid that matches neither (or no
+        # tcid at all -> legacy drain) is skipped.
+        resume_metadata: dict | None = None
+        entry = next(
+            (e for e in (checkpoint.get("pending_agent_yields") or [])
+             if e.get("tool_call_id") == tcid),
+            None,
+        )
+        if entry is not None and entry.get("tool_name") == "_approval":
+            resume_metadata = entry.get("resume_metadata") or {}
+        else:
+            disp = next(
+                (d for d in (checkpoint.get("pending_dispatch") or [])
+                 if d.get("tool_call_id") == tcid),
+                None,
+            )
+            if disp is not None:
+                resume_metadata = disp.get("resume_metadata") or {}
+        if resume_metadata is None:
+            return
+        decision, reason = classify_approval_payload(payload)
+        blob = {
+            "tool_call_id": tcid,
+            "yielded": {"resume_metadata": resume_metadata},
+        }
+        record = record_from_parked_blob(
+            blob=blob,
+            decision=decision,
+            reason=reason,
+            agent_id=getattr(session.binding, "agent_id", None),
+            session_id=session.id,
+            requested_at=session.parked_at,
+        )
+        storage = (
+            self._storage.get_storage(ToolApprovalRecord)
+            if self._storage is not None
+            else None
+        )
+        await write_approval_record(storage, record)
+
     async def _resume_engine_session(self, engine_lease, session):
         """Drive a resumable park to its conclusion on the engine path.
 
@@ -668,6 +761,13 @@ class WorkerPool:
         tool_name = parked.yielded.tool_name
         try:
             if tool_name == "_approval":
+                # Persist the resolved decision (approved/rejected/timeout/
+                # cancelled) exactly once, BEFORE we re-dispatch/synthesise.
+                # classify_approval_payload is the same classifier the resume
+                # uses, so the record's verdict cannot drift from the result.
+                await self._write_approval_record_for_session(
+                    session=session, blob=blob, payload=resume_payload.payload,
+                )
                 tool_result_part = await _resume_tool_approval(
                     blob=blob,
                     payload=resume_payload.payload,
@@ -792,6 +892,13 @@ class WorkerPool:
         repark = None
         for tcid, payload in replies:
             agent_tool_result = await self._graph_agent_tool_result(ck, tcid, payload)
+            # An approval gate is a pending tool-call yield (NOT an ask_user
+            # agent yield, which carries agent_tool_result). Persist the
+            # resolved decision for that gate exactly once per reply.
+            if agent_tool_result is None:
+                await self._write_approval_record_for_graph(
+                    session=session, checkpoint=ck, tcid=tcid, payload=payload,
+                )
             try:
                 _decision, repark = await resume_graph_from_checkpoint(
                     executor=executor,

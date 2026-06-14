@@ -61,22 +61,31 @@ function ApprovalsPage({ pushToast, onNavigate }) {
     { pollMs: 5000 },
   );
 
+  // Resolved (approved/rejected/timeout/cancelled) records, persisted
+  // durably and queried newest-first. Merged with the live pending rows
+  // below so the records view shows full history, not just live parks.
+  const resolvedRecords = useResource(
+    "approvals:resolved-records",
+    (signal) => apiFetch(
+      "GET",
+      "/tool_approval/records?status=all&offset=0&length=200",
+      null,
+      { signal },
+    ),
+    { pollMs: 5000 },
+  );
+
   const sessionRows = (parkedSessions.data?.items ?? []);
   const chatRows = (parkedChats.data?.items ?? []).filter((c) => c.parked_status === "parked");
+  const recordRows = (resolvedRecords.data?.items ?? []);
 
-  // The records list is built by combining per-row tool_approval/pending
-  // fetches. Each row renders an <AP_RecordRow> that does its own
-  // useResource and renders nothing on 404. Reusing the same cache keys
-  // as the ApprovalBanner (tool-approval:session:${id}) - handy for
-  // invalidation.
-  //
-  // NOTE (backend gap): the only queryable source of approval records is
-  // the set of currently-parked sessions/chats, which are all "pending".
-  // Resolved (approved/rejected) records are not persisted anywhere, so
-  // the live list only ever contains pending records. The view is built
-  // to render any status (each record carries `status`) and to sort by
-  // time + status, so it is ready for resolved records once they are
-  // persisted; until then it is honestly labelled "pending only".
+  // The records list combines two sources: (1) per-row tool_approval/pending
+  // fetches for live (still-parked) sessions/chats, which are "pending", and
+  // (2) the durable resolved records from /tool_approval/records. Each pending
+  // row renders an <AP_RecordRow> that does its own useResource and renders
+  // nothing on 404; resolved records are normalised into the same shape and
+  // merged in. Reusing the same cache keys as the ApprovalBanner
+  // (tool-approval:session:${id}) - handy for invalidation.
   return (
     <div className="col" style={{ gap: 14 }}>
       <AP_ConfigHint onNavigate={onNavigate} />
@@ -118,10 +127,11 @@ function ApprovalsPage({ pushToast, onNavigate }) {
           <AP_RecordsPanel
             sessions={sessionRows}
             chats={chatRows}
+            resolved={recordRows}
             sortBy={sortBy}
             sortDir={sortDir}
-            loading={(parkedSessions.loading && !parkedSessions.data) || (parkedChats.loading && !parkedChats.data)}
-            error={parkedSessions.error || parkedChats.error}
+            loading={(parkedSessions.loading && !parkedSessions.data) || (parkedChats.loading && !parkedChats.data) || (resolvedRecords.loading && !resolvedRecords.data)}
+            error={parkedSessions.error || parkedChats.error || resolvedRecords.error}
             onNavigate={onNavigate}
             pushToast={pushToast}
           />
@@ -160,15 +170,32 @@ function AP_ConfigHint({ onNavigate }) {
 // =============================================================
 
 // Build the comparator for the records list. Time sorts on parked_at;
-// status sorts on a fixed rank (pending first, then approved, rejected)
+// status sorts on a fixed rank (pending first, then resolved verdicts)
 // so the most actionable rows lead. `dir` flips both.
-const AP_STATUS_RANK = { pending: 0, approved: 1, rejected: 2 };
+const AP_STATUS_RANK = { pending: 0, approved: 1, rejected: 2, timeout: 3, cancelled: 4 };
+
+// Normalise a durable resolved record (/tool_approval/records) into the
+// row shape the records list renders (which keys off `status`, `parked_at`,
+// `tool_call_id`). `decision` -> `status`; `requested_at` (fallback
+// `decided_at`) -> `parked_at`.
+function AP_normResolved(rec) {
+  return {
+    ...rec,
+    status: rec.decision,
+    parked_at: rec.requested_at || rec.decided_at,
+    tool_call_id: rec.tool_call_id || rec.id,
+  };
+}
 
 // Inline status badge for a record. Pending=amber, approved=green,
 // rejected=red. Keeps the records list scannable by status.
 function AP_StatusBadge({ status }) {
   const s = status || "pending";
-  const color = s === "approved" ? "var(--green)" : s === "rejected" ? "var(--red)" : "var(--amber)";
+  const color = s === "approved"
+    ? "var(--green)"
+    : (s === "rejected" || s === "timeout" || s === "cancelled")
+      ? "var(--red)"
+      : "var(--amber)";
   return (
     <span
       className="pill"
@@ -194,7 +221,7 @@ function AP_recordCompare(a, b, sortBy, sortDir) {
   return sortDir === "asc" ? -cmp : cmp;
 }
 
-function AP_RecordsPanel({ sessions, chats, sortBy, sortDir, loading, error, onNavigate, pushToast }) {
+function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, sortDir, loading, error, onNavigate, pushToast }) {
   // Each source row resolves its own pending record asynchronously. We
   // collect them into a shared store so the panel can sort across all
   // rows. `onRecord(key, record|null)` reports a resolved record (or
@@ -232,14 +259,28 @@ function AP_RecordsPanel({ sessions, chats, sortBy, sortDir, loading, error, onN
     );
   }
 
-  // Sources whose pending fetch resolved to a real approval record.
+  // Pending sources: each parked session/chat fetches its live pending
+  // record (404 = not parked on an approval -> skipped).
   const sources = [
     ...sessions.map((s) => ({ key: `session:${s.id}`, scope: "sessions", id: s.id })),
     ...chats.map((c) => ({ key: `chats:${c.id}`, scope: "chats", id: c.id })),
   ];
-  const resolved = sources
+  const pendingResolved = sources
     .map((src) => ({ src, record: records[src.key] }))
-    .filter((r) => r.record)
+    .filter((r) => r.record);
+
+  // Durable resolved records: normalised into the row shape and tagged with
+  // their originating session/chat for navigation. They are read-only.
+  const durableResolved = (resolvedRecords || []).map((rec) => ({
+    src: {
+      key: `record:${rec.id}`,
+      scope: rec.chat_id ? "chats" : "sessions",
+      id: rec.chat_id || rec.session_id || rec.id,
+    },
+    record: AP_normResolved(rec),
+  }));
+
+  const resolved = [...pendingResolved, ...durableResolved]
     .sort((a, b) => AP_recordCompare(a.record, b.record, sortBy, sortDir));
 
   return (
@@ -255,8 +296,9 @@ function AP_RecordsPanel({ sessions, chats, sortBy, sortDir, loading, error, onN
           <div className="ico-wrap"><Icon name="check-circle" size={22} /></div>
           <div className="head">No approval records</div>
           <div className="sub">
-            Pending records appear here when a tool call hits a gate. Resolved (approved/rejected)
-            records are not retained. Polling every 5s across all sessions + chats.
+            Pending records appear here when a tool call hits a gate; resolved
+            (approved/rejected/timeout/cancelled) decisions are retained and
+            shown alongside. Polling every 5s across all sessions + chats.
           </div>
         </div>
       ) : (

@@ -8,8 +8,9 @@ evaluator decides whether the call requires operator approval.
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import Enum
-from typing import Annotated, ClassVar, Literal, Union
+from typing import Annotated, Any, ClassVar, Literal, Union
 
 from pydantic import BaseModel, Field
 
@@ -125,11 +126,95 @@ class ToolApprovalPolicy(Identifiable):
     )
 
 
+ApprovalDecision = Literal["approved", "rejected", "timeout", "cancelled"]
+
+
+class ToolApprovalRecord(Identifiable):
+    """One durable, resolved tool-approval decision.
+
+    Written exactly once at the moment an approval gate is finalized
+    (operator approved/rejected, or a yield timeout/cancel synthesised a
+    decision) by every resume path: agent sessions, graph sessions, and
+    chats. The Approvals records view reads these back to show resolved
+    history alongside the live (still-parked) pending calls.
+
+    Fields are captured from the parked ``resume_metadata`` blob being
+    resolved: ``original_call`` carries the gated ``(id, name, arguments)``
+    and ``policy_id`` / ``approval_type`` / ``gate_reason`` come from the
+    gate that tripped.
+    """
+
+    _id_prefix: ClassVar[str] = "tool-approval-record"
+
+    toolset_id: str | None = Field(
+        default=None,
+        description="Toolset id of the gated tool, when known.",
+    )
+    tool_name: str = Field(
+        ...,
+        description="Bare name of the gated tool.",
+    )
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Arguments the gated call was invoked with.",
+    )
+    tool_call_id: str | None = Field(
+        default=None,
+        description="Id of the gated tool call this decision resolves.",
+    )
+    agent_id: str | None = Field(
+        default=None,
+        description="Agent that issued the gated call, when known.",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Session the gate parked on (None for chat-surface gates).",
+    )
+    chat_id: str | None = Field(
+        default=None,
+        description="Chat the gate parked on (None for session/graph gates).",
+    )
+    requested_at: datetime | None = Field(
+        default=None,
+        description="When the gate first parked awaiting a decision.",
+    )
+    decided_at: datetime = Field(
+        ...,
+        description="When the decision was finalized.",
+    )
+    decision: ApprovalDecision = Field(
+        ...,
+        description="Resolved verdict.",
+    )
+    reason: str | None = Field(
+        default=None,
+        description="Operator reason or the canned timeout/cancel reason.",
+    )
+    policy_id: str | None = Field(
+        default=None,
+        description="Approval policy that gated the call, when one applied.",
+    )
+    approval_type: str | None = Field(
+        default=None,
+        description="Gate strategy that tripped (required|policy|llm).",
+    )
+    gate_reason: str | None = Field(
+        default=None,
+        description="Why the gate tripped, as surfaced to the operator.",
+    )
+    principal: str | None = Field(
+        default=None,
+        description="Gating principal (caller identity), when available.",
+    )
+
+
 __all__ = [
     "ApprovalConfig",
+    "ApprovalDecision",
     "ApprovalType",
     "LlmApprovalConfig",
     "PolicyApprovalConfig",
     "RequiredApprovalConfig",
     "ToolApprovalPolicy",
+    "ToolApprovalRecord",
 ]

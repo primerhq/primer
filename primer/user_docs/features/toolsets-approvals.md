@@ -56,10 +56,10 @@ Approval configurations are additive and reversible. A configuration can be disa
 ```embed:approvals
 ```
 
-The Approvals page is a single **records** view. It lists every approval record drawn from the live sources, with controls to sort **by time** and **by status**, and a status badge on each row (pending, approved, rejected). It polls automatically every five seconds. There is no global "Policies" tab: approval gates are configured **per tool**, not in a shared list, so the page links you to the Tools page when you want to add or edit a gate.
+The Approvals page is a single **records** view. It lists every approval record, with controls to sort **by time** and **by status**, and a status badge on each row (pending, approved, rejected, timeout, cancelled). It polls automatically every five seconds. There is no global "Policies" tab: approval gates are configured **per tool**, not in a shared list, so the page links you to the Tools page when you want to add or edit a gate.
 
 ```callout:note
-Only **pending** records are persisted and queryable today. A pending record is a tool call currently parked on a gate. Resolved (approved/rejected) records are not retained after the decision is made, so the live records view shows pending records only. The view still renders and sorts by status so that resolved records slot in unchanged once they are persisted; the embed above shows all three statuses to illustrate the full view.
+The view shows two kinds of record together. A **pending** record is a tool call currently parked on a gate (drawn live from parked sessions and chats). A **resolved** record is a decision that has been finalized; every approve, reject, timeout, and cancel is now persisted durably the moment it is made, so the full history stays visible alongside the live pending calls. Sort by status to group them; only pending rows expose the Approve / Reject controls.
 ```
 
 ### Creating an approval configuration

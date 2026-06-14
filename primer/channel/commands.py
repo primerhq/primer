@@ -233,11 +233,13 @@ class CommandExecutor:
         if chat.agent_id == agent_id:
             return CommandResult(kind="notice", text="Already that agent.")
         if chat.pending_tool_call is not None:
+            from primer.model.tool_approval import ToolApprovalRecord
             await abandon_pending_rows(
                 chat, pending=chat.pending_tool_call,
                 messages=self._sp.get_storage(ChatMessage), chats=chats,
                 result_text="auto-rejected: agent switched",
-                terminal_reason="agent_switch")
+                terminal_reason="agent_switch",
+                approval_records=self._sp.get_storage(ToolApprovalRecord))
         chat.agent_id = agent_id
         await chats.update(chat)
         return CommandResult(

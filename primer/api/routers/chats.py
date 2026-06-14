@@ -151,12 +151,14 @@ async def switch_chat_agent(
         return chat  # idempotent no-op
     if chat.pending_tool_call is not None:
         from primer.chat.pending import abandon_pending_rows
+        from primer.model.tool_approval import ToolApprovalRecord
         messages_storage = sp.get_storage(ChatMessage)
         await abandon_pending_rows(
             chat, pending=chat.pending_tool_call,
             messages=messages_storage, chats=chats_storage,
             result_text="auto-rejected: agent switched",
             terminal_reason="agent_switch",
+            approval_records=sp.get_storage(ToolApprovalRecord),
         )
     chat.agent_id = body.agent_id
     await chats_storage.update(chat)

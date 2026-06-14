@@ -6,7 +6,7 @@ import logging
 from datetime import timedelta
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Body, Depends, Path, Request
+from fastapi import APIRouter, Body, Depends, Path, Query, Request
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
@@ -23,12 +23,13 @@ from primer.api.routers._crud import make_crud_router
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.workspace_session import WorkspaceSession
-from primer.model.storage import OffsetPage
+from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
 from primer.storage.q import Q
 from primer.model.tool_approval import (
     LlmApprovalConfig,
     PolicyApprovalConfig,
     ToolApprovalPolicy,
+    ToolApprovalRecord,
 )
 
 
@@ -365,6 +366,41 @@ def make_tool_approval_router() -> APIRouter:
         chat = await chat_storage.get(chat_id)
         pending = _chat_approval_pending_or_404(chat, chat_id)
         return _build_chat_pending_response(pending, chat)
+
+    # -----------------------------------------------------------------------
+    # Resolved approval records (durable history)
+    # -----------------------------------------------------------------------
+
+    @router.get(
+        "/tool_approval/records",
+        response_model=OffsetPageResponse[ToolApprovalRecord],
+        responses=common_responses(422, 500),
+    )
+    async def list_tool_approval_records(
+        request: Request,
+        status: Annotated[
+            Literal["all", "approved", "rejected", "timeout", "cancelled"],
+            Query(),
+        ] = "all",
+        offset: Annotated[int, Query(ge=0)] = 0,
+        length: Annotated[int, Query(ge=1, le=200)] = 50,
+    ) -> OffsetPageResponse[ToolApprovalRecord]:
+        """List resolved approval decisions, newest first.
+
+        ``status`` filters by decision (``all`` = no filter). Ordered by
+        ``decided_at`` descending so the most recent decisions lead, mirroring
+        the records view's default sort.
+        """
+        sp = get_storage_provider(request)
+        storage = sp.get_storage(ToolApprovalRecord)
+        page = OffsetPage(offset=offset, length=length)
+        order = [OrderBy(field="decided_at", direction="desc")]
+        if status == "all":
+            return await storage.list(page, order_by=order)
+        predicate = (
+            Q(ToolApprovalRecord).where("decision", status).build()
+        )
+        return await storage.find(predicate, page, order_by=order)
 
     return router
 

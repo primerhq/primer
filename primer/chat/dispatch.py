@@ -395,6 +395,7 @@ async def _build_runner(
             artifact_store = await deps.artifact_storage_registry.get_default()
         except Exception:
             logger.warning("chat runner: no default artifact store available")
+    from primer.model.tool_approval import ToolApprovalRecord
     return ChatTurnRunner(
         agent=agent,
         llm=llm,
@@ -404,6 +405,9 @@ async def _build_runner(
         message_storage=msgs,
         cancel_event=cancel_event,
         artifact_storage=artifact_store,
+        approval_record_storage=deps.storage_provider.get_storage(
+            ToolApprovalRecord
+        ),
     )
 
 
