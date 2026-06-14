@@ -11,8 +11,8 @@ Collections and documents form the knowledge surface under `/v1`. Semantic searc
 Toolsets and tools: how agents access knowledge collections via the knowledge toolset.
 ```
 
-```ref:features/knowledge-collections
-Knowledge collections feature guide: creating collections and uploading documents from the console.
+```ref:features/collections-and-documents
+Collections and documents: creating collections, ingesting documents, and searching from the console.
 ```
 
 ## Endpoints
