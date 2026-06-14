@@ -31,13 +31,13 @@ stateDiagram-v2
     Ended --> [*]
 ```
 
-The key insight is the gap between Parked and Resumable: during that window the run exists only in storage. No worker slot is consumed, no network connection is held. A parked session survives an arbitrary wait -- seconds or hours -- without resource cost.
+The key insight is the gap between Parked and Resumable: during that window the run exists only in storage. No worker slot is consumed, no network connection is held. A parked session survives an arbitrary wait (seconds or hours) without resource cost.
 
 ## How a session parks and resumes
 
 When a tool yields, it returns a sentinel value instead of a result. The runtime detects the sentinel and does three things atomically:
 
-1. Writes the paused state -- the in-progress message history, the tool name, and the event key the tool is waiting on -- into durable storage.
+1. Writes the paused state (the in-progress message history, the tool name, and the event key the tool is waiting on) into durable storage.
 2. Releases the worker lease, making the worker immediately available to claim other work.
 3. Marks the session as parked.
 
@@ -51,7 +51,7 @@ Each yielding tool registers an event key when it parks. Common keys look like:
 | `timer:{call_id}` | `misc__sleep` |
 | `watch:{session_id}:{call_id}` | `workspaces__watch_files` |
 
-When the awaited event fires -- the user replies, the trigger ticks, the operator approves, the file changes -- the platform publishes a message on that event key. The event listener picks it up, finds the matching parked row, and marks it resumable. From that moment the session is eligible to be claimed by any available worker.
+When the awaited event fires (the user replies, the trigger ticks, the operator approves, the file changes), the platform publishes a message on that event key. The event listener picks it up, finds the matching parked row, and marks it resumable. From that moment the session is eligible to be claimed by any available worker.
 
 When a worker claims the resumed session, it rehydrates the `ParkedState` blob (the LLM message history, the pending tool call id, and the yield resume metadata) and continues the turn from exactly where it stopped. To the LLM the park is invisible: the resumed turn sees the tool result it was waiting for and continues.
 
@@ -117,7 +117,7 @@ Hands the current chat off to a different agent. The switch parks the current tu
 
 When a tool approval policy is configured for a tool and the policy verdict requires approval, the platform raises a yield internally. The session parks with the event key `tool_approval:{scope_id}:{call_id}` and transitions to `WAITING` with a `_ToolApprovalWaiting` marker. An operator approves or rejects the call in the console; on approval the turn re-executes the tool call bypassing the gate, on rejection the tool result is an error.
 
-Tool approval gates are not themselves a named tool -- they are a yield raised by the tool dispatch layer whenever an active policy gates a call.
+Tool approval gates are not themselves a named tool; they are a yield raised by the tool dispatch layer whenever an active policy gates a call.
 
 ```ref:features/sessions
 The session lifecycle walkthrough, including how parked sessions appear in the console and the pending ask_user endpoint.
@@ -147,7 +147,7 @@ Yielding tools do not require separate configuration. To make a tool available t
 ```embed:approvals
 ```
 
-## Walkthrough -- using ask_user in a session
+## Walkthrough: using ask_user in a session
 
 1. Open **Agents** and create or edit an agent. On the tools tab, add the **misc** toolset (or enable `ask_user` as an individual tool).
 2. Open **Workspaces**, open a workspace, and start a new session bound to that agent.

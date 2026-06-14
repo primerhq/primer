@@ -7,14 +7,14 @@ summary: The seven reserved system toolsets (system, search, workspaces, misc, w
 
 ## Concept
 
-A **tool** is a single callable function -- `read_file`, `web_search`, `list_sessions`. A **toolset** is a named collection of related tools: `system`, `web`, `workspaces`, `misc`.
+A **tool** is a single callable function (`read_file`, `web_search`, `list_sessions`). A **toolset** is a named collection of related tools: `system`, `web`, `workspaces`, `misc`.
 
 The two levels serve different roles:
 
 - An agent is bound to **toolsets**. Binding a toolset grants the agent access to every tool inside it.
 - An agent can also declare individual **tool ids** to restrict its context to a subset of a toolset's tools.
 
-This split matters because context size matters. An agent bound to only the tools it needs exposes a smaller, cleaner schema to the model than one that carries the entire platform surface. Toolsets answer the question "what kind of work can this agent do?" -- browse the web, manage sessions, read workspace files. Individual tool ids answer "which exact actions within that kind?" -- only read, not write.
+This split matters because context size matters. An agent bound to only the tools it needs exposes a smaller, cleaner schema to the model than one that carries the entire platform surface. Toolsets answer the question "what kind of work can this agent do?" (browse the web, manage sessions, read workspace files). Individual tool ids answer "which exact actions within that kind?" (only read, not write).
 
 ### How binding gates what an agent can call
 
@@ -33,7 +33,7 @@ flowchart LR
     MCPTS --> T4[company_query]
 ```
 
-Binding determines what the agent can request. The approval layer -- a separate mechanism -- determines what actually executes.
+Binding determines what the agent can request. The approval layer (a separate mechanism) determines what actually executes.
 
 ### The seven reserved toolsets
 
@@ -60,16 +60,16 @@ Key yielding tools:
 | `misc__sleep` | A timer event after N seconds |
 | `misc__ask_user` | An operator reply via the pending questions queue |
 | `trigger__subscribe_to_trigger` | The named trigger firing |
-| `system__switch_to_agent` | Chat-only -- hands the conversation off to another agent |
+| `system__switch_to_agent` | Chat-only: hands the conversation off to another agent |
 
 ### Exploring the tool catalog from an agent
 
 Two meta-tools in the `system` toolset let an agent discover and call any tool at runtime without carrying the full catalog in its context:
 
-- **`system__list_toolset_tools`** -- enumerate every tool a given toolset exposes, including its arguments schema and description. Call this on an unfamiliar toolset before dispatching to it.
-- **`system__call_tool`** -- meta-dispatch: invoke any tool from any toolset by toolset id and tool name, forwarding arguments directly. The dispatched tool's output and error status are passed through unchanged.
+- **`system__list_toolset_tools`**: enumerate every tool a given toolset exposes, including its arguments schema and description. Call this on an unfamiliar toolset before dispatching to it.
+- **`system__call_tool`**: meta-dispatch: invoke any tool from any toolset by toolset id and tool name, forwarding arguments directly. The dispatched tool's output and error status are passed through unchanged.
 
-This is the **search-and-invoke pattern**: an agent searches for a tool by description via `search__search_tools`, finds the right one, then calls it through `system__call_tool` -- all without its prompt carrying every tool definition up front.
+This is the **search-and-invoke pattern**: an agent searches for a tool by description via `search__search_tools`, finds the right one, then calls it through `system__call_tool`, all without its prompt carrying every tool definition up front.
 
 ## Configuration
 
@@ -83,17 +83,17 @@ Toolset bindings are set on the agent, not on the toolset itself. The toolset ju
 1. Open **Agents** in the left nav.
 2. Click the agent you want to configure, or click **New agent**.
 3. Go to the **Tools** tab.
-4. Use the toolset selector to add one or more toolsets. The selector shows all registered toolsets -- built-in and MCP.
+4. Use the toolset selector to add one or more toolsets. The selector shows all registered toolsets (built-in and MCP).
 5. Optionally, after adding a toolset, expand it and check individual tool ids to restrict the agent to a subset. Leaving the list empty means "all tools in this toolset."
 6. Click **Save**.
 
 ### Tool id syntax
 
-When referencing a tool by its full scoped id (for example, in MCP exposure allowlists or policy configurations), the convention is `toolset_id__tool_name`, using double underscores as a separator -- for example `system__invoke_agent`, `misc__ask_user`, `search__search_agents`.
+When referencing a tool by its full scoped id (for example, in MCP exposure allowlists or policy configurations), the convention is `toolset_id__tool_name`, using double underscores as a separator; for example `system__invoke_agent`, `misc__ask_user`, `search__search_agents`.
 
 The `web` toolset uses hyphens in its bare tool names (`web-search`, `web-fetch`, `http-request`), so their scoped ids are `web__web-search`, `web__web-fetch`, `web__http-request`.
 
-## Walkthrough -- explore a toolset from the console
+## Walkthrough: explore a toolset from the console
 
 This walkthrough discovers what tools the `misc` toolset exposes, then calls one of them through a running agent.
 
@@ -103,7 +103,7 @@ This walkthrough discovers what tools the `misc` toolset exposes, then calls one
 4. The agent calls `system__list_toolset_tools` with `{"toolset_id": "misc"}` and returns the tool list including `get_datetime`, `sleep`, `ask_user`, `uuid_v4`, `hash`, and `calculate`.
 5. Ask: "Now call `get_datetime` for me." The agent calls `system__call_tool` with `{"toolset_id": "misc", "tool_name": "get_datetime", "arguments": {}}` and returns the current timestamp.
 
-The same pattern works for any registered toolset -- built-in or MCP.
+The same pattern works for any registered toolset, built-in or MCP.
 
 ## What happens after
 

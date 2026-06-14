@@ -15,13 +15,13 @@ configuration that tells primer which runtime to use and how to reach it.
 Three concepts share the workspace namespace; knowing them up front prevents
 confusion:
 
-- **Provider** -- the backend configuration: which runtime (local filesystem,
+- **Provider**: the backend configuration: which runtime (local filesystem,
   container daemon, Kubernetes cluster) and how to reach it. One provider per
   backend per installation.
-- **Template** -- the materialisation recipe that references a provider:
+- **Template**: the materialisation recipe that references a provider:
   which image or base path, environment variables, initial files, and init
   commands. Many templates can reference one provider.
-- **Workspace instance** -- the live, materialised sandbox created from a
+- **Workspace instance**: the live, materialised sandbox created from a
   template. Many instances can be created from one template; each instance
   hosts one or more sessions.
 
@@ -120,7 +120,7 @@ the container.
 The token is stored in a per-workspace Kubernetes Secret and recovered from
 it on re-attach.
 
-## Walkthrough -- register a container provider
+## Walkthrough: register a container provider
 
 1. Open **Workspaces** in the left nav.
 2. Click the **Providers** tab at the top of the page.
@@ -168,7 +168,7 @@ the image, environment variables, init commands, and initial files.
 ```
 
 ```ref:features/sessions
-Sessions run on workspace instances -- one agent or graph per session,
+Sessions run on workspace instances; one agent or graph per session,
 many sessions per workspace.
 ```
 
