@@ -7,7 +7,7 @@ summary: REST endpoints for LLM, embedding, cross-encoder, and semantic-search p
 
 Providers are the backend adapters that agents and knowledge features use. There are four provider families: LLM providers (for chat/completion), embedding providers (for vector search), cross-encoder providers (for re-ranking), and semantic-search providers (pgvector, pgvectorscale, Lance).
 
-```ref:concepts/toolsets-and-tools
+```ref:features/toolsets-system
 How providers relate to tools and toolsets.
 ```
 

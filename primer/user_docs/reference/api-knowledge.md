@@ -7,8 +7,8 @@ section: reference
 
 Collections and documents form the knowledge surface under `/v1`. Semantic search providers (SSP) back the vector store. The internal-collections subsystem enables semantic search over agents, graphs, and collections via a CDC-driven index.
 
-```ref:concepts/toolsets-and-tools
-Toolsets and tools: how agents access knowledge collections via the knowledge toolset.
+```ref:features/toolsets-system
+Toolsets and tools: how agents access knowledge collections via the search toolset.
 ```
 
 ```ref:features/knowledge-collections

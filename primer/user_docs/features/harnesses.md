@@ -55,8 +55,8 @@ Uninstall removes all entities the harness created that have not been individual
 
 ## See also
 
-```ref:concepts/toolsets-and-tools
-The concept page covers the two-level binding model used when a harness attaches toolsets to agents.
+```ref:features/toolsets-system
+The two-level binding model used when a harness attaches toolsets to agents.
 ```
 
 ## Automate this

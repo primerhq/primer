@@ -94,7 +94,7 @@ list, and per-collection document and search endpoints.
 
 ## Related concept
 
-```ref:concepts/toolsets-and-tools
+```ref:features/toolsets-system
 How to bind a collection to an agent so the agent can call
 search and retrieve against it.
 ```

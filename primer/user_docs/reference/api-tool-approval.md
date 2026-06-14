@@ -7,12 +7,8 @@ summary: REST endpoints to configure approval policies and submit operator decis
 
 Tool approval policies define gates that intercept tool calls before execution. Three strategy types are supported: `required` (always blocks for a human decision), `policy` (evaluates a Rego policy against the call context), and `llm` (delegates to an LLM judge). When a gate trips, the session parks on `_approval` and a decision must be submitted via the respond endpoint before execution continues.
 
-```ref:concepts/tool-approval
-The approval gate lifecycle and park/resume model.
-```
-
-```ref:features/tool-approval
-Configure approval policies in the console.
+```ref:features/toolsets-approvals
+The approval gate lifecycle, park/resume model, and console walkthrough.
 ```
 
 ## Endpoints
