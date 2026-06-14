@@ -415,11 +415,23 @@ async def run_one_session_turn(
             },
             created_at=_now(),
         )
-        seq = await writer.append(error_rec)
-        await writer.flush()
-        await deps.event_bus.publish(
-            f"session:{session_id}:tick", {"seq": seq}
-        )
+        # Wrap the workspace IO write so that a secondary storage failure
+        # (e.g. disk full, broken workspace mount) cannot prevent the
+        # session from transitioning to ENDED.  If the write fails the
+        # error is logged but execution falls through to the transition
+        # below, which is what guarantees the lease is always released.
+        try:
+            seq = await writer.append(error_rec)
+            await writer.flush()
+            await deps.event_bus.publish(
+                f"session:{session_id}:tick", {"seq": seq}
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "session %s failed to write error record after executor"
+                " failure; session will still be transitioned to ENDED",
+                session_id,
+            )
         await _transition_session_status(
             session_storage,
             session,
