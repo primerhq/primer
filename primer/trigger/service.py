@@ -19,6 +19,7 @@ from primer.model.storage import OffsetPage, Op
 from primer.model.trigger import (
     Subscription,
     Trigger,
+    WebhookTriggerConfig,
 )
 from primer.storage.q import Q
 from primer.trigger.cron import (
@@ -57,6 +58,10 @@ class TriggerSlugConflict(Exception):
     """A trigger with the requested slug already exists."""
 
 
+class WebhookTokenNotFound(Exception):
+    """No trigger found for the supplied webhook token."""
+
+
 # ---------------------------------------------------------------------------
 # Deps
 # ---------------------------------------------------------------------------
@@ -78,6 +83,12 @@ class ServiceDeps:
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _mint_webhook_token() -> str:
+    """Return a 32-hex-char cryptographically random token."""
+    import secrets
+    return secrets.token_hex(16)  # 16 bytes = 32 hex chars
 
 
 def _validate_config(cfg) -> None:
@@ -151,6 +162,14 @@ async def create_trigger(
     page = await storage.find(q.build(), OffsetPage(offset=0, length=1))
     if page.items:
         raise TriggerSlugConflict(f"slug {slug!r} already in use")
+    # Webhook triggers always get a server-minted token regardless of what
+    # the caller supplied. This ensures the token is cryptographically random
+    # and prevents callers from choosing predictable tokens.
+    if config.kind == "webhook":
+        config = WebhookTriggerConfig(
+            token=_mint_webhook_token(),
+            hmac_secret=config.hmac_secret,
+        )
     _validate_config(config)
 
     source = get_source(config.kind)
@@ -214,6 +233,14 @@ async def update_trigger(
         trigger.enabled = enabled
     if config is not None:
         _validate_config(config)
+        # For webhook triggers, preserve the existing token unless the
+        # caller has supplied a non-empty one (rotate path uses rotate_webhook_token
+        # explicitly; update is only used for hmac_secret set/clear).
+        if config.kind == "webhook" and not config.token:
+            config = WebhookTriggerConfig(
+                token=trigger.config.token,
+                hmac_secret=config.hmac_secret,
+            )
         trigger.config = config
 
     source = get_source(trigger.config.kind)
@@ -386,6 +413,47 @@ async def get_trigger(*, trigger_id: str, deps: ServiceDeps) -> Trigger:
     return trigger
 
 
+async def get_trigger_by_webhook_token(
+    *, token: str, deps: ServiceDeps,
+) -> Trigger:
+    """Resolve a webhook trigger by its capability token.
+
+    Raises :class:`WebhookTokenNotFound` when no trigger matches.
+    """
+    storage = deps.storage_provider.get_storage(Trigger)
+    q = Q(Trigger).where_op("config.token", Op.EQ, token)
+    page = await storage.find(q.build(), OffsetPage(offset=0, length=1))
+    if not page.items:
+        raise WebhookTokenNotFound(token)
+    return page.items[0]
+
+
+async def rotate_webhook_token(
+    *, trigger_id: str, deps: ServiceDeps,
+) -> Trigger:
+    """Rotate the capability token of a webhook trigger.
+
+    Returns the updated trigger with the new token.
+    Raises :class:`TriggerNotFound` if missing, or ``ValueError`` if the
+    trigger is not of kind='webhook'.
+    """
+    storage = deps.storage_provider.get_storage(Trigger)
+    trigger = await storage.get(trigger_id)
+    if trigger is None:
+        raise TriggerNotFound(trigger_id)
+    if trigger.config.kind != "webhook":
+        raise ValueError(
+            f"rotate_webhook_token requires kind='webhook', got {trigger.config.kind!r}"
+        )
+    new_token = _mint_webhook_token()
+    trigger.config = WebhookTriggerConfig(
+        token=new_token,
+        hmac_secret=trigger.config.hmac_secret,
+    )
+    await storage.update(trigger)
+    return trigger
+
+
 async def get_subscription(
     *, trigger_id: str, subscription_id: str, deps: ServiceDeps,
 ) -> Subscription:
@@ -431,6 +499,7 @@ __all__ = [
     "TriggerKindImmutable",
     "TriggerNotFound",
     "TriggerSlugConflict",
+    "WebhookTokenNotFound",
     "create_subscription",
     "create_trigger",
     "delete_subscription",
@@ -438,8 +507,10 @@ __all__ = [
     "fire_now",
     "get_subscription",
     "get_trigger",
+    "get_trigger_by_webhook_token",
     "list_subscriptions",
     "list_triggers",
+    "rotate_webhook_token",
     "update_subscription",
     "update_trigger",
 ]

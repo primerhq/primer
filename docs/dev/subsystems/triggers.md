@@ -2,9 +2,11 @@
 
 ## 1. Purpose
 
-The triggers subsystem turns "do something later, or on a schedule" into a first-class persisted primitive. A `Trigger` is a fire source (a one-off `delayed` instant or a recurring `scheduled` cron expression); a `Subscription` is a delivery rule bound to a trigger that says where a fire should land (append a message to a chat, spin up a fresh agent or graph session, or wake a session that is parked on the `subscribe_to_trigger` yielding tool). When a trigger fires, the orchestrator fans every enabled subscription out to its kind-specific dispatcher.
+The triggers subsystem turns "do something later, on a schedule, or on an inbound HTTP event" into a first-class persisted primitive. A `Trigger` is a fire source (a one-off `delayed` instant, a recurring `scheduled` cron expression, or an inbound `webhook` POST); a `Subscription` is a delivery rule bound to a trigger that says where a fire should land (append a message to a chat, spin up a fresh agent or graph session, or wake a session that is parked on the `subscribe_to_trigger` yielding tool). When a trigger fires, the orchestrator fans every enabled subscription out to its kind-specific dispatcher.
 
-Triggers deliberately do not own their own scheduler. Time-based firing rides the existing claim engine: a `Trigger` row with `enabled=true` and a non-null `next_fire_at` becomes an eligible `ClaimKind.TRIGGER` lease, a worker claims it when its moment arrives, fires it, and the claim adapter's `on_release` hook recomputes `next_fire_at` (cron tick for `scheduled`, null + disabled for `delayed`). The `subscribe_to_trigger` yielding tool is the bridge into the park/resume machinery: an agent yields against a trigger, the worker parks the turn on the event bus, and the trigger fire reaches back through `respond_to_yield` to wake it.
+Time-based triggers (`delayed` and `scheduled`) ride the existing claim engine: a `Trigger` row with `enabled=true` and a non-null `next_fire_at` becomes an eligible `ClaimKind.TRIGGER` lease, a worker claims it when its moment arrives, fires it, and the claim adapter's `on_release` hook recomputes `next_fire_at`. `webhook` triggers are event-driven: they fire when an authenticated HTTP POST arrives at `POST /v1/webhooks/{token}` and are never picked up by the claim engine (`eligible_for_claim=False`, `next_fire_at` is always null).
+
+The `subscribe_to_trigger` yielding tool is the bridge into the park/resume machinery: an agent yields against a trigger, the worker parks the turn on the event bus, and the trigger fire reaches back through `respond_to_yield` to wake it.
 
 The Trigger and Subscription models live in `primer/model/trigger.py`. All mutation flows through one service module, `primer/trigger/service.py`, shared by the REST router (`primer/api/routers/triggers.py`) and the internal toolset (`primer/toolset/trigger.py`) so behaviour stays in lockstep across surfaces. The park/resume mechanics themselves are owned by the yielding-tools flow and documented in the worker-system and sessions docs; this document covers the trigger model, the fire path, and the trigger-to-park integration.
 
@@ -12,7 +14,7 @@ The Trigger and Subscription models live in `primer/model/trigger.py`. All mutat
 
 A `Trigger` carries fire-time context only (timestamps, slug, kind). A `Subscription` carries the delivery rule and the payload template. Payload lives on the subscription, never on the trigger, so one trigger can fan out to many destinations with different rendered payloads.
 
-`Trigger.config` is a discriminated union over `kind`: `DelayedTriggerConfig` (`{kind: 'delayed', fire_at}`) and `ScheduledTriggerConfig` (`{kind: 'scheduled', cron, timezone, catchup}`). `Subscription.config` is a discriminated union over four kinds: `ChatMessageSubConfig`, `AgentFreshSubConfig`, `GraphFreshSubConfig`, and `ParkedSessionSubConfig`. The `parked_session` config is special: it is the one the `subscribe_to_trigger` yielding tool writes, and it points back at the parked session by `(session_id, tool_call_id, parked_at)`.
+`Trigger.config` is a discriminated union over `kind`: `DelayedTriggerConfig` (`{kind: 'delayed', fire_at}`), `ScheduledTriggerConfig` (`{kind: 'scheduled', cron, timezone, catchup}`), and `WebhookTriggerConfig` (`{kind: 'webhook', token, hmac_secret?}`). `Subscription.config` is a discriminated union over four kinds: `ChatMessageSubConfig`, `AgentFreshSubConfig`, `GraphFreshSubConfig`, and `ParkedSessionSubConfig`. The `parked_session` config is special: it is the one the `subscribe_to_trigger` yielding tool writes, and it points back at the parked session by `(session_id, tool_call_id, parked_at)`.
 
 When a trigger fires, the source builds a `fire_context` dict (`trigger_id`, `trigger_slug`, `kind`, `fired_at`, `scheduled_for`, and an injected `fire_id`). Each subscription renders its `payload_template` against that context and the dispatcher delivers the result.
 
@@ -31,7 +33,7 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 
 ## 3. Architecture patterns implemented
 
-- **Time-based firing rides the claim machine.** A trigger is a claim kind, not a bespoke scheduler. See [claim-machine.md](../architecture/claim-machine.md). `ClaimKind.TRIGGER` is registered in `primer/int/claim.py` and `primer/claim/factory.py` wires `TriggerClaimAdapter` (`primer/claim/adapters/triggers.py`). The adapter's `eligibility_sql` filters `enabled=true AND next_fire_at IS NOT NULL AND kind IN ('delayed','scheduled') AND next_fire_at <= now()`; `on_release` advances or disables the row.
+- **Time-based firing rides the claim machine.** A trigger is a claim kind, not a bespoke scheduler. See [claim-machine.md](../architecture/claim-machine.md). `ClaimKind.TRIGGER` is registered in `primer/int/claim.py` and `primer/claim/factory.py` wires `TriggerClaimAdapter` (`primer/claim/adapters/triggers.py`). The adapter's `eligibility_sql` filters `enabled=true AND next_fire_at IS NOT NULL AND kind IN ('delayed','scheduled') AND next_fire_at <= now()`; `on_release` advances or disables the row. Webhook triggers set `eligible_for_claim=False` and always have `next_fire_at=null`; they are never picked up by this path.
 - **Workers fire leases, not a timer.** The fire path runs inside the worker pool's claim loop via `WorkerPool._run_engine_trigger` (`primer/worker/pool.py`). See [worker-system.md](../architecture/worker-system.md). Scheduled catchup replay (`catchup='all'`) is handled there too.
 - **Storage-backed Identifiables with discriminated-union configs.** `Trigger` and `Subscription` are Pydantic `Identifiable`s persisted through the storage provider. See [storage.md](../architecture/storage.md). Polymorphic kinds plug new fire sources and delivery rules into the same dispatch core.
 - **One service layer behind two REST/tool surfaces.** Every mutation flows through `primer/trigger/service.py`; the REST router and toolset are thin adapters over it. See [rest-api.md](../architecture/rest-api.md).
@@ -42,13 +44,14 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 
 | Path | Responsibility |
 | --- | --- |
-| `primer/model/trigger.py` | `Trigger`, `Subscription`, the two `TriggerConfig` and four `SubscriptionConfig` variants, slug validation. |
+| `primer/model/trigger.py` | `Trigger`, `Subscription`, the three `TriggerConfig` and four `SubscriptionConfig` variants, slug validation. |
 | `primer/trigger/service.py` | The single mutation path: trigger/subscription CRUD, `fire_now`, typed exceptions, claim-lease upsert. |
 | `primer/trigger/dispatch.py` | `fire_trigger` orchestrator + `FireResult`; force-imports the four dispatchers. |
 | `primer/trigger/cron.py` | `validate_cron`, `validate_timezone`, `next_fire_at`, `iter_missed_fires` (timezone-aware croniter wrapper). |
 | `primer/trigger/payload.py` | `render_payload` (Jinja2 `SandboxedEnvironment`, `StrictUndefined`, `tojson`); `PayloadTemplateError`. |
 | `primer/trigger/fire_id.py` | `make_fire_id` (deterministic `fire-{trigger_id}-{ms}`). |
-| `primer/trigger/sources/` | `DelayedSource`, `ScheduledSource`, the `SOURCES` registry and `get_source`. Sources compute `next_fire_at` and build the `fire_context`. |
+| `primer/trigger/sources/` | `DelayedSource`, `ScheduledSource`, `WebhookSource`, the `SOURCES` registry and `get_source`. Sources compute `next_fire_at` and build the `fire_context`. |
+| `primer/api/routers/webhooks.py` | Public `POST /v1/webhooks/{token}` endpoint (no auth dep); HMAC verification; per-token rate limit; body cap; fire-and-forget dispatch. |
 | `primer/trigger/subscribers/__init__.py` | `Dispatcher` protocol, `SubscriptionDispatchResult`, `DispatchDeps`, `register` / `get_dispatcher`. |
 | `primer/trigger/subscribers/chat_message.py` | Appends a user message to a `Chat` and pulses `ClaimKind.CHAT`. |
 | `primer/trigger/subscribers/agent_fresh_session.py` | Creates a fresh agent-bound `WorkspaceSession` via the session factory. |
@@ -63,12 +66,13 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 
 ## 5. Data model
 
-`Trigger` (an `Identifiable`) fields: `slug` (unique, validated against `^[a-z][a-z0-9-]{1,63}$` and may not contain `__`), `name`, `description`, `config` (the discriminated `TriggerConfig`), `enabled`, `next_fire_at` (null when disabled or a terminal one-off), `last_fired_at`, `last_fire_error` (JSON-encoded `{code, message}`), `created_at`.
+`Trigger` (an `Identifiable`) fields: `slug` (unique, validated against `^[a-z][a-z0-9-]{1,63}$` and may not contain `__`), `name`, `description`, `config` (the discriminated `TriggerConfig`), `enabled`, `next_fire_at` (null when disabled, a terminal one-off, or a webhook trigger), `last_fired_at`, `last_fire_error` (JSON-encoded `{code, message}`), `created_at`.
 
 `TriggerConfig` variants:
 
 - `DelayedTriggerConfig`: `fire_at` (a UTC `datetime`). Fires once.
 - `ScheduledTriggerConfig`: `cron` (validated by croniter), `timezone` (IANA name, default `UTC`), `catchup` (`one` | `all` | `none`, default `one`).
+- `WebhookTriggerConfig`: `token` (server-minted 32-hex-char capability URL token; never returned after initial creation response), `hmac_secret` (`SecretStr | None`; when set, callers must include `X-Primer-Signature: sha256=<hex>` over the raw body). Webhook triggers always have `next_fire_at=null` and `eligible_for_claim=False`.
 
 `Subscription` (an `Identifiable`) fields: `trigger_id`, `config` (the discriminated `SubscriptionConfig`), `payload_template` (Jinja2, nullable), `parallelism` (`skip` | `queue`, default `skip`), `enabled`, `description`, `last_fired_at`, `last_fire_error`, `created_at`.
 
@@ -122,14 +126,18 @@ The subscription row is written before the `Yielded` sentinel is returned so a f
 
 REST router `primer/api/routers/triggers.py` under prefix `/v1/triggers`:
 
-- `POST /`, `GET /` (`?kind`, `?enabled`), `GET /{id}`, `PUT /{id}`, `DELETE /{id}`, `POST /{id}/fire_now`.
+- `POST /`, `GET /` (`?kind`, `?enabled`), `GET /{id}`, `PUT /{id}`, `DELETE /{id}`, `POST /{id}/fire_now`, `POST /{id}/rotate_token` (webhook only).
 - `POST /{id}/subscriptions`, `GET /{id}/subscriptions`, `GET /{id}/subscriptions/{sid}`, `PUT /{id}/subscriptions/{sid}`, `DELETE /{id}/subscriptions/{sid}`.
 
-Error envelope is `HTTPException(detail={code, message})` with codes `trigger_slug_conflict` (409), `trigger_kind_immutable` (409), `trigger_not_found` / `subscription_not_found` (404), `parked_session_only_from_yield` (422), `cron_invalid` (422), `timezone_invalid` (422).
+Public webhook inbound endpoint `primer/api/routers/webhooks.py` (mounted without auth dep):
+
+- `POST /v1/webhooks/{token}` -- resolves the trigger by its capability token, optionally verifies `X-Primer-Signature` HMAC-SHA256, then dispatches subscriptions fire-and-forget; returns 202 + `{delivery_id, status}`. Guardrails: 1 MB body cap, 60 req/min per-token rate limit (in-process sliding window), no internal error leakage.
+
+Error envelope is `HTTPException(detail={code, message})` with codes `trigger_slug_conflict` (409), `trigger_kind_immutable` (409), `trigger_not_found` / `subscription_not_found` (404), `parked_session_only_from_yield` (422), `cron_invalid` (422), `timezone_invalid` (422), `not_a_webhook_trigger` (422). Webhook inbound codes: `webhook_not_found` (404), `webhook_disabled` (403), `hmac_mismatch` (401), `payload_too_large` (413), `rate_limited` (429).
 
 Internal toolset `primer/toolset/trigger.py`, toolset id `trigger`, built by `build_trigger_toolset_provider` (wired in `primer/api/app.py` lifespan): `trigger__list`, `trigger__get`, `trigger__create`, `trigger__update`, `trigger__delete`, `trigger__fire_now`, `trigger__list_subscriptions`, `trigger__get_subscription`, `trigger__create_subscription`, `trigger__update_subscription`, `trigger__delete_subscription`, and the yielding tool `subscribe_to_trigger`. Management tools share `service.py` with the router so error codes map one to one. `subscribe_to_trigger` validates the trigger exists and is enabled, refuses chat-only (sessionless) callers with `trigger_not_found_or_disabled`, persists a `parked_session` Subscription, and returns `Yielded(tool_name='subscribe_to_trigger', event_key='trigger:{id}', timeout=None, resume_metadata={subscription_id, trigger_id})`.
 
-The operator UI is `ui/components/triggers.jsx` (TR_-prefixed components) with a `triggers` nav entry registered in `ui/components/chrome.jsx`: list grid, three-step create wizard, detail page with a Fire now button, and a subscription dialog. The cron preview is computed client-side.
+The operator UI is `ui/components/triggers.jsx` (TR_-prefixed components) with a `triggers` nav entry registered in `ui/components/chrome.jsx`: list grid, three-step create wizard (now includes webhook kind), detail page with a Fire now button and -- for webhook triggers -- a copyable URL, HMAC secret set/clear dialog (`TR_HmacSecretDialog`), and a rotate token action. The cron preview is computed client-side.
 
 ## 9. Internal contracts
 
@@ -143,7 +151,7 @@ Update guards: `update_trigger` rejects a change to `config.kind` with `TriggerK
 
 ## 10. Testing patterns
 
-Unit and integration tests live under `tests/trigger/`: cron helpers (`test_cron.py`), the two sources and the source registry (`test_sources_delayed.py`, `test_sources_scheduled.py`, `test_sources_registry.py`), payload rendering (`test_payload.py`), the claim adapter (`test_claim_adapter.py`), the fire orchestrator (`test_dispatch.py`), each dispatcher (`test_subscribers_chat_message.py`, `test_subscribers_fresh_session.py`, `test_subscribers_parked_session.py`), the model (`test_model.py`), and the end-to-end park-fire-resume path (`test_parked_session_e2e.py`). The REST surface is covered by `tests/api/test_triggers_router.py`; the `subscribe_to_trigger` yielding tool by `tests/toolset/test_subscribe_to_trigger.py`. UI static tests live at `tests/ui/test_triggers_list_page.py`, `test_triggers_create_dialog.py`, `test_triggers_detail_page.py`, and `test_triggers_sub_dialog.py`. The common pattern is to drive the service or dispatcher directly with a `ServiceDeps` / `DispatchDeps` built over in-memory storage and an in-memory event bus, asserting on the structured `SubscriptionDispatchResult` / `FireResult` envelopes rather than on side-effect logs.
+Unit and integration tests live under `tests/trigger/`: cron helpers (`test_cron.py`), the three sources and the source registry (`test_sources_delayed.py`, `test_sources_scheduled.py`, `test_sources_registry.py`, `test_webhook_trigger.py`), payload rendering (`test_payload.py`), the claim adapter (`test_claim_adapter.py`), the fire orchestrator (`test_dispatch.py`), each dispatcher (`test_subscribers_chat_message.py`, `test_subscribers_fresh_session.py`, `test_subscribers_parked_session.py`), the model (`test_model.py`), and the end-to-end park-fire-resume path (`test_parked_session_e2e.py`). The REST surface is covered by `tests/api/test_triggers_router.py`; the webhook endpoint by `tests/api/test_webhook_endpoint.py`; the `subscribe_to_trigger` yielding tool by `tests/toolset/test_subscribe_to_trigger.py`. E2E coverage lives in `tests/e2e/test_webhook_trigger_e2e.py`. UI static tests live at `tests/ui/test_triggers_list_page.py`, `test_triggers_create_dialog.py`, `test_triggers_detail_page.py`, and `test_triggers_sub_dialog.py`. The common pattern is to drive the service or dispatcher directly with a `ServiceDeps` / `DispatchDeps` built over in-memory storage and an in-memory event bus, asserting on the structured `SubscriptionDispatchResult` / `FireResult` envelopes rather than on side-effect logs.
 
 ## 11. Historical decisions
 
@@ -160,3 +168,8 @@ Unit and integration tests live under `tests/trigger/`: cron helpers (`test_cron
 - **subscribe_to_trigger shipped as a yielding tool not in the original milestone list.** Why: it demonstrated a fourth event-key family on the park/resume protocol beyond the spec's enumerated tools. Spec: docs/superpowers/specs/2026-05-22-yielding-tools-design.md.
 - **fire_id idempotency is documented but best-effort in v1.** Why: the deterministic fire-{trigger_id}-{ms} token threads through every dispatch, but sub-dispatchers do not yet query for an existing artefact by fire_id before writing one; full idempotency tokens are deferred. Spec: docs/superpowers/specs/2026-06-01-triggers-and-subscriptions-design.md.
 - **The 64-fire catchup cap is a hard-coded constant rather than a per-trigger field.** Why: the spec called for a configurable catchup_limit, but the cap currently lives as the iter_missed_fires default and in WorkerPool._run_engine_trigger. Spec: docs/superpowers/specs/2026-06-01-triggers-and-subscriptions-design.md.
+- **Webhook triggers use the same TriggerConfig discriminated union, not a separate resource.** Why: the subscription and dispatch machinery are identical -- only the fire source differs. Adding a third TriggerConfig variant with `eligible_for_claim=False` plugs into the existing source registry with zero changes to subscribers, fire_trigger, or the claim adapter. Added: user-4 (2026-06-14).
+- **The webhook token is always server-minted; callers cannot choose it.** Why: callers may choose weak or predictable tokens. The service replaces any caller-supplied token at create time. Rotation via `POST /{id}/rotate_token` gives operators explicit control. Added: user-4.
+- **Dispatch is fire-and-forget via BackgroundTasks; the 202 is returned before subscriptions run.** Why: subscription dispatch (especially fresh-session creation) can take hundreds of milliseconds. The caller's timeout budget should not constrain this; a delivery_id lets operators correlate the fire to later events. Added: user-4.
+- **Rate limiting is in-process (sliding window per token).** Why: a full Redis-backed limit was disproportionate for v1; multi-worker deployments accept approximate counting (each process maintains its own window). The token itself is already the primary authentication layer. Added: user-4.
+- **HMAC uses SHA-256 over the raw body (not JSON-normalised).** Why: normalising JSON before signing is implementation-dependent and adds parser-differential risk. Raw-body HMAC is the industry-standard pattern (GitHub, Stripe, Twilio). Added: user-4.
