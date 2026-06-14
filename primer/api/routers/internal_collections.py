@@ -374,6 +374,14 @@ async def _build_subsystem_for_request(
     harness_ts = getattr(request.app.state, "harness_toolset", None)
     if harness_ts is not None:
         toolsets["harness"] = harness_ts
+    trigger_ts = getattr(request.app.state, "trigger_toolset", None)
+    if trigger_ts is not None:
+        toolsets["trigger"] = trigger_ts
+    workspace_ext_ts = getattr(
+        request.app.state, "workspace_ext_toolset", None
+    )
+    if workspace_ext_ts is not None:
+        toolsets["workspace_ext"] = workspace_ext_ts
     subsystem = build_subsystem(
         config=cfg,
         storage_provider=storage_provider,
