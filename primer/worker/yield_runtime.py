@@ -185,7 +185,11 @@ class ParkedState:
                     graph_id=md.get("graph_id"),
                     gsid=md.get("sub_gsid"),
                     checkpoint=graph_checkpoint,
-                    tool_call_id=md.get("child_tcid") or tool_call_id,
+                    # tool_call_id = the AGENT's invoke_graph call id (the
+                    # park's own tool_call_id); node_tcid = the child graph's
+                    # parked-node id (the resumed_tcid).
+                    tool_call_id=tool_call_id,
+                    node_tcid=md.get("child_tcid"),
                 )
             ]
         else:

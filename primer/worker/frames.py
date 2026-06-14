@@ -224,14 +224,24 @@ class GraphFrame:
         The graph executor checkpoint (JSON-able), produced by the graph's
         snapshot so the mid-flight executor can be rehydrated on resume.
     tool_call_id
-        The tool_call_id by which this graph was invoked from its parent
-        frame (the ``system__invoke_graph`` call).
+        The AGENT's ``system__invoke_graph`` call id - the id this graph was
+        invoked under from its parent frame. Used as the result
+        :class:`~primer.model.chat.ToolResultPart`'s id (so the resumed graph
+        output pairs with the agent's tool_use) and as the frame's identity
+        for result pairing.
+    node_tcid
+        The CHILD graph's parked-node tcid - the tool_call_id of the node
+        INSIDE the child graph that raised the leaf yield. Passed as
+        ``resumed_tcid`` to :func:`resume_invoke_graph` so the child executor
+        delivers the resume to the right parked node. Distinct from
+        ``tool_call_id`` (the caller-result id).
     """
 
     graph_id: str
     gsid: str
     checkpoint: dict[str, Any]
     tool_call_id: str
+    node_tcid: str | None = None
     kind: str = field(default="graph")
 
     def to_jsonable(self) -> dict[str, Any]:
@@ -242,6 +252,7 @@ class GraphFrame:
             "gsid": self.gsid,
             "checkpoint": dict(self.checkpoint),
             "tool_call_id": self.tool_call_id,
+            "node_tcid": self.node_tcid,
         }
 
     @classmethod
@@ -251,6 +262,7 @@ class GraphFrame:
             gsid=data["gsid"],
             checkpoint=dict(data.get("checkpoint") or {}),
             tool_call_id=data["tool_call_id"],
+            node_tcid=data.get("node_tcid"),
         )
 
     async def resume_leaf(
@@ -275,13 +287,13 @@ class GraphFrame:
         graph = await services.resolve_graph(self.graph_id)
         child = await services.build_child_graph_executor(graph, self.gsid)
         agent_tool_result = await services.graph_agent_tool_result(
-            self.checkpoint, self.tool_call_id, payload
+            self.checkpoint, self.node_tcid, payload
         )
         out, repark = await resume_invoke_graph(
             child=child,
             checkpoint=self.checkpoint,
             payload=payload,
-            resumed_tcid=self.tool_call_id,
+            resumed_tcid=self.node_tcid,
             agent_tool_result=agent_tool_result,
         )
         if repark is not None:
@@ -317,7 +329,7 @@ class GraphFrame:
             child=child,
             checkpoint=self.checkpoint,
             payload=None,
-            resumed_tcid=self.tool_call_id,
+            resumed_tcid=self.node_tcid,
             agent_tool_result=agent_tool_result,
         )
         if repark is not None:

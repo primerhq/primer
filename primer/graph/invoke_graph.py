@@ -33,7 +33,14 @@ def _restamp_as_invoke_graph(
     child_yld: "Any", *, sub_gsid: str, graph_id: str,
     agent_tool_call_id: str,
 ) -> "Any":
-    """Re-wrap a child-graph park as an ``invoke_graph`` park on the AGENT
+    """RETIRED for the descent path (Task 5.1): ``run_invoke_graph`` no longer
+    re-stamps - it pushes a ``GraphFrame`` and re-raises the child's real leaf
+    so the worker routes resume through the generic continuation walk. Kept
+    importable because ``primer.worker.pool._repark_invoke_graph_outcome``
+    (the now-dead legacy ``tool_name=='invoke_graph'`` resume branch) still
+    imports it; that branch is harmless and untouched.
+
+    Re-wrap a child-graph park as an ``invoke_graph`` park on the AGENT
     session: preserve the child's event_key(s) (so the human's reply targets
     the right gate) + checkpoint, but stamp tool_name='invoke_graph' (so the
     worker routes resume to _resume_invoke_graph) and carry the child's
@@ -75,10 +82,16 @@ async def run_invoke_graph(
     """Run ``graph_id`` to completion inside the session, namespaced under
     ``<graph_session_id>__invoke_<tool_call_id>``, and return its output text.
 
-    When the child graph hits a HITL gate it raises a ``YieldToWorker``;
-    that park is re-stamped as an ``invoke_graph`` park (carrying the child's
-    identity + checkpoint) and re-raised so the worker parks the AGENT session
-    and routes the eventual resume to ``_resume_invoke_graph``.
+    When the child graph hits a HITL gate it raises a ``YieldToWorker``
+    carrying its OWN leaf (an ``_approval`` / ``ask_user`` / ... gate). The
+    descent pushes a :class:`~primer.worker.frames.GraphFrame` (carrying the
+    child's identity + checkpoint) onto that yield's ``frames`` stack and
+    re-raises the child's real leaf unchanged, so the worker parks the AGENT
+    session and routes the eventual resume through the generic continuation
+    walk (``GraphFrame.resume_leaf``) rather than the legacy
+    ``tool_name=='invoke_graph'`` switch. The frame carries two distinct ids:
+    ``tool_call_id`` (the AGENT's invoke_graph call id, the caller-result id)
+    and ``node_tcid`` (the child graph's parked-node id, the resumed_tcid).
 
     Two output channels are honoured so the returned text matches what the
     session log records for the same graph:
@@ -116,10 +129,22 @@ async def run_invoke_graph(
                 if delta:
                     delta_buf.append(delta)
     except YieldToWorker as child_yld:
-        raise _restamp_as_invoke_graph(
-            child_yld, sub_gsid=sub_gsid, graph_id=graph_id,
-            agent_tool_call_id=tool_call_id,
-        ) from child_yld
+        # Descend: push a GraphFrame onto the child yield's frame stack
+        # (root-first) and re-raise the child's REAL leaf unchanged. The
+        # worker then routes the park through the generic continuation walk.
+        from primer.worker.frames import GraphFrame
+
+        gf = GraphFrame(
+            graph_id=graph_id,
+            gsid=sub_gsid,
+            checkpoint=getattr(child_yld, "graph_checkpoint", None),
+            # The AGENT's invoke_graph call id (caller-result id).
+            tool_call_id=tool_call_id,
+            # The CHILD graph's parked-node id (resumed_tcid).
+            node_tcid=child_yld.tool_call_id,
+        )
+        child_yld.frames = [gf] + list(getattr(child_yld, "frames", []))
+        raise
 
     if end_text is not None:
         return end_text

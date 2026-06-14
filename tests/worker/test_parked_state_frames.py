@@ -32,3 +32,6 @@ def test_legacy_invoke_graph_park_shims_to_one_graph_frame():
     back = ParkedState.from_jsonable(blob)
     assert len(back.frames) == 1 and back.frames[0].kind == "graph"
     assert back.frames[0].gsid == "gs" and back.frames[0].checkpoint == {"k": 1}
+    # tool_call_id = the AGENT's invoke_graph call id; node_tcid = child node.
+    assert back.frames[0].tool_call_id == "c1"
+    assert back.frames[0].node_tcid == "n"

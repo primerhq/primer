@@ -63,6 +63,7 @@ def _graph_frame() -> GraphFrame:
         gsid="gsid-1",
         checkpoint={"pending_agent_yields": []},
         tool_call_id="graph-tc",
+        node_tcid="node-tc",
     )
 
 
@@ -175,17 +176,20 @@ async def test_graph_resume_leaf_completed(monkeypatch):
     out = await frame.resume_leaf(_Leaf(), payload={"p": 9}, services=services)
 
     assert isinstance(out, Completed)
+    # The result pairs with the AGENT's invoke_graph call id (tool_call_id).
     assert out.value == ToolResultPart(
         id="graph-tc", output='{"output": "graph out"}', error=False,
     )
-    # graph_agent_tool_result awaited with (checkpoint, tool_call_id, payload).
-    assert rec["agent_tool_result"] == (frame.checkpoint, frame.tool_call_id, {"p": 9})
-    # resume_invoke_graph got the resolved child + raw payload + the ATR.
+    # graph_agent_tool_result awaited with (checkpoint, child node tcid, payload).
+    assert rec["agent_tool_result"] == (frame.checkpoint, frame.node_tcid, {"p": 9})
+    # resume_invoke_graph got the resolved child + raw payload + the ATR, and
+    # resumed_tcid is the CHILD graph's parked-node id (node_tcid), not the
+    # agent's call id.
     rig = rec["resume_invoke_graph"]
     assert rig["child"] == "child::gsid-1"
     assert rig["checkpoint"] is frame.checkpoint
     assert rig["payload"] == {"p": 9}
-    assert rig["resumed_tcid"] == "graph-tc"
+    assert rig["resumed_tcid"] == "node-tc"
     assert rig["agent_tool_result"] == "ATR"
 
 
