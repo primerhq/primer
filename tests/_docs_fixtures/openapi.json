@@ -592,60 +592,6 @@
         "title": "BranchCondition",
         "type": "object"
       },
-      "BugReportBody": {
-        "properties": {
-          "captured_at": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Captured At"
-          },
-          "description": {
-            "maxLength": 20000,
-            "minLength": 1,
-            "title": "Description",
-            "type": "string"
-          },
-          "page_url": {
-            "default": "",
-            "maxLength": 2000,
-            "title": "Page Url",
-            "type": "string"
-          },
-          "screenshot_b64": {
-            "anyOf": [
-              {
-                "maxLength": 64000000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Screenshot B64"
-          },
-          "viewport": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ViewportBody"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "description"
-        ],
-        "title": "BugReportBody",
-        "type": "object"
-      },
       "CancelYieldedToolBody": {
         "description": "Optional reason surfaced to the agent via YieldCancelled.",
         "properties": {
@@ -6151,28 +6097,6 @@
         "title": "Value",
         "type": "object"
       },
-      "ViewportBody": {
-        "properties": {
-          "height": {
-            "maximum": 100000.0,
-            "minimum": 1.0,
-            "title": "Height",
-            "type": "integer"
-          },
-          "width": {
-            "maximum": 100000.0,
-            "minimum": 1.0,
-            "title": "Width",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "width",
-          "height"
-        ],
-        "title": "ViewportBody",
-        "type": "object"
-      },
       "WebSearchProvider": {
         "description": "Persisted provider row.\n\n``provider_type`` is a redundant outer copy of ``config.type``,\nkept because it's easier to query/filter on. The model validator\nenforces consistency between the two fields.",
         "properties": {
@@ -8629,49 +8553,6 @@
         "tags": [
           "auth",
           "tokens"
-        ]
-      }
-    },
-    "/v1/bugs": {
-      "post": {
-        "operationId": "create_bug_v1_bugs_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BugReportBody"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Create Bug V1 Bugs Post",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Bug",
-        "tags": [
-          "bugs"
         ]
       }
     },
