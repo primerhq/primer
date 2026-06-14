@@ -7,13 +7,13 @@ summary: Register semantic search providers (pgvector, pgvectorscale, or LanceDB
 
 ## Concept
 
-Every knowledge collection stores its document chunks as dense vectors and retrieves them by similarity. A **semantic search provider (SSP)** is the backend that holds those vectors and answers nearest-neighbour queries. Primer separates the SSP from the collection so you can run several backends simultaneously -- a lightweight local store for development and a Postgres-backed store for production -- and bind each collection to whichever backend fits its workload.
+Every knowledge collection stores its document chunks as dense vectors and retrieves them by similarity. A **semantic search provider (SSP)** is the backend that holds those vectors and answers nearest-neighbour queries. Primer separates the SSP from the collection so you can run several backends simultaneously (a lightweight local store for development and a Postgres-backed store for production) and bind each collection to whichever backend fits its workload.
 
 Three backends ship with Primer:
 
-- **LanceDB** (`lance`) -- an embedded, file-backed vector store with no external dependency. Primer auto-creates a reserved `lance` row at first boot so semantic search works without any manual configuration. Use it for development, local demos, or workloads where a flat-file backup (copy the directory) is sufficient.
-- **pgvector** (`pgvector`) -- vectors stored in Postgres tables alongside the rest of your data. A single Postgres instance serves both storage and semantic search; suitable for small to medium collections.
-- **pgvectorscale** (`pgvectorscale`) -- pgvector extended with the StreamingDiskANN index and Statistical Binary Quantization. Choose this backend for very large collections (10 million+ vectors) where HNSW memory cost becomes prohibitive.
+- **LanceDB** (`lance`): an embedded, file-backed vector store with no external dependency. Primer auto-creates a reserved `lance` row at first boot so semantic search works without any manual configuration. Use it for development, local demos, or workloads where a flat-file backup (copy the directory) is sufficient.
+- **pgvector** (`pgvector`): vectors stored in Postgres tables alongside the rest of your data. A single Postgres instance serves both storage and semantic search; suitable for small to medium collections.
+- **pgvectorscale** (`pgvectorscale`): pgvector extended with the StreamingDiskANN index and Statistical Binary Quantization. Choose this backend for very large collections (10 million+ vectors) where HNSW memory cost becomes prohibitive.
 
 Once you register an SSP, you bind a collection to it at create time. That binding is immutable: every embedded chunk for that collection lives in that backend. Deleting an SSP that still has collections bound to it returns 409.
 
@@ -26,7 +26,7 @@ erDiagram
     VectorStore ||--o{ EmbeddingRecord : "stores + ranks"
 ```
 
-The search pipeline works as follows: an agent or the console search modal embeds the query text using the collection's configured embedder, sends the resulting vector to the SSP's vector store, and the store returns the top-k nearest chunks by similarity. That ranked list can be further refined by a cross-encoder reranker or MMR diversification -- both are configured on the collection, not the SSP (see ref:features/collections-and-documents).
+The search pipeline works as follows: an agent or the console search modal embeds the query text using the collection's configured embedder, sends the resulting vector to the SSP's vector store, and the store returns the top-k nearest chunks by similarity. That ranked list can be further refined by a cross-encoder reranker or MMR diversification; both are configured on the collection, not the SSP (see ref:features/collections-and-documents).
 
 ## Configuration
 
@@ -34,7 +34,7 @@ The search pipeline works as follows: an agent or the console search modal embed
 
 | Field | Default | Notes |
 |---|---|---|
-| Path | required | Absolute filesystem path for the LanceDB datasets. Created with mode 0700 on first use. The directory is your backup unit -- copy it to snapshot the index. |
+| Path | required | Absolute filesystem path for the LanceDB datasets. Created with mode 0700 on first use. The directory is your backup unit; copy it to snapshot the index. |
 | HNSW M | 16 | Graph degree. Higher values improve recall and increase index size. |
 | HNSW ef construction | 64 | Candidate list size during index build. Higher = better recall, slower build. |
 | HNSW ef search | 40 | Candidate list size during queries. Higher = better recall, slower queries. |
@@ -51,7 +51,7 @@ The reserved `lance` row uses `~/.primer/vector` as its path. You can add additi
 | HNSW ef construction | 64 | See LanceDB above. |
 | HNSW ef search | 40 | See LanceDB above. |
 | Reindex cron | none | Crontab expression for periodic HNSW maintenance. Leave blank to disable. |
-| Use halfvec | off | Store vectors as pgvector `halfvec` (half-precision, up to 4000 dimensions) instead of the standard `vector` type (up to 2000 dimensions). Enable for embedding models above 2000 dimensions -- for example `text-embedding-3-large` outputs 3072-dimensional vectors. **Only affects collections created while this flag is on**; existing collections keep their original type. |
+| Use halfvec | off | Store vectors as pgvector `halfvec` (half-precision, up to 4000 dimensions) instead of the standard `vector` type (up to 2000 dimensions). Enable for embedding models above 2000 dimensions; for example `text-embedding-3-large` outputs 3072-dimensional vectors. **Only affects collections created while this flag is on**; existing collections keep their original type. |
 
 ### pgvectorscale fields
 
@@ -75,7 +75,7 @@ pgvectorscale shares all pgvector fields and adds the following DiskANN controls
 3. Choose **pgvector** from the provider type dropdown.
 4. Enter an ID (e.g. `pgvector-prod`). IDs are immutable after creation.
 5. Enter the Postgres DSN for your database.
-6. Adjust HNSW tuning if needed -- defaults work for most workloads.
+6. Adjust HNSW tuning if needed; defaults work for most workloads.
 7. Enable **Use halfvec** if you plan to use embedding models with more than 2000 dimensions.
 8. Click **Save**.
 
