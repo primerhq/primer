@@ -203,6 +203,16 @@ class SandboxWorkspace(Workspace):
         agent_id: str | None = None,
         status: SessionStatus | None = None,
     ) -> list[SessionInfo]:
+        # Rehydrate every persisted session into the in-memory registry so
+        # sessions created in another process (the API/worker split) or
+        # before a platform restart are visible. The container/k8s
+        # ``.state`` tree is a runtime-managed git repo, so we enumerate
+        # ids via ``state_history`` (see SandboxStateRepo.list_session_ids)
+        # and rebuild any handle we don't already hold. This brings the
+        # sandbox backends to parity with the local backend's cross-process
+        # session survival -- a session is no longer dropped just because a
+        # different process owns the in-memory slot.
+        await self._rehydrate_all_sessions()
         out: list[SessionInfo] = []
         for session in self._sessions.values():
             info = await session.info()
@@ -215,7 +225,82 @@ class SandboxWorkspace(Workspace):
         return out
 
     async def get_session(self, session_id: str) -> AgentSession | None:
-        return self._sessions.get(session_id)
+        cached = self._sessions.get(session_id)
+        if cached is not None:
+            return cached
+        # Cross-process rehydration -- mirrors LocalWorkspace.get_session.
+        # The session may have been created on a different process (e.g. the
+        # API process allocated the slot via start_session; a worker process
+        # now needs to build its executor and run the turn) or before a
+        # platform restart. The slot is persisted inside the sandbox under
+        # ``<state_path>/sessions/<sid>/`` (session.json + agent.json) in the
+        # runtime-managed git repo, so rebuild the in-memory handle from it.
+        # Returns None when no slot exists.
+        async with self._lock:
+            # Re-check under the lock in case a concurrent caller rehydrated.
+            cached = self._sessions.get(session_id)
+            if cached is not None:
+                return cached
+            return await self._rehydrate_locked(session_id)
+
+    async def remove_session(self, session_id: str) -> bool:
+        """Drop the in-memory handle for ``session_id``.
+
+        Mirrors :meth:`LocalWorkspace.remove_session`: the on-disk slot is
+        reaped by the API handler; this just unbinds the in-memory cache so
+        a subsequent :meth:`list_sessions` (which rehydrates) won't surface
+        a session whose persisted slot has been removed. Returns ``True``
+        when an entry was removed.
+        """
+        async with self._lock:
+            return self._sessions.pop(session_id, None) is not None
+
+    async def _rehydrate_locked(self, session_id: str) -> AgentSession | None:
+        """Rebuild one session handle from persisted state. Caller holds
+        ``self._lock``. Returns ``None`` when no slot is persisted."""
+        info = await self._state_repo.load_session_info(session_id)
+        binding = await self._state_repo.load_agent_binding(session_id)
+        if info is None or binding is None:
+            return None
+        session = AgentSession(
+            session_info=info,
+            agent_binding=binding,
+            state_repo=self._state_repo,
+            truncation_store=self._cache,
+            workspace_tools=self._tools,
+        )
+        self._sessions[session_id] = session
+        return session
+
+    async def _rehydrate_all_sessions(self) -> None:
+        """Rebuild handles for every persisted session not already cached.
+
+        Best-effort: a slot whose ``session.json``/``agent.json`` can't be
+        read (mid-write race, partial create) is skipped rather than
+        failing the whole listing."""
+        try:
+            session_ids = await self._state_repo.list_session_ids()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "SandboxWorkspace: list_session_ids failed during rehydrate",
+                extra={"workspace_id": self._workspace_id, "error": str(exc)},
+            )
+            return
+        async with self._lock:
+            for sid in session_ids:
+                if sid in self._sessions:
+                    continue
+                try:
+                    await self._rehydrate_locked(sid)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "SandboxWorkspace: skipping unrehydratable session",
+                        extra={
+                            "workspace_id": self._workspace_id,
+                            "session_id": sid,
+                            "error": str(exc),
+                        },
+                    )
 
     # ---- File browsing for users ----------------------------------------
 

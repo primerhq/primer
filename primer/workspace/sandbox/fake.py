@@ -65,6 +65,26 @@ def _find_posix_shell() -> str | None:
 _POSIX_SHELL = _find_posix_shell()
 
 
+def _parse_trailers(message: str) -> dict[str, str]:
+    """Extract ``Key: Value`` trailer lines from a git commit message.
+
+    Used by :meth:`FakeSandbox.state_history` to surface the
+    ``X-Primer-*`` trailers (workspace / session / agent / op) the state
+    repo embeds in every commit, matching the flat shape the real runtime
+    returns. Only lines of the form ``Key: Value`` are recognised.
+    """
+    trailers: dict[str, str] = {}
+    for line in message.splitlines():
+        if ":" not in line:
+            continue
+        key, _, value = line.partition(":")
+        key = key.strip()
+        value = value.strip()
+        if key and value:
+            trailers[key] = value
+    return trailers
+
+
 class FakeSandbox(Sandbox):
     """In-process Sandbox impl backed by a host tempdir.
 
@@ -329,8 +349,39 @@ class FakeSandbox(Sandbox):
         agent_id: str | None = None,
         limit: int = 50,
     ) -> list[dict]:
-        """Return in-memory commit history (newest first, up to *limit*)."""
-        return list(reversed(self._state_commits))[:limit]
+        """Return in-memory commit history (newest first, up to *limit*).
+
+        Mirrors the real runtime's *flat* commit shape: the
+        ``X-Primer-Session`` / ``X-Primer-Agent`` / ``X-Primer-Op`` trailers
+        embedded in the commit message are parsed out into top-level
+        ``session_id`` / ``agent_id`` / ``op`` fields, and the optional
+        ``session_id`` / ``agent_id`` filters are honoured. This keeps the
+        stub faithful enough for session-rehydration tests that drive
+        ``create_session`` and then expect ``list_session_ids`` to recover
+        the persisted ids.
+        """
+        out: list[dict] = []
+        for commit in reversed(self._state_commits):
+            trailers = _parse_trailers(commit.get("message", ""))
+            sid = trailers.get("X-Primer-Session")
+            aid = trailers.get("X-Primer-Agent")
+            if session_id is not None and sid != session_id:
+                continue
+            if agent_id is not None and aid != agent_id:
+                continue
+            enriched = dict(commit)
+            if sid is not None:
+                enriched["session_id"] = sid
+            if aid is not None:
+                enriched["agent_id"] = aid
+            if "X-Primer-Workspace" in trailers:
+                enriched["workspace_id"] = trailers["X-Primer-Workspace"]
+            if "X-Primer-Op" in trailers:
+                enriched["op"] = trailers["X-Primer-Op"]
+            out.append(enriched)
+            if len(out) >= limit:
+                break
+        return out
 
 
 __all__ = ["FakeSandbox"]

@@ -99,6 +99,30 @@ async def _wait_for_ready(container, *, timeout_s: float = _READY_TIMEOUT_S) -> 
         await asyncio.sleep(_READY_POLL_INTERVAL_S)
 
 
+def _token_from_inspect(info: dict) -> str | None:
+    """Recover the runtime bearer token from a ``docker inspect`` payload.
+
+    ``create_sandbox`` injects the token into the container env as
+    ``PRIMER_RUNTIME_TOKEN`` (canonical, read by the runtime server) and
+    ``RUNTIME_TOKEN`` (operator-facing alias). The inspect payload exposes
+    the env as a list of ``"KEY=VALUE"`` strings under ``Config.Env``.
+    Returns the first key that is present, or ``None`` if neither is.
+    """
+    env_list = (info.get("Config", {}) or {}).get("Env", []) or []
+    found: dict[str, str] = {}
+    for entry in env_list:
+        if not isinstance(entry, str) or "=" not in entry:
+            continue
+        key, _, value = entry.partition("=")
+        if key in ("PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"):
+            found[key] = value
+    # Prefer the canonical key the runtime reads.
+    for key in ("PRIMER_RUNTIME_TOKEN", "RUNTIME_TOKEN"):
+        if key in found:
+            return found[key]
+    return None
+
+
 async def _discover_host_port(container, container_port: int) -> int:
     """Return the host port mapped to *container_port* via docker inspect."""
     info = await container.show()
@@ -341,13 +365,26 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         )
 
     async def get_sandbox(self, name: str) -> Sandbox | None:
-        """Look up a sandbox by name.
+        """Re-attach to a running workspace container by name.
 
-        NOTE: ``get_sandbox`` cannot re-create the :class:`RuntimeClient`
-        because the original bearer token is not persisted.  It returns
-        ``None`` so that the calling backend creates a fresh sandbox when
-        the original handle is lost.  A production implementation would
-        persist the token alongside the sandbox metadata.
+        Rehydrates the live :class:`WSSandbox` for a container that this
+        process did not start (the API/worker split) or that survived a
+        platform restart. The bearer token is NOT held in process memory
+        across the split, but it *is* persisted: ``create_sandbox`` injects
+        it into the container's environment as ``PRIMER_RUNTIME_TOKEN``
+        (and the ``RUNTIME_TOKEN`` alias), so we recover it from
+        ``docker inspect`` (``Config.Env``) and reconnect the
+        :class:`RuntimeClient` against the same URL the create path built.
+
+        Returns ``None`` when:
+
+        * the container does not exist (``404``);
+        * the container is not ``running`` (a stopped/exited container has
+          no runtime listening to reconnect to);
+        * the token cannot be recovered from the container env.
+
+        This mirrors how :class:`KubernetesWorkspaceBackend` recovers the
+        token from the per-workspace Secret on re-attach.
         """
         assert self._docker is not None
         try:
@@ -361,19 +398,49 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         if state != "running":
             logger.warning(
                 "get_sandbox(%s): container is %s; cannot reconnect runtime "
-                "(token not persisted). Returning None so caller creates fresh sandbox.",
+                "to a non-running container. Returning None.",
                 name,
                 state,
             )
             return None
-        # TODO(task10): persist token in volume labels or a sidecar file so
-        # we can reconnect here.  For now, signal that re-creation is needed.
-        logger.warning(
-            "get_sandbox(%s): runtime token not persisted; returning None "
-            "to trigger re-creation.",
-            name,
-        )
-        return None
+        token = _token_from_inspect(info)
+        if token is None:
+            logger.warning(
+                "get_sandbox(%s): PRIMER_RUNTIME_TOKEN not found in container "
+                "env; cannot reconnect runtime. Returning None.",
+                name,
+            )
+            return None
+        reachability = self._reachability_for_reattach()
+        try:
+            sandbox = await _make_ws_sandbox(
+                self._docker, container, name, token,
+                reachability=reachability,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "get_sandbox(%s): runtime reconnect failed: %s", name, exc,
+            )
+            return None
+        # Stash the recovered token so the backend can populate the
+        # workspace ``runtime_meta`` on re-attach (mirrors how the K8s
+        # backend recovers it from the Secret). Parallels the
+        # ``mapped_host_port`` stash in ``_make_ws_sandbox``.
+        sandbox.recovered_token = token  # type: ignore[attr-defined]
+        return sandbox
+
+    def _reachability_for_reattach(self) -> ContainerReachabilityConfig:
+        """Resolve the reachability config the running container was
+        started with so :func:`_make_ws_sandbox` rebuilds the same URL.
+
+        The provider config carries it on ``.reachability``; legacy
+        configs (the live docker integration tests) omit it, in which case
+        we default to ``host_port`` on loopback -- the same fallback
+        :meth:`create_sandbox` uses."""
+        reachability = getattr(self._config, "reachability", None)
+        if reachability is None:
+            return ContainerReachabilityHostPort()
+        return reachability
 
     async def list_sandboxes(self) -> list[str]:
         assert self._docker is not None

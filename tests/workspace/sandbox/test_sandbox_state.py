@@ -53,3 +53,64 @@ def test_empty_workspace_id_raises() -> None:
     sandbox = _make_mock_sandbox()
     with pytest.raises(ValueError, match="workspace_id"):
         SandboxStateRepo(sandbox, state_path="/workspace/.state", workspace_id="")
+
+
+# ===========================================================================
+# list_session_ids -- the enumeration source for cross-process rehydration
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_list_session_ids_from_flat_history() -> None:
+    """The real runtime returns flat ``session_id`` fields; distinct,
+    non-empty ids are collected (newest-first order preserved)."""
+    sandbox = _make_mock_sandbox()
+    sandbox.state_history = AsyncMock(return_value=[
+        {"sha": "c3", "session_id": "sess-b", "agent_id": "ag-2", "op": "turn"},
+        {"sha": "c2", "session_id": "sess-a", "agent_id": "ag-1", "op": "turn"},
+        {"sha": "c1", "session_id": "sess-a", "agent_id": "ag-1", "op": "attach"},
+    ])
+    repo = SandboxStateRepo(
+        sandbox, state_path="/workspace/.state", workspace_id="ws-1",
+    )
+    ids = await repo.list_session_ids()
+    assert ids == ["sess-b", "sess-a"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_ids_from_nested_trailers() -> None:
+    """Falls back to the nested ``trailers`` dict shape."""
+    sandbox = _make_mock_sandbox()
+    sandbox.state_history = AsyncMock(return_value=[
+        {"sha": "c1", "trailers": {
+            "X-Primer-Session": "sess-x", "X-Primer-Agent": "ag-x",
+        }},
+    ])
+    repo = SandboxStateRepo(
+        sandbox, state_path="/workspace/.state", workspace_id="ws-1",
+    )
+    assert await repo.list_session_ids() == ["sess-x"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_ids_skips_commits_without_session() -> None:
+    """Commits with no session trailer (e.g. arbitrary graph commits) are
+    ignored rather than producing empty-string ids."""
+    sandbox = _make_mock_sandbox()
+    sandbox.state_history = AsyncMock(return_value=[
+        {"sha": "c2", "op": "graph_state"},
+        {"sha": "c1", "session_id": "sess-only", "op": "attach"},
+    ])
+    repo = SandboxStateRepo(
+        sandbox, state_path="/workspace/.state", workspace_id="ws-1",
+    )
+    assert await repo.list_session_ids() == ["sess-only"]
+
+
+@pytest.mark.asyncio
+async def test_list_session_ids_empty_history() -> None:
+    sandbox = _make_mock_sandbox()
+    repo = SandboxStateRepo(
+        sandbox, state_path="/workspace/.state", workspace_id="ws-1",
+    )
+    assert await repo.list_session_ids() == []

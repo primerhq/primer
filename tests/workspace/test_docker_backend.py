@@ -285,3 +285,75 @@ async def test_stop_and_remove_sandbox() -> None:
             await adapter.remove_volume("test-ws-vol-stop")
             await adapter.aclose()
         await docker.close()
+
+
+@pytest.mark.asyncio
+async def test_get_sandbox_reattaches_to_running_container() -> None:
+    """get_sandbox recovers the runtime token from the container env and
+    reconnects -- the cross-process / restart re-attach path. A file
+    written through the original handle is readable through the
+    re-attached one (proving they share the same volume + live runtime)."""
+    from primer.workspace.runtime.docker import DockerRuntimeAdapter
+    from primer.workspace.runtime.ws_sandbox import WSSandbox
+
+    adapter = DockerRuntimeAdapter(_make_config())
+    await adapter.initialize()
+    name = "test-ws-sandbox-reattach"
+    volume = "test-ws-vol-reattach"
+    sandbox = None
+    reattached = None
+    try:
+        sandbox = await adapter.create_sandbox(
+            name=name,
+            image="primer/workspace-runtime:1.0",
+            command=[],
+            env={},
+            workdir="/workspace",
+            volume_name=volume,
+            volume_target="/workspace",
+            extra_mounts=[],
+            user=None,
+            resources=_make_resources(),
+            network="full",
+            pull_policy="never",
+        )
+        await sandbox.write_file("/workspace/reattach.txt", b"persisted\n")
+        # Drop the original RuntimeClient to simulate the process that
+        # created the sandbox going away (the API/worker split / restart).
+        await sandbox._client.aclose()  # noqa: SLF001
+
+        reattached = await adapter.get_sandbox(name)
+        assert isinstance(reattached, WSSandbox), (
+            f"expected a reconnected WSSandbox, got {type(reattached)!r}"
+        )
+        # The token was recovered from the container env and stashed.
+        assert getattr(reattached, "recovered_token", None), (
+            "get_sandbox should stash the recovered runtime token"
+        )
+        read_back = await reattached.read_file("/workspace/reattach.txt")
+        assert read_back == b"persisted\n"
+    finally:
+        # Tear down via whichever live handle we have.
+        live = reattached or sandbox
+        if live is not None:
+            try:
+                await live._client.aclose()  # noqa: SLF001
+            except Exception:  # noqa: BLE001
+                pass
+            await live.stop()
+            await live.remove()
+        await adapter.remove_volume(volume)
+        await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_sandbox_absent_container_returns_none() -> None:
+    """get_sandbox returns None for a container that does not exist."""
+    from primer.workspace.runtime.docker import DockerRuntimeAdapter
+
+    adapter = DockerRuntimeAdapter(_make_config())
+    await adapter.initialize()
+    try:
+        assert await adapter.get_sandbox("test-ws-nonexistent-xyz") is None
+    finally:
+        await adapter.aclose()

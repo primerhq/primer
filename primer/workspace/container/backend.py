@@ -296,10 +296,12 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
             )
         # Re-attach: rebuild the runtime_meta so the wrapper still
         # exposes a non-None ``runtime_meta`` per the Workspace ABC. The
-        # token isn't recoverable here (it was injected into the
-        # container's env at create time); the persisted workspace row
-        # remains the source of truth — re-attach merely rebuilds the
-        # live handle.
+        # adapter recovered the bearer token from the container env
+        # (``docker inspect`` -> ``Config.Env``) and stashed it on the
+        # sandbox as ``recovered_token``; fold it back into the meta so the
+        # re-attached workspace carries the live token (mirrors the K8s
+        # backend recovering it from the per-workspace Secret). Falls back
+        # to an empty SecretStr when the adapter could not recover it.
         reattach_host_port: int | None = None
         if isinstance(self._config.reachability, ContainerReachabilityHostPort):
             reattach_host_port = getattr(sandbox, "mapped_host_port", None)
@@ -308,9 +310,10 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
             workspace_id=workspace_id,
             mapped_host_port=reattach_host_port,
         )
+        recovered_token = getattr(sandbox, "recovered_token", None)
         runtime_meta = WorkspaceRuntimeMeta(
             url=reattach_url,
-            token=SecretStr(""),
+            token=SecretStr(recovered_token) if recovered_token else SecretStr(""),
             mapped_host_port=reattach_host_port,
         )
         ws = await SandboxWorkspace.materialise(
