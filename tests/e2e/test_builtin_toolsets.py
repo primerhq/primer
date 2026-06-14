@@ -155,6 +155,7 @@ async def test_t0141_workspaces_toolset_lists_tools(
 
 _EXPECTED_MISC_TOOL_IDS = {
     "get_datetime", "sleep", "uuid_v4", "hash", "calculate", "ask_user",
+    "inform_user",
 }
 
 
@@ -445,9 +446,12 @@ async def test_t0247_delete_search_toolset_before_activation_clean(
         assert envelope["type"].startswith("/errors/"), envelope
         assert envelope["type"] != "/errors/internal", envelope
 
-    # Activation must still succeed after the DELETE attempt
+    # Activation must still succeed after the DELETE attempt.
+    # IC config now requires embedding_provider_id + embedding_model +
+    # search_provider_id (SSP reference added when IC was redesigned).
     embedder_id = f"emb-t0247-{unique_suffix}"
-    pr = await client.post(
+    ssp_id = f"ssp-t0247-{unique_suffix}"
+    pr_emb = await client.post(
         "/v1/embedding_providers",
         json={
             "id": embedder_id,
@@ -459,7 +463,23 @@ async def test_t0247_delete_search_toolset_before_activation_clean(
             "limits": {"max_concurrency": 1},
         },
     )
-    assert pr.status_code == 201, pr.text
+    assert pr_emb.status_code == 201, pr_emb.text
+
+    pr_ssp = await client.post(
+        "/v1/ssp",
+        json={
+            "id": ssp_id,
+            "provider": "pgvector",
+            "config": {
+                "hostname": "127.0.0.1",
+                "port": 5432,
+                "username": "primer",
+                "password": "primer",
+                "database": "primer_dogfood",
+            },
+        },
+    )
+    assert pr_ssp.status_code == 201, pr_ssp.text
 
     config_created = False
     try:
@@ -468,6 +488,7 @@ async def test_t0247_delete_search_toolset_before_activation_clean(
             json={
                 "embedding_provider_id": embedder_id,
                 "embedding_model": "sentence-transformers/all-MiniLM-L6-v2",
+                "search_provider_id": ssp_id,
             },
         )
         assert put.status_code == 200, (
@@ -478,6 +499,7 @@ async def test_t0247_delete_search_toolset_before_activation_clean(
     finally:
         if config_created:
             await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/ssp/{ssp_id}")
         await client.delete(f"/v1/embedding_providers/{embedder_id}")
 
 

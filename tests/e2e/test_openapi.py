@@ -320,12 +320,19 @@ async def test_t0339_openapi_every_crud_entity_has_six_ops(
             f"{find_path} missing POST"
         )
 
-        # Verify instance path exists with GET, PUT, DELETE
+        # Verify instance path exists with GET, PUT, DELETE.
+        # Some entities register multiple overlapping parameterised paths
+        # (e.g. toolsets registers both /{entity_id} and /{toolset_id}
+        # for different sub-sets of verbs). Use the path that exposes the
+        # most verbs so the union covers all 3 required ops.
         assert instance_paths, (
             f"OpenAPI missing instance path for {prefix!r}; "
             f"available paths: {[p for p in paths if p.startswith(prefix)]!r}"
         )
-        instance_path = instance_paths[0]
+        # Pick the instance path with the largest verb set.
+        instance_path = max(
+            instance_paths, key=lambda p: len(paths[p]),
+        )
         instance_methods = paths[instance_path]
         for verb in ("get", "put", "delete"):
             assert verb in instance_methods, (

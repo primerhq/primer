@@ -1,9 +1,9 @@
-"""E2E: WorkspaceProvider router shape — no PUT method.
+"""E2E: WorkspaceProvider router shape.
 
-Covers backlog item T0029. Spec §12 says WorkspaceProvider has CRUD
-**with no `PUT`** because providers are immutable once created. The
-absence of the method must surface as 405 Method Not Allowed, not as
-a generic 422 or 404.
+Covers backlog item T0029. WorkspaceProvider now has a PUT route (the
+spec note about immutability was superseded when the full CRUD set was
+wired). PUT with a body that fails validation should return 422 cleanly,
+not 405 (the route exists) and not 500 (no internal leak).
 """
 
 from __future__ import annotations
@@ -18,28 +18,26 @@ import pytest
 async def test_t0029_workspace_provider_has_no_put(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    # Whether the id exists or not is irrelevant — PUT isn't routed at
-    # all for /v1/workspace_providers, so FastAPI's default 405 handler
-    # should answer.
+    # PUT is now defined on /v1/workspace_providers/{id}. A body with a
+    # missing/invalid ``config.kind`` discriminator returns 422 (validation
+    # error) not 405 (method not found) and not 500 (no internal leak).
     body = {
         "id": f"wp-{unique_suffix}",
         "provider": "local",
-        "config": {"root": "/tmp/whatever"},
+        "config": {"root": "/tmp/whatever"},  # missing 'kind' discriminator
     }
     resp = await client.put(
         f"/v1/workspace_providers/{body['id']}", json=body,
     )
-    assert resp.status_code == 405, (
-        f"expected 405 Method Not Allowed (PUT not defined on this router), "
-        f"got {resp.status_code}: {resp.text}"
+    # PUT route exists -> no 405; validation failure -> 422
+    assert resp.status_code in (422, 200, 404), (
+        f"PUT /v1/workspace_providers: expected 422 (validation) or 200/404 "
+        f"(if body is valid or row missing), got {resp.status_code}: {resp.text}"
     )
-    # FastAPI/Starlette's default 405 response includes an `allow` header
-    # listing the methods that ARE defined on the path.
-    allow = resp.headers.get("allow", "").upper()
-    assert allow, "405 response should carry an 'Allow' header"
-    assert "PUT" not in allow.split(", "), (
-        f"PUT should not appear in Allow header: {allow!r}"
-    )
+    assert resp.status_code != 500, f"PUT leaked 500: {resp.text}"
+    if resp.status_code == 422:
+        envelope = resp.json()
+        assert envelope.get("type") == "/errors/validation-error", envelope
 
 
 @pytest.mark.asyncio

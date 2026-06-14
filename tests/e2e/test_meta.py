@@ -321,17 +321,26 @@ async def test_t0315_post_with_trailing_slash_consistent(
 async def test_t0367_vary_header_absent_on_list_endpoint(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0367 — Pin no Vary header on a list endpoint. CORS / Accept-
-    Encoding negotiation could fragment caches inadvertently;
-    primer doesn't promise this header so it shouldn't be set by
-    accident.
+    """T0367 — Pin that any Vary header on list endpoints contains only
+    benign, documented values. GZip compression (enabled in the current
+    deployment) causes starlette to set ``Vary: Accept-Encoding``; that is
+    the expected behaviour for content-encoding negotiation and is harmless.
+
+    The contract: if Vary is set it must reference only safe negotiation
+    headers (Accept-Encoding), NOT user-visible headers (Cookie,
+    Authorization) that would make responses uncacheable or leak private data.
     """
     resp = await client.get("/v1/llm_providers")
     assert resp.status_code == 200, resp.text
-    vary = resp.headers.get("vary")
-    assert vary is None, (
-        f"Vary header unexpectedly set on /v1/llm_providers: {vary!r}"
-    )
+    vary = resp.headers.get("vary", "")
+    if vary:
+        vary_parts = {v.strip().lower() for v in vary.split(",")}
+        disallowed = vary_parts - {"accept-encoding"}
+        assert not disallowed, (
+            f"Vary header on /v1/llm_providers contains unexpected "
+            f"directives {disallowed!r} (only accept-encoding is "
+            f"acceptable from the gzip middleware): {vary!r}"
+        )
 
 
 # ============================================================================
@@ -495,16 +504,24 @@ async def test_t0388_get_content_length_matches_body_bytes(
     client: httpx.AsyncClient,
 ) -> None:
     """T0388 — Sanity-check the framework isn't emitting a stale
-    Content-Length on a list endpoint. If Content-Length is present,
-    it must equal the actual body byte length.
+    Content-Length on a list endpoint. When GZip compression is active,
+    Content-Length reflects the compressed byte count while
+    ``resp.content`` is the decompressed body (httpx auto-decompresses).
+    The invariant: if Content-Length is present AND the response is NOT
+    compressed, it equals the actual body byte length; if the response IS
+    compressed (Content-Encoding: gzip), Content-Length reflects the wire
+    size and the assertion is skipped (both values are correct for their
+    respective layers).
     """
     resp = await client.get("/v1/llm_providers")
     assert resp.status_code == 200, resp.text
     cl = resp.headers.get("content-length")
-    if cl is not None:
+    content_encoding = resp.headers.get("content-encoding", "")
+    if cl is not None and not content_encoding:
+        # Only check byte-equality when the body is not compressed.
         assert int(cl) == len(resp.content), (
-            f"Content-Length mismatch: header={cl}, "
-            f"body bytes={len(resp.content)}"
+            f"Content-Length mismatch on uncompressed response: "
+            f"header={cl}, body bytes={len(resp.content)}"
         )
 
 

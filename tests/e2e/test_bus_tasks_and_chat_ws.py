@@ -36,6 +36,17 @@ from tests._support.runs import (
 from tests._support.yield_journeys import drive_park_on_tool, wait_for_resume
 
 
+def _ws_headers(client: httpx.AsyncClient) -> list[tuple[str, str]]:
+    """Forward the authenticated client's session cookie onto the WS
+    handshake. The chat WS closes with 4401 unless the signed
+    ``primer_session`` cookie is present; the ``client`` fixture holds it
+    in its cookie jar after login."""
+    pairs = [f"{c.name}={c.value}" for c in client.cookies.jar]
+    if not pairs:
+        return []
+    return [("Cookie", "; ".join(pairs))]
+
+
 # ---------------------------------------------------------------------------
 # WS-test seed helpers (used only by T0792/T0793)
 # ---------------------------------------------------------------------------
@@ -252,7 +263,7 @@ async def test_t0791_timeout_sweeper_publishes_timeout_marker(
 
 @pytest.mark.asyncio
 async def test_t0792_chat_ws_reconnect_with_cursor_replays_missed_messages(
-    client: httpx.AsyncClient, unique_suffix: str,
+    client: httpx.AsyncClient, mock_llm, unique_suffix: str,
 ) -> None:
     """T0792 — Drive a chat turn over WS (3 message rows persisted).
     Reconnect with ``?cursor=0``; the server must replay all 3 rows
@@ -260,13 +271,22 @@ async def test_t0792_chat_ws_reconnect_with_cursor_replays_missed_messages(
 
     Pin for the M6 cursor-replay contract in
     primer/api/routers/chats.py:_replay_since_cursor.
+
+    Uses the scripted mock-LLM harness so the chat worker gets a real
+    assistant reply (one assistant_token delta) on each turn.
     """
     import websockets
 
-    pid = f"llm-ws792-{unique_suffix}"
-    aid = f"ag-ws792-{unique_suffix}"
-    await _seed_llm_provider(client, pid)
-    await _seed_agent(client, aid, pid)
+    registry, base_url = mock_llm
+    scenario = f"scripted:ws792-{unique_suffix}"
+    agent_info = await make_scripted_agent(
+        client, registry, base_url,
+        suffix=f"ws792-{unique_suffix}",
+        scenario=scenario,
+        rules=[Rule(when_tool_result=False, emit_text="hi")],
+    )
+    aid = agent_info["agent_id"]
+    pid = agent_info["provider_id"]
     cleanup_urls = [f"/v1/agents/{aid}", f"/v1/llm_providers/{pid}"]
     cid: str | None = None
     try:
@@ -282,7 +302,7 @@ async def test_t0792_chat_ws_reconnect_with_cursor_replays_missed_messages(
         ws_url = f"{ws_origin}/v1/chats/{cid}/ws"
 
         # Connection 1: drive a turn → 3 rows seq 1..3.
-        async with websockets.connect(ws_url) as ws:
+        async with websockets.connect(ws_url, additional_headers=_ws_headers(client)) as ws:
             # Spec §6.4: initial ``usage`` frame after accept().
             initial = json.loads(await ws.recv())
             assert initial["kind"] == "usage", initial
@@ -302,7 +322,7 @@ async def test_t0792_chat_ws_reconnect_with_cursor_replays_missed_messages(
         # Connection 2: ?cursor=0 → server replays all 3 rows in order,
         # then sends the initial ``usage`` envelope.
         async with websockets.connect(
-            f"{ws_url}?cursor=0",
+            f"{ws_url}?cursor=0", additional_headers=_ws_headers(client),
         ) as ws2:
             # Receive 3 replayed messages with seq 1, 2, 3.
             replayed: list[dict] = []
@@ -375,7 +395,7 @@ async def test_t0793_chat_ws_connect_to_missing_chat_closes_with_4404(
     # request) and immediately close with 4404. websockets raises
     # ConnectionClosed on the close.
     try:
-        async with websockets.connect(ws_url) as ws:
+        async with websockets.connect(ws_url, additional_headers=_ws_headers(client)) as ws:
             # Try a single recv — should get the close.
             with pytest.raises(websockets.ConnectionClosed) as exc_info:
                 await asyncio.wait_for(ws.recv(), timeout=3.0)

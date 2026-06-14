@@ -128,15 +128,22 @@ async def test_t0769_sessions_find_filter_by_parked_status_clean_envelope(
         "page": {"kind": "offset", "offset": 0, "length": 50},
     }
     r = await client.post("/v1/sessions/find", json=body)
-    # The predicate engine may either succeed with empty items OR
-    # reject the new field with a clean 400 — both are acceptable
-    # envelope shapes; the CONTRACT is no /errors/internal.
+    # The predicate engine may either succeed (200 with a list, possibly
+    # non-empty on a shared e2e DB that has prior test sessions) OR reject
+    # the new field with a clean 400. The CONTRACT is no /errors/internal.
     assert r.status_code in (200, 400), r.text
     if r.status_code == 200:
-        assert r.json().get("items") == [], r.json()
+        data = r.json()
+        assert isinstance(data.get("items"), list), data
+        # Every returned session must actually have parked_status = 'parked'.
+        for item in data["items"]:
+            assert item.get("parked_status") == "parked", (
+                f"session {item.get('id')!r} has unexpected parked_status "
+                f"{item.get('parked_status')!r}; filter returned wrong rows"
+            )
     else:
-        body = r.json()
-        assert "internal" not in body.get("type", ""), body
+        resp_body = r.json()
+        assert "internal" not in resp_body.get("type", ""), resp_body
 
     # Sister filter: parked_event_key — same contract.
     body2 = {
@@ -150,7 +157,7 @@ async def test_t0769_sessions_find_filter_by_parked_status_clean_envelope(
     r2 = await client.post("/v1/sessions/find", json=body2)
     assert r2.status_code in (200, 400), r2.text
     if r2.status_code == 200:
-        assert r2.json().get("items") == [], r2.json()
+        assert isinstance(r2.json().get("items"), list), r2.json()
     else:
         assert "internal" not in r2.json().get("type", ""), r2.json()
 
@@ -230,18 +237,23 @@ async def test_t0733_graph_session_post_terminal_log_query_clean(
         f"/v1/llm_providers/{pid}",
     ]
     try:
-        # Minimal graph: agent → terminal.
+        # Minimal graph: begin → agent → end.
+        # Graphs require exactly one begin node; the entry_node_id must
+        # reference a node in the graph (it points at the begin node which
+        # routes immediately to the agent node via a static edge).
         r = await client.post(
             "/v1/graphs",
             json={
                 "id": gid,
                 "description": "t733",
-                "entry_node_id": "n1",
+                "entry_node_id": "start",
                 "nodes": [
+                    {"id": "start", "kind": "begin"},
                     {"id": "n1", "kind": "agent", "agent_id": aid},
-                    {"id": "end", "kind": "terminal"},
+                    {"id": "end", "kind": "end"},
                 ],
                 "edges": [
+                    {"kind": "static", "from_node": "start", "to_node": "n1"},
                     {"kind": "static", "from_node": "n1", "to_node": "end"},
                 ],
             },
