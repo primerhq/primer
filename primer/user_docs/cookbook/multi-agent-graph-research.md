@@ -30,7 +30,7 @@ and run the pipeline.
 ```
 
 ```ref:features/agents
-Fine-grained tool binding and the turn loop -- relevant for
+Fine-grained tool binding and the turn loop, relevant for
 scoping each agent to only the tools it needs.
 ```
 
