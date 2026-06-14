@@ -2,28 +2,41 @@
 slug: mcp-server
 title: MCP Server
 section: features
-summary: Expose a curated subset of primer's internal tools to external MCP clients via the built-in streamable-HTTP endpoint, and control exactly which tools are published through the allowlist.
+summary: Expose primer's own platform capabilities over a built-in MCP endpoint so external agents can use primer as a backend to build and run agentic AI systems, with an allowlist that controls exactly which tools are published.
 ---
 
 ## Concept
 
-Primer ships a built-in MCP server at `/v1/mcp`. External MCP clients - Claude Desktop, Claude Code, claude.ai, or any client that speaks the MCP streamable-HTTP transport - connect to that URL and receive the set of tools you explicitly allow. Nothing is published by default; you enable the endpoint and then select tools one by one (or use the safe-defaults preset).
+Primer ships a built-in MCP server at `/v1/mcp`. The point of that endpoint is to turn the whole platform into a toolbox that an external agent can drive. Connect Claude Code, Claude Desktop, claude.ai, or any other MCP-speaking agentic system to that URL and primer's own capabilities become tools the external agent can call: create and configure agents, wire up graphs, spin up workspace sessions and run them, manage collections, channels, and triggers, and run semantic search across the platform. In short, primer-as-an-MCP-server lets an outside agent use primer as a backend to **build and run agentic AI systems** without ever touching primer's REST API or console directly.
 
-This is useful for two patterns:
+This is primer exposing *its own* platform surface to the outside. It is the inverse of mounting external MCP servers as toolsets so primer's own agents can call them; for that direction, see the [toolsets over MCP](toolsets-mcp) feature. This page is only about the server primer hosts.
 
-1. **Using primer tools from Claude Desktop or Claude Code.** An agent in an external host can search your collections, list sessions, inspect agents, or post messages to chats - without leaving its native interface.
-2. **Connecting remote automation.** A script or service that speaks MCP can call primer's internal tools over HTTP with a bearer token, without a browser session.
+The tools that become available are primer's built-in toolsets:
+
+- **`system`** - CRUD over the core entities (agents, graphs, collections, channels, providers, approval policies, and more) plus `system__invoke_agent` and `system__invoke_graph` to run them, `system__search_collection`, and document operations.
+- **`workspaces`** - create, run, steer, and cancel workspace sessions (`workspaces__create_workspace_session`), and read or write workspace files.
+- **`search`** - semantic search across agents, graphs, collections, and tools (`search__search_agents`, `search__search_collections`).
+- **`trigger`** - manage triggers and subscriptions.
+- **`web`** - web search and HTTP requests.
+- **`misc`** and **`harness`** - utility and harness-management helpers.
+
+An external agent that holds a token for these tools can, for example, search for an existing agent, create a new one from a prompt, then invoke it and read the result, all over MCP. That is the platform's actual dogfooding pattern: primer's own dogfood instance registers its MCP endpoint with Claude Code and is driven entirely through these tools.
 
 ### The exposure model
 
-The MCP exposure configuration is a single global record with two fields: a `enabled` boolean and an `allowed_tools` list. The list holds scoped tool ids of the form `toolset_id__tool_id` (for example, `search__search_agents` or `misc__get_agent_context`). Only tools in the list appear in the client's tool palette. Changing the list takes effect immediately on the next client request.
+Nothing is published by default. Exposure is governed by a single global `McpExposure` record with two fields: an `enabled` boolean and an `allowed_tools` list. The list holds scoped tool ids of the form `toolset_id__tool_id` (for example, `system__invoke_agent` or `search__search_agents`). Only tools in the allowlist appear on the client's `tools/list`, and only while `enabled` is true. A fresh install starts with `enabled=false` and an empty allowlist, so the endpoint publishes zero tools until you opt in. Editing the allowlist takes effect on the next client request.
 
-Not every tool can be added to the allowlist. Two categories are always excluded:
+The allowlist is operator-controlled and mutated only from the console (cookie session); a bearer token cannot change it even with the `mcp` scope. Saving a new allowlist replaces the previous one atomically.
 
-- **Yielding tools** - tools that park a session on an event bus (such as `workspace_ext__subscribe_to_trigger` and `workspace_ext__watch_files`). MCP v1 has no pause/resume primitive, so a round-trip to a yielding tool is impossible over MCP.
-- **Workspace session tools that need an agent session context** - tools that read the current `session_id` from the agent runtime context. These are meaningless outside an agent loop.
+Not every tool can be added to the allowlist. Three categories are always excluded:
 
-Tools from user-defined Toolset rows are also excluded. The MCP endpoint is for primer's own built-in toolsets, not for relaying to external MCP servers that you have mounted as toolsets.
+- **Tools from user-defined Toolset rows.** The endpoint exposes only primer's reserved built-in toolsets (`system`, `workspaces`, `search`, `trigger`, `web`, `misc`, `harness`). Tools from toolsets you defined yourself, including external MCP servers you mounted, are denied with reason `not_system_toolset`. They belong to primer's own agents, not to outside MCP clients.
+- **Yielding tools** - tools that park a session on an event bus (such as `misc__ask_user`, `misc__sleep`, `trigger__subscribe_to_trigger`, and `workspaces__watch_files`). MCP v1 has no pause/resume primitive, so a round-trip is impossible. These are denied with reason `yielding_unsupported`.
+- **Workspace tools that need an active agent session** - workspace tools that read the current `session_id` from the agent runtime context. These are meaningless outside an agent loop and are denied with reason `needs_session`.
+
+There is no policy-level denylist beyond those technical floors: you enabled MCP, you chose which tools to expose, and you minted the token, so you choose the risk surface (including powerful tools like `system__call_tool` or `web__http-request`).
+
+Approval-gated tools are exposable from a catalogue standpoint, but the dispatcher refuses to invoke them when called over MCP. If a client calls an approval-gated tool, it receives an error rather than a park for a human decision. If you plan to expose tools to external clients, prefer tools that do not require approvals, or explicitly lift the approval requirement for those tools.
 
 Approval-gated tools are exposable from a catalogue standpoint, but the dispatcher refuses to invoke them when called over MCP. If a client calls an approval-gated tool, it receives an error rather than a park for a human decision. If you plan to expose tools to external clients, prefer tools that do not require approvals, or explicitly lift the approval requirement for those tools.
 
@@ -111,14 +124,30 @@ Saving a new allowlist replaces the previous one atomically. Any tool you desele
 
 ### Connecting Claude Code
 
-Run:
+Register primer's endpoint as an MCP server. This is exactly how primer's own dogfood instance is driven:
 
 ```code-tabs:bash
 --- bash
-claude mcp add --transport streamable-http <your-primer-origin>/v1/mcp
+claude mcp add --transport http primer <your-primer-origin>/v1/mcp
 ```
 
-Supply the bearer token when prompted, or add it manually to `~/.claude/claude_mcp_config.json`.
+Supply the bearer token (with the `mcp` scope) when prompted, or add it manually to your Claude Code MCP config. Use the trailing-slash form of the URL if you call the endpoint directly over JSON-RPC; a bare `/v1/mcp` may redirect.
+
+After Claude Code reconnects, the published tools appear in its palette. From there an external agent uses primer as a backend to build and run an agentic system. For example, the agent can search for an existing agent, create a new one, then invoke it and read the result:
+
+```code-tabs:json
+--- json
+{ "method": "tools/call",
+  "params": { "name": "search__search_agents", "arguments": { "query": "triage incoming support tickets" } } }
+{ "method": "tools/call",
+  "params": { "name": "system__create_agent",
+    "arguments": { "id": "ticket-triage", "model": "...", "system_prompt": "You triage support tickets..." } } }
+{ "method": "tools/call",
+  "params": { "name": "system__invoke_agent",
+    "arguments": { "agent_id": "ticket-triage", "input": "Customer reports a billing error." } } }
+```
+
+The same pattern wires graphs (`system__create_graph` then `system__invoke_graph`), spins up workspace sessions (`workspaces__create_workspace_session`), and manages channels and triggers, all without leaving the external agent's interface.
 
 
 ```ref:features/toolsets-mcp
