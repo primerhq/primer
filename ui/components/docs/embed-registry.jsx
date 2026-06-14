@@ -123,9 +123,18 @@
       props: { onOpen: function () {}, pushToast: function () {} },
     },
     "chat-agent-switch": {
-      component: "ChatsPage",
+      // ChatDetail renders the conversation view WITH the composer, which
+      // is where CT_AgentSwitcher (the agent selector chip) lives. The list
+      // page (ChatsPage) never shows the selector, so the embed mounts the
+      // detail directly. chatId must match the concrete keys in the fixture
+      // (the stub resolves "GET /chats/chat-blog-launch-001" et al.).
+      component: "ChatDetail",
       fixtures: "chat-agent-switch",
-      props: { onOpen: function () {}, pushToast: function () {} },
+      props: {
+        chatId: "chat-blog-launch-001",
+        pushToast: function () {},
+        onBack: function () {},
+      },
     },
     "internal-collections-enable": {
       component: "InternalCollectionsPage",
