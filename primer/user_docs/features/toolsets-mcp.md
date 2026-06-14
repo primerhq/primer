@@ -104,13 +104,6 @@ The agent calls the GitHub MCP server's `list_pull_requests` tool (or equivalent
 5. Optionally add a static `Authorization` header under **headers**.
 6. Click **Save**.
 
-## What happens after
-
-- Primer queries the MCP server for its tool list on the first `list_toolset_tools` call (and on each `list_tools` request). If the server is unreachable, the call returns an error; no crash or restart is needed.
-- For stdio toolsets, the subprocess is started on the first call and kept alive. If it exits unexpectedly, primer will attempt to restart it on the next call.
-- An agent bound to an MCP toolset can select a subset of tools from it by id, keeping only the relevant tool schemas in the agent's context.
-- Mutating or deleting a Toolset row invalidates the cached adapter immediately; the next call reconstructs from the updated row.
-- A `principal` argument on `system__list_toolset_tools` and `system__call_tool` is forwarded to the MCP provider. For OAuth-protected HTTP toolsets, this scopes the bearer token to a specific end-user identity.
 
 ```ref:features/toolsets-system
 The seven built-in toolsets and how to explore tools with list_toolset_tools and call_tool.

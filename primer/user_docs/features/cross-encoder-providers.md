@@ -84,14 +84,6 @@ After saving, go to a collection and enable the **Cross-encoder reranker** toggl
 The built-in `huggingface-ce` provider row is created automatically on first boot. If it already carries the model you want, you can use it directly without adding a new row.
 ```
 
-## What happens after
-
-Once a cross-encoder provider row is saved and a collection is configured to use it:
-
-- Every search against that collection retrieves the top-N candidates from the vector store and then passes them through the cross-encoder for reranking.
-- Only the top-K reranked chunks are injected into the agent's context window. The rest are discarded.
-- The agent sees a tighter, higher-quality set of chunks compared to retrieval without reranking, which matters most when the vector distance scores are close together.
-- Reranking adds latency proportional to the batch size (N pairs per query). Keep N reasonable (the collection default is typically 20 to 50) to avoid stalling the agent turn.
 
 ```ref:features/semantic-search-providers
 The vector store backend that the cross-encoder reranks results from.

@@ -125,21 +125,6 @@ Deleting a document removes its row and its chunks from the vector store. The ch
 
 Results show the document ID, chunk ID, score, text, and metadata for each hit. If a cross-encoder is configured on the collection, the score column reflects the cross-encoder logit (higher = more relevant); otherwise it reflects the raw vector similarity from the SSP.
 
-## What happens after
-
-### Dimension mismatch (422)
-
-If you add a document to a collection and the embedding model returns a different number of dimensions than the chunks already in the vector store, Primer rejects the ingest with a `422 DimensionMismatchError`. This happens when the embedding provider's model was changed between ingests. The error message includes the expected dimension and the actual dimension.
-
-To recover: delete all documents from the collection, then delete and re-create the collection with the correct embedder, and re-ingest the documents.
-
-### System collections
-
-Collections with `system: true` are managed by Primer subsystems (for example the internal-collections subsystem). They appear in the collection list but cannot be edited or deleted through the console or the collection CRUD endpoints.
-
-### Agent access
-
-Agents with the `search` toolset available can query any collection by ID using the `search_collections` tool. The query is embedded using the collection's configured embedder and the result is returned as a ranked list of chunks. MMR and cross-encoder settings configured on the collection apply automatically.
 
 ```ref:features/embedding-providers
 ```

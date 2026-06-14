@@ -97,37 +97,6 @@ re-bootstrap to rebuild from scratch. Cross-encoder and MMR settings remain
 editable at any time.
 ```
 
-## What happens after
-
-With internal collections active, any agent that has the `search` toolset can
-find agents, graphs, tools, and knowledge collections by natural language
-description. The search tools are:
-
-| Tool | What it searches |
-|---|---|
-| `search__search_agents` | Agent descriptions and names |
-| `search__search_graphs` | Graph descriptions and names |
-| `search__search_tools` | Tool descriptions across all toolsets |
-| `search__search_collections` | Knowledge collection descriptions and names |
-| `search__search_ai_docs` | Primer's own AI-facing documentation |
-
-Combine `search__search_agents` with `system__invoke_agent` to build a router
-agent that finds the right specialist and calls it; the full agent catalogue
-stays out of the router's context and is only consulted at query time.
-
-### Update config and re-bootstrap
-
-While active, click **Update config** to change cross-encoder or MMR settings.
-To force a full re-index (for example after bulk entity changes), click
-**Re-bootstrap**. The subsystem stays live during re-bootstrap; search results
-may be stale until it completes.
-
-### Deactivate
-
-Click **Deactivate** to remove the config row and drop all four reserved
-collections. The CDC worker stops; new entities will not be indexed. All four
-search routes immediately return `503`. Deactivation is required before
-switching embedding providers or models.
 
 ```ref:features/semantic-search-providers
 Create and configure the semantic search provider that backs the four reserved

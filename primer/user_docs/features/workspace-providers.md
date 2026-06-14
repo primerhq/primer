@@ -146,21 +146,6 @@ The local provider (`local`) is already registered on first boot. You do not
 need to create it, but you may create additional local providers pointing at
 different directories.
 
-## What happens after
-
-Once a provider is registered, you can create templates that reference it and
-materialise workspace instances from those templates.
-
-The provider carries no state of its own beyond its configuration row. Changing
-provider reachability settings on a live provider does not affect already-running
-workspaces; it only changes how new workspaces connect. To switch an existing
-workspace to a different reachability mode, delete it, update the provider, and
-create a fresh workspace.
-
-Providers registered via the console are also reachable through the workspace
-toolset (`workspaces__create_workspace_provider`) and the REST API at
-`/v1/workspace_providers`, so automation and meta-agents can manage the full
-provider lifecycle.
 
 ```ref:features/workspace-templates
 Author templates that materialise workspaces from a provider and configure

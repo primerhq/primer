@@ -95,15 +95,6 @@ Each group shows the entity ids. Locally-modified entities are flagged. A Sync r
 Uninstall removes the harness record and all unmodified managed entities. This cannot be undone. Entities you edited after install appear in the confirmation dialog - you decide whether to keep or delete them.
 ```
 
-## What happens after
-
-Once a harness is installed, the managed entities behave identically to entities you created by hand. Agents appear in the Agents list and can be used in chats or sessions. Graphs appear in the Graphs list and can be run as sessions. Collections and documents appear in their respective pages and are queryable. Toolsets registered by the harness are available in the toolset picker.
-
-The harness record links them all back to the source bundle. Any of them can be edited without breaking the link, though edits do orphan those entities from future Sync operations.
-
-When the harness repository receives a new commit, the outdated indicator appears. Fetch then Sync pulls the new commit and re-applies to unmodified entities, leaving locally-edited ones untouched.
-
-Agents and graphs are built from live snapshots at install time, not pinned snapshots. If the harness manifest references a model or provider that has since been removed from your primer instance, the install or sync will fail with an error shown on the detail page.
 
 ```ref:features/agents
 Agents and their configuration fields.

@@ -131,13 +131,6 @@ If you send a new message while an approval is pending, a warning banner appears
 Rejection is not a retry. The agent receives a rejection result and decides how to continue on its own. If you want the tool to run, approve it; do not send a new message first.
 ```
 
-## What happens after
-
-Once a chat is open, it stays in your Chats list indefinitely. You can return to it at any time to continue the conversation, even hours or days later. The full message log is preserved.
-
-Deleting a chat removes all persisted messages permanently. Click the trash icon on any row in the chats list and confirm the modal to delete.
-
-You can filter the chats list by free-text query (matches chat id, agent id, and title) and by agent using the dropdown. Filters combine.
 
 ```ref:features/agents
 Every field in the agent create modal, and the tool allowlist.

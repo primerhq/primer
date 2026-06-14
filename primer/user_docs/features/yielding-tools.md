@@ -162,15 +162,6 @@ Yielding tools do not require separate configuration. To make a tool available t
 ```embed:sessions-list
 ```
 
-## What happens after
-
-Once a session parks, it consumes no worker slots. The parked row survives process restarts. Other sessions run unimpeded in the worker pool.
-
-When the awaited event fires, the session becomes resumable and enters the normal claim queue. The next available worker picks it up and the agent continues from where it left off, with the tool result injected into its history. The agent sees no discontinuity; the park is transparent to the LLM.
-
-A parked session can be cancelled from the console or the API at any time. A cancel while parked transitions the session directly to Ended/cancelled without resuming the turn.
-
-If the global yield timeout elapses before the awaited event fires, the platform synthesises a timeout result (for example `{timed_out: true}` for `watch_files` and `sleep`) and resumes the session so the agent can handle the timeout gracefully.
 
 ```ref:features/workers
 Worker pool capacity, the claim engine, and how parked sessions re-enter the queue.
