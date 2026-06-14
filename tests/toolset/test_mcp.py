@@ -383,60 +383,202 @@ class TestHttpTransportSuccess:
                 pass
 
 
-class TestStdioSessionLifecycle:
-    """Unit-level coverage of the real stdio _open_session and aclose
-    paths by patching ``stdio_client`` and ``ClientSession``."""
+class _StdioLifecycle:
+    """Test double tracking per-dispatch stdio subprocess lifecycle.
 
-    async def test_stdio_session_caches_and_acloses(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    ``starts`` counts how many subprocesses were launched (one
+    ``stdio_client`` ``__aenter__`` each); ``closes`` counts how many
+    were torn down (``__aexit__``). ``live`` is starts minus closes --
+    the number of subprocesses currently running. A correct
+    per-dispatch implementation always returns ``live == 0`` after every
+    dispatch completes.
+    """
+
+    def __init__(self) -> None:
+        self.starts = 0
+        self.closes = 0
+        self.initialises = 0
+
+    @property
+    def live(self) -> int:
+        return self.starts - self.closes
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from contextlib import asynccontextmanager
         from unittest.mock import AsyncMock, MagicMock
 
-        fake_session = MagicMock()
-        fake_session.__aenter__ = AsyncMock(return_value=fake_session)
-        fake_session.__aexit__ = AsyncMock(return_value=None)
-        fake_session.initialize = AsyncMock()
-        fake_session.list_tools = AsyncMock(
-            return_value=mcp_types.ListToolsResult(tools=[])
-        )
+        outer = self
 
         @asynccontextmanager
         async def fake_stdio_client(params):
-            yield (object(), object())
+            outer.starts += 1
+            try:
+                yield (object(), object())
+            finally:
+                # Closing the stdio_client context is what terminates
+                # the subprocess + closes the pipes in the real SDK.
+                outer.closes += 1
 
-        monkeypatch.setattr(
-            "primer.toolset.mcp.stdio_client",
-            fake_stdio_client,
-        )
-        monkeypatch.setattr(
-            "primer.toolset.mcp.ClientSession",
-            lambda *args, **kwargs: fake_session,
-        )
+        def make_session(*args, **kwargs):
+            session = MagicMock()
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=None)
 
-        provider = McpToolsetProvider(
+            async def _initialize():
+                outer.initialises += 1
+
+            session.initialize = AsyncMock(side_effect=_initialize)
+            session.list_tools = AsyncMock(
+                return_value=mcp_types.ListToolsResult(tools=[])
+            )
+            session.call_tool = AsyncMock(
+                return_value=mcp_types.CallToolResult(
+                    content=[mcp_types.TextContent(type="text", text="ok")],
+                    isError=False,
+                )
+            )
+            return session
+
+        monkeypatch.setattr("primer.toolset.mcp.stdio_client", fake_stdio_client)
+        monkeypatch.setattr("primer.toolset.mcp.ClientSession", make_session)
+
+
+class TestStdioSessionLifecycle:
+    """Per-dispatch stdio lifecycle: a dispatch starts a subprocess and
+    closes it when done; concurrent/sequential dispatches each get a
+    fresh one; cleanup happens even on error."""
+
+    def _provider(self) -> McpToolsetProvider:
+        return McpToolsetProvider(
             toolset_id="ts1",
             config=McpConfig(
                 transport=TransportType.STDIO,
                 config=StdioConfig(command=["fake-mcp", "--root", "/tmp"]),
             ),
         )
-        # First call lazily starts the subprocess.
-        tools_a = [t async for t in provider.list_tools()]
-        # Second call must reuse the same session (no second initialize).
-        tools_b = [t async for t in provider.list_tools()]
-        assert tools_a == [] and tools_b == []
-        fake_session.initialize.assert_awaited_once()
-        # aclose must tear down the long-lived stack.
-        await provider.aclose()
-        # A second aclose must be a no-op.
-        await provider.aclose()
+
+    async def test_dispatch_starts_then_closes_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lc = _StdioLifecycle()
+        lc.install(monkeypatch)
+        provider = self._provider()
+
+        tools = [t async for t in provider.list_tools()]
+
+        assert tools == []
+        assert lc.starts == 1
+        # The subprocess must be terminated once the dispatch completes.
+        assert lc.closes == 1
+        assert lc.live == 0
+
+    async def test_second_dispatch_starts_fresh_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lc = _StdioLifecycle()
+        lc.install(monkeypatch)
+        provider = self._provider()
+
+        # Two separate dispatches: each must launch + tear down its own
+        # subprocess and re-run the init handshake (no caching).
+        await provider.call(tool_name="echo", arguments={})
+        await provider.call(tool_name="echo", arguments={})
+
+        assert lc.starts == 2
+        assert lc.closes == 2
+        assert lc.initialises == 2
+        assert lc.live == 0
+
+    async def test_concurrent_dispatches_do_not_share_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lc = _StdioLifecycle()
+        lc.install(monkeypatch)
+        provider = self._provider()
+
+        await asyncio.gather(
+            provider.call(tool_name="echo", arguments={}),
+            provider.call(tool_name="echo", arguments={}),
+            provider.call(tool_name="echo", arguments={}),
+        )
+
+        # Each concurrent dispatch gets its own subprocess; none shared.
+        assert lc.starts == 3
+        assert lc.closes == 3
+        assert lc.live == 0
+
+    async def test_multiple_calls_within_one_dispatch_reuse_subprocess(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lc = _StdioLifecycle()
+        lc.install(monkeypatch)
+        provider = self._provider()
+
+        # A single dispatch that issues several tool calls over one
+        # _open_session context must reuse the one subprocess and only
+        # tear it down at the end.
+        async with provider._open_session() as session:
+            await session.call_tool("echo", arguments={})
+            await session.call_tool("echo", arguments={})
+            await session.call_tool("echo", arguments={})
+            assert lc.starts == 1
+            assert lc.live == 1  # still alive mid-dispatch
+            assert lc.initialises == 1  # handshake ran once for the dispatch
+
+        # Closed at the end of the dispatch.
+        assert lc.closes == 1
+        assert lc.live == 0
+
+    async def test_subprocess_closed_when_tool_call_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lc = _StdioLifecycle()
+        lc.install(monkeypatch)
+        provider = self._provider()
+
+        from primer.model.except_ import PrimerError
+
+        # call_tool raises mid-dispatch -- the subprocess must still be
+        # torn down by the try/finally in _open_session.
+        async def _boom(*args, **kwargs):
+            raise RuntimeError("kaboom")
+
+        async with provider._open_session() as session:
+            pass  # prime the lifecycle counters
+        assert lc.live == 0  # sanity: that dispatch already closed
+
+        # Now drive a failing call through the real `call` entrypoint.
+        def make_failing_session(*args, **kwargs):
+            from unittest.mock import AsyncMock, MagicMock
+
+            session = MagicMock()
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=None)
+            session.initialize = AsyncMock()
+            session.call_tool = AsyncMock(side_effect=RuntimeError("kaboom"))
+            return session
+
+        monkeypatch.setattr(
+            "primer.toolset.mcp.ClientSession", make_failing_session
+        )
+        before_closes = lc.closes
+        before_starts = lc.starts
+        with pytest.raises(PrimerError):
+            await provider.call(tool_name="echo", arguments={})
+
+        # One new subprocess started and one closed despite the error.
+        assert lc.starts == before_starts + 1
+        assert lc.closes == before_closes + 1
+        assert lc.live == 0
 
     async def test_stdio_session_initialise_failure_propagates(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         from contextlib import asynccontextmanager
         from unittest.mock import AsyncMock, MagicMock
+
+        starts = {"n": 0}
+        closes = {"n": 0}
 
         fake_session = MagicMock()
         fake_session.__aenter__ = AsyncMock(return_value=fake_session)
@@ -445,7 +587,11 @@ class TestStdioSessionLifecycle:
 
         @asynccontextmanager
         async def fake_stdio_client(params):
-            yield (object(), object())
+            starts["n"] += 1
+            try:
+                yield (object(), object())
+            finally:
+                closes["n"] += 1
 
         monkeypatch.setattr(
             "primer.toolset.mcp.stdio_client",
@@ -466,6 +612,23 @@ class TestStdioSessionLifecycle:
         with pytest.raises(RuntimeError, match="boom"):
             async for _ in provider.list_tools():
                 pass
+        # Even when initialize fails, the half-built subprocess is closed.
+        assert starts["n"] == 1
+        assert closes["n"] == 1
+
+    async def test_aclose_is_noop(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        lc = _StdioLifecycle()
+        lc.install(monkeypatch)
+        provider = self._provider()
+
+        # aclose has no long-lived state to free and must be safe to call
+        # repeatedly, including before any dispatch.
+        await provider.aclose()
+        await provider.aclose()
+        assert lc.starts == 0
+        assert lc.live == 0
 
 
 class TestSessionRequestErrors:

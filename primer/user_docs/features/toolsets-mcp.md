@@ -17,7 +17,7 @@ This design keeps the integration surface clean: the operator registers an MCP s
 
 Primer supports two MCP transports.
 
-**stdio**: primer launches the MCP server as a subprocess and speaks MCP over its standard input and output. The subprocess is started on the first tool call and kept alive for the provider's lifetime. Useful for local or containerised MCP servers where you have binary access. The command and its arguments are specified as an argv list; environment variables can be injected as key-value pairs.
+**stdio**: primer launches the MCP server as a subprocess and speaks MCP over its standard input and output. The subprocess has a per-dispatch lifetime: it is started (and the MCP init handshake run) at the beginning of each dispatch and closed when that dispatch finishes, rather than kept alive for the provider's lifetime. A single dispatch that issues several tool calls reuses the one subprocess; across dispatches a fresh subprocess is started. This keeps behaviour correct when dispatches land on different workers, at the cost of re-running the handshake per dispatch. Useful for local or containerised MCP servers where you have binary access. The command and its arguments are specified as an argv list; environment variables can be injected as key-value pairs.
 
 **HTTP (streamable)**: primer connects to a remote MCP endpoint over the streamable-HTTP transport. A new HTTP session is opened for each tool call (the MCP SDK has no long-lived equivalent for stateless HTTP MCP). Useful for hosted or remote MCP servers. Supports static headers (for example, an `Authorization` header) and an optional OAuth 2.1 (PKCE) flow for servers that return a 401 on unauthenticated requests.
 
