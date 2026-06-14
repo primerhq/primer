@@ -109,18 +109,9 @@ The following steps add an OpenRouter provider as an example. Steps are the same
 ```embed:llm-provider-openrouter
 ```
 
-```callout:tip
-For Anthropic, Discover models returns a curated suggested-model list rather than a live catalogue, because Anthropic has no list-models API. Pick from that list or type the model slug directly (e.g. `claude-opus-4-5`), and set its `context_length`.
+```callout:note
+For Anthropic, Discover models currently returns the models you have already configured rather than a live catalogue: live discovery is not yet wired for the anthropic adapter (Anthropic does publish a list-models endpoint, so this is a gap we plan to close). For now, type the model slug directly (e.g. `claude-opus-4-5`) and set its `context_length`.
 ```
-
-## What happens after
-
-Once a provider row is saved, primer caches an adapter for it. From that point:
-
-- Agents can reference the provider by ID when selecting which LLM to use for a turn.
-- Chats can select the provider through the chat configuration or the agent assigned to the chat.
-- If you edit the provider row (change the API key, add a model, adjust limits), primer rebuilds the adapter automatically without restarting.
-- Deleting a provider row drops the cached adapter and releases its HTTP connection pool.
 
 ```ref:features/agents
 How to wire an agent to a specific provider and model.
