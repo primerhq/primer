@@ -108,6 +108,29 @@ async def _seed_session(
     return r.json()["id"]
 
 
+async def _wait_for_worker_idle(conn: asyncpg.Connection, session_id: str) -> None:
+    """Poll until the worker has finished processing the session's initial turn.
+
+    A freshly created session (auto_start=False) is still enqueued in the
+    claim engine and the live worker claims + runs it immediately (completes
+    in one turn because there are no instructions). If we inject the park
+    before the worker's on_release UPDATE lands, the UPDATE overwrites our
+    injection (it replaces the entire data JSONB). We poll until turn_no >= 1
+    which confirms on_release has already written its final row.
+    """
+    import asyncio as _asyncio
+    deadline = _asyncio.get_event_loop().time() + 5.0
+    while _asyncio.get_event_loop().time() < deadline:
+        row = await conn.fetchrow(
+            "SELECT COALESCE((data->>'turn_no')::int, 0) AS tn "
+            "FROM sessions WHERE id = $1",
+            session_id,
+        )
+        if row is None or row["tn"] >= 1:
+            return
+        await _asyncio.sleep(0.05)
+
+
 async def _inject_park(
     session_id: str,
     *,
@@ -134,25 +157,29 @@ async def _inject_park(
             "event_key": event_key,
             "timeout": 600.0,
             "resume_metadata": resume_metadata,
+            "event_keys": None,
         },
         "llm_messages": [],
         "turn_no": 0,
         "started_at": now.isoformat(),
         "resume_event_payload": None,
+        "graph_checkpoint": None,
     }
     sql = """
         UPDATE sessions
-        SET data = jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(data,
+        SET data = jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(data,
                      '{parked_status}', to_jsonb('parked'::text)),
                    '{parked_event_key}', to_jsonb($2::text)),
-                 '{parked_until}', to_jsonb($3::text)),
-               '{parked_at}', to_jsonb($4::text)),
-             '{parked_state}', $5::jsonb),
+                 '{parked_event_keys}', 'null'::jsonb),
+               '{parked_until}', to_jsonb($3::text)),
+             '{parked_at}', to_jsonb($4::text)),
+           '{parked_state}', $5::jsonb),
             updated_at = now()
         WHERE id = $1
     """
     conn = await _pg()
     try:
+        await _wait_for_worker_idle(conn, session_id)
         await conn.execute(
             sql, session_id, event_key,
             parked_until.isoformat(), now.isoformat(),
@@ -186,6 +213,51 @@ async def _read_park_fields(session_id: str) -> dict:
         }
     finally:
         await conn.close()
+
+
+async def _poll_for_resumable(
+    conn: asyncpg.Connection,
+    session_id: str,
+    *,
+    timeout: float = 5.0,
+) -> dict:
+    """Poll the DB in a tight loop for parked_status='resumable'.
+
+    The listener flips the row to 'resumable' and calls mark_resumable(),
+    which notifies the worker via pg_notify. The worker can claim and
+    clear the row within ~1-2 ms, so a 100 ms polling interval misses
+    the window. This function queries in a tight loop (no sleep) to
+    catch the transient 'resumable' state as quickly as possible.
+
+    ``conn`` must be an open asyncpg connection kept alive across the
+    call; using a fresh connection per poll would add TCP/TLS overhead
+    that is far greater than the ~1-2 ms window we are racing against.
+
+    Returns a dict with 'parked_status' and 'resume_event_payload' from
+    the first snapshot that has parked_status='resumable', OR the last
+    snapshot if the timeout elapses.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    last: dict = {}
+    while asyncio.get_event_loop().time() < deadline:
+        row = await conn.fetchrow(
+            "SELECT data->>'parked_status' AS parked_status, "
+            "data->'parked_state'->'resume_event_payload' AS payload "
+            "FROM sessions WHERE id = $1",
+            session_id,
+        )
+        if row is None:
+            break
+        payload = row["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        last = {
+            "parked_status": row["parked_status"],
+            "resume_event_payload": payload,
+        }
+        if last["parked_status"] == "resumable":
+            return last
+    return last
 
 
 async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
@@ -333,6 +405,9 @@ async def test_t0783_ask_user_respond_flips_to_resumable_and_stamps_payload(
     """
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-202-{unique_suffix}"
+    # Open the poll connection before the inject so it is warm and ready
+    # for the tight-poll loop that follows the respond call.
+    conn = await _pg()
     try:
         await _inject_park(
             sid, tool_name="ask_user",
@@ -349,13 +424,14 @@ async def test_t0783_ask_user_respond_flips_to_resumable_and_stamps_payload(
         # Body confirms acceptance.
         assert r.json().get("status") == "accepted"
 
-        # Listener processes the bus event asynchronously. Poll for
-        # parked_status='resumable' for up to 5s.
-        for _ in range(50):
-            await asyncio.sleep(0.1)
-            fields = await _read_park_fields(sid)
-            if fields.get("parked_status") == "resumable":
-                break
+        # The listener flips parked_status to 'resumable' and stamps
+        # resume_event_payload, then mark_resumable() wakes the live
+        # worker which re-claims and clears the park fields within ~1-2 ms.
+        # A sleep-based poll (100 ms intervals) reliably misses that window.
+        # _poll_for_resumable() queries in a tight loop (no sleep) over a
+        # pre-warmed connection so the round-trip is ~1 ms per iteration,
+        # matching the observed ~1-2 ms window.
+        fields = await _poll_for_resumable(conn, sid, timeout=5.0)
         assert fields.get("parked_status") == "resumable", (
             f"row never flipped to resumable: {fields}"
         )
@@ -365,6 +441,7 @@ async def test_t0783_ask_user_respond_flips_to_resumable_and_stamps_payload(
             f"unexpected payload stamped: {payload!r}"
         )
     finally:
+        await conn.close()
         await _cleanup(client, cleanup_urls)
 
 
@@ -389,6 +466,8 @@ async def test_t0784_cancel_yielded_tool_publishes_cancelled_marker(
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-cancel-{unique_suffix}"
     reason = "operator changed their mind"
+    # Open the poll connection before inject so it is warm and ready.
+    conn = await _pg()
     try:
         await _inject_park(
             sid, tool_name="ask_user",
@@ -403,12 +482,10 @@ async def test_t0784_cancel_yielded_tool_publishes_cancelled_marker(
         )
         assert r.status_code == 202, r.text
 
-        # Poll for resumable flip + cancel marker stamped.
-        for _ in range(50):
-            await asyncio.sleep(0.1)
-            fields = await _read_park_fields(sid)
-            if fields.get("parked_status") == "resumable":
-                break
+        # Same tight-poll strategy as T0783: the 'resumable' state is
+        # cleared by the live worker within ~1-2 ms of mark_resumable().
+        # We use a pre-warmed connection to keep round-trip latency ~1 ms.
+        fields = await _poll_for_resumable(conn, sid, timeout=5.0)
         assert fields.get("parked_status") == "resumable", (
             f"row never flipped to resumable: {fields}"
         )
@@ -419,4 +496,5 @@ async def test_t0784_cancel_yielded_tool_publishes_cancelled_marker(
         assert payload.get("reason") == reason, payload
         assert "cancelled_at" in payload, payload
     finally:
+        await conn.close()
         await _cleanup(client, cleanup_urls)

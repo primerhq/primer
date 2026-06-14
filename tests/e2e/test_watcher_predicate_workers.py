@@ -117,6 +117,30 @@ async def _seed_session(
     return r.json()["id"]
 
 
+async def _wait_for_worker_idle(conn: asyncpg.Connection, session_id: str) -> None:
+    """Poll until the worker has finished processing the session's initial turn.
+
+    A freshly created session (auto_start=False) is still enqueued in the
+    claim engine and the live worker claims + runs it immediately (completes
+    in one turn because there are no instructions). If we inject the park
+    before the worker's on_release UPDATE lands, the UPDATE overwrites our
+    injection (it replaces the entire data JSONB, clearing any fields we set).
+    We poll until turn_no >= 1, which confirms on_release has already written
+    its final row and no further writes are pending.
+    """
+    import asyncio as _asyncio
+    deadline = _asyncio.get_event_loop().time() + 5.0
+    while _asyncio.get_event_loop().time() < deadline:
+        row = await conn.fetchrow(
+            "SELECT COALESCE((data->>'turn_no')::int, 0) AS tn "
+            "FROM sessions WHERE id = $1",
+            session_id,
+        )
+        if row is None or row["tn"] >= 1:
+            return
+        await _asyncio.sleep(0.05)
+
+
 async def _inject_park(
     session_id: str,
     *,
@@ -128,6 +152,13 @@ async def _inject_park(
 ) -> None:
     """Inject park state. Accepts an explicit parked_status so callers
     can set up 'resumable' rows directly for race tests.
+
+    Always waits for the worker's initial-turn on_release to complete
+    before writing. The on_release UPDATE replaces the entire data JSONB,
+    so any injection written before it lands is silently wiped. This
+    applies to both 'parked' and 'resumable' injections. The parked_state
+    blob matches ParkedState.to_jsonable() exactly, including the top-level
+    tool_call_id and the event_keys/graph_checkpoint fields.
     """
     now = datetime.now(timezone.utc)
     parked_until = now + timedelta(seconds=600)
@@ -141,25 +172,35 @@ async def _inject_park(
             "event_key": event_key,
             "timeout": 600.0,
             "resume_metadata": rm,
+            "event_keys": None,
         },
         "llm_messages": [],
         "turn_no": 0,
         "started_at": now.isoformat(),
         "resume_event_payload": None,
+        "graph_checkpoint": None,
     }
     sql = """
         UPDATE sessions
-        SET data = jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(data,
+        SET data = jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(jsonb_set(data,
                      '{parked_status}', to_jsonb($6::text)),
                    '{parked_event_key}', to_jsonb($2::text)),
-                 '{parked_until}', to_jsonb($3::text)),
-               '{parked_at}', to_jsonb($4::text)),
-             '{parked_state}', $5::jsonb),
+                 '{parked_event_keys}', 'null'::jsonb),
+               '{parked_until}', to_jsonb($3::text)),
+             '{parked_at}', to_jsonb($4::text)),
+           '{parked_state}', $5::jsonb),
             updated_at = now()
         WHERE id = $1
     """
     conn = await _pg()
     try:
+        # Always wait for the worker to finish the initial turn before
+        # injecting. The on_release UPDATE replaces the full data JSONB,
+        # so any injection written before on_release is overwritten.
+        # This applies to 'resumable' injections too (T0801 creates a
+        # fresh session with auto_start=False and injects 'resumable'
+        # directly — the worker must have settled first).
+        await _wait_for_worker_idle(conn, session_id)
         await conn.execute(
             sql, session_id, event_key,
             parked_until.isoformat(), now.isoformat(),
@@ -189,6 +230,48 @@ async def _read_park(session_id: str) -> dict:
         }
     finally:
         await conn.close()
+
+
+async def _poll_for_resumable(
+    conn: asyncpg.Connection,
+    session_id: str,
+    *,
+    timeout: float = 5.0,
+) -> dict:
+    """Poll the DB in a tight loop for parked_status='resumable'.
+
+    The listener flips the row to 'resumable' then mark_resumable() wakes
+    the live worker which re-claims and clears the park fields within ~1-20 ms.
+    Coarse polling (100-200 ms intervals) reliably misses that window.
+
+    This function queries in a tight loop (no sleep) over a pre-warmed
+    connection so each round-trip is ~1 ms, small enough to catch the
+    transient 'resumable' snapshot before the worker clears it.
+
+    Returns the first snapshot with parked_status='resumable', or the
+    last snapshot seen before the timeout.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    last: dict = {}
+    while asyncio.get_event_loop().time() < deadline:
+        row = await conn.fetchrow(
+            "SELECT data->>'parked_status' AS parked_status, "
+            "data->'parked_state'->'resume_event_payload' AS payload "
+            "FROM sessions WHERE id = $1",
+            session_id,
+        )
+        if row is None:
+            break
+        payload = row["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        last = {
+            "parked_status": row["parked_status"],
+            "resume_event_payload": payload,
+        }
+        if last["parked_status"] == "resumable":
+            return last
+    return last
 
 
 async def _cleanup(client: httpx.AsyncClient, urls: list[str]) -> None:
@@ -271,20 +354,25 @@ async def test_t0800_watcher_fires_on_file_change_and_flips_row(
         # Allow the WatcherManager (2s scan cadence) one tick to
         # notice the new park and start a LocalWorkspaceWatcher for
         # it. Then mutate the file to trigger a change.
-        await asyncio.sleep(3.0)
-        await _put_file("changed content")
+        # Open the poll connection before the touch so it is warm and
+        # ready for the tight-poll loop that follows.
+        conn = await _pg()
+        try:
+            await asyncio.sleep(3.0)
+            await _put_file("changed content")
 
-        # Poll for resumable. The watcher polls mtimes every 500ms,
-        # then waits batch_window_ms (100ms here) for more changes,
-        # then publishes. Listener flips. Budget 15s to absorb cold
-        # paths.
-        deadline = asyncio.get_event_loop().time() + 15.0
-        fields = {}
-        while asyncio.get_event_loop().time() < deadline:
-            await asyncio.sleep(0.2)
-            fields = await _read_park(sid)
-            if fields.get("parked_status") == "resumable":
-                break
+            # Poll for resumable. The watcher polls mtimes every 500ms,
+            # then waits batch_window_ms (100ms here) for more changes,
+            # then publishes. Listener flips. Budget 15s to absorb cold
+            # paths.
+            # After the listener flips the row to 'resumable', the live
+            # worker receives pg_notify and clears the park within ~5-20 ms.
+            # Coarse 200 ms polling reliably misses the window. Use a
+            # tight loop (no sleep) over the pre-warmed connection.
+            fields = await _poll_for_resumable(conn, sid, timeout=15.0)
+        finally:
+            await conn.close()
+
         assert fields.get("parked_status") == "resumable", (
             f"watch park never flipped after file change; final={fields}"
         )
@@ -333,9 +421,13 @@ async def test_t0801_cancel_yielded_tool_on_resumable_session_returns_202(
         f"/v1/llm_providers/{pid}",
     ]
     tcid = f"tc-r801-{unique_suffix}"
+    # Open the poll connection before inject so it is warm and ready.
+    conn = await _pg()
     try:
         # Inject as resumable directly (skip the parked → resumable
-        # flip).
+        # flip). Raw SQL does NOT call mark_resumable, so the worker
+        # is not notified yet — the session sits in 'resumable' state
+        # without a lease entry until something calls mark_resumable.
         await _inject_park(
             sid,
             tool_name="ask_user",
@@ -347,16 +439,26 @@ async def test_t0801_cancel_yielded_tool_on_resumable_session_returns_202(
             parked_status="resumable",
         )
 
-        # Cancel returns 202; idempotent.
+        # Cancel returns 202. The handler publishes to the bus and
+        # returns before the listener has processed the event. The
+        # listener will eventually call mark_resumable, which creates
+        # a lease + pg_notify, waking the worker. The worker then
+        # claims and clears the park within ~5-20 ms after notify.
+        # We poll in a tight loop immediately after the 202 to catch
+        # the 'resumable' state before the worker clears it.
         r = await client.post(
             f"/v1/sessions/{sid}/yields/{tcid}/cancel",
             json={"reason": "post-resumable cancel"},
         )
         assert r.status_code == 202, r.text
-        # Row stays resumable (no double-flip).
-        fields = await _read_park(sid)
-        assert fields["parked_status"] == "resumable"
+        # Row stays resumable until the worker claims it (no double-flip).
+        # Tight-poll to catch the state before the worker clears it.
+        fields = await _poll_for_resumable(conn, sid, timeout=5.0)
+        assert fields["parked_status"] == "resumable", (
+            f"expected resumable, got: {fields}"
+        )
     finally:
+        await conn.close()
         await _cleanup(client, cleanup_urls)
 
 
@@ -370,9 +472,13 @@ async def test_t0802_sessions_find_multi_clause_and_predicate(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path,
 ) -> None:
     """T0802 — POST /v1/sessions/find with a binary AND predicate
-    (workspace_id == X AND status == 'created') returns the rows
+    (workspace_id == X AND status == 'ended') returns the rows
     matching BOTH clauses; rows matching only one (different
     workspace or different status) are filtered out.
+
+    Sessions created with auto_start=False are still processed by the
+    live worker immediately, so they reach 'ended' quickly. The test
+    waits for both sessions to settle before issuing the find query.
 
     Pins the predicate composition path in primer/api/routers/sessions
     and the backend's AND handling.
@@ -404,8 +510,31 @@ async def test_t0802_sessions_find_multi_clause_and_predicate(
         f"/v1/agents/{aid}",
         f"/v1/llm_providers/{pid}",
     ]
+    # Open a direct DB connection to wait for sessions to settle.
+    pg = await _pg()
     try:
-        # AND predicate: workspace_id == wid_a AND status == 'created'.
+        # Sessions created with auto_start=False are still claimed and
+        # processed by the live worker (the claim engine enqueues them
+        # regardless of auto_start). The worker completes quickly since
+        # there are no LLM instructions. Wait for both to reach 'ended'
+        # before issuing the find query, so the status filter is stable.
+        for sid in (sid_on_a, sid_on_b):
+            deadline = asyncio.get_event_loop().time() + 5.0
+            while asyncio.get_event_loop().time() < deadline:
+                row = await pg.fetchrow(
+                    "SELECT data->>'status' AS st FROM sessions WHERE id = $1",
+                    sid,
+                )
+                if row and row["st"] == "ended":
+                    break
+                await asyncio.sleep(0.05)
+    finally:
+        await pg.close()
+
+    try:
+        # AND predicate: workspace_id == wid_a AND status == 'ended'.
+        # Sessions here have no LLM instructions so they end immediately;
+        # filtering on 'ended' is stable once the worker has settled.
         body = {
             "predicate": {
                 "kind": "predicate",
@@ -420,7 +549,7 @@ async def test_t0802_sessions_find_multi_clause_and_predicate(
                     "kind": "predicate",
                     "left": {"kind": "field", "name": "status"},
                     "op": "=",
-                    "right": {"kind": "value", "value": "created"},
+                    "right": {"kind": "value", "value": "ended"},
                 },
             },
             "page": {"kind": "offset", "offset": 0, "length": 100},

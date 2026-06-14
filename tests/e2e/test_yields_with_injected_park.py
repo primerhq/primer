@@ -127,6 +127,30 @@ async def _seed_session(
     return r.json()["id"]
 
 
+async def _wait_for_worker_idle(conn: asyncpg.Connection, session_id: str) -> None:
+    """Poll until the worker has finished processing the session's initial turn.
+
+    A freshly created session (auto_start=False) is still enqueued in the
+    claim engine and the live worker claims + runs it immediately (completes
+    in one turn because there are no instructions). If we inject the park
+    before the worker's on_release UPDATE lands, the UPDATE overwrites our
+    injection (it replaces the entire data JSONB). We poll until turn_no >= 1
+    (success path) which confirms on_release has already written its final row.
+    Timeout after 5 s -- sufficient for any in-process worker round-trip.
+    """
+    import asyncio as _asyncio
+    deadline = _asyncio.get_event_loop().time() + 5.0
+    while _asyncio.get_event_loop().time() < deadline:
+        row = await conn.fetchrow(
+            "SELECT COALESCE((data->>'turn_no')::int, 0) AS tn "
+            "FROM sessions WHERE id = $1",
+            session_id,
+        )
+        if row is None or row["tn"] >= 1:
+            return
+        await _asyncio.sleep(0.05)
+
+
 async def _inject_park(
     session_id: str,
     *,
@@ -137,11 +161,18 @@ async def _inject_park(
     response_schema: dict | None = None,
 ) -> None:
     """Inject parked_* fields onto a session row, mirroring the shape
-    primer.worker.pool._handle_yield writes via scheduler.park_turn.
+    the worker pool writes via the park branch of on_release.
 
-    All five M1 park fields are written:
-      parked_status='parked', parked_event_key, parked_until,
-      parked_at, parked_state (the JSONB blob).
+    Waits for the worker's initial-turn on_release to complete before
+    writing, to avoid a race where the worker's full-row UPDATE overwrites
+    our injected JSONB fields. All six park columns are written:
+      parked_status='parked', parked_event_key, parked_event_keys (null),
+      parked_until, parked_at, parked_state (the JSONB blob).
+
+    The parked_state blob matches ParkedState.to_jsonable() exactly:
+      schema_version, tool_call_id (top-level), yielded (with tool_name,
+      event_key, timeout, resume_metadata, event_keys), llm_messages,
+      turn_no, started_at, resume_event_payload, graph_checkpoint.
     """
     now = datetime.now(timezone.utc)
     parked_until = now + timedelta(seconds=600)
@@ -161,11 +192,13 @@ async def _inject_park(
             "event_key": event_key,
             "timeout": 600.0,
             "resume_metadata": resume_metadata,
+            "event_keys": None,
         },
         "llm_messages": [],
         "turn_no": 0,
         "started_at": now.isoformat(),
         "resume_event_payload": None,
+        "graph_checkpoint": None,
     }
 
     sql = """
@@ -174,9 +207,11 @@ async def _inject_park(
                      jsonb_set(
                        jsonb_set(
                          jsonb_set(
-                           jsonb_set(data,
-                             '{parked_status}', to_jsonb('parked'::text)),
-                           '{parked_event_key}', to_jsonb($2::text)),
+                           jsonb_set(
+                             jsonb_set(data,
+                               '{parked_status}', to_jsonb('parked'::text)),
+                             '{parked_event_key}', to_jsonb($2::text)),
+                           '{parked_event_keys}', 'null'::jsonb),
                          '{parked_until}', to_jsonb($3::text)),
                        '{parked_at}', to_jsonb($4::text)),
                      '{parked_state}', $5::jsonb
@@ -186,6 +221,7 @@ async def _inject_park(
     """
     conn = await _pg()
     try:
+        await _wait_for_worker_idle(conn, session_id)
         await conn.execute(
             sql,
             session_id,
