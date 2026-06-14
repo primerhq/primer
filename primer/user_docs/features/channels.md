@@ -2,7 +2,7 @@
 slug: channels
 title: Channels
 section: features
-summary: Connect Slack, Telegram, or Discord to primer -- create a channel for each platform room, enable chat, and bind a workspace so session gates forward there.
+summary: "Connect Slack, Telegram, or Discord to primer: create a channel for each platform room, enable chat, and bind a workspace so session gates forward there."
 ---
 
 ## What a channel is
@@ -16,9 +16,9 @@ Both responsibilities run on the same room object. You configure which one you w
 
 Three objects work together:
 
-- **Channel provider** -- credentials for one platform (one Slack app, one Telegram bot, one Discord bot). See the channel providers page for setup.
-- **Channel** -- a room inside a provider, identified by its external ID on the platform.
-- **Workspace channel association** -- binds a workspace to a channel so that workspace's session gates forward there.
+- **Channel provider**: credentials for one platform (one Slack app, one Telegram bot, one Discord bot). See the channel providers page for setup.
+- **Channel**: a room inside a provider, identified by its external ID on the platform.
+- **Workspace channel association**: binds a workspace to a channel so that workspace's session gates forward there.
 
 ```mermaid
 flowchart LR

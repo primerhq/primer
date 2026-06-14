@@ -2,18 +2,18 @@
 slug: agents
 title: Agents
 section: features
-summary: Create and configure agents -- pair a model with tools and a system prompt, tune compaction and temperature, and invoke agents from chats, sessions, and graphs.
+summary: "Create and configure agents: pair a model with tools and a system prompt, tune compaction and temperature, and invoke agents from chats, sessions, and graphs."
 ---
 
 ## What an agent is
 
 An agent is a reusable definition that tells primer how to drive an LLM on your behalf. It has three parts:
 
-- **Model binding** -- which LLM provider and model to use.
-- **System prompt** -- the fixed instruction block prepended to every turn.
-- **Tool allowlist** -- the specific tools the agent may call, chosen from the available toolsets and MCP servers.
+- **Model binding**: which LLM provider and model to use.
+- **System prompt**: the fixed instruction block prepended to every turn.
+- **Tool allowlist**: the specific tools the agent may call, chosen from the available toolsets and MCP servers.
 
-The definition is stateless. The conversation transcript, the workspace filesystem the agent reads and writes, the channel it replies into -- all of that lives elsewhere. Multiple chats, sessions, or graph nodes can invoke the same agent simultaneously without sharing memory.
+The definition is stateless. The conversation transcript, the workspace filesystem the agent reads and writes, the channel it replies into: all of that lives elsewhere. Multiple chats, sessions, or graph nodes can invoke the same agent simultaneously without sharing memory.
 
 ```callout:tip
 Think of an agent as a function signature. Chats, sessions, and graph nodes are the call sites. The state lives in the call site, not the function.
@@ -68,16 +68,16 @@ The agent create and edit modal has three tabs: **Basic**, **Tools**, and **Adva
 
 ### Basic tab
 
-- **ID** -- optional. If left blank, the backend assigns a type-prefixed id (for example, `agent-3f9a1c8d`). The id is immutable after creation.
-- **Description** -- a short label shown in the agents table and used by the internal-collections search index when other agents search for agents by capability.
-- **LLM provider** -- select from the providers configured under Providers > LLM. If the list is empty, create a provider first.
-- **Model** -- the dropdown populates from the selected provider.
+- **ID**: optional. If left blank, the backend assigns a type-prefixed id (for example, `agent-3f9a1c8d`). The id is immutable after creation.
+- **Description**: a short label shown in the agents table and used by the internal-collections search index when other agents search for agents by capability.
+- **LLM provider**: select from the providers configured under Providers > LLM. If the list is empty, create a provider first.
+- **Model**: the dropdown populates from the selected provider.
 
 ### Tools tab
 
 The Tools tab shows every tool from every registered toolset and MCP server. Use the search box to filter by name, description, or toolset. Check individual tools or use the toolset header checkbox to bulk-select all tools in a toolset. The counter at the top right shows how many tools are selected.
 
-Only the tools you explicitly check are exposed to the model. You are not binding an entire toolset -- you choose the minimum set the agent needs. This matters for two reasons:
+Only the tools you explicitly check are exposed to the model. You are not binding an entire toolset; you choose the minimum set the agent needs. This matters for two reasons:
 
 - **Scope control**: a large toolset can ship over 100 tools. Binding all of them inflates the model's tool list, increasing token cost per turn and the chance of an unintended call.
 - **Emergency deny**: remove a specific tool from the agent's list to deny it immediately without changing the underlying toolset or approval policy.
@@ -93,7 +93,7 @@ Binding tools from the `system` toolset gives the agent shell and filesystem acc
 
 ### Advanced tab
 
-- **System prompt** -- the fixed instruction block sent before every turn. Accepts Jinja-style placeholders resolved against the session's input metadata:
+- **System prompt**: the fixed instruction block sent before every turn. Accepts Jinja-style placeholders resolved against the session's input metadata:
 
   | Placeholder | Resolves to |
   |---|---|
@@ -104,9 +104,9 @@ Binding tools from the `system` toolset gives the agent shell and filesystem acc
 
   Keep the system prompt focused on role, output format, and constraints. Pass data that changes per-run through the session input instead of hardcoding it into the prompt.
 
-- **Compaction prompt** -- instructions the runtime uses when it compacts the conversation history to fit within the model's context window. Leave blank to use the framework default, which preserves system context, recent turns, and pending tool calls. Override it only when your agent has a domain-specific retention need -- for example, a research agent that must preserve cited sources, or a coding agent that must retain the current file path under edit.
+- **Compaction prompt**: instructions the runtime uses when it compacts the conversation history to fit within the model's context window. Leave blank to use the framework default, which preserves system context, recent turns, and pending tool calls. Override it only when your agent has a domain-specific retention need (for example, a research agent that must preserve cited sources, or a coding agent that must retain the current file path under edit).
 
-- **Temperature** -- controls model output randomness. Leave blank to use the provider's default. Set to a low value (0.1 to 0.3) for deterministic extraction or structured output tasks. Use higher values (0.7 to 1.0) for creative or open-ended generation. The valid range and maximum depend on the provider.
+- **Temperature**: controls model output randomness. Leave blank to use the provider's default. Set to a low value (0.1 to 0.3) for deterministic extraction or structured output tasks. Use higher values (0.7 to 1.0) for creative or open-ended generation. The valid range and maximum depend on the provider.
 
 ## Walkthrough: create your first agent
 
@@ -127,7 +127,7 @@ Binding tools from the `system` toolset gives the agent shell and filesystem acc
 
 Open the agent detail, go to the **Config** tab, and click **Edit**. The same three-tab modal opens with existing values pre-filled. The ID field is locked after creation.
 
-Agents managed by a harness show a notice on the Config tab -- edit the harness instead of the agent directly.
+Agents managed by a harness show a notice on the Config tab; edit the harness instead of the agent directly.
 
 Sessions started after an edit pick up the new definition. Any session already in flight keeps the old model and tools until it ends.
 

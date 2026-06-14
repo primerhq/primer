@@ -11,15 +11,15 @@ An embedding provider converts a piece of text into a dense numeric vector. Prim
 
 The choice of provider determines:
 
-- **Dimensionality** -- the length of the vector each model produces. Primer learns this automatically from the first chunk ingested rather than requiring you to declare it.
-- **Model family semantics** -- some model families (BGE, E5, nomic-embed-text) expect different prefixes on query text versus document text (asymmetric retrieval). The HuggingFace adapter handles this automatically.
-- **Hosting** -- HuggingFace runs the model locally inside the primer process (no external API call). OpenAI and Gemini call a remote API.
+- **Dimensionality**: the length of the vector each model produces. Primer learns this automatically from the first chunk ingested rather than requiring you to declare it.
+- **Model family semantics**: some model families (BGE, E5, nomic-embed-text) expect different prefixes on query text versus document text (asymmetric retrieval). The HuggingFace adapter handles this automatically.
+- **Hosting**: HuggingFace runs the model locally inside the primer process (no external API call). OpenAI and Gemini call a remote API.
 
 Three embedding provider types ship today:
 
-- **huggingface** -- local inference via `sentence-transformers`. No outbound API call; models are downloaded from the HuggingFace Hub on first use. A `huggingface` provider row (id `huggingface`) is auto-created on first boot with an empty token, so public Hub models work out of the box with no configuration.
-- **openai** -- the OpenAI embeddings API, or any OpenAI-compatible embedding endpoint (LM Studio, and others via the `flavor` field).
-- **gemini** -- the Gemini embedding API via Google AI Studio.
+- **huggingface**: local inference via `sentence-transformers`. No outbound API call; models are downloaded from the HuggingFace Hub on first use. A `huggingface` provider row (id `huggingface`) is auto-created on first boot with an empty token, so public Hub models work out of the box with no configuration.
+- **openai**: the OpenAI embeddings API, or any OpenAI-compatible embedding endpoint (LM Studio, and others via the `flavor` field).
+- **gemini**: the Gemini embedding API via Google AI Studio.
 
 ```mermaid
 flowchart LR
@@ -48,28 +48,28 @@ A unique handle such as `hf-local` or `openai-embed`. Collections reference this
 ### Connection fields (per type)
 
 **huggingface**
-- `token` -- HuggingFace token used to pull transformer model weights. Required at the schema level, but the auto-bootstrapped `huggingface` row seeds it with an empty string, which maps to `token=None` on the `SentenceTransformer` call. This is correct for public Hub models. Only set a real token if the model you want is in a gated repository.
+- `token`: HuggingFace token used to pull transformer model weights. Required at the schema level, but the auto-bootstrapped `huggingface` row seeds it with an empty string, which maps to `token=None` on the `SentenceTransformer` call. This is correct for public Hub models. Only set a real token if the model you want is in a gated repository.
 
 **openai**
-- `url` -- base URL of the embedding endpoint (e.g. `https://api.openai.com`).
-- `api_key` -- bearer token. Optional for endpoints that do not require authentication (LM Studio by default).
-- `flavor` -- server variant: `openai` (real OpenAI, requires a non-empty key), `lmstudio` (tolerates empty key), or `other` (conservative, treats missing key as an error). Defaults to `other`.
+- `url`: base URL of the embedding endpoint (e.g. `https://api.openai.com`).
+- `api_key`: bearer token. Optional for endpoints that do not require authentication (LM Studio by default).
+- `flavor`: server variant: `openai` (real OpenAI, requires a non-empty key), `lmstudio` (tolerates empty key), or `other` (conservative, treats missing key as an error). Defaults to `other`.
 
 **gemini**
-- `api_key` -- Gemini API key from Google AI Studio. Optional when fronted by a proxy that supplies auth.
+- `api_key`: Gemini API key from Google AI Studio. Optional when fronted by a proxy that supplies auth.
 
 ### Models
 
 A list of embedding model identifiers the provider is allowed to serve. Each entry has:
 
-- `name` -- the provider-side model slug (e.g. `text-embedding-3-small`, `all-MiniLM-L6-v2`, `models/text-embedding-004`).
+- `name`: the provider-side model slug (e.g. `text-embedding-3-small`, `all-MiniLM-L6-v2`, `models/text-embedding-004`).
 
-Vector dimensionality is not declared here -- primer measures it from the first real embedding produced during ingestion and stores it on the collection.
+Vector dimensionality is not declared here; primer measures it from the first real embedding produced during ingestion and stores it on the collection.
 
 ### Limits
 
-- `max_concurrency` -- maximum number of in-flight embedding requests at once. This applies equally to ingest (bulk chunking) and to query-time encoding. Required; choose a value that fits your API tier.
-- `request_timeout_seconds` -- per-event inactivity timeout (default: `300`). Applies to the remote API call for OpenAI and Gemini. The HuggingFace adapter runs locally so the timeout still applies but stalls are less common. Set to `null` to disable.
+- `max_concurrency`: maximum number of in-flight embedding requests at once. This applies equally to ingest (bulk chunking) and to query-time encoding. Required; choose a value that fits your API tier.
+- `request_timeout_seconds`: per-event inactivity timeout (default: `300`). Applies to the remote API call for OpenAI and Gemini. The HuggingFace adapter runs locally so the timeout still applies but stalls are less common. Set to `null` to disable.
 
 ## Walkthrough
 

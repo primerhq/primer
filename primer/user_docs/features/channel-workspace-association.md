@@ -7,7 +7,7 @@ summary: Associate a workspace with a channel so every session gate (ask_user, t
 
 ## What the association does
 
-A workspace can be linked to one channel at a time via `Workspace.channel_association`. When a link exists, every session running inside that workspace that parks on a yielding tool -- `ask_user`, a tool approval gate, or `inform_user` -- automatically dispatches a message to the associated channel room.
+A workspace can be linked to one channel at a time via `Workspace.channel_association`. When a link exists, every session running inside that workspace that parks on a yielding tool (`ask_user`, a tool approval gate, or `inform_user`) automatically dispatches a message to the associated channel room.
 
 This is what makes long-running agent work practical over Slack, Telegram, or Discord: the session parks (releases its compute lease), a message lands in the channel, and the session resumes the moment a human replies or clicks an approval button. No one needs to watch the primer console.
 
@@ -97,9 +97,9 @@ DELETE /v1/workspaces/{workspace_id}/channel_association
 
 The `allowed_agents` and `allow_agent_switch` settings live on the channel's chat config, not on the workspace association. If the channel has chat enabled:
 
-- `allow_agent_switch: false` (default) -- users cannot run `/agent` to change which agent handles their chat.
-- `allow_agent_switch: true` -- users may run `/agent`; the picker shows all agents unless `allowed_agents` is set.
-- `allowed_agents: ["agent-id-1", "agent-id-2"]` -- restricts the `/agent` picker to the listed agents (and requires `default_agent` to be in the list).
+- `allow_agent_switch: false` (default): users cannot run `/agent` to change which agent handles their chat.
+- `allow_agent_switch: true`: users may run `/agent`; the picker shows all agents unless `allowed_agents` is set.
+- `allowed_agents: ["agent-id-1", "agent-id-2"]`: restricts the `/agent` picker to the listed agents (and requires `default_agent` to be in the list).
 
 These settings are on the channel itself, not on the association, because they describe what is allowed for that room regardless of which workspace sessions are currently forwarding to it.
 
