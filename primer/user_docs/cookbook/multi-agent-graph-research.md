@@ -34,7 +34,7 @@ Fine-grained tool binding and the turn loop -- relevant for
 scoping each agent to only the tools it needs.
 ```
 
-```ref:features/knowledge-collections
+```ref:features/collections-and-documents
 Create and populate the internal knowledge collection the
 fact-checker searches.
 ```

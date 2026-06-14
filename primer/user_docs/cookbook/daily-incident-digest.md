@@ -34,7 +34,7 @@ Configure a Slack provider and bind it to the workspace so the
 agent can post messages.
 ```
 
-```ref:features/knowledge-collections
+```ref:features/collections-and-documents
 Create and populate the incidents collection before the first
 trigger fires.
 ```
