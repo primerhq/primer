@@ -7,7 +7,7 @@ summary: REST endpoints to configure channel providers (Slack, Telegram, Discord
 
 Channel providers hold the credentials for a messaging platform (Slack, Telegram, or Discord). Channels are the individual conversational rooms within a provider (a Slack channel, a Telegram chat id, a Discord channel). A Workspace can carry a `channel_association` that names the Channel all session gates (`ask_user`, tool approval, `inform`) from its sessions forward to. Chat config lives on the Channel itself (`config.chats`).
 
-```ref:concepts/chats
+```ref:features/chats
 How chats, ask_user, and the channel bridge fit together.
 ```
 

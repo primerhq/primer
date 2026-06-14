@@ -7,7 +7,7 @@ summary: REST endpoints to register, fetch, install, sync, build, push, update t
 
 A harness is a git-backed, Jinja2-templated bundle of Primer entities (agents, graphs, collections, toolsets) that can be installed from a remote repository (inbound) or assembled from live entities and pushed to one (outbound).
 
-```ref:concepts/what-is-an-agent
+```ref:features/agents
 Agents and the entities a harness manages.
 ```
 

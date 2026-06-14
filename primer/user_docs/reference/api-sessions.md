@@ -7,10 +7,8 @@ section: reference
 
 Sessions represent a long-running agent or graph execution attached to a workspace. Each session progresses through a defined lifecycle and can park mid-turn to await operator input via yielding-tool endpoints.
 
-```ref:concepts/sessions
-```
-
 ```ref:features/sessions
+Session lifecycle, statuses, and the session detail view.
 ```
 
 ## Endpoints

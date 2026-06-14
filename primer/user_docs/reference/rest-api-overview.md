@@ -11,8 +11,8 @@ All API routes are under `/v1`. The OpenAPI schema is served at `/v1/openapi.jso
 Introduction and quick-start setup.
 ```
 
-```ref:concepts/what-is-an-agent
-Core concepts before using the API.
+```ref:features/agents
+Agents, the turn loop, and core concepts before using the API.
 ```
 
 ## Authentication
