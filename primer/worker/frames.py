@@ -163,14 +163,24 @@ class AgentFrame:
 
         The leaf belongs to this subagent's own tool call (an approval gate or
         a yielding tool it raised), so it is resolved via :func:`apply_leaf`
-        against this frame's tool context. If that re-dispatch itself re-parks
-        (an approved gated tool raised a fresh yield) the :class:`Reparked` is
-        propagated verbatim. Otherwise ``apply_leaf`` returned the resolved
+        against this frame's tool context.
+
+        If that re-dispatch itself re-parks (an approved gated tool raised a
+        fresh yield), THIS subagent's turn has NOT advanced: the same tool_use
+        is now awaiting the tool's own event instead of approval, so this
+        ``AgentFrame`` must be RETAINED. The re-dispatched tool yields a BARE
+        :class:`~primer.model.yield_.YieldToWorker` (its ``.frames`` is empty),
+        so we PREPEND ``self`` (unchanged) onto the re-yield's frames before
+        propagating the :class:`Reparked`; otherwise the in-flight subagent
+        frame would be dropped by the continuation walk. Otherwise
+        ``apply_leaf`` returned the resolved
         :class:`~primer.model.chat.ToolResultPart` for the leaf, which is
         threaded straight into :meth:`resume` to continue the subagent turn.
         """
         leaf_result = await apply_leaf(self, leaf, payload, services)
-        if not isinstance(leaf_result, ToolResultPart):  # it's a Reparked
+        if isinstance(leaf_result, Reparked):
+            ny = leaf_result.new_yield
+            ny.frames = [self] + list(getattr(ny, "frames", None) or [])
             return leaf_result
         return await self.resume(leaf_result, services)
 
@@ -297,7 +307,7 @@ class GraphFrame:
             agent_tool_result=agent_tool_result,
         )
         if repark is not None:
-            return Reparked(new_yield=repark)
+            return self._repark_with_advanced_frame(repark)
         return Completed(
             value=ToolResultPart(
                 id=self.tool_call_id,
@@ -305,6 +315,29 @@ class GraphFrame:
                 error=False,
             )
         )
+
+    def _repark_with_advanced_frame(self, repark: Any) -> "Reparked":
+        """Re-park the child graph on its NEXT gate, retaining this frame.
+
+        When ``resume_invoke_graph`` returns a re-yield (the child graph hit
+        ANOTHER gate), that re-yield carries the child executor's NEW
+        ``graph_checkpoint`` and its new gate node id (``tool_call_id``) but its
+        ``.frames`` is empty - it does NOT carry THIS ``invoke_graph`` frame. The
+        ``GraphFrame`` (the caller's invoke_graph call) must persist across the
+        child's gates with its checkpoint ADVANCED, else the continuation walk
+        would drop the in-flight child graph. Build an UPDATED ``GraphFrame``
+        (advanced checkpoint + new gate node id; same caller-result
+        ``tool_call_id``) and PREPEND it onto the re-yield's frames.
+        """
+        advanced = GraphFrame(
+            graph_id=self.graph_id,
+            gsid=self.gsid,
+            checkpoint=getattr(repark, "graph_checkpoint", None) or self.checkpoint,
+            tool_call_id=self.tool_call_id,
+            node_tcid=getattr(repark, "tool_call_id", None) or self.node_tcid,
+        )
+        repark.frames = [advanced] + list(getattr(repark, "frames", None) or [])
+        return Reparked(new_yield=repark)
 
     async def resume(self, child_result: Any, services: Any) -> "FrameOutcome":
         """Resume this child graph with a completed child's result.
@@ -333,7 +366,7 @@ class GraphFrame:
             agent_tool_result=agent_tool_result,
         )
         if repark is not None:
-            return Reparked(new_yield=repark)
+            return self._repark_with_advanced_frame(repark)
         return Completed(
             value=ToolResultPart(
                 id=self.tool_call_id,

@@ -666,24 +666,32 @@ async def test_subagent_approval_on_yielding_tool_reparks_then_completes(monkeyp
     The session PARKED on ``tool_approval:*`` with ``frames=[S1, S2]``.
 
     Phase 1 - APPROVE: apply_leaf re-dispatches the real gated tool with
-    bypass_approval; the tool body ITSELF yields a timer leaf. The walk Reparks,
-    and because the re-dispatched bare tool yield carries no nested frame of its
-    own, the reconstructed stack is the frames *outer* of S2 - i.e. ``[S1]`` is
-    preserved - re-parked on ``timer:*`` (S2's tcid is consumed as the leaf id).
+    bypass_approval; the tool body ITSELF yields a BARE timer leaf (its own
+    ``YieldToWorker.frames`` is empty). S2's turn has NOT advanced - the same
+    ``do_wait`` tool_use is now awaiting the timer instead of approval - so S2's
+    ``AgentFrame`` must be RETAINED. ``resume_leaf`` prepends S2 (unchanged) onto
+    the bare re-yield, so the walk Reparks with the WHOLE stack ``[S1, S2]``
+    preserved (NOT just ``[S1]``) - re-parked on ``timer:*``.
 
-    Phase 2 - fire the timer: S1 (the surviving outer frame) resolves the timer
-    leaf via its sleep hook, its subagent turn resumes to final text, and the
-    session's invoke-S1 call gets the result. This proves the composition
-    (apply_leaf re-dispatch -> tool re-yield -> mid-unwind repark preserving the
-    outer frames -> fire-the-event -> unwind to completion) end to end."""
+    Phase 2 - fire the timer: S2 (the retained innermost frame) resolves the
+    timer leaf via its sleep hook, its subagent turn resumes to final text,
+    that result threads up to S1 (which resumes to its own text), and the
+    session's invoke-S1 call gets S1's wrapped result. This proves the
+    composition (apply_leaf re-dispatch -> tool re-yield -> mid-unwind repark
+    RETAINING the in-flight innermost subagent -> fire-the-event -> full
+    two-level unwind to completion) end to end."""
     sid = "sess-gated-yield"
     s1_invoke_tcid = "invoke-S1-gy"     # session -> S1
     s2_invoke_tcid = "invoke-S2-gy"     # S1 -> S2
     gated_call_id = "gated-yield-call"  # S2's gated+yielding tool call
 
-    # Exactly ONE subagent LLM turn runs (S1's phase-2 continuation); S2 never
-    # re-runs its LLM (its gated tool re-dispatch yields before any turn).
-    llm = _ScriptedLLM(scripts=[_final_text_script("S1 saw the timer fire")])
+    # TWO subagent LLM turns run in phase 2: S2 resumes (timer fired) -> text,
+    # then S1 resumes (S2's result) -> text. (Phase 1's gated re-dispatch yields
+    # before any LLM turn, so no script is consumed there.)
+    llm = _ScriptedLLM(scripts=[
+        _final_text_script("S2 saw the timer fire"),
+        _final_text_script("S1 wraps: timer done"),
+    ])
     registry = _ProviderRegistry(llm=llm, toolset=_GatedYieldingToolset())
     resolver = _PoliciesOnlyResolver(
         [ToolApprovalPolicy(id="p", toolset_id="t1", tool_name="do_wait", approval=RequiredApprovalConfig())]
@@ -720,9 +728,12 @@ async def test_subagent_approval_on_yielding_tool_reparks_then_completes(monkeyp
     assert row.parked_event_key == f"timer:{sid}:{gated_call_id}", "re-parked on the tool's own timer leaf"
     reparked = ParkedState.from_jsonable(row.parked_state)
     assert reparked.yielded.tool_name == "sleep"
-    # The OUTER frame (S1) is preserved across the mid-unwind re-park; S2 (the
-    # frame whose own tool re-yielded) is consumed.
-    assert [f.tool_call_id for f in reparked.frames] == [s1_invoke_tcid]
+    # BOTH frames are preserved across the mid-unwind re-park: S2 (whose own
+    # gated tool re-yielded a bare timer) is RETAINED - its turn has not
+    # advanced - so the stack is the FULL [S1, S2], not just [S1].
+    assert [f.tool_call_id for f in reparked.frames] == [s1_invoke_tcid, s2_invoke_tcid]
+    # No subagent LLM turn ran in phase 1 (the gated re-dispatch yielded first).
+    assert len(llm._scripts) == 2
 
     # PHASE 2: fire the timer. Stamp a real timer payload onto the re-parked
     # blob (the re-park left resume_event_payload=None) and re-claim.
@@ -737,12 +748,13 @@ async def test_subagent_approval_on_yielding_tool_reparks_then_completes(monkeyp
 
     await pool._run_engine_session(await _claim(engine, sid))
 
-    # The surviving S1 frame resolved the timer + resumed to text; the session's
-    # invoke-S1 call gets it.
+    # FULL UNWIND: S2 resolved the timer + resumed to text, that threaded up to
+    # S1, S1 resumed to text; the session's invoke-S1 call gets S1's wrapped
+    # result. Both phase-2 subagent turns ran (both scripts consumed).
     part = _injected_tool_result(executor, s1_invoke_tcid)
     assert part.error is False
-    assert json.loads(part.output) == {"output": "S1 saw the timer fire"}
-    assert llm._scripts == [], "exactly one subagent turn ran (S1's continuation)"
+    assert json.loads(part.output) == {"output": "S1 wraps: timer done"}
+    assert llm._scripts == [], "both subagent turns ran (S2 then S1)"
 
 
 # ===========================================================================

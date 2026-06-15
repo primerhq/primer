@@ -23,6 +23,7 @@ import pytest
 
 import primer.worker.frames as frames_mod
 from primer.model.chat import ToolResultPart
+from primer.model.yield_ import Yielded, YieldToWorker
 from primer.worker.frames import (
     AgentFrame,
     AgentResumeContext,
@@ -112,7 +113,9 @@ async def test_agent_resume_leaf_completed_threads_into_resume(monkeypatch):
 @pytest.mark.asyncio
 async def test_agent_resume_leaf_reparked_does_not_resume(monkeypatch):
     frame = _agent_frame()
-    repark = Reparked(new_yield=object())
+    # The re-dispatched gated tool yields a BARE YieldToWorker (.frames == []).
+    yld = YieldToWorker(Yielded("timer", "timer:c1"), tool_call_id="c1")
+    repark = Reparked(new_yield=yld)
 
     async def fake_apply_leaf(inner_frame, leaf, payload, services):
         return repark
@@ -130,6 +133,30 @@ async def test_agent_resume_leaf_reparked_does_not_resume(monkeypatch):
 
     assert out is repark
     assert resumed["called"] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_resume_leaf_repark_retains_self(monkeypatch):
+    """An approved gated tool inside this subagent re-yields a BARE yield
+    (its ``.frames`` is empty). The subagent's turn has NOT advanced, so its
+    own ``AgentFrame`` must be RETAINED: ``resume_leaf`` PREPENDS ``self`` onto
+    the re-yield's frames, else the continuation walk's ``frames[:-1] + []``
+    would drop the in-flight subagent."""
+    frame = _agent_frame()
+    yld = YieldToWorker(Yielded("timer", "timer:c1"), tool_call_id="c1")
+    assert yld.frames == []  # bare: the tool's own yield carries no frame
+    repark = Reparked(new_yield=yld)
+
+    async def fake_apply_leaf(inner_frame, leaf, payload, services):
+        return repark
+
+    monkeypatch.setattr(frames_mod, "apply_leaf", fake_apply_leaf)
+
+    out = await frame.resume_leaf(_Leaf(), payload={}, services="SVC")
+
+    assert isinstance(out, Reparked)
+    # self (the unchanged AgentFrame) is retained, first.
+    assert out.new_yield.frames == [frame]
 
 
 # ---------------------------------------------------------------------------
@@ -198,7 +225,7 @@ async def test_graph_resume_leaf_reparked(monkeypatch):
     frame = _graph_frame()
     rec: dict[str, Any] = {}
     services = _graph_services(rec)
-    repark = object()
+    repark = YieldToWorker(Yielded("ask_user", "ask_user:gs1:node2"), tool_call_id="node2")
 
     async def fake_resume_invoke_graph(**kwargs):
         return None, repark
@@ -209,3 +236,65 @@ async def test_graph_resume_leaf_reparked(monkeypatch):
 
     assert isinstance(out, Reparked)
     assert out.new_yield is repark
+
+
+@pytest.mark.asyncio
+async def test_graph_resume_leaf_repark_retains_advanced_frame(monkeypatch):
+    """The child graph hits ANOTHER gate: ``resume_invoke_graph`` returns a
+    re-yield carrying the NEW ``graph_checkpoint`` + new gate node id but an
+    empty ``.frames``. The ``GraphFrame`` (the invoke_graph call) must persist
+    with its checkpoint ADVANCED: ``resume_leaf`` PREPENDS an updated
+    ``GraphFrame`` onto the re-yield's frames."""
+    frame = _graph_frame()
+    rec: dict[str, Any] = {}
+    services = _graph_services(rec)
+    repark = YieldToWorker(Yielded("ask_user", "ask_user:gs1:node2"), tool_call_id="node2")
+    repark.graph_checkpoint = {"v": 2}
+    assert repark.frames == []  # bare: no invoke_graph frame of its own
+
+    async def fake_resume_invoke_graph(**kwargs):
+        return None, repark
+
+    monkeypatch.setattr(frames_mod, "resume_invoke_graph", fake_resume_invoke_graph)
+
+    out = await frame.resume_leaf(_Leaf(), payload={}, services=services)
+
+    assert isinstance(out, Reparked)
+    advanced = out.new_yield.frames[0]
+    assert isinstance(advanced, GraphFrame)
+    assert advanced.checkpoint == {"v": 2}       # checkpoint advanced
+    assert advanced.node_tcid == "node2"          # the NEW gate's child-node id
+    assert advanced.tool_call_id == frame.tool_call_id  # caller's invoke_graph id unchanged
+
+
+@pytest.mark.asyncio
+async def test_graph_resume_repark_retains_advanced_frame(monkeypatch):
+    """Same retention for ``GraphFrame.resume`` (the outer-unwind path): a
+    completed child result delivered into the graph drives it to ANOTHER gate;
+    the re-yield's frames get an advanced ``GraphFrame`` prepended."""
+    frame = _graph_frame()
+    repark = YieldToWorker(Yielded("ask_user", "ask_user:gs1:node2"), tool_call_id="node2")
+    repark.graph_checkpoint = {"v": 2}
+    assert repark.frames == []
+
+    async def fake_resume_invoke_graph(**kwargs):
+        return None, repark
+
+    class _Svc:
+        async def resolve_graph(self, graph_id):
+            return f"graph::{graph_id}"
+
+        async def build_child_graph_executor(self, graph, gsid):
+            return f"child::{gsid}"
+
+    monkeypatch.setattr(frames_mod, "resume_invoke_graph", fake_resume_invoke_graph)
+
+    child_result = ToolResultPart(id="x", output="child", error=False)
+    out = await frame.resume(child_result, _Svc())
+
+    assert isinstance(out, Reparked)
+    advanced = out.new_yield.frames[0]
+    assert isinstance(advanced, GraphFrame)
+    assert advanced.checkpoint == {"v": 2}
+    assert advanced.node_tcid == "node2"
+    assert advanced.tool_call_id == frame.tool_call_id

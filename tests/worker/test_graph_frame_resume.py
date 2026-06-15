@@ -32,7 +32,15 @@ async def test_graph_frame_resume_completes(monkeypatch):
 @pytest.mark.asyncio
 async def test_graph_frame_resume_reparks(monkeypatch):
     repark = YieldToWorker(Yielded(tool_name="ask_user", event_key="ask_user:gs1:n2"), tool_call_id="n2")
+    repark.graph_checkpoint = {"k": 2}
     async def _fake_resume(**kw): return (None, repark)
     monkeypatch.setattr(frames_mod, "resume_invoke_graph", _fake_resume, raising=False)
-    out = await _frame().resume(ToolResultPart(id="x", output="child", error=False), _Services())
+    frame = _frame()
+    out = await frame.resume(ToolResultPart(id="x", output="child", error=False), _Services())
     assert isinstance(out, Reparked) and out.new_yield is repark
+    # The invoke_graph frame is RETAINED across the child's next gate, advanced:
+    # new checkpoint + new gate node id, same caller-result tool_call_id.
+    advanced = out.new_yield.frames[0]
+    assert isinstance(advanced, GraphFrame)
+    assert advanced.checkpoint == {"k": 2} and advanced.node_tcid == "n2"
+    assert advanced.tool_call_id == frame.tool_call_id
