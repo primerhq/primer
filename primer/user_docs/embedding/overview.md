@@ -2,7 +2,7 @@
 slug: embedding-overview
 title: Embedding & Semantic Search
 section: embedding
-summary: The pipeline that turns documents into searchable vectors: embedding providers, vector stores, collections, cross-encoder reranking, and internal collections.
+summary: "The pipeline that turns documents into searchable vectors: embedding providers, vector stores, collections, cross-encoder reranking, and internal collections."
 ---
 
 ## The pipeline

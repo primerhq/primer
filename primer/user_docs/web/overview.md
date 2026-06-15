@@ -2,7 +2,7 @@
 slug: web-overview
 title: Web
 section: web
-summary: The web toolset gives agents two ways to reach the internet: searching the public web for pages, and fetching or calling a specific URL.
+summary: "The web toolset gives agents two ways to reach the internet: searching the public web for pages, and fetching or calling a specific URL."
 ---
 
 ## Search versus fetch
