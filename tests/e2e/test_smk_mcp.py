@@ -277,12 +277,20 @@ async def test_mounted_server_failure_isolated(authed_client, unique_suffix):
 async def test_exposure_enable_and_disable(authed_client):
     enable = await authed_client.put(
         "/v1/mcp_exposure",
-        json={"enabled": True, "allowed_tools": ["misc__uuid_v4", "system__call_tool"]},
+        json={"enabled": True, "allowed_tools": ["misc__uuid_v4", "misc__hash"]},
     )
     assert enable.status_code in (200, 204), enable.text
     got = await authed_client.get("/v1/mcp_exposure")
     assert got.json()["enabled"] is True
     assert "misc__uuid_v4" in got.json()["allowed_tools"]
+    # system__call_tool is a yielding meta-dispatch (it can park for an inner
+    # tool's approval gate), so it is NOT MCP-exposable; the floor rejects it.
+    refused = await authed_client.put(
+        "/v1/mcp_exposure",
+        json={"enabled": True, "allowed_tools": ["system__call_tool"]},
+    )
+    assert refused.status_code == 422, refused.text
+    assert "yielding_unsupported" in refused.text
     disable = await authed_client.put("/v1/mcp_exposure", json={"enabled": False})
     assert disable.status_code in (200, 204), disable.text
     assert (await authed_client.get("/v1/mcp_exposure")).json()["enabled"] is False

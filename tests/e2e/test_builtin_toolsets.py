@@ -154,8 +154,7 @@ async def test_t0141_workspaces_toolset_lists_tools(
 
 
 _EXPECTED_MISC_TOOL_IDS = {
-    "get_datetime", "sleep", "uuid_v4", "hash", "calculate", "ask_user",
-    "inform_user",
+    "get_datetime", "uuid_v4", "hash", "calculate", "inform_user",
 }
 
 
@@ -163,9 +162,10 @@ _EXPECTED_MISC_TOOL_IDS = {
 async def test_t0494_misc_toolset_lists_expected_tools(
     client: httpx.AsyncClient,
 ) -> None:
-    """T0494 — `GET /v1/toolsets/misc/tools` returns the six
-    misc utility tools (get_datetime, sleep, uuid_v4, hash,
-    calculate, ask_user). Each carries the documented Tool fields and
+    """T0494 - `GET /v1/toolsets/misc/tools` returns the five
+    misc utility tools (get_datetime, uuid_v4, hash, calculate,
+    inform_user). ask_user moved to `system` and sleep to `workspace_ext`
+    in the yielding-tools reorg. Each carries the documented Tool fields and
     the canonical ``toolset_id`` of `misc`. Mirrors T0140 (`system`)
     and T0141 (`workspaces`) for the third always-on built-in
     toolset.
