@@ -1,7 +1,7 @@
 ---
 slug: toolsets-system
 title: Toolsets & tools
-section: features
+section: toolsets
 summary: The eight reserved toolsets (system, search, workspaces, misc, web, harness, trigger, workspace_ext) and how to explore their tools from the console or an agent.
 ---
 
@@ -114,10 +114,10 @@ This walkthrough discovers what tools the `misc` toolset exposes, then calls one
 
 The same pattern works for any registered toolset, built-in or MCP.
 
-```ref:features/toolsets-mcp
+```ref:toolsets/toolsets-external
 Register external tools via MCP toolsets (stdio and HTTP).
 ```
 
-```ref:features/toolsets-approvals
+```ref:toolsets/toolsets-approvals
 Gate tool calls with required, Rego, or LLM-judge approval policies.
 ```

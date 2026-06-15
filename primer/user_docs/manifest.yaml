@@ -14,34 +14,70 @@ sections:
       - llm-providers
       - agents
       - chats
+      - triggers
+      - harnesses
+      - mcp-server
+      - workers
+  - id: toolsets
+    title: Toolsets & Tools
+    icon: tools
+    order: 3
+    docs:
+      - overview
       - toolsets-system
-      - toolsets-mcp
+      - toolsets-external
       - toolsets-approvals
+  - id: embedding
+    title: Embedding & Semantic Search
+    icon: doc
+    order: 4
+    docs:
+      - overview
       - embedding-providers
       - semantic-search-providers
       - collections-and-documents
       - cross-encoder-providers
       - internal-collections
+  - id: workspaces
+    title: Workspaces
+    icon: tools
+    order: 5
+    docs:
+      - overview
       - workspace-providers
       - workspace-templates
-      - sessions
+      - workspaces-and-sessions
       - workspace-toolset
       - yielding-tools
+  - id: graphs
+    title: Graphs
+    icon: tools
+    order: 6
+    docs:
       - graphs
       - graph-node-types
       - graph-templating
+  - id: web
+    title: Web
+    icon: tools
+    order: 7
+    docs:
+      - overview
       - web-search-providers
+      - web-fetch-http
+  - id: channels
+    title: Channels
+    icon: tools
+    order: 8
+    docs:
+      - overview
       - channel-providers
       - channels
       - channel-workspace-association
-      - triggers
-      - harnesses
-      - mcp-server
-      - workers
   - id: cookbook
     title: Cookbook
     icon: code
-    order: 3
+    order: 9
     docs:
       - scheduled-summariser
       - slack-question-answerer
@@ -57,7 +93,7 @@ sections:
   - id: reference
     title: Reference
     icon: doc
-    order: 4
+    order: 10
     docs:
       - rest-api-overview
       - api-agents

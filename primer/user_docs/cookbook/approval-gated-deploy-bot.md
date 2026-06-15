@@ -6,7 +6,7 @@ summary: A Slack-driven deploy bot whose actual deploy step requires an explicit
 difficulty: advanced
 time_minutes: 45
 tags: [channels, tool-approval, agents, triggers]
-prerequisites: [features/channels, features/tool-approval, features/agents]
+prerequisites: [channels/channels, features/tool-approval, features/agents]
 features: [channel, agent, tool-approval, trigger]
 ---
 

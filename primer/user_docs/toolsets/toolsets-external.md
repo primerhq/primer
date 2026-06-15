@@ -1,17 +1,21 @@
 ---
-slug: toolsets-mcp
-title: MCP toolsets
-section: features
-summary: Register external MCP servers as toolsets over stdio and HTTP transports so agents can call their tools alongside built-in ones.
+slug: toolsets-external
+title: External Toolsets
+section: toolsets
+summary: Register externally-provided toolsets (today, MCP servers over stdio and HTTP) so agents can call their tools alongside the built-in ones.
 ---
 
 ## Concept
 
+Alongside the built-in system toolsets, primer lets you register **external toolsets**: tool collections that live outside primer and are pulled in over a transport. An external toolset appears in the toolset list next to the built-in ones, and any agent can be bound to it; the agent's effective tool list then includes both the external tools and any other toolsets the agent has.
+
+Today the one external-toolset kind is **MCP**. The same registration model is what any future external-provider kind would follow: register the source once, and any number of agents can bind to it.
+
+### MCP toolsets
+
 **MCP (Model Context Protocol)** is an open standard for exposing tools to LLMs. An MCP server advertises a list of callable functions; an MCP client (primer, in this case) connects, lists those functions, and forwards agent calls to them.
 
-Primer treats each registered MCP server as a **toolset of kind `mcp`**. Once registered, an MCP toolset appears in the toolset list alongside the seven built-in toolsets. Any agent can be bound to it. The agent's effective tool list then includes both the MCP server's tools and any other toolsets the agent has.
-
-This design keeps the integration surface clean: the operator registers an MCP server once, and any number of agents can bind to it. The server does not need to know which agent is calling; primer handles authentication, transport, and the call routing.
+Primer treats each registered MCP server as a **toolset of kind `mcp`**. Once registered, the MCP toolset appears in the toolset list alongside the built-in toolsets, and any agent can be bound to it. This design keeps the integration surface clean: the operator registers an MCP server once, and any number of agents can bind to it. The server does not need to know which agent is calling; primer handles authentication, transport, and the call routing.
 
 ### Transports
 
@@ -105,7 +109,7 @@ The agent calls the GitHub MCP server's `list_pull_requests` tool (or equivalent
 6. Click **Save**.
 
 
-```ref:features/toolsets-system
+```ref:toolsets/toolsets-system
 The seven built-in toolsets and how to explore tools with list_toolset_tools and call_tool.
 ```
 

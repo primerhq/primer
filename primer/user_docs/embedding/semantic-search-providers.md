@@ -1,7 +1,7 @@
 ---
 slug: semantic-search-providers
 title: Semantic search providers
-section: features
+section: embedding
 summary: Register semantic search providers (pgvector, pgvectorscale, or LanceDB) so collections have a vector store to write and search against.
 ---
 
@@ -26,7 +26,7 @@ erDiagram
     VectorStore ||--o{ EmbeddingRecord : "stores + ranks"
 ```
 
-The search pipeline works as follows: an agent or the console search modal embeds the query text using the collection's configured embedder, sends the resulting vector to the SSP's vector store, and the store returns the top-k nearest chunks by similarity. That ranked list can be further refined by a cross-encoder reranker or MMR diversification; both are configured on the collection, not the SSP (see ref:features/collections-and-documents).
+The search pipeline works as follows: an agent or the console search modal embeds the query text using the collection's configured embedder, sends the resulting vector to the SSP's vector store, and the store returns the top-k nearest chunks by similarity. That ranked list can be further refined by a cross-encoder reranker or MMR diversification; both are configured on the collection, not the SSP (see ref:embedding/collections-and-documents).
 
 ## Configuration
 
@@ -95,14 +95,14 @@ The connection fields (hostname, port, database, username, password) are mutable
 **Invalidate** is a separate action that forces a fresh connection *without* a config change. Click **Invalidate** next to the provider row (or send `POST /v1/ssp/{id}/invalidate`) when the existing connection has gone stale (for example, the database was restarted or a pooled connection dropped) but the stored settings are still correct. The cached adapter is closed and rebuilt on the next request. Either way, no vector data is lost.
 
 
-```ref:features/embedding-providers
+```ref:embedding/embedding-providers
 ```
 
-```ref:features/collections-and-documents
+```ref:embedding/collections-and-documents
 ```
 
-```ref:features/cross-encoder-providers
+```ref:embedding/cross-encoder-providers
 ```
 
-```ref:features/internal-collections
+```ref:embedding/internal-collections
 ```

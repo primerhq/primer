@@ -1,7 +1,7 @@
 ---
 slug: graph-node-types
 title: Graph node types
-section: features
+section: graphs
 summary: Every node kind the graph engine supports (Begin, End, Agent, Subgraph, Fan-out, Fan-in, and Tool-call) with all configuration fields and behavior.
 ---
 
@@ -130,7 +130,7 @@ This trichotomy controls what happens when one parallel instance fails:
 
 #### Synthesized instance ids
 
-Instances are assigned synthesized ids of the form `target[0]`, `target[1]`, etc. These appear in `GraphContext.nodes` alongside the bare aggregator list at `nodes.<target_id>`. Templates can reference both (see `ref:features/graph-templating`).
+Instances are assigned synthesized ids of the form `target[0]`, `target[1]`, etc. These appear in `GraphContext.nodes` alongside the bare aggregator list at `nodes.<target_id>`. Templates can reference both (see `ref:graphs/graph-templating`).
 
 ### Fan-in (`kind=fan_in`)
 
@@ -173,7 +173,7 @@ This pattern takes a list of URLs produced by a research agent, fetches each in 
    - source_node_id: `researcher`
    - source_path: `urls`
    - on_failure: `collect`
-5. Add a Fan-in node (`fanin`). Wire `fetcher` -> `fanin` with a Static edge. In the Fan-in's side panel set the `aggregate_template` (see `ref:features/graph-templating` for syntax).
+5. Add a Fan-in node (`fanin`). Wire `fetcher` -> `fanin` with a Static edge. In the Fan-in's side panel set the `aggregate_template` (see `ref:graphs/graph-templating` for syntax).
 6. Add an End node and wire `fanin` -> `end`.
 7. Save. This graph needs no `max_iterations` because it has no cycle.
 
@@ -191,10 +191,10 @@ flowchart LR
 ```
 
 
-```ref:features/graphs
+```ref:graphs/graphs
 How to create and run a graph from the console.
 ```
 
-```ref:features/graph-templating
+```ref:graphs/graph-templating
 How to write Jinja2 templates that access upstream node outputs.
 ```

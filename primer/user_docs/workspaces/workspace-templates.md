@@ -1,7 +1,7 @@
 ---
 slug: workspace-templates
 title: Workspace templates
-section: features
+section: workspaces
 summary: Author workspace templates that define the image, environment, init commands, and seed files used when materialising a workspace instance.
 ---
 
@@ -163,11 +163,11 @@ sandbox. For local workspaces this is nearly instant. For container and
 Kubernetes workspaces it takes a few seconds while the runtime starts.
 
 
-```ref:features/workspace-providers
+```ref:workspaces/workspace-providers
 Provider types (local, container, Kubernetes) and how to register them.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 How a session binds to a workspace and what the agent can do once inside.
 ```
 

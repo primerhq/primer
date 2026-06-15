@@ -1,7 +1,7 @@
 ---
 slug: graphs
 title: Graphs
-section: features
+section: graphs
 summary: Wire agents into a multi-step directed graph, define nodes and edges on the visual canvas, then run the graph as a workspace session.
 ---
 
@@ -137,14 +137,14 @@ flowchart LR
 The session detail view shows per-node status updating as each superstep runs.
 
 
-```ref:features/graph-node-types
+```ref:graphs/graph-node-types
 Every node kind: configuration fields, behavior, and examples.
 ```
 
-```ref:features/graph-templating
+```ref:graphs/graph-templating
 How Jinja2 templates in nodes access upstream outputs and graph input.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 How sessions are created, how graph_input is validated, and how runs are inspected.
 ```

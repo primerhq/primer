@@ -1,7 +1,7 @@
 ---
 slug: yielding-tools
 title: Yielding tools
-section: features
+section: workspaces
 summary: Tools that suspend a session and release its worker while waiting, and how the session parks and resumes when the event arrives.
 ---
 
@@ -123,11 +123,11 @@ The four tools above (`sleep`, `watch_files`, `invoke_graph`, `subscribe_to_trig
 
 A tool approval gate is the other yield you will encounter, but it is not a tool you call: it is raised by the dispatch layer whenever an active approval policy gates a call. The session parks on a `tool_approval:...` event key until an operator approves or rejects in the console. Because it is a yield, it composes with the tools above (a tool can both be approval-gated and yield for its own event). When an approval gate sits on a yielding tool the park is two-phase: the call first parks for the approval decision, and only once approved does the tool actually run and park again on its own event key (timer, file, graph, human). A rejection short-circuits to a clean error and the tool never runs. The full behavior, including how policies are configured and how approvals appear in the console, lives on the approvals page; it is not repeated here.
 
-```ref:features/toolsets-approvals
+```ref:toolsets/toolsets-approvals
 Configuring required, Rego, and LLM-judge approval policies, and how an approval parks and resumes a call.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 The session lifecycle walkthrough, including how parked sessions appear in the console and the pending ask_user endpoint.
 ```
 
@@ -135,7 +135,7 @@ The session lifecycle walkthrough, including how parked sessions appear in the c
 Creating triggers and subscriptions, and how subscribe_to_trigger parks a session.
 ```
 
-```ref:features/toolsets-system
+```ref:toolsets/toolsets-system
 The system and workspace_ext toolsets where yielding tools live.
 ```
 

@@ -24,7 +24,7 @@ re-querying with the bad sources excluded.
 - A knowledge collection named `internal-knowledge` populated with
   known-good reference material.
 
-```ref:features/graphs
+```ref:graphs/graphs
 Build the canvas, add nodes and edges, wire conditional branches,
 and run the pipeline.
 ```
@@ -34,7 +34,7 @@ Fine-grained tool binding and the turn loop, relevant for
 scoping each agent to only the tools it needs.
 ```
 
-```ref:features/collections-and-documents
+```ref:embedding/collections-and-documents
 Create and populate the internal knowledge collection the
 fact-checker searches.
 ```

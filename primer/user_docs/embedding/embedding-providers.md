@@ -1,7 +1,7 @@
 ---
 slug: embedding-providers
 title: Embedding providers
-section: features
+section: embedding
 summary: Register embedding providers (huggingface, openai, gemini) for collections and semantic search.
 ---
 
@@ -95,10 +95,10 @@ The built-in `huggingface` provider row (id `huggingface`) is created automatica
 ```
 
 
-```ref:features/semantic-search-providers
+```ref:embedding/semantic-search-providers
 The vector store backend that receives the embeddings.
 ```
 
-```ref:features/collections-and-documents
+```ref:embedding/collections-and-documents
 How to create a collection backed by an embedding provider and ingest documents into it.
 ```

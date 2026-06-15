@@ -22,12 +22,12 @@ bad content auto-deletes.
 - An agent named `moderator` bound to a toolset that includes a
   `delete_message` tool.
 
-```ref:features/channels
+```ref:channels/channels
 Configure a Discord provider and create a channel before following
 this recipe.
 ```
 
-```ref:features/toolsets-approvals
+```ref:toolsets/toolsets-approvals
 Approval policies gate specific tool calls behind a manual or
 automated decision.
 ```

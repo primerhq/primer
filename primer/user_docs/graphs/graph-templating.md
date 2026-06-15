@@ -1,7 +1,7 @@
 ---
 slug: graph-templating
 title: Graph templating
-section: features
+section: graphs
 summary: How Jinja2 templates in graph nodes access the shared GraphContext (initial input, upstream node outputs, iteration counter, and fan-out scope variables).
 ---
 
@@ -234,10 +234,10 @@ flowchart LR
 ```
 
 
-```ref:features/graphs
+```ref:graphs/graphs
 Creating and running graphs from the console.
 ```
 
-```ref:features/graph-node-types
+```ref:graphs/graph-node-types
 All node kinds and their template fields.
 ```

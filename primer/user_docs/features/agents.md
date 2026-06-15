@@ -180,11 +180,11 @@ This is the tool-driven equivalent of the agent dropdown in the chat header. It 
 Creating chats, the agent switcher, and streaming.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 Starting sessions, lifecycle statuses, and the session detail view.
 ```
 
-```ref:features/toolsets-system
+```ref:toolsets/toolsets-system
 Toolsets, tool approval policies, and the internal toolsets reference.
 ```
 

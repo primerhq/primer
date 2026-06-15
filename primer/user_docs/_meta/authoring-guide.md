@@ -40,7 +40,7 @@ Severity variants: `info`, `warning`, `danger`, `tip`.
 
 ### ref
 
-```ref:concepts/what-is-an-agent
+```ref:features/agents
 Links to another doc by slug.
 ```
 
