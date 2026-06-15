@@ -87,6 +87,17 @@ class TestDbField:
         assert cfg.db.config.path == tmp_path / "x.sqlite"  # type: ignore[union-attr]
 
 
+class TestDocsUrl:
+    def test_default_is_the_placeholder(self) -> None:
+        cfg = AppConfig()
+        assert cfg.docs_url == "https://DOCS-ORG-PLACEHOLDER.github.io/"
+
+    def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PRIMER_DOCS_URL", "https://docs.example.com/")
+        cfg = AppConfig()
+        assert cfg.docs_url == "https://docs.example.com/"
+
+
 class TestRuntimeModeAndScheduler:
     def test_default_runtime_mode_is_api_plus_worker(self) -> None:
         cfg = AppConfig()

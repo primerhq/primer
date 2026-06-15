@@ -100,6 +100,17 @@ class AppConfig(BaseSettings):
     host: str = Field(default="0.0.0.0", description="Bind host for uvicorn.")
     port: int = Field(default=8000, description="Bind port for uvicorn.")
 
+    # --- Documentation site ----------------------------------------------
+    docs_url: str = Field(
+        default="https://DOCS-ORG-PLACEHOLDER.github.io/",
+        description=(
+            "Published docs site URL the operator console's 'Docs' link "
+            "points at (opened in a new tab). The docs are a standalone "
+            "static site now; set PRIMER_DOCS_URL to the real published "
+            "location at release setup."
+        ),
+    )
+
     # --- Background execution (scheduler + worker pool) ------------------
     runtime_mode: RuntimeMode = Field(
         default=RuntimeMode.API_PLUS_WORKER,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -1586,7 +1587,7 @@ def create_app(config: AppConfig) -> FastAPI:
     _mount_routers(app, runtime_mode=config.runtime_mode)
     # JSX bundle route MUST be registered before the /console static
     # mount so it wins the route match for /console/_app.js.
-    _install_jsx_bundle(app)
+    _install_jsx_bundle(app, docs_url=config.docs_url)
     _mount_console(app)
     _mount_metrics(app, config)
     _install_root_redirect(app)
@@ -1944,7 +1945,7 @@ def _install_request_id(app: FastAPI) -> None:
         return response
 
 
-def _install_jsx_bundle(app: FastAPI) -> None:
+def _install_jsx_bundle(app: FastAPI, *, docs_url: str = "") -> None:
     """Precompile every text/babel script at startup, register a route
     that serves the concatenated bundle at ``/console/_app.js``.
 
@@ -1956,10 +1957,27 @@ def _install_jsx_bundle(app: FastAPI) -> None:
     backend redeploy revalidate quickly (304 when nothing changed,
     fresh bytes when bundle hash flipped) without needing the URL
     to embed the hash.
+
+    Server config surfaced to the browser: the console is served as a
+    static ``index.html`` (no template seam), so server-side flags reach
+    the page by being prepended to this server-built bundle as
+    ``window.__PRIMER_*__`` globals. ``docs_url`` rides this seam so the
+    console's external "Docs" link can read it.
     """
     from starlette.responses import Response
 
     etag, body = build_jsx_bundle(_UI_DIR)
+    if body and docs_url:
+        # Prepend the server-config preamble so the global is defined
+        # before any console script runs, then re-derive the ETag so a
+        # docs_url change invalidates caches.
+        preamble = (
+            "window.__PRIMER_DOCS_URL__ = "
+            + json.dumps(docs_url)
+            + ";\n"
+        ).encode("utf-8")
+        body = preamble + body
+        etag = '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
     if not body:
         # No UI dir or no Babel — leave route unregistered; the
         # console will 404 on /_app.js and the static mount handles
