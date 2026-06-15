@@ -1,9 +1,15 @@
 ---
-slug: sessions
-title: Sessions
-section: features
-summary: "Start, monitor, and control sessions: create a run, watch turns stream in, inspect lifecycle status, and pause, resume, or cancel headless agent work."
+slug: workspaces-and-sessions
+title: Workspaces & Sessions
+section: workspaces
+summary: "How a workspace instance hosts sessions: start, monitor, and control runs, watch turns stream in, inspect lifecycle status, and pause, resume, or cancel headless agent work."
 ---
+
+## Workspace instances host sessions
+
+A **workspace instance** is a live, materialised sandbox created from a workspace template: a filesystem the agent reads and writes, a shell it can run commands in, and a git-backed `.state/` history that records every assistant turn as a commit. One instance can host many sessions from different agents or graphs running at the same time; the sessions do not share memory but they do share the instance filesystem. (How instances are backed and configured is covered by their provider and template, linked at the foot of this page.)
+
+A **session** is one run on that instance. The rest of this page is about the session lifecycle: how to start a run, watch its turns, and pause, resume, or cancel it.
 
 ## What a session is
 
@@ -139,7 +145,7 @@ Agent creation, tool selection, and system prompt configuration.
 Worker pools, claim lifecycle, and how sessions are scheduled.
 ```
 
-```ref:features/yielding-tools
+```ref:workspaces/yielding-tools
 How a session parks on a tool call and resumes when the event fires.
 ```
 

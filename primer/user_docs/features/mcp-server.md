@@ -150,11 +150,11 @@ After Claude Code reconnects, the published tools appear in its palette. From th
 The same pattern wires graphs (`system__create_graph` then `system__invoke_graph`), spins up workspace sessions (`workspaces__create_workspace_session`), and manages channels and triggers, all without leaving the external agent's interface.
 
 
-```ref:features/toolsets-mcp
+```ref:toolsets/toolsets-external
 Mount external MCP servers as toolsets so primer's agents can call them.
 ```
 
-```ref:features/toolsets-approvals
+```ref:toolsets/toolsets-approvals
 How the approval gate works and which tools require approval before execution.
 ```
 

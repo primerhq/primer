@@ -7,7 +7,7 @@ summary: Public endpoints to inspect worker pool state, in-flight capacity, and 
 
 The workers and health endpoints expose the runtime state of the worker pool and the scheduler. Both are public (no authentication required) and are suitable for use in load balancer health checks and operational dashboards.
 
-```ref:features/yielding-tools
+```ref:workspaces/yielding-tools
 How sessions yield control and park while waiting for events.
 ```
 

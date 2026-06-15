@@ -182,7 +182,7 @@ The repo your build pushes to is an ordinary inbound bundle. A consumer register
 Agents and their configuration fields.
 ```
 
-```ref:features/toolsets-system
+```ref:toolsets/toolsets-system
 How a harness attaches toolsets to agents using the two-level binding model.
 ```
 

@@ -1,7 +1,7 @@
 ---
 slug: workspace-providers
 title: Workspace providers
-section: features
+section: workspaces
 summary: Register workspace providers (local, container, Kubernetes) and understand how each backend materialises isolated sandboxes for agent sessions.
 ---
 
@@ -150,17 +150,17 @@ need to create it, but you may create additional local providers pointing at
 different directories.
 
 
-```ref:features/workspace-templates
+```ref:workspaces/workspace-templates
 Author templates that materialise workspaces from a provider and configure
 the image, environment variables, init commands, and initial files.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 Sessions run on workspace instances; one agent or graph per session,
 many sessions per workspace.
 ```
 
-```ref:features/workspace-toolset
+```ref:workspaces/workspace-toolset
 The 27-tool workspace toolset agents use to manage providers, templates,
 workspaces, and sessions programmatically.
 ```

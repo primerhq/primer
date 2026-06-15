@@ -1,7 +1,7 @@
 ---
 slug: toolsets-approvals
 title: Tool approvals
-section: features
+section: toolsets
 summary: Gate tool calls with required, Rego, or LLM-judge approval, and understand how approval-required tools are refused over MCP.
 ---
 
@@ -191,7 +191,7 @@ The amber banner in the session or chat detail view also shows the Approve and R
 Rejecting a tool call is not a retry. The agent receives an error message. If the agent's system prompt does not anticipate a rejection it may stall or end unexpectedly. Test the reject path in a development session before enabling a required configuration in production.
 ```
 
-```ref:features/toolsets-system
+```ref:toolsets/toolsets-system
 The seven built-in toolsets and the tools they contain.
 ```
 

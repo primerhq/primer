@@ -11,7 +11,7 @@ Channel providers hold the credentials for a messaging platform (Slack, Telegram
 How chats, ask_user, and the channel bridge fit together.
 ```
 
-```ref:features/channels
+```ref:channels/channels
 Configure channel providers in the console.
 ```
 

@@ -11,7 +11,7 @@ A graph is a directed network of typed nodes connected by static or conditional 
 Agents that graph nodes reference.
 ```
 
-```ref:features/graphs
+```ref:graphs/graphs
 Build and run graphs in the console.
 ```
 

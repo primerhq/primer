@@ -1,7 +1,7 @@
 ---
 slug: channel-workspace-association
 title: Channel and workspace association
-section: features
+section: channels
 summary: Associate a workspace with a channel so every session gate (ask_user, tool approval, inform) from that workspace forwards to the channel room automatically.
 ---
 
@@ -104,18 +104,18 @@ The `allowed_agents` and `allow_agent_switch` settings live on the channel's cha
 These settings are on the channel itself, not on the association, because they describe what is allowed for that room regardless of which workspace sessions are currently forwarding to it.
 
 
-```ref:features/channels
+```ref:channels/channels
 Channel rooms, chat config, and in-channel commands.
 ```
 
-```ref:features/channel-providers
+```ref:channels/channel-providers
 Platform credentials and provider setup.
 ```
 
-```ref:features/workspace-providers
+```ref:workspaces/workspace-providers
 Workspace provider types and creating workspaces.
 ```
 
-```ref:features/yielding-tools
+```ref:workspaces/yielding-tools
 How ask_user and tool approval gates park and resume a session.
 ```

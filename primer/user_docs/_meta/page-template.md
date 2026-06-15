@@ -81,16 +81,16 @@ Features page, then the concept file can be removed by that task.
 Mapping (old concept file -> target Features page):
 
 - `concepts/what-is-an-agent.md` -> `features/agents.md`
-- `concepts/sessions.md` (slug sessions-concept) -> `features/sessions.md`
+- `concepts/sessions.md` (slug sessions-concept) -> `workspaces/workspaces-and-sessions.md`
 - `concepts/chats.md` (slug chats-concept) -> `features/chats.md`
 - `concepts/workspaces.md` (slug workspaces-concept) ->
-  `features/workspace-providers.md` and `features/workspace-templates.md`
-- `concepts/toolsets-and-tools.md` -> `features/toolsets-system.md`
+  `workspaces/workspace-providers.md` and `workspaces/workspace-templates.md`
+- `concepts/toolsets-and-tools.md` -> `toolsets/toolsets-system.md`
 - `concepts/triggers-and-subscriptions.md` -> `features/triggers.md`
-  and `features/yielding-tools.md`
+  and `workspaces/yielding-tools.md`
 - `concepts/tool-approval.md` (slug tool-approval-concept) ->
-  `features/toolsets-approvals.md`
-- `concepts/yielding-and-claims.md` -> `features/yielding-tools.md`
+  `toolsets/toolsets-approvals.md`
+- `concepts/yielding-and-claims.md` -> `workspaces/yielding-tools.md`
   and `features/workers.md`
 - `concepts/troubleshooting.md` was MOVED to
   `reference/troubleshooting.md` (section reference).
@@ -105,10 +105,10 @@ should reuse their prose where it maps, then remove the stale file:
 - `features/auth-and-tokens.md` -> fold into `features/mcp-server.md`
 - `features/knowledge-collections.md` and
   `features/knowledge-documents.md` -> fold into
-  `features/collections-and-documents.md`
+  `embedding/collections-and-documents.md`
 - `features/semantic-search.md` -> fold into
-  `features/semantic-search-providers.md`
+  `embedding/semantic-search-providers.md`
 - `features/tool-approval.md` -> fold into
-  `features/toolsets-approvals.md`
+  `toolsets/toolsets-approvals.md`
 - `features/workers-and-health.md` -> fold into `features/workers.md`
-- `features/workspaces.md` -> fold into `features/workspace-providers.md`
+- `features/workspaces.md` -> fold into `workspaces/workspace-providers.md`

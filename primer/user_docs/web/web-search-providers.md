@@ -1,7 +1,7 @@
 ---
 slug: web-search-providers
 title: Web search providers
-section: features
+section: web
 summary: Register web search providers (DuckDuckGo, Tavily, Firecrawl, Exa) and configure single or aggregated fallback routing so agents can search the web.
 ---
 
@@ -97,5 +97,5 @@ Agents running in-flight pick up the new provider within 5 seconds.
 If Tavily is unavailable or returns an error, the service automatically retries with DuckDuckGo before surfacing an error to the agent.
 
 
-```ref:features/toolsets-system
+```ref:toolsets/toolsets-system
 ```

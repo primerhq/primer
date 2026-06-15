@@ -141,7 +141,7 @@ Now open a new chat with content-router and ask: "Find an agent that can outline
 This is the dogfooding pattern: an agent that finds and runs other agents, with the full catalog kept out of its context behind semantic search.
 ```
 
-```ref:features/internal-collections
+```ref:embedding/internal-collections
 The internal collections and the search toolset.
 ```
 
@@ -159,7 +159,7 @@ Start a workspace session bound to brief-writer and the workspace you just creat
 ```embed:session-detail
 ```
 
-```ref:features/workspace-providers
+```ref:workspaces/workspace-providers
 Workspace providers, templates, and the file tools.
 ```
 
@@ -191,11 +191,11 @@ flowchart LR
     j -->|accept| done([done])
 ```
 
-```ref:features/graphs
+```ref:graphs/graphs
 Node and edge kinds, routers, and fan-out.
 ```
 
-```ref:features/yielding-tools
+```ref:workspaces/yielding-tools
 Why a tool call can suspend a run and how it resumes.
 ```
 

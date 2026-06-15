@@ -1,7 +1,7 @@
 ---
 slug: workspace-toolset
 title: Workspace toolset
-section: features
+section: workspaces
 summary: "The seven workspace tools (ls, read, write, edit, glob, grep, exec) auto-registered with any agent that runs inside a workspace session."
 ---
 
@@ -101,14 +101,14 @@ In the foreground it returns the exit code, then stdout, then stderr (truncated 
 `exec` gives the agent a real shell inside the workspace sandbox. Scope what a workspace agent can reach through its workspace template and the backend you run it on (a throwaway local directory, a container, or a Kubernetes pod), and gate sensitive operations with an approval policy if needed.
 ```
 
-```ref:features/workspace-providers
+```ref:workspaces/workspace-providers
 Workspace backends (local, container, kubernetes) and how a workspace is materialised.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 Workspace sessions: how an agent run is bound to a workspace.
 ```
 
-```ref:features/yielding-tools
+```ref:workspaces/yielding-tools
 watch_files, invoke_graph, and the park-resume protocol.
 ```

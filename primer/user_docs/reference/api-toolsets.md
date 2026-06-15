@@ -7,7 +7,7 @@ summary: REST endpoints to create, list, update, delete, and introspect toolsets
 
 A toolset is a named collection of tools sourced from either the internal registry or a connected MCP server. Agents reference toolsets by scoped tool ids of the form `<toolset_id>__<tool_name>`.
 
-```ref:features/toolsets-system
+```ref:toolsets/toolsets-system
 What toolsets are and how tools are scoped.
 ```
 

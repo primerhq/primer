@@ -29,12 +29,12 @@ Scheduled and delayed triggers, subscription kinds, and the
 timezone-aware cron wizard.
 ```
 
-```ref:features/channels
+```ref:channels/channels
 Configure a Slack provider and bind it to the workspace so the
 agent can post messages.
 ```
 
-```ref:features/collections-and-documents
+```ref:embedding/collections-and-documents
 Create and populate the incidents collection before the first
 trigger fires.
 ```

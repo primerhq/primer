@@ -121,11 +121,11 @@ Drain a worker before a planned restart or scale-down so in-flight sessions comp
 A draining worker accepts no new claims. Once all in-flight sessions complete the worker exits. Calling Drain on an already-draining worker is a no-op.
 
 
-```ref:features/yielding-tools
+```ref:workspaces/yielding-tools
 How yielding tools park a session, release the lease, and queue the session for resume.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 The full session lifecycle, including WAITING, PAUSED, and ENDED states.
 ```
 

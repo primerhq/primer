@@ -136,7 +136,7 @@ Rejection is not a retry. The agent receives a rejection result and decides how 
 Every field in the agent create modal, and the tool allowlist.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 Sessions for headless, autonomous work without a human in the loop.
 ```
 

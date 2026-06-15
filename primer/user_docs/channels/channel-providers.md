@@ -1,7 +1,7 @@
 ---
 slug: channel-providers
 title: Channel providers
-section: features
+section: channels
 summary: Register a Telegram bot, a Slack app, or a Discord bot as a channel provider so primer can send and receive messages on that platform.
 ---
 
@@ -189,11 +189,11 @@ Discord Developer Portal  https://discord.com/developers/applications
 After creating a provider, return to the **Channels** tab to add the specific rooms (channel IDs) that belong to this provider.
 
 
-```ref:features/channels
+```ref:channels/channels
 Create channels and bind them to workspaces.
 ```
 
-```ref:features/channel-workspace-association
+```ref:channels/channel-workspace-association
 Associate a channel with a workspace so session gates forward there.
 ```
 

@@ -1,7 +1,7 @@
 ---
 slug: internal-collections
 title: Internal collections
-section: features
+section: embedding
 summary: Configure the internal-collections subsystem to enable semantic search across agents, graphs, tools, and knowledge collections.
 ---
 
@@ -98,12 +98,12 @@ editable at any time.
 ```
 
 
-```ref:features/semantic-search-providers
+```ref:embedding/semantic-search-providers
 Create and configure the semantic search provider that backs the four reserved
 collections.
 ```
 
-```ref:features/collections-and-documents
+```ref:embedding/collections-and-documents
 Operator-managed knowledge collections use the same SSP and embedding
 machinery.
 ```

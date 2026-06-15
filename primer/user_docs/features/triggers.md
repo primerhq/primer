@@ -162,11 +162,11 @@ flowchart LR
     S3 --> PR[Parked run resumes]
 ```
 
-```ref:features/yielding-tools
+```ref:workspaces/yielding-tools
 How subscribe_to_trigger parks a session and how the resume mechanism works.
 ```
 
-```ref:features/sessions
+```ref:workspaces/workspaces-and-sessions
 Session lifecycle and parked_status transitions.
 ```
 

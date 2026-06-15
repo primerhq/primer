@@ -1,7 +1,7 @@
 ---
 slug: channels
 title: Channels
-section: features
+section: channels
 summary: "Connect Slack, Telegram, or Discord to primer: create a channel for each platform room, enable chat, and bind a workspace so session gates forward there."
 ---
 
@@ -93,11 +93,11 @@ Channels support inbound and outbound media:
 - **Outbound:** media produced by tools (files written to a workspace, images returned from a tool result) are forwarded to the channel when the session gate fires.
 
 
-```ref:features/channel-providers
+```ref:channels/channel-providers
 Set up the provider credentials before creating channels.
 ```
 
-```ref:features/channel-workspace-association
+```ref:channels/channel-workspace-association
 Bind a channel to a workspace and understand the full inbound/outbound flow.
 ```
 

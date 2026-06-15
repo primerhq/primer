@@ -1,7 +1,7 @@
 ---
 slug: collections-and-documents
 title: Collections and documents
-section: features
+section: embedding
 summary: Create knowledge collections with a fixed embedder and SSP, ingest plaintext or uploaded files, and search with optional MMR and cross-encoder reranking.
 ---
 
@@ -136,14 +136,14 @@ The console search above is for operators. An agent reaches collections and docu
 
 A typical flow is: call `search__search_collections` to locate a knowledge base, `system__search_collection` to pull the most relevant chunks (or metadata-filter its documents), then call `get_document_content` on the ones the task needs.
 
-```ref:features/embedding-providers
+```ref:embedding/embedding-providers
 ```
 
-```ref:features/semantic-search-providers
+```ref:embedding/semantic-search-providers
 ```
 
-```ref:features/cross-encoder-providers
+```ref:embedding/cross-encoder-providers
 ```
 
-```ref:features/internal-collections
+```ref:embedding/internal-collections
 ```

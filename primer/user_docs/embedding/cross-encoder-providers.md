@@ -1,7 +1,7 @@
 ---
 slug: cross-encoder-providers
 title: Cross-encoder providers
-section: features
+section: embedding
 summary: Register cross-encoder providers to rerank search results returned by the semantic search subsystem.
 ---
 
@@ -85,10 +85,10 @@ The built-in `huggingface-ce` provider row is created automatically on first boo
 ```
 
 
-```ref:features/semantic-search-providers
+```ref:embedding/semantic-search-providers
 The vector store backend that the cross-encoder reranks results from.
 ```
 
-```ref:features/collections-and-documents
+```ref:embedding/collections-and-documents
 How to enable the cross-encoder reranker toggle on a collection.
 ```
