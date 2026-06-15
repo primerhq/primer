@@ -173,6 +173,11 @@ class _CheckpointMixin:
                     "resume_metadata": dict(p.resume_metadata),
                     "llm_messages": list(p.llm_messages),
                     "iteration": p.iteration,
+                    # Unified nested-yield: the in-flight subagent chain (root-
+                    # first) + deeper leaf when the node yielded from inside a
+                    # nested invoke_agent. Empty / None for an ordinary park.
+                    "frames": list(p.frames),
+                    "leaf": dict(p.leaf) if p.leaf is not None else None,
                 }
                 for p in self._pending_agent_yields
             ],
@@ -282,6 +287,8 @@ class _CheckpointMixin:
                 resume_metadata=dict(raw.get("resume_metadata") or {}),
                 llm_messages=list(raw.get("llm_messages") or []),
                 iteration=raw["iteration"],
+                frames=list(raw.get("frames") or []),
+                leaf=dict(raw["leaf"]) if raw.get("leaf") is not None else None,
             )
             for raw in (payload.get("pending_agent_yields") or [])
         ]
