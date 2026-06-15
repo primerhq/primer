@@ -94,6 +94,21 @@ class SessionClaimAdapter(ClaimAdapter):
             await self._storage.update(parked, conn=conn)
             return
 
+        # Preserve-park branch: the operator paused a resumable session (the
+        # pause_requested gate in pool.py / run_one_session_turn). Drop the
+        # lease but leave the park columns (parked_status stays 'resumable',
+        # parked_state intact) so a later /resume can replay the hook. The
+        # pause completion still counts as a turn, so bump turn_no /
+        # last_turn_at on success, mirroring the non-park branch.
+        if outcome.preserve_park:
+            updates = {"last_worker_id": None}
+            if outcome.success:
+                updates["turn_no"] = sess.turn_no + 1
+                updates["last_turn_at"] = datetime.now(timezone.utc)
+            preserved = sess.model_copy(update=updates)
+            await self._storage.update(preserved, conn=conn)
+            return
+
         # Non-park release: clear any park columns. Only bump turn_no /
         # stamp last_turn_at when a turn actually ran (outcome.success).
         # A failed release (reclaim, executor build failure, executor crash)

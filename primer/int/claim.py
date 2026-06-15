@@ -52,6 +52,12 @@ class ReleaseOutcome:
     last_error: str | None = None
     drop_lease: bool = False
     park: ParkRequest | None = None
+    # When True, on_release leaves the entity's park columns (parked_status,
+    # parked_state, parked_event_keys, parked_at) and turn_no untouched. Used
+    # by the pause-while-parked path: the operator paused a resumable session,
+    # so the lease drops but the park is retained for a later /resume to
+    # replay. Mutually exclusive with ``park`` (which re-parks instead).
+    preserve_park: bool = False
 
 
 class ClaimAdapter(ABC):

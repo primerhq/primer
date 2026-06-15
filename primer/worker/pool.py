@@ -532,6 +532,14 @@ class WorkerPool:
                     outcome = ReleaseOutcome(success=True, drop_lease=True)
                 elif session_row.cancel_requested:
                     outcome = await self._end_session(session_row, reason="cancelled")
+                elif session_row.pause_requested:
+                    # Pause-while-parked: the operator paused a resumable
+                    # session. Transition to PAUSED and preserve the park
+                    # instead of resuming, so a later /resume re-arms the lease
+                    # and replays the hook. The normal-turn path applies the
+                    # same guard in run_one_session_turn; the resume branch
+                    # bypasses that function, so re-check here (e2e t0867).
+                    outcome = await self._pause_session(session_row)
                 else:
                     outcome = await self._resume_engine_session(engine_lease, session_row)
             else:
@@ -609,6 +617,29 @@ class WorkerPool:
         # success=True so on_release does not write a terminal error record;
         # drop_lease=True so the ended session is not re-claimed.
         return ReleaseOutcome(success=True, drop_lease=True)
+
+    async def _pause_session(self, session):
+        """Write a PAUSED status to a resumable session and return a
+        park-preserving outcome. Mirrors _end_session, but keeps the park:
+        preserve_park=True tells on_release to leave parked_status (still
+        'resumable'), parked_state, and turn_no untouched, so a later /resume
+        re-arms the lease and replays the hook."""
+        from primer.int.claim import ReleaseOutcome
+
+        storage = self._storage.get_storage(WorkspaceSession)
+        fresh = await storage.get(session.id)
+        if fresh is not None:
+            paused = fresh.model_copy(update={"status": SessionStatus.PAUSED})
+            await storage.update(paused)
+        else:
+            logger.warning(
+                "pause_session: row %s vanished before pause write", session.id,
+            )
+        # drop_lease=True so the paused session is not re-claimed until /resume
+        # re-arms it; preserve_park=True so on_release keeps the park columns.
+        return ReleaseOutcome(
+            success=True, drop_lease=True, preserve_park=True,
+        )
 
     async def _write_approval_record_for_session(
         self, *, session, blob: dict, payload,
