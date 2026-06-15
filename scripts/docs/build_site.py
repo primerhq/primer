@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import html
 import logging
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -37,6 +38,12 @@ from primer.user_docs_service import UserDocsService  # noqa: E402
 logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "site_template"
+
+# ``ref:<section>/<slug>`` cross-link forms. Inline links look like
+# ``[text](ref:section/slug)`` (optionally ``#anchor``); the block form
+# is a fenced code block whose info string is ``ref:section/slug`` with
+# an optional explanatory body. See ui/components/docs/directives-ref.jsx.
+_REF_SLUG_RE = r"[A-Za-z0-9][A-Za-z0-9._/#-]*"
 
 
 def _doc_url(slug: str) -> str:
@@ -91,17 +98,73 @@ def _render_sidebar(sections: list[dict[str, Any]]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Body rendering
+# Markdown rendering + ref resolution
 # ---------------------------------------------------------------------------
-def render_body(md_source: str, slug_url_map: dict[str, str]) -> str:
-    """Render a doc body to HTML.
+def _make_md():
+    from markdown_it import MarkdownIt
+    from mdit_py_plugins.anchors import anchors_plugin
 
-    Placeholder implementation: escapes the raw markdown into a ``<pre>``
-    block. The real markdown renderer (with ref resolution) lands in the
-    next task. ``slug_url_map`` is accepted now so the call site is
-    stable.
+    md = MarkdownIt("commonmark", {"html": False, "linkify": True})
+    md.enable("table")
+    md.use(anchors_plugin, max_level=3)
+    return md
+
+
+def _resolve_ref(target: str, slug_url_map: dict[str, str]) -> str:
+    """Resolve a ``<slug>[#anchor]`` ref target to its page url, raising
+    ``KeyError`` (after logging) when the slug is unknown."""
+    slug, _, anchor = target.partition("#")
+    url = slug_url_map.get(slug)
+    if url is None:
+        logger.warning("docs build: unresolved ref slug %r", slug)
+        raise KeyError(f"unresolved ref slug: {slug}")
+    return f"{url}#{anchor}" if anchor else url
+
+
+def _rewrite_ref_blocks(md_source: str, slug_url_map: dict[str, str]) -> str:
+    """Turn ```ref:<slug>``` fenced blocks into a markdown link.
+
+    The fence info string is ``ref:<slug>[#anchor]``; the block body (if
+    any) is a one-line note. We rewrite the whole block to an inline link
+    so the standard renderer produces a normal anchor.
     """
-    return f"<pre>{html.escape(md_source)}</pre>"
+    fence = re.compile(
+        r"^```ref:(?P<target>" + _REF_SLUG_RE + r")[ \t]*\n"
+        r"(?P<body>.*?)"
+        r"^```[ \t]*$",
+        re.MULTILINE | re.DOTALL,
+    )
+
+    def repl(m: re.Match[str]) -> str:
+        url = _resolve_ref(m.group("target"), slug_url_map)
+        note = (m.group("body") or "").strip()
+        text = note or m.group("target")
+        return f"[{text}]({url})\n"
+
+    return fence.sub(repl, md_source)
+
+
+def _rewrite_inline_refs(html_out: str, slug_url_map: dict[str, str]) -> str:
+    """Rewrite ``href="ref:<slug>[#anchor]"`` produced by inline
+    ``[text](ref:slug)`` links into the resolved page url."""
+    href = re.compile(r'href="ref:(?P<target>' + _REF_SLUG_RE + r')"')
+
+    def repl(m: re.Match[str]) -> str:
+        return f'href="{_resolve_ref(m.group("target"), slug_url_map)}"'
+
+    return href.sub(repl, html_out)
+
+
+def render_markdown(md_source: str, slug_url_map: dict[str, str]) -> str:
+    """Render ``md_source`` to HTML, resolving every ``ref:<slug>``
+    cross-link (both the inline-link and fenced-block forms) to a real
+    page url via ``slug_url_map``. Headings (h2/h3) get stable ``id``
+    anchors. Raises ``KeyError`` on an unknown ref slug.
+    """
+    md = _make_md()
+    pre = _rewrite_ref_blocks(md_source, slug_url_map)
+    rendered = md.render(pre)
+    return _rewrite_inline_refs(rendered, slug_url_map)
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +204,7 @@ def build_site(src_root: Path, out_dir: Path) -> None:
     for entry in service.all_entries():
         title = entry.title
         section_title = section_titles.get(entry.section, entry.section)
-        body_html = render_body(entry.body, slug_url_map)
+        body_html = render_markdown(entry.body, slug_url_map)
         article = (
             _breadcrumb(section_title, title)
             + f"<h1>{html.escape(title)}</h1>\n"
