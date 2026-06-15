@@ -78,6 +78,10 @@ dev = [
     "respx>=0.23.1",
     "testcontainers[postgres]>=4.14.2",
 ]
+docs = [
+    "markdown-it-py>=3",
+    "mdit-py-plugins>=0.4",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
