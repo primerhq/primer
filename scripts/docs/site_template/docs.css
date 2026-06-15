@@ -359,17 +359,17 @@ pre.mermaid {
 }
 
 /* ai-doc cross-link card (agent-facing reference) */
-a.ai-doc {
+.ai-doc {
   display: block; padding: 12px 16px; margin: 0 0 20px;
   background: var(--bg-1); border: 1px solid var(--violet);
   border-left: 4px solid var(--violet); border-radius: 10px; color: var(--text);
 }
-a.ai-doc:hover { text-decoration: none; background: var(--bg-hover); }
-a.ai-doc .ai-doc-label {
+.ai-doc:hover { text-decoration: none; background: var(--bg-hover); }
+.ai-doc .ai-doc-label {
   font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em;
   color: var(--violet); margin-bottom: 4px;
 }
-a.ai-doc .ai-doc-slug { font-weight: 600; font-size: 14px; }
+.ai-doc .ai-doc-slug { font-weight: 600; font-size: 14px; }
 
 /* embed: live-component screenshot figure (light/dark via <picture>) */
 figure.embed {

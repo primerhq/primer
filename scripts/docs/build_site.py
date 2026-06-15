@@ -338,6 +338,47 @@ def _section_titles(sections: list[dict[str, Any]]) -> dict[str, str]:
 
 
 # ---------------------------------------------------------------------------
+# 404 + sitemap
+# ---------------------------------------------------------------------------
+def _render_404(template: str, sidebar: str, home_url: str) -> str:
+    """Render a friendly 404 page using the standard page shell.
+
+    Uses the same sidebar nav as every page and points back at the docs
+    home so a mistyped url still lands somewhere navigable.
+    """
+    article = (
+        '<nav class="breadcrumb"><span>Docs</span> / '
+        "<span>Not found</span></nav>"
+        "<h1>Page not found</h1>\n"
+        "<p>The page you were looking for does not exist or has moved.</p>\n"
+        f'<p><a href="{html.escape(home_url)}">Back to the docs home</a></p>\n'
+    )
+    return (
+        template.replace("{{TITLE}}", "Page not found")
+        .replace("{{SIDEBAR}}", sidebar)
+        .replace("{{ARTICLE}}", article)
+    )
+
+
+def _render_sitemap(page_urls: list[str]) -> str:
+    """Render a sitemap urlset listing every published page url.
+
+    Locs are root-relative absolute paths (``/section/slug/``); keeping
+    them origin-free means the same sitemap works regardless of where the
+    site is hosted.
+    """
+    locs = "\n".join(
+        f"  <url><loc>{html.escape(u)}</loc></url>" for u in page_urls
+    )
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{locs}\n"
+        "</urlset>\n"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Search index
 # ---------------------------------------------------------------------------
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -377,11 +418,49 @@ def _search_entry(entry: Any, body_html: str) -> dict[str, Any]:
     }
 
 
+class DocsLintError(RuntimeError):
+    """Raised when the corpus fails the build-time lint gate."""
+
+
+def _run_lint_gate(src_root: Path) -> None:
+    """Run the doc-corpus lint (frontmatter / ref+embed resolution /
+    em-dash / ...) and raise on any error-severity issue.
+
+    Reuses ``scripts.docs.docs_lint`` (the same checks the standalone
+    linter and the FastAPI lifespan run) rather than duplicating them, so
+    the static build cannot publish a corpus the linter would reject. Warnings
+    are non-blocking. A broken ``ref:`` or an ``embed:`` id missing from
+    ``_fixtures/registry.json`` is an error and therefore fails the build.
+    """
+    from scripts.docs.docs_lint import lint_corpus
+
+    issues = lint_corpus(src_root)
+    errors = [i for i in issues if i.severity == "error"]
+    if errors:
+        detail = "\n".join(
+            f"  {i.file}"
+            + (f":{i.line}" if i.line is not None else "")
+            + f": {i.rule}: {i.message}"
+            for i in sorted(errors, key=lambda i: (i.file, i.line or 0, i.rule))
+        )
+        raise DocsLintError(
+            f"docs lint gate failed with {len(errors)} error(s):\n{detail}"
+        )
+
+
 def build_site(src_root: Path, out_dir: Path) -> None:
     """Render the user-docs corpus under ``src_root`` into a static
-    multi-page site at ``out_dir``."""
+    multi-page site at ``out_dir``.
+
+    Before rendering, the corpus is run through the doc lint gate; any
+    error-severity issue (bad frontmatter, unresolved ``ref:`` slug,
+    unregistered ``embed:`` id, em-dash, ...) aborts the build.
+    """
     src_root = Path(src_root)
     out_dir = Path(out_dir)
+
+    # Fail fast on a corpus the linter would reject (before writing files).
+    _run_lint_gate(src_root)
 
     service = UserDocsService(src_root)
     service.reload_index()
@@ -395,6 +474,7 @@ def build_site(src_root: Path, out_dir: Path) -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     search_index: list[dict[str, Any]] = []
+    page_urls: list[str] = []
     for entry in service.all_entries():
         # Skip internal authoring docs: the _meta section (authoring-guide,
         # page-template) is writer guidance, not public documentation. It is
@@ -405,6 +485,7 @@ def build_site(src_root: Path, out_dir: Path) -> None:
         section_title = section_titles.get(entry.section, entry.section)
         body_html = render_markdown(entry.body, slug_url_map)
         search_index.append(_search_entry(entry, body_html))
+        page_urls.append(_doc_url(entry.slug))
         article = (
             _breadcrumb(section_title, title)
             + f"<h1>{html.escape(title)}</h1>\n"
@@ -424,6 +505,20 @@ def build_site(src_root: Path, out_dir: Path) -> None:
     # section + url + heading texts + a short plain-text excerpt).
     (out_dir / "search-index.json").write_text(
         json.dumps(search_index, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    # 404 page: the page shell + a friendly "not found" article linking
+    # back to the docs home (the first published page, else "/").
+    home_url = page_urls[0] if page_urls else "/"
+    (out_dir / "404.html").write_text(
+        _render_404(template, sidebar, home_url),
+        encoding="utf-8",
+    )
+
+    # sitemap.xml: every published page url (root-relative).
+    (out_dir / "sitemap.xml").write_text(
+        _render_sitemap(page_urls),
         encoding="utf-8",
     )
 

@@ -27,32 +27,58 @@ from primer.user_docs_service import UserDocsService
 # Embeds manifest -- embed ids from primer/user_docs/_fixtures/registry.json.
 # ---------------------------------------------------------------------------
 _REGISTRY_PATH = _REPO_ROOT / "primer" / "user_docs" / "_fixtures" / "registry.json"
-try:
-    _registry_data = json.loads(_REGISTRY_PATH.read_text(encoding="utf-8"))
-    _EMBEDS_MANIFEST: list[str] = _registry_data.get("embeds", [])
-except Exception:  # noqa: BLE001
-    _EMBEDS_MANIFEST = []
+
+
+def load_embeds_manifest(src_root: pathlib.Path | None = None) -> list[str]:
+    """Return the registered embed ids from ``_fixtures/registry.json``.
+
+    ``src_root`` defaults to the repo's ``primer/user_docs`` so the CLI
+    keeps its existing behaviour; the build passes its own corpus root.
+    """
+    root = pathlib.Path(src_root) if src_root else _USER_DOCS_ROOT
+    registry = root / "_fixtures" / "registry.json"
+    try:
+        data = json.loads(registry.read_text(encoding="utf-8"))
+        return list(data.get("embeds", []))
+    except Exception:  # noqa: BLE001
+        return []
+
 
 _USER_DOCS_ROOT = _REPO_ROOT / "primer" / "user_docs"
 
+_EMBEDS_MANIFEST: list[str] = load_embeds_manifest()
 
-def main() -> int:
-    svc = UserDocsService(_USER_DOCS_ROOT)
-    # Exclude _fixtures/ by building a patched service that skips that subtree.
-    # The simplest approach: reload_index walks rglob("*.md"); we override it
-    # to skip paths under _fixtures/ before indexing.
-    _fixtures_prefix = _USER_DOCS_ROOT / "_fixtures"
+
+def index_corpus(src_root: pathlib.Path) -> UserDocsService:
+    """Index ``src_root`` into a service, dropping ``_fixtures/`` docs.
+
+    ``reload_index`` walks ``rglob("*.md")`` which would pull in the
+    fixture markdown used only to drive embed capture; those are not real
+    docs, so we strip them after indexing (matching the CLI's behaviour).
+    """
+    src_root = pathlib.Path(src_root)
+    svc = UserDocsService(src_root)
     svc.reload_index()
-
-    # Remove any entries whose path falls under _fixtures/
+    fixtures_prefix = src_root / "_fixtures"
     to_remove = [
-        slug for slug, entry in svc._entries.items()
-        if _fixtures_prefix in entry.path.parents or entry.path.parent == _fixtures_prefix
+        slug for slug, entry in svc._entries.items()  # noqa: SLF001
+        if fixtures_prefix in entry.path.parents
+        or entry.path.parent == fixtures_prefix
     ]
     for slug in to_remove:
-        del svc._entries[slug]
+        del svc._entries[slug]  # noqa: SLF001
+    return svc
 
-    issues = run_lint(svc, embeds_manifest=_EMBEDS_MANIFEST)
+
+def lint_corpus(src_root: pathlib.Path) -> list:
+    """Index ``src_root`` and run every lint rule, returning the issues."""
+    svc = index_corpus(src_root)
+    return run_lint(svc, embeds_manifest=load_embeds_manifest(src_root))
+
+
+def main() -> int:
+    svc = index_corpus(_USER_DOCS_ROOT)
+    issues = run_lint(svc, embeds_manifest=load_embeds_manifest())
 
     errors = [i for i in issues if i.severity == "error"]
     warnings = [i for i in issues if i.severity == "warning"]
