@@ -34,6 +34,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Path, Reque
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.llm.anthropic import _discover_anthropic_models
+from primer.llm.gemini import _discover_gemini_models
 from primer.llm.openrouter import _discover_openrouter_models
 
 from primer.api.deps import (
@@ -59,6 +60,7 @@ from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderProvider,
     EmbeddingProvider,
+    GoogleConfig,
     LLMProvider,
     OpenRouterConfig,
     Toolset,
@@ -240,9 +242,10 @@ async def discover_llm_models(
     endpoint deliberately bypasses the adapter for discovery and calls
     the provider's native list endpoint directly.
 
-    ``ollama``, ``openresponses``, ``openrouter``, and ``anthropic``
-    expose a live list-models API. For ``gemini`` the frontend should
-    fall back to a curated suggested-model list (it returns 400 here).
+    ``ollama``, ``openresponses``, ``openrouter``, ``anthropic``, and
+    ``gemini`` expose a live list-models API. Any other provider type
+    returns 400 and the frontend falls back to its curated
+    suggested-model list.
     """
     # Validate the draft via the canonical model so config shape errors
     # surface cleanly. We never persist or run anything from the stub.
@@ -298,6 +301,33 @@ async def discover_llm_models(
                 f"{exc}",
             ) from exc
         result = {"models": catalogue}
+    elif body.provider == "gemini":
+        try:
+            gem_draft = GoogleConfig.model_validate(body.config)
+        except ValidationError as exc:
+            raise BadRequestError(
+                f"invalid Gemini config: {exc}",
+            ) from exc
+        try:
+            catalogue = await _discover_gemini_models(gem_draft)
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status in (401, 403):
+                raise BadRequestError(
+                    "Gemini API key invalid or unauthorized (HTTP "
+                    f"{status}); check the key from Google AI Studio.",
+                ) from exc
+            raise BadRequestError(
+                f"Gemini discover failed: HTTP {status} "
+                f"{exc.response.text[:200]}",
+            ) from exc
+        except httpx.RequestError as exc:
+            # Connect / timeout / read errors that are not HTTP responses.
+            raise BadRequestError(
+                f"Gemini discover network error: {type(exc).__name__}: "
+                f"{exc}",
+            ) from exc
+        result = {"models": catalogue}
     else:
         raise BadRequestError(
             f"live model discovery is not supported for provider "
@@ -308,8 +338,10 @@ async def discover_llm_models(
     # /v1/models exposes a per-model context window. LLMModel requires
     # context_length, so seed a sane default the operator can override
     # in the form. OpenRouter's catalogue carries context_length
-    # verbatim, so skip the default for that branch.
-    if body.provider in ("ollama", "openresponses", "anthropic"):
+    # verbatim, so skip the default for that branch. Gemini reports
+    # inputTokenLimit for most models but not all, so seed the default
+    # only where the helper omitted it.
+    if body.provider in ("ollama", "openresponses", "anthropic", "gemini"):
         for m in result.get("models", []):
             m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
     return result

@@ -14,6 +14,7 @@ import pytest
 import respx
 
 from primer.llm.anthropic import ANTHROPIC_BASE_URL
+from primer.llm.gemini import GEMINI_BASE_URL
 from primer.llm.openrouter import OPENROUTER_BASE_URL
 
 
@@ -133,4 +134,73 @@ class TestDiscoverAnthropic:
             "anthropic" in r.text.lower()
             or "401" in r.text
             or "invalid x-api-key" in r.text.lower()
+        )
+
+
+class TestDiscoverGemini:
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_discovers_models_live(self, client) -> None:
+        respx.get(f"{GEMINI_BASE_URL}/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": "models/gemini-2.5-flash",
+                            "displayName": "Gemini 2.5 Flash",
+                            "inputTokenLimit": 1048576,
+                            "supportedGenerationMethods": ["generateContent"],
+                        },
+                        {
+                            # No inputTokenLimit -> route seeds default.
+                            "name": "models/gemini-2.5-pro",
+                            "supportedGenerationMethods": ["generateContent"],
+                        },
+                        {
+                            # Embedder dropped by the helper's filter.
+                            "name": "models/text-embedding-004",
+                            "supportedGenerationMethods": ["embedContent"],
+                        },
+                    ],
+                },
+            ),
+        )
+        r = await client.post(
+            "/v1/llm_providers/_discover_models",
+            json={
+                "provider": "gemini",
+                "config": {"api_key": "test-key-123"},
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        names = [m["name"] for m in body["models"]]
+        assert names == ["gemini-2.5-flash", "gemini-2.5-pro"]
+        assert body["models"][0]["display_name"] == "Gemini 2.5 Flash"
+        assert body["models"][0]["context_length"] == 1048576
+        # Missing inputTokenLimit gets the seeded default.
+        assert body["models"][1]["context_length"] > 0
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_bad_api_key_surfaces_4xx(self, client) -> None:
+        respx.get(f"{GEMINI_BASE_URL}/models").mock(
+            return_value=httpx.Response(
+                401,
+                json={"error": {"code": 401, "message": "API key invalid"}},
+            ),
+        )
+        r = await client.post(
+            "/v1/llm_providers/_discover_models",
+            json={
+                "provider": "gemini",
+                "config": {"api_key": "bad-key"},
+            },
+        )
+        assert r.status_code >= 400
+        assert (
+            "gemini" in r.text.lower()
+            or "401" in r.text
+            or "invalid" in r.text.lower()
         )

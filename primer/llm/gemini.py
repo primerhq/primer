@@ -20,6 +20,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
+import httpx
 from google import genai
 from google.genai import types as gtypes
 from pydantic import BaseModel
@@ -75,6 +76,94 @@ from primer.model.provider import (
 )
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
+
+
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+
+async def _discover_gemini_models(
+    draft_config: GoogleConfig,
+) -> list[dict[str, Any]]:
+    """Probe Gemini's ``GET /v1beta/models`` with the draft credentials.
+
+    Used by the discovery REST route powering the UI's *Fetch models*
+    button: the operator types an API key into the new-provider form,
+    the route calls this helper, and the response populates the model
+    picker. Unlike :meth:`GeminiLLM.list_models` (which returns the
+    stored row's static list), this is a live probe.
+
+    Returns a list of dicts (one per upstream model) with:
+
+    - ``name``: the bare model id with the upstream ``models/`` prefix
+      stripped (e.g. ``gemini-2.5-flash``).
+    - ``display_name``: human-readable name; defaults to ``name`` if
+      upstream omits.
+    - ``context_length``: the model's ``inputTokenLimit`` when upstream
+      reports one; omitted otherwise so the route can seed a default.
+
+    Only models whose ``supportedGenerationMethods`` includes
+    ``generateContent`` are kept; this drops embedders and
+    token-counter-only models that cannot back a chat provider.
+
+    Gemini's ListModels paginates via ``nextPageToken`` (passed back as
+    ``pageToken``); this helper follows the cursor until the catalogue
+    is exhausted. Uses a plain :class:`httpx.AsyncClient` to mirror
+    :func:`primer.llm.anthropic._discover_anthropic_models` and
+    :func:`primer.llm.openrouter._discover_openrouter_models`. Raises
+    :class:`httpx.HTTPStatusError` on an auth/HTTP failure (e.g. a bad
+    key -> 401/403); the REST route wraps it into a 4xx response.
+    """
+    api_key = (
+        draft_config.api_key.get_secret_value()
+        if draft_config.api_key is not None
+        else ""
+    )
+
+    out: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    params: dict[str, Any] = {"key": api_key, "pageSize": 1000}
+    async with httpx.AsyncClient(
+        base_url=GEMINI_BASE_URL, timeout=30.0,
+    ) as client:
+        while True:
+            response = await client.get("/models", params=params)
+            response.raise_for_status()
+            payload = response.json()
+
+            for entry in payload.get("models") or []:
+                if not isinstance(entry, dict):
+                    continue
+                methods = entry.get("supportedGenerationMethods") or []
+                if "generateContent" not in methods:
+                    continue
+                raw_name = entry.get("name")
+                if not raw_name:
+                    continue
+                # Strip the upstream "models/" prefix to get the bare id.
+                model_id = (
+                    raw_name[len("models/"):]
+                    if raw_name.startswith("models/")
+                    else raw_name
+                )
+                if not model_id or model_id in seen_ids:
+                    continue
+                seen_ids.add(model_id)
+                record: dict[str, Any] = {
+                    "name": model_id,
+                    "display_name": entry.get("displayName") or model_id,
+                }
+                context_length = entry.get("inputTokenLimit")
+                if isinstance(context_length, int) and context_length > 0:
+                    record["context_length"] = context_length
+                out.append(record)
+
+            next_token = payload.get("nextPageToken")
+            if not next_token:
+                break
+            params["pageToken"] = next_token
+
+    return out
+
 
 
 logger = logging.getLogger(__name__)
