@@ -29,49 +29,6 @@ class GraphInvocationServices:
     graph_session_id: str
 
 
-def _restamp_as_invoke_graph(
-    child_yld: "Any", *, sub_gsid: str, graph_id: str,
-    agent_tool_call_id: str,
-) -> "Any":
-    """RETIRED for the descent path (Task 5.1): ``run_invoke_graph`` no longer
-    re-stamps - it pushes a ``GraphFrame`` and re-raises the child's real leaf
-    so the worker routes resume through the generic continuation walk. Kept
-    importable because ``primer.worker.pool._repark_invoke_graph_outcome``
-    (the now-dead legacy ``tool_name=='invoke_graph'`` resume branch) still
-    imports it; that branch is harmless and untouched.
-
-    Re-wrap a child-graph park as an ``invoke_graph`` park on the AGENT
-    session: preserve the child's event_key(s) (so the human's reply targets
-    the right gate) + checkpoint, but stamp tool_name='invoke_graph' (so the
-    worker routes resume to _resume_invoke_graph) and carry the child's
-    identity (sub_gsid, graph_id, child_tcid) in resume_metadata. The
-    tool_call_id is the AGENT's invoke_graph call id so the resumed
-    tool_result pairs with the agent's tool_use. llm_messages is left None so
-    the agent executor stamps the agent turn's messages on the way out."""
-    from primer.model.yield_ import Yielded, YieldToWorker
-
-    cy = child_yld.yielded
-    md = dict(cy.resume_metadata or {})
-    md.update({
-        "invoke_graph": True,
-        "sub_gsid": sub_gsid,
-        "graph_id": graph_id,
-        "child_tcid": child_yld.tool_call_id,
-    })
-    repark = YieldToWorker(
-        Yielded(
-            tool_name="invoke_graph",
-            event_key=cy.event_key,
-            timeout=cy.timeout,
-            resume_metadata=md,
-            event_keys=cy.event_keys,
-        ),
-        tool_call_id=agent_tool_call_id,
-    )
-    repark.graph_checkpoint = getattr(child_yld, "graph_checkpoint", None)
-    return repark
-
-
 async def run_invoke_graph(
     *,
     graph_id: str,
