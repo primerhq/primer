@@ -223,14 +223,25 @@ async def _inject_approval_park(
             updated_at = now()
         WHERE id = $1
     """
+    # The claim engine's lease table is ``leases`` keyed on
+    # (kind, entity_id); a parked session has an unclaimed lease
+    # (claimed_by NULL) gated off by the Postgres eligibility filter
+    # (parked_status='parked' is not claimable). The resume event's
+    # mark_resumable flips parked_status->'resumable' and resets
+    # next_attempt_at=now(), which re-arms this row. We push
+    # next_attempt_at far into the future so the row is not claimed
+    # before the resume event arms it.
     lease_sql = """
-        INSERT INTO session_leases (session_id, runnable, next_attempt_at)
-        VALUES ($1, FALSE, now())
-        ON CONFLICT (session_id) DO UPDATE
-            SET runnable = FALSE,
-                worker_id = NULL,
+        INSERT INTO leases (kind, entity_id, claimed_by, claimed_at,
+                            expires_at, next_attempt_at, priority_score,
+                            attempt_count)
+        VALUES ('session', $1, NULL, NULL, NULL,
+                now() + interval '1 hour', 100, 0)
+        ON CONFLICT (kind, entity_id) DO UPDATE
+            SET claimed_by = NULL,
+                claimed_at = NULL,
                 expires_at = NULL,
-                next_attempt_at = now()
+                next_attempt_at = now() + interval '1 hour'
     """
     park_sql = park_sql_status_reset if reset_status else park_sql_plain
     conn = await _pg()
