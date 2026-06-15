@@ -258,10 +258,44 @@ class UserDocsService:
             return fresh
         return entry
 
+    def _doc_meta(self, full_slug: str) -> dict[str, Any] | None:
+        """Resolve a full ``<section>/<slug>`` to its metadata dict, or
+        ``None`` when the slug is not indexed."""
+        e = self._entries.get(full_slug)
+        if e is None:
+            return None
+        return {
+            "slug": e.slug,
+            "title": e.title,
+            "summary": e.summary,
+            "section": e.section,
+            "headings": e.headings,
+            "tags": e.frontmatter.get("tags", []),
+            "difficulty": e.frontmatter.get("difficulty"),
+            "time_minutes": e.frontmatter.get("time_minutes"),
+            "features": e.frontmatter.get("features", []),
+        }
+
     def list_sections(self) -> list[dict[str, Any]]:
         """Return the section tree from ``manifest.yaml`` joined with
         each listed doc's metadata. Re-walks the index if the manifest's
-        mtime advanced."""
+        mtime advanced.
+
+        A section may list its docs in either of two shapes:
+
+        - ``docs``: an ordered list of slug basenames resolved under the
+          section id (the flat shape; getting-started/cookbook/reference).
+        - ``items``: an ordered list of either a full-slug leaf string or
+          a group mapping ``{title, overview, children}`` (the nested
+          two-level shape; used by the Features section). Group children
+          and the overview are full ``<section>/<slug>`` slugs and may
+          live in any physical directory.
+
+        Leaves resolve to a doc-meta dict (as in the flat shape). A group
+        resolves to ``{"group": True, "title", "overview": <meta|None>,
+        "children": [<meta>, ...]}``. Unresolved slugs are skipped, as
+        before.
+        """
         mpath = self._root / "manifest.yaml"
         if mpath.exists():
             try:
@@ -281,22 +315,39 @@ class UserDocsService:
                 "order": sec.get("order", 0),
                 "docs": [],
             }
+
+            items = sec.get("items")
+            if items is not None:
+                for item in items or []:
+                    if isinstance(item, str):
+                        meta = self._doc_meta(item)
+                        if meta is not None:
+                            section_node["docs"].append(meta)
+                        continue
+                    if not isinstance(item, dict):
+                        continue
+                    children: list[dict[str, Any]] = []
+                    for child_slug in item.get("children", []) or []:
+                        child_meta = self._doc_meta(child_slug)
+                        if child_meta is not None:
+                            children.append(child_meta)
+                    overview_slug = item.get("overview")
+                    section_node["docs"].append({
+                        "group": True,
+                        "title": item.get("title", ""),
+                        "overview": (
+                            self._doc_meta(overview_slug)
+                            if overview_slug else None
+                        ),
+                        "children": children,
+                    })
+                out.append(section_node)
+                continue
+
             for slug_basename in sec.get("docs", []) or []:
-                full_slug = f"{sid}/{slug_basename}"
-                e = self._entries.get(full_slug)
-                if e is None:
-                    continue
-                section_node["docs"].append({
-                    "slug": e.slug,
-                    "title": e.title,
-                    "summary": e.summary,
-                    "section": e.section,
-                    "headings": e.headings,
-                    "tags": e.frontmatter.get("tags", []),
-                    "difficulty": e.frontmatter.get("difficulty"),
-                    "time_minutes": e.frontmatter.get("time_minutes"),
-                    "features": e.frontmatter.get("features", []),
-                })
+                meta = self._doc_meta(f"{sid}/{slug_basename}")
+                if meta is not None:
+                    section_node["docs"].append(meta)
             out.append(section_node)
         return out
 

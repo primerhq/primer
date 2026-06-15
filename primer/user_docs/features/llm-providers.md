@@ -1,6 +1,6 @@
 ---
 slug: llm-providers
-title: LLM providers
+title: LLM Providers
 section: features
 summary: Register and configure LLM providers (anthropic, openai, gemini, ollama, openrouter, openchat) including concurrency and request timeout.
 ---

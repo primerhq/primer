@@ -1,6 +1,6 @@
 ---
 slug: web-fetch-http
-title: Web Fetch & HTTP Fetch
+title: Web Fetch & HTTP Requests
 section: web
 summary: The web__web_fetch and web__http_request tools for reading a web page as clean markdown or calling an HTTP/API endpoint and returning the raw response.
 ---

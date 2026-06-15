@@ -6,78 +6,70 @@ sections:
     docs:
       - introduction
       - quickstart
+  # The Features section is a TWO-LEVEL tree. Its `items` list is ordered;
+  # each item is either:
+  #   - a leaf: a full "<section>/<slug>" string (resolved against the index); or
+  #   - a group: { title, overview: <full-slug>, children: [<full-slug>, ...] }
+  #     whose header is clickable (navigates to `overview`) and expands to
+  #     its `children`.
+  # Physical directories are unchanged: grouping is logical only. Leaves and
+  # group members may live in any directory (toolsets/, embedding/, ...).
   - id: features
     title: Features
     icon: tools
     order: 2
-    docs:
-      - llm-providers
-      - agents
-      - chats
-      - triggers
-      - harnesses
-      - mcp-server
-      - workers
-  - id: toolsets
-    title: Toolsets & Tools
-    icon: tools
-    order: 3
-    docs:
-      - overview
-      - toolsets-system
-      - toolsets-external
-      - toolsets-approvals
-  - id: embedding
-    title: Embedding & Semantic Search
-    icon: doc
-    order: 4
-    docs:
-      - overview
-      - embedding-providers
-      - semantic-search-providers
-      - collections-and-documents
-      - cross-encoder-providers
-      - internal-collections
-  - id: workspaces
-    title: Workspaces
-    icon: tools
-    order: 5
-    docs:
-      - overview
-      - workspace-providers
-      - workspace-templates
-      - workspaces-and-sessions
-      - workspace-toolset
-      - yielding-tools
-  - id: graphs
-    title: Graphs
-    icon: tools
-    order: 6
-    docs:
-      - graphs
-      - graph-node-types
-      - graph-templating
-  - id: web
-    title: Web
-    icon: tools
-    order: 7
-    docs:
-      - overview
-      - web-search-providers
-      - web-fetch-http
-  - id: channels
-    title: Channels
-    icon: tools
-    order: 8
-    docs:
-      - overview
-      - channel-providers
-      - channels
-      - channel-workspace-association
+    items:
+      - features/llm-providers
+      - features/agents
+      - features/chats
+      - title: Toolsets & Tools
+        overview: toolsets/overview
+        children:
+          - toolsets/toolsets-system
+          - toolsets/toolsets-external
+          - toolsets/toolsets-approvals
+      - title: Semantic Search
+        overview: embedding/overview
+        children:
+          - embedding/embedding-providers
+          - embedding/semantic-search-providers
+          - embedding/collections-and-documents
+          - embedding/cross-encoder-providers
+          - embedding/internal-collections
+      - title: Workspaces
+        overview: workspaces/overview
+        children:
+          - workspaces/workspace-providers
+          - workspaces/workspace-templates
+          - workspaces/workspaces-and-sessions
+          - workspaces/workspace-toolset
+          - workspaces/yielding-tools
+      - title: Graphs
+        overview: graphs/overview
+        children:
+          - graphs/graphs
+          - graphs/graph-node-types
+          - graphs/graph-templating
+      - title: Web
+        overview: web/overview
+        children:
+          - web/web-search-providers
+          - web/web-fetch-http
+      - title: Channels
+        overview: channels/overview
+        children:
+          - channels/channel-providers
+          - channels/channels
+          - channels/channel-workspace-association
+      - features/triggers
+      - features/harnesses
+      - features/mcp-server
+      - features/workers
+      - features/observability
   - id: cookbook
     title: Cookbook
     icon: code
-    order: 9
+    order: 3
     docs:
       - scheduled-summariser
       - slack-question-answerer
@@ -93,7 +85,7 @@ sections:
   - id: reference
     title: Reference
     icon: doc
-    order: 10
+    order: 4
     docs:
       - rest-api-overview
       - api-agents

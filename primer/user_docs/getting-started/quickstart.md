@@ -191,8 +191,8 @@ flowchart LR
     j -->|accept| done([done])
 ```
 
-```ref:graphs/graphs
-Node and edge kinds, routers, and fan-out.
+```ref:graphs/overview
+What a graph is, the node kinds, and when to reach for one.
 ```
 
 ```ref:workspaces/yielding-tools

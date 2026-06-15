@@ -1,37 +1,15 @@
 ---
 slug: graphs
-title: Graphs
+title: Graph Designer
 section: graphs
-summary: Wire agents into a multi-step directed graph, define nodes and edges on the visual canvas, then run the graph as a workspace session.
+summary: "Build a graph on the visual canvas: create nodes, wire static and conditional edges, validate the topology, save, and run it as a session."
 ---
 
-## What a graph is
+The Graph Designer is the visual canvas for building and editing graphs. If you are new to graphs, start with the Graphs overview for the concepts (what a graph is, the superstep engine, graph sessions, and when to use one); this page is the hands-on canvas walkthrough.
 
-A graph is a directed, potentially cyclic workflow made up of nodes connected by edges. Each node is a unit of work: an agent turn, a direct tool call, or a data-shaping operation like fan-out or aggregation. Edges carry the result of one node into the next.
-
-The key idea is that a graph encodes structure instead of squeezing multi-step reasoning into a single long prompt. When work splits cleanly into stages (research, then critique, then rewrite) a graph makes those stages explicit, each with its own agent, its own tools, and its own context window.
-
-Primer's graph engine runs a Pregel-style superstep loop: it computes the set of nodes ready to run, executes all of them concurrently, records each node's output into a shared context, evaluates outgoing edges to compute the next frontier, and repeats until the ready set drains, a cap is hit, or a failure terminates the run.
-
-```mermaid
-flowchart TD
-    B([Begin]) --> A[agent node]
-    A --> J{conditional edge}
-    J -->|reject| A
-    J -->|accept| E([End])
+```ref:graphs/overview
+What a graph is, how the superstep engine runs it, and when to reach for one.
 ```
-
-### Graph sessions
-
-A graph does not run by itself. It runs as a workspace session bound to the graph: the session carries the initial input (`graph_input`), the workspace its agents can read and write, and the full run state across every superstep. A worker picks up the session and drives the graph to completion. You create that session only after the graph is built, so the actual steps come at the end of the walkthrough below; for now it is enough to know that "running a graph" means "starting a session on it."
-
-Per-node state is committed to the workspace's `.state/graphs/<session_id>/` tree after every superstep, so runs survive worker restarts and every turn is recoverable.
-
-### When to use a graph
-
-Use a graph when work splits cleanly into stages and you want those stages to be distinct, inspectable, and composable. The classic pattern is a producer-and-judge loop: one agent drafts, another critiques, the conditional edge loops back until the judge accepts, then an End node collects the final output.
-
-Use a single agent for one continuous conversation. Graphs are overhead when the task is a single turn.
 
 ## Configuration
 

@@ -1,6 +1,6 @@
 ---
 slug: internal-collections
-title: Internal collections
+title: Internal Search Subsystem
 section: embedding
 summary: Configure the internal-collections subsystem to enable semantic search across agents, graphs, tools, and knowledge collections.
 ---

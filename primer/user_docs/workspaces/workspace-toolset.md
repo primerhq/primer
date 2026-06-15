@@ -1,6 +1,6 @@
 ---
 slug: workspace-toolset
-title: Workspace toolset
+title: Workspace Toolset
 section: workspaces
 summary: "The seven workspace tools (ls, read, write, edit, glob, grep, exec) auto-registered with any agent that runs inside a workspace session."
 ---

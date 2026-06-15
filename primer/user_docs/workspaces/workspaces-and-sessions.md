@@ -1,6 +1,6 @@
 ---
 slug: workspaces-and-sessions
-title: Workspaces & Sessions
+title: Workspace & Sessions
 section: workspaces
 summary: "How a workspace instance hosts sessions: start, monitor, and control runs, watch turns stream in, inspect lifecycle status, and pause, resume, or cancel headless agent work."
 ---

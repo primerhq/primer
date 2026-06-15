@@ -1,6 +1,6 @@
 ---
 slug: channels
-title: Channels
+title: Chatting Through Channels
 section: channels
 summary: "Connect Slack, Telegram, or Discord to primer: create a channel for each platform room, enable chat, and bind a workspace so session gates forward there."
 ---

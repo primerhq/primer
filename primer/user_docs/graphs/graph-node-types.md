@@ -1,6 +1,6 @@
 ---
 slug: graph-node-types
-title: Graph node types
+title: Node Types
 section: graphs
 summary: Every node kind the graph engine supports (Begin, End, Agent, Subgraph, Fan-out, Fan-in, and Tool-call) with all configuration fields and behavior.
 ---

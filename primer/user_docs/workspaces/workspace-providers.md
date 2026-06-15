@@ -1,6 +1,6 @@
 ---
 slug: workspace-providers
-title: Workspace providers
+title: Workspace Providers
 section: workspaces
 summary: Register workspace providers (local, container, Kubernetes) and understand how each backend materialises isolated sandboxes for agent sessions.
 ---

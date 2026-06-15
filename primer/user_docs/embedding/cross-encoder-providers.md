@@ -1,6 +1,6 @@
 ---
 slug: cross-encoder-providers
-title: Cross-encoder providers
+title: Cross-encoder Providers
 section: embedding
 summary: Register cross-encoder providers to rerank search results returned by the semantic search subsystem.
 ---
