@@ -203,6 +203,27 @@ def _render_ai_doc(slug: str) -> str:
     )
 
 
+def _render_embed(embed_id: str) -> str:
+    """Render an ``embed:<id>`` fence as a theme-aware screenshot figure.
+
+    The live console component was captured to light+dark PNGs by
+    scripts/docs/capture_embeds.py (under ``<out>/_embeds/<id>-<theme>.png``).
+    We emit a ``<picture>`` so the dark variant is served under a
+    ``prefers-color-scheme: dark`` query, falling back to the light variant.
+    """
+    eid = embed_id.strip()
+    safe = html.escape(eid)
+    return (
+        '<figure class="embed">'
+        "<picture>"
+        f'<source srcset="/_embeds/{safe}-dark.png" media="(prefers-color-scheme: dark)">'
+        f'<img src="/_embeds/{safe}-light.png" alt="{safe} (live component)" loading="lazy">'
+        "</picture>"
+        '<figcaption>Live component - open it in your console.</figcaption>'
+        "</figure>\n"
+    )
+
+
 def _make_md(slug_url_map: dict[str, str]):
     from markdown_it import MarkdownIt
     from mdit_py_plugins.anchors import anchors_plugin
@@ -214,8 +235,8 @@ def _make_md(slug_url_map: dict[str, str]):
     default_fence = md.renderer.rules.get("fence")
 
     def fence(tokens, idx, options, env):
-        """Dispatch directive fences (callout/code-tabs/mermaid/ai-doc) to
-        their static-HTML renderers; everything else falls through to the
+        """Dispatch directive fences (callout/code-tabs/mermaid/ai-doc/embed)
+        to their static-HTML renderers; everything else falls through to the
         normal code-block renderer. ``ref:`` fences are pre-rewritten in
         ``render_markdown`` before this runs.
         """
@@ -231,6 +252,8 @@ def _make_md(slug_url_map: dict[str, str]):
             return _render_code_tabs(info[len("code-tabs:"):], content)
         if info.startswith("ai-doc:"):
             return _render_ai_doc(info[len("ai-doc:"):])
+        if info.startswith("embed:"):
+            return _render_embed(info[len("embed:"):])
         if default_fence is not None:
             return default_fence(tokens, idx, options, env)
         return md.renderer.renderToken(tokens, idx, options)

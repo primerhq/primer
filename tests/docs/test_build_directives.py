@@ -108,3 +108,27 @@ def test_ai_doc_renders_non_linking_note():
     assert "Agent-facing reference" in out
     assert "mcp-server-reference" in out
     assert "```ai-doc" not in out
+
+
+EMBED_MD = """\
+```embed:agents-page
+```
+"""
+
+
+def test_embed_renders_picture_figure_with_light_and_dark_sources():
+    out = render_markdown(EMBED_MD, SLUG_URL_MAP)
+    # An ``embed:<id>`` fence becomes a theme-aware screenshot figure: a
+    # <picture> with a dark <source> (prefers-color-scheme) + a light <img>
+    # fallback, both pointing at the captured PNGs, plus a caption.
+    assert '<figure class="embed">' in out
+    assert (
+        '<source srcset="/_embeds/agents-page-dark.png" '
+        'media="(prefers-color-scheme: dark)">' in out
+    )
+    assert '<img src="/_embeds/agents-page-light.png"' in out
+    assert "(live component)" in out
+    assert "<figcaption>" in out
+    assert "open it in your console" in out
+    # No leftover raw fence.
+    assert "```embed" not in out

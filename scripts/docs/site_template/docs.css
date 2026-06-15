@@ -371,6 +371,20 @@ a.ai-doc .ai-doc-label {
 }
 a.ai-doc .ai-doc-slug { font-weight: 600; font-size: 14px; }
 
+/* embed: live-component screenshot figure (light/dark via <picture>) */
+figure.embed {
+  margin: 0 0 20px; padding: 0;
+  border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+  background: var(--bg-1);
+}
+figure.embed picture, figure.embed img {
+  display: block; width: 100%; height: auto;
+}
+figure.embed figcaption {
+  padding: 8px 14px; font-size: 12px; color: var(--text-3);
+  border-top: 1px solid var(--border); background: var(--bg-2);
+}
+
 /* tables */
 .article table {
   width: 100%; border-collapse: collapse; margin: 0 0 20px; font-size: 14px;
