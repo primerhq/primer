@@ -8,6 +8,7 @@ from fastapi import APIRouter, Request
 
 from primer.api.deps import get_storage_provider
 from primer.api.routers._crud import make_crud_router
+from primer.api.routers._references import ReferenceCheck
 from primer.model.channel import (
     Channel,
     ChannelProvider,
@@ -44,6 +45,17 @@ def make_channel_provider_router() -> APIRouter:
         storage_dep=_get_channel_provider_storage,
         plural="channel_providers",
         tag="channel_providers",
+        references=[
+            # Cascade-block: a ChannelProvider must not be deleted while a
+            # Channel still references it via ``provider_id`` (§3 invariant).
+            # Restores the guard collaterally dropped in ddb91310 when the
+            # WorkspaceChannelAssociation routers were removed.
+            ReferenceCheck(
+                child_kind="channel",
+                child_storage=_get_channel_storage,
+                child_field="provider_id",
+            ),
+        ],
     )
 
 
