@@ -548,6 +548,68 @@ class TestWorkspaceFiles:
         with pytest.raises(NotFoundError):
             await ws.file_info("d")
 
+    async def test_write_file_is_atomic_no_torn_read(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """Regression for e2e t0605: a write racing concurrent reads of
+        the same path must never expose a torn/empty file. With an
+        atomic write (temp file + ``os.replace``) every read observes
+        either the full old content or the full new content.
+
+        We hammer the path: many overwrites alternating between two
+        distinct-length blobs while many readers race them. Every read
+        must return one of the two complete snapshots, never an empty
+        or partial buffer.
+        """
+        import asyncio
+
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+
+        pre = b"pre"
+        post = b"post-content-which-is-longer"
+        await ws.write_file("race.txt", pre)
+
+        allowed = {pre, post}
+        torn: list[bytes] = []
+
+        async def _writer() -> None:
+            for i in range(50):
+                await ws.write_file("race.txt", post if i % 2 else pre)
+
+        async def _reader() -> None:
+            for _ in range(200):
+                data = await ws.read_file("race.txt")
+                if data not in allowed:
+                    torn.append(data)
+
+        await asyncio.gather(
+            _writer(),
+            *[_reader() for _ in range(8)],
+        )
+
+        assert not torn, f"observed torn/empty reads: {torn[:5]!r}"
+
+    async def test_write_file_preserves_mode(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """The atomic swap must preserve an existing file's mode rather
+        than adopting the temp file's default permissions."""
+        import os
+        import sys
+
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+
+        await ws.write_file("perm.txt", b"first")
+        target = ws.root / "perm.txt"
+        os.chmod(target, 0o640)
+        await ws.write_file("perm.txt", b"second")
+
+        assert await ws.read_file("perm.txt") == b"second"
+        if sys.platform != "win32":
+            assert (target.stat().st_mode & 0o777) == 0o640
+
 
 # ===========================================================================
 # LocalWorkspace — download_archive
