@@ -45,7 +45,7 @@ import httpx
 import pytest
 
 from primer.api.app import create_app
-from primer.api.config import AppConfig
+from primer.api.config import AppConfig, AuthConfig
 from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
@@ -109,6 +109,14 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
             provider=SchedulerProviderType.IN_MEMORY,
             config=InMemorySchedulerConfig(),
         ),
+        # Mutating router endpoints are gated by require_auth (the auth
+        # remediation mounted entity routers with auth deps). This
+        # in-process journey drives CRUD directly over ASGITransport
+        # without a login round-trip, so run unauthenticated: the same
+        # established pattern create_app uses for embedded/dogfood
+        # (auth.enabled=False injects a synthetic system user). The test
+        # is exercising the SQLite storage path, not the auth surface.
+        auth=AuthConfig(enabled=False),
     )
     app = create_app(cfg)
 

@@ -762,11 +762,20 @@ async def test_t0654_worker_drain_immediate_observability(
     assert len(pre_workers) >= 1, (
         f"expected at least one worker pre-drain; got {pre_workers!r}"
     )
-    worker = pre_workers[0]
+    # Drain is one-way within a bringup (there is no undrain endpoint),
+    # and this test shares its bringup with sibling tests that drain a
+    # worker (e.g. T0461). A worker may therefore already be 'draining'
+    # before this test runs. Prefer an 'active' worker if one is present
+    # so we still observe the active->draining transition; otherwise an
+    # already-'draining' worker is an acceptable starting point (the
+    # post-drain assertions below still hold, since drain is idempotent).
+    worker = next(
+        (w for w in pre_workers if w["status"] == "active"), pre_workers[0]
+    )
     worker_id = worker["id"]
     pre_capacity = worker["capacity"]
-    assert worker["status"] == "active", (
-        f"expected pre-drain status='active'; got {worker!r}"
+    assert worker["status"] in ("active", "draining"), (
+        f"expected pre-drain status in (active, draining); got {worker!r}"
     )
 
     health_pre = await client.get("/v1/health")

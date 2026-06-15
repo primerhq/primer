@@ -117,12 +117,22 @@ def _agent_body(entity_id: str, *, provider_id: str, toolset_id: str | None = No
 
 
 def _graph_body(entity_id: str, *, agent_id: str) -> dict:
+    # Graph topology (model/graph.py) requires exactly one Begin node,
+    # at least one End node, and every End reachable from Begin. A bare
+    # single agent node (the old payload) is rejected 422. Wire a
+    # minimal valid begin -> agent -> end chain.
     return {
         "id": entity_id,
         "description": "journey graph",
-        "nodes": [{"kind": "agent", "id": "n1", "agent_id": agent_id}],
-        "edges": [],
-        "entry_node_id": "n1",
+        "nodes": [
+            {"kind": "begin", "id": "begin"},
+            {"kind": "agent", "id": "n1", "agent_id": agent_id},
+            {"kind": "end", "id": "end"},
+        ],
+        "edges": [
+            {"kind": "static", "from_node": "begin", "to_node": "n1"},
+            {"kind": "static", "from_node": "n1", "to_node": "end"},
+        ],
     }
 
 

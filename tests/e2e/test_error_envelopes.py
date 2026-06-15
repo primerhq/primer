@@ -37,15 +37,25 @@ def _llm_body(entity_id: str) -> dict:
 async def test_t0007_invalid_llm_provider_returns_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0007 — malformed config body yields 422 with /errors/validation."""
-    # Provider says 'anthropic' but config shape is for a different
-    # provider (missing required `api_key`, has a bogus key). This must
-    # fail the discriminated-union validation.
+    """T0007 - malformed config body yields 422 with /errors/validation.
+
+    The LLMProvider validator coerces ``config`` to the concrete config
+    class matching ``provider`` (see ``_coerce_config_to_provider``).
+    A config dict that omits a REQUIRED field for that provider must
+    fail validation: ``ollama`` requires ``url``, so an empty config is
+    rejected. (Note: an anthropic config with an unknown/extra field is
+    NOT rejected, because ``AnthropicConfig.api_key`` is optional and
+    extra keys are ignored; that permissive coercion is pinned by
+    T0379. T0007 pins the genuinely-malformed case: a missing required
+    field.)
+    """
     bad = {
         "id": f"llm-{unique_suffix}",
-        "provider": "anthropic",
+        "provider": "ollama",
         "models": [{"name": "x", "context_length": 1024}],
-        "config": {"wrong_field": "nope"},
+        # OllamaConfig requires `url`; omitting it is a real validation
+        # failure regardless of provider/config cross-checking.
+        "config": {},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=bad)
@@ -460,13 +470,23 @@ async def test_t0379_provider_config_no_cross_field_validation_pinned(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0379 — Pin actual behaviour: `provider` and `config` are NOT
-    cross-validated. Sending provider=anthropic with an Ollama-shaped
-    config (url instead of api_key) is accepted as 201 — Pydantic's
-    union resolution picks whichever variant the config shape matches,
-    independent of the provider field.
+    cross-validated for *rejection*, but `config` IS coerced to the
+    concrete config class matching `provider`.
 
-    Reframed from the original (which assumed cross-field validation
-    rejection); test discovered the API is permissive at create-time.
+    Sending provider=anthropic with an Ollama-shaped config (a `url`
+    field) is accepted as 201 (no cross-field 422). But the
+    ``_coerce_config_to_provider`` validator parses the config dict with
+    ``AnthropicConfig`` (the provider-matched class), which has no
+    ``url`` field and ignores extra keys. The persisted config is
+    therefore the coerced ``AnthropicConfig`` shape ``{api_key: null}``;
+    the stray ``url`` is dropped, NOT preserved verbatim.
+
+    This is the intended contract: the coercion validator (added with
+    the openchat/openresponses split, which share an identical config
+    shape) deterministically binds config to the provider rather than
+    letting union resolution guess. The earlier verbatim-`url`-retained
+    behaviour was an accident of first-match union resolution, not a
+    contract; this test now pins the deterministic-coercion contract.
     """
     body = {
         "id": f"llm-t0379-{unique_suffix}",
@@ -474,35 +494,33 @@ async def test_t0379_provider_config_no_cross_field_validation_pinned(
         "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
         # OllamaConfig shape (url, optional api_key) — DIFFERENT from
         # what anthropic provider would expect (AnthropicConfig has
-        # only api_key)
+        # only api_key). The url is coerced away, not rejected.
         "config": {"url": "http://localhost:11434"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=body)
-    # Currently accepted as 201; row is persisted with mismatched
-    # provider+config. Pin no /errors/internal.
+    # Accepted as 201 (no cross-field rejection); pin no /errors/internal.
     envelope = resp.json() if resp.content else {}
     assert envelope.get("type") != "/errors/internal", (
         f"discriminator leaked /errors/internal: {resp.text}"
     )
-    if resp.status_code == 201:
-        try:
-            # Verify the row was actually persisted with the mismatched
-            # combo (no silent normalisation)
-            got = await client.get(
-                f"/v1/llm_providers/llm-t0379-{unique_suffix}",
-            )
-            assert got.status_code == 200, got.text
-            row = got.json()
-            assert row["provider"] == "anthropic", row
-            # Config retains the url field (Ollama variant accepted)
-            assert "url" in row["config"], row
-        finally:
-            await client.delete(
-                f"/v1/llm_providers/llm-t0379-{unique_suffix}",
-            )
-    else:
-        assert 400 <= resp.status_code < 500, resp.text
+    assert resp.status_code == 201, resp.text
+    try:
+        got = await client.get(
+            f"/v1/llm_providers/llm-t0379-{unique_suffix}",
+        )
+        assert got.status_code == 200, got.text
+        row = got.json()
+        assert row["provider"] == "anthropic", row
+        # Config is coerced to the anthropic-matched AnthropicConfig:
+        # the stray `url` is dropped (no cross-field rejection, but
+        # deterministic provider-matched coercion).
+        assert "url" not in row["config"], row
+        assert "api_key" in row["config"], row
+    finally:
+        await client.delete(
+            f"/v1/llm_providers/llm-t0379-{unique_suffix}",
+        )
 
 
 @pytest.mark.asyncio
