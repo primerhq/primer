@@ -270,6 +270,13 @@ class _FakeVectorStore:
             "distance": distance,
         }
 
+    async def drop_collection(self, collection_id) -> None:
+        # Idempotent: dropping a non-existent collection is a no-op.
+        self.collections.pop(collection_id, None)
+        for key in list(self.records.keys()):
+            if key[0] == collection_id:
+                del self.records[key]
+
     async def put(self, record):
         self.records[
             (record.collection_id, record.document_id, record.chunk_id)
