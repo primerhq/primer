@@ -105,7 +105,7 @@ const PROVIDER_KINDS_FIELDS = {
       config: [
         { key: "api_key", label: "API key (optional)", type: "password", help: "Required for the real Gemini API; leave blank only when an upstream proxy supplies auth." },
       ],
-      discoverable: false,
+      discoverable: true,
       suggestedModels: [
         { name: "gemini-2.5-pro", context_length: 2000000 },
         { name: "gemini-2.5-flash", context_length: 1000000 },
