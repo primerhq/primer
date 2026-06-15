@@ -4,49 +4,107 @@ Thanks for your interest in contributing. This guide covers the essentials;
 the full contributor handbook (project layout, the coordinator/worktree
 workflow, and the Definition of Done) lives in [AGENTS.md](AGENTS.md).
 
+> AI agents working on this repo must follow the full agent contract in
+> [AGENTS.md](AGENTS.md) (the coordinator/worktree working model, the
+> Definition of Done, and the hard rules). The rules below are the human-facing
+> summary and do not override it.
+
 ## Development setup
 
 Primer targets Python 3.13 and uses [uv](https://github.com/astral-sh/uv) for
-dependency and environment management.
+dependency and environment management. The stack is FastAPI + asyncio with
+Postgres + pgvector, and a vanilla-React (JSX, no build step) operator console.
 
 ```bash
 git clone https://github.com/<org>/primer
 cd primer
 uv sync
-uv run primer api --config config.example.yaml   # then GET /v1/health
+docker compose up -d postgres
+uv run primer api   # starts the API plus an in-process worker; then GET /v1/health
 ```
 
 See [config.example.yaml](config.example.yaml) for the configuration shape
 (Postgres + providers). A newcomer should be able to go from clone to a running
 `/v1/health` in under ten minutes.
 
+The repository layout is described in [AGENTS.md](AGENTS.md) section 2:
+`primer/<subsystem>/` is the backend, `ui/` the console, `primectl/` the CLI,
+`tests/` the test suites, and `docs/dev/` the authoritative developer reference
+(start at [docs/dev/README.md](docs/dev/README.md) before changing a subsystem).
+
 ## Running tests
 
 ```bash
-# Narrowed unit sweep (the fast signal; what CI runs):
-uv run pytest tests/ -q \
-  --ignore=tests/e2e --ignore=tests/ui_e2e --ignore=tests/distributed \
-  --ignore=tests/integration --ignore=tests/llm
+# Narrowed unit sweep (must stay green at every commit; parallel, ~90s):
+uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e \
+  --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
 
-# Documentation hygiene (frontmatter, ref/embed resolution, style):
+# Documentation hygiene (em-dash ban, frontmatter, ref/embed resolution, style):
 PRIMER_USER_DOCS_STRICT=1 uv run pytest tests/user_docs tests/docs
 ```
 
-The end-to-end suite (`tests/e2e`) runs against a live server and Postgres and
-is CPU-exclusive; it is not part of the default contributor loop.
+Add `-n0` to run a single module serially while debugging.
+
+**The end-to-end suite (`tests/e2e`) saturates all CPU cores and must run
+EXCLUSIVELY.** It is not part of the default contributor loop. When you do run it:
+
+- Never run two e2e runs at once. Before starting, check for an already-running
+  one and kill it first:
+
+  ```bash
+  pgrep -af "pytest tests/e2e" | grep -v pgrep   # kill any match before starting
+  ```
+
+- Bring the environment up with `scripts/e2e/bringup.sh` (it reuses the shared
+  dev Postgres on a separate `primer_e2e` database). Do NOT run
+  `scripts/e2e/teardown.sh` with volume removal: it shares the Postgres
+  container with the dogfood instance and will wipe it.
+- Run targeted e2e serially with `-n0` and the e2e gate set, e.g.
+  `PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/e2e/<file> -n0`.
+  The suite is skipped unless `PRIMER_RUN_E2E=1` is set.
+
+Some tests are environment-gated: real-LLM tests need a reachable LM Studio
+(`LMSTUDIO_API_KEY` set), and the Kubernetes workspace tests need a live
+cluster. After a code-changing task, restart the dogfood `uv run primer api`
+and confirm `/v1/health` returns 200.
 
 ## Pull requests
 
-- Branch off `main`; keep each PR focused.
+A change is not done until every applicable track is done (see the full
+Definition of Done in [AGENTS.md](AGENTS.md) section 4). In summary:
+
+- **Backend** under `primer/` follows the rest-api conventions (RFC7807 errors,
+  observability hooks).
+- **UI** in `ui/` is updated for any user-visible feature (a backend feature
+  with no console surface is incomplete).
+- **System tools** for new functionality are exposed in `primer/toolset/`
+  (built with `make_tool`, callable over `POST /v1/mcp`).
+- **Docs** are updated: operator docs in `primer/user_docs/`, agent-usage docs
+  in `docs/agents/`, and dev docs in `docs/dev/` as the change warrants.
+- **Tests**: add or extend unit tests and, for user-visible flows, e2e coverage.
+- **Regressions**: keep the suites green; do not weaken a test to hide a real
+  regression - fix the cause.
+- **primectl**: keep the CLI in parity when you add an API endpoint.
+
+If a track is genuinely not applicable, say so explicitly with a one-line
+reason rather than skipping it silently.
+
+PR mechanics:
+
+- Branch off `main`; never force-push `main`. Keep each PR focused.
 - Use [conventional commit](https://www.conventionalcommits.org/) messages
-  (`feat:`, `fix:`, `docs:`, `test:`, `chore:`, `refactor:`, `perf:`).
-- Add or update tests for the behavior you change, and update the relevant docs.
+  (`feat:`, `fix:`, `docs:`, `test:`, `chore:`, `refactor:`, `perf:`), and do
+  NOT add a `Co-Authored-By` footer.
+- Stage only the files your change touches (`git add <named files>`); never
+  `git add -A`.
 - Keep the narrowed sweep and the doc-hygiene checks green.
 
 ## Style
 
-- Do not use the em-dash character. Use a hyphen, a double hyphen, or reword.
+- Never use the em-dash character (U+2014) in committed files. Use a regular
+  hyphen, "to", or reword. The `tests/docs/` hygiene suite enforces this.
 - Match the conventions of the surrounding code; prefer small, focused files.
+- Every relative markdown link from `AGENTS.md` or `docs/dev/` must resolve.
 - User-facing documentation lives under `primer/user_docs/`; contributor and
   architecture docs live under `docs/dev/`.
 
