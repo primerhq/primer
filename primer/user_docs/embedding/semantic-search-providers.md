@@ -1,6 +1,6 @@
 ---
 slug: semantic-search-providers
-title: Semantic search providers
+title: Semantic Search Providers
 section: embedding
 summary: Register semantic search providers (pgvector, pgvectorscale, or LanceDB) so collections have a vector store to write and search against.
 ---

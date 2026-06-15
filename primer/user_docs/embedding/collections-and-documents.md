@@ -1,6 +1,6 @@
 ---
 slug: collections-and-documents
-title: Collections and documents
+title: Collections & Documents
 section: embedding
 summary: Create knowledge collections with a fixed embedder and SSP, ingest plaintext or uploaded files, and search with optional MMR and cross-encoder reranking.
 ---

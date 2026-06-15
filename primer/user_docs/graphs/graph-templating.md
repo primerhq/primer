@@ -1,6 +1,6 @@
 ---
 slug: graph-templating
-title: Graph templating
+title: Templating
 section: graphs
 summary: How Jinja2 templates in graph nodes access the shared GraphContext (initial input, upstream node outputs, iteration counter, and fan-out scope variables).
 ---

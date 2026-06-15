@@ -1,6 +1,6 @@
 ---
 slug: web-search-providers
-title: Web search providers
+title: Web Search Providers
 section: web
 summary: Register web search providers (DuckDuckGo, Tavily, Firecrawl, Exa) and configure single or aggregated fallback routing so agents can search the web.
 ---

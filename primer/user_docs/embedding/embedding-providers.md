@@ -1,6 +1,6 @@
 ---
 slug: embedding-providers
-title: Embedding providers
+title: Embedding Providers
 section: embedding
 summary: Register embedding providers (huggingface, openai, gemini) for collections and semantic search.
 ---

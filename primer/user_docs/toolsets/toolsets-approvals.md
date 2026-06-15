@@ -1,6 +1,6 @@
 ---
 slug: toolsets-approvals
-title: Tool approvals
+title: Approvals
 section: toolsets
 summary: Gate tool calls with required, Rego, or LLM-judge approval, and understand how approval-required tools are refused over MCP.
 ---

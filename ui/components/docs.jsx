@@ -91,20 +91,32 @@ function WSP_DocsLeftNav({ sections, currentSection, currentSlug, searchQuery, s
   const { useRouter } = window.primerApi;
   const { navigate } = useRouter();
   const ql = (searchQuery || "").toLowerCase().trim();
+  const currentFullSlug = `${currentSection}/${currentSlug}`;
 
   const filteredSections = React.useMemo(() => {
     if (!ql) return sections;
+    // A leaf doc matches when its title/summary/heading/tag contains the
+    // query. A group matches when its own title matches (keep all children)
+    // or when any child matches (keep only the matching children).
+    const matchLeaf = (d) => {
+      const t = (d.title || "").toLowerCase().includes(ql);
+      const s = (d.summary || "").toLowerCase().includes(ql);
+      const h = (d.headings || []).some((hh) => hh.text.toLowerCase().includes(ql));
+      const g = (d.tags || []).some((tt) => tt.toLowerCase().includes(ql));
+      return t || s || h || g;
+    };
     return sections
       .map((sec) => {
         const titleHit = sec.title.toLowerCase().includes(ql);
         if (titleHit) return sec;
-        const docs = (sec.docs || []).filter((d) => {
-          const t = d.title.toLowerCase().includes(ql);
-          const s = (d.summary || "").toLowerCase().includes(ql);
-          const h = (d.headings || []).some((hh) => hh.text.toLowerCase().includes(ql));
-          const g = (d.tags || []).some((tt) => tt.toLowerCase().includes(ql));
-          return t || s || h || g;
-        });
+        const docs = (sec.docs || [])
+          .map((d) => {
+            if (!d.group) return matchLeaf(d) ? d : null;
+            if (d.title.toLowerCase().includes(ql)) return d;
+            const children = (d.children || []).filter(matchLeaf);
+            return children.length > 0 ? { ...d, children } : null;
+          })
+          .filter(Boolean);
         return { ...sec, docs };
       })
       .filter((sec) => (sec.docs || []).length > 0);
@@ -154,29 +166,126 @@ function WSP_DocsLeftNav({ sections, currentSection, currentSlug, searchQuery, s
             <Icon name={sec.icon || "doc"} size={10} className="muted" style={{ marginRight: 6 }} />
             {sec.title}
           </div>
-          {(sec.docs || []).map((doc) => {
-            const isActive = doc.slug === `${currentSection}/${currentSlug}`;
-            return (
-              <a
+          {(sec.docs || []).map((doc) =>
+            doc.group ? (
+              <WSP_DocsNavGroup
+                key={`group:${doc.title}`}
+                group={doc}
+                currentFullSlug={currentFullSlug}
+                navigate={navigate}
+                forceOpen={!!ql}
+              />
+            ) : (
+              <WSP_DocsNavLeaf
                 key={doc.slug}
-                onClick={() => navigate(`/docs/${doc.slug}`)}
-                style={{
-                  display: "block",
-                  padding: "5px 16px 5px 28px",
-                  cursor: "pointer",
-                  color: isActive ? "var(--accent)" : "var(--text-2)",
-                  background: isActive ? "var(--bg-2)" : "transparent",
-                  borderLeft: isActive
-                    ? "2px solid var(--accent)"
-                    : "2px solid transparent",
-                  fontWeight: isActive ? 600 : 400,
-                }}
-              >
-                {doc.title}
-              </a>
-            );
-          })}
+                doc={doc}
+                currentFullSlug={currentFullSlug}
+                navigate={navigate}
+                depth={1}
+              />
+            ),
+          )}
         </div>
+      ))}
+    </div>
+  );
+}
+
+// Resolve the first reachable leaf full-slug of a nav item (leaf or group).
+// For a group: prefer its overview, else its first child. Returns null when
+// nothing resolves.
+function WSP_DocsFirstLeafSlug(item) {
+  if (!item) return null;
+  if (!item.group) return item.slug || null;
+  if (item.overview && item.overview.slug) return item.overview.slug;
+  const first = (item.children || [])[0];
+  return first ? first.slug : null;
+}
+
+// A single leaf link in the left nav. `depth` controls left indentation:
+// depth 1 = a top-level leaf (sibling of groups), depth 2 = a group child.
+function WSP_DocsNavLeaf({ doc, currentFullSlug, navigate, depth }) {
+  const isActive = doc.slug === currentFullSlug;
+  const paddingLeft = depth >= 2 ? 40 : 28;
+  return (
+    <a
+      onClick={() => navigate(`/docs/${doc.slug}`)}
+      style={{
+        display: "block",
+        padding: `5px 16px 5px ${paddingLeft}px`,
+        cursor: "pointer",
+        color: isActive ? "var(--accent)" : "var(--text-2)",
+        background: isActive ? "var(--bg-2)" : "transparent",
+        borderLeft: isActive
+          ? "2px solid var(--accent)"
+          : "2px solid transparent",
+        fontWeight: isActive ? 600 : 400,
+      }}
+    >
+      {doc.title}
+    </a>
+  );
+}
+
+// A clickable, expandable group header + its children. Clicking the label
+// navigates to the group's overview page; clicking the chevron toggles the
+// child list. The group auto-expands when the active doc is the overview or
+// one of its children (or when a search filter is active).
+function WSP_DocsNavGroup({ group, currentFullSlug, navigate, forceOpen }) {
+  const overviewSlug = group.overview && group.overview.slug;
+  const childSlugs = (group.children || []).map((c) => c.slug);
+  const containsActive =
+    overviewSlug === currentFullSlug || childSlugs.includes(currentFullSlug);
+  const [open, setOpen] = React.useState(containsActive || !!forceOpen);
+  React.useEffect(() => {
+    if (containsActive || forceOpen) setOpen(true);
+  }, [containsActive, forceOpen]);
+
+  const headerActive = overviewSlug === currentFullSlug;
+  return (
+    <div>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          padding: "5px 12px 5px 16px",
+          cursor: "pointer",
+          color: headerActive ? "var(--accent)" : "var(--text-2)",
+          background: headerActive ? "var(--bg-2)" : "transparent",
+          borderLeft: headerActive
+            ? "2px solid var(--accent)"
+            : "2px solid transparent",
+          fontWeight: headerActive ? 600 : 500,
+        }}
+      >
+        <span
+          onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+          aria-label={open ? "Collapse" : "Expand"}
+          style={{
+            display: "inline-flex",
+            width: 14,
+            marginRight: 2,
+            cursor: "pointer",
+            color: "var(--text-3)",
+          }}
+        >
+          <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
+        </span>
+        <span
+          onClick={() => { if (overviewSlug) navigate(`/docs/${overviewSlug}`); }}
+          style={{ flex: 1 }}
+        >
+          {group.title}
+        </span>
+      </div>
+      {open && (group.children || []).map((child) => (
+        <WSP_DocsNavLeaf
+          key={child.slug}
+          doc={child}
+          currentFullSlug={currentFullSlug}
+          navigate={navigate}
+          depth={2}
+        />
       ))}
     </div>
   );
@@ -191,14 +300,19 @@ function WSP_DocsArticle({ sections, currentSection, currentSlug, pushToast }) {
     return <WSP_AiDocMirror slug={currentSlug} pushToast={pushToast} />;
   }
 
-  // /docs — pick the first doc.
+  // /docs - pick the first doc. The first item may be a group, whose
+  // overview (or first child) is the first reachable leaf.
   let effectiveSection = currentSection;
   let effectiveSlug = currentSlug;
   if (!effectiveSection && sections.length > 0) {
     const first = sections.find((s) => (s.docs || []).length > 0);
     if (first) {
-      effectiveSection = first.id;
-      effectiveSlug = first.docs[0].slug.split("/")[1];
+      const firstSlug = WSP_DocsFirstLeafSlug(first.docs[0]);
+      if (firstSlug) {
+        const parts = firstSlug.split("/");
+        effectiveSection = parts[0];
+        effectiveSlug = parts.slice(1).join("/");
+      }
     }
   }
 
@@ -362,24 +476,37 @@ function WSP_DocsSectionIndex({ section, sections, navigate }) {
         gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
         gap: 12,
       }}>
-        {(sec.docs || []).map((doc) => (
-          <div
-            key={doc.slug}
-            onClick={() => navigate(`/docs/${doc.slug}`)}
-            style={{
-              padding: "14px 16px",
-              border: "1px solid var(--border)",
-              borderRadius: 6,
-              cursor: "pointer",
-              background: "var(--bg)",
-            }}
-          >
-            <div style={{ fontWeight: 600, fontSize: 14 }}>{doc.title}</div>
-            <div className="muted text-sm" style={{ marginTop: 6 }}>
-              {doc.summary}
+        {(sec.docs || []).map((doc) => {
+          // A group card links to the group's overview and shows its
+          // child count; a leaf card links to the doc and shows its summary.
+          const isGroup = !!doc.group;
+          const target = isGroup
+            ? (doc.overview && doc.overview.slug)
+            : doc.slug;
+          const key = isGroup ? `group:${doc.title}` : doc.slug;
+          const summary = isGroup
+            ? (doc.overview && doc.overview.summary)
+              || `${(doc.children || []).length} page(s)`
+            : doc.summary;
+          return (
+            <div
+              key={key}
+              onClick={() => { if (target) navigate(`/docs/${target}`); }}
+              style={{
+                padding: "14px 16px",
+                border: "1px solid var(--border)",
+                borderRadius: 6,
+                cursor: target ? "pointer" : "default",
+                background: "var(--bg)",
+              }}
+            >
+              <div style={{ fontWeight: 600, fontSize: 14 }}>{doc.title}</div>
+              <div className="muted text-sm" style={{ marginTop: 6 }}>
+                {summary}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

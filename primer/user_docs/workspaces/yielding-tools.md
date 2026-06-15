@@ -1,6 +1,6 @@
 ---
 slug: yielding-tools
-title: Yielding tools
+title: Yielding Tools
 section: workspaces
 summary: Tools that suspend a session and release its worker while waiting, and how the session parks and resumes when the event arrives.
 ---

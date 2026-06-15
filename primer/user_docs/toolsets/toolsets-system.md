@@ -1,6 +1,6 @@
 ---
 slug: toolsets-system
-title: Toolsets & tools
+title: System Toolsets
 section: toolsets
 summary: The eight reserved toolsets (system, search, workspaces, misc, web, harness, trigger, workspace_ext) and how to explore their tools from the console or an agent.
 ---

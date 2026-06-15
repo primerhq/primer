@@ -1,6 +1,6 @@
 ---
 slug: workspace-templates
-title: Workspace templates
+title: Workspace Templates
 section: workspaces
 summary: Author workspace templates that define the image, environment, init commands, and seed files used when materialising a workspace instance.
 ---

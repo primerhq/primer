@@ -1,6 +1,6 @@
 ---
 slug: channel-providers
-title: Channel providers
+title: Channel Providers
 section: channels
 summary: Register a Telegram bot, a Slack app, or a Discord bot as a channel provider so primer can send and receive messages on that platform.
 ---

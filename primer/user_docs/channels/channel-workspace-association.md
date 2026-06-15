@@ -1,6 +1,6 @@
 ---
 slug: channel-workspace-association
-title: Channel and workspace association
+title: Channel Workspace Associations
 section: channels
 summary: Associate a workspace with a channel so every session gate (ask_user, tool approval, inform) from that workspace forwards to the channel room automatically.
 ---
