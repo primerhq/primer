@@ -591,3 +591,49 @@ async def test_executor_error_plus_write_failure_still_ends_session(
     assert row is not None
     assert row.status == SessionStatus.ENDED
     assert row.ended_reason == "failed"
+
+
+@pytest.mark.asyncio
+async def test_build_executor_notfound_converges_to_ended_failed(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """Build-time fatal: ``build_executor`` raises (e.g. a graph-bound
+    session whose graph row was deleted -> NotFoundError at resolve).
+
+    The session MUST converge to ENDED/failed, never left stuck RUNNING.
+    Regression for e2e t0624: a graph-bound CREATED session whose graph
+    is deleted, then resumed, hung at status=running because the
+    ``build_executor`` call sat OUTSIDE the fatal try/except and the
+    exception escaped run_one_session_turn entirely (the worker's
+    _run_engine_session only logged it without transitioning the row).
+    """
+    from primer.model.except_ import NotFoundError
+
+    async def _build_executor(session: WorkspaceSession):
+        raise NotFoundError(
+            f"Graph 'g-gone' not found for session {session.id!r}"
+        )
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    # The lease must always be dropped so the engine doesn't re-claim.
+    assert outcome.drop_lease is True
+
+    # The session must have transitioned to ENDED/failed, not left RUNNING.
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(seeded_session.id)
+    assert row is not None
+    assert row.status == SessionStatus.ENDED, (
+        f"session left at {row.status!r} instead of ENDED"
+    )
+    assert row.ended_reason == "failed"
