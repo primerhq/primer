@@ -20,6 +20,7 @@ For example::
 from __future__ import annotations
 
 import html
+import json
 import logging
 import re
 import sys
@@ -336,6 +337,46 @@ def _section_titles(sections: list[dict[str, Any]]) -> dict[str, str]:
     return {sec["id"]: sec["title"] for sec in sections}
 
 
+# ---------------------------------------------------------------------------
+# Search index
+# ---------------------------------------------------------------------------
+_TAG_RE = re.compile(r"<[^>]+>")
+_WS_RE = re.compile(r"\s+")
+_EXCERPT_LEN = 200
+
+
+def _strip_html(html_out: str) -> str:
+    """Reduce rendered HTML to a single line of plain text: drop every tag
+    then unescape entities and collapse runs of whitespace. Good enough for
+    a search excerpt (not a fidelity-preserving conversion)."""
+    text = _TAG_RE.sub(" ", html_out)
+    text = html.unescape(text)
+    return _WS_RE.sub(" ", text).strip()
+
+
+def _excerpt(body_html: str) -> str:
+    """First ``_EXCERPT_LEN`` chars of the page body as plain text."""
+    text = _strip_html(body_html)
+    if len(text) <= _EXCERPT_LEN:
+        return text
+    return text[:_EXCERPT_LEN].rstrip() + "..."
+
+
+def _search_entry(entry: Any, body_html: str) -> dict[str, Any]:
+    """Build one client-search-index record for a published doc.
+
+    ``section`` is the section id (e.g. ``features``); the client uses it
+    as a compact source label beside each result.
+    """
+    return {
+        "title": entry.title,
+        "section": entry.section,
+        "url": _doc_url(entry.slug),
+        "headings": [h["text"] for h in entry.headings],
+        "excerpt": _excerpt(body_html),
+    }
+
+
 def build_site(src_root: Path, out_dir: Path) -> None:
     """Render the user-docs corpus under ``src_root`` into a static
     multi-page site at ``out_dir``."""
@@ -353,6 +394,7 @@ def build_site(src_root: Path, out_dir: Path) -> None:
     template = (_TEMPLATE_DIR / "page.html").read_text(encoding="utf-8")
 
     out_dir.mkdir(parents=True, exist_ok=True)
+    search_index: list[dict[str, Any]] = []
     for entry in service.all_entries():
         # Skip internal authoring docs: the _meta section (authoring-guide,
         # page-template) is writer guidance, not public documentation. It is
@@ -362,6 +404,7 @@ def build_site(src_root: Path, out_dir: Path) -> None:
         title = entry.title
         section_title = section_titles.get(entry.section, entry.section)
         body_html = render_markdown(entry.body, slug_url_map)
+        search_index.append(_search_entry(entry, body_html))
         article = (
             _breadcrumb(section_title, title)
             + f"<h1>{html.escape(title)}</h1>\n"
@@ -375,6 +418,14 @@ def build_site(src_root: Path, out_dir: Path) -> None:
         page_dir = out_dir / Path(entry.slug)
         page_dir.mkdir(parents=True, exist_ok=True)
         (page_dir / "index.html").write_text(page, encoding="utf-8")
+
+    # Prebuilt client search index: one compact record per published doc,
+    # fetched by docs.js to power topbar search. Kept small (title +
+    # section + url + heading texts + a short plain-text excerpt).
+    (out_dir / "search-index.json").write_text(
+        json.dumps(search_index, ensure_ascii=False),
+        encoding="utf-8",
+    )
 
     # Assets: the vendored stylesheet plus a placeholder docs.js so the
     # template's <script> tag resolves (the SPA bundle lands in a later
