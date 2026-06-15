@@ -72,7 +72,6 @@ function App() {
     }
     if (root === "tools") return "tools";
     if (root === "web-search") return "web-search";
-    if (root === "docs") return "docs";
     if (root === "providers") {
       if (path.startsWith("/providers/llm")) return "llm";
       if (path.startsWith("/providers/embedding")) return "embedding";
@@ -188,28 +187,6 @@ function App() {
     (signal) => window.primerApi.apiFetch("GET", "/channels?limit=1", null, { signal }),
     { pollMs: 5000 }
   );
-  // Docs manifest for the command palette + future widgets. One-shot
-  // fetch (pollMs null) — the manifest changes only on doc-source
-  // edits, which require a process restart in production.
-  const docsManifest = window.primerApi.useResource(
-    "palette:docs",
-    (signal) => window.primerApi.apiFetch("GET", "/user_docs/manifest", null, { signal }),
-    { pollMs: null }
-  );
-  const docsListForPalette = React.useMemo(() => {
-    const out = [];
-    for (const sec of (docsManifest.data && docsManifest.data.sections) || []) {
-      for (const doc of sec.docs || []) {
-        out.push({
-          slug: doc.slug,
-          title: doc.title,
-          summary: doc.summary,
-          sectionTitle: sec.title,
-        });
-      }
-    }
-    return out;
-  }, [docsManifest.data]);
   // Approvals_pending — client-side aggregation: parked sessions
   // (`/sessions/find` with parked_status=parked predicate) +
   // parked chats (no /chats/find route; GET + client filter, matching
@@ -372,7 +349,6 @@ function App() {
       "trigger-detail": (e) => `/triggers/${e}`,
       "api-tokens": "/settings/api-tokens",
       mcp: "/settings/mcp",
-      docs: "/docs",
     };
     const route = ROUTES[target];
     const url = typeof route === "function" ? route(extra) : (route || "/");
@@ -626,19 +602,6 @@ function App() {
       </>
     );
     pageBody = <window.WebSearchPage pushToast={pushToast} />;
-  } else if (page === "docs") {
-    pageHeader = (
-      <>
-        <div>
-          <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>Help</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Docs</span>
-          </div>
-          <h1 className="page-title">Documentation</h1>
-          <div className="page-sub">Operator-facing user guide and recipes</div>
-        </div>
-      </>
-    );
-    pageBody = <window.DocsPage section={params.section} slug={params.slug} pushToast={pushToast} />;
   } else if (page === "toolset-detail" && currentToolsetId) {
     pageHeader = (
       <>
@@ -1068,70 +1031,6 @@ function App() {
     );
   }
 
-  // Full-page docs view: the docs renderer has its own left-nav and
-  // benefits from owning the full viewport (no console chrome, no
-  // sidebar collapse-toggle, no breadcrumbs). A thin top bar exposes
-  // a back-to-console button so the operator never gets stuck.
-  if (page === "docs") {
-    return (
-      <div className="docs-fullpage" style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100vh",
-        background: "var(--bg)",
-      }}>
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "8px 16px",
-          borderBottom: "1px solid var(--border)",
-          background: "var(--bg-1, var(--bg))",
-          flexShrink: 0,
-        }}>
-          <Btn
-            kind="ghost"
-            size="sm"
-            icon="chevron-left"
-            onClick={() => navigate("dashboard")}
-          >Back to console</Btn>
-          <div style={{
-            fontSize: 13,
-            fontWeight: 600,
-            color: "var(--text-1, var(--text))",
-          }}>Documentation</div>
-          <div style={{ flex: 1 }} />
-          <Btn
-            kind="ghost"
-            size="sm"
-            icon="external-link"
-            onClick={() => window.open("/v1/docs", "_blank", "noopener,noreferrer")}
-            title="Open the static docs in a new tab"
-          >REST API</Btn>
-        </div>
-        <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-          <window.DocsPage section={params.section} slug={params.slug} pushToast={pushToast} />
-        </div>
-        <div className="toast-stack">
-          {toasts.map((t) => (
-            <div key={t.id} className={`toast toast-${t.kind || "info"}`}>
-              <Icon
-                name={t.kind === "success" ? "check-circle" : t.kind === "error" ? "x-circle" : t.kind === "warning" ? "alert" : "info"}
-                size={14}
-                className="ico"
-              />
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div className="title">{t.title}</div>
-                {t.detail && <div className="detail">{t.detail}</div>}
-              </div>
-              <button className="close" onClick={() => removeToast(t.id)}><Icon name="x" size={12} /></button>
-            </div>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       <Topbar workerStats={workerStats} onNavigate={navigate} onOpenPalette={() => setPaletteOpen(true)} onOpenDrawer={() => setDrawerOpen(true)} />
@@ -1203,7 +1102,7 @@ function App() {
         ))}
       </div>
 
-      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onNavigate={navigate} sessions={sessions} docs={docsListForPalette} />}
+      {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onNavigate={navigate} sessions={sessions} />}
 
       {newSessionOpen && (
         <NewSessionModal

@@ -101,23 +101,6 @@
 <script type="text/babel" src="components/api_tokens.jsx"></script>
 <script type="text/babel" src="components/mcp.jsx"></script>
 
-<!-- User documentation system: directives load BEFORE docs.jsx,
-     which registers them. -->
-<script type="text/babel" src="vendor/highlight-jsx.js"></script>
-<script type="text/babel" src="vendor/highlight-curl.js"></script>
-<script type="text/babel" src="components/docs/directives-callout.jsx"></script>
-<script type="text/babel" src="components/docs/directives-ref.jsx"></script>
-<script type="text/babel" src="components/docs/directives-ai-doc.jsx"></script>
-<script type="text/babel" src="components/docs/directives-code-tabs.jsx"></script>
-<script type="text/babel" src="components/docs/directives-mermaid.jsx"></script>
-<!-- embed: directive: embed-preview.jsx provides DocsMakeStubApi +
-     DocsBootEmbedIframe; embed-registry.jsx maps ids to components;
-     directives-embed.jsx registers the embed: directive. -->
-<script type="text/babel" src="components/docs/embed-preview.jsx"></script>
-<script type="text/babel" src="components/docs/embed-registry.jsx"></script>
-<script type="text/babel" src="components/docs/directives-embed.jsx"></script>
-<script type="text/babel" src="components/docs.jsx"></script>
-
 <!-- Tweaks panel + app -->
 <script type="text/babel" src="tweaks-panel.jsx"></script>
 <script type="text/babel" src="app.jsx"></script>
