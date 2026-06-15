@@ -342,7 +342,7 @@ class LocalWorkspace(Workspace):
         parent = target.parent
         try:
             await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(target.write_bytes, content)
+            await asyncio.to_thread(_atomic_write_bytes, target, content)
         except OSError as exc:
             # Map filesystem-rejection errors (invalid filename chars on
             # Windows, MAX_PATH overflow, etc.) to a clean 4xx instead
@@ -602,6 +602,51 @@ class LocalWorkspace(Workspace):
 # ===========================================================================
 # File-entry helpers
 # ===========================================================================
+
+
+def _atomic_write_bytes(target: Path, content: bytes) -> None:
+    """Write ``content`` to ``target`` atomically.
+
+    A naive ``target.write_bytes(content)`` opens the file ``O_TRUNC``
+    and then writes, so a concurrent reader can observe the file in a
+    truncated / partially-written (torn or empty) state mid-write. To
+    guarantee readers always see either the full old content or the
+    full new content, write to a uniquely-named temp file in the SAME
+    directory (so ``os.replace`` is a same-filesystem rename, which is
+    atomic on POSIX and Windows) and then rename it over the target.
+
+    When ``target`` already exists, its file mode is preserved so the
+    atomic swap doesn't silently change permissions.
+    """
+    import os
+    import tempfile
+
+    directory = target.parent
+    existing_mode: int | None = None
+    try:
+        existing_mode = os.stat(target).st_mode
+    except OSError:
+        existing_mode = None
+
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(directory)
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if existing_mode is not None:
+            os.chmod(tmp_path, existing_mode)
+        os.replace(tmp_path, target)
+    except BaseException:
+        # Best-effort cleanup so a failed write doesn't leak temp files.
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _make_file_entry(target: Path, workspace_root: Path) -> FileEntry:
