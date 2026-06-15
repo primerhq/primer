@@ -1589,6 +1589,14 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                 # post a suspended sentinel so the superstep leaves it
                 # unresolved. The executor checkpoints + re-raises after
                 # the superstep settles (mirrors the ToolCall path).
+                # Unified nested-yield: when the node's agent turn yielded from
+                # INSIDE a nested invoke_agent invocation, ``yld.frames`` carries
+                # the in-flight subagent chain (root-first) and ``yld.yielded``
+                # is the deeper leaf. Preserve both so the worker can run the
+                # continuation walk on resume; an empty stack (the node's own
+                # ask_user / approval gate) keeps this park byte-identical.
+                from primer.worker.frames import frames_to_jsonable
+                nested_frames = list(getattr(yld, "frames", None) or [])
                 self._pending_agent_yields.append(
                     _PendingAgentYield(
                         node_id=node_id,
@@ -1598,6 +1606,8 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                         resume_metadata=dict(yld.yielded.resume_metadata or {}),
                         llm_messages=list(yld.llm_messages or []),
                         iteration=context.iteration,
+                        frames=frames_to_jsonable(nested_frames) if nested_frames else [],
+                        leaf=yld.yielded.to_jsonable() if nested_frames else None,
                     )
                 )
                 await queue.put(

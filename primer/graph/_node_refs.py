@@ -12,7 +12,7 @@ back-compat).
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from primer.model.chat import Message
@@ -643,6 +643,15 @@ class _PendingAgentYield:
     ``_stream_agent_node``; persisted into the checkpoint so a resumed
     executor can rebuild the node's turn and continue it with the
     human's answer / decision injected as the tool result.
+
+    ``frames`` / ``leaf`` are the unified nested-yield extension: when the
+    node's agent turn yielded from INSIDE a nested ``system__invoke_agent``
+    (or ``invoke_graph``) invocation, the in-flight subagent chain is carried
+    here (root-first JSON-able frames + the deeper leaf yield). Both stay
+    EMPTY / ``None`` for the ordinary single-event park (the node's own
+    ask_user / approval gate), so that path is byte-identical. On resume the
+    worker runs the continuation walk over ``frames`` + ``leaf`` to unwind the
+    subagent before delivering the result into this node.
     """
 
     node_id: str
@@ -652,4 +661,6 @@ class _PendingAgentYield:
     resume_metadata: dict[str, Any]
     llm_messages: list[dict[str, Any]]
     iteration: int
+    frames: list[dict[str, Any]] = field(default_factory=list)
+    leaf: dict[str, Any] | None = None
 

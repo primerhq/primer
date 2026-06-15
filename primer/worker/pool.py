@@ -714,8 +714,7 @@ class WorkerPool:
           * fail-closed   -> _end_session(reason='failed') (drop_lease=True).
         """
         import json
-        from primer.int.claim import ReleaseOutcome
-        from primer.model.chat import Message, ToolResultPart
+        from primer.model.chat import ToolResultPart
 
         sid = session.id
         blob = session.parked_state or {}
@@ -757,6 +756,55 @@ class WorkerPool:
         executor_or_driver = await self._build_agent_executor(session, workspace)
         executor = getattr(executor_or_driver, "_executor", executor_or_driver)
         tool_manager = getattr(executor, "_tool_manager", None)
+
+        # Unified nested-yield continuation: a non-empty frame stack means the
+        # leaf yield was raised INSIDE a nested invoke_agent invocation (the
+        # session's own turn is NOT a frame - it lives in ``parked.llm_messages``
+        # and is resumed by the shared inject tail below). Walk the frames to
+        # resolve the leaf and unwind the chain into a single tool_result, then
+        # fall through to the SAME inject/continue tail the per-tool_name path
+        # uses. An empty stack routes to the existing switch UNCHANGED, which
+        # preserves the persist-approvals decision-record writes and the
+        # invoke_graph regression until task 5.1 migrates them.
+        if parked.frames:
+            from primer.worker.continuation import Repark, resume_continuation
+
+            services = self._build_invocation_services(
+                session, workspace, executor, tool_manager,
+            )
+            try:
+                outcome = await resume_continuation(
+                    parked.frames,
+                    parked.yielded,
+                    resume_payload.payload,
+                    services,
+                )
+            except Exception as exc:  # noqa: BLE001 - fail-closed synthesis
+                logger.exception(
+                    "resume: continuation walk for session %s raised;"
+                    " synthesising error tool_result", sid,
+                )
+                tool_result_part = ToolResultPart(
+                    id=parked.tool_call_id or "unknown",
+                    output=json.dumps({
+                        "rejected": True,
+                        "reason": (
+                            f"continuation resume failed: "
+                            f"{type(exc).__name__}: {exc}"
+                        ),
+                        "tool_name": parked.yielded.tool_name,
+                    }),
+                    error=True,
+                )
+            else:
+                if isinstance(outcome, Repark):
+                    # A frame (or the leaf re-dispatch) raised a fresh yield
+                    # mid-unwind -> re-park the reconstructed stack + new leaf.
+                    return self._repark_continuation(session, parked, outcome)
+                tool_result_part = outcome.tool_result
+            return await self._inject_resume_and_continue(
+                session, executor, parked, tool_result_part,
+            )
 
         tool_name = parked.yielded.tool_name
         try:
@@ -822,6 +870,25 @@ class WorkerPool:
                 error=True,
             )
 
+        return await self._inject_resume_and_continue(
+            session, executor, parked, tool_result_part,
+        )
+
+    async def _inject_resume_and_continue(
+        self, session, executor, parked, tool_result_part,
+    ):
+        """Inject the resolved tool_result into the parked turn + continue.
+
+        Shared tail for BOTH the per-tool_name resume switch and the new
+        nested-yield continuation walk: rehydrate the parked turn's assistant
+        history, append the resolved ``tool_result_part`` as a tool message,
+        persist them via ``inject_resume_messages``, and return the
+        keep-the-lease continuation outcome (the next claim runs the
+        continuation LLM turn). On persist failure it fails the session.
+        """
+        from primer.int.claim import ReleaseOutcome
+        from primer.model.chat import Message
+
         rehydrated_assistant = [Message.model_validate(m) for m in parked.llm_messages]
         tool_result_msg = Message(role="tool", parts=[tool_result_part])
         try:
@@ -830,13 +897,129 @@ class WorkerPool:
             )
         except Exception:
             logger.exception(
-                "resume: persist failed for session %s - ending failed", sid,
+                "resume: persist failed for session %s - ending failed",
+                session.id,
             )
             return await self._end_session(session, reason="failed")
 
         # Continuation: clear park (on_release) + keep the lease so the next
         # claim runs the continuation LLM turn.
         return ReleaseOutcome(success=True, drop_lease=False)
+
+    def _build_invocation_services(self, session, workspace, executor, tool_manager):
+        """Build the :class:`InvocationServices` bundle the continuation walk
+        drives nested invocations through.
+
+        Binds the worker's storage / provider-registry / approval-resolver into
+        thin closures over :func:`primer.agent.invoke.build_subagent_toolmanager`
+        and :func:`primer.agent.invoke.resume_subagent` (the same deps the worker
+        wires a normal turn with), and threads the session's
+        :class:`GraphInvocationServices` (off the tool_manager, exactly as
+        :meth:`_resume_invoke_graph` reads it) for the graph-frame callables.
+        The walk only ever calls these as ``services.<name>(...)``.
+        """
+        from primer.agent.invoke import (
+            build_subagent_toolmanager as _build_subagent_toolmanager,
+            resume_subagent as _resume_subagent,
+        )
+        from primer.worker.continuation import InvocationServices
+
+        storage_provider = self._storage
+        provider_registry = self._provider_registry
+        approval_resolver = self._approval_resolver
+
+        async def build_subagent_toolmanager(context):
+            return await _build_subagent_toolmanager(
+                context,
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                approval_resolver=approval_resolver,
+            )
+
+        async def resume_subagent(
+            *, agent_id, context, llm_messages, child_result, depth,
+            invoke_tool_call_id,
+        ):
+            return await _resume_subagent(
+                agent_id=agent_id,
+                context=context,
+                llm_messages=llm_messages,
+                child_result=child_result,
+                depth=depth,
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                approval_resolver=approval_resolver,
+                invoke_tool_call_id=invoke_tool_call_id,
+            )
+
+        # Graph callables come off the session's GraphInvocationServices, which
+        # the agent's tool_manager carries (set by _build_agent_executor); the
+        # GraphFrame path that uses them only lands once task 5.1 migrates
+        # invoke_graph onto the continuation walk. Bind defensively so an
+        # absent bundle yields a clear error rather than an AttributeError.
+        graph_services = getattr(tool_manager, "_graph_services", None)
+
+        async def resolve_graph(graph_id):
+            if graph_services is None:
+                raise RuntimeError("graph services unavailable for this session")
+            return await graph_services.resolve_graph(graph_id)
+
+        async def build_child_graph_executor(graph, gsid):
+            if graph_services is None:
+                raise RuntimeError("graph services unavailable for this session")
+            return await graph_services.build_child_executor(graph=graph, gsid=gsid)
+
+        async def graph_agent_tool_result(checkpoint, tcid, payload):
+            # Reuse the worker's own helper (the same call _resume_invoke_graph
+            # makes) so a GraphFrame leaf resolves an agent-node ask_user answer
+            # identically to the flat invoke_graph resume path.
+            return await self._graph_agent_tool_result(checkpoint, tcid, payload)
+
+        return InvocationServices(
+            build_subagent_toolmanager=build_subagent_toolmanager,
+            resume_subagent=resume_subagent,
+            resolve_graph=resolve_graph,
+            build_child_graph_executor=build_child_graph_executor,
+            graph_agent_tool_result=graph_agent_tool_result,
+        )
+
+    def _repark_continuation(self, session, parked, outcome):
+        """Re-park an AGENT session whose nested continuation re-yielded.
+
+        A frame's resume (or the leaf re-dispatch) raised a fresh yield
+        mid-unwind: the continuation walk returns a :class:`Repark` carrying the
+        reconstructed (root-first) frame stack + the new innermost leaf. Persist
+        a fresh :class:`ParkedState` whose ``frames`` is the reconstructed stack
+        and whose ``yielded`` is the new leaf, preserving the SESSION turn's
+        ``llm_messages`` + ``tool_call_id`` so the eventual completion pairs
+        correctly. Mirrors :meth:`_repark_invoke_graph_outcome` for the
+        ParkRequest / ReleaseOutcome shape + timeout handling.
+        """
+        from datetime import timedelta
+        from primer.int.claim import ParkRequest, ReleaseOutcome
+
+        leaf = outcome.leaf
+        now = datetime.now(timezone.utc)
+        timeout = leaf.timeout if leaf.timeout is not None else 3600.0
+        new_parked = ParkedState(
+            yielded=leaf,
+            llm_messages=parked.llm_messages,
+            turn_no=session.turn_no,
+            started_at=now,
+            tool_call_id=parked.tool_call_id,
+            frames=list(outcome.frames),
+        )
+        return ReleaseOutcome(
+            success=True,
+            drop_lease=True,
+            park=ParkRequest(
+                parked_state=new_parked.to_jsonable(),
+                parked_event_key=leaf.event_key,
+                parked_event_keys=getattr(leaf, "event_keys", None),
+                parked_until=now + timedelta(seconds=timeout),
+                parked_at=now,
+            ),
+        )
 
     async def _resume_graph_engine(self, session, parked):
         """Resume a graph-bound session parked at a ToolCall approval.
@@ -891,14 +1074,32 @@ class WorkerPool:
 
         repark = None
         for tcid, payload in replies:
-            agent_tool_result = await self._graph_agent_tool_result(ck, tcid, payload)
-            # An approval gate is a pending tool-call yield (NOT an ask_user
-            # agent yield, which carries agent_tool_result). Persist the
-            # resolved decision for that gate exactly once per reply.
-            if agent_tool_result is None:
-                await self._write_approval_record_for_graph(
-                    session=session, checkpoint=ck, tcid=tcid, payload=payload,
+            # Unified nested-yield: when the parked agent-node yielded from
+            # INSIDE a nested invoke_agent invocation, its pending entry carries
+            # a continuation ``frames`` stack. Run the continuation walk to
+            # unwind the subagent chain into a single tool_result FIRST; deliver
+            # that as the node's agent_tool_result (Deliver), or re-park the
+            # graph session on the deeper new leaf if a frame re-yielded
+            # (Repark). The no-nested-frames path below is UNCHANGED.
+            nested = self._graph_nested_agent_yield(ck, tcid)
+            if nested is not None:
+                cont = await self._resume_graph_continuation(
+                    session, parked, ck, nested, payload, workspace, executor,
                 )
+                if cont.repark_outcome is not None:
+                    return cont.repark_outcome
+                agent_tool_result = cont.agent_tool_result
+            else:
+                agent_tool_result = await self._graph_agent_tool_result(
+                    ck, tcid, payload,
+                )
+                # An approval gate is a pending tool-call yield (NOT an ask_user
+                # agent yield, which carries agent_tool_result). Persist the
+                # resolved decision for that gate exactly once per reply.
+                if agent_tool_result is None:
+                    await self._write_approval_record_for_graph(
+                        session=session, checkpoint=ck, tcid=tcid, payload=payload,
+                    )
             try:
                 _decision, repark = await resume_graph_from_checkpoint(
                     executor=executor,
@@ -925,6 +1126,125 @@ class WorkerPool:
         # Drained to completion (the graph's own state.json carries the
         # real ended_reason; the session row mirrors _GraphTurnDriver).
         return await self._end_session(session, reason="completed")
+
+    def _graph_nested_agent_yield(self, checkpoint, tcid):
+        """Return the parked agent-node entry for ``tcid`` IFF it carries a
+        nested continuation ``frames`` stack, else ``None``.
+
+        A non-empty ``frames`` marks a node that yielded from inside a nested
+        ``system__invoke_agent`` invocation; those resume through the
+        continuation walk (:meth:`_resume_graph_continuation`) rather than the
+        flat ask_user / approval path.
+        """
+        ay = next(
+            (e for e in (checkpoint.get("pending_agent_yields") or [])
+             if e.get("tool_call_id") == tcid),
+            None,
+        )
+        if ay is None or not ay.get("frames"):
+            return None
+        return ay
+
+    async def _resume_graph_continuation(
+        self, session, parked, checkpoint, ay, payload, workspace, executor,
+    ):
+        """Run the continuation walk for a graph-node's nested invoke_agent yield.
+
+        ``ay`` is the checkpoint's pending_agent_yield entry (with ``frames`` +
+        ``leaf``). Builds :class:`InvocationServices`, drives
+        :func:`resume_continuation` over the subagent chain, and returns a tiny
+        result carrying EITHER:
+
+        * ``agent_tool_result`` - a ``role="tool"`` Message wrapping the unwound
+          subagent result (keyed by the node's invoke_agent call id), to deliver
+          into the parked graph node as its ``agent_tool_result`` (Deliver), or
+        * ``repark_outcome`` - a ReleaseOutcome re-parking the GRAPH SESSION on
+          the deeper new leaf when a frame re-yielded (Repark). The graph itself
+          did NOT advance; only the nested subagent state changed.
+        """
+        from dataclasses import dataclass
+        from primer.model.chat import Message
+        from primer.worker.continuation import Repark, resume_continuation
+        from primer.worker.frames import frames_from_jsonable
+        from primer.model.yield_ import Yielded
+
+        @dataclass
+        class _ContResult:
+            agent_tool_result: "Message | None" = None
+            repark_outcome: "Any | None" = None
+
+        # Graph-session continuation: the subagent callables only need worker
+        # deps (storage / registry / approval), NOT an agent tool_manager - so
+        # bind the services with tool_manager=None (the GraphFrame callables,
+        # unused for a pure subagent yield, fail loudly if ever reached).
+        services = self._build_invocation_services(
+            session, workspace, executor, None,
+        )
+        frames = frames_from_jsonable(list(ay.get("frames") or []))
+        leaf = Yielded.from_jsonable(ay["leaf"])
+        outcome = await resume_continuation(frames, leaf, payload, services)
+        if isinstance(outcome, Repark):
+            return _ContResult(
+                repark_outcome=self._repark_graph_continuation(
+                    session, parked, checkpoint, ay, outcome,
+                ),
+            )
+        # Deliver: the tool_result is keyed by the node's invoke_agent call id
+        # (the outermost AgentFrame's tool_call_id), which pairs with the
+        # invoke_agent tool_use in the node's rehydrated history.
+        return _ContResult(
+            agent_tool_result=Message(role="tool", parts=[outcome.tool_result]),
+        )
+
+    def _repark_graph_continuation(self, session, parked, checkpoint, ay, outcome):
+        """Re-park a GRAPH SESSION whose node's nested subagent re-yielded.
+
+        The graph did not advance: only the nested subagent chain changed.
+        Persist the SAME ``graph_checkpoint`` with this node's pending entry's
+        ``frames`` / ``leaf`` replaced by the reconstructed stack + new deeper
+        leaf, and park on the new leaf's event key. Mirrors
+        :meth:`_repark_graph_outcome` for the ParkRequest / timeout shape.
+        """
+        from copy import deepcopy
+        from datetime import timedelta
+        from primer.int.claim import ParkRequest, ReleaseOutcome
+        from primer.worker.frames import frames_to_jsonable
+
+        leaf = outcome.leaf
+        new_ck = deepcopy(checkpoint)
+        for e in new_ck.get("pending_agent_yields") or []:
+            if e.get("tool_call_id") == ay.get("tool_call_id"):
+                e["frames"] = frames_to_jsonable(list(outcome.frames))
+                e["leaf"] = leaf.to_jsonable()
+                # The node still awaits the SAME invoke_agent call, but the
+                # deeper leaf's event/metadata moved - re-point the entry's
+                # await key so the park + drain selection track the new leaf.
+                e["event_key"] = leaf.event_key
+                e["tool_name"] = leaf.tool_name
+                e["resume_metadata"] = dict(leaf.resume_metadata or {})
+                break
+
+        now = datetime.now(timezone.utc)
+        timeout = leaf.timeout if leaf.timeout is not None else 3600.0
+        parked_state = ParkedState(
+            yielded=leaf,
+            llm_messages=[],
+            turn_no=session.turn_no,
+            started_at=now,
+            tool_call_id=parked.tool_call_id,
+            graph_checkpoint=new_ck,
+        )
+        return ReleaseOutcome(
+            success=True,
+            drop_lease=True,
+            park=ParkRequest(
+                parked_state=parked_state.to_jsonable(),
+                parked_event_key=leaf.event_key,
+                parked_event_keys=getattr(leaf, "event_keys", None),
+                parked_until=now + timedelta(seconds=timeout),
+                parked_at=now,
+            ),
+        )
 
     async def _graph_agent_tool_result(self, checkpoint, tcid, payload):
         """Build the tool_result Message an agent-node yield continues from

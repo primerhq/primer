@@ -106,10 +106,19 @@ class ParkedState:
     # mid-flight graph executor on resume. ``None`` for agent-bound
     # parks (their continuation runs through the LLM history alone).
     graph_checkpoint: dict[str, Any] | None = None
+    # Unified nested-yield continuation stack: an ordered (root-first) list
+    # of AgentFrame/GraphFrame instances capturing every in-flight caller
+    # above the leaf yield. Empty for a flat (single-frame) park written by
+    # an older runtime; ``from_jsonable`` synthesises a one-frame stack in
+    # that case so downstream resume code always sees at least one frame.
+    frames: list = field(default_factory=list)
     schema_version: int = PARKED_STATE_SCHEMA_VERSION
 
     def to_jsonable(self) -> dict[str, Any]:
         """Render to a JSON-safe dict for persistence in sessions.data."""
+        # Lazy import: frames.py imports from this module, so a top-level
+        # import would create a cycle.
+        from primer.worker.frames import frames_to_jsonable
         return {
             "schema_version": self.schema_version,
             "tool_call_id": self.tool_call_id,
@@ -127,6 +136,7 @@ class ParkedState:
                 if self.graph_checkpoint is not None
                 else None
             ),
+            "frames": frames_to_jsonable(self.frames),
         }
 
     @classmethod
@@ -146,22 +156,62 @@ class ParkedState:
             raise ValueError(
                 f"parked_state blob missing required keys: {sorted(missing)}"
             )
+        # Lazy import: frames.py imports from this module (cycle avoidance).
+        from primer.worker.frames import (
+            GraphFrame,
+            frames_from_jsonable,
+        )
+
+        yielded = Yielded.from_jsonable(data["yielded"])
+        llm_messages = list(data["llm_messages"])
+        tool_call_id = data.get("tool_call_id")
+        graph_checkpoint = (
+            dict(data["graph_checkpoint"])
+            if data.get("graph_checkpoint") is not None
+            else None
+        )
+
+        raw_frames = data.get("frames")
+        if raw_frames:
+            frames = frames_from_jsonable(raw_frames)
+        elif yielded.tool_name == "invoke_graph" or graph_checkpoint is not None:
+            # Back-compat shim for a pre-unification invoke_graph park: it has
+            # no ``frames`` key, so reconstruct the single GraphFrame the
+            # invoke_graph resume path expects. (This branch is kept until
+            # task 5.1 migrates invoke_graph onto the continuation walk.)
+            md = yielded.resume_metadata or {}
+            frames = [
+                GraphFrame(
+                    graph_id=md.get("graph_id"),
+                    gsid=md.get("sub_gsid"),
+                    checkpoint=graph_checkpoint,
+                    # tool_call_id = the AGENT's invoke_graph call id (the
+                    # park's own tool_call_id); node_tcid = the child graph's
+                    # parked-node id (the resumed_tcid).
+                    tool_call_id=tool_call_id,
+                    node_tcid=md.get("child_tcid"),
+                )
+            ]
+        else:
+            # An OLD agent park (or a session that yielded directly) carries
+            # NO nested-invocation frames: the session's own turn lives in
+            # ``llm_messages``, not in a frame. Shim to an EMPTY stack so the
+            # resume path routes through the existing per-tool_name switch.
+            frames = []
+
         return cls(
-            yielded=Yielded.from_jsonable(data["yielded"]),
-            llm_messages=list(data["llm_messages"]),
+            yielded=yielded,
+            llm_messages=llm_messages,
             turn_no=int(data["turn_no"]),
             started_at=_parse_iso(data["started_at"]),
-            tool_call_id=data.get("tool_call_id"),
+            tool_call_id=tool_call_id,
             resume_event_payload=(
                 dict(data["resume_event_payload"])
                 if data.get("resume_event_payload") is not None
                 else None
             ),
-            graph_checkpoint=(
-                dict(data["graph_checkpoint"])
-                if data.get("graph_checkpoint") is not None
-                else None
-            ),
+            graph_checkpoint=graph_checkpoint,
+            frames=frames,
             schema_version=version,
         )
 

@@ -347,6 +347,12 @@ async def run_one_session_turn(
         # resume dispatch can route to the graph resume adapter.
         graph_checkpoint = getattr(park, "graph_checkpoint", None)
 
+        # A yield raised inside a NESTED invoke_agent invocation arrives with
+        # ``park.frames`` already populated (run_subagent/resume_subagent
+        # prepended one AgentFrame per in-flight caller). Persist that stack so
+        # the worker's continuation walk can unwind it on resume. A session that
+        # yielded directly carries an empty list -> the existing per-tool_name
+        # resume path handles it unchanged.
         parked_state = ParkedState(
             yielded=yielded_stamped,
             llm_messages=llm_message_dicts,
@@ -357,6 +363,7 @@ async def run_one_session_turn(
             started_at=_turn_started_at,
             tool_call_id=park.tool_call_id,
             graph_checkpoint=graph_checkpoint,
+            frames=list(getattr(park, "frames", []) or []),
         )
 
         logger.info(

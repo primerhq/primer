@@ -73,7 +73,16 @@ def parked_state(yielded_sleep: Yielded, t0: datetime) -> ParkedState:
 class TestParkedStateRoundTrip:
     def test_minimal_roundtrip(self, parked_state: ParkedState):
         round_tripped = ParkedState.from_jsonable(parked_state.to_jsonable())
-        assert round_tripped == parked_state
+        # A non-graph park with no explicit continuation stack carries NO
+        # nested-invocation frames: the session's own turn lives in
+        # ``llm_messages``, not a frame, so the back-compat shim reconstructs an
+        # EMPTY stack (see ParkedState.from_jsonable).
+        assert round_tripped.yielded == parked_state.yielded
+        assert round_tripped.llm_messages == parked_state.llm_messages
+        assert round_tripped.turn_no == parked_state.turn_no
+        assert round_tripped.started_at == parked_state.started_at
+        assert round_tripped.graph_checkpoint == parked_state.graph_checkpoint
+        assert round_tripped.frames == []
 
     def test_roundtrip_with_resume_event_payload(self, parked_state: ParkedState):
         resumed = ParkedState(
@@ -84,7 +93,12 @@ class TestParkedStateRoundTrip:
             resume_event_payload={"response": "yes please"},
         )
         round_tripped = ParkedState.from_jsonable(resumed.to_jsonable())
-        assert round_tripped == resumed
+        assert round_tripped.resume_event_payload == resumed.resume_event_payload
+        assert round_tripped.yielded == resumed.yielded
+        assert round_tripped.llm_messages == resumed.llm_messages
+        assert round_tripped.turn_no == resumed.turn_no
+        assert round_tripped.started_at == resumed.started_at
+        assert round_tripped.frames == []
 
     def test_unknown_schema_version_raises_loudly(self, parked_state: ParkedState):
         blob = parked_state.to_jsonable()

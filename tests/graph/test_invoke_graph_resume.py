@@ -1,8 +1,9 @@
-"""invoke_graph HITL parking + resume (Task 5).
+"""invoke_graph HITL parking + resume (Task 5 / 5.1).
 
-Stub child executors (no live graph): exercise the re-stamp of a child-graph
-park as an ``invoke_graph`` park on the AGENT session, and the resume drain
-that collects the graph's terminal output (or catches a re-park).
+Stub child executors (no live graph): exercise the descent of a child-graph
+park into a ``GraphFrame`` pushed onto the re-raised child yield (the worker
+then routes it through the continuation walk), and the resume drain that
+collects the graph's terminal output (or catches a re-park).
 """
 
 import pytest
@@ -48,7 +49,7 @@ def _svc(build):
 
 
 @pytest.mark.asyncio
-async def test_run_invoke_graph_reparks_as_invoke_graph():
+async def test_run_invoke_graph_pushes_graph_frame():
     async def _build(*, graph, gsid):
         return _ParkingExec()
 
@@ -58,14 +59,25 @@ async def test_run_invoke_graph_reparks_as_invoke_graph():
             graph_id="g", graph_input="i", services=svc, tool_call_id="atc"
         )
     y = ei.value
-    assert y.yielded.tool_name == "invoke_graph"
-    assert y.yielded.resume_metadata["invoke_graph"] is True
-    assert y.yielded.resume_metadata["sub_gsid"] == "gs__invoke_atc"
-    assert y.yielded.resume_metadata["graph_id"] == "g"
-    assert y.yielded.resume_metadata["child_tcid"] == "child-tc"
+    # The descent re-raises the CHILD graph's REAL leaf (its own gate), NOT a
+    # re-stamped invoke_graph park.
+    assert y.yielded.tool_name == "_approval"
     assert y.yielded.event_key == "ask:1"
+    assert y.tool_call_id == "child-tc"
     assert y.graph_checkpoint == {"snap": "shot"}
-    assert y.tool_call_id == "atc"
+    # A single GraphFrame is prepended onto the yield's frame stack.
+    from primer.worker.frames import GraphFrame
+
+    assert len(y.frames) == 1
+    gf = y.frames[0]
+    assert isinstance(gf, GraphFrame)
+    assert gf.graph_id == "g"
+    assert gf.gsid == "gs__invoke_atc"
+    assert gf.checkpoint == {"snap": "shot"}
+    # tool_call_id = the AGENT's invoke_graph call id (caller-result id).
+    assert gf.tool_call_id == "atc"
+    # node_tcid = the CHILD graph's parked-node id (resumed_tcid).
+    assert gf.node_tcid == "child-tc"
 
 
 class _CompletingExec:
