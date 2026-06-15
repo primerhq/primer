@@ -39,6 +39,10 @@ logger = logging.getLogger(__name__)
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent / "site_template"
 
+# Internal authoring section: writer guidance (authoring-guide, page-template),
+# not part of the published site. Excluded from page output, nav, search, sitemap.
+_META_SECTION = "_meta"
+
 # ``ref:<section>/<slug>`` cross-link forms. Inline links look like
 # ``[text](ref:section/slug)`` (optionally ``#anchor``); the block form
 # is a fenced code block whose info string is ``ref:section/slug`` with
@@ -202,6 +206,11 @@ def build_site(src_root: Path, out_dir: Path) -> None:
 
     out_dir.mkdir(parents=True, exist_ok=True)
     for entry in service.all_entries():
+        # Skip internal authoring docs: the _meta section (authoring-guide,
+        # page-template) is writer guidance, not public documentation. It is
+        # absent from the nav and must not be published, indexed, or sitemapped.
+        if entry.section == _META_SECTION:
+            continue
         title = entry.title
         section_title = section_titles.get(entry.section, entry.section)
         body_html = render_markdown(entry.body, slug_url_map)

@@ -9,3 +9,10 @@ def test_builds_a_page_per_doc(tmp_path):
     assert (out / "getting-started" / "introduction" / "index.html").exists()
     home = (out / "getting-started" / "introduction" / "index.html").read_text()
     assert "Features" in home and "LLM Providers" in home
+
+
+def test_excludes_internal_meta_authoring_docs(tmp_path):
+    out = tmp_path / "dist"
+    build_site(Path("primer/user_docs"), out)
+    # _meta is writer guidance, not public docs: no pages built for it.
+    assert not (out / "_meta").exists()
