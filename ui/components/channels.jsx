@@ -5,7 +5,10 @@
 // `PROVIDER_FIELDS` const which collided with providers.jsx during the
 // Task 3 wiring — see plan §"Task 3").
 
-const { apiFetch, useResource, useMutation, useRouter, useViewport } = window.primerApi;
+// NOTE: do NOT destructure window.primerApi at module top level. The docs
+// embeds install a fixture-backed stub (DocsMakeStubApi) AFTER this module is
+// evaluated, so a top-level capture would freeze the real (network) apiFetch.
+// Each component reads from window.primerApi inside its own render instead.
 
 const CH_LIST_PROVIDERS = "channels:providers";
 const CH_LIST_CHANNELS = "channels:channels";
@@ -62,6 +65,7 @@ function ProviderBadge({ kind }) {
 // ============== Providers list ==============
 
 function ChannelProvidersPage({ onOpen, pushToast }) {
+  const { apiFetch, useResource, useViewport } = window.primerApi;
   const { isMobile } = useViewport();
   const [showNew, setShowNew] = React.useState(false);
   const [filter, setFilter] = React.useState("");
@@ -185,6 +189,7 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
 }
 
 function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
+  const { apiFetch, useMutation } = window.primerApi;
   const isEdit = !!existing;
   const [id, setId] = React.useState(existing?.id || "");
   const [provider, setProvider] = React.useState(existing?.provider || "slack");
@@ -385,6 +390,7 @@ function NewChannelProviderModal({ onClose, onCreated, pushToast, existing }) {
 // ============== Provider detail ==============
 
 function ChannelProviderDetail({ providerId, pushToast }) {
+  const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
   const { navigate } = useRouter();
   const detailKey = CH_DETAIL_PREFIX + providerId;
   const [showDelete, setShowDelete] = React.useState(false);
@@ -577,6 +583,7 @@ function ChannelProviderDetail({ providerId, pushToast }) {
 // ============== Channels list ==============
 
 function ChannelsPage({ onNavigate, pushToast }) {
+  const { apiFetch, useResource, useMutation, useViewport } = window.primerApi;
   const { isMobile } = useViewport();
   const [showNew, setShowNew] = React.useState(false);
   const [editing, setEditing] = React.useState(null);
@@ -891,6 +898,7 @@ function CH_AllowedAgentsPicker({
 }
 
 function NewChannelModal({ providers, onClose, onCreated, pushToast, existing }) {
+  const { apiFetch, useResource, useMutation } = window.primerApi;
   const isEdit = !!existing;
   const [id, setId] = React.useState(existing?.id || "");
   const [providerId, setProviderId] = React.useState(
