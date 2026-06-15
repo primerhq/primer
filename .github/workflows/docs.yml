@@ -1,0 +1,51 @@
+name: Docs site
+
+# Docs ship on their own cadence, separate from any release pipeline.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "primer/user_docs/**"
+      - "scripts/docs/**"
+      - "ui/components/docs/**"
+      - ".github/workflows/docs.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build-deploy:
+    name: Build, capture, and deploy
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      # The docs group pulls in primer (build_jsx_bundle needs it importable)
+      # plus the markdown-it-py / mdit-py-plugins build libs.
+      - name: Install dependencies
+        run: uv sync --group docs
+
+      - name: Install Playwright chromium
+        run: uv run playwright install --with-deps chromium
+
+      - name: Build site
+        run: uv run python -m scripts.docs.build_site primer/user_docs dist/docs
+
+      # capture_embeds starts its own throwaway http.server internally, so no
+      # external static-server step is required here.
+      - name: Capture embeds
+        run: uv run python -m scripts.docs.capture_embeds dist/docs
+
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          personal_token: ${{ secrets.DOCS_DEPLOY_TOKEN }}
+          external_repository: ${{ vars.DOCS_ORG }}/${{ vars.DOCS_ORG }}.github.io
+          publish_branch: gh-pages
+          publish_dir: ./dist/docs
