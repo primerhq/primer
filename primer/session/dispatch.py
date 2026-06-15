@@ -161,7 +161,28 @@ async def run_one_session_turn(
     # ------------------------------------------------------------------
     # 2. Build executor
     # ------------------------------------------------------------------
-    executor = await deps.build_executor(session)
+    # Building the executor can raise a fatal resolution error BEFORE the
+    # turn starts streaming -- e.g. a graph-bound session whose graph row
+    # was deleted (NotFoundError at resolve), a missing agent, or a
+    # ConfigError. This call sits OUTSIDE the streaming try/except below,
+    # so an escaping exception would otherwise propagate uncaught up to the
+    # worker's _run_engine_session, which only logs it -- leaving the
+    # session stuck RUNNING forever (e2e t0624). Converge to ENDED/failed
+    # here so the row always reaches a terminal state and the lease drops.
+    try:
+        executor = await deps.build_executor(session)
+    except Exception:
+        logger.exception(
+            "session %s failed to build executor; ending failed",
+            session_id,
+        )
+        await _transition_session_status(
+            session_storage,
+            session,
+            new_status=SessionStatus.ENDED,
+            ended_reason="failed",
+        )
+        return ReleaseOutcome(success=False, drop_lease=True)
     if executor is None:
         logger.warning("executor builder returned None for session %s", session_id)
         return ReleaseOutcome(success=False, drop_lease=True)
