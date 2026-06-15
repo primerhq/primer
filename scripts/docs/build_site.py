@@ -49,6 +49,14 @@ _META_SECTION = "_meta"
 # an optional explanatory body. See ui/components/docs/directives-ref.jsx.
 _REF_SLUG_RE = r"[A-Za-z0-9][A-Za-z0-9._/#-]*"
 
+# Callout kinds, mirroring ui/components/docs/directives-callout.jsx
+# (info/success/warning/danger/tip). Unknown kinds fall back to ``info``.
+_CALLOUT_KINDS = ("info", "success", "warning", "danger", "tip")
+
+# Splits a code-tabs body into ``--- <lang>`` sections, matching the
+# ``^---\s+(\w+)\s*$`` separator used by directives-code-tabs.jsx.
+_CODE_TABS_SECTION_RE = re.compile(r"^---\s+(\w+)\s*$")
+
 
 def _doc_url(slug: str) -> str:
     """Map a full ``<section>/<basename>`` slug to its page url."""
@@ -104,13 +112,130 @@ def _render_sidebar(sections: list[dict[str, Any]]) -> str:
 # ---------------------------------------------------------------------------
 # Markdown rendering + ref resolution
 # ---------------------------------------------------------------------------
-def _make_md():
+def _render_callout(kind: str, body: str, md, slug_url_map: dict[str, str]) -> str:
+    """Render a ``callout:<kind>`` box. The body is re-parsed as markdown
+    (so callouts can hold lists/links/inline code), mirroring
+    directives-callout.jsx. ``ref:`` links inside the body resolve too.
+    """
+    kind = kind if kind in _CALLOUT_KINDS else "info"
+    inner = _rewrite_ref_blocks(body, slug_url_map)
+    rendered = _rewrite_inline_refs(md.render(inner), slug_url_map)
+    return (
+        f'<div class="callout callout-{kind}">'
+        f'<div class="callout-title">{html.escape(kind)}</div>'
+        f'<div class="callout-body">{rendered}</div>'
+        "</div>\n"
+    )
+
+
+def _render_code_tabs(langs_spec: str, body: str) -> str:
+    """Render a ``code-tabs:<langs>`` widget as ``.tabs`` markup driven by
+    ``wireTabs()`` in docs.js: a row of ``.tab`` buttons and matching
+    ``.tab-panel`` blocks. The body is split on ``--- <lang>`` separators,
+    matching directives-code-tabs.jsx.
+    """
+    langs = [s.strip() for s in langs_spec.split(",") if s.strip()]
+    sections: dict[str, str] = {}
+    current: str | None = None
+    buf: list[str] = []
+
+    def flush() -> None:
+        if current is not None:
+            sections[current] = "\n".join(buf).strip("\n")
+
+    for line in body.split("\n"):
+        m = _CODE_TABS_SECTION_RE.match(line)
+        if m:
+            flush()
+            current = m.group(1)
+            buf = []
+        elif current is not None:
+            buf.append(line)
+    flush()
+
+    if not langs:
+        return ""
+
+    # Stable, collision-resistant panel ids scoped to this widget.
+    uid = f"{abs(hash((langs_spec, body))) & 0xFFFFFF:06x}"
+    buttons: list[str] = []
+    panels: list[str] = []
+    for i, lang in enumerate(langs):
+        active = " active" if i == 0 else ""
+        panel_id = f"tab-{uid}-{lang}"
+        code = html.escape(sections.get(lang, ""))
+        buttons.append(
+            f'<button class="tab{active}" data-tab="{panel_id}">'
+            f"{html.escape(lang)}</button>"
+        )
+        panels.append(
+            f'<div class="tab-panel{active}" id="{panel_id}">'
+            f'<pre class="md-pre lang-{html.escape(lang)}"><code>{code}</code></pre>'
+            "</div>"
+        )
+    return (
+        '<div class="tabs">'
+        f'<div class="tab-row">{"".join(buttons)}</div>'
+        f'{"".join(panels)}'
+        "</div>\n"
+    )
+
+
+def _render_mermaid(body: str) -> str:
+    """Render a ``mermaid`` block as ``<pre class="mermaid">`` carrying the
+    diagram source; docs.js runs ``mermaid.run()`` over these on load.
+    """
+    return f'<pre class="mermaid">{html.escape(body.strip())}</pre>\n'
+
+
+def _render_ai_doc(slug: str) -> str:
+    """Render an ``ai-doc:<slug>`` reference. In the console this linked to
+    the in-app AI-doc mirror (``/docs/_ai/<slug>``); that route does not
+    exist on the static site (the AI-doc mirror is a console-only feature),
+    so emit a NON-linking labelled note rather than a dead link, preserving
+    the authoring cue from directives-ai-doc.jsx without a broken target.
+    """
+    return (
+        '<div class="ai-doc">'
+        '<div class="ai-doc-label">Agent-facing reference</div>'
+        f'<div class="ai-doc-slug">{html.escape(slug)}</div>'
+        "</div>\n"
+    )
+
+
+def _make_md(slug_url_map: dict[str, str]):
     from markdown_it import MarkdownIt
     from mdit_py_plugins.anchors import anchors_plugin
 
     md = MarkdownIt("commonmark", {"html": False, "linkify": True})
     md.enable("table")
     md.use(anchors_plugin, max_level=3)
+
+    default_fence = md.renderer.rules.get("fence")
+
+    def fence(tokens, idx, options, env):
+        """Dispatch directive fences (callout/code-tabs/mermaid/ai-doc) to
+        their static-HTML renderers; everything else falls through to the
+        normal code-block renderer. ``ref:`` fences are pre-rewritten in
+        ``render_markdown`` before this runs.
+        """
+        info = tokens[idx].info.strip()
+        content = tokens[idx].content
+        if info == "mermaid":
+            return _render_mermaid(content)
+        if info.startswith("callout:"):
+            return _render_callout(
+                info[len("callout:"):], content, md, slug_url_map
+            )
+        if info.startswith("code-tabs:"):
+            return _render_code_tabs(info[len("code-tabs:"):], content)
+        if info.startswith("ai-doc:"):
+            return _render_ai_doc(info[len("ai-doc:"):])
+        if default_fence is not None:
+            return default_fence(tokens, idx, options, env)
+        return md.renderer.renderToken(tokens, idx, options)
+
+    md.renderer.rules["fence"] = fence
     return md
 
 
@@ -165,7 +290,7 @@ def render_markdown(md_source: str, slug_url_map: dict[str, str]) -> str:
     page url via ``slug_url_map``. Headings (h2/h3) get stable ``id``
     anchors. Raises ``KeyError`` on an unknown ref slug.
     """
-    md = _make_md()
+    md = _make_md(slug_url_map)
     pre = _rewrite_ref_blocks(md_source, slug_url_map)
     rendered = md.render(pre)
     return _rewrite_inline_refs(rendered, slug_url_map)
@@ -237,7 +362,10 @@ def build_site(src_root: Path, out_dir: Path) -> None:
         (_TEMPLATE_DIR / "docs.css").read_text(encoding="utf-8"),
         encoding="utf-8",
     )
-    (assets / "docs.js").write_text("", encoding="utf-8")
+    (assets / "docs.js").write_text(
+        (_TEMPLATE_DIR / "docs.js").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
