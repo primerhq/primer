@@ -157,6 +157,27 @@ async def run_one_session_turn(
         session.ended_at = _now()
         await session_storage.update(session)
         return ReleaseOutcome(success=True, drop_lease=True)
+    # * If pause_requested is set, the operator paused the session while it
+    #   was running or parked. Honour it BEFORE building the executor or
+    #   resuming: transition to PAUSED and drop the lease without running a
+    #   turn. parked_* columns are left untouched so a parked session keeps
+    #   its 'resumable' marker and a later /resume can replay the hook. This
+    #   check was lost when the worker turn loop moved out of pool.py
+    #   (_run_one_turn) into this function; without it a paused parked
+    #   session gets silently resumed to completion (e2e t0867).
+    if session.pause_requested:
+        await _transition_session_status(
+            session_storage,
+            session,
+            new_status=SessionStatus.PAUSED,
+        )
+        # Drop the lease but preserve the park columns: a paused session that
+        # was 'resumable' keeps its marker + parked_state so a later /resume
+        # re-arms the lease and replays the hook. preserve_park also blocks
+        # the turn_no bump (no turn ran).
+        return ReleaseOutcome(
+            success=True, drop_lease=True, preserve_park=True,
+        )
 
     # ------------------------------------------------------------------
     # 2. Build executor
