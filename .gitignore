@@ -241,6 +241,11 @@ tests/ui_e2e/.state/
 
 # User-filled test configuration (the .example template is versioned).
 tests/testconfig.yaml
+# Docs embed harness build output: the console JSX bundle is built offline at
+# capture time (scripts/docs/capture_embeds.py) and the embed PNGs land under
+# dist/ (already ignored). Neither is source.
+scripts/docs/embed_harness/_app.js
+
 # local channel/test credentials (never commit)
 .credentials
 .superpowers/

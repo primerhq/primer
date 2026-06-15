@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Docs embed harness</title>
+<style>
+  html,body { margin:0; background:var(--bg,#111); color:var(--text,#ddd); font-family:sans-serif; }
+  #status { display:none; }
+  #host { width:100%; height:100vh; border:0; display:block; }
+</style>
+</head>
+<body>
+<div id="status">booting...</div>
+<iframe id="host" title="embed-host" sandbox="allow-scripts allow-same-origin"></iframe>
+
+<!--
+  Build-only embed render harness (no live backend). It loads:
+    - the worktree's vendored React + html2canvas
+    - a freshly-built console bundle (_app.js, built offline by
+      scripts/docs/capture_embeds.py via build_jsx_bundle)
+    - the docs embed-preview + embed-registry helpers
+  resolves the embed id from the registry, fetches its committed fixture,
+  installs the fixture-backed DocsMakeStubApi as window.primerApi, then
+  renders the real console component. On completion it sets
+  data-embed-status="done" (or "error") on the host <html> AND publishes
+  window.__HARNESS_RESULT so the playwright capture can wait deterministically.
+-->
+<script>
+(function () {
+  var statusEl = document.getElementById("status");
+  function setStatus(msg) { statusEl.textContent = msg; }
+  function getParam(name, dflt) {
+    var m = new RegExp("[?&]" + name + "=([^&]+)").exec(location.search);
+    return m ? decodeURIComponent(m[1]) : dflt;
+  }
+
+  var embedId = getParam("embed", "agents-page");
+  var theme = getParam("theme", "light");
+  if (theme !== "light" && theme !== "dark") { theme = "light"; }
+
+  // Worktree root is the static-server root. These files live under it.
+  var APP_JS         = "/scripts/docs/embed_harness/_app.js";
+  var REACT          = "/ui/vendor/react.min.js";
+  var REACT_DOM      = "/ui/vendor/react-dom.min.js";
+  var HTML2CANVAS    = "/ui/vendor/html2canvas.min.js";
+  var STYLES         = "/ui/styles.css";
+  var EMBED_PREVIEW  = "/ui/components/docs/embed-preview.jsx";
+  var EMBED_REGISTRY = "/ui/components/docs/embed-registry.jsx";
+
+  // Theme the host doc root so the page background matches the embed.
+  document.documentElement.setAttribute("data-theme", theme);
+
+  function fail(msg) {
+    window.__HARNESS_RESULT = { embedId: embedId, theme: theme, error: String(msg) };
+    setStatus("ERROR embed=" + embedId + ": " + msg);
+    document.documentElement.setAttribute("data-embed-status", "error");
+  }
+
+  var iframe = document.getElementById("host");
+  var idoc = iframe.contentDocument;
+  idoc.open();
+  idoc.write(
+    "<!doctype html><html lang=\"en\" data-theme=\"" + theme + "\"><head>" +
+    "<meta charset=\"utf-8\" />" +
+    "<link rel=\"stylesheet\" href=\"" + STYLES + "\" />" +
+    "<style>html,body{margin:0;background:var(--bg,#111);} #embed-root{padding:16px;}</style>" +
+    "</head><body><div id=\"embed-root\"></div>" +
+    "<script src=\"" + REACT + "\"><\/script>" +
+    "<script src=\"" + REACT_DOM + "\"><\/script>" +
+    "<script src=\"" + HTML2CANVAS + "\"><\/script>" +
+    "<\/body><\/html>"
+  );
+  idoc.close();
+  var iwin = iframe.contentWindow;
+
+  // Swallow the harmless createRoot(null) auto-boot error (no #root in frame).
+  iwin.addEventListener("error", function (e) {
+    var msg = String((e && e.message) || "");
+    if (/root|createRoot|null/i.test(msg)) { e.preventDefault(); }
+  });
+
+  function loadInline(src) {
+    return iwin.fetch(src).then(function (res) {
+      if (!res.ok) throw new Error("fetch " + src + " -> " + res.status);
+      return res.text();
+    }).then(function (code) {
+      var s = idoc.createElement("script");
+      s.textContent = code;
+      idoc.body.appendChild(s);
+    });
+  }
+
+  function waitForReact() {
+    return new Promise(function (resolve) {
+      var t = setInterval(function () {
+        if (iwin.React && iwin.ReactDOM) { clearInterval(t); resolve(); }
+      }, 10);
+    });
+  }
+
+  var registry, entry;
+
+  setStatus("loading react...");
+  waitForReact()
+    .then(function () { setStatus("loading _app.js bundle..."); return loadInline(APP_JS); })
+    .then(function () { setStatus("loading embed-preview.jsx..."); return loadInline(EMBED_PREVIEW); })
+    .then(function () { setStatus("loading embed-registry.jsx..."); return loadInline(EMBED_REGISTRY); })
+    .then(function () {
+      registry = iwin.DocsEmbedRegistry;
+      if (!registry) throw new Error("DocsEmbedRegistry not defined in iframe");
+      entry = registry[embedId];
+      if (!entry) throw new Error("unknown embed id: " + embedId + " (valid: " + Object.keys(registry).join(",") + ")");
+      return iwin.fetch("/primer/user_docs/_fixtures/" + entry.fixtures + ".json").then(function (r) {
+        if (!r.ok) throw new Error("fixture fetch -> " + r.status);
+        return r.json();
+      });
+    })
+    .then(function (fixtures) {
+      if (typeof iwin.DocsMakeStubApi !== "function") throw new Error("DocsMakeStubApi missing");
+      if (typeof iwin[entry.component] !== "function") throw new Error(entry.component + " not defined in iframe after bundle load");
+      iwin.primerApi = iwin.DocsMakeStubApi(fixtures);
+      var root = iwin.ReactDOM.createRoot(idoc.getElementById("embed-root"));
+      root.render(iwin.React.createElement(iwin[entry.component], entry.props || {}));
+      // Give React effects (useResource fetchers, per-row effects) a beat to
+      // run against the stub, then report and signal done.
+      setTimeout(function () {
+        var rootEl = idoc.getElementById("embed-root");
+        var rendered = rootEl && rootEl.children.length > 0 && rootEl.textContent.trim().length > 0;
+        window.__HARNESS_RESULT = {
+          embedId: embedId,
+          theme: theme,
+          component: entry.component,
+          rendered: !!rendered,
+          rootHtmlLen: rootEl ? rootEl.innerHTML.length : 0,
+          textSample: rootEl ? rootEl.textContent.slice(0, 120) : ""
+        };
+        setStatus("DONE embed=" + embedId + " theme=" + theme + " component=" + entry.component +
+                  " rendered=" + rendered);
+        document.documentElement.setAttribute("data-embed-status", "done");
+      }, 900);
+    })
+    .catch(function (err) { fail(err && err.message || err); });
+})();
+</script>
+</body>
+</html>
