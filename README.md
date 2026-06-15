@@ -1,37 +1,117 @@
-# Primer
+<div align="center">
 
-Primer is a context-first, batteries-included agent orchestration platform. It
-ships LLM providers, workspaces, directed graphs, knowledge collections,
-channels, triggers, and vector search as integrated first-class primitives --
-everything an agent deployment needs, wired together from the start.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.png">
+  <img alt="Primer - orchestrate fleets of small, context-optimized agents" src="docs/assets/hero-light.png" width="760">
+</picture>
 
-The central design bet: a small model given a clean, purpose-built context can
-rival a much larger model on a narrow task. Every Primer feature exists to keep
-each agent's working context tight and accurate.
+<br>
+
+**An unopinionated, batteries-included agent-orchestration platform built around one bet: a small model given a clean, purpose-built context can rival a much larger one.**
+
+<br>
+
+[![License](https://img.shields.io/badge/license-Apache_2.0-61d46a.svg)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/codemug/primer/ci.yml?branch=main&label=build)](https://github.com/codemug/primer/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.13+-3776ab.svg)](https://www.python.org/)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-61d46a.svg)](CONTRIBUTING.md)
+[![Stars](https://img.shields.io/github/stars/codemug/primer?style=flat&color=61d46a)](https://github.com/codemug/primer/stargazers)
+
+[Quickstart](#quickstart) · [Features](#what-you-can-build) · [How it works](#how-it-works) · [Docs](#documentation) · [Contributing](CONTRIBUTING.md)
+
+</div>
+
+---
+
+## Why Primer
+
+A language model spreads a fixed budget of attention across every token in its context at once. Keep the context tight and the few tokens that matter get most of that attention; bloat it with stale history, unused tool definitions, and irrelevant background and the signal thins out. Primer's core bet is that **you often do not need the biggest model if you give the model you have exactly what it needs and nothing more** - and that this is a lever on any model, large or small.
+
+So instead of one giant agent with everything crammed into its prompt, Primer lets you orchestrate **fleets of small, focused agents**, each with a clean working context, wired together with the primitives a real deployment needs: LLM providers, workspaces, graphs, knowledge collections, channels, triggers, and semantic search - integrated from the start, runnable on your own hardware.
 
 ## What you can build
 
-- **Agents and chats** -- run multi-turn conversations against configurable
-  agents; switch agents mid-chat without losing shared history.
-- **Directed graphs** -- wire agents into graphs (producer-judge loops,
-  fan-out/fan-in, conditional branches) that run as structured workflows.
-- **Knowledge and collections** -- ingest documents into vector collections;
-  agents retrieve only the relevant chunks, not the whole corpus.
-- **Channels** -- bridge agents to Slack, Telegram, and Discord; agents can ask
-  questions, request approvals, and be triggered from a channel message.
-- **Workspaces** -- materialised sandboxes (local, container, or Kubernetes)
-  that give agents a persistent filesystem and git-backed state.
-- **Triggers** -- schedule work or fire on events; agents park and resume
-  around slow tools or human approvals without blocking compute.
-- **MCP** -- expose all platform tools over the Model Context Protocol so
-  external agents and MCP clients can use Primer's full surface.
-- **Harnesses** -- package a tuned set of agents, graphs, and collections into
-  a git-backed versioned bundle; deploy it anywhere with one command.
+<table>
+  <tr>
+    <td width="33%" valign="top">
+
+⏸️ **Yielding, event-driven agents**
+
+Agents park on a slow tool or a human decision and resume when the event fires - freeing compute while they wait.
+
+</td>
+    <td width="33%" valign="top">
+
+🔀 **Directed graphs**
+
+Wire agents into cyclic graphs (producer-judge loops, fan-out/fan-in, conditional branches) that run as structured workflows.
+
+</td>
+    <td width="33%" valign="top">
+
+📁 **Workspaces & sessions**
+
+Materialised sandboxes (local, container, or Kubernetes) give each agent a persistent filesystem and git-backed state.
+
+</td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+
+🔎 **Semantic search**
+
+Ingest documents into vector collections; agents retrieve only the relevant chunks, not the whole corpus.
+
+</td>
+    <td width="33%" valign="top">
+
+💬 **Channels**
+
+Bridge agents to Slack, Telegram, and Discord - ask questions, request approvals, and trigger work from a message.
+
+</td>
+    <td width="33%" valign="top">
+
+🔌 **MCP server**
+
+Expose the full platform tool surface over the Model Context Protocol so external agents and MCP clients can use it.
+
+</td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+
+✅ **Human approvals**
+
+Gate sensitive tool calls behind an approval that a person grants from a channel or the console before the agent proceeds.
+
+</td>
+    <td width="33%" valign="top">
+
+📦 **Harnesses**
+
+Package a tuned set of agents, graphs, and collections into a git-backed, versioned bundle and deploy it anywhere in one step.
+
+</td>
+    <td width="33%" valign="top">
+
+🧭 **Dynamic discovery**
+
+Two meta-tools let an agent search for and invoke any tool or agent at runtime - without carrying the whole catalog in its context.
+
+</td>
+  </tr>
+</table>
+
+<!-- DEMO GIF: drop the ask_user -> channel reply -> resume capture here once recorded, e.g.
+<div align="center"><img alt="Park on a question, reply from a channel, resume" src="docs/assets/demo-park-resume.gif" width="760"></div>
+-->
+
+<!-- SCREENSHOTS: add a framed-console section here (Dashboard / Session control room / Approvals / Graph editor) once the captures are produced. -->
 
 ## Quickstart
 
-**Requirements:** Python 3.13, `uv`, and a Postgres instance (see
-`docker-compose.yml` for a one-command local setup).
+**Requirements:** Python 3.13, [`uv`](https://github.com/astral-sh/uv), and (optionally) Postgres - see `docker-compose.yml` for a one-command setup.
 
 ```bash
 # 1. Clone and install
@@ -39,105 +119,62 @@ git clone https://github.com/codemug/primer.git
 cd primer
 uv sync
 
-# 2. Start Postgres (optional: skip if you already have one)
-docker compose up -d postgres
-# or: podman compose up -d postgres
-
-# 3. Configure
-cp config.example.yaml config.yaml
-# Edit config.yaml: at minimum set db.config.password to match your Postgres
-
-# 4. Start the API (includes an in-process worker by default)
-uv run primer api --config config.yaml
-
-# 5. Verify
-curl http://localhost:8000/v1/health
-# -> {"status":"ok"}
-```
-
-Open the operator console at `http://localhost:8000/console/`.
-
-### Zero-config single-user mode
-
-If you have no Postgres instance and just want to try Primer locally, omit the
-`--config` flag. Primer falls back to an embedded SQLite database at
-`~/.primer/db/data.sqlite`. Worker scheduling is in-memory only in this mode;
-it is not suitable for multi-process or production deployments.
-
-```bash
+# 2. Start the API (includes an in-process worker)
 uv run primer api
+
+# 3. Verify, then open the console
+curl http://localhost:8000/v1/health      # -> {"status":"ok"}
 ```
 
-### Docker / Podman
+Open the operator console at **http://localhost:8000/console/**.
 
-The included `docker-compose.yml` starts Postgres plus the Primer application
-container together. AppConfig is driven entirely by `PRIMER_*` environment
-variables; no config file is needed:
+With no `--config` flag, Primer runs zero-config on an embedded SQLite database (`~/.primer/db/data.sqlite`, in-memory scheduling) - perfect for a first look. For multi-process or production use, point it at Postgres:
 
 ```bash
-docker compose up -d        # start postgres + primer
-# or:
-podman compose up -d
+docker compose up -d postgres            # or: podman compose up -d postgres
+cp config.example.yaml config.yaml       # set db.config.password to match
+uv run primer api --config config.yaml
 ```
 
-The application is available on port 8765 by default (mapped in compose).
+`config.example.yaml` documents every field. Environment variables override file values: every `AppConfig` field maps to `PRIMER_<FIELD>` (nested fields use `__`, e.g. `PRIMER_DB__CONFIG__PASSWORD`).
 
-## Configuration
+## How it works
 
-`config.example.yaml` documents every supported field. Copy it to
-`config.yaml` (gitignored by convention) and adjust the values for your
-environment. The most common change is the database password.
+Primer is a stack of layers, where each layer keeps the one below it from getting cluttered:
 
-The CLI reads the file with `yaml.safe_load` and passes the result to
-`AppConfig`. Key sections:
+- **Context discipline** - tool selection, meta-tools, and internal collections keep each agent's prompt lean.
+- **State** - workspaces give agents a shared, minimal surface to hand off results without carrying history in-context.
+- **Sequencing** - directed cyclic graphs express multi-step reasoning as structure instead of one giant prompt.
+- **Time** - event-driven park-and-resume frees compute while work waits on a slow tool or a human.
+- **Sharing** - harnesses package a working configuration into a versioned, git-backed bundle.
+- **Edges** - channels, web search, and approval gates handle where agents reach outside the platform.
 
-- `db` -- storage backend (nested `provider` + `config` block; see the example
-  for the correct Postgres shape). Omit to use embedded SQLite.
-- `scheduler` -- background-job scheduler. Use `provider: postgres` for
-  production; omit for in-memory single-process use.
-- `vector_store` -- required for collections and semantic search.
-- `worker` -- pool concurrency and lease knobs.
-- `auth` -- cookie-based session auth (enabled by default).
-- `observability` -- OTEL traces and Prometheus metrics.
-
-Environment variables override file values. Every `AppConfig` field maps to a
-`PRIMER_<FIELD>` env var; nested fields use double-underscore separators (for
-example `PRIMER_DB__CONFIG__PASSWORD`).
+At runtime, requests arrive from many edges (REST/console, MCP clients, chat channels, triggers), become **sessions / chats / graph runs** that a worker pool claims and drives; each turn calls LLM providers, tools, workspaces, and collections, and can park on a human or event and resume later - all backed by Postgres.
 
 ## Documentation
 
-- **Operator docs** -- built into the console under the Help menu; also served
-  at `/docs` when the server is running.
-- **Agent-usage docs** -- `docs/agents/` -- how to drive a running Primer
-  instance from an AI agent over MCP.
-- **Developer docs** -- `docs/dev/` -- architecture patterns, subsystem
-  references, and the contributing guide. Start at `docs/dev/README.md`.
+- **Operator docs** - served at `/docs` when the server is running (start with [Introduction](primer/user_docs/getting-started/introduction.md) and the [Quickstart](primer/user_docs/getting-started/quickstart.md)).
+- **Agent-usage docs** - [`docs/agents/`](docs/agents/) - how to drive a running Primer instance from an AI agent over MCP.
+- **Developer docs** - [`docs/dev/`](docs/dev/) - architecture patterns and subsystem references. Start at [`docs/dev/README.md`](docs/dev/README.md).
 
 ## Contributing
 
-Read `AGENTS.md` first. It describes the coordinator/subagent workflow, the
-project layout, the Definition of Done, how to run the test suites, and the
-hard rules (no em-dash characters, no `Co-Authored-By` footers, conventional
-commit messages).
-
-Quick setup:
+Read [AGENTS.md](AGENTS.md) first - it is the authoritative contributor contract (project layout, the Definition of Done, how to run the suites, and the hard rules). [CONTRIBUTING.md](CONTRIBUTING.md) is the human-facing summary.
 
 ```bash
 uv sync
 docker compose up -d postgres
-# run the narrowed unit sweep (excludes e2e/distributed/ui_e2e):
+# narrowed unit sweep (excludes e2e/distributed/ui_e2e):
 uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e \
   --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
 ```
 
-See `CONTRIBUTING.md` for the full contributor guide and
-`CODE_OF_CONDUCT.md` for community expectations.
+See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community expectations.
 
 ## Security
 
-Please report vulnerabilities privately. See `SECURITY.md`.
+Please report vulnerabilities privately - see [SECURITY.md](SECURITY.md).
 
 ## License
 
-Primer is licensed under the Apache License 2.0. See the `LICENSE` file for the
-full text.
+Primer is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the full text.
