@@ -43,7 +43,7 @@ from primer.model.workspace_session import (
     WorkspaceSession,
 )
 from primer.model.yield_ import ToolContext, YieldToWorker
-from primer.toolset.trigger import build_trigger_toolset_provider
+from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.trigger.dispatch import fire_trigger
 from primer.trigger.subscribers import DispatchDeps
 from primer.workspace.session_factory import SessionFactoryDeps, create_session
@@ -122,10 +122,10 @@ async def test_parked_session_e2e_subscribe_fire_resume(
     #    ToolContext tied to the session. The handler must yield AND
     #    persist a parked_session Subscription bound to (session_id,
     #    tool_call_id).
-    toolset = build_trigger_toolset_provider(
+    # subscribe_to_trigger now lives on the reserved workspace_ext toolset
+    # (its descriptor + handler moved there); build that to invoke it.
+    toolset = build_workspace_ext_toolset(
         storage_provider=fake_storage_provider,
-        claim_engine=fake_claim_engine,
-        event_bus=fake_event_bus,
     )
     tool_call_id = "tc-e2e-1"
     ctx = ToolContext(
@@ -258,10 +258,10 @@ async def test_parked_session_e2e_with_payload_template(
             scheduler=fake_scheduler,
         ),
     )
-    toolset = build_trigger_toolset_provider(
+    # subscribe_to_trigger now lives on the reserved workspace_ext toolset
+    # (its descriptor + handler moved there); build that to invoke it.
+    toolset = build_workspace_ext_toolset(
         storage_provider=fake_storage_provider,
-        claim_engine=fake_claim_engine,
-        event_bus=fake_event_bus,
     )
     tool_call_id = "tc-tpl-1"
     ctx = ToolContext(
@@ -339,10 +339,10 @@ async def test_parked_session_e2e_chat_only_call_rejected(
     trigger = await _seed_trigger(
         fake_storage_provider, trigger_id="tr-e2e-chat",
     )
-    toolset = build_trigger_toolset_provider(
+    # subscribe_to_trigger now lives on the reserved workspace_ext toolset
+    # (its descriptor + handler moved there); build that to invoke it.
+    toolset = build_workspace_ext_toolset(
         storage_provider=fake_storage_provider,
-        claim_engine=fake_claim_engine,
-        event_bus=fake_event_bus,
     )
     chat_ctx = ToolContext(
         tool_call_id="tc-chat-x",
@@ -401,10 +401,10 @@ async def test_parked_session_e2e_session_unparked_before_fire(
             scheduler=fake_scheduler,
         ),
     )
-    toolset = build_trigger_toolset_provider(
+    # subscribe_to_trigger now lives on the reserved workspace_ext toolset
+    # (its descriptor + handler moved there); build that to invoke it.
+    toolset = build_workspace_ext_toolset(
         storage_provider=fake_storage_provider,
-        claim_engine=fake_claim_engine,
-        event_bus=fake_event_bus,
     )
     ctx = ToolContext(
         tool_call_id="tc-unpark-1",

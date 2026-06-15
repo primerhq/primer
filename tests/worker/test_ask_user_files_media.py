@@ -106,7 +106,7 @@ async def test_dispatch_no_files_no_media():
 def test_ask_user_handler_carries_files():
     import asyncio
     from primer.model.yield_ import ToolContext, Yielded
-    from primer.toolset.misc import _ask_user_handler
+    from primer.toolset.system import _ask_user_handler
     ctx = ToolContext(tool_call_id="tc1", session_id="s-1", workspace_id="ws-1")
     # asyncio.run() spins up and tears down its own event loop, so this stays
     # robust under parallel xdist runs where a neighbouring async test may have

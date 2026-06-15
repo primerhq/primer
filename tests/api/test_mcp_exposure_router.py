@@ -6,8 +6,9 @@ Cover:
 * PUT flips ``enabled``.
 * PUT accepts a known-safe scoped id (``misc__uuid_v4``).
 * PUT rejects an unknown scoped id with 422 ``tool_unknown``.
-* PUT accepts a previously hard-denied id (``system__call_tool``) with
-  422 ``tool_not_exposable``.
+* PUT rejects ``system__call_tool``: HARD_DENY was dropped (operator owns
+  the exposure decision) but the orthogonal yielding gate still blocks it
+  with 422 ``tool_not_exposable`` / ``yielding_unsupported``.
 * GET /available returns rows enriched with the documented fields.
 * PUT with a bearer token (no cookie) is rejected with 403
   ``mcp_exposure_cookie_only``.
@@ -80,15 +81,21 @@ async def test_put_rejects_unknown_id(client):
 
 
 @pytest.mark.asyncio
-async def test_put_accepts_previously_hard_denied_id(client):
-    """``system__call_tool`` is no longer hard-denied — operator owns the
-    exposure decision. PUT should accept it as an opt-in."""
+async def test_put_call_tool_rejected_as_yielding_not_hard_denied(client):
+    """HARD_DENY was dropped (operator owns the exposure decision), but the
+    orthogonal yielding gate still blocks ``system__call_tool``: it raises
+    YieldToWorker and MCP v1 has no park/resume protocol. So the PUT is
+    rejected as not-exposable with reason ``yielding_unsupported``, NOT a
+    hard-deny."""
     resp = await client.put(
         "/v1/mcp_exposure",
         json={"allowed_tools": ["system__call_tool"]},
     )
-    assert resp.status_code == 200, resp.text
-    assert "system__call_tool" in resp.json().get("allowed_tools", [])
+    assert resp.status_code == 422, resp.text
+    detail = resp.json()["detail"]
+    assert detail["code"] == "tool_not_exposable"
+    assert detail["scoped_id"] == "system__call_tool"
+    assert detail["reason"] == "yielding_unsupported"
 
 
 @pytest.mark.asyncio
