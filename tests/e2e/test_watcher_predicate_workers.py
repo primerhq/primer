@@ -472,13 +472,18 @@ async def test_t0802_sessions_find_multi_clause_and_predicate(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path,
 ) -> None:
     """T0802 — POST /v1/sessions/find with a binary AND predicate
-    (workspace_id == X AND status == 'ended') returns the rows
+    (workspace_id == X AND status == 'created') returns the rows
     matching BOTH clauses; rows matching only one (different
     workspace or different status) are filtered out.
 
-    Sessions created with auto_start=False are still processed by the
-    live worker immediately, so they reach 'ended' quickly. The test
-    waits for both sessions to settle before issuing the find query.
+    Sessions created with auto_start=False stay in 'created' with no
+    scheduler lease -- the worker never claims them (session_factory
+    only enqueues on auto_start, and create_session persists
+    status=CREATED). 'created' is therefore the stable, deterministic
+    status to filter on; no worker settle wait is needed. (An earlier
+    revision filtered on 'ended' and waited for the worker to move the
+    rows there, but auto_start=False rows never reach 'ended' on their
+    own, so that premise was stale and the find always returned empty.)
 
     Pins the predicate composition path in primer/api/routers/sessions
     and the backend's AND handling.
@@ -510,31 +515,10 @@ async def test_t0802_sessions_find_multi_clause_and_predicate(
         f"/v1/agents/{aid}",
         f"/v1/llm_providers/{pid}",
     ]
-    # Open a direct DB connection to wait for sessions to settle.
-    pg = await _pg()
     try:
-        # Sessions created with auto_start=False are still claimed and
-        # processed by the live worker (the claim engine enqueues them
-        # regardless of auto_start). The worker completes quickly since
-        # there are no LLM instructions. Wait for both to reach 'ended'
-        # before issuing the find query, so the status filter is stable.
-        for sid in (sid_on_a, sid_on_b):
-            deadline = asyncio.get_event_loop().time() + 5.0
-            while asyncio.get_event_loop().time() < deadline:
-                row = await pg.fetchrow(
-                    "SELECT data->>'status' AS st FROM sessions WHERE id = $1",
-                    sid,
-                )
-                if row and row["st"] == "ended":
-                    break
-                await asyncio.sleep(0.05)
-    finally:
-        await pg.close()
-
-    try:
-        # AND predicate: workspace_id == wid_a AND status == 'ended'.
-        # Sessions here have no LLM instructions so they end immediately;
-        # filtering on 'ended' is stable once the worker has settled.
+        # AND predicate: workspace_id == wid_a AND status == 'created'.
+        # auto_start=False rows are persisted as 'created' and never
+        # claimed, so 'created' is the stable status to filter on.
         body = {
             "predicate": {
                 "kind": "predicate",
@@ -549,7 +533,7 @@ async def test_t0802_sessions_find_multi_clause_and_predicate(
                     "kind": "predicate",
                     "left": {"kind": "field", "name": "status"},
                     "op": "=",
-                    "right": {"kind": "value", "value": "ended"},
+                    "right": {"kind": "value", "value": "created"},
                 },
             },
             "page": {"kind": "offset", "offset": 0, "length": 100},
