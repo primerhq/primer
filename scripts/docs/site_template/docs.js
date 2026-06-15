@@ -2,16 +2,131 @@
  *
  * The static site is multi-page (one index.html per doc), not the SPA
  * mockup, so this only enhances the directives the build emits:
+ *   - active-nav highlight + scroll-into-view, keyed on location.pathname
+ *     (no SPA hash router / window.PAGES);
+ *   - right-hand table of contents built from the article's h2/h3 ids,
+ *     with scroll-spy (both ported from the mockup docs.js, reading the
+ *     static article instead of a rendered SPA page);
  *   - code-tabs widgets (.tabs/.tab/.tab-panel), ported from the mockup
  *     docs.js wireTabs() helper;
  *   - mermaid diagrams (<pre class="mermaid">), rendered client-side;
  *   - theme toggle, kept in sync with localStorage;
  *   - client search over the prebuilt /search-index.json (a results
  *     dropdown under the topbar search box), with the mockup's
- *     "/"-to-focus and Escape-to-clear keybindings.
+ *     "/"-to-focus and Escape-to-clear keybindings;
+ *   - the mobile menu toggle (open/close the sidebar).
  */
 (function () {
   "use strict";
+
+  // ---- active nav (keyed on the current path, not a hash router) -----
+  // Mark the .nav-link whose href resolves to the current page as
+  // .active, expand the nav group it lives in, and scroll it into view in
+  // the sidebar. Hrefs are emitted as absolute paths ("/section/slug/")
+  // and the page <base href="/"> means location.pathname matches them
+  // directly; we normalise a trailing index.html just in case.
+  function normalizePath(p) {
+    if (!p) return "/";
+    try {
+      // Resolve relative/absolute hrefs against the current origin.
+      p = new URL(p, window.location.origin).pathname;
+    } catch (_e) {
+      /* keep p as-is */
+    }
+    return p.replace(/index\.html$/, "");
+  }
+
+  function wireNav() {
+    var sidebar = document.getElementById("sidebar");
+    if (!sidebar) return;
+    var here = normalizePath(window.location.pathname);
+    var links = sidebar.querySelectorAll(".nav-link");
+    var active = null;
+    links.forEach(function (link) {
+      var href = normalizePath(link.getAttribute("href"));
+      var isActive = href === here;
+      link.classList.toggle("active", isActive);
+      if (isActive) active = link;
+    });
+    if (active) {
+      // Expand the containing nav group (no-op when groups are flat) and
+      // bring the active link into view without scrolling the page.
+      var group = active.closest(".nav-group");
+      if (group) group.classList.add("expanded");
+      if (typeof active.scrollIntoView === "function") {
+        active.scrollIntoView({ block: "nearest" });
+      }
+    }
+  }
+
+  // ---- table of contents + scroll-spy (ported from the mockup) -------
+  // Build #tocLinks from the static article's h2[id]/h3[id], smooth-scroll
+  // on click, and highlight the heading currently in view on scroll.
+  function wireToc() {
+    var article = document.getElementById("article");
+    var tocLinks = document.getElementById("tocLinks");
+    if (!article || !tocLinks) return;
+
+    var heads = [].slice.call(article.querySelectorAll("h2[id], h3[id]"));
+    if (heads.length === 0) {
+      tocLinks.innerHTML =
+        '<span style="color:var(--text-4);font-size:13px">-</span>';
+      return;
+    }
+
+    tocLinks.innerHTML = heads
+      .map(function (h) {
+        var cls = h.tagName === "H3" ? "h3" : "";
+        return (
+          '<a href="#' +
+          h.id +
+          '" class="' +
+          cls +
+          '" data-anchor="' +
+          h.id +
+          '">' +
+          (h.textContent || "") +
+          "</a>"
+        );
+      })
+      .join("");
+
+    tocLinks.querySelectorAll("a").forEach(function (a) {
+      a.addEventListener("click", function (e) {
+        e.preventDefault();
+        var el = document.getElementById(a.dataset.anchor);
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
+
+    var spy;
+    function onScroll() {
+      cancelAnimationFrame(spy);
+      spy = requestAnimationFrame(function () {
+        var current = null;
+        for (var i = 0; i < heads.length; i++) {
+          if (heads[i].getBoundingClientRect().top < 120) {
+            current = heads[i].id;
+          }
+        }
+        tocLinks.querySelectorAll("a").forEach(function (a) {
+          a.classList.toggle("active", a.dataset.anchor === current);
+        });
+      });
+    }
+    window.addEventListener("scroll", onScroll, { passive: true });
+    onScroll();
+  }
+
+  // ---- mobile menu toggle --------------------------------------------
+  function wireMenu() {
+    var toggle = document.getElementById("menuToggle");
+    var sidebar = document.getElementById("sidebar");
+    if (!toggle || !sidebar) return;
+    toggle.addEventListener("click", function () {
+      sidebar.classList.toggle("open");
+    });
+  }
 
   // ---- code-tabs (ported from the mockup docs.js wireTabs) -----------
   function wireTabs() {
@@ -205,6 +320,9 @@
   }
 
   function init() {
+    wireNav();
+    wireToc();
+    wireMenu();
     wireTabs();
     wireTheme();
     wireSearch();
