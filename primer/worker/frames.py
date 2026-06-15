@@ -286,8 +286,7 @@ class GraphFrame:
         compute the node's ``agent_tool_result`` from the raw ``payload`` via
         ``services.graph_agent_tool_result`` (None for approval/verdict leaves),
         and hand BOTH the raw ``payload`` and that ``agent_tool_result`` to
-        :func:`resume_invoke_graph` (mirroring the pool's
-        ``_resume_invoke_graph``).
+        :func:`resume_invoke_graph`.
 
         Returns a :class:`Reparked` if the child graph raised a fresh yield,
         else a :class:`Completed` carrying a :class:`ToolResultPart` (keyed by
