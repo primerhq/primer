@@ -53,7 +53,7 @@ def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
     return fallback
 
 
-def _document_text(doc: Document) -> str:
+def document_body_text(doc: Document) -> str:
     """Extract the indexable body text from a Document.
 
     The REST create form stores prose under ``meta['text']``; the
@@ -67,6 +67,10 @@ def _document_text(doc: Document) -> str:
         if isinstance(val, str) and val.strip():
             return val
     return ""
+
+
+# Back-compat alias: existing callers import the private name.
+_document_text = document_body_text
 
 
 def chunk_text(text: str) -> list[str]:
