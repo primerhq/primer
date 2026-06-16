@@ -108,6 +108,76 @@ async def test_url_source_raises_on_error(monkeypatch):
         await resolve_file_sources([fm])
 
 
+async def test_url_source_verifies_matching_sha256(monkeypatch):
+    class _FakeResp:
+        status = 200
+
+        async def read(self):
+            return b'{"a":1}'
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        def get(self, url, **_):
+            return _FakeResp()
+
+    monkeypatch.setattr(
+        "primer.workspace.files._http_session", lambda: _FakeSession()
+    )
+    # Real SHA-256 hex digest of b'{"a":1}'.
+    digest = "015abd7f5cc57a2dd94b7590f04ad8084273905ee33ec5cebeae62276a97f862"
+    fm = FileMount(
+        path="external.json",
+        source=_UrlSource(url="https://example.com/x.json", sha256=digest),
+    )
+    out = await resolve_file_sources([fm])
+    assert out[0].content == b'{"a":1}'
+
+
+async def test_url_source_raises_on_sha256_mismatch(monkeypatch):
+    class _FakeResp:
+        status = 200
+
+        async def read(self):
+            return b'{"a":1}'
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+    class _FakeSession:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return None
+
+        def get(self, url, **_):
+            return _FakeResp()
+
+    monkeypatch.setattr(
+        "primer.workspace.files._http_session", lambda: _FakeSession()
+    )
+    fm = FileMount(
+        path="external.json",
+        source=_UrlSource(url="https://example.com/x.json", sha256="0" * 64),
+    )
+    with pytest.raises(RuntimeError, match="sha256 mismatch"):
+        await resolve_file_sources([fm])
+
+
 async def test_document_source_requires_resolver():
     fm = FileMount(
         path="d.txt",
