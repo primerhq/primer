@@ -213,6 +213,14 @@ def _make_lifespan(config: AppConfig):
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
 
+        from primer.model.provider import SecretProviderConfig
+        from primer.secret.factory import SecretProviderFactory
+
+        secret_provider = SecretProviderFactory.create(
+            config.secrets or SecretProviderConfig()
+        )
+        await secret_provider.initialize()
+
         # --- First-boot auto-bootstrap -----------------------------------
         # Run synchronously before serving so the reserved-id providers
         # are available by the time any request arrives. Cost <2s on
@@ -331,6 +339,7 @@ def _make_lifespan(config: AppConfig):
         workspace_registry = WorkspaceRegistry(
             storage_provider,
             subprocess_timeout_seconds=config.subprocess_timeout_seconds,
+            secret_provider=secret_provider,
         )
         # Bootstrap the system toolset before constructing the
         # ProviderRegistry so the registry can short-circuit
@@ -422,6 +431,7 @@ def _make_lifespan(config: AppConfig):
         logger.info("lifespan: web toolset built")
         provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001
         app.state.storage_provider = storage_provider
+        app.state.secret_provider = secret_provider
         app.state.provider_registry = provider_registry
         app.state.workspace_registry = workspace_registry
         app.state.system_toolset = system_toolset
@@ -1388,6 +1398,10 @@ def _make_lifespan(config: AppConfig):
             except Exception:
                 logger.exception("workspace_registry.aclose failed")
             try:
+                await secret_provider.aclose()
+            except Exception:
+                logger.warning("lifespan: secret_provider.aclose() failed", exc_info=True)
+            try:
                 await storage_provider.aclose()
             except Exception:
                 logger.exception("storage_provider.aclose failed")
@@ -2071,6 +2085,8 @@ def create_test_app(
     )
     _install_request_id(app)
     _install_auth_middleware(app)
+    # secret_provider omitted: this lightweight app path does not wire
+    # secret-sourced file mounts (they raise a clear error if declared).
     if workspace_registry is None:
         workspace_registry = WorkspaceRegistry(storage_provider)
     # Wire the SemanticSearchRegistry so /v1/ssp endpoints work in tests.

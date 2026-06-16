@@ -55,6 +55,20 @@ _DocumentResolver = Callable[["FileMount"], Awaitable[bytes]]
 _SecretResolver = Callable[["FileMount"], Awaitable[bytes]]
 
 
+@dataclass(frozen=True)
+class FileResolvers:
+    """Bundle of the optional resolvers passed into a backend's ``create``.
+
+    Built by the orchestration layer (``WorkspaceRegistry.materialise``)
+    and forwarded to :func:`resolve_file_sources`. ``None`` for either
+    field means that source kind is unsupported in this call and will
+    raise inside :func:`resolve_file_sources`.
+    """
+
+    document_resolver: _DocumentResolver | None = None
+    secret_resolver: _SecretResolver | None = None
+
+
 async def resolve_file_sources(
     mounts: list["FileMount"],
     *,

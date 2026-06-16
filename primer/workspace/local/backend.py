@@ -35,7 +35,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.workspace.files import ResolvedFile, resolve_file_sources
+from primer.workspace.files import FileResolvers, ResolvedFile, resolve_file_sources
 from primer.workspace.local.workspace import LocalWorkspace
 
 
@@ -101,6 +101,7 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         template: WorkspaceTemplate,
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
+        resolvers: FileResolvers | None = None,
     ) -> Workspace:
         if not self._initialised:
             await self.initialize()
@@ -128,10 +129,14 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         try:
             # Resolve every FileSource variant (inline/url/document/secret)
             # up-front via the central helper; the backend just writes the
-            # resulting bytes. document/secret resolvers aren't wired here
-            # yet — the orchestration layer will pass them in once Phase 6
-            # threads app state through.
-            resolved_files = await resolve_file_sources(merged_files)
+            # resulting bytes. document/secret resolvers are supplied by the
+            # orchestration layer (WorkspaceRegistry.materialise) via the
+            # resolvers bundle; when absent, those kinds raise.
+            resolved_files = await resolve_file_sources(
+                merged_files,
+                document_resolver=resolvers.document_resolver if resolvers else None,
+                secret_resolver=resolvers.secret_resolver if resolvers else None,
+            )
             for rf in resolved_files:
                 await self._materialise_resolved_file(ws_root, rf)
             for cmd in merged_init:

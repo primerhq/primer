@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     from primer.workspace.session import AgentSession
     from primer.model.workspace import CommitInfo
     from primer.workspace.tool import WorkspaceTool
+    from primer.workspace.files import FileResolvers
 
 
 # ===========================================================================
@@ -441,6 +442,7 @@ class WorkspaceBackend(ABC):
         template: WorkspaceTemplate,
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
+        resolvers: "FileResolvers | None" = None,
     ) -> Workspace:
         """Materialise a new workspace from ``template``.
 
@@ -448,6 +450,11 @@ class WorkspaceBackend(ABC):
         vars, additional files, additional init commands). Override
         semantics are merge-then-extend (see
         :class:`primer.model.workspace.WorkspaceTemplateOverrides`).
+
+        ``resolvers`` supplies the document/secret resolver callables
+        for ``document``- and ``secret``-sourced file mounts. ``None``
+        means those source kinds are unsupported for this call and will
+        raise during materialisation.
         """
 
     @abstractmethod
