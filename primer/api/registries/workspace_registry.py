@@ -29,9 +29,15 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.workspace.files import FileResolvers
+from primer.workspace.resolvers import (
+    make_document_resolver,
+    make_secret_resolver,
+)
 
 
 if TYPE_CHECKING:
+    from primer.int.secret_provider import SecretProvider
     from primer.int.storage_provider import StorageProvider
     from primer.int.workspace import Workspace, WorkspaceBackend
 
@@ -76,8 +82,10 @@ class WorkspaceRegistry:
         *,
         factory: Callable[[WorkspaceProvider], "WorkspaceBackend"] | None = None,
         subprocess_timeout_seconds: float = 120.0,
+        secret_provider: "SecretProvider | None" = None,
     ) -> None:
         self._sp = storage_provider
+        self._secret_provider = secret_provider
         # If a custom factory is supplied, use it as-is; otherwise build a
         # default factory that captures the configured subprocess timeout.
         self._factory = factory or _make_default_factory(subprocess_timeout_seconds)
@@ -163,7 +171,17 @@ class WorkspaceRegistry:
     ) -> "Workspace":
         """Create a new live workspace via the right backend."""
         backend = await self.get_backend(template.provider_id)
-        return await backend.create(template, overrides=overrides)
+        resolvers = FileResolvers(
+            document_resolver=make_document_resolver(self._sp),
+            secret_resolver=(
+                make_secret_resolver(self._secret_provider)
+                if self._secret_provider is not None
+                else None
+            ),
+        )
+        return await backend.create(
+            template, overrides=overrides, resolvers=resolvers
+        )
 
     async def destroy(self, workspace_id: str) -> None:
         """Destroy the live workspace AND drop the persisted row."""
