@@ -24,7 +24,7 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from primer.model.provider import StorageProviderConfig
+from primer.model.provider import SecretProviderConfig, StorageProviderConfig
 from primer.model.scheduler import (
     RuntimeMode,
     SchedulerProviderConfig,
@@ -93,6 +93,17 @@ class AppConfig(BaseSettings):
             "SQLite (which has no schema concept). Intended for test "
             "isolation: set PRIMER_DB_SCHEMA=<name> to place all tables "
             "in a dedicated schema so concurrent test runs don't collide."
+        ),
+    )
+
+    # --- Secrets ---------------------------------------------------------
+    secrets: SecretProviderConfig | None = Field(
+        default=None,
+        description=(
+            "Secret provider backing secret-sourced workspace file "
+            "mounts. None (default) means 'use the env-backed provider' "
+            "(PRIMER_SECRET_<NAME>). Set to a SecretProviderConfig to "
+            "override."
         ),
     )
 
