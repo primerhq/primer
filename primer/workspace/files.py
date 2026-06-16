@@ -19,6 +19,7 @@ discriminated source fields and the destination ``path`` / ``mode``.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Awaitable, Callable
@@ -81,6 +82,14 @@ async def resolve_file_sources(
                             f"FileSource url={url!r} returned {resp.status}"
                         )
                     content = await resp.read()
+            if src.sha256 is not None:
+                expected = src.sha256.lower()
+                actual = hashlib.sha256(content).hexdigest()
+                if actual != expected:
+                    raise RuntimeError(
+                        f"FileSource url={url!r} sha256 mismatch: "
+                        f"expected {expected}, got {actual}"
+                    )
         elif kind == "document":
             if document_resolver is None:
                 raise RuntimeError(
