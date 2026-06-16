@@ -434,3 +434,90 @@ async def test_harness_smoke(
     finally:
         for created in track:
             await created.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Feature: template-seeded inline files (content + mode)
+# ---------------------------------------------------------------------------
+
+
+async def test_seed_inline_file_and_mode(
+    platform_client: tuple[httpx.AsyncClient, Target],
+) -> None:
+    """A template ``files`` entry with an inline source lands in the workspace
+    with the right CONTENT and the requested file MODE, across every backend.
+
+    Content is asserted via the file-read API on every backend. Mode read-back
+    differs per backend, so the cross-backend source of truth is a diagnostic
+    exec. The diagnostic command head is whitelisted (only ``echo``/``ls``/
+    ``pwd``/``uname``/``whoami`` are allowed - ``stat`` is rejected), so we read
+    the mode via ``ls -l`` and assert the rwx permission string for an
+    executable file (``-rwxr-xr-x`` == 0755). The diagnostic shell runs from the
+    workspace root on every backend - the local root_path on local,
+    ``/workspace`` on container/k8s - so a path relative to the workspace root
+    resolves on all of them.
+
+    KNOWN PRODUCT GAP: the seeded-file ``mode`` is honored only on the local
+    backend. The container and kubernetes backends call
+    ``sandbox.write_file(path, content)`` WITHOUT forwarding ``rf.mode``
+    (``primer/workspace/container/backend.py`` and
+    ``primer/workspace/k8s/backend.py``), even though ``ws_sandbox.write_file``
+    accepts a ``mode`` kwarg - so the file lands 0644 there. Those targets are
+    ``xfail``-ed on the mode assertion (content still asserted strictly); the
+    xfail will flip to xpass and flag once the backends forward the mode."""
+    client, target = platform_client
+    suffix = uuid.uuid4().hex[:12]
+    rel_path = "seed/hello.txt"
+    marker = f"INLINE-{target.name}-{suffix}"
+    track: list[_Created] = []
+    try:
+        wid = await make_template_workspace(
+            client,
+            target,
+            suffix,
+            files=[
+                {
+                    "path": rel_path,
+                    "source": {"kind": "inline", "content": marker},
+                    "mode": "0755",
+                }
+            ],
+            track=track,
+        )
+
+        # CONTENT: the inline source must land verbatim.
+        rd = await client.get(
+            f"/v1/workspaces/{wid}/files/read",
+            params={"path": rel_path, "encoding": "text"},
+        )
+        assert rd.status_code == 200, rd.text
+        assert rd.json()["content"] == marker, rd.text
+
+        # MODE: cross-backend truth via a diagnostic exec. The diagnostic
+        # command head is whitelisted (stat is rejected), so read the mode via
+        # `ls -l` and assert the executable rwx string (-rwxr-xr-x == 0755). The
+        # diagnostic shell runs from the workspace root on every backend, so the
+        # workspace-root-relative path resolves identically everywhere.
+        diag = await client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": f"ls -l {rel_path}", "timeout_seconds": 30},
+        )
+        assert diag.status_code in (200, 201), diag.text
+        body = diag.json()
+        assert body["exit_code"] == 0, body
+        # `ls -l` of a 0755 regular file starts with `-rwxr-xr-x`.
+        mode_applied = "-rwxr-xr-x" in body["stdout"]
+        if not mode_applied and target.provider != "local":
+            pytest.xfail(
+                f"seeded-file mode not forwarded on {target.name!r} backend "
+                f"(known product gap: container/k8s backends drop rf.mode); "
+                f"ls -l stdout={body['stdout']!r}"
+            )
+        assert mode_applied, (
+            f"expected mode 0755 (-rwxr-xr-x) for {rel_path!r} on target "
+            f"{target.name!r}, ls -l stdout={body['stdout']!r} "
+            f"stderr={body.get('stderr')!r}"
+        )
+    finally:
+        for created in track:
+            await created.cleanup()
