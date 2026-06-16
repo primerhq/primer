@@ -436,11 +436,17 @@ class LocalWorkspace(Workspace):
         kwargs: dict = {}
         if os.name == "posix":
             kwargs["start_new_session"] = True
+        # Mirror the exec tool: the diagnostic shell must see the
+        # workspace's template env. ``self._env`` is already
+        # secret-resolved (plain ``dict[str, str]``); merge it over the
+        # parent environment so PATH and friends survive.
+        proc_env = {**os.environ, **self._env}
         proc = await asyncio.create_subprocess_shell(
             command,
             cwd=str(self._root),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            env=proc_env,
             **kwargs,
         )
         try:
