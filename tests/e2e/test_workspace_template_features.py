@@ -975,6 +975,218 @@ async def test_entrypoint_launches(target: Target) -> None:
             await client.aclose()
 
 
+# ---------------------------------------------------------------------------
+# Feature: template-seeded document-sourced files
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _Collection:
+    """Tracks a collection + document (and its embedder/ssp) for teardown."""
+
+    client: httpx.AsyncClient
+    collection_id: str | None = None
+    document_id: str | None = None
+    embedder_id: str | None = None
+    ssp_id: str | None = None
+
+    async def cleanup(self) -> None:
+        # Delete in dependency order: document -> collection -> ssp -> embedder.
+        if self.document_id is not None:
+            with contextlib.suppress(Exception):
+                await self.client.delete(f"/v1/documents/{self.document_id}")
+        if self.collection_id is not None:
+            with contextlib.suppress(Exception):
+                await self.client.delete(f"/v1/collections/{self.collection_id}")
+        if self.ssp_id is not None:
+            with contextlib.suppress(Exception):
+                await self.client.delete(f"/v1/ssp/{self.ssp_id}")
+        if self.embedder_id is not None:
+            with contextlib.suppress(Exception):
+                await self.client.delete(
+                    f"/v1/embedding_providers/{self.embedder_id}"
+                )
+
+
+async def _make_document(
+    client: httpx.AsyncClient, suffix: str, marker: str, tracker: _Collection
+) -> tuple[str, str]:
+    """Create a collection + a document whose body is ``marker``.
+
+    Reuses the hermetic knowledge backends the existing knowledge e2e uses
+    (``tests/e2e/test_smk_knowledge.py::_embedder_and_ssp``): a HuggingFace
+    placeholder embedder + a LanceDB SSP at a unique on-disk path. The
+    document-source resolver only reads the persisted Document row from
+    storage (``document_body_text`` -> ``meta['text']``); it does NOT touch
+    the vector store, and on-create indexing is best-effort (a failing
+    placeholder embedder is logged, not fatal), so the collection's embedder
+    /SSP are only here because collection-create requires a valid
+    ``search_provider_id``. The marker is stored under ``meta['text']`` -
+    the body text the REST create form indexes and the resolver returns.
+    """
+    eid = f"emb-doc-{suffix}"
+    er = await client.post(
+        "/v1/embedding_providers",
+        json={
+            "id": eid,
+            "provider": "huggingface",
+            "models": [
+                {"name": "sentence-transformers/all-MiniLM-L6-v2", "dim": 384}
+            ],
+            "config": {"token": "hf-placeholder"},
+            "limits": {"max_concurrency": 1},
+        },
+    )
+    assert er.status_code in (200, 201), er.text
+    tracker.embedder_id = eid
+
+    sid = f"ssp-doc-{suffix}"
+    lance_path = Path(os.environ.get("TMPDIR", "/tmp")) / f"primer-wsp-doc-{suffix}"
+    sr = await client.post(
+        "/v1/ssp",
+        json={"id": sid, "provider": "lance", "config": {"path": str(lance_path)}},
+    )
+    assert sr.status_code in (200, 201), sr.text
+    tracker.ssp_id = sid
+
+    cid = f"col-doc-{suffix}"
+    cr = await client.post(
+        "/v1/collections",
+        json={
+            "id": cid,
+            "description": "wsp-template document-source harness",
+            "embedder": {
+                "provider_id": eid,
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+            "search_provider_id": sid,
+            "system": False,
+        },
+    )
+    assert cr.status_code in (200, 201), cr.text
+    tracker.collection_id = cid
+
+    did = f"doc-{suffix}"
+    dr = await client.post(
+        "/v1/documents",
+        json={
+            "id": did,
+            "collection_id": cid,
+            "name": did,
+            "meta": {"text": marker},
+        },
+    )
+    assert dr.status_code in (200, 201), dr.text
+    tracker.document_id = did
+
+    return cid, did
+
+
+async def test_seed_document_file(
+    platform_client: tuple[httpx.AsyncClient, Target],
+) -> None:
+    """A template ``files`` entry with a ``document`` source lands the
+    Document's body text in the workspace, across every backend.
+
+    The document-source resolver loads the Document by id, verifies it
+    belongs to the named collection, and returns its body text
+    (``meta['text']``) UTF-8 encoded. The collection/document live on the
+    SAME platform that materializes the workspace (``client``), so the
+    resolver can read them. We assert the seeded file equals the unique
+    per-target body marker.
+    """
+    client, target = platform_client
+    suffix = uuid.uuid4().hex[:12]
+    rel_path = "seed/from-doc.txt"
+    marker = f"doc-body-{target.name}-{suffix}"
+    track: list[_Created] = []
+    coll = _Collection(client=client)
+    try:
+        cid, did = await _make_document(client, suffix, marker, coll)
+
+        wid = await make_template_workspace(
+            client,
+            target,
+            suffix,
+            files=[
+                {
+                    "path": rel_path,
+                    "source": {
+                        "kind": "document",
+                        "collection_id": cid,
+                        "document_id": did,
+                    },
+                }
+            ],
+            track=track,
+        )
+
+        rd = await client.get(
+            f"/v1/workspaces/{wid}/files/read",
+            params={"path": rel_path, "encoding": "text"},
+        )
+        assert rd.status_code == 200, rd.text
+        assert rd.json()["content"] == marker, rd.text
+    finally:
+        for created in track:
+            await created.cleanup()
+        await coll.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Feature: template-seeded secret-sourced files
+# ---------------------------------------------------------------------------
+
+
+async def test_seed_secret_file(
+    platform_client: tuple[httpx.AsyncClient, Target],
+) -> None:
+    """A template ``files`` entry with a ``secret`` source lands the secret
+    VALUE in the workspace, across every backend.
+
+    The secret value is read by the PLATFORM process from its OWN environment
+    via the env-backed SecretProvider: the secret named ``wsp_e2e_token``
+    resolves to the env var ``PRIMER_SECRET_WSP_E2E_TOKEN`` (prefix +
+    upper-cased name) on the platform under test. This test reads the SAME
+    env var only to know the expected value and to skip when it is unset; the
+    coordinator sets the same env on the platform under test. The secret value
+    is NEVER hardcoded here.
+    """
+    client, target = platform_client
+    secret_name = "wsp_e2e_token"
+    env_var = "PRIMER_SECRET_WSP_E2E_TOKEN"
+    expected = os.environ.get(env_var)
+    if expected is None:
+        pytest.skip(f"{env_var} not set")
+
+    suffix = uuid.uuid4().hex[:12]
+    rel_path = "seed/secret.txt"
+    track: list[_Created] = []
+    try:
+        wid = await make_template_workspace(
+            client,
+            target,
+            suffix,
+            files=[
+                {
+                    "path": rel_path,
+                    "source": {"kind": "secret", "name": secret_name},
+                }
+            ],
+            track=track,
+        )
+
+        rd = await client.get(
+            f"/v1/workspaces/{wid}/files/read",
+            params={"path": rel_path, "encoding": "text"},
+        )
+        assert rd.status_code == 200, rd.text
+        assert rd.json()["content"] == expected, rd.text
+    finally:
+        for created in track:
+            await created.cleanup()
+
+
 def _pvc_storage_request(workspace_id: str, kubeconfig: str) -> str | None:
     """Return the requested storage size of ``workspace_id``'s PVC, or None.
 
