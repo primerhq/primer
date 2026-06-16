@@ -705,25 +705,6 @@ async def test_env_injection(
                 f"diagnostic did not expand $PRIMER_SMK_VAR on target "
                 f"{target.name!r} (no shell?): stdout={stdout!r}"
             )
-        if marker not in stdout:
-            # PRODUCT GAP (local only): the local diagnostic_exec path runs
-            # `asyncio.create_subprocess_shell` with NO `env=` argument
-            # (primer/workspace/local/workspace.py LocalWorkspace.diagnostic_exec
-            # ~L439), so the subprocess inherits the API server's environment,
-            # NOT the workspace template's env. (Template env IS wired into the
-            # local exec TOOL and init commands - local/backend.py - but not into
-            # this diagnostic surface.) `echo $PRIMER_SMK_VAR` therefore expands
-            # to empty on local. Container/k8s exec inside the runtime pod/
-            # container, whose process environment carries the injected env, so
-            # they pass. Strict everywhere else; xfail only on local.
-            if target.name == "local":
-                pytest.xfail(
-                    "template env not honored by local diagnostic_exec - "
-                    "LocalWorkspace.diagnostic_exec "
-                    "(primer/workspace/local/workspace.py) calls "
-                    "create_subprocess_shell without env=, so template.env is "
-                    "not injected into the diagnostic shell"
-                )
         assert marker in stdout, (
             f"expected env marker {marker!r} in echo stdout for target "
             f"{target.name!r}, got stdout={stdout!r} "
@@ -769,23 +750,6 @@ async def test_init_commands(
             f"/v1/workspaces/{wid}/files/read",
             params={"path": rel_path, "encoding": "text"},
         )
-        if rd.status_code != 200 and target.provider == "kubernetes":
-            # PRODUCT GAP (kubernetes backends): KubernetesWorkspaceBackend
-            # materialization (primer/workspace/k8s/backend.py ~L418-446)
-            # resolves `files`, injects `env` into the pod spec, and applies
-            # `resources`, but NEVER runs `template.init_commands`. The local
-            # backend (local/backend.py L118-138) and the container backend
-            # (container/backend.py L140-144) both run init_commands; the k8s
-            # backend drops them entirely, so the marker file is never created
-            # and the read 404s. Affects both kubernetes-gateway and
-            # kubernetes-incluster (they share _k8s_backend).
-            pytest.xfail(
-                "template init_commands not honored on kubernetes backend - "
-                "KubernetesWorkspaceBackend materialization "
-                "(primer/workspace/k8s/backend.py) never runs "
-                "template.init_commands (local + container backends do); "
-                f"marker file {rel_path!r} 404s: body={rd.text}"
-            )
         assert rd.status_code == 200, (
             f"init_commands marker file {rel_path!r} not readable on target "
             f"{target.name!r}: status={rd.status_code} body={rd.text}"
