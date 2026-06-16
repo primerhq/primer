@@ -657,3 +657,140 @@ async def test_seed_url_file(
     finally:
         for created in track:
             await created.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Feature: template env injection
+# ---------------------------------------------------------------------------
+
+
+async def test_env_injection(
+    platform_client: tuple[httpx.AsyncClient, Target],
+) -> None:
+    """A template ``env`` entry is injected into the workspace runtime and is
+    visible to processes, across every backend.
+
+    Env values are ``SecretStr`` in the model, but the API accepts a plain
+    string in the JSON body, so we pass the marker as a plain string. We read
+    the value back via a diagnostic exec. The diagnostic command head is
+    whitelisted (only ``echo``/``ls``/``pwd``/``uname``/``whoami`` are allowed),
+    so we use ``echo $PRIMER_SMK_VAR`` and rely on the shell to expand it; if the
+    diagnostic does not run via a shell the expansion will not happen and stdout
+    will contain the literal ``$PRIMER_SMK_VAR`` instead of the marker - that is
+    a finding, surfaced via the assertion message.
+    """
+    client, target = platform_client
+    suffix = uuid.uuid4().hex[:12]
+    marker = f"ENV-{target.name}-{suffix}"
+    track: list[_Created] = []
+    try:
+        wid = await make_template_workspace(
+            client,
+            target,
+            suffix,
+            env={"PRIMER_SMK_VAR": marker},
+            track=track,
+        )
+
+        diag = await client.post(
+            f"/v1/workspaces/{wid}/diagnostic",
+            json={"command": "echo $PRIMER_SMK_VAR", "timeout_seconds": 30},
+        )
+        assert diag.status_code in (200, 201), diag.text
+        body = diag.json()
+        assert body["exit_code"] == 0, body
+        stdout = body["stdout"]
+        if "$PRIMER_SMK_VAR" in stdout and marker not in stdout:
+            pytest.fail(
+                f"diagnostic did not expand $PRIMER_SMK_VAR on target "
+                f"{target.name!r} (no shell?): stdout={stdout!r}"
+            )
+        if marker not in stdout:
+            # PRODUCT GAP (local only): the local diagnostic_exec path runs
+            # `asyncio.create_subprocess_shell` with NO `env=` argument
+            # (primer/workspace/local/workspace.py LocalWorkspace.diagnostic_exec
+            # ~L439), so the subprocess inherits the API server's environment,
+            # NOT the workspace template's env. (Template env IS wired into the
+            # local exec TOOL and init commands - local/backend.py - but not into
+            # this diagnostic surface.) `echo $PRIMER_SMK_VAR` therefore expands
+            # to empty on local. Container/k8s exec inside the runtime pod/
+            # container, whose process environment carries the injected env, so
+            # they pass. Strict everywhere else; xfail only on local.
+            if target.name == "local":
+                pytest.xfail(
+                    "template env not honored by local diagnostic_exec - "
+                    "LocalWorkspace.diagnostic_exec "
+                    "(primer/workspace/local/workspace.py) calls "
+                    "create_subprocess_shell without env=, so template.env is "
+                    "not injected into the diagnostic shell"
+                )
+        assert marker in stdout, (
+            f"expected env marker {marker!r} in echo stdout for target "
+            f"{target.name!r}, got stdout={stdout!r} "
+            f"stderr={body.get('stderr')!r}"
+        )
+    finally:
+        for created in track:
+            await created.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Feature: template init_commands
+# ---------------------------------------------------------------------------
+
+
+async def test_init_commands(
+    platform_client: tuple[httpx.AsyncClient, Target],
+) -> None:
+    """Template ``init_commands`` run once after files land, against the
+    workspace root, across every backend.
+
+    The init command writes a marker file under the workspace root; we then read
+    it back via the file-read API. The path is workspace-root-relative on every
+    backend (the local root_path on local, ``/workspace`` on container/k8s),
+    mirroring the inline-file test. ``init_commands`` runs in a shell at
+    materialization time, so the ``> init-marker.txt`` redirect lands the file at
+    the workspace root.
+    """
+    client, target = platform_client
+    suffix = uuid.uuid4().hex[:12]
+    rel_path = "init-marker.txt"
+    track: list[_Created] = []
+    try:
+        wid = await make_template_workspace(
+            client,
+            target,
+            suffix,
+            init_commands=["echo INIT-OK > init-marker.txt"],
+            track=track,
+        )
+
+        rd = await client.get(
+            f"/v1/workspaces/{wid}/files/read",
+            params={"path": rel_path, "encoding": "text"},
+        )
+        if rd.status_code != 200 and target.provider == "kubernetes":
+            # PRODUCT GAP (kubernetes backends): KubernetesWorkspaceBackend
+            # materialization (primer/workspace/k8s/backend.py ~L418-446)
+            # resolves `files`, injects `env` into the pod spec, and applies
+            # `resources`, but NEVER runs `template.init_commands`. The local
+            # backend (local/backend.py L118-138) and the container backend
+            # (container/backend.py L140-144) both run init_commands; the k8s
+            # backend drops them entirely, so the marker file is never created
+            # and the read 404s. Affects both kubernetes-gateway and
+            # kubernetes-incluster (they share _k8s_backend).
+            pytest.xfail(
+                "template init_commands not honored on kubernetes backend - "
+                "KubernetesWorkspaceBackend materialization "
+                "(primer/workspace/k8s/backend.py) never runs "
+                "template.init_commands (local + container backends do); "
+                f"marker file {rel_path!r} 404s: body={rd.text}"
+            )
+        assert rd.status_code == 200, (
+            f"init_commands marker file {rel_path!r} not readable on target "
+            f"{target.name!r}: status={rd.status_code} body={rd.text}"
+        )
+        assert rd.json()["content"].strip() == "INIT-OK", rd.text
+    finally:
+        for created in track:
+            await created.cleanup()
