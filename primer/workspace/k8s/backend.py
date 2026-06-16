@@ -431,6 +431,25 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
                     rf.content,
                     mode=int(rf.mode, 8) if rf.mode else None,
                 )
+            # Run template init_commands in the pod, mirroring the
+            # container backend: files land first, then each init command
+            # execs via the same runtime client; a non-zero exit surfaces
+            # as a ConfigError rather than being silently swallowed.
+            env = dict(template.env)
+            init_cmds = list(template.init_commands)
+            if overrides is not None:
+                env.update(overrides.env)
+                init_cmds = init_cmds + list(overrides.init_commands)
+            env_str = {k: v.get_secret_value() for k, v in env.items()}
+            for cmd in init_cmds:
+                res = await sandbox.exec(
+                    cmd, workdir=workdir, env=env_str,
+                )
+                if res.exit_code != 0:
+                    raise ConfigError(
+                        f"init command failed (rc={res.exit_code}): "
+                        f"{cmd!r}\nstderr: {res.stderr}"
+                    )
             runtime_meta = WorkspaceRuntimeMeta(
                 url=url,
                 token=SecretStr(token),
