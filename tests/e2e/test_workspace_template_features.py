@@ -28,9 +28,11 @@ from __future__ import annotations
 
 import contextlib
 import os
+import threading
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
@@ -508,6 +510,150 @@ async def test_seed_inline_file_and_mode(
             f"{target.name!r}, ls -l stdout={body['stdout']!r} "
             f"stderr={body.get('stderr')!r}"
         )
+    finally:
+        for created in track:
+            await created.cleanup()
+
+
+# ---------------------------------------------------------------------------
+# Feature: template-seeded url-sourced files
+# ---------------------------------------------------------------------------
+
+# Node IP of the host machine as seen from INSIDE the k3s cluster. The
+# in-cluster platform pod fetches the seed url at materialization time, so it
+# must be given a url that resolves from inside the cluster (the host's node
+# IP), NOT 127.0.0.1.
+_HOST_NODE_IP = "127.0.0.1"
+
+
+@dataclass
+class _UrlServer:
+    """A running local HTTP server serving fixed bytes at ``/seed-content``."""
+
+    port: int
+    body: bytes
+
+    def url_for(self, target: Target) -> str:
+        """The seed url to hand to ``target``'s platform.
+
+        Host targets are materialized by the host platform (``:8765``), which
+        shares the loopback with this test process, so ``127.0.0.1`` works. The
+        in-cluster target is materialized by a pod inside the cluster, which
+        reaches this server via the host's node IP.
+        """
+        host = _HOST_NODE_IP if target.platform == "incluster" else "127.0.0.1"
+        return f"http://{host}:{self.port}/seed-content"
+
+
+@pytest.fixture(scope="module")
+def url_file_server() -> Iterator[_UrlServer]:
+    """Start a tiny HTTP server serving fixed bytes at ``/seed-content``.
+
+    Binds ``0.0.0.0`` on an ephemeral port so it is reachable both over
+    loopback (host platform) and from inside the cluster via the host node IP
+    (in-cluster platform). Torn down at module teardown.
+    """
+    token = uuid.uuid4().hex[:12]
+    body = f"URL-SOURCED-{token}".encode()
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            if self.path != "/seed-content":
+                self.send_response(404)
+                self.end_headers()
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_args: Any) -> None:  # silence access logging
+            return
+
+    server = ThreadingHTTPServer(("0.0.0.0", 0), _Handler)
+    port = server.server_address[1]
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield _UrlServer(port=port, body=body)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5.0)
+
+
+async def test_seed_url_file(
+    platform_client: tuple[httpx.AsyncClient, Target],
+    url_file_server: _UrlServer,
+) -> None:
+    """A template ``files`` entry with a ``url`` source lands the FETCHED bytes
+    in the workspace, across every backend.
+
+    The platform that materializes the workspace fetches the url at
+    materialization time, so the url must be reachable by that platform:
+    ``127.0.0.1`` for the host platform, the host node IP for the in-cluster
+    pod (see :meth:`_UrlServer.url_for`).
+
+    For the in-cluster target only: if materialization fails specifically
+    because the pod could not reach the host server (a connection/timeout error
+    surfaced on the workspace), we ``skip`` rather than hard-fail - the cluster
+    network reaching back out to the host node is environmental. Host targets
+    hard-assert.
+    """
+    client, target = platform_client
+    suffix = uuid.uuid4().hex[:12]
+    rel_path = "seed/from-url.txt"
+    expected = url_file_server.body.decode()
+    url = url_file_server.url_for(target)
+    track: list[_Created] = []
+    try:
+        try:
+            wid = await make_template_workspace(
+                client,
+                target,
+                suffix,
+                files=[
+                    {
+                        "path": rel_path,
+                        "source": {"kind": "url", "url": url},
+                    }
+                ],
+                track=track,
+            )
+        except AssertionError as exc:
+            # In-cluster only: a materialization failure whose root cause is the
+            # pod being unable to reach the host url server is environmental, so
+            # skip. Host targets must hard-fail (re-raise).
+            if target.platform != "incluster":
+                raise
+            msg = str(exc).lower()
+            reachability_markers = (
+                "connection",
+                "connect",
+                "timed out",
+                "timeout",
+                "refused",
+                "unreachable",
+                "no route",
+                "resolve",
+                "fetch",
+                url.lower(),
+                _HOST_NODE_IP,
+            )
+            if any(m in msg for m in reachability_markers):
+                pytest.skip(
+                    f"cluster cannot reach the host url server at "
+                    f"{_HOST_NODE_IP}:{url_file_server.port}: {exc}"
+                )
+            raise
+
+        rd = await client.get(
+            f"/v1/workspaces/{wid}/files/read",
+            params={"path": rel_path, "encoding": "text"},
+        )
+        assert rd.status_code == 200, rd.text
+        assert rd.json()["content"] == expected, rd.text
     finally:
         for created in track:
             await created.cleanup()
