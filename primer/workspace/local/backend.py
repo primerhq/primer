@@ -129,9 +129,9 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         try:
             # Resolve every FileSource variant (inline/url/document/secret)
             # up-front via the central helper; the backend just writes the
-            # resulting bytes. document/secret resolvers aren't wired here
-            # yet — the orchestration layer will pass them in once Phase 6
-            # threads app state through.
+            # resulting bytes. document/secret resolvers are supplied by the
+            # orchestration layer (WorkspaceRegistry.materialise) via the
+            # resolvers bundle; when absent, those kinds raise.
             resolved_files = await resolve_file_sources(
                 merged_files,
                 document_resolver=resolvers.document_resolver if resolvers else None,

@@ -417,10 +417,11 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
 
         try:
             # Resolve every FileSource variant (inline/url/document/secret)
-            # up-front via the central helper; the sandbox just writes the
+            # up-front via the central helper; the sandbox writes the
             # resulting bytes via the WS runtime. document/secret resolvers
-            # aren't wired here yet — the orchestration layer will pass them
-            # in once Phase 6 threads app state through.
+            # are supplied by the orchestration layer
+            # (WorkspaceRegistry.materialise) via the resolvers bundle; when
+            # absent, those kinds raise.
             files = list(template.files) + (
                 list(overrides.files) if overrides else []
             )
