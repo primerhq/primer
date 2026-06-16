@@ -37,3 +37,23 @@ async def test_custom_prefix(monkeypatch):
     monkeypatch.setenv("APP_API_KEY", "xyz")
     provider = EnvSecretProvider(prefix="APP_")
     assert (await provider.get_secret("api_key")).get_secret_value() == "xyz"
+
+
+from primer.model.provider import SecretProviderConfig, SecretProviderType
+from primer.secret.factory import SecretProviderFactory
+
+
+def test_factory_builds_env_provider():
+    cfg = SecretProviderConfig()  # defaults to provider=env
+    provider = SecretProviderFactory.create(cfg)
+    assert isinstance(provider, EnvSecretProvider)
+
+
+def test_factory_honors_custom_prefix():
+    cfg = SecretProviderConfig(
+        provider=SecretProviderType.ENV,
+        config={"prefix": "APP_"},
+    )
+    provider = SecretProviderFactory.create(cfg)
+    assert isinstance(provider, EnvSecretProvider)
+    assert provider._prefix == "APP_"
