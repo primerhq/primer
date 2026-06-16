@@ -457,14 +457,10 @@ async def test_seed_inline_file_and_mode(
     ``/workspace`` on container/k8s - so a path relative to the workspace root
     resolves on all of them.
 
-    KNOWN PRODUCT GAP: the seeded-file ``mode`` is honored only on the local
-    backend. The container and kubernetes backends call
-    ``sandbox.write_file(path, content)`` WITHOUT forwarding ``rf.mode``
-    (``primer/workspace/container/backend.py`` and
-    ``primer/workspace/k8s/backend.py``), even though ``ws_sandbox.write_file``
-    accepts a ``mode`` kwarg - so the file lands 0644 there. Those targets are
-    ``xfail``-ed on the mode assertion (content still asserted strictly); the
-    xfail will flip to xpass and flag once the backends forward the mode."""
+    The seeded-file ``mode`` is forwarded on every backend: the local backend
+    ``chmod``-s the file, and the container + kubernetes backends pass ``mode``
+    through ``sandbox.write_file`` to the runtime ``write_file`` op. Mode is
+    therefore asserted strictly on ALL targets."""
     client, target = platform_client
     suffix = uuid.uuid4().hex[:12]
     rel_path = "seed/hello.txt"
@@ -507,12 +503,6 @@ async def test_seed_inline_file_and_mode(
         assert body["exit_code"] == 0, body
         # `ls -l` of a 0755 regular file starts with `-rwxr-xr-x`.
         mode_applied = "-rwxr-xr-x" in body["stdout"]
-        if not mode_applied and target.provider != "local":
-            pytest.xfail(
-                f"seeded-file mode not forwarded on {target.name!r} backend "
-                f"(known product gap: container/k8s backends drop rf.mode); "
-                f"ls -l stdout={body['stdout']!r}"
-            )
         assert mode_applied, (
             f"expected mode 0755 (-rwxr-xr-x) for {rel_path!r} on target "
             f"{target.name!r}, ls -l stdout={body['stdout']!r} "
