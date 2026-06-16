@@ -29,7 +29,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
 )
-from primer.workspace.files import resolve_file_sources
+from primer.workspace.files import FileResolvers, resolve_file_sources
 from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name
 from primer.workspace.runtime.runtime_client import RuntimeClient
@@ -330,6 +330,7 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
         workspace_id: str | None = None,
+        resolvers: FileResolvers | None = None,
     ) -> Workspace:
         """Materialise a workspace as Secret + Headless Service + StatefulSet
         and wire a :class:`SandboxWorkspace` over a :class:`WSSandbox` over
@@ -423,7 +424,11 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
             files = list(template.files) + (
                 list(overrides.files) if overrides else []
             )
-            resolved_files = await resolve_file_sources(files)
+            resolved_files = await resolve_file_sources(
+                files,
+                document_resolver=resolvers.document_resolver if resolvers else None,
+                secret_resolver=resolvers.secret_resolver if resolvers else None,
+            )
             workdir = template.backend.workdir
             for rf in resolved_files:
                 await sandbox.write_file(

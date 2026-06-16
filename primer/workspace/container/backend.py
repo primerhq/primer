@@ -47,7 +47,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.workspace.files import resolve_file_sources
+from primer.workspace.files import FileResolvers, resolve_file_sources
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.runtime.url import build_runtime_url
 from primer.workspace.sandbox.workspace import SandboxWorkspace
@@ -127,6 +127,7 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         template: WorkspaceTemplate,
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
+        resolvers: FileResolvers | None = None,
     ) -> Workspace:
         if not isinstance(template.backend, ContainerTemplateConfig):
             raise ConfigError(
@@ -221,7 +222,11 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
             # resulting bytes. document/secret resolvers aren't wired here
             # yet -- the orchestration layer will pass them in once Phase 6
             # threads app state through.
-            resolved_files = await resolve_file_sources(files)
+            resolved_files = await resolve_file_sources(
+                files,
+                document_resolver=resolvers.document_resolver if resolvers else None,
+                secret_resolver=resolvers.secret_resolver if resolvers else None,
+            )
             for rf in resolved_files:
                 await sandbox.write_file(
                     f"{spec.workdir}/{rf.path}",
