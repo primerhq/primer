@@ -226,6 +226,7 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
                 await sandbox.write_file(
                     f"{spec.workdir}/{rf.path}",
                     rf.content,
+                    mode=int(rf.mode, 8) if rf.mode else None,
                 )
             for cmd in init_cmds:
                 res = await sandbox.exec(
