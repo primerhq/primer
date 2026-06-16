@@ -1,6 +1,9 @@
 /* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab */
 
-const { apiFetch, useResource, useMutation, useRouter, useViewport } = window.primerApi;
+// NOTE: do NOT destructure window.primerApi at module top level. The docs
+// embeds install a fixture-backed stub (DocsMakeStubApi) AFTER this module is
+// evaluated, so a top-level capture would freeze the real (network) apiFetch.
+// Each component reads from window.primerApi inside its own render instead.
 
 const VENDOR_COLORS = {
   openai: "var(--green)",
@@ -240,6 +243,7 @@ const OPENROUTER_DEFAULT_LLM_CONTEXT = 128000;
 // ============================================================================
 
 function ProvidersPage({ kind: kindProp, pushToast }) {
+  const { useRouter } = window.primerApi;
   const { params } = useRouter();
   const k = KINDS[kindProp];
   if (!k) return <Banner kind="error" title="Unknown provider kind" detail={String(kindProp)} />;
@@ -255,6 +259,7 @@ function ProvidersPage({ kind: kindProp, pushToast }) {
 // ============================================================================
 
 function ProvidersList({ kindProp, pushToast }) {
+  const { apiFetch, useResource, useViewport } = window.primerApi;
   const k = KINDS[kindProp];
   const { isMobile } = useViewport();
   const list = useResource(
@@ -573,6 +578,7 @@ function OpenRouterModelPicker({ discovered, selected, onSelect, onDeselect }) {
 // ============================================================================
 
 function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToast, existing }) {
+  const { apiFetch, useMutation } = window.primerApi;
   const _push = pushToast || (() => {});
   const fieldKind = _normKind(kindProp);
   const providers = PROVIDER_KINDS_FIELDS[fieldKind] || {};
@@ -996,6 +1002,7 @@ function ConfigField({ field, value, onChange, error }) {
 // ============================================================================
 
 function ProviderDetail({ kindProp, id, pushToast }) {
+  const { apiFetch, useResource, useMutation } = window.primerApi;
   const _push = pushToast || (() => {});
   const k = KINDS[kindProp];
   const listHash = "#/providers/" + k.segment;
@@ -1256,6 +1263,7 @@ function _redactSecrets(row) {
 // ============================================================================
 
 function JsonField({ label, value, onChange, placeholder, rows = 6 }) {
+  const { useViewport } = window.primerApi;
   const [expanded, setExpanded] = React.useState(false);
   const { isMobile } = useViewport();
   return (

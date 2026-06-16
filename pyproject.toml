@@ -65,6 +65,10 @@ members = ["primectl"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["primer"]
+# Docs are a standalone static site now, not a runtime concern. The
+# markdown + fixtures under primer/user_docs/ stay in the repo as build
+# inputs for scripts/docs/, but are not shipped in the wheel.
+exclude = ["primer/user_docs/**"]
 
 [dependency-groups]
 dev = [
@@ -77,6 +81,10 @@ dev = [
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
     "testcontainers[postgres]>=4.14.2",
+]
+docs = [
+    "markdown-it-py>=3",
+    "mdit-py-plugins>=0.4",
 ]
 
 [tool.pytest.ini_options]

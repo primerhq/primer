@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -55,7 +56,6 @@ from primer.api.routers import (
 )
 from primer.api.routers.auth import auth_router
 from primer.api.routers.semantic_search import semantic_search_router
-from primer.api.routers.user_docs import user_docs_router
 from primer.api.routers.web_fetch import (
     web_fetch_active_config_router,
     web_fetch_providers_helpers_router,
@@ -440,61 +440,6 @@ def _make_lifespan(config: AppConfig):
         app.state.internal_collections = None
         app.state.search_toolset = None
         app.state.config = config
-
-        # Construct the user-docs service. Walks primer/user_docs/ once
-        # at startup; the service handles its own mtime-based hot-reload
-        # from then on. Stash on app.state so the router can reach it.
-        import primer
-        from primer.user_docs_service import UserDocsService
-
-        _user_docs_root = Path(primer.__file__).resolve().parent / "user_docs"
-        user_docs_service = UserDocsService(_user_docs_root)
-        user_docs_service.reload_index()
-        app.state.user_docs_service = user_docs_service
-        _registry_path = _user_docs_root / "_fixtures" / "registry.json"
-        try:
-            _registry_data = json.loads(_registry_path.read_text(encoding="utf-8"))
-            _user_docs_embed_ids: list[str] = _registry_data.get("embeds", [])
-        except Exception:  # noqa: BLE001
-            logger.warning(
-                "lifespan: could not read embed registry from %s; "
-                "no embed ids will be valid",
-                _registry_path,
-            )
-            _user_docs_embed_ids = []
-        app.state.user_docs_embeds = _user_docs_embed_ids
-        user_docs_service.set_embeds_manifest(_user_docs_embed_ids)
-        logger.info("lifespan: user-docs service initialised")
-        # Dev-mode lint gate. Set PRIMER_USER_DOCS_STRICT=1 to refuse
-        # startup on lint errors. Production logs them and excludes
-        # the offending docs from the manifest.
-        _ud_errors = [
-            i for i in user_docs_service.lint_issues()
-            if i.severity == "error"
-        ]
-        _ud_warnings = [
-            i for i in user_docs_service.lint_issues()
-            if i.severity == "warning"
-        ]
-        if _ud_warnings:
-            logger.warning(
-                "user_docs: %d lint warning(s); see /docs/_lint",
-                len(_ud_warnings),
-            )
-        if _ud_errors:
-            _ud_summary = "\n".join(
-                f"  {i.file}:{i.line or '?'} [{i.rule}] {i.message}"
-                for i in _ud_errors[:20]
-            )
-            if os.environ.get("PRIMER_USER_DOCS_STRICT") == "1":
-                raise RuntimeError(
-                    f"user_docs: {len(_ud_errors)} lint error(s); "
-                    f"refusing to start.\n{_ud_summary}"
-                )
-            logger.error(
-                "user_docs: %d lint error(s).\n%s",
-                len(_ud_errors), _ud_summary,
-            )
 
         # Workspace health-probe loop. Pings each running/failed
         # workspace at ``workspace_probe_interval_seconds`` cadence,
@@ -1512,7 +1457,6 @@ def _mount_routers(
     app.include_router(web_fetch_providers_helpers_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(web_fetch_providers_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(web_fetch_active_config_router, prefix=prefix, dependencies=auth_dep)
-    app.include_router(user_docs_router, prefix=prefix, dependencies=auth_dep)
     # Phase 2 — compute (Agent + Graph)
     app.include_router(compute.agent_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=auth_dep)
@@ -1600,7 +1544,7 @@ def create_app(config: AppConfig) -> FastAPI:
     _mount_routers(app, runtime_mode=config.runtime_mode)
     # JSX bundle route MUST be registered before the /console static
     # mount so it wins the route match for /console/_app.js.
-    _install_jsx_bundle(app)
+    _install_jsx_bundle(app, docs_url=config.docs_url)
     _mount_console(app)
     _mount_metrics(app, config)
     _install_root_redirect(app)
@@ -1958,7 +1902,7 @@ def _install_request_id(app: FastAPI) -> None:
         return response
 
 
-def _install_jsx_bundle(app: FastAPI) -> None:
+def _install_jsx_bundle(app: FastAPI, *, docs_url: str = "") -> None:
     """Precompile every text/babel script at startup, register a route
     that serves the concatenated bundle at ``/console/_app.js``.
 
@@ -1970,10 +1914,27 @@ def _install_jsx_bundle(app: FastAPI) -> None:
     backend redeploy revalidate quickly (304 when nothing changed,
     fresh bytes when bundle hash flipped) without needing the URL
     to embed the hash.
+
+    Server config surfaced to the browser: the console is served as a
+    static ``index.html`` (no template seam), so server-side flags reach
+    the page by being prepended to this server-built bundle as
+    ``window.__PRIMER_*__`` globals. ``docs_url`` rides this seam so the
+    console's external "Docs" link can read it.
     """
     from starlette.responses import Response
 
     etag, body = build_jsx_bundle(_UI_DIR)
+    if body and docs_url:
+        # Prepend the server-config preamble so the global is defined
+        # before any console script runs, then re-derive the ETag so a
+        # docs_url change invalidates caches.
+        preamble = (
+            "window.__PRIMER_DOCS_URL__ = "
+            + json.dumps(docs_url)
+            + ";\n"
+        ).encode("utf-8")
+        body = preamble + body
+        etag = '"' + hashlib.sha256(body).hexdigest()[:16] + '"'
     if not body:
         # No UI dir or no Babel — leave route unregistered; the
         # console will 404 on /_app.js and the static mount handles
@@ -2211,37 +2172,6 @@ def create_test_app(
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
     app.state.search_toolset = None
-    # Wire the user-docs service over the real primer/user_docs/ tree;
-    # tests that exercise /v1/user_docs see the live manifest + docs on
-    # disk. Hot-reload via mtime still works in tests.
-    import primer as _primer_pkg
-    from primer.user_docs_service import UserDocsService as _UDS
-    _user_docs_root = (
-        Path(_primer_pkg.__file__).resolve().parent / "user_docs"
-    )
-    _test_user_docs_service = _UDS(_user_docs_root)
-    _test_user_docs_service.reload_index()
-    app.state.user_docs_service = _test_user_docs_service
-    _test_embed_ids = [
-        "topbar",
-        "sessions-list-empty",
-        "agent-create-modal",
-        "graph-canvas-three-nodes",
-        "channels-prompt",
-        "docs-callout-demo",
-        "workspace-empty",
-        "session-detail-panel",
-        "chat-stream",
-        "harness-wizard-step",
-        "workspace-template-form",
-        "collection-list-empty",
-        "ssp-list",
-        "trigger-create",
-        "worker-stats",
-        "api-token-create",
-    ]
-    app.state.user_docs_embeds = _test_embed_ids
-    _test_user_docs_service.set_embeds_manifest(_test_embed_ids)
     # Auth: tests get a fixed test secret so cookies are deterministic
     # across the suite. Real lifespan uses resolve_session_secret().
     from primer.api.config import AppConfig

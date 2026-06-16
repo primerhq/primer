@@ -89,7 +89,15 @@ const NAV = [
   {
     group: "Help",
     items: [
-      { id: "docs", label: "Docs", icon: "doc" },
+      // Docs live on a standalone static site now. The URL is surfaced by
+      // the server into window.__PRIMER_DOCS_URL__ (see primer.api.app
+      // _install_jsx_bundle); fall back to "#" if it is somehow unset.
+      {
+        id: "docs",
+        label: "Docs",
+        icon: "doc",
+        href: (typeof window !== "undefined" && window.__PRIMER_DOCS_URL__) || "#",
+      },
     ],
   },
 ];
@@ -115,20 +123,34 @@ function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapse
           )}
           <div className="nav-items">
             {section.items.map((it) => (
-              <div
-                key={it.id}
-                className={`nav-item ${page === it.id ? "active" : ""}`}
-                onClick={() => onNavigate(it.id)}
-              >
-                <Icon name={it.icon} className="icon" />
-                <span className="label">{it.label}</span>
-                {it.subsystem && (
-                  <span className={subsystemOn ? "nav-pill-on" : "nav-pill-off"}>{subsystemOn ? "ON" : "OFF"}</span>
-                )}
-                {it.countKey != null && counts[it.countKey] != null && (
-                  <span className="count">{counts[it.countKey]}</span>
-                )}
-              </div>
+              it.href ? (
+                <a
+                  key={it.id}
+                  className="nav-item"
+                  href={it.href}
+                  target="_blank"
+                  rel="noopener"
+                >
+                  <Icon name={it.icon} className="icon" />
+                  <span className="label">{it.label}</span>
+                  <Icon name="external-link" className="icon" size={12} />
+                </a>
+              ) : (
+                <div
+                  key={it.id}
+                  className={`nav-item ${page === it.id ? "active" : ""}`}
+                  onClick={() => onNavigate(it.id)}
+                >
+                  <Icon name={it.icon} className="icon" />
+                  <span className="label">{it.label}</span>
+                  {it.subsystem && (
+                    <span className={subsystemOn ? "nav-pill-on" : "nav-pill-off"}>{subsystemOn ? "ON" : "OFF"}</span>
+                  )}
+                  {it.countKey != null && counts[it.countKey] != null && (
+                    <span className="count">{counts[it.countKey]}</span>
+                  )}
+                </div>
+              )
             ))}
           </div>
         </div>
@@ -370,7 +392,7 @@ const NAV_PAGES = (() => {
 })();
 
 
-function CommandPalette({ onClose, onNavigate, sessions, docs }) {
+function CommandPalette({ onClose, onNavigate, sessions }) {
   const [q, setQ] = React.useState("");
   const [active, setActive] = React.useState(0);
   const inputRef = React.useRef(null);
@@ -412,26 +434,7 @@ function CommandPalette({ onClose, onNavigate, sessions, docs }) {
           icon: "zap",
         }));
 
-  // Docs: only when a query is typed; capped at 6 so doc hits do not
-  // crowd out page hits. Subtitle is the section title.
-  const docHits = !ql
-    ? []
-    : (docs || [])
-        .filter((d) =>
-          d.title.toLowerCase().includes(ql)
-          || (d.summary || "").toLowerCase().includes(ql)
-          || (d.sectionTitle || "").toLowerCase().includes(ql)
-        )
-        .slice(0, 6)
-        .map((d) => ({
-          kind: "doc",
-          id: d.slug,
-          label: d.title,
-          sub: `${d.sectionTitle || "docs"} · docs`,
-          icon: "doc",
-        }));
-
-  const matches = [...pageHits, ...docHits, ...sessionHits].slice(0, 20);
+  const matches = [...pageHits, ...sessionHits].slice(0, 20);
 
   React.useEffect(() => { setActive(0); }, [q]);
 
@@ -446,11 +449,6 @@ function CommandPalette({ onClose, onNavigate, sessions, docs }) {
         onClose();
         if (m.kind === "session") {
           onNavigate("session-detail", m.id);
-        } else if (m.kind === "doc") {
-          const router = window.primerApi && window.primerApi.useRouter
-            ? window.primerApi.useRouter()
-            : null;
-          if (router && router.navigate) router.navigate(`/docs/${m.id}`);
         } else {
           onNavigate(m.id);
         }
@@ -493,11 +491,6 @@ function CommandPalette({ onClose, onNavigate, sessions, docs }) {
                   onClose();
                   if (m.kind === "session") {
                     onNavigate("session-detail", m.id);
-                  } else if (m.kind === "doc") {
-                    const router = window.primerApi && window.primerApi.useRouter
-                      ? window.primerApi.useRouter()
-                      : null;
-                    if (router && router.navigate) router.navigate(`/docs/${m.id}`);
                   } else {
                     onNavigate(m.id);
                   }
