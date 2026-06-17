@@ -88,9 +88,9 @@ class TestDbField:
 
 
 class TestDocsUrl:
-    def test_default_is_the_placeholder(self) -> None:
+    def test_default_points_at_the_docs_site(self) -> None:
         cfg = AppConfig()
-        assert cfg.docs_url == "https://DOCS-ORG-PLACEHOLDER.github.io/"
+        assert cfg.docs_url == "https://primerhq.github.io/"
 
     def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PRIMER_DOCS_URL", "https://docs.example.com/")

@@ -113,12 +113,12 @@ class AppConfig(BaseSettings):
 
     # --- Documentation site ----------------------------------------------
     docs_url: str = Field(
-        default="https://DOCS-ORG-PLACEHOLDER.github.io/",
+        default="https://primerhq.github.io/",
         description=(
             "Published docs site URL the operator console's 'Docs' link "
             "points at (opened in a new tab). The docs are a standalone "
-            "static site now; set PRIMER_DOCS_URL to the real published "
-            "location at release setup."
+            "static site published to the primerhq GitHub Pages org; "
+            "override with PRIMER_DOCS_URL if the site moves."
         ),
     )
 

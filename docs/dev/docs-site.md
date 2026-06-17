@@ -20,8 +20,8 @@ human must do to wire up deployment.
 - The operator console no longer ships an in-app docs viewer. The console's
   "Docs" link opens the published site in a new tab. That URL comes from the
   `docs_url` setting in `primer/api/config.py`, overridable with the
-  `PRIMER_DOCS_URL` environment variable. The default is currently the
-  placeholder `https://DOCS-ORG-PLACEHOLDER.github.io/`.
+  `PRIMER_DOCS_URL` environment variable. The default is
+  `https://primerhq.github.io/` (the `primerhq` org).
 
 ## One-time release setup
 
@@ -31,9 +31,8 @@ or env change so the console links to the real site.
 1. **Pick an available GitHub org name.** The site is published to a GitHub
    user/org Pages site, so the org name becomes part of the public URL
    (`https://<DOCS_ORG>.github.io/`). Note that `primer` is already taken (it is
-   GitHub's own design system org), so pick another name and verify it is
-   available before continuing (try to view `https://github.com/<name>`; a 404
-   means it is free to register).
+   GitHub's own design system org). DONE: the org `primerhq` was created for
+   this (`https://primerhq.github.io/`).
 
 2. **Create the org and the Pages repo.** Create the chosen org, then create a
    repo in it named exactly `<DOCS_ORG>.github.io`. In that repo's
@@ -52,11 +51,9 @@ or env change so the console links to the real site.
    named `DOCS_ORG` set to the org name from step 1. The workflow uses it to
    target `${{ vars.DOCS_ORG }}/${{ vars.DOCS_ORG }}.github.io`.
 
-5. **Point the console at the real site.** Either replace the
-   `DOCS-ORG-PLACEHOLDER` placeholder in the `docs_url` default in
-   `primer/api/config.py` with the real value
-   (`https://<DOCS_ORG>.github.io/`), or set `PRIMER_DOCS_URL` to that URL in
-   the deployment environment.
+5. **Point the console at the real site.** DONE: the `docs_url` default in
+   `primer/api/config.py` is set to `https://primerhq.github.io/`. Override
+   with `PRIMER_DOCS_URL` in the deployment environment if the site moves.
 
 ## How deploys trigger
 
