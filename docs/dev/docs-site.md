@@ -37,8 +37,9 @@ or env change so the console links to the real site.
 2. **Create the org and the Pages repo.** Create the chosen org, then create a
    repo in it named exactly `<DOCS_ORG>.github.io`. In that repo's
    Settings -> Pages, enable GitHub Pages with the source set to the
-   `gh-pages` branch (the deploy workflow publishes to that branch). The branch
-   appears after the first successful deploy; you can finish enabling Pages then.
+   `main` branch, root folder (both the manual first deploy and the deploy
+   workflow publish to `main`). DONE: `primerhq/primerhq.github.io` was created
+   and seeded with an initial manual build.
 
 3. **Create a deploy token and add it as a secret.** Create a Personal Access
    Token (classic or fine-grained) with write access to the
@@ -57,12 +58,13 @@ or env change so the console links to the real site.
 
 ## How deploys trigger
 
-`.github/workflows/docs.yml` runs on push to `main` whenever it touches docs
-paths (`primer/user_docs/**`, `scripts/docs/**`, `ui/components/docs/**`, or the
-workflow file itself). It installs the `docs` dependency group, installs
-Playwright Chromium, runs `build_site.py` then `capture_embeds.py` into
-`dist/docs`, and deploys that directory to the `gh-pages` branch of the
-external Pages repo via `peaceiris/actions-gh-pages`.
+`.github/workflows/docs.yml` (maintained on the release-engineering branch
+until release) runs on push to `main` whenever it touches docs paths
+(`primer/user_docs/**`, `scripts/docs/**`, or the workflow file itself). It
+installs the `docs` dependency group, installs Playwright Chromium, runs
+`build_site.py` then `capture_embeds.py` into `dist/docs`, and deploys that
+directory to the `main` branch of the external Pages repo via
+`peaceiris/actions-gh-pages`.
 
 ## Build and preview locally
 
@@ -80,7 +82,6 @@ uv run python -m http.server -d dist/docs 8001
 
 ## Known merge-time follow-up
 
-The unit-test sweep in `release.yml` (maintained on the separate
-release-engineering branch) must add `uv sync --group docs` before it runs the
-test suite, so that `tests/docs/` can run there. Apply that change once both
+DONE: the unit-test sweep in `release.yml` (on the release-engineering branch)
+now runs `uv sync --dev --group docs` so `tests/docs/` can run there once both
 branches are merged.
