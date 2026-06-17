@@ -360,6 +360,51 @@ def _render_404(template: str, sidebar: str, home_url: str) -> str:
     )
 
 
+def _first_nav_slug(sections: list[dict[str, Any]]) -> str | None:
+    """Return the slug of the first doc in nav order: the docs home.
+
+    Mirrors the order ``_render_sidebar`` walks, so the home page is the
+    first link a reader sees in the sidebar (the Getting Started intro),
+    not whatever ``all_entries()`` happens to yield first.
+    """
+    for sec in sections:
+        for item in sec.get("docs", []) or []:
+            if item.get("group"):
+                overview = item.get("overview")
+                if overview:
+                    return overview["slug"]
+                for child in item.get("children", []) or []:
+                    return child["slug"]
+            else:
+                return item["slug"]
+    return None
+
+
+def _render_root_redirect(home_url: str) -> str:
+    """Render a minimal root ``index.html`` that redirects to the docs home.
+
+    When the site is served at a domain root (e.g.
+    ``https://<org>.github.io/``) the bare root would otherwise 404, since
+    every page lives under ``/<section>/<slug>/``. This emits a tiny
+    meta-refresh + JS redirect (with a plain link fallback) to the first
+    published page.
+    """
+    href = html.escape(home_url)
+    return (
+        "<!doctype html>\n"
+        '<html lang="en">\n'
+        "<head>\n"
+        '<meta charset="utf-8">\n'
+        f'<meta http-equiv="refresh" content="0; url={href}">\n'
+        f'<link rel="canonical" href="{href}">\n'
+        "<title>Primer docs</title>\n"
+        f"<script>location.replace({json.dumps(home_url)});</script>\n"
+        "</head>\n"
+        f'<body><p>Redirecting to <a href="{href}">the documentation</a>.</p></body>\n'
+        "</html>\n"
+    )
+
+
 def _render_sitemap(page_urls: list[str]) -> str:
     """Render a sitemap urlset listing every published page url.
 
@@ -510,9 +555,21 @@ def build_site(src_root: Path, out_dir: Path) -> None:
 
     # 404 page: the page shell + a friendly "not found" article linking
     # back to the docs home (the first published page, else "/").
-    home_url = page_urls[0] if page_urls else "/"
+    home_slug = _first_nav_slug(sections)
+    home_url = (
+        _doc_url(home_slug)
+        if home_slug
+        else (page_urls[0] if page_urls else "/")
+    )
     (out_dir / "404.html").write_text(
         _render_404(template, sidebar, home_url),
+        encoding="utf-8",
+    )
+
+    # Root landing page: redirect the site root to the docs home (first
+    # published page) so serving at a domain root does not 404.
+    (out_dir / "index.html").write_text(
+        _render_root_redirect(home_url),
         encoding="utf-8",
     )
 

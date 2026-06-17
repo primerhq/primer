@@ -16,8 +16,10 @@ def test_writes_search_index(tmp_path):
     assert data, "search index should not be empty"
 
     # One entry per published doc (the _meta authoring section is excluded
-    # from pages and must be excluded from the search index too).
-    page_count = sum(1 for p in out.rglob("index.html"))
+    # from pages and must be excluded from the search index too). The root
+    # index.html is a redirect to the docs home, not a published doc, so it
+    # is excluded from the count.
+    page_count = sum(1 for p in out.rglob("index.html") if p.parent != out)
     assert len(data) == page_count
 
     # No _meta urls leak in.
