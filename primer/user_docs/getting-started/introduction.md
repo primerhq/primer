@@ -66,6 +66,21 @@ flowchart TD
     edge --> primer[Primer: a microagents orchestration platform]
 ```
 
+## Loop engineering
+
+A growing practice called loop engineering reframes how people work with coding agents. Instead of prompting an agent one turn at a time, you design a *system* that prompts it: a loop that wakes on a schedule, works toward a stated goal, checks its own output, and escalates to a human only when it should. The leverage moves from writing a good prompt to designing a good loop. As the practice puts it, you stop being the person who prompts the agent and start being the person who designs the system that prompts it.
+
+That practice names a specific set of building blocks every loop needs. Primer exists to provide them, integrated and runnable on your own hardware.
+
+- **A heartbeat** - something that surfaces work on a cadence instead of waiting for you to type. Primer's **triggers** start a fresh agent or graph session, or resume a parked one, on a cron schedule, after a delay, or on a webhook.
+- **Isolation** - parallel agents that do not step on each other. Primer's **workspaces** give each agent its own sandbox (local, container, or Kubernetes) with a persistent, git-backed filesystem.
+- **Durable memory** - the model forgets between runs; the repository does not. Primer keeps state in **git-backed workspaces** and in **knowledge collections** that agents retrieve from, so knowledge compounds across iterations instead of resetting each time.
+- **A maker and a checker** - the agent that wrote the work is a poor judge of it. Primer's **directed cyclic graphs** make the producer-judge loop a first-class structure: one agent drafts, another critiques it against a schema or a rubric, and the loop repeats until the check passes.
+- **Connectors** - a loop has to touch real tools and real people. Primer is an **MCP server** (and an MCP client), and it bridges agents to **Slack, Telegram, and Discord**.
+- **A human gate** - approve the risky, let the safe run. Primer gates sensitive tool calls behind **human approvals** and lets work **park and resume**, so an agent can wait on a person for hours without holding compute.
+
+Primer does not press "go" on the loop for you, and it is built so that you do not have to surrender your judgment to run one. Each iteration gets a clean, purpose-built context rather than an ever-growing transcript, which is the same context discipline that keeps a single agent accurate, now applied over and over. That is what lets a loop run for a long time without drifting. To borrow the practice's own advice: build the loop like someone who intends to stay the engineer, not just the person who presses go.
+
 ## Next
 
 Ready to see it in action? The quickstart walks you through building a real agent end to end.

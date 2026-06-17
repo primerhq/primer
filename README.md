@@ -109,6 +109,23 @@ Two meta-tools let an agent search for and invoke any tool or agent at runtime -
 
 <!-- SCREENSHOTS: add a framed-console section here (Dashboard / Session control room / Approvals / Graph editor) once the captures are produced. -->
 
+## Built for loop engineering
+
+Loop engineering is the shift from prompting an agent turn-by-turn to **designing the system that prompts it** - a loop that wakes on a schedule, works toward a stated goal, checks its own output against evidence, and escalates to a human only when it should. The leverage moves from writing a good prompt to designing a good loop.
+
+A loop needs a specific set of primitives. Primer ships all of them, integrated and self-hostable:
+
+| A loop needs... | Primer gives you |
+|---|---|
+| **A heartbeat** - work surfaced on a cadence, not by hand | **Triggers** that start a fresh session or graph run (or resume a parked one) on a cron schedule, a delay, or a webhook |
+| **Isolation** - parallel agents that don't collide | **Workspaces** - a per-agent local, container, or Kubernetes sandbox with its own persistent, git-backed filesystem |
+| **Durable memory** - the agent forgets, the repo doesn't | Git-backed workspace **state** plus **knowledge collections** agents retrieve from, so knowledge compounds across runs instead of resetting to zero |
+| **A maker and a checker** - keep the writer away from the grader | **Directed cyclic graphs** with producer-judge loops, fan-out/fan-in, and runtime agent/graph invocation |
+| **Connectors** - reach real tools and real people | A built-in **MCP server** (and MCP client), plus **Slack / Telegram / Discord** channels |
+| **A human gate** - approve the risky, let the safe run | **Approval gates** and **park-and-resume**: an agent waits on a person for hours without holding compute, then continues when the reply lands |
+
+Primer does not press "go" on the loop for you - it gives you the orchestration substrate to build one and to keep a human in it where that matters. And the same context discipline that makes a single agent accurate is what lets a loop run for a long time without drifting: each iteration gets a clean, purpose-built context instead of an ever-growing transcript.
+
 ## Quickstart
 
 **Requirements:** Python 3.13, [`uv`](https://github.com/astral-sh/uv), and (optionally) Postgres - see `docker-compose.yml` for a one-command setup.
