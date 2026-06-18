@@ -239,7 +239,7 @@ class _StubBackend:
     async def aclose(self):
         return
 
-    async def create(self, template, *, overrides=None):
+    async def create(self, template, *, overrides=None, resolvers=None):
         ws = _LiveWorkspace("ws-stub")
         self._workspaces[ws.id] = ws
         return ws
