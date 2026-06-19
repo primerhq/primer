@@ -422,6 +422,30 @@ _UNINSTALL_ORDER: list[str] = list(reversed(_INSTALL_ORDER))
 # ---------------------------------------------------------------------------
 
 
+async def _persist_document_body(
+    *,
+    storage_provider: Any,
+    document_entity: Any,
+    content: str | None,
+) -> None:
+    """Write a harness-installed document's body to the content store.
+
+    Bodies live in the content store now (keyed by the stable document id,
+    addressed by ``(collection_id, path)``), not in ``Document.meta``. The
+    entity row was already created by the caller; this writes the matching
+    content row so the body is readable by path and indexable. ``None``
+    content (a metadata-only document) writes nothing.
+    """
+    if content is None:
+        return
+    await storage_provider.get_content_store().upsert(
+        document_id=document_entity.id,
+        collection_id=document_entity.collection_id,
+        path=document_entity.path,
+        content=content,
+    )
+
+
 async def _index_installed_document(
     *,
     storage_provider: Any,
@@ -487,12 +511,14 @@ async def apply_install(
     Writes the HarnessRendering snapshot (id = harness.id).
     Returns None on success or a JSON-encoded error string on failure.
 
-    Document content (content_inline / content_path) is stored in
-    Document.meta["content"] when present in the corresponding RenderedFile,
-    and each installed Document is routed through the same chunk/embed/index
-    pipeline as the REST create_document flow (best-effort: indexing failures
-    are logged, never aborting the install). When the registries are omitted
-    (pure-storage callers) indexing is skipped.
+    Document content (content_inline / content_path) is written to the
+    content store (keyed by the stable id, addressed by collection_id +
+    path) when present in the corresponding RenderedFile, so the body is
+    readable by path and indexable. Each installed Document is then routed
+    through the same chunk/embed/index pipeline as the REST create_document
+    flow (best-effort: indexing failures are logged, never aborting the
+    install). When the registries are omitted (pure-storage callers)
+    indexing is skipped.
     """
     # Group entries by kind for ordered application
     by_kind: dict[str, list[RenderedEntry]] = {k: [] for k in _INSTALL_ORDER}
@@ -507,13 +533,12 @@ async def apply_install(
             for entry in by_kind.get(kind, []):
                 payload = dict(entry.rendered_payload)
 
-                # Document content: store in meta["content"] if available
+                # Document body: persist to the content store (keyed by the
+                # stable id, addressed by collection_id + path) after the
+                # entity is created, so it is readable by path + indexable.
+                doc_content: str | None = None
                 if kind == "document" and entry.template_name in rendered_files_by_name:
-                    rf = rendered_files_by_name[entry.template_name]
-                    if rf.content is not None:
-                        meta = dict(payload.get("meta") or {})
-                        meta["content"] = rf.content
-                        payload = {**payload, "meta": meta}
+                    doc_content = rendered_files_by_name[entry.template_name].content
 
                 entity = _entity_from_entry(
                     RenderedEntry(
@@ -561,6 +586,11 @@ async def apply_install(
                     raise conflict
                 created.append((kind, entry.resolved_id))
                 if kind == "document":
+                    await _persist_document_body(
+                        storage_provider=storage_provider,
+                        document_entity=entity,
+                        content=doc_content,
+                    )
                     created_documents.append(entity)
 
     except Exception as exc:
@@ -656,12 +686,9 @@ async def apply_sync(
     # Process creates (install order: toolset → ... → graph)
     for entry in _sorted_by_kind(diff.creates, _INSTALL_ORDER):
         payload = dict(entry.rendered_payload)
+        doc_content: str | None = None
         if entry.kind == "document" and entry.template_name in rendered_files_by_name:
-            rf = rendered_files_by_name[entry.template_name]
-            if rf.content is not None:
-                meta = dict(payload.get("meta") or {})
-                meta["content"] = rf.content
-                payload = {**payload, "meta": meta}
+            doc_content = rendered_files_by_name[entry.template_name].content
 
         entity = _entity_from_entry(
             RenderedEntry(
@@ -683,17 +710,19 @@ async def apply_sync(
             )
         else:
             if entry.kind == "document":
+                await _persist_document_body(
+                    storage_provider=storage_provider,
+                    document_entity=entity,
+                    content=doc_content,
+                )
                 indexed_documents.append(entity)
 
     # Process updates
     for _old_entry, new_entry in diff.updates:
         payload = dict(new_entry.rendered_payload)
+        doc_content: str | None = None
         if new_entry.kind == "document" and new_entry.template_name in rendered_files_by_name:
-            rf = rendered_files_by_name[new_entry.template_name]
-            if rf.content is not None:
-                meta = dict(payload.get("meta") or {})
-                meta["content"] = rf.content
-                payload = {**payload, "meta": meta}
+            doc_content = rendered_files_by_name[new_entry.template_name].content
 
         entity = _entity_from_entry(
             RenderedEntry(
@@ -715,6 +744,11 @@ async def apply_sync(
             )
         else:
             if new_entry.kind == "document":
+                await _persist_document_body(
+                    storage_provider=storage_provider,
+                    document_entity=entity,
+                    content=doc_content,
+                )
                 indexed_documents.append(entity)
 
     # On partial apply failure we MUST NOT advance the rendering snapshot.

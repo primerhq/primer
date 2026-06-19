@@ -20,14 +20,28 @@ def test_file_resolvers_holds_callables():
 
 
 import pytest
+import pytest_asyncio
 from pydantic import SecretStr
 
 from primer.model.collection import Document
+from primer.model.provider import (
+    SqliteConfig,
+    StorageProviderConfig,
+    StorageProviderType,
+)
 from primer.model.workspace import FileMount
+from primer.storage.factory import StorageProviderFactory
 from primer.workspace.resolvers import (
     make_document_resolver,
     make_secret_resolver,
 )
+
+
+class _StubContentStore:
+    """Content store that always misses, exercising the legacy meta fallback."""
+
+    async def get(self, document_id, *, conn=None):
+        return None
 
 
 class _StubStorage:
@@ -43,9 +57,13 @@ class _StubStorage:
 class _StubStorageProvider:
     def __init__(self, doc):
         self._storage = _StubStorage(doc)
+        self._content = _StubContentStore()
 
     def get_storage(self, model_class):
         return self._storage
+
+    def get_content_store(self):
+        return self._content
 
 
 class _StubSecretProvider:
@@ -110,6 +128,38 @@ async def test_document_resolver_empty_body_raises():
     resolver = make_document_resolver(_StubStorageProvider(doc))
     with pytest.raises(RuntimeError, match="empty"):
         await resolver(_doc_mount())
+
+
+@pytest_asyncio.fixture
+async def sqlite_provider(tmp_path):
+    cfg = StorageProviderConfig(
+        provider=StorageProviderType.SQLITE,
+        config=SqliteConfig(path=tmp_path / "resolvers.sqlite"),
+    )
+    sp = StorageProviderFactory.create(cfg)
+    await sp.initialize()
+    await sp.get_content_store().ensure_schema()
+    yield sp
+    await sp.aclose()
+
+
+@pytest.mark.asyncio
+async def test_document_resolver_reads_body_from_content_store(sqlite_provider):
+    """The body lives ONLY in the content store (entity meta empty); the
+    resolver returns it, not the empty meta."""
+    doc = Document(
+        id="document-abc", collection_id="col1", name="d", path="d.md", meta={}
+    )
+    await sqlite_provider.get_storage(Document).create(doc)
+    await sqlite_provider.get_content_store().upsert(
+        document_id=doc.id,
+        collection_id="col1",
+        path="d.md",
+        content="RESOLVED BODY",
+    )
+
+    resolver = make_document_resolver(sqlite_provider)
+    assert await resolver(_doc_mount()) == b"RESOLVED BODY"
 
 
 @pytest.mark.asyncio

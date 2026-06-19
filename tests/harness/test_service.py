@@ -692,6 +692,56 @@ async def test_apply_install_indexing_failure_does_not_fail_install(
     assert stored is not None
 
 
+@pytest.mark.asyncio
+async def test_apply_install_writes_body_to_content_store(fake_storage_provider):
+    """A harness-installed document's body lands in the content store keyed by
+    its path (and stable id), readable via get_by_path / DocumentService."""
+    harness = _make_harness("acme")
+
+    collection_entry = RenderedEntry(
+        kind="collection", template_name="col", resolved_id="acme__col",
+        template_source_hash="h", rendered_hash="h1",
+        rendered_payload={
+            "description": "col",
+            "embedder": {"provider_id": "ep", "model": "text-emb"},
+            "search_provider_id": "ssp",
+        },
+    )
+    doc_entry = RenderedEntry(
+        kind="document", template_name="doc", resolved_id="acme__doc",
+        template_source_hash="h", rendered_hash="h2",
+        rendered_payload={
+            "collection_id": "acme__col",
+            "name": "Doc",
+            "path": "guides/intro.md",
+            "meta": {},
+        },
+    )
+    rf = _make_rendered_file(
+        "document", "doc", {}, content="HARNESS BODY TEXT"
+    )
+
+    error = await apply_install(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        entries=[collection_entry, doc_entry],
+        rendered_files_by_name={"doc": rf},
+        bundle_hash="bh1", overrides_hash="oh1", schema_hash=None,
+    )
+
+    assert error is None
+    content_store = fake_storage_provider.get_content_store()
+    row = await content_store.get_by_path("acme__col", "guides/intro.md")
+    assert row is not None
+    assert row.content == "HARNESS BODY TEXT"
+    assert await content_store.get("acme__doc") == "HARNESS BODY TEXT"
+
+    from primer.knowledge.document_service import DocumentService
+    svc = DocumentService(fake_storage_provider)
+    read = await svc.read(collection_id="acme__col", path="guides/intro.md")
+    assert read.content == "HARNESS BODY TEXT"
+
+
 # ---------------------------------------------------------------------------
 # 7. apply_install — writes HarnessRendering snapshot
 # ---------------------------------------------------------------------------

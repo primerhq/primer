@@ -27,10 +27,13 @@ def make_document_resolver(storage_provider: "StorageProvider") -> _Resolver:
     """Return a resolver that reads a Document's body from storage.
 
     Loads the Document by ``source.document_id``, verifies it belongs to
-    ``source.collection_id``, extracts its indexable body text, and
-    returns it UTF-8 encoded. Raises ``RuntimeError`` (surfacing as a
-    workspace-create failure) on missing document, collection mismatch,
-    or empty body.
+    ``source.collection_id``, then reads the body from the content store
+    (keyed by the stable document id) and returns it UTF-8 encoded. Bodies
+    live in the content store now, not in ``meta``; for a not-yet-migrated
+    document with no content row this falls back to the legacy
+    ``document_body_text(doc)`` read so nothing breaks in transit. Raises
+    ``RuntimeError`` (surfacing as a workspace-create failure) on missing
+    document, collection mismatch, or empty body.
     """
 
     async def _resolve(fm: "FileMount") -> bytes:
@@ -47,7 +50,10 @@ def make_document_resolver(storage_provider: "StorageProvider") -> _Resolver:
                 f"{src.document_id!r} belongs to collection "
                 f"{doc.collection_id!r}, not {src.collection_id!r}"
             )
-        body = document_body_text(doc)
+        body = await storage_provider.get_content_store().get(doc.id)
+        if body is None:
+            # Transitional: no content row yet -> read the legacy meta body.
+            body = document_body_text(doc)
         if not body:
             raise RuntimeError(
                 f"FileSource path={fm.path!r} kind=document: document "
