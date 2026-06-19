@@ -9,7 +9,7 @@ summary: Create knowledge collections with a fixed embedder and SSP, ingest plai
 
 A **collection** is a named container of documents that you can search by meaning. Every collection has an embedding model and a semantic search provider (SSP) chosen at creation time. When you add a document to a collection, Primer splits the document text into overlapping chunks, passes each chunk through the embedding model to produce a dense vector, and stores those vectors in the collection's SSP. At search time, the query is embedded with the same model and the SSP returns the chunks whose vectors are nearest in meaning.
 
-A **document** is a piece of text you add to a collection. It has an ID, a name, free-form metadata (a JSON object), and a text payload. The payload is split into chunks on ingest; the chunks, not the document as a whole, are what the vector index holds and returns as search results.
+A **document** is a piece of text you add to a collection, addressed by a **path** that is unique within the collection (for example `runbooks/db-failover.md`). Each document has a path, an optional human-readable `title` (defaults to the path's last segment), free-form metadata (a JSON object), and a body. The body is the source of truth: Primer stores it in a first-class content store keyed by `(collection_id, path)`, separate from the vector index. The body is split into chunks on write; the chunks, not the document as a whole, are what the vector index holds and returns as search results. Search is on in this release, so writing a document both stores its body and (re-)indexes its chunks; the vector index is an optional, derived index over the body rather than the place the body lives.
 
 Two decisions are fixed at create time and cannot be changed afterward:
 
@@ -88,12 +88,12 @@ The collection row is created. The vector index for this collection does not exi
 
 1. Open the collection and click **Documents**.
 2. Click **Add document**.
-3. Enter a document ID (or leave blank to auto-generate) and a name.
+3. Enter a **path** (e.g. `runbooks/db-failover.md`). The path is unique within the collection; writing to a path that already exists replaces that document. Optionally set a **title** (defaults to the path's last segment).
 4. Paste the document text directly, or upload a file. Supported upload formats include PDF, DOCX, HTML, and Markdown; Primer converts them to text before splitting.
 5. Optionally add metadata as a JSON object (e.g. `{"source": "manual", "version": "2"}`). Metadata is stored with every chunk and can be used for filtering.
 6. Click **Save**.
 
-Primer splits the document into overlapping chunks, embeds each chunk, and writes the vectors to the SSP. Progress is synchronous; the save button returns once indexing is complete.
+Primer stores the document body in the content store under its path, then splits it into overlapping chunks, embeds each chunk, and writes the vectors to the SSP. Progress is synchronous; the save button returns once the body is stored and indexing is complete.
 
 **Tip:** You can also drop multiple files at once in the upload area to queue them as a batch.
 
@@ -108,14 +108,18 @@ The embedding provider, model, and SSP fields are read-only in the edit form. To
 ### Edit a document
 
 1. Open the document and click **Edit**.
-2. Update the name, metadata, or text payload.
+2. Update the title, metadata, or body.
 3. Click **Save**.
 
-Saving with a changed text payload triggers a full re-index: Primer deletes the document's existing chunks from the vector store and re-ingests the new text. The collection ID and document ID are locked after creation.
+Saving a changed body replaces the stored body and triggers a full re-index: Primer deletes the document's existing chunks from the vector store and re-ingests the new text. The collection ID is locked after creation; the path identifies the document and can be changed only by moving it (see below).
+
+### Move (rename) a document
+
+Moving a document changes its path. Use it to rename a document or reorganise a collection's hierarchy. The body, title, and metadata are preserved; the move fails if the target path is already taken.
 
 ### Delete a document
 
-Deleting a document removes its row and its chunks from the vector store. The chunks are dropped immediately; there is no soft-delete.
+Deleting a document removes its body from the content store and its chunks from the vector store. Both are dropped immediately; there is no soft-delete.
 
 ### Search a collection
 
@@ -131,10 +135,12 @@ The console search above is for operators. An agent reaches collections and docu
 
 - **Find the right collection**: `search__search_collections` runs a semantic search over your collection *definitions* and returns the collections whose description best matches a query. It is part of the `search` toolset, which is only available when internal collections are enabled.
 - **Search a collection's contents**: `system__search_collection` runs a semantic search over a collection's indexed document *contents* and returns ranked chunk hits (`document_id`, `chunk_id`, `score`, `text`, `meta`), most relevant first. It uses the collection's own embedder and vector store, the same path the operator search bench above uses.
-- **Find documents in a collection**: `system__list_collection_documents` lists a collection's documents, and `system__find_collection_documents_by_meta` filters them by metadata fields.
-- **Read a document**: `system__get_document_content` returns a document's full text by `document_id`.
+- **List documents**: `system__list_documents(collection_id, prefix?)` lists a collection's documents by path. Pass a `prefix` (e.g. `runbooks/`) to scope to a subtree. Each entry carries its `path`, `document_id`, and `size`.
+- **Read a document**: `system__get_document_content(collection_id, path)` returns a document's full body by path.
+- **Write a document**: `system__put_document(collection_id, path, content, title?, meta?)` creates or replaces the document at `path` with `content` as its body, and re-indexes it.
+- **Move a document**: `system__move_document(collection_id, from, to)` changes a document's path, preserving its body, title, and metadata.
 
-A typical flow is: call `search__search_collections` to locate a knowledge base, `system__search_collection` to pull the most relevant chunks (or metadata-filter its documents), then call `get_document_content` on the ones the task needs.
+A typical flow is: call `search__search_collections` to locate a knowledge base, `system__search_collection` to pull the most relevant chunks (or `system__list_documents` to browse by path), then call `system__get_document_content` with the path of each document the task needs.
 
 ```ref:embedding/embedding-providers
 ```

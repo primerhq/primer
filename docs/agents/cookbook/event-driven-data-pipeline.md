@@ -10,7 +10,8 @@ mcp_tools:
   - trigger::create_subscription
   - trigger::fire_now
   - workspaces::get_workspace_session
-  - system::find_documents
+  - system::put_document
+  - system::list_documents
 ---
 
 ## Goal
@@ -51,7 +52,7 @@ The embedder and search provider are fixed at create time. To change either, del
   "entity": {
     "id": "ingestion-bot",
     "description": "Normalises an event payload and ingests it",
-    "system_prompt": ["You receive an upstream event payload in the session input. Write the raw payload to inbox/<id>.txt in the workspace, normalise it to clean markdown, then call put_document on the ingestion-buffer collection with a unique idempotency key derived from the source payload identifier."],
+    "system_prompt": ["You receive an upstream event payload in the session input. Write the raw payload to inbox/<id>.txt in the workspace, normalise it to clean markdown, then call put_document on the ingestion-buffer collection using a stable path derived from the source payload identifier (for example events/<id>.md) and the normalised markdown as content."],
     "model": { "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6" }
   }
 }
@@ -60,7 +61,7 @@ Response:
 ```json
 { "id": "ingestion-bot" }
 ```
-Bind the `workspaces` toolset (to write the inbox file) and the knowledge toolset (to call `put_document`) on the agent so the run can do both. Instruct the agent to idempotency-key every `put_document`; a catch-up fire after a missed tick can otherwise re-ingest the same payload.
+Bind the `workspaces` toolset (to write the inbox file) and the knowledge toolset (to call `put_document`) on the agent so the run can do both. Instruct the agent to derive each document's `path` from a stable field in the payload; writing the same path twice replaces the document, so the path is the idempotency key and a catch-up fire after a missed tick will not create a duplicate.
 
 ### 3. Materialise the workspace
 `workspaces::create_workspace`
@@ -130,24 +131,18 @@ Response:
 Re-call on an interval until `status` is `ended`.
 
 ### 8. Confirm the document landed
-`system::find_documents`
+`system::list_documents`
 ```json
-{
-  "predicate": {
-    "left": { "name": "collection_id" },
-    "op": "=",
-    "right": { "value": "ingestion-buffer" }
-  }
-}
+{ "collection_id": "ingestion-buffer", "prefix": "events/" }
 ```
 Response:
 ```json
-{ "items": [ { "id": "doc-1", "collection_id": "ingestion-buffer" } ] }
+{ "documents": [ { "path": "events/evt-001.md", "document_id": "document-...", "size": 274 } ] }
 ```
-`find_documents` matches a predicate tree; filter on `collection_id` to list this collection's documents. The new document should appear after a clean fire.
+`list_documents` returns the collection's documents by path (no bodies); pass a `prefix` to scope to the subtree the agent writes into. The new document should appear after a clean fire.
 
 ## Verify
-The fired session ends with `ended_reason: "completed"`, the agent wrote a file under `inbox/`, and `find_documents` on `ingestion-buffer` shows the new normalised document. After a clean Fire now, the cron takes over unattended.
+The fired session ends with `ended_reason: "completed"`, the agent wrote a file under `inbox/`, and `list_documents` on `ingestion-buffer` shows the new normalised document at its derived path. After a clean Fire now, the cron takes over unattended.
 
 ## Gotchas
 - A burst of upstream events floods the worker pool if `parallelism` is `queue` and the trigger fires faster than sessions complete. Use `skip` parallelism or scale the worker pool to match the expected rate.

@@ -56,9 +56,11 @@ need to change either, delete the collection and re-ingest all documents.
    You receive an upstream event payload in the session input.
    Write the raw payload to inbox/<id>.txt in the workspace.
    Normalise the content into clean markdown.
-   Call put_document on the ingestion-buffer collection with the
-   normalised markdown and a unique idempotency key derived from
-   the source payload identifier.
+   Call put_document on the ingestion-buffer collection, using a
+   stable path derived from the source payload identifier (for
+   example events/<id>.md) and the normalised markdown as content.
+   Writing the same path twice replaces the document, so the path
+   doubles as the idempotency key.
    ```
 
 5. Click **Create**.
@@ -133,9 +135,11 @@ to `queue` and the trigger fires faster than sessions complete. Use `skip`
 parallelism or scale the worker pool to match the expected rate.
 ```
 
-- The agent should idempotency-key every `put_document` call: an upstream
-  system that retries on a slow response can deliver the same event twice.
-  Derive the key from a stable field in `webhook_body`.
+- The agent should derive each document's `path` from a stable field in
+  `webhook_body`: an upstream system that retries on a slow response can
+  deliver the same event twice, and writing to the same path replaces the
+  document rather than creating a duplicate, so the path is the idempotency
+  key.
 - The webhook body is capped at 1 MB and rate-limited to 60 requests per
   minute per token (a sliding window, approximate across workers). For
   larger or burstier feeds, have the sender push to a queue and POST a

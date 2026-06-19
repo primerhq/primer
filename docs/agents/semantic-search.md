@@ -18,8 +18,8 @@ mcp_tools:
 Primer has two distinct semantic-search surfaces that agents often
 confuse. The first is user-defined knowledge: a `Collection` row that
 an operator created with `system::create_collection`, into which
-documents have been ingested via the regular knowledge router. That
-surface uses `system::list_collection_documents` and (when wired up)
+documents have been written by path. That surface uses
+`system::list_documents`, `system::get_document_content`, and
 `system::search_collection`. The second is **internal collections** -
 five reserved collections (id-prefixed with `_internal_`) that primer
 itself maintains, automatically, so agents can discover what primer
@@ -88,9 +88,11 @@ A search call goes:
 For the first four collections, `document_id` is the entity id
 (`ag-foo`, `gr-bar`, `col-baz`, `system::list_agents`). For the docs
 collection, `document_id` is the slug of the markdown file
-(`agents`, `chats`, etc.) - pair the hit with
-`system::get_document(id=<slug>, collection_id="_internal_ai_docs")`
-to fetch the full doc.
+(`agents`, `chats`, etc.). A docs hit carries the matched subsection
+as its `text`; the internal AI-docs bodies are not stored in the
+user-document content store, so the slug is an index identifier for
+ranking and dedup, not a `(collection_id, path)` you can read back
+with `system::get_document_content`.
 
 ## Lifecycle and states
 
@@ -165,9 +167,8 @@ nodes are `analyse`, `lint`, `verdict`.
 **Purpose.** Find user-defined `Collection` rows. **Does not search
 documents inside collections** - only the collection metadata rows.
 To search documents within a specific user collection, use the
-collection's own `system::search_collection` (when implemented) or
-inspect documents via `system::list_collection_documents` +
-`system::get_document_content`.
+collection's own `system::search_collection`, or inspect documents
+by path via `system::list_documents` + `system::get_document_content`.
 
 ### `search::search_tools`
 
@@ -187,8 +188,11 @@ of the matched doc (`agents`, `triggers-and-subscriptions`, etc.);
 
 **Returns.** Per hit: the chunk text (a specific section of the
 doc), the score, and meta carrying the doc's title, summary, and
-mcp_tools frontmatter - enough to decide if it's worth fetching the
-whole doc via `system::get_document_content(id=<slug>)`.
+mcp_tools frontmatter - enough to decide which doc slug is the right
+one. The returned chunk text is the readable payload; the AI-docs
+bodies are not exposed through `system::get_document_content`, so a
+follow-up search with a tighter query is how you pull in more of the
+matched doc.
 
 ## Workflows
 
@@ -234,12 +238,13 @@ about cron semantics in primer.
 2. Top hit's `document_id` is `triggers-and-subscriptions`, chunk
    text covers the catch-up policy (`one` / `all` / `none`). Meta
    carries the doc's full mcp_tools list.
-3. To read the entire doc:
+3. To pull in more of the matched doc, run a tighter follow-up
+   search scoped to the area you still need:
 
 ```json
 {
-  "tool": "system::get_document_content",
-  "arguments": {"id": "triggers-and-subscriptions"}
+  "tool": "search::search_ai_docs",
+  "arguments": {"query": "trigger catch-up policy one all none semantics", "top_k": 3}
 }
 ```
 
@@ -254,7 +259,7 @@ about cron semantics in primer.
   operator needs to activate the subsystem.
 - **`search::search_collections` searches collection *metadata*, not
   documents within collections.** To search documents in a specific
-  user collection use that collection's own search (when wired up).
+  user collection use that collection's own `system::search_collection`.
   This is a frequent mismatch.
 - **First four collections store one vector per entity; the docs
   collection chunks.** A `search_agents` hit's `chunk_id` is always
@@ -283,9 +288,10 @@ about cron semantics in primer.
   collection tables from the backing SSP and clears the config row),
   then PUT a new config with the new model, then POST bootstrap.
 - **Hits from `search_ai_docs` carry the chunk, not the whole doc.**
-  Don't try to satisfy a user's question entirely from the snippet -
-  follow up with `system::get_document_content` if the snippet looks
-  like the right doc.
+  Don't try to satisfy a user's question entirely from one snippet -
+  the AI-docs bodies are not readable through
+  `system::get_document_content`, so run a tighter follow-up
+  `search_ai_docs` query to pull in the rest of the matched doc.
 - **Tool documents use scoped ids as `document_id`.** The
   `_internal_tools` collection's document ids look like
   `system::create_agent`, not `create_agent`. This is so two

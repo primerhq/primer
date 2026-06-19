@@ -4,12 +4,15 @@ These markdown files are the agent-facing knowledge base. At bootstrap,
 the internal-collections subsystem walks this directory recursively
 (`rglob("*.md")`), skips files whose name starts with `_`, and ingests
 each remaining file as one Document in the reserved `_internal_ai_docs`
-collection. The Document id is the file's path relative to this
+collection. The Document slug is the file's path relative to this
 directory without the `.md` suffix (e.g. `agents`,
-`cookbook/pr-reviewer-on-cron`).
+`cookbook/pr-reviewer-on-cron`); the Document's `path` is that slug
+plus `.md`.
 
-Agents reach these via `search::search_ai_docs(query=...)` and
-`system::get_document_content(id=<slug>, collection_id="_internal_ai_docs")`.
+Agents reach these via `search::search_ai_docs(query=...)`, whose hits
+carry the matched chunk text and a `document_id` equal to the slug.
+The AI-docs bodies are not stored in the user-document content store,
+so they are not readable through `system::get_document_content`.
 
 Every doc starts with frontmatter (`slug`, `title`, `summary`, optional
 `related`, optional `mcp_tools`) and follows the agent-doc template:

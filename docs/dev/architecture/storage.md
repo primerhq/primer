@@ -60,6 +60,7 @@ A provider is constructed once per process at lifespan start, `initialize`-d, th
 - `initialize()` opens the pool or embedded connection and runs one-time schema setup. Idempotent; must be awaited before any handle is used.
 - `aclose()` tears the backend down. Idempotent on a never-initialised or already-closed provider.
 - `get_storage(model_class)` returns a cached `Storage[ModelT]` handle. The handle shares the pool with siblings and does not eagerly create its table.
+- `get_content_store()` returns the backend's `DocumentContentStore` (`primer/int/document_content.py`): the path-keyed store for user-document bodies that sits beside the JSONB entity tables. See section 5.
 - `get_system_state()` returns the singleton `system_state` row (`primer/model/system_state.py`), guaranteed non-null because the row is inserted during `initialize`.
 - `set_bootstrap_completed(ts)` stamps `bootstrap_completed_at` on the singleton row; consumed by first-boot auto-bootstrap.
 - `set_session_secret(secret)` persists the cookie-signing HMAC secret on the singleton row so sessions survive restarts.
@@ -110,6 +111,10 @@ Both backends share rules so an operator can swap providers without renaming any
 - Serialisation goes through `dump_for_storage` (`primer/model/common.py`), which dumps in JSON mode and then re-injects `SecretStr` plaintext so credentials round-trip instead of being written as the masked placeholder.
 - Predicate translation is split between two sibling translators: `_PredicateTranslator` (`primer/storage/_predicate.py`) emits `data->>'field'` with `$N` placeholders for Postgres; `_SqlitePredicateTranslator` (`primer/storage/_sqlite_predicate.py`) emits `json_extract(data, '$.field')` with `?` placeholders for SQLite. Both resolve field annotations to apply numeric casts (`::bigint` / `::double precision` versus `CAST(... AS INTEGER|REAL)`), short-circuit an empty `IN` list to a constant-false clause, and raise `BadRequestError` for a field absent on the model. The two translators are independent visitors with substantial overlap; this duplication is a known, accepted state held honest by the contract test.
 - Order-by rendering (`render_order_by` / `render_order_by_sqlite`) always appends the implicit `id ASC` tiebreaker for deterministic cursor seeks.
+
+### The `document_content` table
+
+Knowledge documents are path-addressed and their bodies are the source of truth, so the body does not live under the generic `data` JSONB column with the `Document` entity row, nor in the vector store. Instead each `StorageProvider` hands out a `DocumentContentStore` (`primer/int/document_content.py`) via `get_content_store()`, backed by a dedicated `document_content` table that is a sibling to the JSONB entity tables rather than another `Storage[ModelT]` handle. Its columns are `document_id` (PRIMARY KEY), `collection_id`, `path`, `content`, and `updated_at`, with a `UNIQUE(collection_id, path)` index (the authoritative `path -> document_id` resolver) plus a `(collection_id)` index for prefix listing. Postgres stores `content` as `text` and `updated_at` as `timestamptz`; SQLite stores both as `TEXT`. The store exposes path-keyed reads (`get`, `get_by_path`, `resolve_id`), `upsert`, `delete`, `move`, and a prefix `list`, and runs `ensure_schema()` at startup (see `docs/dev/subsystems/knowledge.md`). It is the only first-class table outside the one-table-per-model rule; the vector index over the same bodies is separate and optional.
 
 The vector / semantic-search store is a separate provider family (`VectorStoreProvider` with pgvector, pgvectorscale, and lance backends, configured by `SemanticSearchProvider` rows) and is not part of this entity-storage layer; see the semantic-search subsystem and provider-pattern docs.
 
