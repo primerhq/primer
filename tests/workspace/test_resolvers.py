@@ -77,14 +77,14 @@ def _secret_mount(name="deploy_key"):
 
 @pytest.mark.asyncio
 async def test_document_resolver_happy_text_key():
-    doc = Document(id="document-abc", collection_id="col1", name="d", meta={"text": "hello body"})
+    doc = Document(id="document-abc", collection_id="col1", name="d", path="d.md", meta={"text": "hello body"})
     resolver = make_document_resolver(_StubStorageProvider(doc))
     assert await resolver(_doc_mount()) == b"hello body"
 
 
 @pytest.mark.asyncio
 async def test_document_resolver_happy_content_key():
-    doc = Document(id="document-abc", collection_id="col1", name="d", meta={"content": "alt body"})
+    doc = Document(id="document-abc", collection_id="col1", name="d", path="d.md", meta={"content": "alt body"})
     resolver = make_document_resolver(_StubStorageProvider(doc))
     assert await resolver(_doc_mount()) == b"alt body"
 
@@ -98,7 +98,7 @@ async def test_document_resolver_missing_document_raises():
 
 @pytest.mark.asyncio
 async def test_document_resolver_collection_mismatch_raises():
-    doc = Document(id="document-abc", collection_id="OTHER", name="d", meta={"text": "x"})
+    doc = Document(id="document-abc", collection_id="OTHER", name="d", path="d.md", meta={"text": "x"})
     resolver = make_document_resolver(_StubStorageProvider(doc))
     with pytest.raises(RuntimeError, match="collection"):
         await resolver(_doc_mount(collection_id="col1"))
@@ -106,7 +106,7 @@ async def test_document_resolver_collection_mismatch_raises():
 
 @pytest.mark.asyncio
 async def test_document_resolver_empty_body_raises():
-    doc = Document(id="document-abc", collection_id="col1", name="d", meta={})
+    doc = Document(id="document-abc", collection_id="col1", name="d", path="d.md", meta={})
     resolver = make_document_resolver(_StubStorageProvider(doc))
     with pytest.raises(RuntimeError, match="empty"):
         await resolver(_doc_mount())

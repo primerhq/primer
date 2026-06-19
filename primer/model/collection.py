@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from primer.model.common import Describeable, Identifiable
 from primer.model.search import CollectionSearch
@@ -139,6 +139,20 @@ class Document(Identifiable):
         min_length=1,
         description="Human-readable name of the document.",
     )
+    path: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "POSIX-like address of the document within its collection "
+            "(e.g. 'concepts/slo.md'). Unique per collection; the "
+            "agent-facing handle. Validated: no leading/trailing slash, "
+            "no empty or '.'/'..' segments, no '//'."
+        ),
+    )
+    title: str | None = Field(
+        default=None,
+        description="Optional human display title; defaults to the path leaf when unset.",
+    )
     meta: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -154,3 +168,13 @@ class Document(Identifiable):
             "use the harness's sync/uninstall flow instead."
         ),
     )
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, v: str) -> str:
+        if v.startswith("/") or v.endswith("/"):
+            raise ValueError("path must not start or end with '/'")
+        for seg in v.split("/"):
+            if seg in ("", ".", ".."):
+                raise ValueError("path must not contain empty, '.', or '..' segments")
+        return v

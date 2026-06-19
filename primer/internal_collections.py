@@ -977,6 +977,7 @@ class InternalCollectionsSubsystem:
                     id=slug,
                     collection_id=AI_DOCS_COLLECTION_ID,
                     name=title,
+                    path=f"{slug}.md",
                     meta=doc_meta,
                 )
                 if existing is None:

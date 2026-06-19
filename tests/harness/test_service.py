@@ -762,7 +762,7 @@ async def test_apply_uninstall_deletes_in_reverse_order(fake_storage_provider):
         )
     )
     await fake_storage_provider.get_storage(Document).create(
-        Document(id="acme__doc", collection_id="acme__col", name="doc", meta={}, harness_id=harness.id)
+        Document(id="acme__doc", collection_id="acme__col", name="doc", path="acme__doc.md", meta={}, harness_id=harness.id)
     )
     await fake_storage_provider.get_storage(Agent).create(
         Agent(

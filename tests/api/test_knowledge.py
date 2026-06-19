@@ -39,6 +39,7 @@ def _document(**overrides) -> Document:
         id="doc-1",
         collection_id="kb-1",
         name="hello.txt",
+        path="hello.txt",
         meta={},
     )
     body.update(overrides)

@@ -340,6 +340,11 @@ def build_rendered_entries(
         )
 
         rid = resolved_id(file_slug, f.template_name)
+        # Document gained a required ``path`` (Phase 1). Templates predating
+        # that field carry no path; derive a minimal one from the resolved id
+        # so build-time validation passes. Later tasks thread a real path.
+        if f.kind == "document" and not rewritten_payload.get("path"):
+            rewritten_payload = {**rewritten_payload, "path": f"{rid}.md"}
         entity, validation_errors = _validate_payload(f.kind, rid, rewritten_payload)
 
         if validation_errors:
@@ -390,6 +395,11 @@ def _entity_from_entry(
         **entry.rendered_payload,
         "harness_id": harness_id,
     }
+    # Document gained a required ``path`` (Phase 1). Templates predating
+    # that field carry no path; derive a minimal one from the resolved id
+    # so reconstruction stays valid. Later tasks thread a real path through.
+    if entry.kind == "document" and not data.get("path"):
+        data["path"] = f"{entry.resolved_id}.md"
     return model_cls.model_validate(data)
 
 

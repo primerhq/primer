@@ -164,6 +164,7 @@ def _document(*, collection_id: str = "kb-research") -> Document:
         id="doc-001",
         collection_id=collection_id,
         name="test.pdf",
+        path="test.pdf",
         meta={"source": "synthetic"},
     )
 

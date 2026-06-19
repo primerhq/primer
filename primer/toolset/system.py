@@ -487,6 +487,7 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
             "id": "doc-1",
             "collection_id": "kb-1",
             "name": "Onboarding guide",
+            "path": "doc-1.md",
         },
     ),
     "agent_thread": _EntityHint(
@@ -1542,6 +1543,7 @@ def _document_extras(
             id=args.id,
             collection_id=args.collection_id,
             name=args.name,
+            path=f"{args.id}.md",
             meta=merged_meta,
         )
         existing = await documents.get(args.id)

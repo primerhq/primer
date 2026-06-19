@@ -32,7 +32,7 @@ def _document(text: str | None = None, content: str | None = None) -> Document:
         meta["text"] = text
     if content is not None:
         meta["content"] = content
-    return Document(id="doc-1", collection_id="kb-1", name="d", meta=meta)
+    return Document(id="doc-1", collection_id="kb-1", name="d", path="doc-1.md", meta=meta)
 
 
 class TestChunkText:
@@ -414,9 +414,9 @@ class TestBackfill:
                 text="x", vector=[0.1, 0.2, 0.3], meta={},
             )
         )
-        doc_a = Document(id="doc-a", collection_id="kb-1", name="a",
+        doc_a = Document(id="doc-a", collection_id="kb-1", name="a", path="doc-a.md",
                          meta={"text": "already indexed"})
-        doc_b = Document(id="doc-b", collection_id="kb-1", name="b",
+        doc_b = Document(id="doc-b", collection_id="kb-1", name="b", path="doc-b.md",
                          meta={"text": "needs indexing"})
         reg = AsyncMock()
         reg.get_embedder = AsyncMock(return_value=_Emb())
@@ -437,7 +437,7 @@ class TestBackfill:
     @pytest.mark.asyncio
     async def test_unregistered_collection_indexes_all(self):
         store = _Store()  # nothing registered -> search_by_meta raises
-        doc = Document(id="doc-1", collection_id="kb-1", name="d",
+        doc = Document(id="doc-1", collection_id="kb-1", name="d", path="doc-1.md",
                        meta={"text": "hello"})
         reg = AsyncMock()
         reg.get_embedder = AsyncMock(return_value=_Emb())
@@ -455,7 +455,7 @@ class TestBackfill:
 
     @pytest.mark.asyncio
     async def test_system_collection_skipped(self):
-        doc = Document(id="doc-1", collection_id="sys", name="d",
+        doc = Document(id="doc-1", collection_id="sys", name="d", path="doc-1.md",
                        meta={"text": "hello"})
         sys_coll = Collection(
             id="sys", description="t",
@@ -477,9 +477,9 @@ class TestBackfill:
     @pytest.mark.asyncio
     async def test_one_bad_document_does_not_abort_others(self):
         store = _Store()
-        doc_ok = Document(id="ok", collection_id="kb-1", name="ok",
+        doc_ok = Document(id="ok", collection_id="kb-1", name="ok", path="ok.md",
                           meta={"text": "fine"})
-        doc_bad = Document(id="bad", collection_id="kb-1", name="bad",
+        doc_bad = Document(id="bad", collection_id="kb-1", name="bad", path="bad.md",
                            meta={"text": "boom"})
 
         class _FlakyEmb:
