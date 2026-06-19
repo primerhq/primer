@@ -143,9 +143,61 @@ async def test_build_runner_wires_approval_resolver(
         fake_llm=fake_llm,  # type: ignore[arg-type]
     )
 
-    runner = await _build_runner(deps, chat, asyncio.Event())
+    runner, reason = await _build_runner(deps, chat, asyncio.Event())
     assert runner is not None
+    assert reason is None
     assert runner._tools._approval_resolver is not None
     # Chat-surface inform delivery is deferred (channels-drive-chats), so no
     # inform sink is wired on the chat runner: inform_user returns delivered_to:0.
     assert runner._tools._inform_sink is None
+
+
+@pytest.mark.asyncio
+async def test_build_runner_reports_missing_model(
+    fake_storage_provider, fake_provider_registry,
+):
+    """When the agent's model is no longer registered on its provider,
+    _build_runner returns a specific reason naming the model + provider,
+    not the opaque 'could not build chat runner'."""
+    import asyncio
+    from datetime import datetime, timezone
+
+    from pydantic import SecretStr
+
+    from primer.chat.dispatch import _build_runner
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.chats import Chat
+    from primer.model.provider import (
+        AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+    )
+
+    await fake_storage_provider.get_storage(LLMProvider).create(
+        LLMProvider(
+            id="p", provider=LLMProviderType.ANTHROPIC,
+            models=[LLMModel(name="m", context_length=8192)],
+            config=AnthropicConfig(api_key=SecretStr("test")),
+            limits=Limits(max_concurrency=1),
+        ),
+    )
+    await fake_storage_provider.get_storage(Agent).create(Agent(
+        id="ag", description="x",
+        model=AgentModel(provider_id="p", model_name="gone-model"),
+    ))
+    chat = Chat(
+        id="chat-1", agent_id="ag", title="t",
+        created_at=datetime.now(timezone.utc),
+    )
+    await fake_storage_provider.get_storage(Chat).create(chat)
+
+    deps = ChatDispatchDeps(
+        storage_provider=fake_storage_provider,
+        provider_registry=fake_provider_registry,
+        event_bus=object(),  # type: ignore[arg-type]
+        chat_tick_router=object(),  # type: ignore[arg-type]
+        fake_llm=object(),  # type: ignore[arg-type]
+    )
+
+    runner, reason = await _build_runner(deps, chat, asyncio.Event())
+    assert runner is None
+    assert reason is not None
+    assert "gone-model" in reason and "'p'" in reason

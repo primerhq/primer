@@ -185,9 +185,9 @@ async def run_one_chat_turn(
 
     cancel_event = asyncio.Event()
 
-    runner = await _build_runner(deps, chat, cancel_event)
+    runner, build_error = await _build_runner(deps, chat, cancel_event)
     if runner is None:
-        await _persist_build_error(deps, chat, worker_id)
+        await _persist_build_error(deps, chat, worker_id, build_error)
         return "idle"
 
     cancel_task = asyncio.create_task(
@@ -329,36 +329,51 @@ async def _build_runner(
     deps: ChatDispatchDeps,
     chat: Chat,
     cancel_event: asyncio.Event,
-) -> ChatTurnRunner | None:
+) -> tuple[ChatTurnRunner | None, str | None]:
     """Resolve the agent + LLM + tool stack and construct the runner.
 
-    Returns None if any resolution fails; caller persists an error
-    row and releases the claim.
+    Returns ``(runner, None)`` on success. On failure returns
+    ``(None, reason)`` where ``reason`` names the specific resolution
+    that failed (missing agent, unresolvable provider, model not
+    registered on the provider, or an unresolvable toolset); the caller
+    persists that reason on the error row and releases the claim.
     """
     chats = deps.storage_provider.get_storage(Chat)
     agents = deps.storage_provider.get_storage(Agent)
     msgs = deps.storage_provider.get_storage(ChatMessage)
     agent = await agents.get(chat.agent_id)
     if agent is None:
-        return None
+        return None, (
+            f"agent {chat.agent_id!r} referenced by this chat no longer exists"
+        )
     try:
         llm = (
             deps.fake_llm
             if deps.fake_llm is not None
             else await deps.provider_registry.get_llm(agent.model.provider_id)
         )
-    except (NotFoundError, ConfigError):
-        return None
+    except (NotFoundError, ConfigError) as exc:
+        return None, (
+            f"LLM provider {agent.model.provider_id!r} could not be resolved: "
+            f"{exc}"
+        )
     provider_rows = deps.storage_provider.get_storage(LLMProvider)
     provider_row = await provider_rows.get(agent.model.provider_id)
     if provider_row is None:
-        return None
+        return None, (
+            f"LLM provider {agent.model.provider_id!r} configured on agent "
+            f"{agent.id!r} does not exist"
+        )
     llm_model = next(
         (m for m in provider_row.models if m.name == agent.model.model_name),
         None,
     )
     if llm_model is None:
-        return None
+        return None, (
+            f"model {agent.model.model_name!r} is not registered on provider "
+            f"{agent.model.provider_id!r} (it may have been renamed or removed); "
+            "update the agent's model or re-add it to the provider"
+        )
     toolset_ids: set[str] = set()
     for sid in (agent.tools or []):
         if "__" in sid:
@@ -367,8 +382,11 @@ async def _build_runner(
     for tid in toolset_ids:
         try:
             toolset_providers[tid] = await deps.provider_registry.get_toolset(tid)
-        except (NotFoundError, ConfigError):
-            return None
+        except (NotFoundError, ConfigError) as exc:
+            return None, (
+                f"toolset {tid!r} required by this agent could not be "
+                f"resolved: {exc}"
+            )
     from primer.agent.approval import ApprovalResolver
     from primer.agent.tool_manager import ToolExecutionManager
     from primer.model.tool_approval import ToolApprovalPolicy
@@ -408,21 +426,27 @@ async def _build_runner(
         approval_record_storage=deps.storage_provider.get_storage(
             ToolApprovalRecord
         ),
-    )
+    ), None
 
 
 async def _persist_build_error(
     deps: ChatDispatchDeps,
     chat: Chat,
     worker_id: str,
+    reason: str | None = None,
 ) -> None:
     chats = deps.storage_provider.get_storage(Chat)
     msgs = deps.storage_provider.get_storage(ChatMessage)
     next_seq = chat.last_seq + 1
+    message = (
+        f"could not build chat runner: {reason}"
+        if reason
+        else "could not build chat runner"
+    )
     await msgs.create(ChatMessage(
         id=ChatMessage.make_id(chat.id, next_seq),
         chat_id=chat.id, seq=next_seq, kind="error",
-        payload={"message": "could not build chat runner",
+        payload={"message": message,
                  "code": "runner_build_failed"},
         created_at=datetime.now(timezone.utc),
     ))
