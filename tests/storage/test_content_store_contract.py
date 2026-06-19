@@ -1,4 +1,4 @@
-"""Parametrised :class:`DocumentContentStore` contract — every backend.
+"""Parametrised :class:`DocumentContentStore` contract - every backend.
 
 Each scenario is asserted on SQLite always, and on Postgres when
 ``PRIMER_TEST_PG_DSN`` is set (a later task adds the Postgres impl so
