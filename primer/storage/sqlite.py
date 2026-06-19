@@ -21,6 +21,7 @@ Per-model tables are created lazily on first use (same as Postgres).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import sqlite3
@@ -89,53 +90,107 @@ class SqliteStorageProvider(StorageProvider):
         self._config = config
         self._conn: aiosqlite.Connection | None = None
         self._handles: dict[type[Identifiable], SqliteStorage[Any]] = {}
-        # Transaction flag. SQLite uses ONE shared aiosqlite connection that
-        # auto-commits per write today. ``transaction()`` flips this True for
-        # the duration of a multi-write block; while it is True the individual
-        # CRUD / content-store writes SKIP their own ``commit()`` and the
-        # ``transaction()`` context issues a single COMMIT (or ROLLBACK on
-        # exception) so two writes land atomically. When False (the default,
-        # and the path taken by the conformance suites) each write commits on
-        # its own exactly as before.
-        self._in_txn = False
+        # SQLite uses ONE shared aiosqlite connection for every Storage handle,
+        # the claim engine, the scheduler, and every concurrent request. A
+        # transaction (BEGIN..COMMIT) on that single connection is therefore a
+        # PROCESS-WIDE critical section: while one is open, NO other write may
+        # touch the connection, or it would be silently swept into (or lost
+        # by) the transaction. ``_write_lock`` serialises every write -- both
+        # standalone single-statement writes and the whole transactional unit
+        # -- so no foreign write can interleave between BEGIN and COMMIT. The
+        # transaction captures only its own statements; unrelated writes wait
+        # for the lock and then commit independently.
+        self._write_lock = asyncio.Lock()
+        # The asyncio Task that currently holds an open ``transaction()``
+        # block, or ``None``. Writes issued from THAT task (the document
+        # entity + body writes the transaction itself performs) must NOT try
+        # to re-acquire ``_write_lock`` (it is already held -> deadlock) and
+        # must NOT commit on their own (the transaction commits them as a
+        # unit). Any OTHER task's write is a foreign write: it blocks on the
+        # lock and gets its own commit.
+        self._txn_task: asyncio.Task[Any] | None = None
 
-    @property
-    def in_transaction(self) -> bool:
-        """True while a :meth:`transaction` block is open on this provider.
+    def _in_own_transaction(self) -> bool:
+        """True iff the calling task is the one that opened an active
+        :meth:`transaction` block (so its writes are reentrant: skip the
+        lock + skip the per-write commit)."""
+        if self._txn_task is None:
+            return False
+        try:
+            return asyncio.current_task() is self._txn_task
+        except RuntimeError:  # pragma: no cover - no running loop
+            return False
 
-        Read by :class:`SqliteStorage` and :class:`SqliteDocumentContentStore`
-        to decide whether to commit per-write (False) or defer to the
-        enclosing transaction (True)."""
-        return self._in_txn
+    @asynccontextmanager
+    async def _write_guard(self):
+        """Serialise a single write on the shared connection.
+
+        Acquires ``_write_lock`` unless the caller is already inside its own
+        transaction (which holds the lock for the whole BEGIN..COMMIT). Yields
+        ``True`` when the caller should commit its own statement (standalone
+        write), ``False`` when it must defer to the enclosing transaction.
+        """
+        if self._in_own_transaction():
+            # Reentrant write from inside the held transaction: the lock is
+            # already held by this task and the transaction owns the commit.
+            yield False
+            return
+        async with self._write_lock:
+            yield True
 
     @asynccontextmanager
     async def transaction(self):
         """Group writes on the shared connection into one atomic transaction.
 
-        Yields the shared connection (so callers can pass it as the ``conn``
-        kwarg for Protocol parity; SQLite ignores the value but threading it
-        keeps the call sites backend-agnostic). Issues ``BEGIN`` on entry,
-        ``COMMIT`` on clean exit, and ``ROLLBACK`` if the body raises. While
-        the block is open ``in_transaction`` is True so the per-write
-        ``commit()`` calls are suppressed and both writes commit together
-        here. Not re-entrant: nesting raises ``ConfigError``.
+        Holds ``_write_lock`` for the entire ``BEGIN``..``COMMIT``/``ROLLBACK``
+        so no other coroutine can write to the shared connection while the
+        transaction is open -- the transaction therefore captures only its own
+        statements and a concurrent unrelated write keeps its own independent
+        durability (it simply waits for the lock). Yields the shared connection
+        so callers thread it as the ``conn`` kwarg for backend parity; SQLite
+        ignores the value (reentrancy is detected via the owning task), but
+        threading it keeps the call sites identical to Postgres.
+
+        Issues ``COMMIT`` on clean exit and ``ROLLBACK`` if the body raises.
+        A ``try/finally`` always clears ``_txn_task`` even if COMMIT itself
+        raises, so the connection can never be left in a "skip commit" state.
+        Not re-entrant: a nested ``transaction()`` from the same task raises
+        ``ConfigError`` (and never deadlocks).
         """
-        if self._in_txn:
-            raise ConfigError("SqliteStorageProvider.transaction() is not re-entrant")
-        conn = self.connection
-        await conn.execute("BEGIN")
-        self._in_txn = True
-        try:
-            yield conn
-        except BaseException:
+        if self._in_own_transaction():
+            raise ConfigError(
+                "SqliteStorageProvider.transaction() is not re-entrant"
+            )
+        async with self._write_lock:
+            conn = self.connection
+            # BEGIN before claiming ownership: if BEGIN itself raises we leave
+            # ``_txn_task`` None (the lock releases via the context manager) so
+            # the next caller is not wedged into a phantom transaction.
+            await conn.execute("BEGIN")
+            self._txn_task = asyncio.current_task()
             try:
-                await conn.rollback()
-            finally:
-                self._in_txn = False
-            raise
-        else:
-            await conn.commit()
-            self._in_txn = False
+                yield conn
+            except BaseException:
+                try:
+                    await conn.rollback()
+                finally:
+                    self._txn_task = None
+                raise
+            else:
+                try:
+                    await conn.commit()
+                finally:
+                    self._txn_task = None
+
+    @property
+    def in_transaction(self) -> bool:
+        """True while any :meth:`transaction` block is open on this provider.
+
+        Retained for diagnostics / backward compatibility. Per-write commit
+        decisions now flow through :meth:`_write_guard` (which is task-aware),
+        NOT this flag, so a foreign write is never misled into skipping its
+        own commit."""
+        return self._txn_task is not None
 
     @property
     def connection(self) -> aiosqlite.Connection:
@@ -345,13 +400,31 @@ class SqliteStorage(Storage[ModelT]):
         # provider has not been initialised yet.
         conn = self._provider.connection
         try:
-            await conn.execute(ddl)
-            await conn.commit()
+            # Serialise the DDL on the shared write lock and only commit when
+            # NOT inside an enclosing transaction. The unconditional commit
+            # this used to do would prematurely commit an in-progress
+            # transactional unit (a torn write: the first document write runs
+            # _ensure_table -> committed the entity early, so a failing body
+            # write left a committed orphan). Inside a transaction the DDL is
+            # part of the unit and is committed/rolled back with it; since the
+            # DDL is ``IF NOT EXISTS`` a rollback simply re-runs it next time.
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await conn.execute(ddl)
+                if should_commit:
+                    await conn.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="ensure_table",
             ) from exc
-        self._table_ensured = True
+        else:
+            # Only cache "ensured" when the DDL was COMMITTED. When it ran
+            # deferred inside an enclosing transaction (should_commit False),
+            # that transaction may still ROLL BACK and undo the CREATE; caching
+            # True would then skip the DDL on the next write and hit a missing
+            # table. Re-running the idempotent ``IF NOT EXISTS`` DDL next time
+            # is cheap and correct.
+            if should_commit:
+                self._table_ensured = True
 
     # ----- serialisation ------------------------------------------------
 
@@ -395,12 +468,13 @@ class SqliteStorage(Storage[ModelT]):
             f"RETURNING id, data"
         )
         try:
-            cur = await self._provider.connection.execute(
-                sql, (entity_id, data_json),
-            )
-            row = await cur.fetchone()
-            if not self._provider.in_transaction:
-                await self._provider.connection.commit()
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                cur = await self._provider.connection.execute(
+                    sql, (entity_id, data_json),
+                )
+                row = await cur.fetchone()
+                if should_commit:
+                    await self._provider.connection.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="create",
@@ -421,12 +495,13 @@ class SqliteStorage(Storage[ModelT]):
             f"WHERE id = ? RETURNING id, data"
         )
         try:
-            cur = await self._provider.connection.execute(
-                sql, (data_json, entity_id),
-            )
-            row = await cur.fetchone()
-            if not self._provider.in_transaction:
-                await self._provider.connection.commit()
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                cur = await self._provider.connection.execute(
+                    sql, (data_json, entity_id),
+                )
+                row = await cur.fetchone()
+                if should_commit:
+                    await self._provider.connection.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="update",
@@ -444,10 +519,11 @@ class SqliteStorage(Storage[ModelT]):
         await self._ensure_table()
         sql = f'DELETE FROM "{self._table}" WHERE id = ?'
         try:
-            cur = await self._provider.connection.execute(sql, (id,))
-            if not self._provider.in_transaction:
-                await self._provider.connection.commit()
-            rowcount = cur.rowcount
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                cur = await self._provider.connection.execute(sql, (id,))
+                if should_commit:
+                    await self._provider.connection.commit()
+                rowcount = cur.rowcount
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="delete",
@@ -718,24 +794,31 @@ class SqliteDocumentContentStore(DocumentContentStore):
 
     async def ensure_schema(self) -> None:
         try:
-            await self._conn.execute(
-                "CREATE TABLE IF NOT EXISTS document_content ("
-                "  document_id   TEXT PRIMARY KEY,"
-                "  collection_id TEXT NOT NULL,"
-                "  path          TEXT NOT NULL,"
-                "  content       TEXT NOT NULL,"
-                "  updated_at    TEXT NOT NULL"
-                ")"
-            )
-            await self._conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS document_content_coll_path "
-                "ON document_content (collection_id, path)"
-            )
-            await self._conn.execute(
-                "CREATE INDEX IF NOT EXISTS document_content_coll "
-                "ON document_content (collection_id)"
-            )
-            await self._conn.commit()
+            # Serialise on the shared write lock; commit only when not inside
+            # an enclosing transaction (the unconditional commit this used to
+            # do would prematurely commit an in-progress transactional unit).
+            # The DDL is ``IF NOT EXISTS`` so a rollback inside a transaction
+            # just re-runs it next time.
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS document_content ("
+                    "  document_id   TEXT PRIMARY KEY,"
+                    "  collection_id TEXT NOT NULL,"
+                    "  path          TEXT NOT NULL,"
+                    "  content       TEXT NOT NULL,"
+                    "  updated_at    TEXT NOT NULL"
+                    ")"
+                )
+                await self._conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS document_content_coll_path "
+                    "ON document_content (collection_id, path)"
+                )
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS document_content_coll "
+                    "ON document_content (collection_id)"
+                )
+                if should_commit:
+                    await self._conn.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name="document_content", op="ensure_schema",
@@ -793,19 +876,20 @@ class SqliteDocumentContentStore(DocumentContentStore):
         del conn
         now = datetime.now(timezone.utc).isoformat()
         try:
-            await self._conn.execute(
-                "INSERT INTO document_content"
-                " (document_id, collection_id, path, content, updated_at)"
-                " VALUES (?, ?, ?, ?, ?)"
-                " ON CONFLICT(document_id) DO UPDATE SET"
-                "   collection_id = excluded.collection_id,"
-                "   path = excluded.path,"
-                "   content = excluded.content,"
-                "   updated_at = excluded.updated_at",
-                (document_id, collection_id, path, content, now),
-            )
-            if not self._provider.in_transaction:
-                await self._conn.commit()
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await self._conn.execute(
+                    "INSERT INTO document_content"
+                    " (document_id, collection_id, path, content, updated_at)"
+                    " VALUES (?, ?, ?, ?, ?)"
+                    " ON CONFLICT(document_id) DO UPDATE SET"
+                    "   collection_id = excluded.collection_id,"
+                    "   path = excluded.path,"
+                    "   content = excluded.content,"
+                    "   updated_at = excluded.updated_at",
+                    (document_id, collection_id, path, content, now),
+                )
+                if should_commit:
+                    await self._conn.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name="document_content", op="upsert",
@@ -814,12 +898,13 @@ class SqliteDocumentContentStore(DocumentContentStore):
     async def delete(self, document_id: str, *, conn: Any | None = None) -> None:
         del conn
         try:
-            await self._conn.execute(
-                "DELETE FROM document_content WHERE document_id = ?",
-                (document_id,),
-            )
-            if not self._provider.in_transaction:
-                await self._conn.commit()
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await self._conn.execute(
+                    "DELETE FROM document_content WHERE document_id = ?",
+                    (document_id,),
+                )
+                if should_commit:
+                    await self._conn.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name="document_content", op="delete",
@@ -831,14 +916,15 @@ class SqliteDocumentContentStore(DocumentContentStore):
         del conn
         now = datetime.now(timezone.utc).isoformat()
         try:
-            cur = await self._conn.execute(
-                "UPDATE document_content SET path = ?, updated_at = ? "
-                "WHERE document_id = ?",
-                (new_path, now, document_id),
-            )
-            if not self._provider.in_transaction:
-                await self._conn.commit()
-            rowcount = cur.rowcount
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                cur = await self._conn.execute(
+                    "UPDATE document_content SET path = ?, updated_at = ? "
+                    "WHERE document_id = ?",
+                    (new_path, now, document_id),
+                )
+                if should_commit:
+                    await self._conn.commit()
+                rowcount = cur.rowcount
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name="document_content", op="move",
