@@ -125,7 +125,7 @@ by the incoming message. Click the row to inspect the full transcript.
 
 ## Automate this
 
-```ref reference/api-channels
+```ref:reference/api-channels
 The API reference covers channel providers, channels, and workspace
 channel associations with full schema detail.
 ```

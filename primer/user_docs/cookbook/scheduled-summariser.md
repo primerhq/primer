@@ -107,7 +107,7 @@ approval times out or the agent returns an error.
 
 ## Automate this
 
-```ref reference/api-triggers
+```ref:reference/api-triggers
 The API reference covers POST /triggers, subscriptions, and fire_now
 with full schema detail.
 ```

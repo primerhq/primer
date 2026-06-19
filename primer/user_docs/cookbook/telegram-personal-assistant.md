@@ -119,7 +119,7 @@ it to a single private chat ID rather than a group channel ID.
 
 ## Automate this
 
-```ref reference/api-channels
+```ref:reference/api-channels
 The API reference covers channel providers, channels, and workspace
 channel associations with full schema detail.
 ```

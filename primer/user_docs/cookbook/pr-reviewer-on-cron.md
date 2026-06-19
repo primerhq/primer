@@ -128,11 +128,11 @@ GitHub App token (15000 requests per hour) for production runs.
 
 ## Automate this
 
-```ref reference/api-triggers
+```ref:reference/api-triggers
 The API reference covers POST /triggers, subscriptions, and fire_now
 with full schema detail.
 ```
 
-```ref reference/api-sessions
+```ref:reference/api-sessions
 Session list, control endpoints, and transcript inspection via API.
 ```

@@ -66,25 +66,25 @@ need to change either, delete the collection and re-ingest all documents.
 ### 3. Create the webhook trigger
 
 1. Open **Triggers** in the left nav and click **Create trigger**.
-2. In Step 1, select **Scheduled** or **Delayed**; for a webhook, choose
-   the kind that matches your upstream dispatch pattern.
-
-```callout:info
-Primer triggers fire on schedule (cron) or at a specific instant (delayed),
-not on raw HTTP webhooks. To receive arbitrary POSTs from an upstream
-system, expose the primer API behind a lightweight gateway or use a
-polling trigger that fetches from a queue.
-```
-
-   For a cron-based pull pattern:
-
-   - In Step 2, enter a cron expression such as `*/5 * * * *` (every five
-     minutes) and select your timezone.
-   - Set the catchup policy to `one` so a single catch-up fires after
-     downtime rather than a flood.
-3. In Step 3, enter the name `inbound-ingest` and click **Create**.
+2. In Step 1, select **Webhook**.
+3. In Step 2, optionally set an **HMAC secret**. When set, every inbound
+   request must carry an `X-Primer-Signature: sha256=<hex>` header computed
+   over the raw body with that secret; unsigned or mismatched requests are
+   rejected 401. Leave it blank to authenticate by the URL token alone.
+4. In Step 3, enter the name `inbound-ingest` and click **Create**.
 
 ```embed:trigger-create
+```
+
+On the trigger detail page, copy the **webhook URL**. It looks like
+`https://<your-primer-origin>/v1/webhooks/<token>`, where `<token>` is a
+server-minted 32-character secret shown only here. Point your upstream
+system at this URL with an HTTP `POST` and a JSON body.
+
+```callout:warning
+The URL token is the credential, so treat the webhook URL as a secret and
+rotate it from the detail page if it leaks. For untrusted senders set an
+HMAC secret and verify the `X-Primer-Signature` header.
 ```
 
 ### 4. Add a subscription to the trigger
@@ -93,16 +93,28 @@ polling trigger that fetches from a queue.
    **Add subscription**.
 2. Choose `agent_fresh_session`.
 3. Select the workspace and then `ingestion-bot` as the agent.
-4. Optionally write a Jinja2 payload template that passes `{{ fired_at }}`
-   and `{{ trigger_id }}` into the session context.
-5. Set parallelism to `skip` to drop a tick if the previous run is still
+4. Write a Jinja2 payload template that passes the inbound payload into the
+   session context, for example `{{ webhook_body }}` (also available:
+   `webhook_headers`, `webhook_query`, `webhook_method`). The agent reads
+   this as its session input.
+5. Set parallelism to `skip` to drop an event if the previous run is still
    in-flight, or `queue` to always dispatch.
 6. Click **Add subscription**.
 
 ### 5. Verify end to end
 
-1. On the trigger detail page, click **Fire now** to dispatch an immediate
-   session outside the schedule.
+1. POST a sample payload to the webhook URL:
+
+```code-tabs:bash
+--- bash
+curl -X POST https://<your-primer-origin>/v1/webhooks/<token> \
+  -H "Content-Type: application/json" \
+  -d '{"id": "evt-001", "text": "hello from upstream"}'
+```
+
+   The endpoint returns `202 Accepted` immediately and dispatches the
+   session in the background. (You can also click **Fire now** on the
+   trigger detail page to test with an empty payload.)
 2. Open **Sessions** in the left nav and click the new session row to
    inspect the transcript.
 3. Confirm the agent wrote a file to `inbox/` and called `put_document`.
@@ -121,12 +133,13 @@ to `queue` and the trigger fires faster than sessions complete. Use `skip`
 parallelism or scale the worker pool to match the expected rate.
 ```
 
-- The agent should idempotency-key every `put_document` call. A missed tick
-  followed by a catch-up fire can re-ingest the same payload if the agent
-  does not check for duplicates.
-- Large payloads over roughly 10 MB need the workspace template's disk
-  allocation set high enough to hold the inbox file. Process large files as
-  a stream if possible.
+- The agent should idempotency-key every `put_document` call: an upstream
+  system that retries on a slow response can deliver the same event twice.
+  Derive the key from a stable field in `webhook_body`.
+- The webhook body is capped at 1 MB and rate-limited to 60 requests per
+  minute per token (a sliding window, approximate across workers). For
+  larger or burstier feeds, have the sender push to a queue and POST a
+  reference the agent fetches, rather than the whole payload.
 
 ## Automate it
 
