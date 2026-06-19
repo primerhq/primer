@@ -212,6 +212,7 @@ def _make_lifespan(config: AppConfig):
 
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
+        await storage_provider.get_content_store().ensure_schema()
 
         from primer.model.provider import SecretProviderConfig
         from primer.secret.factory import SecretProviderFactory

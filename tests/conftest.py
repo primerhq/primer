@@ -185,6 +185,13 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
     return True
 
 
+class _FakeContentStore:
+    """No-op in-memory ``DocumentContentStore`` stub for the fake provider."""
+
+    async def ensure_schema(self) -> None:
+        return
+
+
 class _FakeStorageProvider:
     """In-memory ``StorageProvider`` returning ``_InMemoryStorage`` per model."""
 
@@ -194,6 +201,9 @@ class _FakeStorageProvider:
 
     def get_storage(self, model_class: type[_T]) -> _InMemoryStorage[_T]:
         return self._stores.setdefault(model_class, _InMemoryStorage(model_class))
+
+    def get_content_store(self) -> Any:
+        return _FakeContentStore()
 
     async def initialize(self) -> None:
         return

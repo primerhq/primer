@@ -28,11 +28,15 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import datetime
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from primer.int.storage import Storage
 from primer.model.common import Identifiable
 from primer.model.system_state import SystemState
+
+
+if TYPE_CHECKING:
+    from primer.int.document_content import DocumentContentStore
 
 
 ModelT = TypeVar("ModelT", bound=Identifiable)
@@ -78,6 +82,11 @@ class StorageProvider(ABC):
         method on the returned handle (e.g. ``await
         handle.list(OffsetPage(length=1))``) inside ``initialize``.
         """
+
+    @abstractmethod
+    def get_content_store(self) -> "DocumentContentStore":
+        """Return the document content-store handle, sharing this provider's
+        backend connection/pool. Holds document bodies in the primary DB."""
 
     @abstractmethod
     async def get_system_state(self) -> SystemState:
