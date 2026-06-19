@@ -376,6 +376,22 @@ class PostgresStorageProvider(StorageProvider):
         """Return the document-body store bound to this provider's pool."""
         return PostgresDocumentContentStore(self.pool, self._schema)
 
+    @asynccontextmanager
+    async def transaction(self):
+        """Acquire a pooled connection and open a transaction on it.
+
+        Yields the connection so the caller threads it as the ``conn`` kwarg
+        to :class:`Storage` and :class:`DocumentContentStore` writes; every
+        write then runs inside this single ``asyncpg`` transaction, which
+        commits on clean exit and rolls back on any exception. This is the
+        backend-agnostic atomic-write entry point used by ``DocumentService``;
+        the SQLite provider offers a matching ``transaction()`` over its
+        single shared connection.
+        """
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                yield conn
+
 
 # ===========================================================================
 # Per-model handle

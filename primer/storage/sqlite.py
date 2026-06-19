@@ -24,6 +24,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, TypeVar
 
@@ -88,6 +89,53 @@ class SqliteStorageProvider(StorageProvider):
         self._config = config
         self._conn: aiosqlite.Connection | None = None
         self._handles: dict[type[Identifiable], SqliteStorage[Any]] = {}
+        # Transaction flag. SQLite uses ONE shared aiosqlite connection that
+        # auto-commits per write today. ``transaction()`` flips this True for
+        # the duration of a multi-write block; while it is True the individual
+        # CRUD / content-store writes SKIP their own ``commit()`` and the
+        # ``transaction()`` context issues a single COMMIT (or ROLLBACK on
+        # exception) so two writes land atomically. When False (the default,
+        # and the path taken by the conformance suites) each write commits on
+        # its own exactly as before.
+        self._in_txn = False
+
+    @property
+    def in_transaction(self) -> bool:
+        """True while a :meth:`transaction` block is open on this provider.
+
+        Read by :class:`SqliteStorage` and :class:`SqliteDocumentContentStore`
+        to decide whether to commit per-write (False) or defer to the
+        enclosing transaction (True)."""
+        return self._in_txn
+
+    @asynccontextmanager
+    async def transaction(self):
+        """Group writes on the shared connection into one atomic transaction.
+
+        Yields the shared connection (so callers can pass it as the ``conn``
+        kwarg for Protocol parity; SQLite ignores the value but threading it
+        keeps the call sites backend-agnostic). Issues ``BEGIN`` on entry,
+        ``COMMIT`` on clean exit, and ``ROLLBACK`` if the body raises. While
+        the block is open ``in_transaction`` is True so the per-write
+        ``commit()`` calls are suppressed and both writes commit together
+        here. Not re-entrant: nesting raises ``ConfigError``.
+        """
+        if self._in_txn:
+            raise ConfigError("SqliteStorageProvider.transaction() is not re-entrant")
+        conn = self.connection
+        await conn.execute("BEGIN")
+        self._in_txn = True
+        try:
+            yield conn
+        except BaseException:
+            try:
+                await conn.rollback()
+            finally:
+                self._in_txn = False
+            raise
+        else:
+            await conn.commit()
+            self._in_txn = False
 
     @property
     def connection(self) -> aiosqlite.Connection:
@@ -260,7 +308,7 @@ class SqliteStorageProvider(StorageProvider):
 
     def get_content_store(self) -> "SqliteDocumentContentStore":
         """Return the document-body store bound to this provider's connection."""
-        return SqliteDocumentContentStore(self.connection)
+        return SqliteDocumentContentStore(self)
 
 
 class SqliteStorage(Storage[ModelT]):
@@ -351,7 +399,8 @@ class SqliteStorage(Storage[ModelT]):
                 sql, (entity_id, data_json),
             )
             row = await cur.fetchone()
-            await self._provider.connection.commit()
+            if not self._provider.in_transaction:
+                await self._provider.connection.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="create",
@@ -376,7 +425,8 @@ class SqliteStorage(Storage[ModelT]):
                 sql, (data_json, entity_id),
             )
             row = await cur.fetchone()
-            await self._provider.connection.commit()
+            if not self._provider.in_transaction:
+                await self._provider.connection.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="update",
@@ -395,7 +445,8 @@ class SqliteStorage(Storage[ModelT]):
         sql = f'DELETE FROM "{self._table}" WHERE id = ?'
         try:
             cur = await self._provider.connection.execute(sql, (id,))
-            await self._provider.connection.commit()
+            if not self._provider.in_transaction:
+                await self._provider.connection.commit()
             rowcount = cur.rowcount
         except Exception as exc:
             raise _wrap_sqlite_error(
@@ -650,12 +701,20 @@ class SqliteDocumentContentStore(DocumentContentStore):
 
     SQLite uses one shared connection, so the ``conn`` kwarg has nothing
     to thread; it is accepted for Protocol parity and ignored. Each write
-    commits on its own (the standalone path); multi-write transaction
-    grouping is handled by a later task, not here.
+    commits on its own EXCEPT while the owning provider has a
+    :meth:`SqliteStorageProvider.transaction` block open
+    (``provider.in_transaction``), in which case the per-write ``commit()``
+    is suppressed and the enclosing transaction commits both the entity row
+    and the body row together. The conformance suite calls these methods
+    outside any transaction, so the per-call commit still happens there.
     """
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
-        self._conn = conn
+    def __init__(self, provider: "SqliteStorageProvider") -> None:
+        self._provider = provider
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        return self._provider.connection
 
     async def ensure_schema(self) -> None:
         try:
@@ -745,7 +804,8 @@ class SqliteDocumentContentStore(DocumentContentStore):
                 "   updated_at = excluded.updated_at",
                 (document_id, collection_id, path, content, now),
             )
-            await self._conn.commit()
+            if not self._provider.in_transaction:
+                await self._conn.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name="document_content", op="upsert",
@@ -758,7 +818,8 @@ class SqliteDocumentContentStore(DocumentContentStore):
                 "DELETE FROM document_content WHERE document_id = ?",
                 (document_id,),
             )
-            await self._conn.commit()
+            if not self._provider.in_transaction:
+                await self._conn.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name="document_content", op="delete",
@@ -775,7 +836,8 @@ class SqliteDocumentContentStore(DocumentContentStore):
                 "WHERE document_id = ?",
                 (new_path, now, document_id),
             )
-            await self._conn.commit()
+            if not self._provider.in_transaction:
+                await self._conn.commit()
             rowcount = cur.rowcount
         except Exception as exc:
             raise _wrap_sqlite_error(
