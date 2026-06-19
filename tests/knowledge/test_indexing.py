@@ -57,6 +57,15 @@ class TestChunkText:
         assert all(len(c) <= 1500 for c in chunks)
 
 
+class _NullContentStore:
+    """Content store with no rows: every ``get`` returns None so the indexer
+    falls back to the legacy ``meta`` body. Lets these meta-driven tests keep
+    exercising the chunk/embed pipeline unchanged."""
+
+    async def get(self, document_id, *, conn=None):
+        return None
+
+
 class _Emb:
     def __init__(self, dim: int = 3):
         self._dim = dim
@@ -114,6 +123,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         assert n == 2
         assert store.created == ("kb-1", 4)
@@ -134,6 +144,7 @@ class TestIndexDocument:
             collection=_collection(system=True),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         assert n == 0
         ssr.get_store.assert_not_called()
@@ -151,6 +162,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         assert n == 1
         assert store.puts[0].text == "from content key"
@@ -168,6 +180,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         assert n == 0
         # The dim-mismatch probe registers the collection (dim=3) even for
@@ -222,6 +235,7 @@ class TestBatchEmbedEquivalence:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         assert n == 3
         # chunk_id is the positional index, text is the chunk, and the vector's
@@ -255,6 +269,7 @@ class TestBatchEmbedEquivalence:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         assert n == n_chunks
         assert len(store.puts) == n_chunks
@@ -314,6 +329,7 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=ok_reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         before = await store.get("kb-1", "doc-1")
         assert len(before) == 2
@@ -327,6 +343,7 @@ class TestReindexFailureKeepsOldChunks:
                 collection=_collection(),
                 provider_registry=bad_reg,
                 semantic_search_registry=ssr,
+                content_store=_NullContentStore(),
             )
 
         # The old chunks must still be present/searchable.
@@ -347,6 +364,7 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         assert len(await store.get("kb-1", "doc-1")) == 3
 
@@ -356,6 +374,7 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         final = await store.get("kb-1", "doc-1")
         assert len(final) == 1
@@ -398,6 +417,11 @@ class _StorageProvider:
         if model_cls is Collection:
             return self._coll_store
         raise AssertionError(f"unexpected model {model_cls!r}")
+
+    def get_content_store(self):
+        # No content rows in these meta-driven backfill tests; the indexer
+        # falls back to the legacy meta body.
+        return _NullContentStore()
 
 
 class TestBackfill:
@@ -562,6 +586,7 @@ class TestDimensionMismatchDetection:
                 collection=_collection(),
                 provider_registry=reg,
                 semantic_search_registry=ssr,
+                content_store=_NullContentStore(),
             )
 
         err = exc_info.value
@@ -587,6 +612,7 @@ class TestDimensionMismatchDetection:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
+            content_store=_NullContentStore(),
         )
         assert n == 1
         assert len(store.puts) == 1
@@ -613,6 +639,7 @@ class TestDimensionMismatchDetection:
                 collection=_collection(),
                 provider_registry=reg,
                 semantic_search_registry=ssr,
+                content_store=_NullContentStore(),
             )
 
         assert exc_info.value.status_code == 422

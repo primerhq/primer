@@ -21,6 +21,7 @@ from __future__ import annotations
 import logging
 import re as _re
 
+from primer.int.document_content import DocumentContentStore
 from primer.model.chat import TextPart
 from primer.model.collection import Collection, Document
 from primer.model.except_ import ConflictError, DimensionMismatchError, PrimerError
@@ -117,6 +118,7 @@ async def index_document(
     collection: Collection,
     provider_registry,
     semantic_search_registry,
+    content_store: DocumentContentStore,
 ) -> int:
     """Chunk, embed, and upsert ``document`` into its collection's vector
     store. Returns the number of chunks indexed. Re-indexing embeds the new
@@ -124,13 +126,21 @@ async def index_document(
     failed re-embed leaves the prior index intact (the document stays
     searchable) rather than wiping it.
 
+    The indexable body is read from the content store keyed by the stable
+    document id. Bodies live there now, not in ``meta``. For a not-yet-
+    migrated document with no content row, this falls back to the legacy
+    ``meta['text']`` / ``meta['content']`` read so nothing breaks in transit.
+
     System collections are skipped (returns 0). On embedder/store failure it
     raises; the caller treats indexing as best-effort and swallows it.
     """
     if collection.system:
         return 0
 
-    text = _document_text(document)
+    text = await content_store.get(document.id)
+    if text is None:
+        # Transitional: no content row yet -> read the legacy meta body.
+        text = _document_text(document)
     chunks = chunk_text(text)
 
     embedder = await provider_registry.get_embedder(
@@ -302,6 +312,7 @@ async def backfill_missing_document_vectors(
 
     doc_storage = storage_provider.get_storage(Document)
     coll_storage = storage_provider.get_storage(Collection)
+    content_store = storage_provider.get_content_store()
 
     # Group documents by collection so the "already indexed" lookup runs
     # once per collection rather than once per document.
@@ -351,6 +362,7 @@ async def backfill_missing_document_vectors(
                     collection=collection,
                     provider_registry=provider_registry,
                     semantic_search_registry=semantic_search_registry,
+                    content_store=content_store,
                 )
                 if n:
                     indexed += 1

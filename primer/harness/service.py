@@ -454,6 +454,7 @@ async def _index_installed_document(
             collection=collection,
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
+            content_store=storage_provider.get_content_store(),
         )
     except Exception:  # noqa: BLE001 - best-effort indexing, never fail install
         logger.exception(

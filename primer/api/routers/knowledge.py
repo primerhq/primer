@@ -511,6 +511,7 @@ async def _index_document_hook(document_id: str, request: Request) -> None:
             collection=collection,
             provider_registry=provider_registry,
             semantic_search_registry=ssr,
+            content_store=storage_provider.get_content_store(),
         )
     except DimensionMismatchError:
         # Dimension mismatches are operator-configuration errors that must

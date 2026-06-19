@@ -191,6 +191,10 @@ class _FakeContentStore:
     async def ensure_schema(self) -> None:
         return
 
+    async def get(self, document_id: str, *, conn: Any | None = None) -> str | None:
+        # No content rows here: the indexer falls back to the legacy meta body.
+        return None
+
 
 class _FakeStorageProvider:
     """In-memory ``StorageProvider`` returning ``_InMemoryStorage`` per model."""
