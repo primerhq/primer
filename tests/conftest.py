@@ -40,7 +40,7 @@ class _InMemoryStorage(Generic[_T]):
     async def get(self, id: str, *, conn=None) -> _T | None:
         return self._data.get(id)
 
-    async def create(self, entity: _T) -> _T:
+    async def create(self, entity: _T, *, conn=None) -> _T:
         if entity.id in self._data:
             raise ConflictError(f"id {entity.id!r} already exists")
         self._data[entity.id] = entity
@@ -52,7 +52,7 @@ class _InMemoryStorage(Generic[_T]):
         self._data[entity.id] = entity
         return entity
 
-    async def delete(self, id: str) -> None:
+    async def delete(self, id: str, *, conn=None) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
         del self._data[id]
@@ -186,14 +186,95 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
 
 
 class _FakeContentStore:
-    """No-op in-memory ``DocumentContentStore`` stub for the fake provider."""
+    """In-memory ``DocumentContentStore`` for the fake provider.
+
+    Holds bodies keyed by document id with the same
+    ``UNIQUE(collection_id, path)`` semantics as the real backends, so the
+    path-addressed :class:`DocumentService` (and the routes that wrap it)
+    works over the fake provider too. ``conn`` is accepted and ignored: the
+    fake provider's ``transaction()`` is a no-op context manager.
+    """
+
+    def __init__(self) -> None:
+        # document_id -> ContentRow
+        self._rows: dict[str, Any] = {}
 
     async def ensure_schema(self) -> None:
         return
 
     async def get(self, document_id: str, *, conn: Any | None = None) -> str | None:
-        # No content rows here: the indexer falls back to the legacy meta body.
+        row = self._rows.get(document_id)
+        return row.content if row is not None else None
+
+    async def get_by_path(self, collection_id, path, *, conn=None):
+        for row in self._rows.values():
+            if row.collection_id == collection_id and row.path == path:
+                return row
         return None
+
+    async def resolve_id(self, collection_id, path, *, conn=None):
+        row = await self.get_by_path(collection_id, path)
+        return row.document_id if row is not None else None
+
+    async def upsert(
+        self, *, document_id, collection_id, path, content, conn=None
+    ) -> None:
+        from primer.int.document_content import ContentRow
+
+        owner = await self.resolve_id(collection_id, path)
+        if owner is not None and owner != document_id:
+            raise ConflictError(
+                f"path {path!r} already taken in collection {collection_id!r}"
+            )
+        self._rows[document_id] = ContentRow(
+            document_id=document_id,
+            collection_id=collection_id,
+            path=path,
+            content=content,
+        )
+
+    async def delete(self, document_id, *, conn=None) -> None:
+        self._rows.pop(document_id, None)
+
+    async def move(self, document_id, new_path, *, conn=None) -> None:
+        row = self._rows.get(document_id)
+        if row is None:
+            raise NotFoundError(f"no content row for document {document_id!r}")
+        owner = await self.resolve_id(row.collection_id, new_path)
+        if owner is not None and owner != document_id:
+            raise ConflictError(
+                f"path {new_path!r} already taken in collection "
+                f"{row.collection_id!r}"
+            )
+        self._rows[document_id] = row.model_copy(update={"path": new_path})
+
+    async def list(self, collection_id, *, prefix=None):
+        from primer.int.document_content import ContentListEntry
+
+        entries = [
+            ContentListEntry(
+                document_id=r.document_id, path=r.path, size=len(r.content)
+            )
+            for r in self._rows.values()
+            if r.collection_id == collection_id
+            and (prefix is None or r.path.startswith(prefix))
+        ]
+        return sorted(entries, key=lambda e: e.path)
+
+
+class _NoOpTransaction:
+    """No-op async context manager for the fake provider's ``transaction()``.
+
+    Yields ``None`` as the connection handle: the fake storage + content
+    store ignore ``conn`` and mutate their in-memory dicts directly, so
+    there is nothing to commit or roll back.
+    """
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *exc) -> bool:
+        return False
 
 
 class _FakeStorageProvider:
@@ -201,13 +282,17 @@ class _FakeStorageProvider:
 
     def __init__(self) -> None:
         self._stores: dict[type, _InMemoryStorage[Any]] = {}
+        self._content_store = _FakeContentStore()
         self._bootstrap_completed_at: datetime | None = None
 
     def get_storage(self, model_class: type[_T]) -> _InMemoryStorage[_T]:
         return self._stores.setdefault(model_class, _InMemoryStorage(model_class))
 
     def get_content_store(self) -> Any:
-        return _FakeContentStore()
+        return self._content_store
+
+    def transaction(self) -> Any:
+        return _NoOpTransaction()
 
     async def initialize(self) -> None:
         return

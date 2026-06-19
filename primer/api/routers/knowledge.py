@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from primer.api.deps import (
     get_collection_storage,
+    get_document_service,
     get_document_storage,
     get_provider_registry,
     get_semantic_search_registry,
@@ -37,16 +38,12 @@ from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router
 from primer.model.chat import TextPart
 from primer.model.collection import Collection, Document
-from primer.model.except_ import BadRequestError, DimensionMismatchError, NotFoundError
-from primer.model.provider import SemanticSearchProvider
-
-
-from primer.model.storage import (
-    CursorPageResponse,
-    OffsetPage,
-    OffsetPageResponse,
+from primer.model.except_ import (
+    BadRequestError,
+    DimensionMismatchError,
+    NotFoundError,
 )
-from primer.storage.q import Q
+from primer.model.provider import SemanticSearchProvider
 
 
 logger = logging.getLogger(__name__)
@@ -56,6 +53,33 @@ logger = logging.getLogger(__name__)
 # resolve it via known_cdc_kinds().  Document is harness-managed but has no
 # internal-collections vector index, so no CDC event hooks are wired here.
 register_cdc_kind("document", Document)
+
+
+class _DocumentUpsertBody(BaseModel):
+    """Body for ``PUT /v1/collections/{id}/documents?path=<p>``."""
+
+    content: str = Field(..., description="The document body to store + index.")
+    title: str | None = Field(
+        default=None,
+        description="Optional display title; defaults to the path leaf when unset.",
+    )
+    meta: dict[str, Any] | None = Field(
+        default=None,
+        description="Free-form metadata bag stored on the Document entity.",
+    )
+
+
+class _DocumentMoveBody(BaseModel):
+    """Body for ``POST /v1/collections/{id}/documents/move``.
+
+    Uses ``from`` / ``to`` on the wire (matching a filesystem move); ``from``
+    is a reserved Python keyword so it is aliased to the ``src`` field.
+    """
+
+    model_config = {"populate_by_name": True}
+
+    src: str = Field(..., alias="from", description="Source path to move.")
+    dst: str = Field(..., alias="to", description="Destination path.")
 
 
 class _CollectionSearchBody(BaseModel):
@@ -165,23 +189,126 @@ collection_router = make_crud_router(
 
 @collection_router.get(
     "/collections/{collection_id}/documents",
-    summary="List documents belonging to a collection",
+    summary="Read one document by path, or list documents under a prefix",
     responses=common_responses(404, 500),
 )
-async def list_collection_documents(
+async def get_or_list_collection_documents(
     collection_id: str = Path(..., description="Collection id"),
-    limit: int = Query(default=20, ge=1, le=200),
-    offset: int = Query(default=0, ge=0),
+    path: str | None = Query(
+        default=None,
+        description=(
+            "When set, return the single document at this path (body + "
+            "metadata), or 404. The ?path= query form avoids slash-in-path "
+            "segment routing issues, matching the workspace files/read "
+            "convention."
+        ),
+    ),
+    prefix: str | None = Query(
+        default=None,
+        description=(
+            "Optional path prefix to scope the listing. Ignored when "
+            "``path`` is set."
+        ),
+    ),
     collections=Depends(get_collection_storage),
-    documents=Depends(get_document_storage),
-) -> OffsetPageResponse | CursorPageResponse:
-    """Server-side find on ``Document.collection_id == collection_id``."""
+    service=Depends(get_document_service),
+) -> dict:
+    """Path-addressed read + list, reconciled onto one GET.
+
+    * ``?path=<p>`` set -> return the single document at that path as
+      ``{"document": {...}, "content": "..."}`` (404 if missing).
+    * no ``path`` -> list entries under the optional ``?prefix=`` as
+      ``{"documents": [{path, document_id, size}, ...]}``, NO bodies. The
+      listing is sourced from the content store, which is authoritative for
+      ``(collection_id, path)`` resolution.
+    """
     if await collections.get(collection_id) is None:
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
 
-    predicate = Q(Document).where("collection_id", collection_id).build()
-    page = OffsetPage(offset=offset, length=limit)
-    return await documents.find(predicate, page)
+    if path is not None:
+        # DocumentService.read raises NotFoundError -> 404 via the handler.
+        result = await service.read(collection_id=collection_id, path=path)
+        return {
+            "document": result.document.model_dump(mode="json"),
+            "content": result.content,
+        }
+
+    entries = await service.list(collection_id=collection_id, prefix=prefix)
+    return {"documents": [e.model_dump(mode="json") for e in entries]}
+
+
+@collection_router.put(
+    "/collections/{collection_id}/documents",
+    summary="Create or replace a document at a path",
+    responses=common_responses(404, 422, 500),
+)
+async def put_collection_document(
+    collection_id: str = Path(..., description="Collection id"),
+    path: str = Query(..., description="Path to create/replace within the collection"),
+    body: _DocumentUpsertBody = Body(...),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_service),
+) -> dict:
+    """Upsert the document at ``(collection_id, path)``.
+
+    Writes the entity + body atomically, then (search on in P1) re-indexes
+    the body via the service's indexer after the write commits. Returns the
+    stored document metadata.
+    """
+    if await collections.get(collection_id) is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+
+    doc = await service.upsert(
+        collection_id=collection_id,
+        path=path,
+        content=body.content,
+        title=body.title,
+        meta=body.meta,
+    )
+    return {"document": doc.model_dump(mode="json")}
+
+
+@collection_router.delete(
+    "/collections/{collection_id}/documents",
+    summary="Delete a document by path",
+    status_code=204,
+    responses=common_responses(404, 500),
+)
+async def delete_collection_document(
+    collection_id: str = Path(..., description="Collection id"),
+    path: str = Query(..., description="Path to delete within the collection"),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_service),
+) -> None:
+    """Delete the entity + body at ``(collection_id, path)`` atomically.
+
+    Raises 404 (via NotFoundError) when no document lives at that path.
+    """
+    if await collections.get(collection_id) is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    await service.delete(collection_id=collection_id, path=path)
+
+
+@collection_router.post(
+    "/collections/{collection_id}/documents/move",
+    summary="Move a document from one path to another",
+    status_code=204,
+    responses=common_responses(404, 409, 500),
+)
+async def move_collection_document(
+    collection_id: str = Path(..., description="Collection id"),
+    body: _DocumentMoveBody = Body(...),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_service),
+) -> None:
+    """Move ``from`` -> ``to`` within the collection.
+
+    404 (NotFoundError) when ``from`` does not exist; 409 (ConflictError)
+    when ``to`` is already occupied.
+    """
+    if await collections.get(collection_id) is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    await service.move(collection_id=collection_id, src=body.src, dst=body.dst)
 
 
 @collection_router.post(
@@ -477,6 +604,52 @@ async def _document_pre_update(
         await _reject_system_collection(
             existing.collection_id, request, verb="updated",
         )
+
+
+def build_document_indexer(request: Request):
+    """Return the best-effort indexer the path-addressed routes wire into
+    :class:`DocumentService`.
+
+    The returned async callable ``(document=..., content=...)`` is invoked by
+    the service AFTER its atomic entity + content write commits, so the body
+    is durable in the content store before any embedding work begins. It
+    mirrors the CRUD ``_index_document_hook`` best-effort contract: a missing
+    collection is a no-op, a dimension mismatch surfaces as 422, and any
+    other embedder/store failure is logged and swallowed so the write still
+    succeeds. There is no double-index risk: the path-addressed routes do not
+    go through ``make_crud_router``, so the Document CDC hook never fires for
+    these writes.
+    """
+    from primer.knowledge.indexing import index_document
+
+    storage_provider = request.app.state.storage_provider
+
+    async def _indexer(*, document: Document, content: str) -> None:
+        collection = await storage_provider.get_storage(Collection).get(
+            document.collection_id
+        )
+        if collection is None:
+            return
+        try:
+            provider_registry = get_provider_registry(request)
+            ssr = get_semantic_search_registry(request)
+            await index_document(
+                document=document,
+                collection=collection,
+                provider_registry=provider_registry,
+                semantic_search_registry=ssr,
+                content_store=storage_provider.get_content_store(),
+            )
+        except DimensionMismatchError:
+            # Operator-configuration error: surface as 422, do not swallow.
+            raise
+        except Exception:  # noqa: BLE001 - best-effort indexing
+            logger.exception(
+                "document %s: indexing failed; row persisted but not searchable",
+                document.id,
+            )
+
+    return _indexer
 
 
 async def _index_document_hook(document_id: str, request: Request) -> None:

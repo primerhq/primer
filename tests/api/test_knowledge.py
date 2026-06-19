@@ -62,18 +62,21 @@ class TestCollectionRouter:
     ) -> None:
         await client.post("/v1/ssp", json=_SSP_BODY)
         await client.post("/v1/collections", json=_collection().model_dump(mode="json"))
-        await client.post(
-            "/v1/documents",
-            json=_document(id="doc-1", collection_id="kb-1").model_dump(mode="json"),
+        # The reconciled GET sources its listing from the content store, so
+        # create the document through the path-addressed PUT (which writes a
+        # content row) rather than the legacy CRUD POST.
+        await client.put(
+            "/v1/collections/kb-1/documents",
+            params={"path": "hello.txt"},
+            json={"content": "hi"},
         )
 
         resp = await client.get("/v1/collections/kb-1/documents")
         assert resp.status_code == 200
-        # The fake _InMemoryStorage.find ignores predicates and returns
-        # the full set; the route still passes through Storage.find,
-        # so this test verifies the wiring rather than the predicate
-        # evaluation (which is the backend's concern).
-        assert resp.json()["length"] >= 1
+        items = resp.json()["documents"]
+        assert {i["path"] for i in items} == {"hello.txt"}
+        # The list never carries bodies.
+        assert all("content" not in i for i in items)
 
     @pytest.mark.asyncio
     async def test_list_documents_404_when_collection_missing(self, client) -> None:
