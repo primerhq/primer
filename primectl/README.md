@@ -27,6 +27,13 @@ primectl explain agent                 # schema fields
 primectl get agent <id> -o yaml > a.yaml   # edit it
 primectl apply -f a.yaml                    # upsert (PUT if present else POST)
 
+# collection documents, addressed by path
+primectl doc put <col> notes/readme.md --content "hi" --title Readme
+primectl doc get <col> notes/readme.md --content   # bare body
+primectl doc list <col> --prefix notes/
+primectl doc move <col> notes/a.md notes/b.md
+primectl doc delete <col> notes/old.md
+
 # custom operations + escape hatch
 primectl call agent status <id>
 primectl raw GET /v1/health

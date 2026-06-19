@@ -18,12 +18,14 @@ from primectl.commands import crud as _crud  # noqa: E402
 from primectl.commands import call as _call  # noqa: E402
 from primectl.commands import raw as _raw  # noqa: E402
 from primectl.commands import meta as _meta  # noqa: E402
+from primectl.commands import doc as _doc  # noqa: E402
 from primectl.commands.config_cmd import config_app  # noqa: E402
 
 _crud.register(app)
 _call.register(app)
 _raw.register(app)
 _meta.register(app)
+_doc.register(app)
 app.add_typer(config_app, name="config")
 
 
