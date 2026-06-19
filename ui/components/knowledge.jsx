@@ -207,14 +207,19 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onNavigate, embedProvid
   // For the docs count: system collections live in the vector store
   // only — Document storage rows are always empty, so probing them
   // would always render 0. Probe the vector-store enumeration instead.
+  // User collections store path-addressed documents; the list route
+  // returns the full path list with no pagination, so the count is just
+  // the length of the returned {documents:[...]} array.
   const storageDocs = useResource(
     `collection-docs-count:${c.id}`,
-    (signal) => apiFetch(
-      "GET",
-      `/collections/${encodeURIComponent(c.id)}/documents?limit=1`,
-      null,
-      { signal },
-    ),
+    (signal) => isSystem
+      ? Promise.resolve(null)
+      : apiFetch(
+          "GET",
+          `/collections/${encodeURIComponent(c.id)}/documents`,
+          null,
+          { signal },
+        ),
     { pollMs: null, deps: [c.id, isSystem] },
   );
   const vectorDocs = useResource(
@@ -231,7 +236,7 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onNavigate, embedProvid
   );
   const docCount = isSystem
     ? (vectorDocs.data?.total ?? "—")
-    : (storageDocs.data?.total ?? "—");
+    : (storageDocs.data?.documents ? storageDocs.data.documents.length : "-");
 
   return (
     <div className="col" style={{ gap: 14 }}>
@@ -361,46 +366,48 @@ function KN_EntryRow({ entry, index }) {
 
 // Modal: list a collection's documents. System (internal) collections
 // have no Document storage rows - their content lives in the vector
-// store - so those pull from /indexed_documents. User collections store
-// Document rows (which may not be vectorised yet), so those pull from
-// /documents and render one row per document.
+// store - so those pull from /indexed_documents (paginated chunk
+// enumeration). User collections store path-addressed documents, so
+// those defer to KN_UserCollectionListView which consumes the
+// path-list shape ({documents:[{path, document_id, size}]}, no pager).
 function KN_CollectionListModal({ collection, pushToast, onClose }) {
-  const { useResource, apiFetch } = window.primerApi;
   const isSystem = !!collection.system;
+  const titleBar = (
+    <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <Icon name="doc" size={13} className="muted" />
+      <span>Documents in <span className="mono">{collection.id}</span></span>
+      {collection.system && <span className="pill" style={{ marginLeft: 4 }}><span className="dot"></span>system</span>}
+    </span>
+  );
+  if (isSystem) {
+    return <KN_SystemCollectionListView collection={collection} pushToast={pushToast} onClose={onClose} titleBar={titleBar} />;
+  }
+  return <KN_UserCollectionListView collection={collection} pushToast={pushToast} onClose={onClose} titleBar={titleBar} />;
+}
+
+// System collections: paginated chunk enumeration from /indexed_documents,
+// which still returns the {items, total, offset, limit} OffsetPage shape.
+function KN_SystemCollectionListView({ collection, pushToast, onClose, titleBar }) {
+  const { useResource, apiFetch } = window.primerApi;
   const PAGE_SIZE = 25;
   const [offset, setOffset] = React.useState(0);
-  const endpoint = isSystem ? "indexed_documents" : "documents";
   const indexed = useResource(
-    `collection-list:${collection.id}:${endpoint}:${offset}`,
+    `collection-list:${collection.id}:indexed_documents:${offset}`,
     (signal) => apiFetch(
       "GET",
-      `/collections/${encodeURIComponent(collection.id)}/${endpoint}?limit=${PAGE_SIZE}&offset=${offset}`,
+      `/collections/${encodeURIComponent(collection.id)}/indexed_documents?limit=${PAGE_SIZE}&offset=${offset}`,
       null,
       { signal },
     ),
-    { pollMs: null, deps: [collection.id, isSystem, offset] },
+    { pollMs: null, deps: [collection.id, offset] },
   );
-  // Normalise to the shared entry-row shape. Vector entries arrive as
-  // {document_id, chunk_id, text, meta}; Document storage rows arrive as
-  // {id, name, meta:{text,...}} and map onto the same row (no chunk_id;
-  // text falls back to the stored meta.text or the name).
-  const items = (indexed.data?.items || []).map((r) => isSystem
-    ? {
-        document_id: r.document_id,
-        chunk_id: r.chunk_id,
-        text: r.text,
-        meta: r.meta,
-        score: null,
-      }
-    : {
-        document_id: r.id,
-        chunk_id: null,
-        text: (r.meta && r.meta.text) || r.name || "",
-        meta: Object.fromEntries(
-          Object.entries(r.meta || {}).filter(([k]) => k !== "text"),
-        ),
-        score: null,
-      });
+  const items = (indexed.data?.items || []).map((r) => ({
+    document_id: r.document_id,
+    chunk_id: r.chunk_id,
+    text: r.text,
+    meta: r.meta,
+    score: null,
+  }));
   const total = indexed.data?.total ?? null;
   const showingFrom = total != null && total > 0 ? offset + 1 : 0;
   const showingTo = total != null
@@ -413,13 +420,7 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
 
   return (
     <Modal
-      title={
-        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <Icon name="doc" size={13} className="muted" />
-          <span>Documents in <span className="mono">{collection.id}</span></span>
-          {collection.system && <span className="pill" style={{ marginLeft: 4 }}><span className="dot"></span>system</span>}
-        </span>
-      }
+      title={titleBar}
       onClose={onClose}
       footer={
         <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
@@ -449,12 +450,7 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
         overflowX: "hidden",
       }}>
         <div className="muted text-sm mb-3" style={{ overflowWrap: "anywhere" }}>
-          <span className="mono">GET /v1/collections/{collection.id}/{endpoint}</span>
-          {!isSystem && (
-            <span className="muted text-sm" style={{ marginLeft: 8 }}>
-              Document rows; vector indexing is a separate step.
-            </span>
-          )}
+          <span className="mono">GET /v1/collections/{collection.id}/indexed_documents</span>
         </div>
         {indexed.loading && items.length === 0 && (
           <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
@@ -464,9 +460,7 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
         )}
         {!indexed.loading && items.length === 0 && !indexed.error && (
           <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
-            {offset === 0
-              ? (isSystem ? "No entries indexed yet." : "No documents in this collection yet.")
-              : "No more entries."}
+            {offset === 0 ? "No entries indexed yet." : "No more entries."}
           </div>
         )}
         {items.length > 0 && (
@@ -476,6 +470,168 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
             ))}
           </div>
         )}
+      </div>
+    </Modal>
+  );
+}
+
+// User collections: the documents route is path-addressed and returns the
+// full list with NO pagination as {documents:[{path, document_id, size}]}
+// (optional ?prefix= filter). Render one row per path (path + size),
+// clicking a row opens the body via GET ...?path=<p> -> {document, content}.
+function KN_UserCollectionListView({ collection, pushToast, onClose, titleBar }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const cid = collection.id;
+  const enc = encodeURIComponent;
+  const [prefix, setPrefix] = React.useState("");
+  const [appliedPrefix, setAppliedPrefix] = React.useState("");
+  const [selectedPath, setSelectedPath] = React.useState(null);
+
+  const list = useResource(
+    `collection-doc-list:${cid}:${appliedPrefix}`,
+    (signal) => apiFetch(
+      "GET",
+      `/collections/${enc(cid)}/documents` +
+        (appliedPrefix ? `?prefix=${enc(appliedPrefix)}` : ""),
+      null,
+      { signal },
+    ),
+    { pollMs: null, deps: [cid, appliedPrefix] },
+  );
+  const rows = _knIndentRows(list.data?.documents ?? []);
+  const count = list.data?.documents ? list.data.documents.length : null;
+
+  // Selected document body, fetched on demand by path. Mirrors the path
+  // browser: GET ...?path=<p> -> {document:{...}, content}.
+  const doc = useResource(
+    `collection-doc-body:${cid}:${selectedPath || ""}`,
+    (signal) => selectedPath
+      ? apiFetch("GET", `/collections/${enc(cid)}/documents?path=${enc(selectedPath)}`, null, { signal })
+      : Promise.resolve(null),
+    { pollMs: null, deps: [cid, selectedPath] },
+  );
+  const docMeta = doc.data?.document || null;
+
+  return (
+    <Modal
+      title={titleBar}
+      onClose={onClose}
+      footer={
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+          <span className="muted text-sm tabular">
+            {count == null
+              ? (list.loading ? "Loading…" : "-")
+              : `${count} document${count === 1 ? "" : "s"}`}
+          </span>
+          <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+            <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
+            <Btn kind="ghost" onClick={onClose}>Close</Btn>
+          </div>
+        </div>
+      }
+    >
+      <div style={{ width: "min(86vw, 1000px)", maxWidth: "100%", minWidth: 0 }}>
+        <div className="muted text-sm mb-3" style={{ overflowWrap: "anywhere" }}>
+          <span className="mono">GET /v1/collections/{cid}/documents?prefix=</span>
+        </div>
+
+        {/* Prefix filter */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <div className="input-icon" style={{ flex: 1 }}>
+            <Icon name="filter" size={13} className="icon" />
+            <input
+              className="input"
+              placeholder="Filter by path prefix… (Enter to apply)"
+              value={prefix}
+              onChange={(e) => setPrefix(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") setAppliedPrefix(prefix.trim()); }}
+              onBlur={() => setAppliedPrefix(prefix.trim())}
+            />
+          </div>
+          {appliedPrefix && (
+            <Btn size="sm" kind="ghost" icon="x" onClick={() => { setPrefix(""); setAppliedPrefix(""); }}>Clear</Btn>
+          )}
+        </div>
+
+        {/* Two-pane: path list + read-only content */}
+        <div className="kn-doc-browser" style={{ display: "grid", gridTemplateColumns: "minmax(220px, 320px) 1fr", gap: 14, alignItems: "start" }}>
+          <div className="tbl-wrap" style={{ maxHeight: 460, overflow: "auto" }}>
+            {list.loading && rows.length === 0 ? (
+              <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>Loading…</div>
+            ) : list.error ? (
+              <div style={{ padding: 16, textAlign: "center" }}>
+                <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
+                {" · "}<a onClick={list.refetch} style={{ cursor: "pointer" }}>Retry</a>
+              </div>
+            ) : rows.length === 0 ? (
+              <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>
+                {appliedPrefix
+                  ? `No documents under "${appliedPrefix}".`
+                  : "No documents in this collection yet."}
+              </div>
+            ) : (
+              rows.map((r) => (
+                <div
+                  key={r.path}
+                  onClick={() => setSelectedPath(r.path)}
+                  className={selectedPath === r.path ? "selected" : ""}
+                  style={{
+                    cursor: "pointer",
+                    padding: "6px 8px",
+                    paddingLeft: 8 + r.depth * 14,
+                    borderBottom: "1px solid var(--border)",
+                    background: selectedPath === r.path ? "var(--accent-dim, rgba(56,189,248,0.08))" : "transparent",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    minWidth: 0,
+                  }}
+                  title={r.path}
+                >
+                  <Icon name="file" size={12} className="muted" />
+                  <span className="mono text-sm" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{r.leaf}</span>
+                  <span className="muted tabular" style={{ fontSize: 10.5 }}>{r.size}</span>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div style={{ minWidth: 0 }}>
+            {!selectedPath ? (
+              <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
+                Select a document on the left to view its content.
+              </div>
+            ) : doc.loading && !doc.data ? (
+              <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading…</div>
+            ) : doc.error ? (
+              <Banner kind="error" title={doc.error.title || "Failed to load document"} detail={doc.error.detail || doc.error.message} />
+            ) : (
+              <div className="col" style={{ gap: 10, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                  <span className="mono" style={{ fontWeight: 600, overflowWrap: "anywhere", minWidth: 0 }}>{selectedPath}</span>
+                </div>
+                <div className="kv text-sm" style={{ gridTemplateColumns: "70px 1fr" }}>
+                  <dt>title</dt><dd>{docMeta?.title || <span className="muted">{_leafOf(selectedPath)}</span>}</dd>
+                  <dt>id</dt><dd className="mono muted text-sm">{docMeta?.id || "-"}</dd>
+                </div>
+                <pre style={{
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "anywhere",
+                  wordBreak: "break-word",
+                  background: "var(--bg-1, var(--bg))",
+                  border: "1px solid var(--border)",
+                  borderRadius: 6,
+                  padding: 12,
+                  margin: 0,
+                  maxHeight: 360,
+                  overflow: "auto",
+                  fontSize: 12.5,
+                  lineHeight: 1.5,
+                }}>{doc.data?.content || ""}</pre>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
     </Modal>
   );
@@ -1550,6 +1706,13 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
     (c) => c.id === collectionFilter,
   );
   const isSystemFilter = !!selectedCollection?.system;
+  // A non-system collection's documents are path-addressed: the
+  // per-collection list route returns {documents:[{path, document_id,
+  // size}]} with no pagination and no name/meta columns, and the bodies
+  // are reached by ?path=. The legacy storage-row table below can't
+  // represent that shape, so for a selected user collection we defer to
+  // the path-addressed browser (full list + view/edit/move/delete).
+  const isPathCollection = !!collectionFilter && !!selectedCollection && !isSystemFilter;
 
   // Pagination — keep prev/next driven by offset. Reset when the
   // collection filter changes so we don't end up past-the-end after a
@@ -1560,17 +1723,21 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
 
   const list = useResource(
     `documents:list:${collectionFilter}:${isSystemFilter ? "vec" : "store"}:${offset}`,
-    (signal) => apiFetch(
-      "GET",
-      collectionFilter
-        ? (isSystemFilter
-            ? `/collections/${encodeURIComponent(collectionFilter)}/indexed_documents?limit=${PAGE_SIZE}&offset=${offset}`
-            : `/collections/${encodeURIComponent(collectionFilter)}/documents?limit=${PAGE_SIZE}&offset=${offset}`)
-        : `/documents?limit=${PAGE_SIZE}&offset=${offset}`,
-      null,
-      { signal },
-    ),
-    { pollMs: null, deps: [collectionFilter, isSystemFilter, offset] },
+    (signal) => isPathCollection
+      // Path-addressed user collection: handled by the inline browser
+      // below, so skip the (incompatible) storage-row enumeration.
+      ? Promise.resolve(null)
+      : apiFetch(
+          "GET",
+          collectionFilter
+            ? (isSystemFilter
+                ? `/collections/${encodeURIComponent(collectionFilter)}/indexed_documents?limit=${PAGE_SIZE}&offset=${offset}`
+                : `/collections/${encodeURIComponent(collectionFilter)}/documents?limit=${PAGE_SIZE}&offset=${offset}`)
+            : `/documents?limit=${PAGE_SIZE}&offset=${offset}`,
+          null,
+          { signal },
+        ),
+    { pollMs: null, deps: [collectionFilter, isSystemFilter, isPathCollection, offset] },
   );
   const total = list.data?.total ?? null;
   const showingFrom = total != null && total > 0 ? offset + 1 : 0;
@@ -1640,6 +1807,19 @@ function DocumentsPage({ pushToast, filterCollection, onClearFilter }) {
     if (typeof onClearFilter === "function" && !next) onClearFilter();
     navigate("/knowledge/documents", next ? { collection: next } : {});
   };
+
+  // A selected user collection is path-addressed: render the full
+  // path-browser (list + view/edit/move/delete) instead of the legacy
+  // storage-row table, which can't consume the {documents:[...]} shape.
+  if (isPathCollection) {
+    return (
+      <KN_CollectionDocBrowserModal
+        collection={selectedCollection}
+        pushToast={pushToast}
+        onClose={() => setCollectionFilter("")}
+      />
+    );
+  }
 
   return (
     <div className="col" style={{ gap: 14 }}>
