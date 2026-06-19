@@ -138,8 +138,12 @@ async def index_document(
         return 0
 
     text = await content_store.get(document.id)
-    if text is None:
-        # Transitional: no content row yet -> read the legacy meta body.
+    if text is None or not text.strip():
+        # Transitional: no content row yet, OR a blank/empty-string content
+        # row (the real body still lives in meta during the migration
+        # window). Either way, fall back to the legacy meta body. An empty
+        # string is NOT None, so the previous `is None` guard would have
+        # indexed zero chunks for a doc whose body was still in meta.
         text = _document_text(document)
     chunks = chunk_text(text)
 

@@ -128,3 +128,57 @@ async def test_index_document_falls_back_to_meta_when_no_content_row(
         assert store.puts[0].text == "from meta fallback"
     finally:
         await provider.aclose()
+
+
+@pytest.mark.asyncio
+async def test_index_document_falls_back_to_meta_on_empty_content_row(
+    tmp_path: Path,
+) -> None:
+    """Transition window: the content row exists but is the empty string,
+    while the real body still lives in meta. An empty content row is NOT
+    None, so the old `is None` guard would index ZERO chunks; the fixed
+    guard treats a blank content-store result as a miss and falls back to
+    the meta body."""
+    cfg = StorageProviderConfig(
+        provider=StorageProviderType.SQLITE,
+        config=SqliteConfig(path=tmp_path / "content.sqlite"),
+    )
+    provider = StorageProviderFactory.create(cfg)
+    await provider.initialize()
+    try:
+        content_store = provider.get_content_store()
+        await content_store.ensure_schema()
+
+        # An empty-string content row (real body still in meta).
+        await content_store.upsert(
+            document_id="doc-3",
+            collection_id="kb-1",
+            path="doc-3.md",
+            content="",
+        )
+
+        document = Document(
+            id="doc-3",
+            collection_id="kb-1",
+            name="d",
+            path="doc-3.md",
+            meta={"content": "real body still in meta"},
+        )
+
+        store = _Store()
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_Emb())
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        n = await index_document(
+            document=document,
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=content_store,
+        )
+        assert n == 1
+        assert store.puts[0].text == "real body still in meta"
+    finally:
+        await provider.aclose()

@@ -32,6 +32,8 @@ from primer.int.document_content import ContentListEntry, DocumentContentStore
 from primer.int.storage import Storage
 from primer.model.collection import Document
 from primer.model.except_ import NotFoundError
+from primer.model.storage import OffsetPage
+from primer.storage.q import Q
 
 
 # Optional best-effort search-indexing hook. Called with the freshly
@@ -143,32 +145,110 @@ class DocumentService:
     async def read(self, *, collection_id: str, path: str) -> ReadResult:
         """Return the body + entity for ``(collection_id, path)``.
 
-        Raises :class:`NotFoundError` when no document lives at that path.
+        The content store is the authority, but documents created through
+        the generic CRUD route (``POST/PUT /v1/documents``) write only the
+        :class:`Document` ENTITY row (body in ``meta``) and NO content row.
+        Those docs still carry a valid ``path`` on the entity, so when the
+        content store has no row we FALL BACK to an entity lookup by
+        ``(collection_id, path)`` and serve the body from ``meta`` via
+        :func:`document_body_text`. This keeps the path surface from hiding
+        a real, searchable document.
+
+        Raises :class:`NotFoundError` only when neither a content row NOR an
+        entity row exists at that path.
         """
         row = await self._content.get_by_path(collection_id, path)
-        if row is None:
+        if row is not None:
+            doc = await self._docs.get(row.document_id)
+            if doc is None:
+                # Content row without an entity row: a torn write the atomic
+                # path is designed to prevent. Surface as not-found rather
+                # than returning a half-populated result.
+                raise NotFoundError(
+                    f"document entity {row.document_id!r} missing for path {path!r}"
+                )
+            return ReadResult(document=doc, content=row.content)
+
+        # No content row: fall back to an entity-only document mirroring the
+        # path (created via the generic CRUD route). Serve its meta body.
+        doc = await self._find_entity_by_path(collection_id, path)
+        if doc is None:
             raise NotFoundError(
                 f"no document at path {path!r} in collection {collection_id!r}"
             )
-        doc = await self._docs.get(row.document_id)
-        if doc is None:
-            # Content row without an entity row: a torn write the atomic
-            # path is designed to prevent. Surface as not-found rather than
-            # returning a half-populated result.
-            raise NotFoundError(
-                f"document entity {row.document_id!r} missing for path {path!r}"
-            )
-        return ReadResult(document=doc, content=row.content)
+        from primer.knowledge.indexing import document_body_text
+
+        return ReadResult(document=doc, content=document_body_text(doc))
+
+    async def _find_entity_by_path(
+        self, collection_id: str, path: str
+    ) -> Document | None:
+        """Find the Document ENTITY at ``(collection_id, path)``, or None.
+
+        Used as the fallback for entity-only documents (generic-CRUD writes
+        that never created a content row). The entity carries a ``path``
+        mirror, so a typed ``Q`` predicate resolves it.
+        """
+        predicate = (
+            Q(Document)
+            .where("collection_id", collection_id)
+            .where("path", path)
+            .build()
+        )
+        response = await self._docs.find(predicate, OffsetPage(offset=0, length=1))
+        items = response.items
+        return items[0] if items else None
 
     async def list(
         self, *, collection_id: str, prefix: str | None = None
     ) -> list[ContentListEntry]:
         """List entries under an optional path prefix WITHOUT loading bodies.
 
-        Delegates to the content store, whose entries carry ``path``,
-        ``document_id`` and ``size`` (character length) but never the body.
+        UNION of two sources, deduped by path with the content row WINNING:
+
+        * the content store (authoritative), whose entries carry ``path``,
+          ``document_id`` and ``size`` (character length), and
+        * Document ENTITY rows that carry a ``path`` but have NO content row
+          (created via the generic CRUD route). These are surfaced so an
+          entity-only document is never hidden from the path listing; their
+          ``size`` is the meta body length.
+
+        Never loads a content-store body; entity ``size`` comes from the
+        cheap meta body length already on the entity row.
         """
-        return await self._content.list(collection_id, prefix=prefix)
+        entries = await self._content.list(collection_id, prefix=prefix)
+        seen_paths = {e.path for e in entries}
+
+        # Find entity rows for this collection with a path; include only
+        # those whose path is not already covered by a content row.
+        predicate = Q(Document).where("collection_id", collection_id).build()
+        from primer.knowledge.indexing import document_body_text
+
+        result = list(entries)
+        offset = 0
+        page_size = 200
+        while True:
+            response = await self._docs.find(
+                predicate, OffsetPage(offset=offset, length=page_size)
+            )
+            items = response.items
+            for doc in items:
+                if not doc.path or doc.path in seen_paths:
+                    continue
+                if prefix and not doc.path.startswith(prefix):
+                    continue
+                seen_paths.add(doc.path)
+                result.append(
+                    ContentListEntry(
+                        document_id=doc.id,
+                        path=doc.path,
+                        size=len(document_body_text(doc)),
+                    )
+                )
+            if len(items) < page_size:
+                break
+            offset += page_size
+        return result
 
     async def delete(self, *, collection_id: str, path: str) -> None:
         """Delete the entity + body at ``(collection_id, path)`` atomically.
