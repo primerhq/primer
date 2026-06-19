@@ -422,28 +422,57 @@ _UNINSTALL_ORDER: list[str] = list(reversed(_INSTALL_ORDER))
 # ---------------------------------------------------------------------------
 
 
-async def _persist_document_body(
+async def _write_entity_with_body(
     *,
     storage_provider: Any,
-    document_entity: Any,
+    storage: Any,
+    entity: Any,
     content: str | None,
+    is_update: bool,
 ) -> None:
-    """Write a harness-installed document's body to the content store.
+    """Write an entity row and (for documents) its content-store body row
+    inside ONE backend transaction, so the two never diverge.
 
-    Bodies live in the content store now (keyed by the stable document id,
-    addressed by ``(collection_id, path)``), not in ``Document.meta``. The
-    entity row was already created by the caller; this writes the matching
-    content row so the body is readable by path and indexable. ``None``
-    content (a metadata-only document) writes nothing.
+    Mirrors :meth:`DocumentService.upsert`: the entity create/update and the
+    content upsert commit or roll back together. A failure in either write
+    therefore leaves no committed orphan (the torn state - a committed entity
+    with no content row - that ``DocumentService`` is designed to avoid).
+
+    For non-document entities (or documents with ``None`` content, i.e.
+    metadata-only) only the entity row is written. ``is_update`` selects
+    ``storage.update`` over ``storage.create``.
     """
-    if content is None:
-        return
-    await storage_provider.get_content_store().upsert(
-        document_id=document_entity.id,
-        collection_id=document_entity.collection_id,
-        path=document_entity.path,
-        content=content,
-    )
+    async with storage_provider.transaction() as conn:
+        if is_update:
+            await storage.update(entity, conn=conn)
+        else:
+            await storage.create(entity, conn=conn)
+        if content is not None:
+            await storage_provider.get_content_store().upsert(
+                document_id=entity.id,
+                collection_id=entity.collection_id,
+                path=entity.path,
+                content=content,
+                conn=conn,
+            )
+
+
+async def _delete_document_content(
+    *,
+    storage_provider: Any,
+    document_id: str,
+) -> None:
+    """Remove a document's content-store row by its stable id.
+
+    Called when a harness-managed document entity is deleted (uninstall, or a
+    sync that drops the document) so no orphan content row is left behind -
+    an orphan would leak forever and, owned by a now-deleted document_id,
+    would trip the content store's ``UNIQUE(collection_id, path)`` constraint
+    on a later reinstall at the same path. ``content_store.delete`` is a
+    no-op when no row exists, so this is safe for documents that never wrote
+    a body (metadata-only).
+    """
+    await storage_provider.get_content_store().delete(document_id)
 
 
 async def _index_installed_document(
@@ -553,7 +582,17 @@ async def apply_install(
                 )
                 storage = _storage_for_kind(storage_provider, kind)
                 try:
-                    await storage.create(entity)
+                    # The entity row and (for documents) its content-store
+                    # body row are written in ONE transaction so a failure in
+                    # either rolls both back - no committed entity orphaned
+                    # without its content row.
+                    await _write_entity_with_body(
+                        storage_provider=storage_provider,
+                        storage=storage,
+                        entity=entity,
+                        content=doc_content if kind == "document" else None,
+                        is_update=False,
+                    )
                 except ConflictError as conflict:
                     # Inspect the colliding row: if it's owned by another
                     # harness, surface a cross-harness collision so the
@@ -586,20 +625,25 @@ async def apply_install(
                     raise conflict
                 created.append((kind, entry.resolved_id))
                 if kind == "document":
-                    await _persist_document_body(
-                        storage_provider=storage_provider,
-                        document_entity=entity,
-                        content=doc_content,
-                    )
                     created_documents.append(entity)
 
     except Exception as exc:
-        # Best-effort rollback of already-created entities
+        # Best-effort rollback of already-created entities (and, for
+        # documents, their content-store rows) so a partial install leaves
+        # no orphan entity OR orphan content row behind.
         for rollback_kind, rollback_id in reversed(created):
             try:
                 await _storage_for_kind(storage_provider, rollback_kind).delete(rollback_id)
             except Exception:
                 pass
+            if rollback_kind == "document":
+                try:
+                    await _delete_document_content(
+                        storage_provider=storage_provider,
+                        document_id=rollback_id,
+                    )
+                except Exception:
+                    pass
         return json.dumps({"code": "apply_failed", "message": str(exc)})
 
     # Write the HarnessRendering snapshot
@@ -678,6 +722,14 @@ async def apply_sync(
         storage = _storage_for_kind(storage_provider, entry.kind)
         try:
             await storage.delete(entry.resolved_id)
+            # A removed document's body must be deleted too, else the content
+            # row is orphaned (it would later trip the content store's UNIQUE
+            # (collection_id, path) constraint on a re-add at the same path).
+            if entry.kind == "document":
+                await _delete_document_content(
+                    storage_provider=storage_provider,
+                    document_id=entry.resolved_id,
+                )
         except Exception as exc:
             apply_errors.append(
                 {"kind": entry.kind, "id": entry.resolved_id, "error": str(exc)}
@@ -703,18 +755,21 @@ async def apply_sync(
         )
         storage = _storage_for_kind(storage_provider, entry.kind)
         try:
-            await storage.create(entity)
+            # Entity row + (document) content row in ONE transaction so a
+            # failure in either rolls both back - no torn write.
+            await _write_entity_with_body(
+                storage_provider=storage_provider,
+                storage=storage,
+                entity=entity,
+                content=doc_content if entry.kind == "document" else None,
+                is_update=False,
+            )
         except Exception as exc:
             apply_errors.append(
                 {"kind": entry.kind, "id": entry.resolved_id, "error": str(exc)}
             )
         else:
             if entry.kind == "document":
-                await _persist_document_body(
-                    storage_provider=storage_provider,
-                    document_entity=entity,
-                    content=doc_content,
-                )
                 indexed_documents.append(entity)
 
     # Process updates
@@ -737,18 +792,21 @@ async def apply_sync(
         )
         storage = _storage_for_kind(storage_provider, new_entry.kind)
         try:
-            await storage.update(entity)
+            # Entity row + (document) content row in ONE transaction so a
+            # failure in either rolls both back - no torn write.
+            await _write_entity_with_body(
+                storage_provider=storage_provider,
+                storage=storage,
+                entity=entity,
+                content=doc_content if new_entry.kind == "document" else None,
+                is_update=True,
+            )
         except Exception as exc:
             apply_errors.append(
                 {"kind": new_entry.kind, "id": new_entry.resolved_id, "error": str(exc)}
             )
         else:
             if new_entry.kind == "document":
-                await _persist_document_body(
-                    storage_provider=storage_provider,
-                    document_entity=entity,
-                    content=doc_content,
-                )
                 indexed_documents.append(entity)
 
     # On partial apply failure we MUST NOT advance the rendering snapshot.
@@ -827,6 +885,18 @@ async def apply_uninstall(
                     await storage.delete(entry.resolved_id)
                 except Exception:
                     pass  # tolerate "not found"
+                # Documents also own a content-store row keyed by the same
+                # stable id; delete it so no orphan body leaks (which would
+                # trip the content store's UNIQUE(collection_id, path) on a
+                # later reinstall at the same path). No-op if absent.
+                if kind == "document":
+                    try:
+                        await _delete_document_content(
+                            storage_provider=storage_provider,
+                            document_id=entry.resolved_id,
+                        )
+                    except Exception:
+                        pass
 
         # Delete the rendering row
         try:

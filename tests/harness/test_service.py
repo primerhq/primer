@@ -492,25 +492,25 @@ async def test_apply_install_orders_kinds(fake_storage_provider):
     original_create_agent = fake_storage_provider.get_storage(Agent).create
     original_create_graph = fake_storage_provider.get_storage(Graph).create
 
-    async def track_toolset(entity):
+    async def track_toolset(entity, *, conn=None):
         created_kinds.append("toolset")
-        return await original_create_toolset(entity)
+        return await original_create_toolset(entity, conn=conn)
 
-    async def track_collection(entity):
+    async def track_collection(entity, *, conn=None):
         created_kinds.append("collection")
-        return await original_create_collection(entity)
+        return await original_create_collection(entity, conn=conn)
 
-    async def track_document(entity):
+    async def track_document(entity, *, conn=None):
         created_kinds.append("document")
-        return await original_create_document(entity)
+        return await original_create_document(entity, conn=conn)
 
-    async def track_agent(entity):
+    async def track_agent(entity, *, conn=None):
         created_kinds.append("agent")
-        return await original_create_agent(entity)
+        return await original_create_agent(entity, conn=conn)
 
-    async def track_graph(entity):
+    async def track_graph(entity, *, conn=None):
         created_kinds.append("graph")
-        return await original_create_graph(entity)
+        return await original_create_graph(entity, conn=conn)
 
     fake_storage_provider.get_storage(Toolset).create = track_toolset
     fake_storage_provider.get_storage(Collection).create = track_collection
@@ -740,6 +740,182 @@ async def test_apply_install_writes_body_to_content_store(fake_storage_provider)
     svc = DocumentService(fake_storage_provider)
     read = await svc.read(collection_id="acme__col", path="guides/intro.md")
     assert read.content == "HARNESS BODY TEXT"
+
+
+def _doc_install_entries() -> tuple[RenderedEntry, RenderedEntry, RenderedFile]:
+    """Return a (collection, document) entry pair + the document's RenderedFile.
+
+    The document body is "BODY ONE" addressed at acme__col / guides/intro.md
+    with stable id acme__doc.
+    """
+    collection_entry = RenderedEntry(
+        kind="collection", template_name="col", resolved_id="acme__col",
+        template_source_hash="h", rendered_hash="h1",
+        rendered_payload={
+            "description": "col",
+            "embedder": {"provider_id": "ep", "model": "text-emb"},
+            "search_provider_id": "ssp",
+        },
+    )
+    doc_entry = RenderedEntry(
+        kind="document", template_name="doc", resolved_id="acme__doc",
+        template_source_hash="h", rendered_hash="h2",
+        rendered_payload={
+            "collection_id": "acme__col",
+            "name": "Doc",
+            "path": "guides/intro.md",
+            "meta": {},
+        },
+    )
+    rf = _make_rendered_file("document", "doc", {}, content="BODY ONE")
+    return collection_entry, doc_entry, rf
+
+
+@pytest.mark.asyncio
+async def test_uninstall_deletes_content_row(fake_storage_provider):
+    """Uninstalling a harness with a document removes its content-store row
+    (no orphan) and a later reinstall at the same path succeeds (no UNIQUE
+    conflict against a leftover row owned by the deleted document_id)."""
+    harness = _make_harness("acme")
+    collection_entry, doc_entry, rf = _doc_install_entries()
+
+    error = await apply_install(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        entries=[collection_entry, doc_entry],
+        rendered_files_by_name={"doc": rf},
+        bundle_hash="bh1", overrides_hash="oh1", schema_hash=None,
+    )
+    assert error is None
+
+    content_store = fake_storage_provider.get_content_store()
+    assert await content_store.get("acme__doc") == "BODY ONE"
+
+    # Seed the Harness row so uninstall can clean it up.
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    await apply_uninstall(storage_provider=fake_storage_provider, harness=harness)
+
+    # The content row must be GONE - no orphan left behind.
+    assert await content_store.get("acme__doc") is None
+    assert await content_store.get_by_path("acme__col", "guides/intro.md") is None
+
+    # Reinstall at the same (collection_id, path) must succeed: the orphan
+    # would otherwise trip the content store's UNIQUE(collection_id, path)
+    # constraint (owned by a now-deleted document_id).
+    harness2 = _make_harness("acme")
+    error2 = await apply_install(
+        storage_provider=fake_storage_provider,
+        harness=harness2,
+        entries=[collection_entry, doc_entry],
+        rendered_files_by_name={"doc": rf},
+        bundle_hash="bh2", overrides_hash="oh2", schema_hash=None,
+    )
+    assert error2 is None
+    assert await content_store.get("acme__doc") == "BODY ONE"
+
+
+@pytest.mark.asyncio
+async def test_sync_delete_removes_content_row(fake_storage_provider):
+    """A sync that removes a document deletes its content row; a later sync
+    re-adding the same path succeeds (no orphan UNIQUE conflict)."""
+    harness = _make_harness("acme")
+    collection_entry, doc_entry, rf = _doc_install_entries()
+
+    error = await apply_install(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        entries=[collection_entry, doc_entry],
+        rendered_files_by_name={"doc": rf},
+        bundle_hash="bh1", overrides_hash="oh1", schema_hash=None,
+    )
+    assert error is None
+    content_store = fake_storage_provider.get_content_store()
+    assert await content_store.get("acme__doc") == "BODY ONE"
+
+    # Sync that drops the document (keep only the collection).
+    error = await apply_sync(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        new_entries=[collection_entry],
+        rendered_files_by_name={},
+        bundle_hash="bh2", overrides_hash="oh2", schema_hash=None,
+    )
+    assert error is None
+
+    # Content row gone after the sync-delete.
+    assert await content_store.get("acme__doc") is None
+    assert await content_store.get_by_path("acme__col", "guides/intro.md") is None
+
+    # Re-add the same path in a later sync: must succeed (no orphan conflict).
+    error = await apply_sync(
+        storage_provider=fake_storage_provider,
+        harness=harness,
+        new_entries=[collection_entry, doc_entry],
+        rendered_files_by_name={"doc": rf},
+        bundle_hash="bh3", overrides_hash="oh3", schema_hash=None,
+    )
+    assert error is None
+    assert await content_store.get("acme__doc") == "BODY ONE"
+
+
+@pytest.mark.asyncio
+async def test_install_document_body_atomic(tmp_path, monkeypatch):
+    """If the content upsert fails during install, NO orphan entity row is
+    committed for that document: the entity create + body upsert share ONE
+    backend transaction, so a failed body write rolls back the entity too.
+
+    Uses a REAL sqlite provider (the fake provider's transaction is a no-op
+    and could not demonstrate rollback), mirroring the DocumentService
+    no-orphan test.
+    """
+    from primer.model.collection import Document
+    from primer.model.provider import (
+        SqliteConfig,
+        StorageProviderConfig,
+        StorageProviderType,
+    )
+    from primer.storage.factory import StorageProviderFactory
+    from primer.storage.sqlite import SqliteDocumentContentStore
+
+    cfg = StorageProviderConfig(
+        provider=StorageProviderType.SQLITE,
+        config=SqliteConfig(path=tmp_path / "t.sqlite"),
+    )
+    provider = StorageProviderFactory.create(cfg)
+    await provider.initialize()
+    await provider.get_content_store().ensure_schema()
+    try:
+        harness = _make_harness("acme")
+        collection_entry, doc_entry, rf = _doc_install_entries()
+
+        # Force the content upsert to fail AFTER the entity would be written.
+        # ``get_content_store()`` returns a fresh store bound to the provider
+        # each call, so patch the class method rather than one instance.
+        async def boom(*a, **k):
+            raise RuntimeError("content write failed")
+
+        monkeypatch.setattr(SqliteDocumentContentStore, "upsert", boom)
+
+        error = await apply_install(
+            storage_provider=provider,
+            harness=harness,
+            entries=[collection_entry, doc_entry],
+            rendered_files_by_name={"doc": rf},
+            bundle_hash="bh1", overrides_hash="oh1", schema_hash=None,
+        )
+
+        # Install reports failure...
+        assert error is not None
+        assert "apply_failed" in error
+
+        # ...and crucially leaves NO committed document entity row behind:
+        # the transaction rolled the entity write back with the failed body.
+        monkeypatch.undo()
+        assert await provider.get_storage(Document).get("acme__doc") is None
+        assert await provider.get_content_store().get("acme__doc") is None
+    finally:
+        await provider.aclose()
 
 
 # ---------------------------------------------------------------------------
