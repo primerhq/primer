@@ -30,6 +30,29 @@ if os.environ.get("PRIMER_TEST_PG_DSN"):
     _BACKENDS.append("postgres")
 
 
+def _pg_config_for_test() -> "StorageProviderConfig":
+    """Build a Postgres config from PRIMER_TEST_PG_DSN with a unique schema
+    so each test's content table is isolated on a shared test database."""
+    import uuid
+    from urllib.parse import urlparse
+
+    from primer.model.provider import PoolConfig, PostgresConfig
+
+    u = urlparse(os.environ["PRIMER_TEST_PG_DSN"])
+    return StorageProviderConfig(
+        provider=StorageProviderType.POSTGRES,
+        config=PostgresConfig(
+            hostname=u.hostname or "localhost",
+            port=u.port or 5432,
+            username=u.username or "primer",
+            password=u.password or "primer",  # type: ignore[arg-type]
+            database=(u.path or "/primer_pgtest").lstrip("/") or "primer_pgtest",
+            db_schema=f"t{uuid.uuid4().hex[:16]}",
+            pool=PoolConfig(min_size=1, max_size=4),
+        ),
+    )
+
+
 @pytest_asyncio.fixture(params=_BACKENDS)
 async def content_store(
     request: pytest.FixtureRequest, tmp_path: Path,
@@ -41,7 +64,7 @@ async def content_store(
             config=SqliteConfig(path=tmp_path / "content.sqlite"),
         )
     else:
-        pytest.skip("postgres contract path requires PRIMER_TEST_PG_DSN")
+        cfg = _pg_config_for_test()
     provider = StorageProviderFactory.create(cfg)
     await provider.initialize()
     try:
@@ -49,6 +72,13 @@ async def content_store(
         await store.ensure_schema()
         yield store
     finally:
+        if backend == "postgres":
+            schema = cfg.config.db_schema
+            try:
+                async with provider.pool.acquire() as c:
+                    await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            except Exception:
+                pass
         await provider.aclose()
 
 

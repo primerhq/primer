@@ -48,6 +48,32 @@ if os.environ.get("PRIMER_TEST_PG_DSN"):
     _BACKENDS.append("postgres")
 
 
+def _pg_config_for_test() -> "StorageProviderConfig":
+    """Build a Postgres config from PRIMER_TEST_PG_DSN with a unique schema.
+
+    Each test gets its own schema (created by ``initialize``) so the
+    contract runs in isolation against a shared test database.
+    """
+    import uuid
+    from urllib.parse import urlparse
+
+    from primer.model.provider import PoolConfig, PostgresConfig
+
+    u = urlparse(os.environ["PRIMER_TEST_PG_DSN"])
+    return StorageProviderConfig(
+        provider=StorageProviderType.POSTGRES,
+        config=PostgresConfig(
+            hostname=u.hostname or "localhost",
+            port=u.port or 5432,
+            username=u.username or "primer",
+            password=u.password or "primer",  # type: ignore[arg-type]
+            database=(u.path or "/primer_pgtest").lstrip("/") or "primer_pgtest",
+            db_schema=f"t{uuid.uuid4().hex[:16]}",
+            pool=PoolConfig(min_size=1, max_size=4),
+        ),
+    )
+
+
 @pytest_asyncio.fixture(params=_BACKENDS)
 async def provider(
     request: pytest.FixtureRequest, tmp_path: Path,
@@ -59,12 +85,27 @@ async def provider(
             config=SqliteConfig(path=tmp_path / "contract.sqlite"),
         )
     else:
-        pytest.skip("postgres contract path requires PRIMER_TEST_PG_DSN")
+        cfg = _pg_config_for_test()
     p = StorageProviderFactory.create(cfg)
     await p.initialize()
     try:
         yield p
     finally:
+        if backend == "postgres":
+            schema = cfg.config.db_schema
+            try:
+                async with p.pool.acquire() as c:
+                    await c.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            except Exception:
+                pass
+            # The "table ensured" cache is keyed by ``id(provider)``. With a
+            # fresh per-test schema, a later provider can be allocated at the
+            # same address as this one once it is GC'd, aliasing onto a stale
+            # entry and skipping the CREATE for the new schema. Evict this
+            # provider's entries so the next test always re-creates its table.
+            from primer.storage import postgres as _pg
+            for key in [k for k in _pg._table_ensured if k[0] == id(p)]:
+                _pg._table_ensured.discard(key)
         await p.aclose()
 
 
