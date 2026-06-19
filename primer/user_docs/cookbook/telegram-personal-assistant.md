@@ -58,14 +58,12 @@ The agent needs a workspace to run in.
 1. Open **Workspaces** and click **New workspace**.
 2. Select a template and click **Create**.
 
-### 5. Bind the channel to the workspace
+### 5. Link the channel to the workspace
 
-1. In Channels, switch to the **Associations** tab and click **New
-   association**.
-2. Select the workspace and the `personal-dm` channel.
-3. Enable **Forward ask_user** if you want approval prompts delivered
-   to Telegram.
-4. Click **Create**.
+1. Open the workspace and switch to its **Channels** tab.
+2. Click **Link channel** and select the `personal-dm` channel.
+3. Confirm. All session gates from that workspace, including ask_user,
+   now forward to Telegram automatically; there are no per-gate toggles.
 
 ### 6. Create the personal assistant agent
 

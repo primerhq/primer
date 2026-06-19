@@ -66,14 +66,12 @@ The agent needs a workspace to run in.
 2. Select a template (create one first if none exist).
 3. Click **Create**.
 
-### 4. Bind the channel to the workspace
+### 4. Link the channel to the workspace
 
-1. In Channels, switch to the **Associations** tab and click **New
-   association**.
-2. Select the workspace and the `#ops-help` channel.
-3. Enable **Forward ask_user** if you want the bot to surface approval
-   prompts in Slack.
-4. Click **Create**.
+1. Open the workspace and switch to its **Channels** tab.
+2. Click **Link channel** and select the `#ops-help` channel.
+3. Confirm. All session gates from that workspace, including ask_user,
+   now forward to Slack automatically; there are no per-gate toggles.
 
 ### 5. Create the agent
 
@@ -113,9 +111,10 @@ by the incoming message. Click the row to inspect the full transcript.
 
 ## Gotchas
 
-- The `mention_only` behaviour is the default when a channel is
-  associated with exactly one agent. Without a mention the bot stays
-  silent.
+- The bot replies according to the channel's chat config
+  (`config.chats`): make sure chats are enabled and a default agent is
+  set. There is no mention-only mode; the bot is not gated on being
+  @-mentioned.
 - Slack rate-limits app messages at roughly 1 per second per channel.
   Long answers stream across multiple messages; this is handled
   automatically by the channel adapter.

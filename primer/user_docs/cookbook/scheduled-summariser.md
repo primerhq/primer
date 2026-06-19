@@ -23,11 +23,11 @@ workspace. Each step below maps to one of them.
 - An agent already configured under Agents with a system prompt that
   knows how to read and summarise logs. See the Agents feature doc if
   you need to create one first.
-- A workspace template with a TTL of at least 60 minutes and access to
-  the log directory.
+- A workspace template with access to the log directory.
 - A Slack channel provider already set up under Channels, with a channel
-  bound to the workspace via an association that has **Forward ask_user**
-  enabled.
+  linked to the workspace (from the workspace's Channels tab, click Link
+  channel). A linked workspace forwards all of its session gates,
+  including ask_user, to that channel.
 
 ```callout:info
 Tune the agent's system prompt against real log volume before
@@ -79,8 +79,9 @@ stream in as the agent reads logs and builds the summary.
 ### 4. Review the ask_user prompt in Slack
 
 When the agent finishes the summary it issues an `ask_user` prompt.
-Because the workspace association has **Forward ask_user** enabled, the
-prompt is delivered to the bound Slack channel. The message looks like:
+Because the workspace is linked to the Slack channel, the prompt is
+delivered there (a linked workspace forwards all session gates,
+including ask_user). The message looks like:
 
 > *weekday-summary*: Approve yesterday's summary?
 > [Approve] [Reject]
@@ -97,8 +98,9 @@ approval times out or the agent returns an error.
 
 ## Gotchas
 
-- Workspace TTL must outlast the agent's longest turn. Default 30
-  minutes is usually fine; bump to 60 if log volume is large.
+- Workspaces are not auto-expired; a workspace persists until you delete
+  it. Reuse one across runs or delete stale ones so they do not
+  accumulate.
 - The Slack channel provider needs the `chat:write` and `chat:read`
   scopes. The OAuth flow surfaces this during provider setup.
 - Cron expressions are evaluated in the timezone you select in the

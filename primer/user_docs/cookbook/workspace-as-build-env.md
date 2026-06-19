@@ -40,8 +40,6 @@ Create the build agent and bind the tools it needs.
    - **Name**: `rust-1.83`
    - **Provider**: your Docker provider
    - **Base image**: `rust:1.83-slim`
-   - **TTL**: 20 (minutes), long enough for a full build cycle,
-     short enough to avoid idle accumulation
    - **Environment variables**: add `CARGO_TERM_COLOR=never` so
      test output is plain text
    - **Init command**: `apt-get update && apt-get install -y git`
@@ -51,9 +49,9 @@ Create the build agent and bind the tools it needs.
 ```
 
 ```callout:tip
-Set the TTL just longer than your heaviest typical build. Too short
-and the workspace is torn down mid-build; too long and idle
-workspaces accumulate between runs.
+Workspaces are not torn down on a timer; this one persists until you
+delete it. Delete the build workspace when a run finishes, or reuse it
+across builds, so idle workspaces do not accumulate.
 ```
 
 ### 2. Create the build agent

@@ -48,14 +48,14 @@ automated decision.
 3. Enter the channel snowflake of the text channel to moderate.
 4. Click **Create channel**.
 
-### 3. Bind the channel to a workspace
+### 3. Link the channel to a workspace
 
-1. Open the **Associations** tab and click **New association**.
-2. Select the workspace that hosts the `moderator` agent and the
-   channel above.
-3. Enable **Forward tool_approval** so moderator approval prompts
-   arrive in Discord.
-4. Click **Create**.
+1. Open the workspace that hosts the `moderator` agent and switch to
+   its **Channels** tab.
+2. Click **Link channel** and select the Discord channel above.
+3. Confirm. All session gates from that workspace, including tool
+   approvals, now forward to Discord automatically; there are no
+   per-gate toggles.
 
 ```embed:channels
 ```

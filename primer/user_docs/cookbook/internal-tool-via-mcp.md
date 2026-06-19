@@ -57,8 +57,8 @@ The MCP client authenticates with a bearer token that has the `mcp` scope.
 1. Navigate to **API tokens** in the left nav.
 2. Click **Create token**.
 3. Name the token (for example, `claude-desktop-prod`).
-4. Under **Scopes**, check **mcp**. Add any other scopes the client needs
-   (for example, `sessions:read` if it will list sessions).
+4. Under **Scopes**, check **mcp**. This is the scope the MCP endpoint
+   requires, and it is currently the only scope the platform enforces.
 5. Optionally set an expiry date.
 6. Click **Create token**.
 
@@ -69,10 +69,10 @@ The MCP client authenticates with a bearer token that has the `mcp` scope.
    The token is shown only once.
 
 ```callout:tip
-Mint a separate token for each MCP client and scope it to the minimum the
-client needs. A read-only assistant does not need `sessions:write`; a token
-with that scope added by mistake is the most common source of unexpected
-agent behaviour.
+Mint a separate token for each MCP client. Today the only enforced scope
+is `mcp` (the MCP endpoint checks for it); other scope strings are
+accepted but not yet enforced by any route, so do not rely on them as an
+access-control boundary.
 ```
 
 ### 4. Connect the client

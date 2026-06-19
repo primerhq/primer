@@ -164,9 +164,8 @@ the fact-checker's JSON parsing, which stalls the whole pipeline.
   populate it with known-good reference material before the first
   run or the validator has nothing to check against.
 - Long-running graph runs hold workspace slots for the duration. If
-  the writer step is slow, consider a longer TTL on the workspace
-  template or split the writer into a separate session triggered
-  by the graph's output.
+  the writer step is slow, split the writer into a separate session
+  triggered by the graph's output.
 - The conditional back-edge targets `researcher` with the bad
   sources excluded. Ensure the researcher's system prompt instructs
   it to treat the excluded list as off-limits, or it will propose

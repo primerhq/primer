@@ -49,7 +49,7 @@ Primer is single-operator in v1. The first visit to the console presents a one-t
 1. Navigate to **API Tokens** in the left nav.
 2. Click **Create token**.
 3. Enter a unique name (for example, `claude-desktop-mcp`). Names must be unique and at most 128 characters.
-4. Under **Scopes**, check `mcp` to permit calls to the MCP endpoint. Check any additional scopes the client needs (for example, `sessions:write` if the client will start sessions).
+4. Under **Scopes**, check `mcp` to permit calls to the MCP endpoint. This is currently the only scope the platform enforces; other scope strings are accepted but not yet checked by any route.
 5. Optionally set an expiry date.
 6. Click **Create token**.
 

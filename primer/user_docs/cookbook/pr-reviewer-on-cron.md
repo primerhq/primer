@@ -44,8 +44,6 @@ runs reads as inconsistent to PR authors.
 3. Fill in:
    - **Name**: `pr-review-template`
    - **Provider**: your configured workspace provider
-   - **TTL**: set to at least 60 minutes; a batch of PRs can take a
-     while to review
    - **Init command**: any first-run setup needed (e.g. cloning the
      repo, installing tools)
 4. Click **Create template**, then **Create workspace** to spin up an
@@ -120,8 +118,9 @@ GitHub App token (15000 requests per hour) for production runs.
 
 - The cron expression `0 * * * *` fires at the top of every UTC hour.
   Convert to local time for any documentation or runbooks you write.
-- A long review batch keeps the workspace alive past the default TTL.
-  Bump the template TTL or split reviews into smaller batches.
+- Workspaces persist until you delete them (there is no TTL). A long
+  review batch simply holds the workspace longer; reuse or delete
+  workspaces so they do not accumulate.
 - The workspace state (cloned repo) persists across agent sessions on
   the same instance. Pull the latest changes at the start of each run
   to avoid reviewing already-merged commits.

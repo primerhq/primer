@@ -14,15 +14,16 @@ features: [channel, agent, tool-approval, trigger]
 
 An operator messages a Slack channel with a deploy command. An agent plans
 the deploy, then the actual deploy step parks until a human clicks Approve
-in the primer console (or in Slack, if the channel association has
-`forward_tool_approval` enabled). The deploy runs only after explicit
-approval; a Reject returns a clean error to the agent.
+in the primer console (or in Slack, if the workspace is linked to a
+channel). The deploy runs only after explicit approval; a Reject returns
+a clean error to the agent.
 
 ## Prerequisites
 
 - A Slack channel provider is configured under Channels / Providers.
-- A Slack channel is created and bound to a workspace (Channels /
-  Associations, with **Forward tool approval** enabled on the association).
+- A Slack channel is created and linked to a workspace (from the
+  workspace's Channels tab, click Link channel). A linked workspace
+  forwards all session gates, including tool approvals, to the channel.
 - A `deploy-tools` toolset is registered with a `deploy_prod` tool.
 - An LLM provider is configured.
 
@@ -109,11 +110,11 @@ delivers a matching slash command, skipping the trigger entirely.
 
 ```callout:warning
 The approval prompt surfaces in the primer console on the Pending tab and,
-if the channel association has **Forward tool approval** enabled, in Slack.
-In high-traffic channels the Slack prompt can scroll away before the
-approver sees it. Pin approval responses to a dedicated moderator channel
-by creating a second association with `forward_tool_approval` enabled and
-`forward_ask_user` disabled.
+when the workspace is linked to a channel, in that channel (a linked
+workspace forwards all gates, including tool approvals). In high-traffic
+channels the Slack prompt can scroll away before the approver sees it.
+Link the workspace to a dedicated, low-traffic moderator channel so
+approval prompts stay visible.
 ```
 
 ## Result
