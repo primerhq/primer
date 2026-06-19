@@ -117,13 +117,96 @@ async def test_migrate_legacy_bodies_and_paths(provider):
     assert d1.path  # non-empty
     assert d1.title == "Runbook"
 
-    # system collection doc is UNTOUCHED (no content row)
+    # system collection doc gets a path+title on the ENTITY row (so it loads
+    # cleanly via the now-strict Document model) but NO content row -- system
+    # bodies stay vector-backed (a P4 concern).
+    s1 = await docs.get("s1")
+    assert s1.path  # non-empty -> deserialises cleanly
+    assert s1.title == "cat"
     assert await cs.get("s1") is None
 
     # idempotent: running again is a no-op (no duplicate/conflict)
     again = await migrate_document_content(provider)
     assert again == 0
     assert await cs.get("d1") == "BODYC"
+
+
+async def test_system_collection_row_backfilled_with_path_no_content(provider):
+    """A pre-existing SYSTEM-collection legacy row (no path) must end up with a
+    valid path + title so it deserialises via the strict Document model, but
+    must NOT get a content-store row (system bodies stay vector-backed)."""
+    colls = provider.get_storage(Collection)
+    await colls.create(_collection("sys1", system=True))
+
+    await _raw_insert_document(
+        provider,
+        {"id": "ai1", "collection_id": "sys1", "name": "Getting Started", "meta": {"content": "AIBODY"}},
+    )
+
+    migrated = await migrate_document_content(provider)
+    # system rows are path-backfilled but NOT counted as body migrations
+    assert migrated == 0
+
+    docs = provider.get_storage(Document)
+    # would raise ValidationError before the fix (row has no path)
+    ai1 = await docs.get("ai1")
+    assert ai1.path
+    assert ai1.title == "Getting Started"
+
+    cs = provider.get_content_store()
+    assert await cs.get("ai1") is None  # no content row for system rows
+
+    # idempotent: a re-run leaves the now-pathed system row alone
+    again = await migrate_document_content(provider)
+    assert again == 0
+    ai1b = await docs.get("ai1")
+    assert ai1b.path == ai1.path
+
+
+async def test_orphan_document_collection_missing_is_skipped(provider):
+    """A document whose collection_id points at a non-existent collection is an
+    orphan -- it must be skipped (no crash, no content row), not resurrected."""
+    await _raw_insert_document(
+        provider,
+        {"id": "orph1", "collection_id": "ghost", "name": "Ghost", "meta": {"content": "Z"}},
+    )
+
+    migrated = await migrate_document_content(provider)
+    assert migrated == 0
+
+    cs = provider.get_content_store()
+    assert await cs.get("orph1") is None
+
+
+async def test_migrates_many_rows_correctly(provider):
+    """Correctness over a larger seed -- exercises the batched/paginated read."""
+    colls = provider.get_storage(Collection)
+    await colls.create(_collection("c1"))
+
+    n = 50
+    for i in range(n):
+        await _raw_insert_document(
+            provider,
+            {
+                "id": f"m{i}",
+                "collection_id": "c1",
+                "name": f"Doc {i}",
+                "meta": {"content": f"BODY{i}"},
+            },
+        )
+
+    migrated = await migrate_document_content(provider)
+    assert migrated == n
+
+    cs = provider.get_content_store()
+    docs = provider.get_storage(Document)
+    for i in range(n):
+        assert await cs.get(f"m{i}") == f"BODY{i}"
+        d = await docs.get(f"m{i}")
+        assert d.path
+
+    # idempotent over the larger seed too
+    assert await migrate_document_content(provider) == 0
 
 
 async def test_path_collision_yields_distinct_paths(provider):
