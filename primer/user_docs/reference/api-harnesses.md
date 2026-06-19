@@ -187,7 +187,7 @@ const {items} = await r.json()
 
 ## Fetch bundle from remote
 
-`POST /v1/harnesses/{harness_id}/fetch` - pulls the bundle from the remote git URL and caches the overrides schema. Returns `200` or `202` (async). Poll `GET /v1/harnesses/{harness_id}` until `pending_operation` is null.
+`POST /v1/harnesses/{harness_id}/fetch` - pulls the bundle from the remote git URL and caches the overrides schema. Returns `202 Accepted` (async). Poll `GET /v1/harnesses/{harness_id}` until `pending_operation` is null.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -199,7 +199,7 @@ r = httpx.post(
     "https://your-host/v1/harnesses/hrn-a1b2c3d4e5f6/fetch",
     headers={"Authorization": f"Bearer {token}"},
 )
-assert r.status_code in (200, 202)
+assert r.status_code == 202
 # Poll until idle
 while True:
     h = httpx.get(
@@ -220,7 +220,7 @@ After fetch completes, `overrides_schema` is populated on the harness object.
 
 ## Set override values
 
-`PUT /v1/harnesses/{harness_id}/overrides` - stores the override values used during install/sync. Returns `200` or `204`.
+`PUT /v1/harnesses/{harness_id}/overrides` - stores the override values used during install/sync. Returns `200 OK` with the updated harness object.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -235,7 +235,7 @@ r = httpx.put(
     headers={"Authorization": f"Bearer {token}"},
     json={"provider_id": "anthropic-prod", "model_name": "claude-sonnet-4-6"},
 )
-assert r.status_code in (200, 204)
+assert r.status_code == 200
 --- javascript
 await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/overrides", {
   method: "PUT",
@@ -246,7 +246,7 @@ await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/overrides", {
 
 ## Install
 
-`POST /v1/harnesses/{harness_id}/install` - renders bundle templates into live entities. Returns `200` or `202`. Poll until `pending_operation` is null.
+`POST /v1/harnesses/{harness_id}/install` - renders bundle templates into live entities. Returns `202 Accepted`. Poll until `pending_operation` is null.
 
 Entities created by install carry a `harness_id` field and are write-protected; direct `PUT`/`DELETE` on them returns `409`.
 
@@ -260,7 +260,7 @@ r = httpx.post(
     "https://your-host/v1/harnesses/hrn-a1b2c3d4e5f6/install",
     headers={"Authorization": f"Bearer {token}"},
 )
-assert r.status_code in (200, 202)
+assert r.status_code == 202
 while True:
     h = httpx.get(
         "https://your-host/v1/harnesses/hrn-a1b2c3d4e5f6",
@@ -281,7 +281,7 @@ await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/install", {
 
 ## Sync to latest ref
 
-`POST /v1/harnesses/{harness_id}/sync` - re-fetches the bundle and re-renders entities in place. Returns `200` or `202`. Safe to call when status is `outdated`.
+`POST /v1/harnesses/{harness_id}/sync` - re-fetches the bundle and re-renders entities in place. Returns `202 Accepted`. Safe to call when status is `outdated`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -293,7 +293,7 @@ r = httpx.post(
     "https://your-host/v1/harnesses/hrn-a1b2c3d4e5f6/sync",
     headers={"Authorization": f"Bearer {token}"},
 )
-assert r.status_code in (200, 202)
+assert r.status_code == 202
 --- javascript
 await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/sync", {
   method: "POST",
@@ -303,7 +303,7 @@ await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/sync", {
 
 ## Build outbound bundle
 
-`POST /v1/harnesses/{harness_id}/build` - renders tracked live entities into bundle templates. Requires `direction: outbound` and a populated `tracked_entities` list. Returns `200` or `202`.
+`POST /v1/harnesses/{harness_id}/build` - renders tracked live entities into bundle templates. Requires `direction: outbound` and a populated `tracked_entities` list. Returns `202 Accepted`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -315,7 +315,7 @@ r = httpx.post(
     "https://your-host/v1/harnesses/hrn-a1b2c3d4e5f6/build",
     headers={"Authorization": f"Bearer {token}"},
 )
-assert r.status_code in (200, 202)
+assert r.status_code == 202
 --- javascript
 await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/build", {
   method: "POST",
@@ -325,7 +325,7 @@ await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/build", {
 
 ## Push outbound bundle to git
 
-`POST /v1/harnesses/{harness_id}/push` - commits and pushes the built bundle to the configured remote. Requires a `git_token` with push access. Returns `200` or `202`.
+`POST /v1/harnesses/{harness_id}/push` - commits and pushes the built bundle to the configured remote. Requires a `git_token` with push access. Returns `202 Accepted`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -337,7 +337,7 @@ r = httpx.post(
     "https://your-host/v1/harnesses/hrn-a1b2c3d4e5f6/push",
     headers={"Authorization": f"Bearer {token}"},
 )
-assert r.status_code in (200, 202)
+assert r.status_code == 202
 --- javascript
 await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/push", {
   method: "POST",
@@ -394,7 +394,7 @@ await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6/tracked_entities", {
 
 ## Uninstall a harness
 
-`DELETE /v1/harnesses/{harness_id}` - enqueues an UNINSTALL operation that removes all harness-managed entities and lifts write-protection. Returns `200`. Poll `GET /v1/harnesses/{harness_id}` until the harness is gone or `status` transitions away from `installed`.
+`DELETE /v1/harnesses/{harness_id}` - enqueues an UNINSTALL operation that removes all harness-managed entities and lifts write-protection. Returns `202 Accepted`. Poll `GET /v1/harnesses/{harness_id}` until the harness is gone or `status` transitions away from `installed`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -406,7 +406,7 @@ r = httpx.delete(
     "https://your-host/v1/harnesses/hrn-a1b2c3d4e5f6",
     headers={"Authorization": f"Bearer {token}"},
 )
-assert r.status_code == 200
+assert r.status_code == 202
 --- javascript
 await fetch("/v1/harnesses/hrn-a1b2c3d4e5f6", {
   method: "DELETE",

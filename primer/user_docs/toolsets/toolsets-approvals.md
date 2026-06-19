@@ -192,7 +192,7 @@ Rejecting a tool call is not a retry. The agent receives an error message. If th
 ```
 
 ```ref:toolsets/toolsets-system
-The seven built-in toolsets and the tools they contain.
+The eight built-in toolsets and the tools they contain.
 ```
 
 ```ref:features/mcp-server

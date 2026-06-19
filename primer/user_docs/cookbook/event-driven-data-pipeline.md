@@ -21,7 +21,7 @@ Every upstream event becomes searchable within minutes.
 - An embedding provider and search provider are configured under
   Providers / Embedding (needed to create the collection).
 - A workspace template exists.
-- An agent exists with the `workspaces` toolset and the knowledge toolset
+- An agent exists with the `workspaces` toolset and the `system` toolset
   bound (so it can write files and call `put_document`).
 
 ## Steps
@@ -48,7 +48,7 @@ need to change either, delete the collection and re-ingest all documents.
 1. Open **Agents** in the left nav and click **New agent**.
 2. In the **Basic** tab, give the agent the ID `ingestion-bot` and select
    a provider and model.
-3. Switch to the **Tools** tab and enable the `workspaces` and `knowledge`
+3. Switch to the **Tools** tab and enable the `workspaces` and `system`
    toolsets.
 4. Switch to the **Advanced** tab and set the system prompt:
 

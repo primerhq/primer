@@ -68,23 +68,26 @@ A successful login sets a session cookie. For programmatic access use **bearer t
 
 Create a long-lived token once; pass it on every request instead of a session cookie.
 
+Token CRUD is operator-only: it requires an active **session cookie**. A request authenticated with a bearer token is rejected with `403` - bearer credentials cannot mint or manage other tokens.
+
 ```code-tabs:curl,python,javascript
 --- curl
-# Create a token (requires an active session cookie or existing bearer token)
+# Create a token (requires an active session cookie; cookie sent via -b)
 curl -X POST https://your-host/v1/auth/tokens \
-  -H "Authorization: Bearer $TOKEN" \
+  -b cookies.txt \
   -H "Content-Type: application/json" \
   -d '{"name": "ci-pipeline", "scopes": []}'
 --- python
 import httpx
 r = httpx.post("https://your-host/v1/auth/tokens",
-               headers={"Authorization": f"Bearer {token}"},
+               cookies=session_cookies,
                json={"name": "ci-pipeline", "scopes": []})
 print(r.json()["plaintext"])   # shown ONCE; store it securely
 --- javascript
 const r = await fetch("/v1/auth/tokens", {
   method: "POST",
-  headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json"},
+  credentials: "include",
+  headers: {"Content-Type": "application/json"},
   body: JSON.stringify({name: "ci-pipeline", scopes: []})
 })
 const {plaintext} = await r.json()   // shown ONCE
@@ -94,10 +97,10 @@ Response `201 Created`:
 
 ```json
 {
-  "id": "tok_01abc...",
+  "id": "at-01abc...",
   "name": "ci-pipeline",
-  "prefix": "pmt_",
-  "plaintext": "pmt_...",
+  "prefix": "primer_p",
+  "plaintext": "primer_pat_...",
   "scopes": [],
   "created_at": "2025-01-15T09:00:00Z",
   "expires_at": null

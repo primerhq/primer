@@ -72,7 +72,7 @@ runs reads as inconsistent to PR authors.
 2. **Kind**: choose **Scheduled**.
 3. **Config**: enter cron expression `0 * * * *` (top of every UTC
    hour). Select an appropriate IANA timezone. Set **Catchup policy**
-   to `skip` so missed ticks during downtime do not cause a burst of
+   to `none` so missed ticks during downtime do not cause a burst of
    review runs.
 4. **Details**: name it `pr-review-hourly`. Click **Create**.
 

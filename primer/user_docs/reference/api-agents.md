@@ -273,7 +273,7 @@ await fetch("/v1/agents/find", {
 
 ## Validate agent status
 
-`GET /v1/agents/{id}/status` - checks whether the agent's `model.provider_id` and `model.model_name` resolve against the current provider registry. Returns `200 OK` with a status object.
+`GET /v1/agents/{id}/status` - checks whether the agent's `model.provider_id` (an `LLMProvider` row) and any non-built-in toolsets referenced by `tools` exist in storage. Returns `200 OK` with `{"ok": boolean, "issues": [string, ...]}`. It does not call the live LLM or toolset providers.
 
 ```code-tabs:curl,python,javascript
 --- curl

@@ -98,24 +98,24 @@ provider. The workspace root is a subdirectory under the provider's
 | Field | Description |
 |---|---|
 | **Image** | The container image to run (for example `python:3.13-slim` or `primer/workspace-runtime:1.0`) |
-| **Entrypoint** | Optional override for the image entrypoint |
-| **Volumes** | Named volumes or bind mounts to attach |
-| **Resource limits** | `cpu_limit`, `memory_limit` in Docker notation |
+| **Entrypoint** | Optional override for the image entrypoint (`entrypoint`), plus optional `user` and `workdir` (default `/workspace`) |
+| **Mounts** | `extra_mounts`: host bind mounts to attach (`host`, `container`, `readonly`) |
+| **Resource limits** | `cpu_cores` (float) and `memory_bytes` (int) |
 
 **Kubernetes backend:**
 
 | Field | Description |
 |---|---|
-| **Image** | Container image; must be accessible from the cluster |
-| **Entrypoint** | Optional override |
-| **PVC size** | Persistent volume size (for example `5Gi`) |
-| **Storage class** | Optional; uses cluster default when omitted |
-| **Pod overrides** | Node selector, tolerations, extra volumes (forbidden keys are rejected: `securityContext`, `hostPath`, `hostNetwork`, and similar escalation paths) |
+| **Image** | Container image; must be accessible from the cluster (plus optional `entrypoint`, `args`, `workdir`) |
+| **Resource limits** | `cpu_request` / `cpu_limit` / `memory_request` / `memory_limit` as Kubernetes quantity strings (`500m`, `2`, `1Gi`) |
+| **PVC size** | `pvc_size`, default `10Gi`; `pvc_access_modes` defaults to `["ReadWriteOnce"]` |
+| **Storage class** | `storage_class`, optional; uses the cluster default when omitted |
+| **Pod overrides** | `pod_overrides` (deep-merged into the PodSpec), `extra_volumes`, `extra_volume_mounts`. Escalation keys are rejected recursively: `securityContext`, `hostPath`, `hostNetwork`, `privileged`, `runAsUser`, and similar paths |
 
 ### File sources
 
-The `files` field is a list of `FileMount` entries, each with a `destination`
-path and a `source` discriminated by kind:
+The `files` field is a list of `FileMount` entries, each with a `path`
+(the destination inside the workspace) and a `source` discriminated by kind:
 
 - `inline`: content supplied directly in the template
 - `url`: fetched from an HTTP URL at materialisation time

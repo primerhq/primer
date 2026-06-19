@@ -228,6 +228,7 @@ const {items} = await r.json()
     "chats": {
       "enabled": false,
       "default_agent": null,
+      "allow_agent_switch": false,
       "allowed_agents": [],
       "relay_mode": "final"
     }
@@ -252,7 +253,8 @@ The pair `(provider_id, external_id)` must be unique. A duplicate returns `409 /
 |-------|----------|------|-------------|
 | `config.chats.enabled` | no | boolean | Default `false`. When `true`, incoming messages on this room start primer chats |
 | `config.chats.default_agent` | yes when enabled | string | Agent id each new chat begins with; required when `chats.enabled=true` |
-| `config.chats.allowed_agents` | no | list of strings | Agent ids the `/agent` command may switch to; `[]` means any agent is allowed |
+| `config.chats.allow_agent_switch` | no | boolean | Default `false`. When `false`, the `/agent` command is disabled and `allowed_agents` is ignored |
+| `config.chats.allowed_agents` | no | list of strings | Only applies when `allow_agent_switch=true`: restricts `/agent` to these agent ids; `[]` means any agent is allowed |
 | `config.chats.relay_mode` | no | string | `"final"` (default) or `"all"`. Controls which assistant turns are relayed back to the platform |
 
 ## Create a channel
@@ -402,11 +404,13 @@ await fetch("/v1/workspaces/ws-prod/channel_association", {
 ```
 
 **Errors:**
-- `404` - workspace or channel does not exist
+- `404` - workspace does not exist
+- `422` - the named channel does not exist
+- `409` - the workspace is terminating and cannot have its association changed
 
 ### Clear workspace channel association
 
-`DELETE /v1/workspaces/{workspace_id}/channel_association` - returns `200 OK`.
+`DELETE /v1/workspaces/{workspace_id}/channel_association` - returns `204 No Content`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -418,7 +422,7 @@ r = httpx.delete(
     "https://your-host/v1/workspaces/ws-prod/channel_association",
     headers={"Authorization": f"Bearer {token}"},
 )
-assert r.status_code == 200
+assert r.status_code == 204
 --- javascript
 await fetch("/v1/workspaces/ws-prod/channel_association", {
   method: "DELETE",
@@ -431,4 +435,4 @@ await fetch("/v1/workspaces/ws-prod/channel_association", {
 
 ## Errors note
 
-All error responses use the RFC 7807 `ProblemDetails` envelope with `type`, `title`, `status`, `detail`, `instance`, and `extensions` (which includes `request_id` and, for 422 errors, an `errors` array with field paths). See the REST API overview for details.
+Channel-provider and channel CRUD errors use the RFC 7807 `ProblemDetails` envelope with `type`, `title`, `status`, `detail`, `instance`, and `extensions` (which includes `request_id` and, for 422 errors, an `errors` array with field paths). The workspace channel-association routes (`PUT` / `DELETE .../channel_association`) instead return a `{"detail": {"error": "<code>", "message": "..."}}` body for their `409` (workspace terminating) and `422` (channel not found) cases. See the REST API overview for details.

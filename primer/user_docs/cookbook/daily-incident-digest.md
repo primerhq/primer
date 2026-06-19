@@ -125,9 +125,11 @@ write-ups.
 ## Gotchas
 
 - Change `1-5` to `*` in the cron expression for weekend coverage.
-- If you want weekend coverage without recreating the trigger
-  (trigger schedule is immutable), create a second trigger with
-  `0 5 * * 0,6` and the same subscription.
+- The cron schedule is editable: edit the trigger (`PUT
+  /v1/triggers/{id}`) and supply a new config to widen the days, for
+  example `0 5 * * *`. Only the trigger *kind* is immutable (switching a
+  scheduled trigger to a webhook returns 409), so changing the cron
+  expression in place does not require recreating the trigger.
 - The semantic query the agent sends is natural-language. Recency
   filtering uses the `started_at` collection metadata, not the
   query text. Ensure incident documents land with accurate

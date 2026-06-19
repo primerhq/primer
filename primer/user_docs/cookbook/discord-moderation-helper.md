@@ -117,7 +117,7 @@ association to exclude the bot's user ID, or instruct the agent in
 its system prompt to skip messages where the author is itself.
 ```
 
-- Discord webhook delivery is slightly delayed (1 to 5 seconds
+- Discord gateway delivery is slightly delayed (1 to 5 seconds
   typical). Calibrate the approval timeout against the moderator's
   expected response window.
 - The approval queue grows if the moderator is away. Set a timeout

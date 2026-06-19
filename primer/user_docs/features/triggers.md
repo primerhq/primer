@@ -86,7 +86,7 @@ Rate limiting is 60 requests per minute per token (in-process sliding window). B
 
 | Field | Notes |
 |---|---|
-| **Cron** | Five-field expression (`m h dom mon dow`). Validated by croniter. |
+| **Cron** | Standard five-field expression (`m h dom mon dow`). Validity is checked with `croniter.is_valid` (which also accepts croniter's extended six-field, seconds-first form). |
 | **Timezone** | IANA timezone name (e.g. `America/New_York`). Defaults to `UTC`. |
 | **Catchup** | `one` (default), `all`, or `none`. See catchup policies above. |
 

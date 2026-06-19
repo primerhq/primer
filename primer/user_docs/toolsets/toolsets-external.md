@@ -110,7 +110,7 @@ The agent calls the GitHub MCP server's `list_pull_requests` tool (or equivalent
 
 
 ```ref:toolsets/toolsets-system
-The seven built-in toolsets and how to explore tools with list_toolset_tools and call_tool.
+The eight built-in toolsets and how to explore tools with list_toolset_tools and call_tool.
 ```
 
 ```ref:features/mcp-server

@@ -30,13 +30,11 @@ The allowlist is operator-controlled and mutated only from the console (cookie s
 
 Not every tool can be added to the allowlist. Three categories are always excluded:
 
-- **Tools from user-defined Toolset rows.** The endpoint exposes only primer's reserved built-in toolsets (`system`, `workspaces`, `search`, `trigger`, `web`, `misc`, `harness`). Tools from toolsets you defined yourself, including external MCP servers you mounted, are denied with reason `not_system_toolset`. They belong to primer's own agents, not to outside MCP clients.
+- **Tools from user-defined Toolset rows.** The endpoint exposes only primer's reserved built-in toolsets (`system`, `workspaces`, `search`, `trigger`, `web`, `misc`, `harness`, and `workspace_ext`). Tools from toolsets you defined yourself, including external MCP servers you mounted, are denied with reason `not_system_toolset`. They belong to primer's own agents, not to outside MCP clients.
 - **Yielding tools** - tools that park a session on an event bus (such as `misc__ask_user`, `misc__sleep`, `trigger__subscribe_to_trigger`, and `workspaces__watch_files`). MCP v1 has no pause/resume primitive, so a round-trip is impossible. These are denied with reason `yielding_unsupported`.
 - **Workspace tools that need an active agent session** - workspace tools that read the current `session_id` from the agent runtime context. These are meaningless outside an agent loop and are denied with reason `needs_session`.
 
-There is no policy-level denylist beyond those technical floors: you enabled MCP, you chose which tools to expose, and you minted the token, so you choose the risk surface (including powerful tools like `system__call_tool` or `web__http-request`).
-
-Approval-gated tools are exposable from a catalogue standpoint, but the dispatcher refuses to invoke them when called over MCP. If a client calls an approval-gated tool, it receives an error rather than a park for a human decision. If you plan to expose tools to external clients, prefer tools that do not require approvals, or explicitly lift the approval requirement for those tools.
+There is no policy-level denylist beyond those technical floors: you enabled MCP, you chose which tools to expose, and you minted the token, so you choose the risk surface (including powerful tools like `system__call_tool` or `web__http_request`).
 
 Approval-gated tools are exposable from a catalogue standpoint, but the dispatcher refuses to invoke them when called over MCP. If a client calls an approval-gated tool, it receives an error rather than a park for a human decision. If you plan to expose tools to external clients, prefer tools that do not require approvals, or explicitly lift the approval requirement for those tools.
 

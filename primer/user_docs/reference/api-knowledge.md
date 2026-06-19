@@ -38,12 +38,15 @@ Collections and documents: creating collections, ingesting documents, and search
 | DELETE | `/v1/collections/{id}` | Delete |
 | POST | `/v1/collections/find` | Predicate-based search |
 | POST | `/v1/collections/{id}/search` | Semantic search within a collection |
-| GET | `/v1/collections/{id}/documents` | List documents in a collection |
+| GET | `/v1/collections/{id}/documents` | List documents (no `path`) or read one by `?path=` |
+| PUT | `/v1/collections/{id}/documents?path=<p>` | Create or replace a document at a path |
+| DELETE | `/v1/collections/{id}/documents?path=<p>` | Delete a document by path |
+| POST | `/v1/collections/{id}/documents/move` | Move a document from one path to another |
 | GET | `/v1/collections/{id}/indexed_documents` | List indexed chunks |
-| POST | `/v1/documents` | Create (ingest) a document |
-| GET | `/v1/documents/{id}` | Fetch one document |
-| PUT | `/v1/documents/{id}` | Replace and re-index |
-| DELETE | `/v1/documents/{id}` | Delete and remove chunks |
+| POST | `/v1/documents` | Create a document (entity CRUD; `path` required) |
+| GET | `/v1/documents/{id}` | Fetch one document by id |
+| PUT | `/v1/documents/{id}` | Replace and re-index by id |
+| DELETE | `/v1/documents/{id}` | Delete and remove chunks by id |
 | POST | `/v1/documents/_convert_file` | Convert a file to indexable text |
 | PUT | `/v1/internal_collections/config` | Activate the internal-collections subsystem |
 | GET | `/v1/internal_collections/config` | Get current config |
@@ -59,7 +62,7 @@ Collections and documents: creating collections, ingesting documents, and search
 
 ## POST /v1/ssp
 
-Create a semantic-search provider. Supported backends: `pgvector`, `pgvector_scale`, `lance`. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `semantic-search-provider-3f9a1c8d`). The id is immutable after creation.
+Create a semantic-search provider. Supported backends: `pgvector`, `pgvectorscale`, `lance`. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `semantic-search-provider-3f9a1c8d`). The id is immutable after creation.
 
 ### pgvector
 
@@ -140,7 +143,7 @@ Deleting an SSP that is still referenced by one or more collections returns `409
 
 ## POST /v1/embedding_providers
 
-Register an embedding provider. Supported backends: `openai` (compatible with LM Studio, Azure, OpenRouter, etc.) and `huggingface`. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `embedding-provider-3f9a1c8d`). The id is immutable after creation.
+Register an embedding provider. Supported backends: `openai` (compatible with LM Studio, Azure, OpenRouter, etc.), `huggingface`, and `gemini`. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `embedding-provider-3f9a1c8d`). The id is immutable after creation.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -266,7 +269,7 @@ Response `201`:
 
 ## POST /v1/documents
 
-Ingest a document. The `meta.text` field carries the content to embed. Embedding happens synchronously on create; the document's chunks appear immediately in `GET /v1/collections/{id}/indexed_documents` once the embedder is reachable. On embedder failure the row is persisted without chunks and the startup backfill will retry. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `document-3f9a1c8d`). The id is immutable after creation.
+Create a document via the id-addressed entity CRUD path. A document now carries a required `path` (a POSIX-like address, unique per collection, e.g. `concepts/slo.md`); creating one without `path` returns `422`. The body to index is read from `meta.text` (or `meta.content`) on this CRUD path. Indexing is best-effort: when the embedder is reachable the document's chunks become searchable, and on embedder failure the row is persisted without chunks and indexing is retried later. The `id` is optional: supply one to use it verbatim, or omit it and the server assigns a type-prefixed id (e.g. `document-3f9a1c8d`). The id is immutable after creation. To address a document by its path instead, use the path-addressed routes under `/v1/collections/{id}/documents` (below).
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -277,6 +280,7 @@ curl -s -X POST https://primer.example/v1/documents \
     "id": "doc-postmortem-001",
     "collection_id": "company-docs",
     "name": "Q1 post-mortem",
+    "path": "postmortems/q1.md",
     "meta": { "text": "We experienced a 30-minute outage on March 3..." }
   }'
 --- python
@@ -288,6 +292,7 @@ r = httpx.post(
         "id": "doc-postmortem-001",
         "collection_id": "company-docs",
         "name": "Q1 post-mortem",
+        "path": "postmortems/q1.md",
         "meta": {"text": "We experienced a 30-minute outage on March 3..."},
     },
 )
@@ -303,6 +308,7 @@ await fetch("/v1/documents", {
     id: "doc-postmortem-001",
     collection_id: "company-docs",
     name: "Q1 post-mortem",
+    path: "postmortems/q1.md",
     meta: { text: "We experienced a 30-minute outage on March 3..." },
   }),
 });
@@ -312,7 +318,7 @@ await fetch("/v1/documents", {
 
 ## PUT /v1/documents/{id}
 
-Replace a document and re-index it. Old chunks are removed before new chunks are written; no stale vectors linger.
+Replace a document by id and re-index it. The `path` field is required here too. Old chunks are removed before new chunks are written; no stale vectors linger.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -323,6 +329,7 @@ curl -s -X PUT https://primer.example/v1/documents/doc-postmortem-001 \
     "id": "doc-postmortem-001",
     "collection_id": "company-docs",
     "name": "Q1 post-mortem (revised)",
+    "path": "postmortems/q1.md",
     "meta": { "text": "Updated analysis: root cause was a misconfigured timeout..." }
   }'
 --- python
@@ -334,6 +341,7 @@ r = httpx.put(
         "id": "doc-postmortem-001",
         "collection_id": "company-docs",
         "name": "Q1 post-mortem (revised)",
+        "path": "postmortems/q1.md",
         "meta": {"text": "Updated analysis: root cause was a misconfigured timeout..."},
     },
 )
@@ -349,8 +357,167 @@ await fetch("/v1/documents/doc-postmortem-001", {
     id: "doc-postmortem-001",
     collection_id: "company-docs",
     name: "Q1 post-mortem (revised)",
+    path: "postmortems/q1.md",
     meta: { text: "Updated analysis: root cause was a misconfigured timeout..." },
   }),
+});
+```
+
+---
+
+## Path-addressed documents
+
+Documents are also addressable by their `path` within a collection. These routes are the agent-facing surface: the body lives in a content store keyed by `(collection_id, path)`, and the `?path=` query form (rather than a slash-bearing path segment) avoids segment-routing issues with nested paths.
+
+### GET /v1/collections/{id}/documents
+
+With no `path`, list documents in the collection. The listing is sourced from the content store unioned with entity rows that carry a `path`, is scoped to the collection, and is NOT offset-paginated. Bodies are not loaded; each entry carries `document_id`, `path`, and `size` (body length in characters). Pass `?prefix=<p>` to scope the listing to a path prefix.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s "https://primer.example/v1/collections/company-docs/documents" \
+  -H "Authorization: Bearer $TOKEN"
+--- python
+import httpx
+r = httpx.get(
+    "https://primer.example/v1/collections/company-docs/documents",
+    headers={"Authorization": f"Bearer {token}"},
+)
+docs = r.json()["documents"]
+--- javascript
+const r = await fetch("/v1/collections/company-docs/documents", {
+  headers: { "Authorization": `Bearer ${token}` },
+});
+const { documents } = await r.json();
+```
+
+Response `200`:
+
+```json
+{
+  "documents": [
+    { "document_id": "doc-postmortem-001", "path": "postmortems/q1.md", "size": 48 }
+  ]
+}
+```
+
+With `?path=<p>`, return the single document at that path (body + metadata), or `404`:
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s "https://primer.example/v1/collections/company-docs/documents?path=postmortems/q1.md" \
+  -H "Authorization: Bearer $TOKEN"
+--- python
+import httpx
+r = httpx.get(
+    "https://primer.example/v1/collections/company-docs/documents",
+    params={"path": "postmortems/q1.md"},
+    headers={"Authorization": f"Bearer {token}"},
+)
+result = r.json()
+--- javascript
+const r = await fetch(
+  "/v1/collections/company-docs/documents?path=postmortems/q1.md",
+  { headers: { "Authorization": `Bearer ${token}` } },
+);
+const result = await r.json();
+```
+
+Response `200`:
+
+```json
+{
+  "document": {
+    "id": "doc-postmortem-001",
+    "collection_id": "company-docs",
+    "name": "Q1 post-mortem",
+    "path": "postmortems/q1.md",
+    "title": null,
+    "meta": {}
+  },
+  "content": "We experienced a 30-minute outage on March 3..."
+}
+```
+
+### PUT /v1/collections/{id}/documents (path query)
+
+Create or replace (upsert) the document at `(collection_id, path)` named by the `?path=` query parameter. The body carries `content` (required), and optional `title` and `meta`. Returns the stored document metadata under `document`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X PUT "https://primer.example/v1/collections/company-docs/documents?path=postmortems/q1.md" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"content": "We experienced a 30-minute outage on March 3...", "title": "Q1 post-mortem"}'
+--- python
+import httpx
+r = httpx.put(
+    "https://primer.example/v1/collections/company-docs/documents",
+    params={"path": "postmortems/q1.md"},
+    headers={"Authorization": f"Bearer {token}"},
+    json={"content": "We experienced a 30-minute outage on March 3...", "title": "Q1 post-mortem"},
+)
+r.raise_for_status()
+--- javascript
+await fetch("/v1/collections/company-docs/documents?path=postmortems/q1.md", {
+  method: "PUT",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ content: "We experienced a 30-minute outage on March 3...", title: "Q1 post-mortem" }),
+});
+```
+
+### DELETE /v1/collections/{id}/documents (path query)
+
+Delete the document at `(collection_id, path)` named by the `?path=` query parameter. Returns `204`; a missing path returns `404`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X DELETE "https://primer.example/v1/collections/company-docs/documents?path=postmortems/q1.md" \
+  -H "Authorization: Bearer $TOKEN"
+--- python
+import httpx
+r = httpx.delete(
+    "https://primer.example/v1/collections/company-docs/documents",
+    params={"path": "postmortems/q1.md"},
+    headers={"Authorization": f"Bearer {token}"},
+)
+r.raise_for_status()  # 204
+--- javascript
+await fetch("/v1/collections/company-docs/documents?path=postmortems/q1.md", {
+  method: "DELETE",
+  headers: { "Authorization": `Bearer ${token}` },
+});
+```
+
+### POST /v1/collections/{id}/documents/move
+
+Move a document from one path to another within the collection. The body uses `from` and `to`. Returns `204`; a missing source returns `404`, and an already-occupied destination returns `409`.
+
+```code-tabs:curl,python,javascript
+--- curl
+curl -s -X POST "https://primer.example/v1/collections/company-docs/documents/move" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"from": "postmortems/q1.md", "to": "archive/postmortems/q1.md"}'
+--- python
+import httpx
+r = httpx.post(
+    "https://primer.example/v1/collections/company-docs/documents/move",
+    headers={"Authorization": f"Bearer {token}"},
+    json={"from": "postmortems/q1.md", "to": "archive/postmortems/q1.md"},
+)
+r.raise_for_status()  # 204
+--- javascript
+await fetch("/v1/collections/company-docs/documents/move", {
+  method: "POST",
+  headers: {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  },
+  body: JSON.stringify({ from: "postmortems/q1.md", to: "archive/postmortems/q1.md" }),
 });
 ```
 
@@ -464,7 +631,7 @@ with open("note.md", "rb") as f:
         headers={"Authorization": f"Bearer {token}"},
         files={"file": ("note.md", f, "text/markdown")},
     )
-text = r.text
+text = r.json()["text"]
 --- javascript
 const fd = new FormData();
 fd.append("file", fileBlob, "note.md");
@@ -473,10 +640,21 @@ const r = await fetch("/v1/documents/_convert_file", {
   headers: { "Authorization": `Bearer ${token}` },
   body: fd,
 });
-const text = await r.text();
+const { text } = await r.json();
 ```
 
-Returns `200` with the extracted plain text as the response body.
+Returns `200` with a JSON object carrying the extracted text plus upload metadata. The endpoint is non-destructive: it does not persist a Document row.
+
+```json
+{
+  "filename": "note.md",
+  "content_type": "text/markdown",
+  "bytes_loaded": 1234,
+  "text": "# Note\n\n..."
+}
+```
+
+The upload is capped at 32 MB; a larger or empty file returns `400`.
 
 ---
 
@@ -527,7 +705,7 @@ await fetch("/v1/internal_collections/config", {
 
 ### POST /v1/internal_collections/bootstrap
 
-Trigger an async bootstrap that creates vector tables and indexes existing entities. Returns `202` immediately; poll `GET /v1/internal_collections/bootstrap/status` until `status == "succeeded"`. A second call while the first is running returns `409`.
+Trigger an async bootstrap that creates vector tables and indexes existing entities. Returns `202` immediately with the freshly created status row (its `status` is `"running"`); poll `GET /v1/internal_collections/bootstrap/status` until `status == "succeeded"`. A second call while the first is running returns `409`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -558,16 +736,34 @@ const boot = await fetch("/v1/internal_collections/bootstrap", {
 // boot.status === 202; poll status
 ```
 
-Bootstrap `202` response body:
+Bootstrap `202` response body (the status row at launch):
 
 ```json
-{ "status": "pending" }
+{
+  "status": "running",
+  "phase": null,
+  "phase_done": 0,
+  "phase_total": null,
+  "counts": { "agents": 0, "graphs": 0, "collections": 0, "tools": 0 },
+  "started_at": "2026-06-08T12:00:00Z",
+  "finished_at": null,
+  "error": null
+}
 ```
 
-Status poll response `200`:
+Status poll response `200` (same shape; `status` is one of `idle`, `running`, `succeeded`, `failed`):
 
 ```json
-{ "status": "succeeded", "indexed": 12 }
+{
+  "status": "succeeded",
+  "phase": null,
+  "phase_done": 0,
+  "phase_total": null,
+  "counts": { "agents": 4, "graphs": 2, "collections": 1, "tools": 5 },
+  "started_at": "2026-06-08T12:00:00Z",
+  "finished_at": "2026-06-08T12:00:12Z",
+  "error": null
+}
 ```
 
 ### DELETE /v1/internal_collections/config

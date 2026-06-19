@@ -25,14 +25,14 @@ The approval gate lifecycle, park/resume model, and console walkthrough.
 | GET | `/v1/sessions/{session_id}/tool_approval/pending` | Get pending approval for a session |
 | POST | `/v1/sessions/{session_id}/tool_approval/respond` | Submit an approval decision for a session |
 
-Chats do not expose `tool_approval/pending` or `tool_approval/respond`. On a chat, approval is conversational: when a policy gates a tool call the agent ends its turn with a normal assistant message asking you to approve, and you reply with a normal chat message (for example "yes" or "no").
+Chats expose a read-only `GET /v1/chats/{chat_id}/tool_approval/pending` but do not expose `tool_approval/respond`. On a chat, approval is conversational: when a policy gates a tool call the agent ends its turn with a normal assistant message asking you to approve, and you reply with a normal chat message (for example "yes" or "no").
 
 ## ToolApprovalPolicy object
 
 ```json
 {
   "id": "gate-delete-files",
-  "toolset_id": "_workspaces",
+  "toolset_id": "workspaces",
   "tool_name": "fs_delete",
   "approval": {"type": "required"},
   "enabled": true,
@@ -43,7 +43,7 @@ Chats do not expose `tool_approval/pending` or `tool_approval/respond`. On a cha
 | Field | Required | Type | Description |
 |-------|----------|------|-------------|
 | `id` | no | string | Identifier. If omitted, the server assigns a type-prefixed id (e.g. `tool-approval-policy-3f9a1c8d`). Immutable after creation |
-| `toolset_id` | yes | string | Toolset the policy applies to; may be a reserved internal toolset (`_system`, `_workspaces`, `_misc`, `_search`, `web`) or a user-created Toolset id |
+| `toolset_id` | yes | string | Toolset the policy applies to; may be a reserved built-in toolset (`system`, `workspaces`, `search`, `misc`, `web`, `harness`, `trigger`, `workspace_ext`) or a user-created Toolset id |
 | `tool_name` | yes | string | Bare tool name as registered in the provider catalogue (min length 1) |
 | `approval` | yes | ApprovalConfig | Discriminated approval strategy (see below) |
 | `enabled` | no | boolean | Default `true`; disabled policies are stored but skipped at evaluation time |
@@ -96,7 +96,7 @@ curl -X POST https://your-host/v1/tool_approval_policies \
   -H "Content-Type: application/json" \
   -d '{
     "id": "gate-delete-files",
-    "toolset_id": "_workspaces",
+    "toolset_id": "workspaces",
     "tool_name": "fs_delete",
     "approval": {"type": "required"},
     "enabled": true,
@@ -109,7 +109,7 @@ r = httpx.post(
     headers={"Authorization": f"Bearer {token}"},
     json={
         "id": "gate-delete-files",
-        "toolset_id": "_workspaces",
+        "toolset_id": "workspaces",
         "tool_name": "fs_delete",
         "approval": {"type": "required"},
         "enabled": True,
@@ -123,7 +123,7 @@ const r = await fetch("/v1/tool_approval_policies", {
   headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json"},
   body: JSON.stringify({
     id: "gate-delete-files",
-    toolset_id: "_workspaces",
+    toolset_id: "workspaces",
     tool_name: "fs_delete",
     approval: {type: "required"},
     enabled: true,
@@ -190,7 +190,7 @@ curl -X PUT https://your-host/v1/tool_approval_policies/gate-delete-files \
   -H "Content-Type: application/json" \
   -d '{
     "id": "gate-delete-files",
-    "toolset_id": "_workspaces",
+    "toolset_id": "workspaces",
     "tool_name": "fs_delete",
     "approval": {"type": "required"},
     "enabled": false,
@@ -203,7 +203,7 @@ r = httpx.put(
     headers={"Authorization": f"Bearer {token}"},
     json={
         "id": "gate-delete-files",
-        "toolset_id": "_workspaces",
+        "toolset_id": "workspaces",
         "tool_name": "fs_delete",
         "approval": {"type": "required"},
         "enabled": False,
@@ -216,7 +216,7 @@ await fetch("/v1/tool_approval_policies/gate-delete-files", {
   headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json"},
   body: JSON.stringify({
     id: "gate-delete-files",
-    toolset_id: "_workspaces",
+    toolset_id: "workspaces",
     tool_name: "fs_delete",
     approval: {type: "required"},
     enabled: false,
@@ -227,7 +227,7 @@ await fetch("/v1/tool_approval_policies/gate-delete-files", {
 
 ## Delete a policy
 
-`DELETE /v1/tool_approval_policies/{entity_id}` - returns `200 OK`.
+`DELETE /v1/tool_approval_policies/{entity_id}` - returns `204 No Content`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -274,7 +274,7 @@ await fetch("/v1/tool_approval_policies/invalidate", {
 
 When an enabled policy gates a tool call, the session parks on `_approval`. The pending endpoint returns the queued call details.
 
-`GET /v1/sessions/{session_id}/tool_approval/pending` - returns `200 OK` with the pending call, or `204 No Content` if there is no pending approval. Sessions only; on a chat the agent asks for approval as a normal assistant message instead.
+`GET /v1/sessions/{session_id}/tool_approval/pending` - returns `200 OK` with the pending call, or `404 Not Found` if there is no pending approval. A read-only chat variant exists at `GET /v1/chats/{chat_id}/tool_approval/pending`; chats have no respond endpoint, so on a chat the agent asks for approval as a normal assistant message instead.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -297,7 +297,7 @@ const pending = await r.json()
 
 ## Submit an approval decision
 
-`POST /v1/sessions/{session_id}/tool_approval/respond` - submit an `approved` or `rejected` decision. The session resumes with the result. Sessions only; on a chat you approve or reject by sending a normal chat message in reply to the agent's request.
+`POST /v1/sessions/{session_id}/tool_approval/respond` - submit an `approved` or `rejected` decision. Returns `202 Accepted`; the session then resumes with the result. Sessions only; on a chat you approve or reject by sending a normal chat message in reply to the agent's request.
 
 Request body:
 
@@ -372,7 +372,7 @@ await fetch("/v1/sessions/sess-abc123/tool_approval/respond", {
 })
 ```
 
-**Errors:** `404` if the session or chat does not exist; `422` if `tool_call_id` is missing or `decision` is not a valid value.
+**Errors:** `404` if the session does not exist; `422` if `tool_call_id` is missing or `decision` is not a valid value.
 
 **Timeout behavior:** if no decision arrives before `timeout_seconds` elapses, the TimeoutSweeper synthesises a rejected result (reason `"timed-out"`) and the session resumes with that rejection. The session does not terminate; the agent receives the rejection and continues.
 

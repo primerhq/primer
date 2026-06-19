@@ -7,9 +7,10 @@ summary: Every PRIMER_* env var, its default, and what it controls.
 
 ## Precedence
 
-Env vars override the YAML/TOML config file which overrides built-in
-defaults. Nested config fields use double underscore as the path
-separator (pydantic-settings `env_nested_delimiter`).
+A CLI `--config` YAML file overrides env vars, which override a
+`PRIMER_CONFIG_PATH` TOML file, which overrides built-in defaults.
+Nested config fields use double underscore as the path separator
+(pydantic-settings `env_nested_delimiter`).
 
 ```callout:info
 `PRIMER_DB__PROVIDER=postgres` is equivalent to `db.provider: postgres`
@@ -21,11 +22,12 @@ double underscore is the nesting delimiter.
 
 | Variable | Default | Description |
 |---|---|---|
-| `PRIMER_CONFIG_PATH` | unset | Path to a TOML config file loaded during `AppConfig` instantiation, before env vars are applied. |
+| `PRIMER_CONFIG_PATH` | unset | Path to a TOML config file read during `AppConfig` instantiation. Individual env vars override values from this file. |
 
 The CLI `--config` flag loads YAML through `init_settings` (higher
-priority than env vars). `PRIMER_CONFIG_PATH` loads TOML at the env
-layer (lower priority than CLI YAML, same layer as env vars).
+priority than env vars). `PRIMER_CONFIG_PATH` loads TOML below the env
+layer: source priority is init args (CLI YAML) > env vars > TOML > `.env`
+> secrets file.
 
 ## HTTP server
 
@@ -127,10 +129,9 @@ SQLite database at `~/.primer/db/data.sqlite`.
 
 ## Development flags
 
-These variables are read directly by the application at runtime and
-are not part of `AppConfig`.
+This variable is read directly by the application at runtime and is
+not part of `AppConfig`.
 
 | Variable | When set | Description |
 |---|---|---|
-| `PRIMER_USER_DOCS_STRICT` | `1` | Refuse to start when user-doc lint errors are found. Logs and continues by default. |
 | `PRIMER_ENABLE_TEST_ENDPOINTS` | `1` | Mount internal instrumentation endpoints under `/v1/` used by the distributed test harness. Not for production use. |

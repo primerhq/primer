@@ -15,7 +15,7 @@ No configuration is required to use the worker pool: primer starts a worker in t
 
 ## How the claim and lease model works
 
-Every runnable or resumable session holds a **lease row** in storage. The claim engine polls for rows where `turn_status = claimable` and `parked_status IS NULL` (parked sessions are invisible to claimers). A worker wins the claim atomically using a row-level lock (`FOR UPDATE SKIP LOCKED` on Postgres, a serialised write in single-process mode). Only the lease-holder executes the turn.
+Every runnable or resumable session holds a **lease row** in storage. A session becomes claimable when its `turn_status` flips to `claimable`, which upserts the lease. The claim engine then polls for sessions whose lease is free (unclaimed or expired) and whose `parked_status` is absent or `resumable` (a `parked` session is invisible to claimers). A worker wins the claim atomically using a row-level lock (`FOR UPDATE SKIP LOCKED` on Postgres, a serialised write in single-process mode). Only the lease-holder executes the turn.
 
 When a worker holds a lease it heartbeats on a regular interval, refreshing the lease expiry timestamp. If the worker crashes without releasing the lease, the timestamp eventually passes and the lease becomes claimable again. Another worker can then re-claim and continue the run.
 
@@ -103,9 +103,11 @@ The worker pool is configured at startup. Key parameters (set in the primer conf
 
 | Setting | Default | Description |
 |---|---|---|
-| Worker capacity | 25 | Maximum concurrent sessions per worker. Increase for I/O-bound workloads, decrease if sessions are CPU-heavy. |
-| Lease TTL | (platform default) | How long a held lease stays valid without a heartbeat. Must be at least twice the heartbeat interval. |
-| Heartbeat interval | (platform default) | How often a running worker refreshes its lease expiry. |
+| Worker capacity (`concurrency`) | 8 | Maximum concurrent sessions per worker. Increase for I/O-bound workloads, decrease if sessions are CPU-heavy. |
+| Lease TTL (`lease_ttl_seconds`) | 30 | How long a held lease stays valid without a heartbeat. Must be at least twice the heartbeat interval. |
+| Heartbeat interval (`heartbeat_interval_seconds`) | 10 | How often a running worker refreshes its lease expiry. |
+| Poll interval (`poll_interval_seconds`) | 2.0 | How long the claim loop waits between poll cycles when idle. |
+| Drain timeout (`drain_timeout_seconds`) | 120 | How long a drain waits for in-flight sessions before forcing the worker down. |
 
 ## Walkthrough: draining a worker
 

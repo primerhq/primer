@@ -34,7 +34,8 @@ approval; a Reject returns a clean error to the agent.
 2. In the **Basic** tab, set the ID to `deploy-bot`, choose a provider and
    model.
 3. Switch to the **Tools** tab and enable the `deploy-tools` toolset and
-   the `channels` toolset (so the agent can post results back to Slack).
+   the `misc` toolset (its `inform_user` tool lets the agent post results
+   back to the bound Slack channel).
 4. Switch to the **Advanced** tab and set a system prompt such as:
 
    ```
@@ -70,8 +71,9 @@ error gracefully so the session ends cleanly rather than stalling.
 
 Primer triggers are cron or delayed; they do not match channel message
 patterns natively. The recommended pattern is a short cron trigger that
-polls a command queue, or a gateway script that calls `POST /v1/sessions`
-directly when a matching Slack message arrives.
+polls a command queue, or a gateway script that calls
+`POST /v1/workspaces/{workspace_id}/sessions` directly when a matching
+Slack message arrives.
 
 For a polling approach:
 
@@ -84,8 +86,9 @@ For a polling approach:
    and `deploy-bot`, and click **Add subscription**.
 
 For a direct approach, your gateway POSTs to
-`/v1/sessions` with `agent_id=deploy-bot` whenever Slack delivers a
-matching slash command, skipping the trigger entirely.
+`/v1/workspaces/{workspace_id}/sessions` with a
+`binding` of `{"kind": "agent", "agent_id": "deploy-bot"}` whenever Slack
+delivers a matching slash command, skipping the trigger entirely.
 
 ### 4. Verify the approval gate
 

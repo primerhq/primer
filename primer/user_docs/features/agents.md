@@ -98,14 +98,7 @@ Binding tools from the `system` toolset gives the agent shell and filesystem acc
 
 ### Advanced tab
 
-- **System prompt**: the fixed instruction block sent before every turn. Accepts Jinja-style placeholders resolved against the session's input metadata:
-
-  | Placeholder | Resolves to |
-  |---|---|
-  | `{{ agent.name }}` | The agent's id |
-  | `{{ session.workspace_id }}` | The workspace the session runs in |
-  | `{{ session.input }}` | The initial input string |
-  | `{{ now }}` | Current ISO timestamp |
+- **System prompt**: the fixed instruction block sent before every turn. It is sent verbatim, joined across its parts; the runtime does not substitute placeholders into it (a workspace session appends its own fixed fragment, but that is added by the runtime, not templated from your text).
 
   Keep the system prompt focused on role, output format, and constraints. Pass data that changes per-run through the session input instead of hardcoding it into the prompt.
 
@@ -151,7 +144,7 @@ Use it to delegate a self-contained subtask to a specialist and fold the result 
 | `agent_id` | The agent to run |
 | `prompt` | The input for the subagent |
 
-The subagent's tool surface excludes yielding tools (ask_user, approval gates, invoke_graph): a subagent runs inline and cannot pause for a human. Nested invocations are capped by a depth limit (default 8, configurable via `PRIMER_MAX_INVOCATION_DEPTH`) so a cycle of agents calling each other cannot recurse forever.
+The subagent runs with its full `tools` surface, including yielding tools (ask_user, approval gates), and the caller's approval gate is inherited. If a tool yields, the whole nested-invocation chain parks and resumes when the human replies. Nested invocations are capped by a depth limit (default 8, configurable via `PRIMER_MAX_INVOCATION_DEPTH`) so a cycle of agents calling each other cannot recurse forever.
 
 ### `switch_to_agent` (hand off the chat)
 

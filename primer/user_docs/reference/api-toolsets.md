@@ -77,7 +77,7 @@ Connecting an MCP server as a toolset source.
 
 ## Stdio allowlist
 
-For `transport: stdio`, the MCP provider checks `command[0]` against a server-configured allowlist at the point of first use (not at row create). A command not in the allowlist causes `GET /v1/toolsets/{id}/tools` to return `503 /errors/service-unavailable` with a detail message naming the rejected command. The default allowlist contains `npx`, `python`, and `uv`.
+For `transport: stdio`, the MCP provider checks `command[0]` against a server-configured allowlist at the point of first use (not at row create). A command not in the allowlist causes `GET /v1/toolsets/{id}/tools` to return `503 /errors/service-unavailable` with a detail message naming the rejected command. The allowlist is set by the operator via `PRIMER_MCP_STDIO_ALLOWED_COMMANDS`; when it is left unset (the default), the check is disabled and any command is permitted.
 
 The POST succeeds regardless; the rejection is enforced lazily when the MCP session is first opened.
 

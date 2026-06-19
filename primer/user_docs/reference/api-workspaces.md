@@ -411,11 +411,19 @@ Response `201`:
   "created_at": "2026-06-08T12:00:00Z",
   "failure_reason": null,
   "last_probe_ok": false,
-  "runtime_meta": null
+  "runtime_meta": {
+    "url": "ws://127.0.0.1:5959",
+    "token": "**********",
+    "mapped_host_port": null,
+    "k8s_object_name": null
+  },
+  "channel_association": null
 }
 ```
 
-`phase` values: `running`, `failed`. Container and kubernetes workspaces may briefly show intermediate states while booting.
+`runtime_meta` is always present (it carries the runtime URL plus a bearer token, which is redacted in responses).
+
+`phase` values: `pending`, `running`, `failed`, `terminating`. Container and kubernetes workspaces may briefly show `pending` while booting.
 
 ---
 

@@ -11,7 +11,7 @@ When an agent runs inside a workspace session, primer automatically registers a 
 
 These tools operate on the **current session's workspace**, its filesystem and a shell. They are the same tools whether the workspace runs on the local filesystem, a container, or a Kubernetes pod: the backend differs but the tool surface is identical.
 
-There are seven of them, and they use short, conventional names (no `workspace` prefix):
+There are seven of them, and they use short, conventional names. The model sees them scoped under the reserved `workspace` toolset (`workspace__ls`, `workspace__read`, and so on); this page refers to them by their short names:
 
 | Tool | What it does |
 |---|---|
@@ -53,7 +53,7 @@ Output is the requested lines prefixed with line numbers. Binary files return a 
 
 Creates or replaces a file.
 
-- `path` (required), `content` (required), `mode` (optional octal, default 0644).
+- `path` (required), `content` (required), `mode` (optional octal string; when omitted the backend applies its default, typically 0644).
 - `force` (default false): bypass the read-before-write guard.
 
 `write` enforces a **read-before-write** rule: it refuses to overwrite an existing file the agent has not `read` during the current session, unless `force=true` is passed. Creating a new file is always allowed. This mirrors the safety rule coding assistants use to avoid clobbering content the agent has not actually seen.
@@ -71,17 +71,17 @@ It errors clearly when `old_string` is not found, or is non-unique without `repl
 
 Finds files by glob pattern.
 
-- `pattern` (required, e.g. `src/**/*.py`), `path` (default `.`), plus `limit` and `offset` for paging.
+- `pattern` (required, e.g. `src/**/*.py`), `path` (default `.`), plus `limit` (default 250) and `offset` for paging.
 
 Returns matching paths, newest first.
 
 ### `grep`
 
-Searches file contents by regular expression (uses ripgrep when available, with a Python fallback).
+Searches file contents by regular expression (a pure-Python implementation).
 
 - `pattern` (required regex), `path` (default `.`), and `glob` to filter which files are searched.
 - `output_mode`: `files_with_matches` (default), `content`, or `count`.
-- `case_insensitive`, `multiline`, `context` (lines of context around a match), and `head_limit`.
+- `case_insensitive`, `multiline`, `context` (lines of context around a match), and `head_limit` (default 250).
 
 In `content` mode it emits `<path>:<lineno>:<text>`; in `count` mode, `<path>:<count>`.
 
@@ -92,10 +92,10 @@ Runs a shell command in the workspace. This is what lets an agent build, test, r
 - `command` (required): a command line passed to a shell.
 - `workdir` (default `.`): working directory relative to the workspace root.
 - `timeout_ms` (default 120000): a hard timeout.
-- `background` (default false): return immediately with a process handle instead of blocking.
+- `background` (default false): reserved for non-blocking execution. Not yet implemented; passing `background=true` returns an error.
 - `description` (required): a one-line description of what the command does.
 
-In the foreground it returns the exit code, then stdout, then stderr (truncated by the standard output policy). In the background it returns a process id and an output path; the agent reads the streaming output through the regular `read` tool, and backgrounded processes are reaped when the workspace closes.
+It returns the exit code, then stdout, then stderr (truncated by the standard output policy).
 
 ```callout:warning
 `exec` gives the agent a real shell inside the workspace sandbox. Scope what a workspace agent can reach through its workspace template and the backend you run it on (a throwaway local directory, a container, or a Kubernetes pod), and gate sensitive operations with an approval policy if needed.

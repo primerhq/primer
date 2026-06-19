@@ -72,7 +72,7 @@ stateDiagram-v2
 
 **RUNNING**: a worker holds a lease and a turn is in flight. Within RUNNING, a session can temporarily park when a tool yields (waiting for a trigger, an external event, or an approval decision); parking releases the worker lease so no compute is consumed while the session waits.
 
-**WAITING**: the agent reached a stopping point and needs external input, either because it asked a question (via `system__ask_user`) or because an approval gate tripped. The session stays in WAITING until you provide a response via the API.
+**WAITING**: the agent reached a stopping point and needs external input, for example because the assistant ended a turn with a trailing question or hit a model stop limit. The session stays in WAITING until you provide a response via the API. (Calls to `system__ask_user` and approval gates are handled by the parking mechanism inside RUNNING, described below, rather than by moving the session to WAITING.)
 
 **PAUSED**: an operator requested suspension. The session resumes on demand.
 
@@ -82,8 +82,8 @@ stateDiagram-v2
 
 When you create a session via the API or MCP tools, the `auto_start` field controls whether the session starts immediately:
 
-- `auto_start=true` (default for trigger-created sessions): the session transitions directly from CREATED to RUNNING and a worker picks it up at once.
-- `auto_start=false` (default for API-created sessions): the session stays in CREATED until you call the resume endpoint. This lets you inspect or adjust the session before it runs, or schedule it to start at a specific moment.
+- `auto_start=true` (the default for trigger-created sessions and for the MCP/workspace toolset create tool): the session transitions directly from CREATED to RUNNING and a worker picks it up at once.
+- `auto_start=false` (the default for the REST create endpoint): the session stays in CREATED until you call the resume endpoint. This lets you inspect or adjust the session before it runs, or schedule it to start at a specific moment.
 
 The console always shows the current status, so you can see whether a session is waiting to be started or already running.
 
@@ -132,9 +132,9 @@ Three operator controls appear in the session detail header: **Pause**, **Resume
 Cancel is immediate and irreversible. If the agent was mid-write (writing a file, sending a message), the write may or may not have completed before the cancellation error arrived. Check the transcript to see where the last tool call landed before assuming the operation is rolled back.
 ```
 
-### Retrying from a specific turn
+### Steering a running session
 
-On the session detail, use the retry control to rewind the transcript to a specific turn and re-run from that point. This is useful when a tool failure caused the agent to go off-track and you want to re-run without starting a new session from scratch.
+On the session detail, use the steer control to append a new instruction to a session that is already running or waiting, without starting over. This is useful when you want to nudge the agent mid-run or supply extra context after it has begun working.
 
 
 ```ref:features/agents

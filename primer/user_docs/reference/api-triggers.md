@@ -5,7 +5,7 @@ section: reference
 summary: REST endpoints to create, fire, and manage triggers and subscriptions for event-driven execution.
 ---
 
-Triggers are named event sources (one-shot delayed or recurring cron) that fire subscriptions, which in turn post chat messages, start fresh agent or graph sessions, or resume parked sessions. A running agent can also park itself on a trigger via `subscribe_to_trigger` and resume automatically when the trigger fires.
+Triggers are named event sources (one-shot delayed, recurring cron, or webhook) that fire subscriptions, which in turn post chat messages, start fresh agent or graph sessions, or resume parked sessions. A running agent can also park itself on a trigger via `subscribe_to_trigger` and resume automatically when the trigger fires.
 
 ```ref:features/triggers
 The park/resume model, subscription kinds, and webhook setup.
@@ -22,9 +22,10 @@ Create and manage triggers in the console.
 | GET | `/v1/triggers` | List triggers |
 | POST | `/v1/triggers` | Create a trigger |
 | GET | `/v1/triggers/{trigger_id}` | Get a trigger |
-| PUT | `/v1/triggers/{trigger_id}` | Replace a trigger |
+| PUT | `/v1/triggers/{trigger_id}` | Update a trigger (partial) |
 | DELETE | `/v1/triggers/{trigger_id}` | Delete a trigger (cascades to subscriptions) |
 | POST | `/v1/triggers/{trigger_id}/fire_now` | Synchronously fire a trigger |
+| POST | `/v1/triggers/{trigger_id}/rotate_token` | Rotate a webhook trigger's URL token |
 | GET | `/v1/triggers/{trigger_id}/subscriptions` | List subscriptions for a trigger |
 | POST | `/v1/triggers/{trigger_id}/subscriptions` | Create a subscription |
 | GET | `/v1/triggers/{trigger_id}/subscriptions/{subscription_id}` | Get a subscription |
@@ -54,7 +55,7 @@ Create and manage triggers in the console.
 | `slug` | yes | string | URL-safe identifier (2-64 chars) |
 | `name` | yes | string | Human-readable label (1-200 chars) |
 | `description` | no | string | Optional description (max 2000 chars) |
-| `config` | yes | TriggerConfig | Either a `delayed` or `scheduled` config (see below) |
+| `config` | yes | TriggerConfig | A `delayed`, `scheduled`, or `webhook` config (see below) |
 | `enabled` | no | boolean | Default `true`; when `false` the trigger never fires |
 
 **Delayed trigger config** (`kind: "delayed"`):
@@ -72,6 +73,14 @@ Create and manage triggers in the console.
 | `cron` | yes | Standard 5-field cron expression |
 | `timezone` | no | IANA timezone name; default `"UTC"` |
 | `catchup` | no | `"one"` (default), `"all"`, or `"none"`: controls missed-fire catch-up behavior |
+
+**Webhook trigger config** (`kind: "webhook"`):
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `kind` | yes | Must be `"webhook"` |
+| `token` | no | Server-minted URL token (32 hex chars) embedded in `POST /v1/webhooks/{token}`. On create it is always minted server-side (any supplied value is ignored); rotate it with `POST /v1/triggers/{trigger_id}/rotate_token` |
+| `hmac_secret` | no | When set, callers must send `X-Primer-Signature: HMAC-SHA256(secret, raw_body)` as a lowercase hex digest; requests that fail verification are rejected `401`. Write-only |
 
 ## Create a trigger
 
@@ -150,31 +159,31 @@ const r = await fetch("/v1/triggers/daily-report", {
 
 ## List triggers
 
-`GET /v1/triggers` - returns an offset or cursor page of trigger objects.
+`GET /v1/triggers` - returns `{"items": [...], "total": <count>}`. This list is not paginated; every matching trigger is returned.
 
-Query parameters: `limit` (1-200, default 20), `offset` (default 0), `cursor`, `order_by`.
+Query parameters (both optional filters): `kind` (`delayed`, `scheduled`, or `webhook`) and `enabled` (boolean).
 
 ```code-tabs:curl,python,javascript
 --- curl
-curl "https://your-host/v1/triggers?limit=20&offset=0" \
+curl "https://your-host/v1/triggers?kind=scheduled&enabled=true" \
   -H "Authorization: Bearer $TOKEN"
 --- python
 import httpx
 r = httpx.get("https://your-host/v1/triggers",
               headers={"Authorization": f"Bearer {token}"},
-              params={"limit": 20, "offset": 0})
+              params={"kind": "scheduled", "enabled": True})
 page = r.json()
 triggers = page["items"]
 --- javascript
-const r = await fetch("/v1/triggers?limit=20&offset=0", {
+const r = await fetch("/v1/triggers?kind=scheduled&enabled=true", {
   headers: {"Authorization": `Bearer ${token}`}
 })
 const {items, total} = await r.json()
 ```
 
-## Replace a trigger
+## Update a trigger
 
-`PUT /v1/triggers/{trigger_id}` - full replacement; returns `200 OK`. All fields are replaced; omitted optional fields reset to defaults.
+`PUT /v1/triggers/{trigger_id}` - partial update; returns `200 OK`. Only the fields you send change; omitted fields keep their current value. The body accepts `name`, `description`, `enabled`, and `config` (the `slug` is immutable and is not part of the update body). A `config` that changes the trigger's `kind` is rejected with `409`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -182,7 +191,6 @@ curl -X PUT https://your-host/v1/triggers/daily-report \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "slug": "daily-report",
     "name": "Daily Report (updated)",
     "config": {"kind": "scheduled", "cron": "0 9 * * *", "timezone": "UTC"},
     "enabled": true
@@ -193,7 +201,6 @@ r = httpx.put(
     "https://your-host/v1/triggers/daily-report",
     headers={"Authorization": f"Bearer {token}"},
     json={
-        "slug": "daily-report",
         "name": "Daily Report (updated)",
         "config": {"kind": "scheduled", "cron": "0 9 * * *", "timezone": "UTC"},
         "enabled": True,
@@ -204,7 +211,6 @@ await fetch("/v1/triggers/daily-report", {
   method: "PUT",
   headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json"},
   body: JSON.stringify({
-    slug: "daily-report",
     name: "Daily Report (updated)",
     config: {kind: "scheduled", cron: "0 9 * * *", timezone: "UTC"},
     enabled: true
@@ -212,11 +218,11 @@ await fetch("/v1/triggers/daily-report", {
 })
 ```
 
-**Errors:** `404` if not found.
+**Errors:** `404` if not found; `409` if the `config` changes the trigger's `kind`.
 
 ## Delete a trigger
 
-`DELETE /v1/triggers/{trigger_id}` - cascades to all subscriptions. Returns `200 OK`.
+`DELETE /v1/triggers/{trigger_id}` - cascades to all subscriptions. Returns `204 No Content`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -237,7 +243,7 @@ await fetch("/v1/triggers/daily-report", {
 
 `POST /v1/triggers/{trigger_id}/fire_now` - synchronously executes all enabled subscriptions for this trigger regardless of schedule. Returns `200 OK`.
 
-Response fields: `skipped` (boolean), `results` (array of per-subscription outcomes with `ok`, `skipped`, `error_code`, and `artefact_id`).
+Response fields: `skipped` (boolean), `fire_id` (string), `results` (array of per-subscription outcomes, each with `subscription_id`, `ok`, `skipped`, and either `artefact_id` on success or `error_code` plus `error_message` on failure).
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -282,7 +288,7 @@ const {skipped, results} = await r.json()
 | `config` | yes | SubConfig | Discriminated subscription config (see kinds below) |
 | `description` | no | string | Optional description (max 2000 chars) |
 | `enabled` | no | boolean | Default `true`; disabled subscriptions are skipped on fire |
-| `parallelism` | no | string | `"skip"` (default): behavior when a prior fire's action is still running |
+| `parallelism` | no | string | `"skip"` (default) or `"queue"`: behavior when a prior fire's action is still running |
 | `payload_template` | no | string or null | Jinja-style template rendered into the action payload |
 
 **Subscription kinds:**
@@ -395,7 +401,7 @@ const {items} = await r.json()
 
 ## Delete a subscription
 
-`DELETE /v1/triggers/{trigger_id}/subscriptions/{subscription_id}` - returns `200 OK`.
+`DELETE /v1/triggers/{trigger_id}/subscriptions/{subscription_id}` - returns `204 No Content`.
 
 ```code-tabs:curl,python,javascript
 --- curl
@@ -416,4 +422,4 @@ await fetch("/v1/triggers/daily-report/subscriptions/sub-001", {
 
 ## Errors note
 
-All error responses use the RFC 7807 `ProblemDetails` envelope with `type`, `title`, `status`, `detail`, `instance`, and `extensions` (which includes `request_id` and, for 422 errors, an `errors` array with field paths). See the REST API overview for details.
+Trigger and subscription errors raised by this router (`404` not-found, `409` `trigger_slug_conflict` / `trigger_kind_immutable`, and the `422` codes `cron_invalid`, `timezone_invalid`, `parked_session_only_from_yield`, `not_a_webhook_trigger`) use a `{"detail": {"code": "<error_code>", "message": "..."}}` envelope; dispatch on `response.json()["detail"]["code"]`. Request-body validation failures (malformed JSON, missing required field, wrong type) are caught earlier and returned in the RFC 7807 `ProblemDetails` envelope (`type` `/errors/validation-error`, plus `extensions.errors`). See the REST API overview for details.

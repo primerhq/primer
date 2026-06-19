@@ -2,7 +2,7 @@
 slug: llm-providers
 title: LLM Providers
 section: features
-summary: Register and configure LLM providers (anthropic, openai, gemini, ollama, openrouter, openchat) including concurrency and request timeout.
+summary: Register and configure LLM providers (anthropic, openresponses, openchat, gemini, ollama, openrouter) including concurrency and request timeout.
 ---
 
 ## Concept
@@ -84,7 +84,7 @@ A list of model identifiers the provider is allowed to serve. Each entry has:
 - `name`: the provider-side model slug (e.g. `claude-opus-4-5`, `gpt-4o-mini`, `meta-llama/llama-3.1-8b-instruct:free`). Agents that request a model not in this list receive a `ModelNotFoundError`.
 - `context_length`: the model's usable context window, in tokens. Primer uses this to drive automatic compaction: when a conversation's live history approaches this budget (around 90 percent), primer summarizes the older turns to stay within the window. Set it to the model's real context length so compaction fires at the right point; if it is too low, history is compacted too early, and if it is too high, a turn can overflow the model's actual limit.
 
-Use **Discover models** (available for every provider type) to populate this list automatically from the upstream catalogue. Discovery fills in the model names; set a valid `context_length` for each model you keep (see above).
+Use **Discover models** to populate this list automatically from the upstream catalogue. Live discovery is supported for `anthropic`, `openresponses`, `gemini`, `ollama`, and `openrouter`; `openchat` has no list-models probe, so the console falls back to a curated suggested-model list there. Discovery fills in the model names; set a valid `context_length` for each model you keep (see above).
 
 ### Limits
 

@@ -63,6 +63,8 @@ The scheduler snapshot reports:
 | `primer_lease_expirations_total` | Leases that expired (worker stalled or crashed without releasing). |
 | `primer_scheduler_notify_received_total` | Wake-up notifications the scheduler received. |
 
+This is the snapshot the default in-process (in-memory) scheduler returns. A Postgres-backed scheduler reports a reduced synchronous snapshot under `/v1/health` (`primer_scheduler_notify_received_total` plus `primer_scheduler_listen_reconnects_total`); its session, queue-depth, and lease-expiration gauges are computed in a separate database query that the health probe does not call. Scrape `/metrics` for the full counter set under Postgres.
+
 The worker-pool snapshot reports:
 
 | Key | Meaning |

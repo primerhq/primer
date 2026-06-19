@@ -71,7 +71,7 @@ Use `ask_user` when the agent needs a human decision before it can continue. Unl
 
 ### `workspace_ext__sleep`
 
-Parks the session for a fixed number of seconds (0 to 300). A background sweeper publishes the timer event when the duration elapses. Zero-second sleeps short-circuit without parking. Fractional values are accepted.
+Parks the session for a fixed number of seconds (any value at or above 0, bounded by the global yield-timeout cap, which defaults to 60 minutes). A background sweeper publishes the timer event when the duration elapses. Zero-second sleeps short-circuit without parking. Fractional values are accepted.
 
 Use `sleep` for polling loops, rate-limit backoffs, or any pattern where an agent must wait a known duration before retrying.
 

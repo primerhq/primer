@@ -66,7 +66,9 @@ Tools are identified by their scoped id: `<toolset_id>__<tool_id>`
 Only tools from the reserved built-in toolsets can be exposed. Tools
 from user-defined toolset rows are always denied with reason
 `not_system_toolset`. Built-in toolset ids are: `system`, `workspaces`,
-`misc`, `web`, `harness`, `trigger`, `search`.
+`misc`, `web`, `harness`, `trigger`, `search`, and `workspace_ext`
+(though every `workspace_ext` tool is also caught by the yielding or
+session floor below, so none are reachable in practice).
 
 Additional constraints applied before a tool can be allowlisted:
 

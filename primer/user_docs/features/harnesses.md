@@ -46,7 +46,7 @@ Every entity the harness creates is tracked. Entities you edit after install are
 | **Slug** | Kebab-case identifier. Must match `^[a-z][a-z0-9-]{1,63}$`. Unique. Auto-derived from name. Used as the entity id prefix for all managed entities. |
 | **Git URL** | HTTPS URL of the repository (for example, `https://github.com/org/repo`). |
 | **Ref** | Branch, tag, or commit SHA to track. Defaults to `main`. Changing this after install marks overrides dirty. |
-| **Subpath** | Optional subdirectory within the repo that contains `manifest.yaml`. Leave blank for the repo root. |
+| **Subpath** | Optional subdirectory within the repo that contains `harness.yaml`. Leave blank for the repo root. |
 | **Git token** | Optional personal access token for private repos. Stored encrypted. |
 | **Description** | Optional. |
 | **Overrides** | The deployment-specific values dict. Validated against the harness's overrides schema before install. |
@@ -60,7 +60,7 @@ Every entity the harness creates is tracked. Entities you edit after install are
 
 1. Navigate to **Harnesses** in the left nav.
 2. Click **Register from git**.
-3. In the **Register harness** dialog, fill in the **Source** step: name, slug, Git URL, ref, subpath (optional), git token (optional for private repos).
+3. In the **Register harness** dialog, fill in the **Source** step: name, slug, Git URL, ref, subpath (optional, the subdirectory containing `harness.yaml`), git token (optional for private repos).
 4. Click **Fetch**. Primer creates the harness record and pulls bundle metadata from the remote. A progress indicator shows while the fetch runs.
 5. If the harness declares an overrides schema, an **Overrides** step appears. Fill in the required fields and click **Create**.
 6. Once the install operation completes, the status shows **INSTALLED** and the console navigates to the harness detail page.
@@ -118,7 +118,7 @@ A build assembles a self-contained bundle in the configured repo and ref:
 | `harness.yaml` | Bundle metadata: name, slug, description, and the tracked-entity manifest. |
 | `templates/<template_name>.yaml` | One file per tracked entity. The live entity is exported, system-managed fields are stripped, and each override mapping replaces a value with a `{{ overrides.<path> }}` token. |
 | `overrides.schema.json` | A composed JSON Schema derived from every override mapping. This becomes the consumer's overrides form at install time. |
-| `bundle_hash` | A stable hash over the whole rendered set, used to detect drift between the live entities and the last push. |
+| `bundle_hash` (build metadata, not a file) | A stable hash computed over the whole rendered set, used to detect drift between the live entities and the last push. |
 
 ### Tracked entities and override mappings
 
@@ -129,7 +129,7 @@ Each tracked entity records:
 | **kind** | One of `agent`, `graph`, `toolset`, `collection`, `document`. |
 | **source_id** | The id of the live entity to export. |
 | **template_name** | The bundle filename (without extension). Must be unique within the harness. |
-| **overrides** | A list of override mappings. Each maps a field in the exported entity (a JSON pointer, `field_path`) to an `override_path` in the consumer's overrides, optionally with a picker `widget` and a default value. |
+| **overrides** | A list of override mappings. Each maps a field in the exported entity (a JSON pointer, `field_path`) to an `override_path` in the consumer's overrides, optionally with a picker `widget` and a `schema_override` fragment that refines the generated schema slot. |
 
 Templatizing a field turns a hard-coded value (for example, a specific LLM provider id) into a slot the consumer fills in when they install. A mapping with `override_path: llm.provider_id` and `widget: llm-provider-picker` renders an LLM-provider dropdown on the consumer's install form, so a bundle authored against your provider installs cleanly against theirs.
 

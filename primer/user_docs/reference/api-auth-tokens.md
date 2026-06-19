@@ -67,7 +67,7 @@ const r = await fetch("/v1/auth/register", {
 
 ## POST /v1/auth/login
 
-Authenticates a user and sets a `session` cookie on the response. Subsequent requests that include this cookie are treated as authenticated.
+Authenticates a user and sets a session cookie on the response (named `primer_session` by default; configurable). Subsequent requests that include this cookie are treated as authenticated.
 
 Request body:
 

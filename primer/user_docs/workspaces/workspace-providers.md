@@ -72,7 +72,8 @@ on the template, so one provider can back many differently configured templates.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> running : workspace created
+    [*] --> pending : workspace created
+    pending --> running : first probe hit
     running --> failed : 3 consecutive probe misses
     failed --> running : 3 consecutive probe hits
     running --> terminating : workspace deleted
@@ -80,21 +81,21 @@ stateDiagram-v2
     terminating --> [*]
 ```
 
-A background probe pings every running workspace on a configurable interval
-(default 30 seconds). Three consecutive missed pings flip the workspace to
-`failed` and end every session on it with reason `workspace_lost`. Three
-consecutive successful pings restore it to `running`. The phase machine is
-driven by the probe; the probe is leader-elected so only one platform process
-runs it at a time.
+A newly created workspace starts in the `pending` phase and is promoted to
+`running` on its first successful probe ping. A background probe pings every
+running workspace on a configurable interval (default 30 seconds). Three
+consecutive missed pings flip the workspace to `failed` and end every session
+on it with reason `workspace_lost`. Three consecutive successful pings restore
+it to `running`. The phase machine is driven by the probe.
 
 ## Configuration
 
 ### Local provider fields
 
 The local provider requires only a `root_path` where workspace directories are
-created. The auto-bootstrapped `local` provider uses a default path and cannot
-be created, updated, or deleted through the UI or API (the reserved id is
-protected with `409`).
+created. The auto-bootstrapped `local` provider uses a default path and is
+protected from mutation through the UI or API: re-creating the reserved id
+returns `409`, and updating or deleting it returns `403`.
 
 If you need a second local provider pointing at a different directory, register
 it with `provider = "local"` and a different `root_path`.
@@ -104,8 +105,8 @@ it with `provider = "local"` and a different `root_path`.
 | Field | Description |
 |---|---|
 | **Runtime** | `docker` (real); `podman` and `containerd` are config-accepted stubs that raise `ConfigError` at use time |
-| **Connection** | `socket` (path to Unix socket, default `/var/run/docker.sock`) or `tcp` (host + port) |
-| **Reachability** | How the platform reaches the runtime server inside the container: `host_port` (bind a random host port, for host-side platforms), `bridge_network` (container-to-container DNS on a named Docker network), `in_cluster` (not applicable to container), or `ingress` (via an HTTP route) |
+| **Connection** | `socket` (path to a Unix socket; default `/var/run/docker.sock`) or `remote` (a `tcp://` daemon URL with optional TLS) |
+| **Reachability** | How the platform reaches the runtime server inside the container: `host_port` (bind a host port, for host-side platforms) or `bridge_network` (container-to-container DNS on a named Docker network) |
 
 The platform mints a per-workspace bearer token and injects it as
 `PRIMER_RUNTIME_TOKEN` when creating the container. The token is stored on the
@@ -116,9 +117,9 @@ the container.
 
 | Field | Description |
 |---|---|
-| **Connection** | `in_cluster` (when primer runs inside the cluster) or `kubeconfig` with a path |
+| **Connection** | `in_cluster` (when primer runs inside the cluster), `kubeconfig` with a path, or `service_account_token` (explicit apiserver URL + token) |
 | **Namespace** | The Kubernetes namespace where StatefulSets and PVCs are created |
-| **Reachability** | `in_cluster` (pod-to-pod DNS), `ingress` (via a Gateway API HTTPRoute), or `host_port` (NodePort for local k3s setups) |
+| **Reachability** | `in_cluster` (pod-to-pod DNS), `ingress` (via a templated ingress URL), or `gateway_httproute` (via a pre-created Gateway API HTTPRoute) |
 
 The token is stored in a per-workspace Kubernetes Secret and recovered from
 it on re-attach.
@@ -161,7 +162,7 @@ many sessions per workspace.
 ```
 
 ```ref:workspaces/workspace-toolset
-The 27-tool workspace toolset agents use to manage providers, templates,
+The workspace toolset agents use to manage providers, templates,
 workspaces, and sessions programmatically.
 ```
 
