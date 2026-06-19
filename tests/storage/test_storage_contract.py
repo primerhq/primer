@@ -33,6 +33,7 @@ from primer.model.storage import (
     Value,
 )
 from primer.storage.factory import StorageProviderFactory
+from primer.storage.postgres import PostgresStorageProvider
 
 
 class _Thing(Identifiable):
@@ -81,6 +82,29 @@ async def test_get_create_update_delete(provider: StorageProvider) -> None:
     await s.delete("x")
     with pytest.raises(NotFoundError):
         await s.delete("x")
+
+
+@pytest.mark.asyncio
+async def test_create_and_delete_accept_conn(provider: StorageProvider) -> None:
+    """``create`` and ``delete`` accept a ``conn`` kwarg (mirrors ``update``).
+
+    Passing ``conn=None`` must behave exactly like omitting it: pool-less
+    backends (SQLite) ignore it; pooled backends acquire their own.
+    """
+    store = provider.get_storage(_Thing)
+    created = await store.create(_Thing(id="thing-conn", name="x"), conn=None)
+    assert created.id == "thing-conn"
+    assert (await store.get("thing-conn")) is not None
+    await store.delete("thing-conn", conn=None)
+    assert (await store.get("thing-conn")) is None
+
+    # Postgres only: open a real transaction and thread it through create.
+    if isinstance(provider, PostgresStorageProvider):
+        async with provider.pool.acquire() as conn:
+            async with conn.transaction():
+                await store.create(_Thing(id="thing-tx", name="y"), conn=conn)
+        assert (await store.get("thing-tx")) is not None
+        await store.delete("thing-tx")
 
 
 @pytest.mark.asyncio

@@ -80,11 +80,20 @@ class Storage(ABC, Generic[ModelT]):
         """
 
     @abstractmethod
-    async def create(self, entity: ModelT) -> ModelT:
+    async def create(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         """Insert a new entity.
 
         Returns the stored entity (which may differ from the input if
         the backend assigns auto-populated fields, e.g. timestamps).
+
+        Parameters
+        ----------
+        conn
+            When provided, write on that backend connection/transaction
+            instead of acquiring one from the pool. Lets a caller commit
+            the insert atomically with other work on the same
+            transaction. Pool-less backends (SQLite, in-memory) ignore
+            it.
 
         Raises
         ------
@@ -114,8 +123,17 @@ class Storage(ABC, Generic[ModelT]):
         """
 
     @abstractmethod
-    async def delete(self, id: str) -> None:
+    async def delete(self, id: str, *, conn: Any | None = None) -> None:
         """Remove the entity with the given id.
+
+        Parameters
+        ----------
+        conn
+            When provided, delete on that backend connection/transaction
+            instead of acquiring one from the pool. Lets a caller commit
+            the delete atomically with other work on the same
+            transaction. Pool-less backends (SQLite, in-memory) ignore
+            it.
 
         Raises
         ------

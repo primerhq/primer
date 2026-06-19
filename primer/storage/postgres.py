@@ -562,7 +562,7 @@ class PostgresStorage(Storage[ModelT]):
             return None
         return self._from_row(row)
 
-    async def create(self, entity: ModelT) -> ModelT:
+    async def create(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         await self._ensure_table()
         entity_id, data_json = self._to_row(entity)
         sql = (
@@ -571,8 +571,8 @@ class PostgresStorage(Storage[ModelT]):
             f'RETURNING id, data'
         )
         try:
-            async with self._provider.pool.acquire() as conn:
-                row = await conn.fetchrow(sql, entity_id, data_json)
+            async with self._acquire_or_use(conn) as c:
+                row = await c.fetchrow(sql, entity_id, data_json)
         except asyncpg.UniqueViolationError as exc:
             raise ConflictError(
                 f"{self._model.__name__} with id {entity_id!r} already exists",
@@ -602,12 +602,12 @@ class PostgresStorage(Storage[ModelT]):
             )
         return self._from_row(row)
 
-    async def delete(self, id: str) -> None:
+    async def delete(self, id: str, *, conn: Any | None = None) -> None:
         await self._ensure_table()
         sql = f'DELETE FROM {self._qualified} WHERE id = $1'
         try:
-            async with self._provider.pool.acquire() as conn:
-                result = await conn.execute(sql, id)
+            async with self._acquire_or_use(conn) as c:
+                result = await c.execute(sql, id)
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
         # asyncpg returns the command tag string e.g. "DELETE 1" / "DELETE 0".
