@@ -1071,6 +1071,7 @@ async def _make_document(
         "/v1/documents",
         json={
             "id": did,
+            "path": f"{did}.md",
             "collection_id": cid,
             "name": did,
             "meta": {"text": marker},

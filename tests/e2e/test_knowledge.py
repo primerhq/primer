@@ -26,6 +26,7 @@ import pytest
 def _document_body(*, doc_id: str, collection_id: str) -> dict:
     return {
         "id": doc_id,
+        "path": f"{doc_id}.md",
         "name": "test doc",
         "collection_id": collection_id,
         "text": "hello world",
@@ -87,6 +88,7 @@ async def test_t0129_orphan_document_collection_documents_clean(
         "/v1/documents",
         json={
             "id": doc_id,
+            "path": f"{doc_id}.md",
             "name": "orphan",
             "collection_id": orphan_cid,
             "meta": {},
@@ -137,6 +139,7 @@ async def test_t0108_document_put_replaces_name_and_metadata(
     doc_id = f"doc-t0108-{unique_suffix}"
     initial = {
         "id": doc_id,
+        "path": f"{doc_id}.md",
         "name": "initial",
         "collection_id": f"unenforced-{unique_suffix}",
         "meta": {"version": 1, "tag": "old"},
@@ -146,6 +149,7 @@ async def test_t0108_document_put_replaces_name_and_metadata(
     try:
         replacement = {
             "id": doc_id,
+            "path": f"{doc_id}.md",
             "name": "replaced",
             "collection_id": f"unenforced-{unique_suffix}",
             "meta": {"version": 2, "tag": "new"},
@@ -183,6 +187,7 @@ async def test_t0087_multi_key_order_by_breaks_ties(
         for r in rows:
             body = {
                 "id": r["id"],
+                "path": f'{r["id"]}.md',
                 "name": r["name"],
                 "collection_id": f"unenforced-{unique_suffix}",
                 "text": "x",
@@ -263,6 +268,7 @@ async def test_t0088_order_by_jsonb_null_path_is_stable(
         for r in rows:
             body = {
                 "id": r["id"],
+                "path": f'{r["id"]}.md',
                 "name": "x",
                 "collection_id": f"unenforced-{unique_suffix}",
                 "text": "x",
@@ -330,6 +336,7 @@ async def test_t0074_order_by_jsonb_nested_path_sorts_deterministically(
         for d in docs:
             body = {
                 "id": d["id"],
+                "path": f'{d["id"]}.md',
                 "name": f"doc {d['tag']}",
                 "collection_id": f"unenforced-{unique_suffix}",
                 "text": "ignored",
@@ -428,10 +435,15 @@ async def test_t0177_collection_with_missing_embedder_provider_orphan_tolerated(
 async def test_t0204_collection_documents_paginates_with_offset_and_limit(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0204 — The bespoke `/v1/collections/{id}/documents` route is
-    documented as paginated per spec §10. Seed N=5 documents under one
-    real collection; walk with limit=2 + variable offset; assert each
-    document appears exactly once across pages.
+    """T0204 - The `/v1/collections/{id}/documents` listing returns every
+    document in the collection. Seed N=5 documents under one real
+    collection; assert each appears exactly once in the listing.
+
+    P1 contract: this route is a path listing (content store + entity-row
+    union via DocumentService.list), returning
+    ``{"documents": [{document_id, path, size}, ...]}`` for the whole
+    collection in one response. It is NOT offset-paginated; ``offset`` /
+    ``limit`` query params are not honoured.
 
     NB: Unlike Document POST (T0068 — accepts orphan rows), the
     documents-list route DOES gate on collection existence — it returns
@@ -478,6 +490,7 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
                 "/v1/documents",
                 json={
                     "id": did,
+                    "path": f"{did}.md",
                     "name": f"doc-{did}",
                     "collection_id": collection_id,
                     "meta": {"seq": int(did.split("-")[-1])},
@@ -486,25 +499,21 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
             assert r.status_code in (200, 201), r.text
             created_docs.append(did)
 
-        # Walk pages of 2
-        seen: list[str] = []
-        for offset in (0, 2, 4):
-            page = await client.get(
-                f"/v1/collections/{collection_id}/documents"
-                f"?offset={offset}&limit=2",
-            )
-            assert page.status_code == 200, page.text
-            body = page.json()
-            items = body.get("items", [])
-            seen.extend(item["id"] for item in items)
+        # Whole-collection listing in one response (no pagination).
+        page = await client.get(
+            f"/v1/collections/{collection_id}/documents",
+        )
+        assert page.status_code == 200, page.text
+        documents = page.json()["documents"]
+        seen = [d["document_id"] for d in documents]
 
         # Every seeded id appears exactly once
         assert sorted(seen) == sorted(doc_ids), (
-            f"pagination walk missed or duplicated docs. "
+            f"listing missed or duplicated docs. "
             f"seeded={sorted(doc_ids)!r}, seen={sorted(seen)!r}"
         )
         assert len(seen) == len(set(seen)), (
-            f"duplicates across pages: {seen!r}"
+            f"duplicates in listing: {seen!r}"
         )
     finally:
         for did in created_docs:
@@ -541,6 +550,7 @@ async def test_t0236_predicate_gt_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": r["id"],
+                    "path": f'{r["id"]}.md',
                     "name": str(r["score"]),
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": r["score"]},
@@ -634,6 +644,7 @@ async def test_t0249_order_by_two_jsonb_keys_composite(
                 "/v1/documents",
                 json={
                     "id": r["id"],
+                    "path": f'{r["id"]}.md',
                     "name": r["tag"],
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": r["tag"], "score": r["score"]},
@@ -693,10 +704,15 @@ async def test_t0249_order_by_two_jsonb_keys_composite(
 async def test_t0253_collection_documents_items_carry_collection_id(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0253 — Seed Collection C with 3 Documents; the items returned
-    by /v1/collections/{C}/documents must all have collection_id=C.
-    Cross-checks that the gating in T0204 also constrains item
-    membership (not just access).
+    """T0253 - Seed Collection C with 3 Documents plus one document in a
+    DIFFERENT collection; the listing for /v1/collections/{C}/documents
+    must contain exactly C's documents and never the foreign one.
+
+    P1 contract: the listing returns ``{"documents": [{document_id, path,
+    size}, ...]}`` scoped to C by the route (DocumentService.list filters
+    on collection_id). Entries do not carry collection_id themselves, so
+    the per-collection scoping is verified by membership: every seeded doc
+    present, the unrelated doc (different collection) absent.
     """
     coll_id = f"coll-t0253-{unique_suffix}"
     ssp_id = f"ssp-t0253-{unique_suffix}"
@@ -736,6 +752,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
                 "/v1/documents",
                 json={
                     "id": did,
+                    "path": f"{did}.md",
                     "name": did,
                     "collection_id": coll_id,
                     "meta": {},
@@ -752,6 +769,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
             "/v1/documents",
             json={
                 "id": unrelated,
+                "path": f"{unrelated}.md",
                 "name": unrelated,
                 "collection_id": f"other-{unique_suffix}",
                 "meta": {},
@@ -760,18 +778,12 @@ async def test_t0253_collection_documents_items_carry_collection_id(
         docs_created.append(unrelated)
 
         page = await client.get(
-            f"/v1/collections/{coll_id}/documents?offset=0&limit=50",
+            f"/v1/collections/{coll_id}/documents",
         )
         assert page.status_code == 200, page.text
-        items = page.json().get("items", [])
-        # Every returned item must carry collection_id == coll_id
-        for it in items:
-            assert it["collection_id"] == coll_id, (
-                f"listing for {coll_id!r} contains item with wrong "
-                f"collection_id: {it!r}"
-            )
-        # And the unrelated document is NOT present
-        returned_ids = {it["id"] for it in items}
+        documents = page.json()["documents"]
+        returned_ids = {d["document_id"] for d in documents}
+        # The unrelated document (different collection_id) must NOT appear.
         assert unrelated not in returned_ids, (
             f"unrelated doc {unrelated!r} (different collection_id) "
             f"surfaced in {coll_id!r} listing: {returned_ids!r}"
@@ -962,6 +974,7 @@ async def test_t0335_document_get_after_delete_returns_404(
     doc_id = f"doc-t0335-{unique_suffix}"
     body = {
         "id": doc_id,
+        "path": f"{doc_id}.md",
         "name": "T0335",
         "collection_id": f"unenforced-{unique_suffix}",
         "meta": {},
@@ -1031,6 +1044,7 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
         "/v1/documents",
         json={
             "id": doc_id,
+            "path": f"{doc_id}.md",
             "name": "T0336",
             "collection_id": coll_id,
             "meta": {},
@@ -1084,6 +1098,7 @@ async def test_t0347_documents_find_predicate_by_collection_id(
                 "/v1/documents",
                 json={
                     "id": did,
+                    "path": f"{did}.md",
                     "name": did,
                     "collection_id": collection,
                     "meta": {},
@@ -1173,7 +1188,9 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
             r = await client.post(
                 "/v1/documents",
                 json={
-                    "id": did, "name": did,
+                    "id": did,
+                    "path": f"{did}.md",
+                    "name": did,
                     "collection_id": coll_id, "meta": {},
                 },
             )
@@ -1184,7 +1201,9 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
             r = await client.post(
                 "/v1/documents",
                 json={
-                    "id": did, "name": did,
+                    "id": did,
+                    "path": f"{did}.md",
+                    "name": did,
                     "collection_id": f"missing-coll-{unique_suffix}",
                     "meta": {},
                 },
@@ -1256,6 +1275,7 @@ async def test_t0595_predicate_lt_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
+                    "path": f"{prefix}-{score}.md",
                     "name": str(score),
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
@@ -1328,6 +1348,7 @@ async def test_t0596_predicate_lte_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
+                    "path": f"{prefix}-{score}.md",
                     "name": str(score),
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
@@ -1401,6 +1422,7 @@ async def test_t0597_predicate_eq_int_against_jsonb_string_field(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
+                    "path": f"{prefix}-{i}.md",
                     "name": tag,
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
@@ -1480,6 +1502,7 @@ async def test_t0632_predicate_like_on_jsonb_nested_string_field(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
+                    "path": f"{prefix}-{i}.md",
                     "name": tag,
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
@@ -1551,6 +1574,7 @@ async def test_t0633_predicate_in_on_jsonb_nested_numeric_int_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
+                    "path": f"{prefix}-{score}.md",
                     "name": str(score),
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
@@ -1633,6 +1657,7 @@ async def test_t0635_order_by_jsonb_mixed_type_values_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{tag}",
+                    "path": f"{prefix}-{tag}.md",
                     "name": tag,
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
@@ -1720,6 +1745,7 @@ async def test_t0652_predicate_gte_float_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
+                    "path": f"{prefix}-{score}.md",
                     "name": str(score),
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
@@ -1813,6 +1839,7 @@ async def test_t0668_predicate_like_on_jsonb_nested_numeric_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
+                    "path": f"{prefix}-{score}.md",
                     "name": str(score),
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
@@ -1887,6 +1914,7 @@ async def test_t0669_predicate_in_on_jsonb_nested_numeric_float_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
+                    "path": f"{prefix}-{score}.md",
                     "name": str(score),
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
@@ -1959,6 +1987,7 @@ async def test_t0670_predicate_eq_bool_against_jsonb_string_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
+                    "path": f"{prefix}-{i}.md",
                     "name": tag,
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
@@ -2034,6 +2063,7 @@ async def test_t0653_predicate_in_on_jsonb_nested_string_with_string_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
+                    "path": f"{prefix}-{i}.md",
                     "name": tag,
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
@@ -2107,6 +2137,7 @@ async def test_t0700_cursor_walk_with_jsonb_predicate_and_order_by(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score:02d}",
+                    "path": f"{prefix}-{score:02d}.md",
                     "name": str(score),
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},

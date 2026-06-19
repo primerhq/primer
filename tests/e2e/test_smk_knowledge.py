@@ -138,7 +138,7 @@ async def _make_collection(
 async def _ingest(authed_client, cid, doc_id, text) -> None:
     r = await authed_client.post(
         "/v1/documents",
-        json={"id": doc_id, "collection_id": cid, "name": doc_id, "meta": {"text": text}},
+        json={"id": doc_id, "path": f"{doc_id}.md", "collection_id": cid, "name": doc_id, "meta": {"text": text}},
     )
     assert r.status_code in (200, 201), r.text
 
@@ -368,7 +368,7 @@ async def test_update_reindexes_and_delete_removes_chunks(authed_client, unique_
     )
     r = await authed_client.put(
         f"/v1/documents/{did}",
-        json={"id": did, "collection_id": cid, "name": did, "meta": {"text": new_text}},
+        json={"id": did, "path": f"{did}.md", "collection_id": cid, "name": did, "meta": {"text": new_text}},
     )
     assert r.status_code in (200, 201), r.text
 

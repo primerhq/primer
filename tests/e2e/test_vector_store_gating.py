@@ -46,6 +46,7 @@ async def test_t0018_document_create_does_not_gate_on_vector_store(
     """
     body = {
         "id": f"doc-t0018-{unique_suffix}",
+        "path": f"doc-t0018-{unique_suffix}.md",
         "name": "test doc",
         "collection_id": "any-collection",
         "text": "anything",

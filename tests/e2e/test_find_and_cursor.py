@@ -1144,6 +1144,7 @@ async def test_t0213_cursor_pagination_with_order_by_jsonb_key(
                 "/v1/documents",
                 json={
                     "id": r["id"],
+                    "path": f'{r["id"]}.md',
                     "name": r["tag"],
                     "collection_id": collection_id,
                     "meta": {"tag": r["tag"]},
@@ -2183,6 +2184,7 @@ async def test_t0330_cursor_walk_composite_order_by_two_keys(
                 "/v1/documents",
                 json={
                     "id": r["id"],
+                    "path": f'{r["id"]}.md',
                     "name": r["tag"],
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": r["tag"]},
