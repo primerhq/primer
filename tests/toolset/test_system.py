@@ -48,22 +48,22 @@ class _Storage:
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
 
-    async def get(self, id: str) -> Any | None:
+    async def get(self, id: str, *, conn: Any | None = None) -> Any | None:
         return self._data.get(id)
 
-    async def create(self, e: Any) -> Any:
+    async def create(self, e: Any, *, conn: Any | None = None) -> Any:
         if e.id in self._data:
             raise ConflictError(f"id {e.id!r} already exists")
         self._data[e.id] = e
         return e
 
-    async def update(self, e: Any) -> Any:
+    async def update(self, e: Any, *, conn: Any | None = None) -> Any:
         if e.id not in self._data:
             raise NotFoundError(f"no entity with id {e.id!r}")
         self._data[e.id] = e
         return e
 
-    async def delete(self, id: str) -> None:
+    async def delete(self, id: str, *, conn: Any | None = None) -> None:
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
         del self._data[id]
@@ -91,12 +91,101 @@ class _Storage:
         return await self.list(page, order_by=order_by)
 
 
+class _ContentStore:
+    """Minimal in-memory DocumentContentStore for the path-addressed tools.
+
+    Keyed by document_id; enforces the (collection_id, path) uniqueness the
+    real backends do so conflict/move semantics match.
+    """
+
+    def __init__(self) -> None:
+        self._rows: dict[str, Any] = {}  # document_id -> ContentRow
+
+    async def ensure_schema(self) -> None:
+        return
+
+    def _find_by_path(self, collection_id: str, path: str):
+        for row in self._rows.values():
+            if row.collection_id == collection_id and row.path == path:
+                return row
+        return None
+
+    async def get(self, document_id: str, *, conn=None):
+        row = self._rows.get(document_id)
+        return row.content if row is not None else None
+
+    async def get_by_path(self, collection_id: str, path: str, *, conn=None):
+        return self._find_by_path(collection_id, path)
+
+    async def resolve_id(self, collection_id: str, path: str, *, conn=None):
+        row = self._find_by_path(collection_id, path)
+        return row.document_id if row is not None else None
+
+    async def upsert(self, *, document_id, collection_id, path, content, conn=None):
+        from primer.int.document_content import ContentRow
+
+        clash = self._find_by_path(collection_id, path)
+        if clash is not None and clash.document_id != document_id:
+            raise ConflictError(f"path {path!r} already taken in {collection_id!r}")
+        self._rows[document_id] = ContentRow(
+            document_id=document_id,
+            collection_id=collection_id,
+            path=path,
+            content=content,
+        )
+
+    async def delete(self, document_id: str, *, conn=None):
+        self._rows.pop(document_id, None)
+
+    async def move(self, document_id: str, new_path: str, *, conn=None):
+        row = self._rows.get(document_id)
+        if row is None:
+            raise NotFoundError(f"no content row for {document_id!r}")
+        clash = self._find_by_path(row.collection_id, new_path)
+        if clash is not None and clash.document_id != document_id:
+            raise ConflictError(f"path {new_path!r} already taken")
+        self._rows[document_id] = row.model_copy(update={"path": new_path})
+
+    async def list(self, collection_id: str, *, prefix: str | None = None):
+        from primer.int.document_content import ContentListEntry
+
+        out = []
+        for row in self._rows.values():
+            if row.collection_id != collection_id:
+                continue
+            if prefix is not None and not row.path.startswith(prefix):
+                continue
+            out.append(
+                ContentListEntry(
+                    document_id=row.document_id,
+                    path=row.path,
+                    size=len(row.content),
+                )
+            )
+        return out
+
+
+class _NullTxn:
+    async def __aenter__(self):
+        return None
+
+    async def __aexit__(self, *exc):
+        return False
+
+
 class _SP:
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
+        self._content_store = _ContentStore()
 
     def get_storage(self, cls: type) -> _Storage:
         return self._stores.setdefault(cls, _Storage())
+
+    def get_content_store(self) -> _ContentStore:
+        return self._content_store
+
+    def transaction(self) -> _NullTxn:
+        return _NullTxn()
 
     async def initialize(self) -> None:
         return
@@ -253,6 +342,8 @@ class TestCatalog:
         assert "refresh_collection" in names
         assert "get_document_content" in names
         assert "put_document" in names
+        assert "list_documents" in names
+        assert "move_document" in names
         assert "invalidate_semantic_search_provider" in names
 
     @pytest.mark.asyncio
@@ -547,9 +638,8 @@ class TestCollectionExtras:
         await system_toolset.call(
             tool_name="put_document",
             arguments={
-                "id": "doc-1",
                 "collection_id": "kb-1",
-                "name": "hello.txt",
+                "path": "hello.txt",
                 "content": "hello world",
             },
         )
@@ -614,21 +704,22 @@ class TestDocumentExtras:
         result = await system_toolset.call(
             tool_name="put_document",
             arguments={
-                "id": "doc-1",
                 "collection_id": "kb-1",
-                "name": "hello.txt",
+                "path": "hello.txt",
                 "content": "this is the content",
-                "meta": {"author": "alice"},
+                "title": "Hello",
             },
         )
-        assert not result.is_error
+        assert not result.is_error, result.output
         result = await system_toolset.call(
-            tool_name="get_document_content", arguments={"document_id": "doc-1"}
+            tool_name="get_document_content",
+            arguments={"collection_id": "kb-1", "path": "hello.txt"},
         )
         assert not result.is_error
         body = json.loads(result.output)
         assert body["content"] == "this is the content"
-        assert body["name"] == "hello.txt"
+        assert body["path"] == "hello.txt"
+        assert body["title"] == "Hello"
 
     @pytest.mark.asyncio
     async def test_put_document_upserts(self, system_toolset) -> None:
@@ -640,15 +731,15 @@ class TestDocumentExtras:
             result = await system_toolset.call(
                 tool_name="put_document",
                 arguments={
-                    "id": "doc-1",
                     "collection_id": "kb-1",
-                    "name": "x.txt",
+                    "path": "x.txt",
                     "content": content,
                 },
             )
-            assert not result.is_error
+            assert not result.is_error, result.output
         result = await system_toolset.call(
-            tool_name="get_document_content", arguments={"document_id": "doc-1"}
+            tool_name="get_document_content",
+            arguments={"collection_id": "kb-1", "path": "x.txt"},
         )
         assert json.loads(result.output)["content"] == "second"
 
@@ -862,9 +953,8 @@ class TestExtras:
         await system_toolset.call(
             tool_name="put_document",
             arguments={
-                "id": "doc-1",
                 "collection_id": "kb-1",
-                "name": "x.txt",
+                "path": "x.txt",
                 "content": "x",
                 "meta": {"author": "alice"},
             },
@@ -911,7 +1001,7 @@ class TestExtras:
     async def test_get_document_content_404(self, system_toolset) -> None:
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"document_id": "missing"},
+            arguments={"collection_id": "kb-1", "path": "missing.md"},
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"

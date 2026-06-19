@@ -25,7 +25,9 @@ Plus entity-specific operations:
 * Collection extras — ``list_collection_documents``,
   ``find_collection_documents_by_meta``, ``search_collection``,
   ``refresh_collection``.
-* Document extras — ``get_document_content``, ``put_document``.
+* Document extras - ``get_document_content``, ``put_document``,
+  ``list_documents``, ``move_document`` (all path-addressed; bodies live
+  in the content store).
 
 Total: ~75 tools. ``search_collection`` runs real semantic search over
 a collection's indexed document contents (same embedder + vector-store
@@ -107,6 +109,7 @@ if TYPE_CHECKING:
     from primer.api.registries import ProviderRegistry
     from primer.api.registries.semantic_search_registry import SemanticSearchRegistry
     from primer.int.storage_provider import StorageProvider
+    from primer.knowledge.document_service import DocumentService
 
 
 logger = logging.getLogger(__name__)
@@ -1444,70 +1447,170 @@ def _collection_extras(
 # ===========================================================================
 
 
-class _DocumentIdArgs(BaseModel):
-    document_id: str = Field(..., min_length=1, description="Document id.")
+class _GetDocumentArgs(BaseModel):
+    """Address a document by its path within a collection."""
 
-
-class _PutDocumentArgs(BaseModel):
-    """Ingest a document with content into a collection.
-
-    Until the docling/embedding pipeline lands, ``content`` is stored
-    verbatim under ``Document.meta['content']`` so it can be retrieved
-    by ``get_document_content``. Once ingestion lands, content will
-    flow through chunking + embedding before vector storage.
-    """
-
-    id: str = Field(
-        ..., min_length=1, description="Document id (unique within the collection)."
-    )
     collection_id: str = Field(
         ..., min_length=1, description="Parent collection id."
     )
-    name: str = Field(
-        ..., min_length=1, description="Human-readable document name."
+    path: str = Field(
+        ...,
+        min_length=1,
+        description="Document path within the collection, e.g. ``concepts/slo.md``.",
+    )
+
+
+class _PutDocumentArgs(BaseModel):
+    """Upsert a document body at a path within a collection.
+
+    The body is written to the content store (addressed by
+    ``(collection_id, path)``), NOT to ``Document.meta``. Repeated puts on
+    the same path update the same entity. When the collection has search on,
+    the write is followed by a best-effort re-index.
+    """
+
+    collection_id: str = Field(
+        ..., min_length=1, description="Parent collection id."
+    )
+    path: str = Field(
+        ...,
+        min_length=1,
+        description="Document path within the collection, e.g. ``concepts/slo.md``.",
     )
     content: str = Field(
         ...,
         min_length=1,
+        description="Raw text body, stored in the content store keyed by path.",
+    )
+    title: str | None = Field(
+        default=None,
         description=(
-            "Raw text content of the document. Stored under "
-            "``meta['content']`` until the chunking pipeline lands."
+            "Optional human-readable title; defaults to the path's final "
+            "segment when omitted."
         ),
     )
-    meta: dict[str, Any] = Field(
-        default_factory=dict,
+    meta: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional application-defined metadata stored on the entity.",
+    )
+
+
+class _ListDocumentsArgs(BaseModel):
+    """List documents under an optional path prefix (no bodies)."""
+
+    collection_id: str = Field(
+        ..., min_length=1, description="Parent collection id."
+    )
+    prefix: str | None = Field(
+        default=None,
         description=(
-            "Application-defined metadata. Merged with the synthesised "
-            "``content`` key (your value wins on conflict)."
+            "Optional path prefix filter, e.g. ``concepts/``. Omit to list "
+            "every document in the collection."
         ),
     )
+
+
+class _MoveDocumentArgs(BaseModel):
+    """Move a document from one path to another within a collection."""
+
+    collection_id: str = Field(
+        ..., min_length=1, description="Parent collection id."
+    )
+    src: str = Field(
+        ..., min_length=1, alias="from", description="Current document path."
+    )
+    dst: str = Field(
+        ..., min_length=1, alias="to", description="Destination document path."
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+def _document_service_factory(
+    *,
+    storage_provider: "StorageProvider",
+    provider_registry: "ProviderRegistry",
+    semantic_search_registry: "SemanticSearchRegistry | None",
+) -> "Callable[[], DocumentService]":
+    """Return a lazily-memoised builder for the toolset's :class:`DocumentService`.
+
+    Construction is deferred to first use so building the system toolset over
+    a storage provider that has no content store (in-memory unit-test fakes)
+    does not touch ``get_content_store`` / ``transaction`` until a document
+    tool is actually invoked.
+
+    Mirrors :func:`primer.api.deps.get_document_service`: when a
+    SemanticSearchRegistry is wired (search on) the service gets a
+    best-effort indexer that re-embeds the body AFTER the atomic entity +
+    content write commits, so a ``put_document`` into a search-on collection
+    still indexes the document. With no registry (search off / unit tests)
+    the indexer is ``None`` and ``put_document`` is a pure storage write.
+    """
+    cached: dict[str, "DocumentService"] = {}
+
+    def _build() -> "DocumentService":
+        if "svc" in cached:
+            return cached["svc"]
+        from primer.knowledge.document_service import DocumentService
+
+        indexer = None
+        if semantic_search_registry is not None:
+            from primer.knowledge.indexing import index_document
+
+            async def indexer(*, document: Document, content: str) -> None:  # noqa: F811
+                collection = await storage_provider.get_storage(Collection).get(
+                    document.collection_id
+                )
+                if collection is None:
+                    return
+                try:
+                    await index_document(
+                        document=document,
+                        collection=collection,
+                        provider_registry=provider_registry,
+                        semantic_search_registry=semantic_search_registry,
+                        content_store=storage_provider.get_content_store(),
+                    )
+                except Exception:  # noqa: BLE001 - best-effort indexing
+                    logger.exception(
+                        "document %s: indexing failed; row persisted but not "
+                        "searchable",
+                        document.id,
+                    )
+
+        svc = DocumentService(storage_provider, indexer=indexer)
+        cached["svc"] = svc
+        return svc
+
+    return _build
 
 
 def _document_extras(
     *,
-    storage_provider: "StorageProvider",
+    service_factory: "Callable[[], DocumentService]",
 ) -> dict[str, tuple[Tool, ToolHandler]]:
-    documents = storage_provider.get_storage(Document)
     out: dict[str, tuple[Tool, ToolHandler]] = {}
 
     async def _get_content(arguments: dict[str, Any]) -> ToolCallResult:
         try:
-            args = _DocumentIdArgs.model_validate(arguments)
+            args = _GetDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        doc = await documents.get(args.document_id)
-        if doc is None:
-            return _err(
-                f"Document {args.document_id!r} does not exist",
-                error_type="not-found",
+        try:
+            res = await service_factory().read(
+                collection_id=args.collection_id, path=args.path
             )
-        content = (doc.meta or {}).get("content", "")
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
         return _ok(
             {
-                "id": doc.id,
-                "collection_id": doc.collection_id,
-                "name": doc.name,
-                "content": content,
+                "id": res.document.id,
+                "collection_id": res.document.collection_id,
+                "path": res.document.path,
+                "title": res.document.title,
+                "content": res.content,
             }
         )
 
@@ -1515,18 +1618,18 @@ def _document_extras(
         make_tool(
             id="get_document_content",
             toolset_id=SYSTEM_TOOLSET_ID,
-            purpose="Fetch a document's text content.",
+            purpose="Fetch a document's text content by path.",
             when=(
-                "Use when you need the raw text (looks up "
-                "``Document.meta['content']`` where ``put_document`` "
-                "stores it); empty-string content is normal for documents "
-                "created without going through ``put_document``."
+                "Use when you need the raw body of a document addressed by "
+                "``(collection_id, path)``; the body is read from the content "
+                "store. Returns ``type=not-found`` if no document lives at "
+                "that path."
             ),
-            args_schema=_DocumentIdArgs.model_json_schema(),
+            args_schema=_GetDocumentArgs.model_json_schema(),
             examples=[
                 ToolExample(
-                    args={"document_id": "doc-1"},
-                    returns="``{id, collection_id, name, content}``",
+                    args={"collection_id": "kb-1", "path": "concepts/slo.md"},
+                    returns="``{id, collection_id, path, title, content}``",
                 )
             ],
         ),
@@ -1538,52 +1641,140 @@ def _document_extras(
             args = _PutDocumentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        merged_meta = {"content": args.content, **args.meta}
-        doc = Document(
-            id=args.id,
-            collection_id=args.collection_id,
-            name=args.name,
-            path=f"{args.id}.md",
-            meta=merged_meta,
-        )
-        existing = await documents.get(args.id)
         try:
-            if existing is None:
-                stored = await documents.create(doc)
-            else:
-                stored = await documents.update(doc)
+            doc = await service_factory().upsert(
+                collection_id=args.collection_id,
+                path=args.path,
+                content=args.content,
+                title=args.title,
+                meta=args.meta,
+            )
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
-        return _ok(stored)
+        return _ok(doc)
 
     out["put_document"] = (
         make_tool(
             id="put_document",
             toolset_id=SYSTEM_TOOLSET_ID,
-            purpose="Ingest a document with content into a collection (upsert).",
+            purpose="Upsert a document body at a path within a collection.",
             when=(
-                "Use when you have raw text to store under a document; "
-                "synthesises a ``Document`` row with ``content`` saved to "
-                "``meta['content']`` and creates or updates by id. Until "
-                "the chunking + embedding pipeline lands this does NOT "
-                "vectorise the document (search will not see it); use "
-                "``create_document`` / ``update_document`` for raw "
+                "Use when you have raw text to store at a path; the body is "
+                "written to the content store addressed by "
+                "``(collection_id, path)`` (not ``meta``) and the entity is "
+                "created or replaced at that path. When the collection has "
+                "search on, the document is re-indexed best-effort after the "
+                "write. Use ``create_document`` / ``update_document`` for raw "
                 "row-level CRUD without content semantics."
             ),
             args_schema=_PutDocumentArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={
-                        "id": "doc-1",
                         "collection_id": "kb-1",
-                        "name": "Onboarding Guide",
+                        "path": "onboarding.md",
                         "content": "Welcome to the team.",
+                        "title": "Onboarding Guide",
                     },
-                    returns="the stored Document row",
+                    returns="the stored Document entity",
                 )
             ],
         ),
         _put_document,
+    )
+
+    async def _list_documents(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            args = _ListDocumentsArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        try:
+            entries = await service_factory().list(
+                collection_id=args.collection_id, prefix=args.prefix
+            )
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
+        return _ok(
+            {
+                "documents": [
+                    {"path": e.path, "document_id": e.document_id, "size": e.size}
+                    for e in entries
+                ]
+            }
+        )
+
+    out["list_documents"] = (
+        make_tool(
+            id="list_documents",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="List a collection's documents by path (no bodies).",
+            when=(
+                "Use when you want the path hierarchy of a collection; pass "
+                "an optional ``prefix`` to scope to a subtree. Returns "
+                "``{documents: [{path, document_id, size}]}`` without loading "
+                "any body; use ``get_document_content`` to read a body."
+            ),
+            args_schema=_ListDocumentsArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"collection_id": "kb-1", "prefix": "concepts/"},
+                    returns="``{documents: [{path, document_id, size}, ...]}``",
+                )
+            ],
+        ),
+        _list_documents,
+    )
+
+    async def _move_document(arguments: dict[str, Any]) -> ToolCallResult:
+        try:
+            args = _MoveDocumentArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        try:
+            await service_factory().move(
+                collection_id=args.collection_id, src=args.src, dst=args.dst
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
+        except PrimerError as exc:
+            return _err_from_primer(exc, error_type="storage-error")
+        return _ok(
+            {
+                "moved": True,
+                "collection_id": args.collection_id,
+                "from": args.src,
+                "to": args.dst,
+            }
+        )
+
+    out["move_document"] = (
+        make_tool(
+            id="move_document",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Move a document from one path to another within a collection.",
+            when=(
+                "Use when you want to rename or relocate a document; the same "
+                "entity keeps its id and body, only the path changes. Returns "
+                "``type=not-found`` if ``from`` does not exist and "
+                "``type=conflict`` if ``to`` is already taken."
+            ),
+            args_schema=_MoveDocumentArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={
+                        "collection_id": "kb-1",
+                        "from": "draft.md",
+                        "to": "concepts/final.md",
+                    },
+                    returns="``{moved: true, collection_id, from, to}``",
+                )
+            ],
+        ),
+        _move_document,
     )
 
     return out
@@ -1865,7 +2056,15 @@ def build_system_toolset(
             semantic_search_registry=semantic_search_registry,
         )
     )
-    registry.update(_document_extras(storage_provider=storage_provider))
+    registry.update(
+        _document_extras(
+            service_factory=_document_service_factory(
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+            )
+        )
+    )
 
     # ---- Dynamic invocation: invoke_agent ----------------------------
     class _InvokeAgentArgs(BaseModel):
