@@ -1453,6 +1453,10 @@ input, textarea, select { font: inherit; color: inherit; }
   .desktop-only { display: none !important; }
   .mobile-only { display: revert; }
 
+  /* Path-addressed document browser: stack the path list above the
+     content pane so each gets the full sheet width on a phone. */
+  .kn-doc-browser { grid-template-columns: 1fr !important; }
+
   /* Hide existing sidebar in favor of slide-over drawer. */
   .app { grid-template-columns: 1fr; }
   .sidebar { display: none; }
