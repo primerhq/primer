@@ -62,6 +62,11 @@ from primer.storage._ddl import (
 )
 from pydantic import BaseModel
 
+from primer.int.document_content import (
+    ContentListEntry,
+    ContentRow,
+    DocumentContentStore,
+)
 from primer.int.storage import Storage
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable, dump_for_storage
@@ -366,6 +371,10 @@ class PostgresStorageProvider(StorageProvider):
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, secret, "singleton")
+
+    def get_content_store(self) -> "PostgresDocumentContentStore":
+        """Return the document-body store bound to this provider's pool."""
+        return PostgresDocumentContentStore(self.pool, self._schema)
 
 
 # ===========================================================================
@@ -859,4 +868,201 @@ class PostgresStorage(Storage[ModelT]):
         if isinstance(exc, asyncpg.PostgresError):
             return ServerError(f"Postgres error: {exc}", cause=exc)
         return ProviderError(f"storage backend error: {exc}", cause=exc)
+
+
+# ===========================================================================
+# Document content store
+# ===========================================================================
+
+
+def _wrap_content_error(exc: Exception, *, op: str) -> Exception:
+    """Map asyncpg exceptions onto the primer exception hierarchy for the
+    document content store. Mirrors :meth:`PostgresStorage._wrap_db_error`;
+    a UNIQUE violation (path collision) becomes :class:`ConflictError`."""
+    if isinstance(exc, asyncpg.UniqueViolationError):
+        return ConflictError(
+            f"document_content path conflict during {op}: {exc}", cause=exc,
+        )
+    if isinstance(exc, asyncpg.PostgresError):
+        return ServerError(
+            f"Postgres error during document_content.{op}: {exc}", cause=exc,
+        )
+    return ProviderError(
+        f"document_content backend error during {op}: {exc}", cause=exc,
+    )
+
+
+class PostgresDocumentContentStore(DocumentContentStore):
+    """Postgres-backed document body store keyed by stable document id.
+
+    Holds bodies in a ``<schema>.document_content`` table with a
+    ``UNIQUE(collection_id, path)`` index, making it authoritative for
+    path<->id resolution and path uniqueness. Shares the provider's
+    asyncpg pool.
+
+    The ``conn`` kwarg threads a caller-supplied connection so a write can
+    join an open transaction; when omitted a connection is acquired from
+    the pool for the duration of the call (same idiom as
+    :class:`PostgresStorage`).
+    """
+
+    def __init__(self, pool: asyncpg.Pool, schema: str) -> None:
+        self._pool = pool
+        self._schema = schema
+        self._qualified = f'"{schema}".document_content'
+
+    @asynccontextmanager
+    async def _acquire_or_use(self, conn: Any | None):
+        """Yield a usable connection: the caller's if supplied, else a
+        pooled one for the duration of the block."""
+        if conn is not None:
+            yield conn
+        else:
+            async with self._pool.acquire() as acquired:
+                yield acquired
+
+    async def ensure_schema(self) -> None:
+        ddl_table = (
+            f'CREATE TABLE IF NOT EXISTS {self._qualified} ('
+            'document_id   text PRIMARY KEY, '
+            'collection_id text NOT NULL, '
+            'path          text NOT NULL, '
+            'content       text NOT NULL, '
+            'updated_at    timestamptz NOT NULL DEFAULT now()'
+            ')'
+        )
+        ddl_uniq = (
+            'CREATE UNIQUE INDEX IF NOT EXISTS document_content_coll_path '
+            f'ON {self._qualified} (collection_id, path)'
+        )
+        ddl_coll = (
+            'CREATE INDEX IF NOT EXISTS document_content_coll '
+            f'ON {self._qualified} (collection_id)'
+        )
+        try:
+            async with self._pool.acquire() as conn:
+                async with conn.transaction():
+                    await conn.execute(ddl_table)
+                    await conn.execute(ddl_uniq)
+                    await conn.execute(ddl_coll)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="ensure_schema") from exc
+
+    async def get(self, document_id: str, *, conn: Any | None = None) -> str | None:
+        sql = f'SELECT content FROM {self._qualified} WHERE document_id = $1'
+        try:
+            async with self._acquire_or_use(conn) as c:
+                row = await c.fetchrow(sql, document_id)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="get") from exc
+        return None if row is None else row["content"]
+
+    async def get_by_path(
+        self, collection_id: str, path: str, *, conn: Any | None = None
+    ) -> ContentRow | None:
+        sql = (
+            'SELECT document_id, collection_id, path, content '
+            f'FROM {self._qualified} WHERE collection_id = $1 AND path = $2'
+        )
+        try:
+            async with self._acquire_or_use(conn) as c:
+                row = await c.fetchrow(sql, collection_id, path)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="get_by_path") from exc
+        if row is None:
+            return None
+        return ContentRow(
+            document_id=row["document_id"],
+            collection_id=row["collection_id"],
+            path=row["path"],
+            content=row["content"],
+        )
+
+    async def resolve_id(
+        self, collection_id: str, path: str, *, conn: Any | None = None
+    ) -> str | None:
+        sql = (
+            f'SELECT document_id FROM {self._qualified} '
+            f'WHERE collection_id = $1 AND path = $2'
+        )
+        try:
+            async with self._acquire_or_use(conn) as c:
+                row = await c.fetchrow(sql, collection_id, path)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="resolve_id") from exc
+        return None if row is None else row["document_id"]
+
+    async def upsert(
+        self,
+        *,
+        document_id: str,
+        collection_id: str,
+        path: str,
+        content: str,
+        conn: Any | None = None,
+    ) -> None:
+        sql = (
+            f'INSERT INTO {self._qualified} '
+            '(document_id, collection_id, path, content, updated_at) '
+            'VALUES ($1, $2, $3, $4, now()) '
+            'ON CONFLICT (document_id) DO UPDATE SET '
+            'collection_id = EXCLUDED.collection_id, '
+            'path = EXCLUDED.path, '
+            'content = EXCLUDED.content, '
+            'updated_at = now()'
+        )
+        try:
+            async with self._acquire_or_use(conn) as c:
+                await c.execute(sql, document_id, collection_id, path, content)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="upsert") from exc
+
+    async def delete(self, document_id: str, *, conn: Any | None = None) -> None:
+        sql = f'DELETE FROM {self._qualified} WHERE document_id = $1'
+        try:
+            async with self._acquire_or_use(conn) as c:
+                await c.execute(sql, document_id)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="delete") from exc
+
+    async def move(
+        self, document_id: str, new_path: str, *, conn: Any | None = None
+    ) -> None:
+        sql = (
+            f'UPDATE {self._qualified} SET path = $1, updated_at = now() '
+            f'WHERE document_id = $2'
+        )
+        try:
+            async with self._acquire_or_use(conn) as c:
+                result = await c.execute(sql, new_path, document_id)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="move") from exc
+        # asyncpg returns the command tag e.g. "UPDATE 1" / "UPDATE 0".
+        if result.endswith(" 0"):
+            raise NotFoundError(
+                f"document_content with document_id {document_id!r} not found"
+            )
+
+    async def list(
+        self, collection_id: str, *, prefix: str | None = None
+    ) -> list[ContentListEntry]:
+        sql = (
+            'SELECT document_id, path, length(content) AS size '
+            f'FROM {self._qualified} WHERE collection_id = $1'
+        )
+        params: list[Any] = [collection_id]
+        if prefix is not None:
+            sql += " AND path LIKE $2 || '%'"
+            params.append(prefix)
+        try:
+            async with self._pool.acquire() as conn:
+                rows = await conn.fetch(sql, *params)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="list") from exc
+        return [
+            ContentListEntry(
+                document_id=r["document_id"], path=r["path"], size=int(r["size"])
+            )
+            for r in rows
+        ]
 
