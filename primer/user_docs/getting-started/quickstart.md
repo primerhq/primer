@@ -214,7 +214,3 @@ How an agent turn actually runs and every configuration field.
 ```ref:features/harnesses
 Package your tuned agents and graphs into a shareable, git-backed bundle.
 ```
-
-```ref:cookbook/multi-agent-graph-research
-A larger multi-agent graph worked end to end.
-```
