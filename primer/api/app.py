@@ -213,6 +213,13 @@ def _make_lifespan(config: AppConfig):
         storage_provider = _build_storage_provider(config)
         await storage_provider.initialize()
         await storage_provider.get_content_store().ensure_schema()
+        # One-time, idempotent, resumable migration of legacy document bodies
+        # (Document.meta['content']/['text']) + paths into the content store.
+        # Cheap on re-runs: documents already migrated are skipped, and a fresh
+        # install with no legacy rows is a no-op.
+        from primer.knowledge.migration import migrate_document_content
+
+        await migrate_document_content(storage_provider)
 
         from primer.model.provider import SecretProviderConfig
         from primer.secret.factory import SecretProviderFactory
