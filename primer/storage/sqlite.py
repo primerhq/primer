@@ -30,6 +30,11 @@ from typing import Any, TypeVar
 import aiosqlite
 from pydantic import BaseModel
 
+from primer.int.document_content import (
+    ContentListEntry,
+    ContentRow,
+    DocumentContentStore,
+)
 from primer.int.storage import Storage
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable, dump_for_storage
@@ -252,6 +257,10 @@ class SqliteStorageProvider(StorageProvider):
             (secret, "singleton"),
         )
         await self.connection.commit()
+
+    def get_content_store(self) -> "SqliteDocumentContentStore":
+        """Return the document-body store bound to this provider's connection."""
+        return SqliteDocumentContentStore(self.connection)
 
 
 class SqliteStorage(Storage[ModelT]):
@@ -631,4 +640,178 @@ def _wrap_sqlite_error(exc: Exception, *, model_name: str, op: str) -> Exception
     )
 
 
-__all__ = ["SqliteStorage", "SqliteStorageProvider"]
+class SqliteDocumentContentStore(DocumentContentStore):
+    """SQLite-backed document body store keyed by stable document id.
+
+    Holds bodies in a ``document_content`` table with a
+    ``UNIQUE(collection_id, path)`` index, making it authoritative for
+    path<->id resolution and path uniqueness. Shares the provider's
+    single aiosqlite connection.
+
+    SQLite uses one shared connection, so the ``conn`` kwarg has nothing
+    to thread; it is accepted for Protocol parity and ignored. Each write
+    commits on its own (the standalone path); multi-write transaction
+    grouping is handled by a later task, not here.
+    """
+
+    def __init__(self, conn: aiosqlite.Connection) -> None:
+        self._conn = conn
+
+    async def ensure_schema(self) -> None:
+        try:
+            await self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS document_content ("
+                "  document_id   TEXT PRIMARY KEY,"
+                "  collection_id TEXT NOT NULL,"
+                "  path          TEXT NOT NULL,"
+                "  content       TEXT NOT NULL,"
+                "  updated_at    TEXT NOT NULL"
+                ")"
+            )
+            await self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS document_content_coll_path "
+                "ON document_content (collection_id, path)"
+            )
+            await self._conn.execute(
+                "CREATE INDEX IF NOT EXISTS document_content_coll "
+                "ON document_content (collection_id)"
+            )
+            await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="document_content", op="ensure_schema",
+            ) from exc
+
+    async def get(self, document_id: str, *, conn: Any | None = None) -> str | None:
+        del conn
+        cur = await self._conn.execute(
+            "SELECT content FROM document_content WHERE document_id = ?",
+            (document_id,),
+        )
+        row = await cur.fetchone()
+        return None if row is None else row[0]
+
+    async def get_by_path(
+        self, collection_id: str, path: str, *, conn: Any | None = None
+    ) -> ContentRow | None:
+        del conn
+        cur = await self._conn.execute(
+            "SELECT document_id, collection_id, path, content "
+            "FROM document_content WHERE collection_id = ? AND path = ?",
+            (collection_id, path),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            return None
+        return ContentRow(
+            document_id=row[0],
+            collection_id=row[1],
+            path=row[2],
+            content=row[3],
+        )
+
+    async def resolve_id(
+        self, collection_id: str, path: str, *, conn: Any | None = None
+    ) -> str | None:
+        del conn
+        cur = await self._conn.execute(
+            "SELECT document_id FROM document_content "
+            "WHERE collection_id = ? AND path = ?",
+            (collection_id, path),
+        )
+        row = await cur.fetchone()
+        return None if row is None else row[0]
+
+    async def upsert(
+        self,
+        *,
+        document_id: str,
+        collection_id: str,
+        path: str,
+        content: str,
+        conn: Any | None = None,
+    ) -> None:
+        del conn
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            await self._conn.execute(
+                "INSERT INTO document_content"
+                " (document_id, collection_id, path, content, updated_at)"
+                " VALUES (?, ?, ?, ?, ?)"
+                " ON CONFLICT(document_id) DO UPDATE SET"
+                "   collection_id = excluded.collection_id,"
+                "   path = excluded.path,"
+                "   content = excluded.content,"
+                "   updated_at = excluded.updated_at",
+                (document_id, collection_id, path, content, now),
+            )
+            await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="document_content", op="upsert",
+            ) from exc
+
+    async def delete(self, document_id: str, *, conn: Any | None = None) -> None:
+        del conn
+        try:
+            await self._conn.execute(
+                "DELETE FROM document_content WHERE document_id = ?",
+                (document_id,),
+            )
+            await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="document_content", op="delete",
+            ) from exc
+
+    async def move(
+        self, document_id: str, new_path: str, *, conn: Any | None = None
+    ) -> None:
+        del conn
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            cur = await self._conn.execute(
+                "UPDATE document_content SET path = ?, updated_at = ? "
+                "WHERE document_id = ?",
+                (new_path, now, document_id),
+            )
+            await self._conn.commit()
+            rowcount = cur.rowcount
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="document_content", op="move",
+            ) from exc
+        if rowcount == 0:
+            raise NotFoundError(
+                f"document_content with document_id {document_id!r} not found"
+            )
+
+    async def list(
+        self, collection_id: str, *, prefix: str | None = None
+    ) -> list[ContentListEntry]:
+        sql = (
+            "SELECT document_id, path, length(content) AS size "
+            "FROM document_content WHERE collection_id = ?"
+        )
+        params: list[Any] = [collection_id]
+        if prefix is not None:
+            sql += " AND path LIKE ? || '%'"
+            params.append(prefix)
+        try:
+            cur = await self._conn.execute(sql, params)
+            rows = await cur.fetchall()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="document_content", op="list",
+            ) from exc
+        return [
+            ContentListEntry(document_id=r[0], path=r[1], size=int(r[2]))
+            for r in rows
+        ]
+
+
+__all__ = [
+    "SqliteDocumentContentStore",
+    "SqliteStorage",
+    "SqliteStorageProvider",
+]
