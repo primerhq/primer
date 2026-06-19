@@ -102,6 +102,24 @@ async def test_list_never_returns_body(content_store: DocumentContentStore) -> N
 
 
 @pytest.mark.asyncio
+async def test_list_prefix_escapes_like_wildcards(
+    content_store: DocumentContentStore,
+) -> None:
+    # A prefix containing a SQL LIKE wildcard (`_` matches any single char)
+    # must be treated LITERALLY, not as a pattern. `a_b/` must NOT match
+    # `axb/...`.
+    await content_store.upsert(
+        document_id="d1", collection_id="c", path="a_b/x.md", content="x"
+    )
+    await content_store.upsert(
+        document_id="d2", collection_id="c", path="axb/y.md", content="y"
+    )
+    entries = await content_store.list("c", prefix="a_b/")
+    paths = sorted(e.path for e in entries)
+    assert paths == ["a_b/x.md"]
+
+
+@pytest.mark.asyncio
 async def test_move_changes_path(content_store: DocumentContentStore) -> None:
     await content_store.upsert(document_id="d1", collection_id="c", path="a.md", content="x")
     await content_store.move("d1", "b.md")

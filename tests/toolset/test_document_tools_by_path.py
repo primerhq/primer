@@ -91,6 +91,21 @@ async def test_put_then_get_by_path(tools):
     assert "content" not in (entity.meta or {})
 
 
+async def test_put_empty_content(tools):
+    provider, _sp = tools
+    r = await call(
+        provider,
+        "put_document",
+        {"collection_id": "c1", "path": "empty.md", "content": ""},
+    )
+    assert not r.is_error, r.output
+    g = await call(
+        provider, "get_document_content", {"collection_id": "c1", "path": "empty.md"}
+    )
+    assert not g.is_error, g.output
+    assert json.loads(g.output)["content"] == ""
+
+
 async def test_list_documents(tools):
     provider, _sp = tools
     for path in ("a/b.md", "a/c.md", "other/d.md"):

@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from primer.int.document_content import ContentListEntry, DocumentContentStore
 from primer.int.storage import Storage
 from primer.model.collection import Document
-from primer.model.except_ import NotFoundError
+from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 
@@ -115,18 +115,58 @@ class DocumentService:
         path update the same entity rather than minting a new one), writes
         the entity + body atomically, then runs the optional indexer hook.
         Returns the stored :class:`Document`.
+
+        Concurrency: ``resolve_id`` runs INSIDE the transaction so the
+        create-vs-update decision is made under the same write scope as the
+        body write (on sqlite the provider's write-lock serialises it; on
+        postgres it shares the ``conn.transaction()``). If two upserts for the
+        same path still race past the resolve, the second's content ``upsert``
+        hits ``UNIQUE(collection_id, path)`` and raises
+        :class:`ConflictError`; we catch it, re-resolve the now-existing
+        document id, and retry once as an UPDATE so both callers converge to a
+        single document with no 500.
         """
-        existing_id = await self._content.resolve_id(collection_id, path)
-        doc_id = existing_id or _new_document_id()
-        doc = Document(
-            id=doc_id,
-            collection_id=collection_id,
-            name=title or _leaf(path),
-            path=path,
-            title=title,
-            meta=meta or {},
-        )
+        try:
+            return await self._upsert_once(
+                collection_id=collection_id,
+                path=path,
+                content=content,
+                title=title,
+                meta=meta,
+            )
+        except ConflictError:
+            # Lost the create race: another upsert took this path. Re-resolve
+            # and retry as an update against the now-existing document id.
+            return await self._upsert_once(
+                collection_id=collection_id,
+                path=path,
+                content=content,
+                title=title,
+                meta=meta,
+            )
+
+    async def _upsert_once(
+        self,
+        *,
+        collection_id: str,
+        path: str,
+        content: str,
+        title: str | None,
+        meta: dict[str, Any] | None,
+    ) -> Document:
         async with self._sp.transaction() as conn:
+            existing_id = await self._content.resolve_id(
+                collection_id, path, conn=conn
+            )
+            doc_id = existing_id or _new_document_id()
+            doc = Document(
+                id=doc_id,
+                collection_id=collection_id,
+                name=title or _leaf(path),
+                path=path,
+                title=title,
+                meta=meta or {},
+            )
             if existing_id is None:
                 await self._docs.create(doc, conn=conn)
             else:

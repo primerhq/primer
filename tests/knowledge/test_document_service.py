@@ -7,6 +7,8 @@ guarantee that a failed content write leaves NO orphan entity row.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 
@@ -52,6 +54,22 @@ async def test_upsert_same_path_updates_same_doc(svc):
     d2 = await svc.upsert(collection_id="c1", path="a.md", content="v2")
     assert d1.id == d2.id
     assert (await svc.read(collection_id="c1", path="a.md")).content == "v2"
+
+
+async def test_concurrent_upsert_same_path_converges(svc):
+    # Two concurrent upserts of the SAME (collection_id, path) must BOTH
+    # succeed (no UNIQUE-violation 500); they converge to a single document
+    # at that path, whose content is one of the two writes.
+    r1, r2 = await asyncio.gather(
+        svc.upsert(collection_id="c1", path="race.md", content="A"),
+        svc.upsert(collection_id="c1", path="race.md", content="B"),
+    )
+    assert r1.id == r2.id  # converged to one entity
+    entries = await svc.list(collection_id="c1")
+    race = [e for e in entries if e.path == "race.md"]
+    assert len(race) == 1
+    final = (await svc.read(collection_id="c1", path="race.md")).content
+    assert final in ("A", "B")
 
 
 async def test_read_missing_is_notfound(svc):

@@ -174,7 +174,16 @@ class Document(Identifiable):
     def _validate_path(cls, v: str) -> str:
         if v.startswith("/") or v.endswith("/"):
             raise ValueError("path must not start or end with '/'")
+        if "\\" in v:
+            raise ValueError("path must not contain a backslash")
+        if any(ord(ch) < 0x20 for ch in v):
+            raise ValueError("path must not contain ASCII control characters")
         for seg in v.split("/"):
             if seg in ("", ".", ".."):
                 raise ValueError("path must not contain empty, '.', or '..' segments")
+            if seg != seg.strip() or seg.strip() == "":
+                raise ValueError(
+                    "path segments must not be empty or have leading/trailing "
+                    "whitespace"
+                )
         return v

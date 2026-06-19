@@ -25,5 +25,21 @@ def test_path_rejected(bad):
         _doc(path=bad)
 
 
+@pytest.mark.parametrize(
+    "bad",
+    [
+        "a\\b.md",        # backslash
+        "a/ /b.md",       # whitespace-only segment
+        " a.md",          # leading whitespace
+        "a.md ",          # trailing whitespace
+        "a\tb.md",        # control character (tab, < 0x20)
+        "a\x00b.md",      # NUL control char
+    ],
+)
+def test_path_rejected_strict(bad):
+    with pytest.raises(ValidationError):
+        _doc(path=bad)
+
+
 def test_path_normalised_no_dot_segments():
     assert _doc(path="a/b/c.md").path == "a/b/c.md"

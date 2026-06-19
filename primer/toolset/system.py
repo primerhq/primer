@@ -1479,8 +1479,10 @@ class _PutDocumentArgs(BaseModel):
     )
     content: str = Field(
         ...,
-        min_length=1,
-        description="Raw text body, stored in the content store keyed by path.",
+        description=(
+            "Raw text body, stored in the content store keyed by path. "
+            "An empty string is allowed (creates or clears a document body)."
+        ),
     )
     title: str | None = Field(
         default=None,

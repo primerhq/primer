@@ -83,6 +83,17 @@ def _table_name_for(model_class: type[BaseModel]) -> str:
     return name
 
 
+def _escape_like(value: str) -> str:
+    """Escape SQL ``LIKE`` metacharacters in a value bound as a literal prefix.
+
+    Escapes the escape char first, then ``%`` and ``_``, so the value matches
+    LITERALLY under a ``LIKE ? ESCAPE '\\'`` clause. Used by the content
+    store's prefix listing so a path prefix containing ``%`` or ``_`` does not
+    over-match.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 class SqliteStorageProvider(StorageProvider):
     """Storage provider backed by a single embedded SQLite file."""
 
@@ -943,8 +954,11 @@ class SqliteDocumentContentStore(DocumentContentStore):
         )
         params: list[Any] = [collection_id]
         if prefix is not None:
-            sql += " AND path LIKE ? || '%'"
-            params.append(prefix)
+            # Escape LIKE metacharacters in the bound prefix so a `%`/`_`
+            # in the path prefix matches LITERALLY rather than as a wildcard
+            # (would otherwise over-match). The escape char is backslash.
+            sql += " AND path LIKE ? || '%' ESCAPE '\\'"
+            params.append(_escape_like(prefix))
         try:
             cur = await self._conn.execute(sql, params)
             rows = await cur.fetchall()
