@@ -60,7 +60,8 @@ sections:
         children:
           - channels/channel-providers
           - channels/channels
-          - channels/channel-workspace-association
+          - channels/channel-rules
+          - channels/channel-reply-binding
       - features/triggers
       - features/harnesses
       - features/mcp-server

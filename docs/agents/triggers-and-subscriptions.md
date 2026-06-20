@@ -61,7 +61,9 @@ A `Trigger` row:
   `{fire_at: <timestamp>}`. For `scheduled`: `{cron: "<5-field>",
   catch_up: "one|all|none"}`. For `webhook`:
   `{token: "<32-hex-server-minted>", hmac_secret: "<optional>"}`.
-  For `channel`: `{channel_id: "...", filter: {...}}`.
+  For `channel`: `{provider_id: "...", channel_id: "<optional>"}` -
+  the event-source anchor (omit `channel_id` for a provider-wide
+  trigger, needed for room-level events).
 - `payload_template` - a Jinja2 template rendered with the fire's
   context. Produces the body that subscribers receive.
 - `enabled` - bool. Disabled triggers don't fire.
@@ -78,10 +80,37 @@ A `Subscription` row:
   workspace_id: "..."}`. For `graph_fresh_session`: `{graph_id: "...",
   workspace_id: "..."}`. For `parked_session`: dynamic - created at
   yield time by `subscribe_to_trigger`.
+- `event_matcher` - optional `EventMatcher` (channel triggers only).
+  When present, only channel events that match the predicate dispatch
+  this subscription; `None` (the default, and the only option for
+  time/webhook triggers) means every fire dispatches.
+- `reply_target` - optional `ReplyTarget` (channel triggers only).
+  `source_thread` (default) | `source_room` | `dm_sender` | `none`,
+  or an explicit `{channel_id, anchor}`. For session subscriptions the
+  resolved target becomes the session's reply binding.
 - `parallelism` - `skip | queue`. With `skip` (default), if the
   prior fire is still being processed, the new fire is a no-op for
   this sub. With `queue`, always fire.
 - `enabled` - bool.
+
+### The `channel` trigger kind
+
+A `channel` trigger is the event-source anchor that channel
+subscriptions attach to. Its config is
+`ChannelTriggerConfig{provider_id, channel_id?}`: name the provider,
+and optionally one room (omit `channel_id` for a provider-wide
+trigger). Like webhook triggers it is not claim-engine-driven (no
+`next_fire_at`); it fires when the inbound channel router receives a
+normalized event for the matching `(provider_id, channel_id)`.
+
+Bindings on a channel trigger add two fields a time/webhook trigger
+does not use: `event_matcher` gates which normalized event dispatches
+the subscription (an AND of present fields over event type, surface,
+command name, sender, and text pattern), and `reply_target` sets where
+the action's outbound traffic goes. See the channels doc for the full
+event taxonomy, the matcher dimensions, and the action set; create
+bindings with `system::create_channel_binding`, or park a session on a
+channel event with `workspace_ext::subscribe_to_channel_event`.
 
 The fire pipeline:
 
@@ -232,45 +261,52 @@ initial instruction.
 **Goal.** When a particular Slack channel receives a message, kick
 off the `triage-incident` agent.
 
-1. Create the trigger:
+1. Create the channel trigger (the event-source anchor):
 
 ```json
 {
   "tool": "trigger::create",
   "arguments": {
-    "id": "tg-slack-incident",
-    "kind": "channel",
+    "slug": "slack-incident-anchor",
+    "name": "Slack incident channel",
     "config": {
-      "channel_id": "ch-slack-oncall",
-      "filter": {"text_contains": "incident"}
+      "kind": "channel",
+      "provider_id": "cp-slack",
+      "channel_id": "ch-slack-oncall"
     },
-    "payload_template": "{{ channel_message.text }}",
     "enabled": true
   }
 }
 ```
 
-2. Subscribe a fresh `triage-incident` session per fire:
+2. Create the binding: a matcher for messages containing "incident"
+   to a fresh `triage-incident` session per fire:
 
 ```json
 {
-  "tool": "trigger::create_subscription",
+  "tool": "system::create_channel_binding",
   "arguments": {
-    "id": "sub-slack-incident",
-    "trigger_id": "tg-slack-incident",
-    "kind": "agent_fresh_session",
+    "trigger_id": "slack-incident-anchor",
+    "event_matcher": {
+      "event_type": "message.posted",
+      "text_pattern": "incident"
+    },
     "config": {
+      "kind": "agent_fresh_session",
       "agent_id": "triage-incident",
       "workspace_id": "ws-incidents"
     },
-    "parallelism": "queue",
-    "enabled": true
+    "reply_target": "source_thread",
+    "payload_template": "{{ event.text }}",
+    "parallelism": "queue"
   }
 }
 ```
 
 `parallelism: queue` means every matching message produces its own
-session even if a prior triage is still running.
+session even if a prior triage is still running. The fire context
+carries the firing event under `event`, so the payload template can
+reference `event.text`.
 
 ### Workflow 3 - inbound webhook fires a fresh agent session
 
@@ -355,14 +391,16 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   which policy each trigger uses.
 - **`payload_template` runs Jinja2 against a fire-time context.**
   The context dict varies by kind: scheduled gets `scheduled_for`,
-  channel gets `channel_message`, delayed gets nothing beyond the
-  trigger metadata, webhook gets `webhook_body`, `webhook_headers`,
-  `webhook_query`, and `webhook_method`. Template errors are per-sub:
-  a bad template fails this one sub without taking down the others.
-- **`channel` triggers depend on the `ChannelInbox`.** No
-  ChannelProvider configured + no Channel rows → channel triggers
-  never fire. Operators see this as "trigger created but never
-  fires" and it's confusing.
+  channel gets the firing `event` (the normalized `ChannelEvent` as a
+  dict), delayed gets nothing beyond the trigger metadata, webhook
+  gets `webhook_body`, `webhook_headers`, `webhook_query`, and
+  `webhook_method`. Template errors are per-sub: a bad template fails
+  this one sub without taking down the others.
+- **`channel` triggers fire from the inbound router, not the claim
+  engine.** No ChannelProvider configured plus no Channel rows means
+  channel triggers never fire. A reply that continues an existing
+  conversation is handled correlation-first and never reaches the
+  rules; only fresh events are matched.
 - **`trigger::fire_now` is synchronous from the operator's side**
   (returns when the fire dispatch starts) but the subscribers act
   asynchronously. The endpoint returns 202; check `last_fired_at`

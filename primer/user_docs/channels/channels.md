@@ -7,27 +7,27 @@ summary: "Connect Slack, Telegram, or Discord to primer: create a channel for ea
 
 ## What a channel is
 
-A channel is a specific conversational room on a messaging platform: a Slack channel ID, a Telegram chat ID, or a Discord channel snowflake. It belongs to a channel provider (the credential set for the platform) and carries two responsibilities:
+A channel is a specific conversational room on a messaging platform: a Slack channel ID, a Telegram chat ID, or a Discord channel snowflake. It belongs to a channel provider (the credential set for the platform) and carries two directions of traffic:
 
-- **Session gate forwarding.** When a workspace session parks on `ask_user`, a tool approval request, or an `inform_user` call, primer forwards the prompt to the channel the workspace is associated with. The human responds in Slack, Telegram, or Discord, and the session resumes without anyone touching the primer console.
-- **Chat surface.** When chat is enabled on a channel, incoming messages from that room start or continue primer chats, so an agent can hold a full conversation with a user over the messaging platform.
+- **Inbound: events to actions.** A message or command arriving in the room is normalized into an event and matched against rules. A match dispatches a platform action: start a chat, run an agent or graph session, or resume a parked workflow. With chat enabled and no rule at all, the default is still that a new message opens or continues a chat.
+- **Outbound: reply binding.** When a session asks a question, hits a tool approval gate, calls `inform_user`, or finishes, that traffic follows a reply binding back to the channel and thread. The standing reply binding lives on the workspace.
 
-Both responsibilities run on the same room object. You configure which one you want (or both) through the channel's settings.
+Both directions run on the same room object. You configure the inbound rules in the rule editor and the outbound destination through the workspace reply binding.
 
-Three objects work together:
+Three pieces work together:
 
 - **Channel provider**: credentials for one platform (one Slack app, one Telegram bot, one Discord bot). See the channel providers page for setup.
 - **Channel**: a room inside a provider, identified by its external ID on the platform.
-- **Workspace channel association**: binds a workspace to a channel so that workspace's session gates forward there.
+- **Reply binding**: binds a workspace to a channel so that workspace's session traffic forwards there.
 
 ```mermaid
 flowchart LR
     prov[Channel provider\nSlack / Telegram / Discord]
     prov -->|owns| ch[Channel\nexternal_id]
-    ch -->|associated with| ws[Workspace]
-    ws -->|session parks| gate[ask_user / tool approval / inform]
-    gate -->|forwarded to| ch
-    ch -->|reply arrives| gate2[session resumes]
+    ch -->|event matches rule| act[start chat / run session / resume]
+    ws[Workspace] -->|reply binding| ch
+    ws -->|session gate| ch
+    ch -->|reply arrives| res[session resumes]
 ```
 
 ## Configuration
@@ -67,7 +67,7 @@ Chat settings live on the channel and control the chat surface for that room:
 7. Set chat settings if you want the room to drive chats (toggle **enabled**, pick a **default agent**).
 8. Click **Create channel**.
 
-After creating the channel, associate it with a workspace if you want session gates to forward there. See the channel-workspace association page.
+After creating the channel, set a workspace reply binding if you want session gates to forward there, and author channel rules if you want inbound events to drive actions.
 
 ## In-channel commands
 
@@ -97,8 +97,12 @@ Channels support inbound and outbound media:
 Set up the provider credentials before creating channels.
 ```
 
-```ref:channels/channel-workspace-association
-Bind a channel to a workspace and understand the full inbound/outbound flow.
+```ref:channels/channel-rules
+Map inbound events to actions and choose where the reply goes back.
+```
+
+```ref:channels/channel-reply-binding
+Bind a workspace to a channel and understand the full inbound/outbound flow.
 ```
 
 ```ref:features/chats

@@ -193,8 +193,8 @@ After creating a provider, return to the **Channels** tab to add the specific ro
 Create channels and bind them to workspaces.
 ```
 
-```ref:channels/channel-workspace-association
-Associate a channel with a workspace so session gates forward there.
+```ref:channels/channel-reply-binding
+Bind a channel to a workspace so session gates forward there.
 ```
 
 ```ref:reference/api-channels

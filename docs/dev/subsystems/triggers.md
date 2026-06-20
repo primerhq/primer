@@ -50,7 +50,9 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 | `primer/trigger/cron.py` | `validate_cron`, `validate_timezone`, `next_fire_at`, `iter_missed_fires` (timezone-aware croniter wrapper). |
 | `primer/trigger/payload.py` | `render_payload` (Jinja2 `SandboxedEnvironment`, `StrictUndefined`, `tojson`); `PayloadTemplateError`. |
 | `primer/trigger/fire_id.py` | `make_fire_id` (deterministic `fire-{trigger_id}-{ms}`). |
-| `primer/trigger/sources/` | `DelayedSource`, `ScheduledSource`, `WebhookSource`, the `SOURCES` registry and `get_source`. Sources compute `next_fire_at` and build the `fire_context`. |
+| `primer/trigger/sources/` | `DelayedSource`, `ScheduledSource`, `WebhookSource`, `ChannelSource`, the `SOURCES` registry and `get_source`. Sources compute `next_fire_at` and build the `fire_context`. |
+| `primer/trigger/subscribers/start_chat.py` | `start_chat` dispatcher: open a thread-bound chat seeded with the firing channel event's text. |
+| `primer/channel/event_dispatch.py` | `ChannelEventRouter`: correlation-first inbound precedence then fires matching `channel` triggers via `fire_trigger`. |
 | `primer/api/routers/webhooks.py` | Public `POST /v1/webhooks/{token}` endpoint (no auth dep); HMAC verification; per-token rate limit; body cap; fire-and-forget dispatch. |
 | `primer/trigger/subscribers/__init__.py` | `Dispatcher` protocol, `SubscriptionDispatchResult`, `DispatchDeps`, `register` / `get_dispatcher`. |
 | `primer/trigger/subscribers/chat_message.py` | Appends a user message to a `Chat` and pulses `ClaimKind.CHAT`. |
@@ -73,21 +75,25 @@ A `FireEvent` here is the logical fire identified by the deterministic `fire_id`
 - `DelayedTriggerConfig`: `fire_at` (a UTC `datetime`). Fires once.
 - `ScheduledTriggerConfig`: `cron` (validated by croniter), `timezone` (IANA name, default `UTC`), `catchup` (`one` | `all` | `none`, default `one`).
 - `WebhookTriggerConfig`: `token` (server-minted 32-hex-char capability URL token; never returned after initial creation response), `hmac_secret` (`SecretStr | None`; when set, callers must include `X-Primer-Signature: sha256=<hex>` over the raw body). Webhook triggers always have `next_fire_at=null` and `eligible_for_claim=False`.
+- `ChannelTriggerConfig`: `kind="channel"`, `provider_id`, `channel_id` (optional; omit for a provider-wide trigger). The event-source anchor that channel subscriptions attach to. Like webhook, channel triggers always have `next_fire_at=null` and `eligible_for_claim=False`; they fire from the inbound channel router, not the claim engine. `TriggerKind.CHANNEL` is the fourth member of the kind enum.
 
-`Subscription` (an `Identifiable`) fields: `trigger_id`, `config` (the discriminated `SubscriptionConfig`), `payload_template` (Jinja2, nullable), `parallelism` (`skip` | `queue`, default `skip`), `enabled`, `description`, `last_fired_at`, `last_fire_error`, `created_at`.
+`Subscription` (an `Identifiable`) fields: `trigger_id`, `config` (the discriminated `SubscriptionConfig`), `event_matcher` (`EventMatcher | None`; channel bindings only, `None` for time/webhook), `reply_target` (a `ReplyTarget`; channel bindings only), `payload_template` (Jinja2, nullable), `parallelism` (`skip` | `queue`, default `skip`), `enabled`, `description`, `last_fired_at`, `last_fire_error`, `created_at`. `EventMatcher` (`primer/model/event_matcher.py`) is an AND-of-present-fields predicate over a normalized `ChannelEvent` (event type, surface, command name, sender roles/ids, text pattern, room); `ReplyTarget` (`primer/channel/reply_binding.py`) is `source_thread` (default) | `source_room` | `dm_sender` | `none` or an explicit `{channel_id, anchor}`. Both are detailed in the channels subsystem doc.
 
 `SubscriptionConfig` variants:
 
 - `ChatMessageSubConfig`: `chat_id`.
 - `AgentFreshSubConfig`: `workspace_id`, `agent_id`.
 - `GraphFreshSubConfig`: `workspace_id`, `graph_id`.
-- `ParkedSessionSubConfig`: `session_id`, `tool_call_id`, `parked_at`. Only written by `subscribe_to_trigger`.
+- `ParkedSessionSubConfig`: `session_id`, `tool_call_id`, `parked_at`. Written by `subscribe_to_trigger` and `subscribe_to_channel_event`.
+- `StartChatSubConfig`: `agent_id`. The one new action: open a fresh `Chat` bound to the firing channel event's source thread, seeded with the rendered event text (dispatcher in `primer/trigger/subscribers/start_chat.py`).
 
 The `fire_context` dict produced by each source carries `trigger_id`, `trigger_slug`, `kind`, `fired_at` (ISO), `scheduled_for` (ISO or null), plus the `fire_id` injected by the orchestrator. `parallelism` is unused for `parked_session` subscriptions.
 
 ## 6. Lifecycle
 
 A trigger's time-based lifecycle: `create_trigger` computes the initial `next_fire_at` from the source and best-effort upserts a `ClaimKind.TRIGGER` lease (no-op when no claim engine is wired or the source is not `eligible_for_claim`). The engine claims the lease once `next_fire_at <= now()`; the worker fires it; `TriggerClaimAdapter.on_release` recomputes `next_fire_at` (cron advance for `scheduled`, disable + null for `delayed`, defensive null for unknown kinds). `fire_trigger` loads enabled subscriptions (paged in batches of 200, capped at 10k), renders each payload, dispatches per kind with per-subscription failure isolation, and updates `last_fired_at` / `last_fire_error`. The read-side `list_triggers` / `list_subscriptions` service helpers (`primer/trigger/service.py`) page through every row (a 200-row window per round-trip, accumulated until exhausted) rather than returning only the first 200 - so a deployment with more than 200 triggers or more than 200 subscriptions on one trigger lists them all.
+
+The channel fire path is event-driven, not claim-driven. `ChannelEventRouter` (`primer/channel/event_dispatch.py`) receives a normalized `ChannelEvent`, applies the correlation-first precedence (a reply that continues an existing conversation is handled by the correlation store and never fans out), and for a fresh event fires every matching `channel` trigger through `fire_trigger` with the event under `fire_context["event"]`. `fire_trigger` adds two channel-only steps to its normal dispatch loop: it evaluates each subscription's `event_matcher` against the event and skips non-matches (a no-op when `event_matcher is None`), and it propagates the subscription's `reply_target` so a session action establishes the session-scoped reply binding. The `ChannelSource.build_fire_context` accepts the firing `event` kwarg and serializes it (`model_dump(mode="json")`) into the context; `compute_next_fire_at` always returns `None` (`eligible_for_claim=False`).
 
 The `subscribe_to_trigger` park/resume flow:
 
@@ -126,8 +132,8 @@ The subscription row is written before the `Yielded` sentinel is returned so a f
 
 REST router `primer/api/routers/triggers.py` under prefix `/v1/triggers`:
 
-- `POST /`, `GET /` (`?kind`, `?enabled`), `GET /{id}`, `PUT /{id}`, `DELETE /{id}`, `POST /{id}/fire_now`, `POST /{id}/rotate_token` (webhook only).
-- `POST /{id}/subscriptions`, `GET /{id}/subscriptions`, `GET /{id}/subscriptions/{sid}`, `PUT /{id}/subscriptions/{sid}`, `DELETE /{id}/subscriptions/{sid}`.
+- `POST /`, `GET /` (`?kind`, `?enabled`), `GET /{id}`, `PUT /{id}`, `DELETE /{id}`, `POST /{id}/fire_now`, `POST /{id}/rotate_token` (webhook only). `POST /` accepts `config.kind="channel"` (`ChannelTriggerConfig`).
+- `POST /{id}/subscriptions`, `GET /{id}/subscriptions`, `GET /{id}/subscriptions/{sid}`, `PUT /{id}/subscriptions/{sid}`, `DELETE /{id}/subscriptions/{sid}`. The subscription create/update bodies carry the optional `event_matcher` and `reply_target` fields used by channel bindings (a partial update distinguishes omitted from explicit-null via `model_fields_set`). The `system::create_channel_binding` / `list_channel_bindings` / `delete_channel_binding` toolset tools are thin wrappers over these same subscription routes.
 
 Public webhook inbound endpoint `primer/api/routers/webhooks.py` (mounted without auth dep):
 
@@ -135,13 +141,13 @@ Public webhook inbound endpoint `primer/api/routers/webhooks.py` (mounted withou
 
 Error envelope is `HTTPException(detail={code, message})` with codes `trigger_slug_conflict` (409), `trigger_kind_immutable` (409), `trigger_not_found` / `subscription_not_found` (404), `parked_session_only_from_yield` (422), `cron_invalid` (422), `timezone_invalid` (422), `not_a_webhook_trigger` (422). Webhook inbound codes: `webhook_not_found` (404), `webhook_disabled` (403), `hmac_mismatch` (401), `payload_too_large` (413), `rate_limited` (429).
 
-Internal toolset `primer/toolset/trigger.py`, toolset id `trigger`, built by `build_trigger_toolset_provider` (wired in `primer/api/app.py` lifespan): `trigger__list`, `trigger__get`, `trigger__create`, `trigger__update`, `trigger__delete`, `trigger__fire_now`, `trigger__list_subscriptions`, `trigger__get_subscription`, `trigger__create_subscription`, `trigger__update_subscription`, `trigger__delete_subscription`, and the yielding tool `subscribe_to_trigger`. Management tools share `service.py` with the router so error codes map one to one. `subscribe_to_trigger` validates the trigger exists and is enabled, refuses chat-only (sessionless) callers with `trigger_not_found_or_disabled`, persists a `parked_session` Subscription, and returns `Yielded(tool_name='subscribe_to_trigger', event_key='trigger:{id}', timeout=None, resume_metadata={subscription_id, trigger_id})`.
+Internal toolset `primer/toolset/trigger.py`, toolset id `trigger`, built by `build_trigger_toolset_provider` (wired in `primer/api/app.py` lifespan): `trigger__list`, `trigger__get`, `trigger__create`, `trigger__update`, `trigger__delete`, `trigger__fire_now`, `trigger__list_subscriptions`, `trigger__get_subscription`, `trigger__create_subscription`, `trigger__update_subscription`, `trigger__delete_subscription`, and the yielding tool `subscribe_to_trigger`. Management tools share `service.py` with the router so error codes map one to one. `subscribe_to_trigger` validates the trigger exists and is enabled, refuses chat-only (sessionless) callers with `trigger_not_found_or_disabled`, persists a `parked_session` Subscription, and returns `Yielded(tool_name='subscribe_to_trigger', event_key='trigger:{id}', timeout=None, resume_metadata={subscription_id, trigger_id})`. The channel variant `subscribe_to_channel_event` (re-homed into the `workspace_ext` toolset, `primer/toolset/workspace_ext.py`) is the same pattern over a `channel` trigger plus an optional `event_matcher`: it persists a one-shot `parked_session` binding carrying the matcher and parks the session until a matching channel event fires.
 
 The operator UI is `ui/components/triggers.jsx` (TR_-prefixed components) with a `triggers` nav entry registered in `ui/components/chrome.jsx`: list grid, three-step create wizard (now includes webhook kind), detail page with a Fire now button and (for webhook triggers) a copyable URL, HMAC secret set/clear dialog (`TR_HmacSecretDialog`), and a rotate token action. The cron preview is computed client-side.
 
 ## 9. Internal contracts
 
-`Source` (in `primer/trigger/sources/`) exposes `kind`, `eligible_for_claim`, `compute_next_fire_at(trigger, now)`, and `build_fire_context(trigger, fired_at, scheduled_for)`; looked up via `get_source(kind)`. Both shipped sources set `eligible_for_claim = True`.
+`Source` (in `primer/trigger/sources/`) exposes `kind`, `eligible_for_claim`, `compute_next_fire_at(trigger, now)`, and `build_fire_context(trigger, fired_at, scheduled_for)`; looked up via `get_source(kind)`. The time-based sources (`delayed`, `scheduled`) set `eligible_for_claim = True`; `webhook` and `channel` set it `False` and are fired from their own inbound paths. `ChannelSource.build_fire_context` additionally accepts an `event` kwarg (the firing `ChannelEvent`) and serializes it into the context under `event`.
 
 `Dispatcher` (protocol in `primer/trigger/subscribers/__init__.py`) exposes one async `dispatch(sub, rendered_payload, fire_context, fire_id, deps)` returning a `SubscriptionDispatchResult(ok, skipped, error_code, error_message, artefact_id)`. `ok=True` covers both delivery and deliberate skips; `skipped` distinguishes them. Dispatchers self-register via `register(kind, instance)`. Per-kind error codes include `chat_not_found` / `chat_ended` / `skipped_chat_busy` (chat_message), `skipped_subscription_busy` / `dispatch_failed` (fresh-session), `graph_input_invalid` (graph_fresh), and `skipped_session_unparked` (parked_session).
 
