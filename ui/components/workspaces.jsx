@@ -1462,17 +1462,18 @@ function WS_CommitDiff({ wid, sha }) {
 }
 
 // ============================================================================
-// Channels tab — workspace-owned channel association
+// Channels tab — workspace-owned reply binding
 // ============================================================================
 
 function WS_ChannelsTab({ wid, ws, pushToast }) {
   const { useResource, useMutation, apiFetch } = window.primerApi;
   const [showLink, setShowLink] = React.useState(false);
 
-  // The current association lives on the workspace row itself.
+  // The standing reply binding lives on the workspace row itself.
   const wsData = ws.data || {};
-  const currentAssoc = wsData.channel_association || null;
-  const linkedChannelId = currentAssoc?.channel_id || null;
+  const currentBinding = wsData.reply_binding || null;
+  const linkedChannelId = currentBinding?.channel_id || null;
+  const boundAnchor = currentBinding?.anchor || null;
 
   // Fetch channels list for display (label) + link picker
   const channelsList = useResource(
@@ -1487,12 +1488,12 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
     : null;
 
   const unlink = useMutation(
-    () => apiFetch("DELETE", `/workspaces/${encodeURIComponent(wid)}/channel_association`),
+    () => apiFetch("DELETE", `/workspaces/${encodeURIComponent(wid)}/reply_binding`),
     {
       invalidates: [`workspace-detail:${wid}`],
       onSuccess: () => {
         if (typeof pushToast === "function") {
-          pushToast({ kind: "warning", title: "Channel unlinked" });
+          pushToast({ kind: "warning", title: "Reply binding cleared" });
         }
         ws.refetch && ws.refetch();
       },
@@ -1504,7 +1505,11 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
     <div style={{ padding: 14 }}>
       <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
         <div>
-          <div className="text-sm muted">Channel associated with this workspace</div>
+          <div className="text-sm" style={{ fontWeight: 600 }}>Reply binding</div>
+          <div className="text-sm muted">
+            The standing outbound channel for this workspace's session gates
+            (ask_user / approvals / inform_user / final result).
+          </div>
         </div>
         <div style={{ marginLeft: "auto", display: "flex", gap: 8 }}>
           {linkedChannelId && (
@@ -1534,8 +1539,8 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
       ) : !linkedChannelId ? (
         <div className="empty">
           <div className="ico-wrap"><Icon name="bell" size={18} /></div>
-          <div className="head">No channel linked</div>
-          <div className="sub">Link an external channel (Slack, Telegram, Discord) to fan out yielding-tool events from this workspace.</div>
+          <div className="head">No reply binding set</div>
+          <div className="sub">Bind an external channel (Slack, Telegram, Discord) to forward this workspace's session gates and final results to that channel.</div>
           <div className="actions">
             <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowLink(true)}>Link channel</Btn>
           </div>
@@ -1546,6 +1551,12 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
             <dl className="kv" style={{ gridTemplateColumns: "140px 1fr" }}>
               <dt>channel id</dt>
               <dd className="mono">{linkedChannelId}</dd>
+              {boundAnchor && (
+                <>
+                  <dt>anchor</dt>
+                  <dd className="mono">{boundAnchor}</dd>
+                </>
+              )}
               {linkedChannel && linkedChannel.label && (
                 <>
                   <dt>label</dt>
@@ -1579,16 +1590,17 @@ function WS_ChannelsTab({ wid, ws, pushToast }) {
 function WS_LinkChannelModal({ wid, channels, onClose, onLinked, pushToast }) {
   const { useMutation, apiFetch } = window.primerApi;
   const [channelId, setChannelId] = React.useState(channels[0]?.id || "");
+  const [anchor, setAnchor] = React.useState("");
 
   const link = useMutation(
-    (body) => apiFetch("PUT", `/workspaces/${encodeURIComponent(wid)}/channel_association`, body),
+    (body) => apiFetch("PUT", `/workspaces/${encodeURIComponent(wid)}/reply_binding`, body),
     {
       invalidates: [`workspace-detail:${wid}`],
       onSuccess: () => {
         onClose();
         if (typeof onLinked === "function") onLinked();
         if (typeof pushToast === "function") {
-          pushToast({ kind: "success", title: "Channel linked" });
+          pushToast({ kind: "success", title: "Reply binding set" });
         }
       },
       onError: _wsToastErr(pushToast, "Link failed"),
@@ -1597,7 +1609,7 @@ function WS_LinkChannelModal({ wid, channels, onClose, onLinked, pushToast }) {
 
   const onLink = () => {
     if (!channelId) return;
-    link.mutate({ channel_id: channelId });
+    link.mutate({ channel_id: channelId, anchor: anchor || null });
   };
 
   return (
@@ -1635,6 +1647,19 @@ function WS_LinkChannelModal({ wid, channels, onClose, onLinked, pushToast }) {
             ))}
           </select>
         )}
+      </div>
+      <div className="field" style={{ marginTop: 12 }}>
+        <label className="field-label">anchor <span className="hint">optional</span></label>
+        <input
+          className="input mono"
+          style={{ width: "100%" }}
+          value={anchor}
+          placeholder="room / thread id"
+          onChange={(e) => setAnchor(e.target.value)}
+        />
+        <div className="muted text-sm" style={{ marginTop: 4 }}>
+          optional - the default room/thread to post into
+        </div>
       </div>
     </Modal>
   );
