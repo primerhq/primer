@@ -343,6 +343,15 @@ class LocalWorkspace(Workspace):
         try:
             await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
             await asyncio.to_thread(_atomic_write_bytes, target, content)
+        except FileNotFoundError as exc:
+            # The workspace tree was removed underneath us (e.g. a concurrent
+            # destroy removed the root dir mid-write). Surface as 404
+            # (workspace gone) rather than a generic 400, so a caller racing a
+            # destroy sees a clean "not found" instead of a bad-request.
+            raise NotFoundError(
+                f"cannot write {path!r}: workspace path is unavailable "
+                "(the workspace may have been destroyed)"
+            ) from exc
         except OSError as exc:
             # Map filesystem-rejection errors (invalid filename chars on
             # Windows, MAX_PATH overflow, etc.) to a clean 4xx instead
