@@ -29,6 +29,7 @@ from primer.trigger.subscribers import chat_message as _cm  # noqa: F401
 from primer.trigger.subscribers import agent_fresh_session as _afs  # noqa: F401
 from primer.trigger.subscribers import graph_fresh_session as _gfs  # noqa: F401
 from primer.trigger.subscribers import parked_session as _ps  # noqa: F401
+from primer.trigger.subscribers import start_chat as _sc  # noqa: F401
 
 
 logger = logging.getLogger(__name__)

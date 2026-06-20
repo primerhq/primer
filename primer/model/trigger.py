@@ -119,6 +119,7 @@ class SubscriptionKind(str, Enum):
     AGENT_FRESH_SESSION = "agent_fresh_session"
     GRAPH_FRESH_SESSION = "graph_fresh_session"
     PARKED_SESSION = "parked_session"
+    START_CHAT = "start_chat"
 
 
 class ChatMessageSubConfig(BaseModel):
@@ -145,9 +146,14 @@ class ParkedSessionSubConfig(BaseModel):
     parked_at: datetime
 
 
+class StartChatSubConfig(BaseModel):
+    kind: Literal["start_chat"] = "start_chat"
+    agent_id: str
+
+
 SubscriptionConfig = Annotated[
     ChatMessageSubConfig | AgentFreshSubConfig
-    | GraphFreshSubConfig | ParkedSessionSubConfig,
+    | GraphFreshSubConfig | ParkedSessionSubConfig | StartChatSubConfig,
     Field(discriminator="kind"),
 ]
 
@@ -177,6 +183,7 @@ __all__ = [
     "GraphFreshSubConfig",
     "ParkedSessionSubConfig",
     "ScheduledTriggerConfig",
+    "StartChatSubConfig",
     "Subscription",
     "SubscriptionConfig",
     "SubscriptionKind",
