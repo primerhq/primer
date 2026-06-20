@@ -3184,6 +3184,7 @@ async def test_t0432_graph_session_cancel_during_fatal_converges_cleanly(
 # ============================================================================
 
 
+@pytest.mark.requires_llm
 @pytest.mark.asyncio
 async def test_t0433_top_level_get_reflects_fatal_ended_reason(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,

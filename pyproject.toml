@@ -115,6 +115,7 @@ addopts = "-m 'not distributed' -n auto --dist loadscope"
 markers = [
     "distributed: requires testcontainers + multiprocess (deselect with -m 'not distributed')",
     "smk(ids, status): map this test to one or more docs/tests SMK ids; status full|partial",
+    "requires_llm: needs a reachable real LLM (set PRIMER_E2E_LLM_BASE_URL + PRIMER_E2E_LLM_MODEL + PRIMER_E2E_LLM_API_KEY); the mock-LLM lane deselects with -m 'not requires_llm'",
 ]
 
 [tool.coverage.run]

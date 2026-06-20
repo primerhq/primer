@@ -24,6 +24,7 @@ import asyncio
 
 import httpx
 import pytest
+import pytest_asyncio
 
 
 def _embedding_provider_body(entity_id: str) -> dict:
@@ -105,6 +106,31 @@ async def _wait_bootstrap(
         f"bootstrap did not complete within {timeout_seconds}s "
         f"(last status: {row.get('status')!r})"
     )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _drain_inflight_bootstrap(client: httpx.AsyncClient):
+    """Ensure no internal-collections bootstrap is in-flight before each test.
+
+    The bootstrap status row is a global singleton. The in-flight and
+    concurrent cases below intentionally leave a bootstrap running, which
+    makes the NEXT test's POST /bootstrap return 409 instead of 202. Wait
+    for any running bootstrap to reach a terminal state first so every test
+    starts from a clean global state, independent of embedder speed or how
+    a prior test left the subsystem.
+    """
+    deadline = asyncio.get_event_loop().time() + 180.0
+    while asyncio.get_event_loop().time() < deadline:
+        try:
+            r = await client.get(
+                "/v1/internal_collections/bootstrap/status",
+                timeout=httpx.Timeout(30.0, connect=10.0),
+            )
+        except Exception:
+            return
+        if r.status_code != 200 or r.json().get("status") != "running":
+            return
+        await asyncio.sleep(0.5)
 
 
 @pytest.mark.asyncio
