@@ -10,6 +10,12 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from primer.model.common import Identifiable
+from primer.model.event_matcher import EventMatcher
+
+# NOTE: ``Subscription.reply_target`` carries a ``ReplyTarget`` defined in a
+# later part. Pydantic 2.13 rejects an unresolved string forward-ref on import,
+# so the field is typed ``object | None`` for now; the part that defines
+# ``ReplyTarget`` narrows the annotation and calls ``Subscription.model_rebuild()``.
 
 
 # ---------------------------------------------------------------------------
@@ -151,6 +157,11 @@ class Subscription(Identifiable):
     config: SubscriptionConfig
     payload_template: str | None = None  # Jinja2 rendered against fire context
     parallelism: Literal["skip", "queue"] = "skip"
+    event_matcher: EventMatcher | None = None
+    # ``reply_target`` carries a ``ReplyTarget`` defined in a later part. Until
+    # that part lands (and calls ``Subscription.model_rebuild()``), the field is
+    # typed as ``object | None`` so the model stays fully defined and importable.
+    reply_target: object | None = None
     enabled: bool = True
     description: str | None = None
     last_fired_at: datetime | None = None
