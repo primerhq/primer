@@ -18,6 +18,7 @@ Covers backlog items:
 from __future__ import annotations
 
 import json
+import re
 import time
 
 import httpx
@@ -76,12 +77,13 @@ def _seed_graph(base_url: str, gid: str, agent_id: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/graphs", json={
             "id": gid, "description": "dangling probe",
-            "entry_node_id": "n1",
             "nodes": [
+                {"id": "begin", "kind": "begin"},
                 {"id": "n1", "kind": "agent", "agent_id": agent_id},
-                {"id": "end", "kind": "terminal"},
+                {"id": "end", "kind": "end"},
             ],
             "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "n1"},
                 {"kind": "static", "from_node": "n1", "to_node": "end"},
             ],
         })
@@ -184,13 +186,14 @@ def test_u0071_workspaces_list_polls_and_removes_deleted_row(
 def test_u0082_agent_detail_new_session_preselects_agent(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0082 — Drill into agent detail (/agents/<id>), click "Test
-    agent" → NewSessionModal opens with title="New session", the
-    Agent select pre-bound to ``<id>`` via ``defaultAgentId={id}``
-    (per agents.jsx:463). At least one workspace option must be
-    available so the modal can actually submit (covers the
-    regression observed under U0041 where the workspace list was
-    empty and ``ws_option_values=['']``).
+    """U0082 — Drill into agent detail (/agents/<id>) and start an
+    interactive session bound to that agent.
+
+    The agent-detail "test this agent" affordance is now the primary
+    "Chat" action (AG_DetailActions in agents.jsx): it POSTs /chats with
+    ``agent_id=<id>`` and navigates to ``/chats/<chat-id>``. This test
+    clicks it, asserts the navigation, and confirms via the API that the
+    created chat is bound to the agent under test.
     """
     pid = f"llm-82-{unique_suffix}"
     aid = f"ag-82-{unique_suffix}"
@@ -211,55 +214,32 @@ def test_u0082_agent_detail_new_session_preselects_agent(
             f"{console_url}#/agents/{aid}",
             wait_until="domcontentloaded",
         )
-        page.locator(".nav-item").first.wait_for(
+        # Wait for the agent detail header (title carries the agent id)
+        # rather than the sidebar nav, which is layout-dependent.
+        page.locator("h1.page-title").get_by_text(aid).first.wait_for(
             state="visible", timeout=20_000,
         )
 
-        # Click "Test agent" — this opens NewSessionModal per
-        # agents.jsx:404.
-        test_btn = page.get_by_role(
-            "button", name="Test agent", exact=True,
-        ).first
-        test_btn.wait_for(state="visible", timeout=10_000)
-        test_btn.click()
+        # Click the primary "Chat" action — POSTs /chats {agent_id} and
+        # navigates to the chat detail route.
+        chat_btn = page.get_by_role("button", name="Chat", exact=True).first
+        chat_btn.wait_for(state="visible", timeout=10_000)
+        chat_btn.click()
 
-        # Modal opens — title "New session".
-        modal = page.locator(".modal").first
-        modal.wait_for(state="visible", timeout=5_000)
-        expect(
-            page.get_by_text("New session", exact=False).first
-        ).to_be_visible(timeout=3_000)
+        # Navigation lands on the per-chat detail route.
+        page.wait_for_url(re.compile(r"#/chats/.+"), timeout=15_000)
 
-        # Two selects in the modal: Workspace + Agent. The Agent
-        # select should be pre-bound to our aid. Locate the select
-        # that follows the "Agent" label.
-        agent_select = modal.locator("select").nth(1)
-        agent_select.wait_for(state="visible", timeout=3_000)
-        # Allow a brief settle so the useEffect that seeds
-        # agentId from the fetched list (if any) does not race
-        # with the defaultAgentId already passed in.
-        deadline = time.monotonic() + 3.0
-        agent_value = None
-        while time.monotonic() < deadline:
-            agent_value = agent_select.input_value()
-            if agent_value == aid:
-                break
-            page.wait_for_timeout(200)
-        assert agent_value == aid, (
-            f"Agent select didn't preselect {aid!r}, got {agent_value!r} "
-            "(defaultAgentId may not be threading through)."
-        )
-
-        # Workspace select has at least our workspace as an option
-        # (defends against the U0041 regression where ws_option_values
-        # was [''] — empty list).
-        ws_select = modal.locator("select").nth(0)
-        ws_values = ws_select.evaluate(
-            "el => Array.from(el.options).map(o => o.value)"
-        )
-        assert wid in ws_values, (
-            f"Workspace select missing {wid!r}; got options={ws_values!r}"
-        )
+        # Pull the chat id out of the URL and confirm via the API that the
+        # created chat is bound to the agent under test.
+        chat_id = page.url.split("#/chats/")[-1].split("?")[0]
+        assert chat_id, f"could not parse chat id from URL {page.url!r}"
+        cleanup_urls.insert(0, f"/v1/chats/{chat_id}")
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            r = c.get(f"/v1/chats/{chat_id}")
+            assert r.status_code == 200, r.text
+            assert r.json().get("agent_id") == aid, (
+                f"chat {chat_id!r} not bound to agent {aid!r}: {r.text}"
+            )
     finally:
         _cleanup(base_url, cleanup_urls)
 
