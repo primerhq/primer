@@ -48,6 +48,16 @@ pytestmark = [
         os.environ.get("PRIMER_RUN_UI_E2E") != "1",
         reason="UI e2e tests require PRIMER_RUN_UI_E2E=1 + a running primer server",
     ),
+    pytest.mark.skipif(
+        not os.environ.get("PRIMER_E2E_LLM_BASE_URL"),
+        reason=(
+            "the feedback-loop journey needs a real LLM that emits the "
+            "`complete` flag; set PRIMER_E2E_LLM_BASE_URL (the "
+            "OpenAI-compatible base ending in /v1), PRIMER_E2E_LLM_MODEL, "
+            "and PRIMER_E2E_LLM_API_KEY. Without a reachable LLM the graph "
+            "loop never terminates, so the test is skipped rather than hung."
+        ),
+    ),
     smk("SMK-UI-04"),
 ]
 
@@ -79,13 +89,20 @@ def test_graph_builder_feedback_loop_journey(
         # 1. Seed prerequisites via API (LLM provider, two agents,
         #    a workspace). The graph itself is built in the UI.
         # ------------------------------------------------------------------
+        # A real, reachable LLM is required (guaranteed present by the
+        # module skipif): the decider must actually emit the structured
+        # {complete, summary} so the conditional branch can terminate.
+        model_name = os.environ.get("PRIMER_E2E_LLM_MODEL", "google/gemma-4-e4b")
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             r = c.post("/v1/llm_providers", json={
                 "id": llm_id,
-                "provider": "ollama",
-                "config": {"url": "http://127.0.0.1:9999"},
+                "provider": "openchat",
+                "config": {
+                    "url": os.environ["PRIMER_E2E_LLM_BASE_URL"],
+                    "api_key": os.environ.get("PRIMER_E2E_LLM_API_KEY", ""),
+                },
                 "models": [
-                    {"name": "fake-model", "context_length": 4096},
+                    {"name": model_name, "context_length": 32_768},
                 ],
                 "limits": {"max_concurrency": 1},
             })
@@ -100,7 +117,7 @@ def test_graph_builder_feedback_loop_journey(
                     "id": aid,
                     "description": desc,
                     "model": {
-                        "provider_id": llm_id, "model_name": "fake-model",
+                        "provider_id": llm_id, "model_name": model_name,
                     },
                     "tools": [],
                     "system_prompt": [f"you are the {desc}"],
