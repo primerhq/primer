@@ -110,18 +110,18 @@ class ChannelRegistry:
     ) -> list[ChannelAdapter]:
         """Return the channel adapter for this workspace, if any.
 
-        Loads the Workspace row and follows its ``channel_association``
+        Loads the Workspace row and follows its ``reply_binding``
         link (at most one).  Returns an empty list when the workspace
-        has no association or it cannot be resolved.
+        has no reply binding or it cannot be resolved.
         """
         if self._storage_provider is None:
             return []
         from primer.model.workspace import Workspace
 
         ws = await self._storage_provider.get_storage(Workspace).get(workspace_id)
-        if ws is None or ws.channel_association is None:
+        if ws is None or ws.reply_binding is None:
             return []
-        channel_id = ws.channel_association.channel_id
+        channel_id = ws.reply_binding.channel_id
         try:
             adapter = await self.get_adapter(channel_id)
         except Exception as exc:

@@ -44,7 +44,7 @@ def _make_workspace(id: str, channel_id: str | None = None, template_id: str = "
             url="ws://localhost:5959",
             token=SecretStr("test-token"),
         ),
-        channel_association=WorkspaceChannelLink(channel_id=channel_id) if channel_id else None,
+        reply_binding=WorkspaceChannelLink(channel_id=channel_id) if channel_id else None,
     )
 
 

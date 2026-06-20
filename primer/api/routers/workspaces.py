@@ -102,12 +102,12 @@ class WorkspaceCreateBody(BaseModel):
             "extra files, additional init commands)."
         ),
     )
-    channel_association: WorkspaceChannelLink | None = Field(
+    reply_binding: WorkspaceChannelLink | None = Field(
         default=None,
         description=(
-            "Optional channel association to set at create time. "
+            "Optional reply binding to set at create time. "
             "When set, the workspace row is created with this "
-            "channel_association already populated."
+            "reply_binding already populated."
         ),
     )
 
@@ -467,7 +467,7 @@ async def create_workspace(
         created_at=datetime.now(timezone.utc),
         phase="running",
         runtime_meta=live.runtime_meta,
-        channel_association=body.channel_association,
+        reply_binding=body.reply_binding,
     )
     await workspace_storage.create(row)
     return row
@@ -564,7 +564,7 @@ async def set_workspace_channel_association(
             },
         )
     updated = row.model_copy(
-        update={"channel_association": WorkspaceChannelLink(channel_id=body.channel_id)}
+        update={"reply_binding": WorkspaceChannelLink(channel_id=body.channel_id)}
     )
     await workspace_storage.update(updated)
     return updated
@@ -589,7 +589,7 @@ async def clear_workspace_channel_association(
     row = await workspace_storage.get(workspace_id)
     if row is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
-    updated = row.model_copy(update={"channel_association": None})
+    updated = row.model_copy(update={"reply_binding": None})
     await workspace_storage.update(updated)
 
 

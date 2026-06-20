@@ -1903,23 +1903,23 @@ def build_system_toolset(
         _invalidate_ssp_handler,
     )
 
-    # ---- Workspace channel-association tools -------------------------
-    class _SetWorkspaceChannelAssociationArgs(BaseModel):
+    # ---- Workspace reply-binding tools -------------------------------
+    class _SetWorkspaceReplyBindingArgs(BaseModel):
         workspace_id: str = Field(
             ..., min_length=1, description="Id of the Workspace to update."
         )
         channel_id: str = Field(
-            ..., min_length=1, description="Id of the Channel to associate."
+            ..., min_length=1, description="Id of the Channel to bind replies to."
         )
 
     _workspace_storage = storage_provider.get_storage(Workspace)
     _channel_storage = storage_provider.get_storage(Channel)
 
-    async def _set_workspace_channel_association_handler(
+    async def _set_workspace_reply_binding_handler(
         arguments: dict[str, Any],
     ) -> ToolCallResult:
         try:
-            args = _SetWorkspaceChannelAssociationArgs.model_validate(arguments)
+            args = _SetWorkspaceReplyBindingArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         ws = await _workspace_storage.get(args.workspace_id)
@@ -1936,7 +1936,7 @@ def build_system_toolset(
             )
         updated = ws.model_copy(
             update={
-                "channel_association": WorkspaceChannelLink(
+                "reply_binding": WorkspaceChannelLink(
                     channel_id=args.channel_id
                 )
             }
@@ -1953,21 +1953,22 @@ def build_system_toolset(
             }
         )
 
-    registry["set_workspace_channel_association"] = (
+    registry["set_workspace_reply_binding"] = (
         make_tool(
-            id="set_workspace_channel_association",
+            id="set_workspace_reply_binding",
             toolset_id=SYSTEM_TOOLSET_ID,
             purpose=(
-                "Associate a Channel with a Workspace so that session "
-                "gates (ask_user / tool_approval) forward to that channel."
+                "Bind a Channel to a Workspace so that session traffic "
+                "(gates / inform / lifecycle / final result) replies to that "
+                "channel."
             ),
             when=(
-                "Use when you want session gates on a workspace to notify "
+                "Use when you want a workspace's session traffic to reply to "
                 "a Slack / Telegram / Discord channel; pass both ids and "
-                "the association is stored on the Workspace row. Returns "
+                "the reply binding is stored on the Workspace row. Returns "
                 "``type=not-found`` for unknown workspace or channel."
             ),
-            args_schema=_SetWorkspaceChannelAssociationArgs.model_json_schema(),
+            args_schema=_SetWorkspaceReplyBindingArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={"workspace_id": "ws-1", "channel_id": "chan-1"},
@@ -1975,19 +1976,19 @@ def build_system_toolset(
                 )
             ],
         ),
-        _set_workspace_channel_association_handler,
+        _set_workspace_reply_binding_handler,
     )
 
-    class _ClearWorkspaceChannelAssociationArgs(BaseModel):
+    class _ClearWorkspaceReplyBindingArgs(BaseModel):
         workspace_id: str = Field(
             ..., min_length=1, description="Id of the Workspace to update."
         )
 
-    async def _clear_workspace_channel_association_handler(
+    async def _clear_workspace_reply_binding_handler(
         arguments: dict[str, Any],
     ) -> ToolCallResult:
         try:
-            args = _ClearWorkspaceChannelAssociationArgs.model_validate(arguments)
+            args = _ClearWorkspaceReplyBindingArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         ws = await _workspace_storage.get(args.workspace_id)
@@ -1996,27 +1997,27 @@ def build_system_toolset(
                 f"Workspace {args.workspace_id!r} does not exist",
                 error_type="not-found",
             )
-        updated = ws.model_copy(update={"channel_association": None})
+        updated = ws.model_copy(update={"reply_binding": None})
         try:
             await _workspace_storage.update(updated)
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         return _ok({"ok": True, "workspace_id": args.workspace_id})
 
-    registry["clear_workspace_channel_association"] = (
+    registry["clear_workspace_reply_binding"] = (
         make_tool(
-            id="clear_workspace_channel_association",
+            id="clear_workspace_reply_binding",
             toolset_id=SYSTEM_TOOLSET_ID,
             purpose=(
-                "Remove the channel association from a Workspace so that "
-                "session gates are no longer forwarded to any channel."
+                "Remove the reply binding from a Workspace so that "
+                "session traffic is no longer forwarded to any channel."
             ),
             when=(
                 "Use when you want to detach the channel from a workspace; "
-                "safe to call even if no association is set (no-op). "
+                "safe to call even if no reply binding is set (no-op). "
                 "Returns ``type=not-found`` for an unknown workspace."
             ),
-            args_schema=_ClearWorkspaceChannelAssociationArgs.model_json_schema(),
+            args_schema=_ClearWorkspaceReplyBindingArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={"workspace_id": "ws-1"},
@@ -2024,7 +2025,7 @@ def build_system_toolset(
                 )
             ],
         ),
-        _clear_workspace_channel_association_handler,
+        _clear_workspace_reply_binding_handler,
     )
 
     # ---- Provider-specific fetch_models ------------------------------

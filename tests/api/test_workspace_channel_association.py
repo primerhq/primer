@@ -68,12 +68,12 @@ async def test_put_channel_association_sets_and_get_reflects(client, app):
     )
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["channel_association"]["channel_id"] == "ch-t1"
+    assert body["reply_binding"]["channel_id"] == "ch-t1"
 
-    # GET the workspace and confirm the association is persisted
+    # GET the workspace and confirm the binding is persisted
     r2 = await client.get(f"/v1/workspaces/{ws.id}")
     assert r2.status_code == 200, r2.text
-    assert r2.json()["channel_association"]["channel_id"] == "ch-t1"
+    assert r2.json()["reply_binding"]["channel_id"] == "ch-t1"
 
 
 @pytest.mark.asyncio
@@ -81,7 +81,7 @@ async def test_delete_channel_association_clears_it(client, app):
     sp = app.state.storage_provider
     ws = _make_workspace("ws-t2")
     ws = ws.model_copy(
-        update={"channel_association": WorkspaceChannelLink(channel_id="ch-t2")}
+        update={"reply_binding": WorkspaceChannelLink(channel_id="ch-t2")}
     )
     await sp.get_storage(Workspace).create(ws)
 
@@ -90,7 +90,7 @@ async def test_delete_channel_association_clears_it(client, app):
 
     r2 = await client.get(f"/v1/workspaces/{ws.id}")
     assert r2.status_code == 200, r2.text
-    assert r2.json()["channel_association"] is None
+    assert r2.json()["reply_binding"] is None
 
 
 @pytest.mark.asyncio

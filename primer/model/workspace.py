@@ -1139,10 +1139,28 @@ class Workspace(Identifiable):
         ...,
         description="Connection coordinates for the runtime inside this workspace.",
     )
-    channel_association: WorkspaceChannelLink | None = Field(
+    reply_binding: WorkspaceChannelLink | None = Field(
         default=None,
-        description="Channel this workspace's session gates forward to. Mutable post-create.",
+        description=(
+            "Channel this workspace's session traffic (gates / inform / "
+            "lifecycle / final result) replies to. The standing form of the "
+            "unified reply binding. Mutable post-create."
+        ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_channel_association(cls, data: Any) -> Any:
+        """Back-compat: stored rows may carry the old ``channel_association``
+        field. Move it to ``reply_binding`` when the new field is absent."""
+        if (
+            isinstance(data, dict)
+            and "channel_association" in data
+            and "reply_binding" not in data
+        ):
+            data = {**data}
+            data["reply_binding"] = data.pop("channel_association")
+        return data
 
 
 # ===========================================================================
