@@ -22,7 +22,7 @@ class HarnessClaimAdapter(ClaimAdapter):
     async def on_release(self, conn, entity_id: str, *, outcome: ReleaseOutcome) -> None:
         if self._storage is None:
             raise RuntimeError(
-                "harness_storage is None — cannot run on_release without a storage backend"
+                "harness_storage is None - cannot run on_release without a storage backend"
             )
         harness = await self._storage.get(entity_id, conn=conn)
         if harness is None:
@@ -32,7 +32,7 @@ class HarnessClaimAdapter(ClaimAdapter):
         # already writes the operation's authoritative terminal status
         # (INSTALLED / READY / OUTDATED / ERROR) AND clears
         # pending_operation. When that has happened we must NOT clobber it
-        # here — a hardcoded READY would, for example, demote a successful
+        # here - a hardcoded READY would, for example, demote a successful
         # INSTALL back to READY. So only finalize the row from this adapter
         # when dispatch did not (pending_operation still set, e.g. the
         # worker bailed before dispatch ran its own release).

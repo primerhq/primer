@@ -2,10 +2,10 @@
 the cross-page Create-agent-then-bind-to-session flow.
 
 Covers:
-* U0029 — Graph detail "Save" stays disabled until a node is added.
-* U0004 — Session detail page reflects `ended` status without manual
+* U0029 - Graph detail "Save" stays disabled until a node is added.
+* U0004 - Session detail page reflects `ended` status without manual
   refresh after a graph-bound session terminates.
-* U0041 — Create-agent-then-bind-to-session: the newly-created agent
+* U0041 - Create-agent-then-bind-to-session: the newly-created agent
   appears in the NewSessionModal binding selector.
 """
 
@@ -78,7 +78,7 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 
 
 # ---------------------------------------------------------------------------
-# U0029 — Graph editor Save button disabled until a node is added
+# U0029 - Graph editor Save button disabled until a node is added
 # ---------------------------------------------------------------------------
 
 
@@ -88,13 +88,13 @@ def test_u0029_graph_save_disabled_until_node_added(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0029 — Seed a graph via API (minimal agent→terminal skeleton).
+    """U0029 - Seed a graph via API (minimal agent→terminal skeleton).
     Open its detail page. The Save button must start disabled
     (``diffCount === 0`` per graphs.jsx:589). Click "Add node" →
     "Terminal" to introduce a structural change; Save must become
     enabled (``diffCount > 0``).
 
-    Priority 1 — mutation feedback. Pins the Save-gating contract:
+    Priority 1 - mutation feedback. Pins the Save-gating contract:
     Save reflects whether the in-editor graph differs from the
     loaded server state. Defends against a regression where Save
     is permanently enabled (over-eager save) or permanently
@@ -141,11 +141,11 @@ def test_u0029_graph_save_disabled_until_node_added(
         # Initial state: Save is disabled (graph loaded but unchanged).
         assert save_btn.is_disabled(), (
             "Save button should start disabled on a freshly-loaded "
-            "graph (diffCount === 0) — possible regression in "
+            "graph (diffCount === 0) - possible regression in "
             "GraphEditor diff detection"
         )
 
-        # Add a node — click "Add node" then "Tool call" in the dropdown.
+        # Add a node - click "Add node" then "Tool call" in the dropdown.
         # Tool call needs no agent picker and, added unconnected, yields
         # only a SOFT "no incoming edges" warning (not a hard topology
         # violation), so the diff dirties AND Save un-gates. (A second
@@ -187,7 +187,7 @@ def test_u0029_graph_save_disabled_until_node_added(
 
 
 # ---------------------------------------------------------------------------
-# U0004 — Graph-bound session ended status polls without manual refresh
+# U0004 - Graph-bound session ended status polls without manual refresh
 # ---------------------------------------------------------------------------
 
 
@@ -198,20 +198,20 @@ def test_u0004_graph_bound_session_ended_status_polls_without_refresh(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0004 — Seed a graph-bound session via API with auto_start=True
+    """U0004 - Seed a graph-bound session via API with auto_start=True
     so the worker picks it up immediately. The graph executor runs
-    end-to-end in one turn (per commit 1bd07ec — _GraphTurnDriver
+    end-to-end in one turn (per commit 1bd07ec - _GraphTurnDriver
     emits graph_ended and the scheduler maps to ENDED). Open the
     session detail page; the live status caption polls every 2s
     while non-terminal and must reflect a terminal state
     (ended / failed / cancelled / completed) within 15s without a
     manual refresh.
 
-    Priority 4 — polling cadence. Pins the session-detail.jsx:22
+    Priority 4 - polling cadence. Pins the session-detail.jsx:22
     polling contract on the graph dispatch path. The agent in the
     graph uses a placeholder LLM (no upstream), so the graph
     executor likely terminates via the fatal path (ConfigError on
-    the agent's LLM build) — but it terminates cleanly with a
+    the agent's LLM build) - but it terminates cleanly with a
     terminal status, which is what the UI surfaces.
     """
     provider_id = f"llm-u0004-{unique_suffix}"
@@ -278,7 +278,7 @@ def test_u0004_graph_bound_session_ended_status_polls_without_refresh(
             page.wait_for_timeout(500)
         assert terminal_seen, (
             f"graph-bound session detail never reflected a terminal "
-            f"status within 15s — polling stalled or status caption "
+            f"status within 15s - polling stalled or status caption "
             f"regression"
         )
     finally:
@@ -298,7 +298,7 @@ def test_u0004_graph_bound_session_ended_status_polls_without_refresh(
 
 
 # ---------------------------------------------------------------------------
-# U0041 — Create-agent-then-bind-to-session cross-page flow
+# U0041 - Create-agent-then-bind-to-session cross-page flow
 # ---------------------------------------------------------------------------
 
 
@@ -309,7 +309,7 @@ def test_u0041_create_agent_then_bind_to_session_flow(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0041 — Open /agents, create a new agent via the modal (lands
+    """U0041 - Open /agents, create a new agent via the modal (lands
     on /agents/{new-id}), then start an interactive session bound to it
     via the agent-detail "Chat" action. Assert:
 
@@ -318,7 +318,7 @@ def test_u0041_create_agent_then_bind_to_session_flow(
     * the created chat is bound to the freshly-created agent (verified
       via the API).
 
-    Priority 1 — cross-page mutation feedback. The new agent created in
+    Priority 1 - cross-page mutation feedback. The new agent created in
     the modal is immediately usable for a bound conversation, without a
     manual page reload.
     """
@@ -358,7 +358,7 @@ def test_u0041_create_agent_then_bind_to_session_flow(
             agent_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
 
-        # 2. Click "Chat" in the page header — POSTs /chats {agent_id}
+        # 2. Click "Chat" in the page header - POSTs /chats {agent_id}
         # and navigates to the chat detail route.
         page.get_by_role("button", name="Chat", exact=True).first.click()
         page.wait_for_url(re.compile(r"#/chats/.+"), timeout=15_000)

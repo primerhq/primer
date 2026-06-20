@@ -2,16 +2,16 @@
 
 Covers backlog items:
 
-* U0071 — Workspaces list polls and removes a deleted workspace row
+* U0071 - Workspaces list polls and removes a deleted workspace row
   within the polling cadence (no manual refresh).
-* U0082 — Agent detail "Test agent" (which opens NewSessionModal)
+* U0082 - Agent detail "Test agent" (which opens NewSessionModal)
   pre-selects the current agent in the modal's Agent select.
-* U0089 — Graph editor Auto-layout button reshuffles coordinates but
+* U0089 - Graph editor Auto-layout button reshuffles coordinates but
   does NOT enable Save (UI-only x/y are stripped from the diff per
   ``stripCoords``).
-* U0090 — Graph status panel turns red with a missing-agent issue
+* U0090 - Graph status panel turns red with a missing-agent issue
   after the referenced agent is deleted via the API.
-* U0093 — Sidebar section-header collapse state persists via
+* U0093 - Sidebar section-header collapse state persists via
   ``localStorage["primer.sidebar.collapsed"]`` across reload.
 """
 
@@ -100,16 +100,16 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 
 
 # ===========================================================================
-# U0071 — Workspaces list polls and removes a deleted row
+# U0071 - Workspaces list polls and removes a deleted row
 # ===========================================================================
 
 
 def test_u0071_workspaces_list_polls_and_removes_deleted_row(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0071 — Seed a workspace via API, navigate to /workspaces, see
+    """U0071 - Seed a workspace via API, navigate to /workspaces, see
     the row, DELETE via API, assert the row disappears within ~15s
-    (Workspaces list refetches via useResource — sidebar polls
+    (Workspaces list refetches via useResource - sidebar polls
     workspaces every 5s; the list page refetches on navigation +
     list.refetch invalidations). The poll cadence governs how long
     it takes the row to drop.
@@ -145,7 +145,7 @@ def test_u0071_workspaces_list_polls_and_removes_deleted_row(
             r = c.delete(f"/v1/workspaces/{wid}")
             assert r.status_code in (200, 204), r.text
 
-        # Row drops. The list page doesn't auto-poll on a timer —
+        # Row drops. The list page doesn't auto-poll on a timer -
         # it refetches on mutations + nav. To trigger a refetch
         # without a user action, click the "Refresh" button if
         # the page header has one (workspaces.jsx).
@@ -167,11 +167,11 @@ def test_u0071_workspaces_list_polls_and_removes_deleted_row(
             if refresh.count() > 0:
                 try:
                     refresh.first.click()
-                except Exception:  # noqa: BLE001 — best effort
+                except Exception:  # noqa: BLE001 - best effort
                     pass
 
         assert gone, (
-            f"workspace {wid!r} row still visible 15s after DELETE — "
+            f"workspace {wid!r} row still visible 15s after DELETE - "
             "list page didn't refetch / re-render."
         )
     finally:
@@ -179,14 +179,14 @@ def test_u0071_workspaces_list_polls_and_removes_deleted_row(
 
 
 # ===========================================================================
-# U0082 — Agent detail "Test agent" opens NewSessionModal pre-selecting the agent
+# U0082 - Agent detail "Test agent" opens NewSessionModal pre-selecting the agent
 # ===========================================================================
 
 
 def test_u0082_agent_detail_new_session_preselects_agent(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0082 — Drill into agent detail (/agents/<id>) and start an
+    """U0082 - Drill into agent detail (/agents/<id>) and start an
     interactive session bound to that agent.
 
     The agent-detail "test this agent" affordance is now the primary
@@ -220,7 +220,7 @@ def test_u0082_agent_detail_new_session_preselects_agent(
             state="visible", timeout=20_000,
         )
 
-        # Click the primary "Chat" action — POSTs /chats {agent_id} and
+        # Click the primary "Chat" action - POSTs /chats {agent_id} and
         # navigates to the chat detail route.
         chat_btn = page.get_by_role("button", name="Chat", exact=True).first
         chat_btn.wait_for(state="visible", timeout=10_000)
@@ -245,14 +245,14 @@ def test_u0082_agent_detail_new_session_preselects_agent(
 
 
 # ===========================================================================
-# U0089 — Graph editor Auto-layout does NOT enable Save (x/y stripped from diff)
+# U0089 - Graph editor Auto-layout does NOT enable Save (x/y stripped from diff)
 # ===========================================================================
 
 
 def test_u0089_graph_editor_auto_layout_does_not_enable_save(
     page, base_url, console_url, unique_suffix,
 ) -> None:
-    """U0089 — On graph detail editor, Save initially disabled
+    """U0089 - On graph detail editor, Save initially disabled
     (diffCount=0). Click Auto-layout → nodes are re-positioned but
     Save STAYS disabled because the diff strips UI-only x/y
     coordinates before comparison (graphs.jsx:423-429 stripCoords).
@@ -290,7 +290,7 @@ def test_u0089_graph_editor_auto_layout_does_not_enable_save(
         auto.wait_for(state="visible", timeout=5_000)
         auto.click()
 
-        # Save remains disabled — x/y do not count as a real diff.
+        # Save remains disabled - x/y do not count as a real diff.
         # Allow a brief settle for React state to flush.
         page.wait_for_timeout(500)
         expect(save).to_be_disabled()
@@ -299,14 +299,14 @@ def test_u0089_graph_editor_auto_layout_does_not_enable_save(
 
 
 # ===========================================================================
-# U0090 — Graph status panel turns red with missing-agent issue
+# U0090 - Graph status panel turns red with missing-agent issue
 # ===========================================================================
 
 
 def test_u0090_graph_status_red_after_agent_deleted(
     page, base_url, console_url, unique_suffix,
 ) -> None:
-    """U0090 — Seed graph with a valid agent → status returns
+    """U0090 - Seed graph with a valid agent → status returns
     ``{ok:true}`` → panel renders green/"All references resolve".
     DELETE the agent via API → click the Refresh button →
     ``/v1/graphs/<id>/status`` is re-fetched and now returns
@@ -336,7 +336,7 @@ def test_u0090_graph_status_red_after_agent_deleted(
             state="visible", timeout=20_000,
         )
 
-        # Wait for the initial status panel to render — accept any
+        # Wait for the initial status panel to render - accept any
         # of the in-flight phrasings ("Checking references…",
         # "All references resolve", or even "0 issues found").
         # Bound by 30s in case the first poll is slow.
@@ -345,7 +345,7 @@ def test_u0090_graph_status_red_after_agent_deleted(
         ).first
         status_initial.wait_for(state="visible", timeout=30_000)
 
-        # DELETE the agent — the graph's n1 node now references
+        # DELETE the agent - the graph's n1 node now references
         # a missing agent.
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             r = c.delete(f"/v1/agents/{aid}")
@@ -398,20 +398,20 @@ def test_u0090_graph_status_red_after_agent_deleted(
 
 
 # ===========================================================================
-# U0093 — Sidebar section-header collapse persists via localStorage on reload
+# U0093 - Sidebar section-header collapse persists via localStorage on reload
 # ===========================================================================
 
 
 def test_u0093_sidebar_section_collapse_persists_via_localstorage(
     page, base_url, console_url,
 ) -> None:
-    """U0093 — Clicking a sidebar section header (e.g. "Compute")
+    """U0093 - Clicking a sidebar section header (e.g. "Compute")
     toggles its collapsed state, persists ``{<group>: true}`` into
     ``localStorage["primer.sidebar.collapsed"]`` (chrome.jsx:127-132),
     and on reload the section renders with the ``collapsed`` class
     applied to ``.nav-section``.
 
-    Pins the localStorage-backed collapse contract — the only
+    Pins the localStorage-backed collapse contract - the only
     sidebar-collapse tweak that survives reload today (the icons-only
     sidebar toggle uses a separate key
     ``primer.sidebar.iconsOnly``).
@@ -454,7 +454,7 @@ def test_u0093_sidebar_section_collapse_persists_via_localstorage(
         f"primer.sidebar.collapsed missing Compute=true; got {parsed!r}"
     )
 
-    # Reload — collapsed class must persist on the section.
+    # Reload - collapsed class must persist on the section.
     page.reload(wait_until="domcontentloaded")
     page.locator(".nav-item").first.wait_for(
         state="visible", timeout=20_000,
@@ -469,7 +469,7 @@ def test_u0093_sidebar_section_collapse_persists_via_localstorage(
         f"class={after_class!r}"
     )
 
-    # Clean up — restore default uncollapsed state so subsequent
+    # Clean up - restore default uncollapsed state so subsequent
     # tests see a fresh sidebar.
     page.evaluate(
         "() => { try { localStorage.removeItem('primer.sidebar.collapsed'); } catch(_e){} }"

@@ -8,16 +8,16 @@ controlled response. The session row itself is seeded via the REST API
 so the rest of the session-detail page (status pill, worker info,
 turns list, etc.) renders against real data.
 
-This lets us pin the PANEL'S behaviour — render shape, submit flow,
-skip flow, inline-422 validation — without the heavy infrastructure
+This lets us pin the PANEL'S behaviour - render shape, submit flow,
+skip flow, inline-422 validation - without the heavy infrastructure
 needed for a real-LLM-driven park. A future iteration will add a real
 end-to-end test once LM Studio is wired into the UI bringup.
 
 Covered backlog items:
-* U0048 — AskUserPanel renders on session detail when pending returns 200.
-* U0049 — Submit posts response → panel collapses → toast.
-* U0050 — Skip posts cancel-yielded-tool → panel collapses → toast.
-* U0051 — JSON-schema violation renders inline error (not generic toast).
+* U0048 - AskUserPanel renders on session detail when pending returns 200.
+* U0049 - Submit posts response → panel collapses → toast.
+* U0050 - Skip posts cancel-yielded-tool → panel collapses → toast.
+* U0051 - JSON-schema violation renders inline error (not generic toast).
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from playwright.sync_api import expect
 
 
 # ---------------------------------------------------------------------------
-# Seed helpers — shared with the rest of the UI suite's style.
+# Seed helpers - shared with the rest of the UI suite's style.
 # ---------------------------------------------------------------------------
 
 
@@ -99,7 +99,7 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
         for url in urls:
             try:
                 c.delete(url)
-            except Exception:  # noqa: BLE001 — best-effort cleanup
+            except Exception:  # noqa: BLE001 - best-effort cleanup
                 pass
 
 
@@ -174,21 +174,21 @@ def _route_pending_no(page, sid: str):
 
 
 # ---------------------------------------------------------------------------
-# U0048 — Panel renders on parked-on-ask_user session
+# U0048 - Panel renders on parked-on-ask_user session
 # ---------------------------------------------------------------------------
 
 
 def test_u0048_ask_user_panel_renders_when_pending_returns_200(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0048 — With ``GET /v1/sessions/{sid}/ask_user/pending`` returning
+    """U0048 - With ``GET /v1/sessions/{sid}/ask_user/pending`` returning
     a 200 prompt body, the AskUserPanel mounts under the header card on
     the session detail page. Pins the panel render contract from
     [`ui/components/session-detail.jsx`](../../ui/components/session-detail.jsx)
     (the AskUserPanel sub-component + the early-return ``if
     (pending.error?.status === 404)`` rule).
 
-    Priority 1 — yielding-tools UI. Validates the panel is wired into
+    Priority 1 - yielding-tools UI. Validates the panel is wired into
     the page tree and its top-level shape (header + prompt + submit +
     skip buttons) renders.
     """
@@ -220,19 +220,19 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
 
 
 # ---------------------------------------------------------------------------
-# U0049 — Submit posts response, panel collapses, toast appears
+# U0049 - Submit posts response, panel collapses, toast appears
 # ---------------------------------------------------------------------------
 
 
 def test_u0049_ask_user_panel_submit_collapses_and_toasts(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0049 — Fill the response input, click Send response → the panel
+    """U0049 - Fill the response input, click Send response → the panel
     POSTs to /respond, the toast 'Response sent' appears, and the panel
     collapses on the next /pending poll (which we re-route to 404 to
     simulate the row flipping to resumable).
 
-    Priority 1 — yielding-tools UI mutation feedback.
+    Priority 1 - yielding-tools UI mutation feedback.
     """
     sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
@@ -296,14 +296,14 @@ def test_u0049_ask_user_panel_submit_collapses_and_toasts(
 
 
 # ---------------------------------------------------------------------------
-# U0050 — Skip posts cancel-yielded-tool, panel collapses, toast appears
+# U0050 - Skip posts cancel-yielded-tool, panel collapses, toast appears
 # ---------------------------------------------------------------------------
 
 
 def test_u0050_ask_user_panel_skip_posts_cancel_and_toasts(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0050 — Click Skip → the panel POSTs to the tool-agnostic
+    """U0050 - Click Skip → the panel POSTs to the tool-agnostic
     cancel-yielded-tool endpoint, surfaces the operator-cancel toast
     ('Skipped'), and collapses on the next /pending poll.
 
@@ -362,20 +362,20 @@ def test_u0050_ask_user_panel_skip_posts_cancel_and_toasts(
 
 
 # ---------------------------------------------------------------------------
-# U0051 — JSON-schema violation renders inline error (not toast)
+# U0051 - JSON-schema violation renders inline error (not toast)
 # ---------------------------------------------------------------------------
 
 
 def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0051 — When the prompt carries a response_schema and the
+    """U0051 - When the prompt carries a response_schema and the
     operator submits an invalid response, the backend's 422 is rendered
     INLINE under the textarea (not as a generic toast), and the panel
     stays open (the row stays parked).
 
     The schema being ``{type:"object"}`` flips the heuristic to render
-    a textarea (per session-detail.jsx) — and the panel parses the
+    a textarea (per session-detail.jsx) - and the panel parses the
     textarea text as JSON on Submit, surfacing parse errors inline
     before the API call. This test exercises BOTH the client-side JSON
     parse error path AND the server-side 422 path by sending invalid
@@ -432,7 +432,7 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
         # The error text should surface the friendly 422 validation
         # summary the API client builds for any schema-violation response
         # (ApiError normalizes a 422's detail to this copy when the
-        # envelope carries no per-field ``extensions.errors`` — see
+        # envelope carries no per-field ``extensions.errors`` - see
         # ui/foundation/api.js ``_friendlyValidationDetail``).
         expect(inline).to_contain_text("required fields are missing or invalid")
 
