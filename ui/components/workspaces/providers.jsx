@@ -25,7 +25,7 @@ function _wpToastErr(pushToast, fallback) {
 
 function _wpSummary(p) {
   if (!p || !p.config) return "";
-  if (p.provider === "local") return p.config.path || "";
+  if (p.provider === "local") return p.config.root_path || p.config.path || "";
   if (p.provider === "container") {
     const rt = p.config.runtime || "?";
     const conn = p.config.connection?.kind || "?";
@@ -291,7 +291,7 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null }) {
 
     let config;
     if (form.backend === "local") {
-      config = { kind: "local", path: form.path };
+      config = { kind: "local", root_path: form.path };
     } else if (form.backend === "container") {
       let connection;
       if (form.c_conn_kind === "socket") {
