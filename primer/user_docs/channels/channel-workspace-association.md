@@ -7,7 +7,7 @@ summary: Associate a workspace with a channel so every session gate (ask_user, t
 
 ## What the association does
 
-A workspace can be linked to one channel at a time via `Workspace.channel_association`. When a link exists, every session running inside that workspace that parks on a yielding tool (`ask_user`, a tool approval gate, or `inform_user`) automatically dispatches a message to the associated channel room.
+A workspace can be linked to one channel at a time via `Workspace.reply_binding`. When a link exists, every session running inside that workspace that parks on a yielding tool (`ask_user`, a tool approval gate, or `inform_user`) automatically dispatches a message to the associated channel room.
 
 This is what makes long-running agent work practical over Slack, Telegram, or Discord: the session parks (releases its compute lease), a message lands in the channel, and the session resumes the moment a human replies or clicks an approval button. No one needs to watch the primer console.
 
@@ -64,7 +64,7 @@ The association is set on the workspace row. No separate entity is created.
 |---|---|
 | `channel_id` | The ID of the Channel to forward gates to. Must refer to a channel that exists. |
 
-A workspace has the full `channel_association` cleared (null) by default. Setting it via PUT activates forwarding immediately; DELETE clears it.
+A workspace has the full `reply_binding` cleared (null) by default. Setting it via PUT activates forwarding immediately; DELETE clears it.
 
 ## Walkthrough: associate a workspace with a channel
 
@@ -79,7 +79,7 @@ A workspace has the full `channel_association` cleared (null) by default. Settin
 **Via the REST API:**
 
 ```
-PUT /v1/workspaces/{workspace_id}/channel_association
+PUT /v1/workspaces/{workspace_id}/reply_binding
 Content-Type: application/json
 
 {"channel_id": "channel-abc123"}
@@ -88,10 +88,20 @@ Content-Type: application/json
 To clear the association:
 
 ```
-DELETE /v1/workspaces/{workspace_id}/channel_association
+DELETE /v1/workspaces/{workspace_id}/reply_binding
 ```
 
-**Via agent tools:** The `system__set_workspace_channel_association` and `system__clear_workspace_channel_association` tools do the same from inside a session, letting an agent configure its own workspace's channel routing programmatically.
+**Via primectl:**
+
+```
+primectl channel binding set <workspace_id> <channel_id>
+primectl channel binding clear <workspace_id>
+primectl channel binding get <workspace_id>
+```
+
+`binding set` issues the `PUT`, `binding clear` the `DELETE`, and `binding get` reads the workspace and prints its current `reply_binding`.
+
+**Via agent tools:** The `system__set_workspace_reply_binding` and `system__clear_workspace_reply_binding` tools do the same from inside a session, letting an agent configure its own workspace's channel routing programmatically.
 
 ## Allowed agents and the chat surface
 

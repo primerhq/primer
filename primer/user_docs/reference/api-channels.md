@@ -5,7 +5,7 @@ section: reference
 summary: REST endpoints to configure channel providers (Slack, Telegram, Discord), channels, and workspace channel associations.
 ---
 
-Channel providers hold the credentials for a messaging platform (Slack, Telegram, or Discord). Channels are the individual conversational rooms within a provider (a Slack channel, a Telegram chat id, a Discord channel). A Workspace can carry a `channel_association` that names the Channel all session gates (`ask_user`, tool approval, `inform`) from its sessions forward to. Chat config lives on the Channel itself (`config.chats`).
+Channel providers hold the credentials for a messaging platform (Slack, Telegram, or Discord). Channels are the individual conversational rooms within a provider (a Slack channel, a Telegram chat id, a Discord channel). A Workspace can carry a `reply_binding` that names the Channel all session gates (`ask_user`, tool approval, `inform`) from its sessions forward to. Chat config lives on the Channel itself (`config.chats`).
 
 ```ref:features/chats
 How chats, ask_user, and the channel bridge fit together.
@@ -31,8 +31,8 @@ Configure channel providers in the console.
 | GET | `/v1/channels/{entity_id}` | Get a channel |
 | PUT | `/v1/channels/{entity_id}` | Replace a channel |
 | DELETE | `/v1/channels/{entity_id}` | Delete a channel |
-| PUT | `/v1/workspaces/{workspace_id}/channel_association` | Set workspace channel association |
-| DELETE | `/v1/workspaces/{workspace_id}/channel_association` | Clear workspace channel association |
+| PUT | `/v1/workspaces/{workspace_id}/reply_binding` | Set workspace channel association |
+| DELETE | `/v1/workspaces/{workspace_id}/reply_binding` | Clear workspace channel association |
 
 ## ChannelProvider object
 
@@ -373,7 +373,7 @@ workspace row, not a separate resource.
 
 ### Set workspace channel association
 
-`PUT /v1/workspaces/{workspace_id}/channel_association` - returns `200 OK`.
+`PUT /v1/workspaces/{workspace_id}/reply_binding` - returns `200 OK`.
 
 Body:
 
@@ -383,20 +383,20 @@ Body:
 
 ```code-tabs:curl,python,javascript
 --- curl
-curl -X PUT https://your-host/v1/workspaces/ws-prod/channel_association \
+curl -X PUT https://your-host/v1/workspaces/ws-prod/reply_binding \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d '{"channel_id": "ch-general"}'
 --- python
 import httpx
 r = httpx.put(
-    "https://your-host/v1/workspaces/ws-prod/channel_association",
+    "https://your-host/v1/workspaces/ws-prod/reply_binding",
     headers={"Authorization": f"Bearer {token}"},
     json={"channel_id": "ch-general"},
 )
 assert r.status_code == 200
 --- javascript
-await fetch("/v1/workspaces/ws-prod/channel_association", {
+await fetch("/v1/workspaces/ws-prod/reply_binding", {
   method: "PUT",
   headers: {"Authorization": `Bearer ${token}`, "Content-Type": "application/json"},
   body: JSON.stringify({channel_id: "ch-general"})
@@ -410,21 +410,21 @@ await fetch("/v1/workspaces/ws-prod/channel_association", {
 
 ### Clear workspace channel association
 
-`DELETE /v1/workspaces/{workspace_id}/channel_association` - returns `204 No Content`.
+`DELETE /v1/workspaces/{workspace_id}/reply_binding` - returns `204 No Content`.
 
 ```code-tabs:curl,python,javascript
 --- curl
-curl -X DELETE https://your-host/v1/workspaces/ws-prod/channel_association \
+curl -X DELETE https://your-host/v1/workspaces/ws-prod/reply_binding \
   -H "Authorization: Bearer $TOKEN"
 --- python
 import httpx
 r = httpx.delete(
-    "https://your-host/v1/workspaces/ws-prod/channel_association",
+    "https://your-host/v1/workspaces/ws-prod/reply_binding",
     headers={"Authorization": f"Bearer {token}"},
 )
 assert r.status_code == 204
 --- javascript
-await fetch("/v1/workspaces/ws-prod/channel_association", {
+await fetch("/v1/workspaces/ws-prod/reply_binding", {
   method: "DELETE",
   headers: {"Authorization": `Bearer ${token}`}
 })
@@ -433,6 +433,24 @@ await fetch("/v1/workspaces/ws-prod/channel_association", {
 **Errors:**
 - `404` - workspace does not exist
 
+### primectl
+
+The same reply-binding and channel-trigger operations are available from the `primectl channel` command group:
+
+```
+primectl channel binding set <workspace_id> <channel_id>   # PUT reply_binding
+primectl channel binding clear <workspace_id>              # DELETE reply_binding
+primectl channel binding get <workspace_id>                # read the workspace reply_binding
+
+primectl channel trigger create --provider <provider_id> [--channel <channel_id>] \
+  --slug <slug> --name <name>
+
+primectl channel sub create <trigger_id> --action <kind> --event-type <type> \
+  [--command <name>] [--reply-target <target>] --set field=value ...
+```
+
+`trigger create` posts a `channel` `TriggerConfig` (provider-wide when `--channel` is omitted), and `sub create` assembles the action `config`, `event_matcher`, and `reply_target` so operators do not hand-write the discriminated config.
+
 ## Errors note
 
-Channel-provider and channel CRUD errors use the RFC 7807 `ProblemDetails` envelope with `type`, `title`, `status`, `detail`, `instance`, and `extensions` (which includes `request_id` and, for 422 errors, an `errors` array with field paths). The workspace channel-association routes (`PUT` / `DELETE .../channel_association`) instead return a `{"detail": {"error": "<code>", "message": "..."}}` body for their `409` (workspace terminating) and `422` (channel not found) cases. See the REST API overview for details.
+Channel-provider and channel CRUD errors use the RFC 7807 `ProblemDetails` envelope with `type`, `title`, `status`, `detail`, `instance`, and `extensions` (which includes `request_id` and, for 422 errors, an `errors` array with field paths). The workspace channel-association routes (`PUT` / `DELETE .../reply_binding`) instead return a `{"detail": {"error": "<code>", "message": "..."}}` body for their `409` (workspace terminating) and `422` (channel not found) cases. See the REST API overview for details.
