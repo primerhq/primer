@@ -1,4 +1,4 @@
-"""start_chat dispatcher — Spec §6.4, §14 decision 2."""
+"""start_chat dispatcher - Spec §6.4, §14 decision 2."""
 
 from __future__ import annotations
 

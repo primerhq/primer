@@ -1,4 +1,4 @@
-"""start_chat subscription dispatcher — Spec §6.4, §14 decision 2.
+"""start_chat subscription dispatcher - Spec §6.4, §14 decision 2.
 
 ``start_chat`` is the one genuinely new action: it creates a fresh
 :class:`Chat` bound to the source thread, seeds the firing event's
@@ -104,7 +104,7 @@ class StartChatDispatcher:
                 await deps.claim_engine.upsert(
                     ClaimKind.CHAT, chat.id, priority=10,
                 )
-            except Exception as exc:  # noqa: BLE001 — best-effort pulse
+            except Exception as exc:  # noqa: BLE001 - best-effort pulse
                 logger.warning(
                     "start_chat dispatcher: claim_engine.upsert(%r) "
                     "raised: %s",
