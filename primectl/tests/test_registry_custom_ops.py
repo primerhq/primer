@@ -37,3 +37,12 @@ def test_underscore_action_name_normalised(reg):
 
 def test_alias_resolves(reg):
     assert reg.resolve("llm").name == "llm_provider"
+
+
+def test_workspace_reply_binding_is_custom_op(reg):
+    ws = reg.resolve("workspace")
+    assert "reply-binding" in ws.custom_ops
+    op = ws.custom_ops["reply-binding"]
+    assert op.method == "put"
+    assert op.path_template == "/v1/workspaces/{workspace_id}/reply_binding"
+    assert op.path_params == ("workspace_id",)

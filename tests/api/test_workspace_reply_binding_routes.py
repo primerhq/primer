@@ -1,4 +1,4 @@
-"""Tests for PUT/DELETE /v1/workspaces/{id}/channel_association."""
+"""Tests for PUT/DELETE /v1/workspaces/{id}/reply_binding."""
 
 from __future__ import annotations
 
@@ -56,14 +56,14 @@ async def _seed_channel(app, channel_id: str = "ch-t1") -> None:
 
 
 @pytest.mark.asyncio
-async def test_put_channel_association_sets_and_get_reflects(client, app):
+async def test_put_reply_binding_sets_and_get_reflects(client, app):
     sp = app.state.storage_provider
     ws = _make_workspace()
     await sp.get_storage(Workspace).create(ws)
     await _seed_channel(app)
 
     r = await client.put(
-        f"/v1/workspaces/{ws.id}/channel_association",
+        f"/v1/workspaces/{ws.id}/reply_binding",
         json={"channel_id": "ch-t1"},
     )
     assert r.status_code == 200, r.text
@@ -77,7 +77,7 @@ async def test_put_channel_association_sets_and_get_reflects(client, app):
 
 
 @pytest.mark.asyncio
-async def test_delete_channel_association_clears_it(client, app):
+async def test_delete_reply_binding_clears_it(client, app):
     sp = app.state.storage_provider
     ws = _make_workspace("ws-t2")
     ws = ws.model_copy(
@@ -85,7 +85,7 @@ async def test_delete_channel_association_clears_it(client, app):
     )
     await sp.get_storage(Workspace).create(ws)
 
-    r = await client.delete(f"/v1/workspaces/{ws.id}/channel_association")
+    r = await client.delete(f"/v1/workspaces/{ws.id}/reply_binding")
     assert r.status_code == 204, r.text
 
     r2 = await client.get(f"/v1/workspaces/{ws.id}")
@@ -94,37 +94,37 @@ async def test_delete_channel_association_clears_it(client, app):
 
 
 @pytest.mark.asyncio
-async def test_put_channel_association_nonexistent_channel_returns_4xx(client, app):
+async def test_put_reply_binding_nonexistent_channel_returns_4xx(client, app):
     sp = app.state.storage_provider
     ws = _make_workspace("ws-t3")
     await sp.get_storage(Workspace).create(ws)
 
     r = await client.put(
-        f"/v1/workspaces/{ws.id}/channel_association",
+        f"/v1/workspaces/{ws.id}/reply_binding",
         json={"channel_id": "does-not-exist"},
     )
     assert r.status_code in (404, 422), r.text
 
 
 @pytest.mark.asyncio
-async def test_put_channel_association_missing_workspace_returns_404(client):
+async def test_put_reply_binding_missing_workspace_returns_404(client):
     r = await client.put(
-        "/v1/workspaces/no-such-ws/channel_association",
+        "/v1/workspaces/no-such-ws/reply_binding",
         json={"channel_id": "ch-t1"},
     )
     assert r.status_code == 404, r.text
 
 
 @pytest.mark.asyncio
-async def test_delete_channel_association_missing_workspace_returns_404(client):
+async def test_delete_reply_binding_missing_workspace_returns_404(client):
     r = await client.delete(
-        "/v1/workspaces/no-such-ws/channel_association"
+        "/v1/workspaces/no-such-ws/reply_binding"
     )
     assert r.status_code == 404, r.text
 
 
 @pytest.mark.asyncio
-async def test_put_channel_association_terminating_workspace_returns_409(client, app):
+async def test_put_reply_binding_terminating_workspace_returns_409(client, app):
     sp = app.state.storage_provider
     ws = _make_workspace("ws-t4")
     ws = ws.model_copy(update={"phase": "terminating"})
@@ -132,7 +132,7 @@ async def test_put_channel_association_terminating_workspace_returns_409(client,
     await _seed_channel(app, channel_id="ch-t4")
 
     r = await client.put(
-        f"/v1/workspaces/{ws.id}/channel_association",
+        f"/v1/workspaces/{ws.id}/reply_binding",
         json={"channel_id": "ch-t4"},
     )
     assert r.status_code == 409, r.text

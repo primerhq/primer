@@ -56,6 +56,29 @@
       "post": {"operationId": "discover_models_v1_llm_providers__discover_models_post",
         "responses": {"200": {"description": "ok"}}}
     },
+    "/v1/workspaces": {
+      "get": {"operationId": "_list_v1_workspaces_get", "responses": {"200": {"description": "ok"}}},
+      "post": {"operationId": "_create_v1_workspaces_post", "requestBody": {
+        "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Workspace"}}}},
+        "responses": {"201": {"description": "created"}}}
+    },
+    "/v1/workspaces/{workspace_id}": {
+      "get": {"operationId": "_get_v1_workspaces__workspace_id__get",
+        "parameters": [{"name": "workspace_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"200": {"description": "ok"}}},
+      "delete": {"operationId": "_delete_v1_workspaces__workspace_id__delete",
+        "parameters": [{"name": "workspace_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "gone"}}}
+    },
+    "/v1/workspaces/{workspace_id}/reply_binding": {
+      "put": {"operationId": "set_workspace_reply_binding_v1_workspaces__workspace_id__reply_binding_put",
+        "parameters": [{"name": "workspace_id", "in": "path", "schema": {"type": "string"}}],
+        "requestBody": {"content": {"application/json": {"schema": {"$ref": "#/components/schemas/ReplyBindingBody"}}}},
+        "responses": {"200": {"description": "ok"}}},
+      "delete": {"operationId": "clear_workspace_reply_binding_v1_workspaces__workspace_id__reply_binding_delete",
+        "parameters": [{"name": "workspace_id", "in": "path", "schema": {"type": "string"}}],
+        "responses": {"204": {"description": "gone"}}}
+    },
     "/v1/health": {"get": {"operationId": "health_v1_health_get", "responses": {"200": {"description": "ok"}}}},
     "/v1/reports": {
       "get": {"operationId": "_list_v1_reports_get", "responses": {"200": {"description": "ok"}}}
@@ -73,6 +96,10 @@
     "LLMProvider": {"type": "object", "required": ["provider"], "properties": {
       "id": {"type": "string"}, "provider": {"type": "string"}, "base_url": {"type": "string"}}},
     "FindRequest": {"type": "object", "properties": {
-      "predicate": {}, "page": {}, "order_by": {}}}
+      "predicate": {}, "page": {}, "order_by": {}}},
+    "Workspace": {"type": "object", "properties": {
+      "id": {"type": "string"}, "template_id": {"type": "string"}}},
+    "ReplyBindingBody": {"type": "object", "required": ["channel_id"], "properties": {
+      "channel_id": {"type": "string"}}}
   }}
 }
