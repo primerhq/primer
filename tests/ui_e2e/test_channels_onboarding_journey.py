@@ -312,11 +312,14 @@ def test_u0108_channels_operator_onboarding_journey(
             timeout=15_000,
         )
 
-        # Confirm the link landed server-side.
+        # Confirm the link landed server-side. The workspace's channel
+        # link is now exposed as ``reply_binding`` (a WorkspaceChannelLink
+        # carrying channel_id + anchor); the legacy ``channel_association``
+        # field was renamed (back-compat alias only on read).
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             r = c.get(f"/v1/workspaces/{wid}")
             assert r.status_code == 200, r.text
-            assoc = r.json().get("channel_association") or {}
-            assert assoc.get("channel_id") == ch_id, r.json()
+            binding = r.json().get("reply_binding") or {}
+            assert binding.get("channel_id") == ch_id, r.json()
     finally:
         _cleanup(base_url, ids, cleanup_cp, cleanup_ch)
