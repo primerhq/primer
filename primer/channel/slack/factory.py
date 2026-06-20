@@ -35,6 +35,31 @@ logger = logging.getLogger(__name__)
 _HANDLERS_INSTALLED: set[str] = set()
 
 
+async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> None:
+    """Normalize a fresh inbound Slack message event and route it through the
+    channel-event path (correlation-first, else fire channel triggers).
+
+    The Slack ``event`` dict is already the raw provider payload, so the
+    normalizer envelope is just ``{"type": "message", "payload": event}``. Best
+    effort: any failure is logged and swallowed so it never breaks the existing
+    chat-surface dispatch."""
+    router = adapter._event_router()
+    if router is None:
+        return
+    try:
+        from primer.channel.slack.normalizer import SlackEventNormalizer
+
+        normalizer = SlackEventNormalizer(provider_id=provider_id)
+        normalized = await normalizer.normalize(
+            {"type": "message", "payload": event},
+        )
+        if normalized is None:
+            return
+        await router.route_event(event=normalized, channel=adapter._channel)
+    except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
+        logger.exception("slack: channel-event routing failed")
+
+
 def _install_handlers(provider_id: str, app: Any) -> None:
     """One-shot handler installation per shared connection."""
     if provider_id in _HANDLERS_INSTALLED:
@@ -344,6 +369,9 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             sender_name=sender_name, text=event.get("text", ""),
             files=event.get("files"),
         )
+        # Normalized-event path: a fresh inbound message may also fire channel
+        # triggers (correlation-first, else fire rules).
+        await _route_channel_event(adapter, provider_id, event)
 
 
 async def _slack_factory(

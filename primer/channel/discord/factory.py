@@ -32,6 +32,60 @@ logger = logging.getLogger(__name__)
 _HANDLERS_INSTALLED: set[str] = set()
 
 
+async def _route_channel_event(
+    adapter: Any, provider_id: str, message: "discord.Message",
+) -> None:
+    """Normalize a fresh inbound Discord message and route it through the
+    channel-event path (correlation-first, else fire channel triggers).
+
+    Builds the small dict envelope ``{"type": "message", "payload": {...}}`` the
+    provider :class:`DiscordEventNormalizer` consumes (so the normalizer stays
+    SDK-free) - deriving the channel ``kind`` discriminator from the runtime
+    ``discord`` channel type. Best effort: any failure is logged and swallowed
+    so it never breaks the existing chat-surface dispatch."""
+    router = adapter._event_router()
+    if router is None:
+        return
+    try:
+        from primer.channel.discord.normalizer import DiscordEventNormalizer
+
+        ch = message.channel
+        if isinstance(ch, discord.Thread):
+            ch_kind = "thread"
+            parent_id = getattr(ch, "parent_id", None)
+        elif isinstance(ch, discord.DMChannel):
+            ch_kind = "dm"
+            parent_id = None
+        else:
+            ch_kind = "text"
+            parent_id = None
+        author = message.author
+        payload = {
+            "id": message.id,
+            "content": message.content or "",
+            "author": {
+                "id": getattr(author, "id", None) if author else None,
+                "name": getattr(author, "name", None) if author else None,
+                "display_name": getattr(author, "display_name", None)
+                if author
+                else None,
+                "bot": bool(getattr(author, "bot", False)) if author else False,
+            },
+            "channel": {
+                "id": getattr(ch, "id", None),
+                "kind": ch_kind,
+                "parent_id": parent_id,
+            },
+        }
+        normalizer = DiscordEventNormalizer(provider_id=provider_id)
+        event = await normalizer.normalize({"type": "message", "payload": payload})
+        if event is None:
+            return
+        await router.route_event(event=event, channel=adapter._channel)
+    except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
+        logger.exception("discord: channel-event routing failed")
+
+
 def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
     if provider_id in _HANDLERS_INSTALLED:
         return
@@ -193,6 +247,9 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 sender_name=sender_name, text=message.content or "",
                 attachments=list(getattr(message, "attachments", None) or []),
             )
+            # Normalized-event path: a fresh inbound message may also fire
+            # channel triggers (correlation-first, else fire rules).
+            await _route_channel_event(adapter, provider_id, message)
             return
         # Top-level message in the channel: open a new thread-chat anchored on
         # the message id. Only on chat-enabled adapters.
@@ -209,6 +266,9 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             sender_name=sender_name, text=message.content or "",
             attachments=list(getattr(message, "attachments", None) or []),
         )
+        # Normalized-event path: a fresh inbound message may also fire channel
+        # triggers (correlation-first, else fire rules).
+        await _route_channel_event(adapter, provider_id, message)
 
     # Bind the handlers to the real gateway event names. The base
     # ``discord.Client`` dispatches by looking up ``self.on_<event>`` (this is

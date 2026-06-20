@@ -298,6 +298,24 @@ class SlackChannelAdapter(ChannelAdapter):
             self._sp, CorrelationStore(self._sp), event_bus=self._bus,
             claim_engine=self._claim_engine, gate_inbox=gate_inbox)
 
+    def _event_router(self):
+        """Build a ChannelInboundRouter for the normalized-event path, or None
+        when chat-surface dispatch is not configured (no storage provider).
+
+        Mirrors :meth:`_inbound_router`; the caller routes a normalized
+        ``ChannelEvent`` through :meth:`ChannelInboundRouter.route_event`."""
+        if self._sp is None:
+            return None
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.correlation import CorrelationStore
+        from primer.channel.inbound_router import ChannelInboundRouter
+        gate_inbox = ChatResponseInbox(
+            storage_provider=self._sp, event_bus=self._bus,
+            claim_engine=self._claim_engine)
+        return ChannelInboundRouter(
+            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
+            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
+
     async def _resolve_thread_chat(self, thread_external_id: str):
         """Look up the chat bound to (this channel, thread_external_id)."""
         from primer.channel.chat_router import ChatChannelRouter

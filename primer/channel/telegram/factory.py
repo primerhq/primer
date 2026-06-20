@@ -20,6 +20,53 @@ logger = logging.getLogger(__name__)
 _HANDLERS_INSTALLED: set[str] = set()
 
 
+async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> None:
+    """Normalize a fresh inbound PTB message and route it through the
+    channel-event path (correlation-first, else fire channel triggers).
+
+    Builds the small dict envelope ``{"type": "message", "payload": {...}}`` the
+    provider :class:`TelegramEventNormalizer` consumes (so the normalizer stays
+    SDK-free), normalizes it, and - when a :class:`ChannelEvent` results - hands
+    it to the adapter's event router. A best-effort path: any failure is logged
+    and swallowed so it never breaks the existing chat-surface dispatch."""
+    router = adapter._event_router()
+    if router is None:
+        return
+    try:
+        from primer.channel.telegram.normalizer import TelegramEventNormalizer
+
+        chat = msg.chat
+        sender = msg.from_user
+        entities = [
+            {
+                "type": getattr(e, "type", None),
+                "offset": getattr(e, "offset", 0),
+                "length": getattr(e, "length", 0),
+            }
+            for e in (msg.entities or [])
+        ]
+        payload = {
+            "message_id": msg.message_id,
+            "chat": {
+                "id": getattr(chat, "id", None),
+                "type": getattr(chat, "type", None),
+            },
+            "from": {
+                "id": getattr(sender, "id", None) if sender else None,
+                "full_name": getattr(sender, "full_name", None) if sender else None,
+            },
+            "text": msg.text or msg.caption or "",
+            "entities": entities,
+        }
+        normalizer = TelegramEventNormalizer(provider_id=provider_id)
+        event = await normalizer.normalize({"type": "message", "payload": payload})
+        if event is None:
+            return
+        await router.route_event(event=event, channel=adapter._channel)
+    except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
+        logger.exception("telegram: channel-event routing failed")
+
+
 def _install_handlers(provider_id: str, app: Any) -> None:
     if provider_id in _HANDLERS_INSTALLED:
         return
@@ -123,6 +170,10 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     sender_name=sender_name, text=msg.text or "")
             if notice:
                 await context.bot.send_message(chat_id=msg.chat.id, text=notice)
+            # Normalized-event path: a fresh inbound message may also fire
+            # channel triggers. Build the provider normalizer, normalize the
+            # raw update, and route it (correlation-first, else fire rules).
+            await _route_channel_event(adapter, provider_id, msg)
             return
         if not msg.reply_to_message:
             return

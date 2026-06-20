@@ -52,6 +52,30 @@ class ChannelInboundRouter:
             claim_engine=self._claim_engine,
         )
 
+    async def route_event(self, *, event, channel: Channel) -> None:
+        """Route a normalized :class:`ChannelEvent` correlation-first, else fire
+        channel triggers.
+
+        This is the typed inbound entry for the event-driven path. The legacy
+        :meth:`route` stays the fallback for the rejection-reason reply path.
+        """
+        from primer.channel.event_dispatch import ChannelEventRouter
+        from primer.trigger.subscribers import DispatchDeps
+
+        fire_deps = DispatchDeps(
+            storage_provider=self._sp,
+            claim_engine=self._claim_engine,
+            scheduler=None,
+            event_bus=self._bus,
+        )
+        router = ChannelEventRouter(
+            storage_provider=self._sp,
+            correlation_store=self._correlation,
+            fire_deps=fire_deps,
+            event_bus=self._bus,
+        )
+        await router.route_event(event=event, channel=channel)
+
     async def route(
         self,
         *,
