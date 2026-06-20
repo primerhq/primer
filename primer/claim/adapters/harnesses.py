@@ -28,6 +28,17 @@ class HarnessClaimAdapter(ClaimAdapter):
         if harness is None:
             return
 
+        # The dispatch path (run_one_harness_operation -> _release_harness)
+        # already writes the operation's authoritative terminal status
+        # (INSTALLED / READY / OUTDATED / ERROR) AND clears
+        # pending_operation. When that has happened we must NOT clobber it
+        # here — a hardcoded READY would, for example, demote a successful
+        # INSTALL back to READY. So only finalize the row from this adapter
+        # when dispatch did not (pending_operation still set, e.g. the
+        # worker bailed before dispatch ran its own release).
+        if harness.pending_operation is None:
+            return
+
         now = datetime.now(UTC)
         if outcome.success:
             new_status = HarnessStatus.READY
