@@ -235,24 +235,34 @@ def test_graph_builder_feedback_loop_journey(
         #    ``question`` field (the dynamic Begin-schema form), submit.
         # ------------------------------------------------------------------
         assert workspace_id_created is not None
+        # The session-create modal is launched from the Sessions list
+        # page (the per-workspace "New session" button was removed; the
+        # modal carries its own workspace selector).
         page.goto(
-            f"{console_url}#/workspaces/{workspace_id_created}/sessions",
+            f"{console_url}#/sessions",
             wait_until="domcontentloaded",
         )
         page.get_by_role("button", name="New session", exact=False).first.click()
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=10_000)
 
-        # Switch the binding to "graph" and pick our graph by id.
-        graph_radio = modal.get_by_text("Graph", exact=False).first
-        if graph_radio.count() > 0:
-            graph_radio.click()
-        modal.get_by_role(
-            "combobox", name="Graph", exact=False,
-        ).first.select_option(value=graph_id)
+        # Switch the binding to "graph" via the chip, then pick our graph.
+        modal.get_by_text("graph", exact=True).first.click()
+        # The binding select (Agent/Graph) is the first <select>; the
+        # workspace select is the second.
+        selects = modal.locator("select.select")
+        selects.nth(0).select_option(value=graph_id)
+        selects.nth(1).select_option(value=workspace_id_created)
 
         # The dynamic Begin-schema form renders a ``question`` text input.
-        question_input = modal.get_by_label("question", exact=False).first
+        # Its label is not programmatically associated with the control
+        # (no htmlFor/id), so scope to the .field whose label reads
+        # "question" and grab the input within it.
+        question_field = modal.locator(
+            ".field", has=page.locator(".field-label", has_text="question")
+        ).first
+        question_field.wait_for(state="visible", timeout=10_000)
+        question_input = question_field.locator("input, textarea").first
         question_input.fill("Is the answer 42?")
 
         modal.get_by_role("button", name="Create", exact=True).click()
@@ -274,7 +284,9 @@ def test_graph_builder_feedback_loop_journey(
                 if r.status_code == 200:
                     items = r.json().get("items", [])
                     if items:
-                        sid = items[0]["id"]
+                        # The workspace-sessions list item keys the id as
+                        # ``session_id`` (not ``id``).
+                        sid = items[0]["session_id"]
                         rs = c.get(
                             f"/v1/workspaces/{workspace_id_created}/sessions/{sid}",
                         )
