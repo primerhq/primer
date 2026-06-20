@@ -1068,6 +1068,14 @@ class WorkspaceRuntimeMeta(BaseModel):
 class WorkspaceChannelLink(BaseModel):
     model_config = ConfigDict(extra="forbid")
     channel_id: str = Field(..., description="The room-Channel this workspace forwards gates to.")
+    anchor: str | None = Field(
+        default=None,
+        description=(
+            "Optional standing room anchor (e.g. a Slack thread ts) the "
+            "workspace's outbound replies attach to. None posts to the "
+            "channel root."
+        ),
+    )
 
 
 class Workspace(Identifiable):

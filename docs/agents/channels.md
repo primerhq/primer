@@ -14,8 +14,11 @@ mcp_tools:
   - system::create_channel
   - system::update_channel
   - system::delete_channel
-  - system::set_workspace_channel_association
-  - system::clear_workspace_channel_association
+  - system::set_reply_binding
+  - system::clear_reply_binding
+  - system::create_channel_binding
+  - system::list_channel_bindings
+  - system::delete_channel_binding
 ---
 
 # Channels - multi-platform messaging

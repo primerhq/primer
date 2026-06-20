@@ -143,15 +143,15 @@ def _make_channel(ch_id: str = "chan-1") -> Channel:
 
 
 @pytest.mark.asyncio
-async def test_set_workspace_reply_binding_is_exposed(system_toolset):
+async def test_set_reply_binding_is_exposed(system_toolset):
     tools = {t.id async for t in system_toolset.list_tools()}
-    assert "set_workspace_reply_binding" in tools
+    assert "set_reply_binding" in tools
 
 
 @pytest.mark.asyncio
-async def test_clear_workspace_reply_binding_is_exposed(system_toolset):
+async def test_clear_reply_binding_is_exposed(system_toolset):
     tools = {t.id async for t in system_toolset.list_tools()}
-    assert "clear_workspace_reply_binding" in tools
+    assert "clear_reply_binding" in tools
 
 
 @pytest.mark.asyncio
@@ -168,14 +168,14 @@ async def test_old_channel_association_tools_are_not_exposed(system_toolset):
 
 
 @pytest.mark.asyncio
-async def test_set_workspace_reply_binding_persists(sp: _SP, system_toolset):
+async def test_set_reply_binding_persists(sp: _SP, system_toolset):
     ws = _make_workspace()
     ch = _make_channel()
     await sp.get_storage(Workspace).create(ws)
     await sp.get_storage(Channel).create(ch)
 
     result = await system_toolset.call(
-        tool_name="set_workspace_reply_binding",
+        tool_name="set_reply_binding",
         arguments={"workspace_id": "ws-1", "channel_id": "chan-1"},
     )
     assert not result.is_error, result.output
@@ -191,9 +191,9 @@ async def test_set_workspace_reply_binding_persists(sp: _SP, system_toolset):
 
 
 @pytest.mark.asyncio
-async def test_set_workspace_reply_binding_unknown_workspace(sp: _SP, system_toolset):
+async def test_set_reply_binding_unknown_workspace(sp: _SP, system_toolset):
     result = await system_toolset.call(
-        tool_name="set_workspace_reply_binding",
+        tool_name="set_reply_binding",
         arguments={"workspace_id": "no-such-ws", "channel_id": "chan-1"},
     )
     assert result.is_error
@@ -202,12 +202,12 @@ async def test_set_workspace_reply_binding_unknown_workspace(sp: _SP, system_too
 
 
 @pytest.mark.asyncio
-async def test_set_workspace_reply_binding_unknown_channel(sp: _SP, system_toolset):
+async def test_set_reply_binding_unknown_channel(sp: _SP, system_toolset):
     ws = _make_workspace("ws-2")
     await sp.get_storage(Workspace).create(ws)
 
     result = await system_toolset.call(
-        tool_name="set_workspace_reply_binding",
+        tool_name="set_reply_binding",
         arguments={"workspace_id": "ws-2", "channel_id": "no-such-channel"},
     )
     assert result.is_error
@@ -216,7 +216,7 @@ async def test_set_workspace_reply_binding_unknown_channel(sp: _SP, system_tools
 
 
 @pytest.mark.asyncio
-async def test_clear_workspace_reply_binding_removes_link(sp: _SP, system_toolset):
+async def test_clear_reply_binding_removes_link(sp: _SP, system_toolset):
     ws = _make_workspace("ws-3")
     ws = ws.model_copy(
         update={"reply_binding": WorkspaceChannelLink(channel_id="chan-x")}
@@ -224,7 +224,7 @@ async def test_clear_workspace_reply_binding_removes_link(sp: _SP, system_toolse
     await sp.get_storage(Workspace).create(ws)
 
     result = await system_toolset.call(
-        tool_name="clear_workspace_reply_binding",
+        tool_name="clear_reply_binding",
         arguments={"workspace_id": "ws-3"},
     )
     assert not result.is_error, result.output
@@ -238,9 +238,9 @@ async def test_clear_workspace_reply_binding_removes_link(sp: _SP, system_toolse
 
 
 @pytest.mark.asyncio
-async def test_clear_workspace_reply_binding_unknown_workspace(sp: _SP, system_toolset):
+async def test_clear_reply_binding_unknown_workspace(sp: _SP, system_toolset):
     result = await system_toolset.call(
-        tool_name="clear_workspace_reply_binding",
+        tool_name="clear_reply_binding",
         arguments={"workspace_id": "no-such-ws"},
     )
     assert result.is_error
