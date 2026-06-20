@@ -102,9 +102,12 @@ async def resolve_reply_binding(
     workspace load is guarded so a storage error never raises into the
     dispatcher.
     """
+    from primer.observability import metrics
+
     meta = getattr(session, "metadata", None) or {}
     session_binding = meta.get(SESSION_REPLY_BINDING_KEY)
     if isinstance(session_binding, dict) and session_binding.get("channel_id"):
+        metrics.reply_binding_resolutions_total.labels(scope="session").inc()
         return ReplyBinding.model_validate(session_binding)
 
     try:
@@ -115,9 +118,12 @@ async def resolve_reply_binding(
         )
     except Exception as exc:  # never raise into the dispatcher
         _log.warning("resolve_reply_binding: workspace load failed: %s", exc)
+        metrics.reply_binding_resolutions_total.labels(scope="none").inc()
         return None
     if ws is not None and ws.reply_binding is not None:
+        metrics.reply_binding_resolutions_total.labels(scope="workspace").inc()
         return ReplyBinding(channel_id=ws.reply_binding.channel_id)
+    metrics.reply_binding_resolutions_total.labels(scope="none").inc()
     return None
 
 
