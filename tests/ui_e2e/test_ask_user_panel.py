@@ -429,8 +429,12 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
         # Inline error visible, not a toast.
         inline = page.locator("[data-testid='ask-user-error']")
         expect(inline).to_be_visible(timeout=5_000)
-        # The error text should reference the validation failure.
-        expect(inline).to_contain_text("schema validation")
+        # The error text should surface the friendly 422 validation
+        # summary the API client builds for any schema-violation response
+        # (ApiError normalizes a 422's detail to this copy when the
+        # envelope carries no per-field ``extensions.errors`` — see
+        # ui/foundation/api.js ``_friendlyValidationDetail``).
+        expect(inline).to_contain_text("required fields are missing or invalid")
 
         # Panel stays open (the row is still parked from the UI's view).
         expect(

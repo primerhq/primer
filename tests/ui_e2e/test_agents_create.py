@@ -210,9 +210,14 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
         modal.locator("#na-description").fill("u0007 422 probe")
         modal.locator("#na-llm-provider").select_option(provider_id)
         modal.locator("#na-model").select_option("fake-model")
+        # Temperature lives on the "Advanced" tab of the form — switch to
+        # it and wait for the input before filling.
+        modal.get_by_test_id("agent-tab-advanced").click()
+        temperature_input = modal.locator("#na-temperature")
+        temperature_input.wait_for(state="visible", timeout=5_000)
         # The deliberate bad value — violates Agent.temperature's
         # documented ``ge=0.0`` constraint.
-        modal.locator("#na-temperature").fill("-0.5")
+        temperature_input.fill("-0.5")
 
         modal.get_by_role("button", name="Create").click()
 

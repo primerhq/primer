@@ -196,17 +196,17 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0013 — Opening any session detail page renders the documented
-    T0399 / T0555 / T0611 stale-cache notice block ("workspace path
-    is known to drift after signals") under the live status panel.
+    """U0013 — Opening a session detail page renders cleanly and does
+    NOT surface the obsolete dev-only "Reads are authoritative" stale-
+    cache banner (T0399 / T0555 / T0611).
 
-    Priority 3 — anomaly surface. The notice is unconditional per
-    design §3.7 (session-detail.jsx:413-422): every session detail
-    view must surface it so operators interpret nested workspace
-    paths as informational, not authoritative. This test seeds the
-    minimal precondition (agent + workspace + CREATED session)
-    through the API and asserts the banner copy + the three documented
-    references are present.
+    That info banner was intentionally removed in commit f4e56585
+    ("drop stale spec annotations") because it referenced internal
+    ticket ids end users have no context for; the removal is also
+    pinned by tests/ui/test_stale_spec_annotations_removed.py. This
+    e2e asserts the live rendered page matches that decision: the
+    detail page loads (title carries the session id, the References
+    panel renders) and none of the removed banner copy appears.
 
     Setup ladder mirrors test_t0042 (test_sessions_top_level.py:42-):
     LLM provider → agent → workspace provider → workspace template →
@@ -283,24 +283,23 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
             state="visible", timeout=10_000,
         )
 
-        # The stale-cache banner copy ("Reads are authoritative") is the
-        # documented title; the detail line carries the three test
-        # references. Asserting both ensures we don't accidentally match
-        # an unrelated banner.
-        page.get_by_text("Reads are authoritative", exact=False).first.wait_for(
-            state="visible", timeout=5_000,
-        )
-        page.get_by_text("T0399", exact=False).first.wait_for(
-            state="visible", timeout=5_000,
+        # The References panel is part of the detail page proper — wait
+        # for it so we know the page body (not just the title) rendered
+        # before asserting the banner's absence.
+        page.get_by_text("References", exact=False).first.wait_for(
+            state="visible", timeout=10_000,
         )
 
-        # Defence: all three references appear together in the same
-        # detail line — pins the exact contract from §3.7. Use one
-        # locator to keep the assertion contained.
-        notice = page.get_by_text(
-            "T0399 / T0555 / T0611", exact=False,
-        ).first
-        notice.wait_for(state="visible", timeout=5_000)
+        # The removed dev-only banner must NOT appear. Its title copy and
+        # the three internal ticket ids it carried are all gone.
+        assert page.get_by_text("Reads are authoritative", exact=False).count() == 0, (
+            "obsolete 'Reads are authoritative' stale-cache banner is back"
+        )
+        for ticket in ("T0399", "T0555", "T0611"):
+            assert page.get_by_text(ticket, exact=False).count() == 0, (
+                f"removed dev-only ticket reference {ticket} is back on the "
+                "session detail page"
+            )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             for url in (
