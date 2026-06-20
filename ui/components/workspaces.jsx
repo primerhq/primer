@@ -1462,7 +1462,7 @@ function WS_CommitDiff({ wid, sha }) {
 }
 
 // ============================================================================
-// Channels tab — workspace-owned reply binding
+// Channels tab - workspace-owned reply binding
 // ============================================================================
 
 function WS_ChannelsTab({ wid, ws, pushToast }) {
