@@ -78,9 +78,12 @@ def test_workspace_template_create_edit_delete_journey(
         modal = page.locator(".modal").first
         expect(modal).to_be_visible(timeout=5_000)
 
-        # Provider picker shows the seeded provider and is auto-selected.
+        # Provider picker offers the seeded provider; select it
+        # explicitly (the form auto-selects the first provider, which is
+        # not necessarily ours when other rows exist on a shared server).
         provider_select = modal.locator("[data-testid='ws-template-provider']")
         expect(provider_select).to_be_visible(timeout=10_000)
+        provider_select.select_option(provider_id)
         expect(provider_select).to_have_value(provider_id)
 
         # Fill id + description (description has a data-testid).
