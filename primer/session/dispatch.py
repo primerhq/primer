@@ -364,6 +364,7 @@ async def run_one_session_turn(
                 already_sent=set(),
                 workspace_name=ws_name,
                 session_label=sess_label,
+                session=session,
             )
         else:
             await _dispatch_to_channels(

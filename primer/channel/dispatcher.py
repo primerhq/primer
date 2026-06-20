@@ -23,9 +23,12 @@ class ChannelDispatcher:
         self._registry = registry
 
     async def dispatch_prompt(
-        self, *, envelope: PromptEnvelope,
+        self, *, envelope: PromptEnvelope, session=None,
     ) -> list[dict]:
-        adapters = await self._registry.for_workspace(envelope.workspace_id)
+        if session is not None:
+            adapters = await self._registry.for_session(session)
+        else:
+            adapters = await self._registry.for_workspace(envelope.workspace_id)
         if not adapters:
             return []
 

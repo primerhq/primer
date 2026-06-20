@@ -105,32 +105,54 @@ class ChannelRegistry:
             self._adapters[channel_id] = adapter
             return adapter
 
+    async def for_session(self, session) -> list[ChannelAdapter]:
+        """Return the channel adapter(s) for ``session``'s reply binding.
+
+        Resolves through :func:`resolve_reply_binding`, so the
+        session-ephemeral binding (``session.metadata``) takes precedence
+        over the workspace-standing :attr:`Workspace.reply_binding`. Returns
+        an empty list when no binding resolves or the adapter cannot be
+        built (failure is isolated, mirroring :meth:`for_workspace`).
+        """
+        if self._storage_provider is None:
+            return []
+        from primer.channel.reply_binding import resolve_reply_binding
+
+        binding = await resolve_reply_binding(
+            session, storage_provider=self._storage_provider,
+        )
+        if binding is None:
+            return []
+        try:
+            adapter = await self.get_adapter(binding.channel_id)
+        except Exception as exc:
+            logger.warning(
+                "ChannelRegistry: build_adapter failed for %s: %s",
+                binding.channel_id, exc,
+            )
+            return []
+        return [adapter]
+
     async def for_workspace(
         self, workspace_id: str,
     ) -> list[ChannelAdapter]:
         """Return the channel adapter for this workspace, if any.
 
-        Loads the Workspace row and follows its ``reply_binding``
-        link (at most one).  Returns an empty list when the workspace
-        has no reply binding or it cannot be resolved.
+        Thin shim over :meth:`for_session`: builds a lightweight stand-in
+        carrying ``workspace_id`` and empty ``metadata`` so the
+        workspace-standing reply-binding path is exercised through the one
+        resolution path. Returns an empty list when the workspace has no
+        reply binding or it cannot be resolved.
         """
         if self._storage_provider is None:
             return []
-        from primer.model.workspace import Workspace
 
-        ws = await self._storage_provider.get_storage(Workspace).get(workspace_id)
-        if ws is None or ws.reply_binding is None:
-            return []
-        channel_id = ws.reply_binding.channel_id
-        try:
-            adapter = await self.get_adapter(channel_id)
-        except Exception as exc:
-            logger.warning(
-                "ChannelRegistry: build_adapter failed for %s: %s",
-                channel_id, exc,
-            )
-            return []
-        return [adapter]
+        class _WorkspaceStandIn:
+            def __init__(self, workspace_id: str) -> None:
+                self.workspace_id = workspace_id
+                self.metadata: dict = {}
+
+        return await self.for_session(_WorkspaceStandIn(workspace_id))
 
     async def warm_chat_channels(self) -> int:
         """Eagerly start the adapter for every Channel whose

@@ -17,7 +17,7 @@ class _FakeDispatcher:
     def __init__(self) -> None:
         self.calls: list[PromptEnvelope] = []
 
-    async def dispatch_prompt(self, *, envelope: PromptEnvelope) -> list:
+    async def dispatch_prompt(self, *, envelope: PromptEnvelope, session=None) -> list:
         self.calls.append(envelope)
         return [{"ok": True}]
 
@@ -111,7 +111,7 @@ async def test_dispatch_multi_event_sends_one_message_per_pending_node():
 
     class _Disp:
         def __init__(self): self.calls = []
-        async def dispatch_prompt(self, *, envelope):
+        async def dispatch_prompt(self, *, envelope, session=None):
             self.calls.append(envelope); return [{"ok": True}]
 
     d = _Disp()
@@ -139,7 +139,7 @@ async def test_dispatch_multi_event_skips_already_sent():
 
     class _Disp:
         def __init__(self): self.calls = []
-        async def dispatch_prompt(self, *, envelope):
+        async def dispatch_prompt(self, *, envelope, session=None):
             self.calls.append(envelope); return [{"ok": True}]
 
     d = _Disp()

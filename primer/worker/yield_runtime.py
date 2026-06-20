@@ -652,7 +652,7 @@ async def _dispatch_to_channels(
             files=metadata.get("files"),
         )
     try:
-        await dispatcher.dispatch_prompt(envelope=envelope)
+        await dispatcher.dispatch_prompt(envelope=envelope, session=session)
     except Exception:
         logging.getLogger(__name__).exception(
             "_dispatch_to_channels failed for session %s", session.id,
@@ -693,6 +693,7 @@ async def _dispatch_to_channels_multi(
     already_sent: set[str],
     workspace_name: str | None = None,
     session_label: str | None = None,
+    session=None,
 ) -> set[str]:
     """Send one channel prompt per pending human-interaction node.
 
@@ -723,7 +724,7 @@ async def _dispatch_to_channels_multi(
         if envelope is None:
             continue
         try:
-            await dispatcher.dispatch_prompt(envelope=envelope)
+            await dispatcher.dispatch_prompt(envelope=envelope, session=session)
             sent.add(tcid)
         except Exception:
             logging.getLogger(__name__).exception(

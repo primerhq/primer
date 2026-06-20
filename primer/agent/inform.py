@@ -24,11 +24,13 @@ logger = logging.getLogger(__name__)
 class SessionInformSink:
     def __init__(self, *, dispatcher: Any | None,
                  workspace_id: str, session_id: str,
+                 session: Any | None = None,
                  workspace_registry: Any | None = None,
                  artifact_registry: Any | None = None) -> None:
         self._dispatcher = dispatcher
         self._workspace_id = workspace_id
         self._session_id = session_id
+        self._session = session
         self._workspace_registry = workspace_registry
         self._artifacts = artifact_registry
 
@@ -63,7 +65,12 @@ class SessionInformSink:
             media=media,
         )
         try:
-            results = await self._dispatcher.dispatch_prompt(envelope=envelope)
+            if self._session is not None:
+                results = await self._dispatcher.dispatch_prompt(
+                    envelope=envelope, session=self._session,
+                )
+            else:
+                results = await self._dispatcher.dispatch_prompt(envelope=envelope)
         except Exception:
             logger.exception("SessionInformSink: dispatch failed")
             return 0
