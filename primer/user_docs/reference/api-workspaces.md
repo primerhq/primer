@@ -417,7 +417,7 @@ Response `201`:
     "mapped_host_port": null,
     "k8s_object_name": null
   },
-  "channel_association": null
+  "reply_binding": null
 }
 ```
 
