@@ -57,6 +57,7 @@ def test_user_collection_document_list_views_render_paths(
     collections.
     """
     provider_id = f"emb-list-{unique_suffix}"
+    ssp_id = f"ssp-list-{unique_suffix}"
     collection_id = f"col-list-{unique_suffix}"
     doc_path = "guides/getting-started.md"
     doc_leaf = doc_path.split("/")[-1]
@@ -74,6 +75,16 @@ def test_user_collection_document_list_views_render_paths(
         })
         assert r.status_code == 201, f"seed embedding provider failed: {r.text}"
 
+        # Collections now require a SemanticSearchProvider bound at create
+        # (Collection.search_provider_id). A self-contained local lance
+        # index keeps this seed offline.
+        r = c.post("/v1/ssp", json={
+            "id": ssp_id,
+            "provider": "lance",
+            "config": {"path": f"/tmp/lance-list-{unique_suffix}"},
+        })
+        assert r.status_code == 201, f"seed ssp failed: {r.text}"
+
         r = c.post("/v1/collections", json={
             "id": collection_id,
             "description": "doc list-view regression test",
@@ -81,6 +92,7 @@ def test_user_collection_document_list_views_render_paths(
                 "provider_id": provider_id,
                 "model": "sentence-transformers/all-MiniLM-L6-v2",
             },
+            "search_provider_id": ssp_id,
         })
         assert r.status_code == 201, f"seed collection failed: {r.text}"
 
@@ -132,5 +144,6 @@ def test_user_collection_document_list_views_render_paths(
     finally:
         _cleanup(base_url, [
             f"/v1/collections/{collection_id}",
+            f"/v1/ssp/{ssp_id}",
             f"/v1/embedding_providers/{provider_id}",
         ])

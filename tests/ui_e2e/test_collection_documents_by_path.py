@@ -51,6 +51,7 @@ def test_collection_document_path_browser_full_journey(
     journey, asserting the success toasts and the storage round-trips.
     """
     provider_id = f"emb-doc-{unique_suffix}"
+    ssp_id = f"ssp-doc-{unique_suffix}"
     collection_id = f"col-doc-{unique_suffix}"
     first_path = "concepts/slo.md"
     moved_path = "concepts/slo-renamed.md"
@@ -67,6 +68,16 @@ def test_collection_document_path_browser_full_journey(
         })
         assert r.status_code == 201, f"seed embedding provider failed: {r.text}"
 
+        # Collections now require a SemanticSearchProvider bound at create
+        # (Collection.search_provider_id). A self-contained local lance
+        # index keeps this seed offline.
+        r = c.post("/v1/ssp", json={
+            "id": ssp_id,
+            "provider": "lance",
+            "config": {"path": f"/tmp/lance-doc-{unique_suffix}"},
+        })
+        assert r.status_code == 201, f"seed ssp failed: {r.text}"
+
         r = c.post("/v1/collections", json={
             "id": collection_id,
             "description": "task15 doc browser test",
@@ -74,6 +85,7 @@ def test_collection_document_path_browser_full_journey(
                 "provider_id": provider_id,
                 "model": "sentence-transformers/all-MiniLM-L6-v2",
             },
+            "search_provider_id": ssp_id,
         })
         assert r.status_code == 201, f"seed collection failed: {r.text}"
 
@@ -118,9 +130,18 @@ def test_collection_document_path_browser_full_journey(
         )
 
         # ---- move / rename ----
+        # "Move / rename" opens a nested modal whose primary action is
+        # labelled exactly "Move". Scope to that nested modal (the one
+        # that owns the new-path input) and match the button exactly so
+        # we don't accidentally re-target the "Move / rename" trigger
+        # behind the overlay.
         modal.get_by_role("button", name="Move / rename").first.click()
-        modal.get_by_placeholder("new/path.md").fill(moved_path)
-        modal.get_by_role("button", name="Move").first.click()
+        move_modal = page.locator(
+            ".modal:has(input[placeholder='new/path.md'])"
+        ).first
+        move_modal.wait_for(state="visible", timeout=5_000)
+        move_modal.get_by_placeholder("new/path.md").fill(moved_path)
+        move_modal.get_by_role("button", name="Move", exact=True).click()
         page.get_by_text("Document moved", exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )
@@ -155,5 +176,6 @@ def test_collection_document_path_browser_full_journey(
     finally:
         _cleanup(base_url, [
             f"/v1/collections/{collection_id}",
+            f"/v1/ssp/{ssp_id}",
             f"/v1/embedding_providers/{provider_id}",
         ])

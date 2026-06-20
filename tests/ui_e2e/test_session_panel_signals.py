@@ -270,6 +270,7 @@ def test_u0027_empty_collection_search_renders_no_matches(
     a stuck loading spinner.
     """
     embed_pid = f"embed-u27-{unique_suffix}"
+    ssp_id = f"ssp-u27-{unique_suffix}"
     coll_id = f"coll-u27-{unique_suffix}"
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/embedding_providers", json={
@@ -280,14 +281,25 @@ def test_u0027_empty_collection_search_renders_no_matches(
             "limits": {"max_concurrency": 1},
         })
         assert r.status_code == 201, f"seed embed failed: {r.text}"
+        # Collections now require a SemanticSearchProvider bound at create
+        # (Collection.search_provider_id). A self-contained, empty local
+        # lance index keeps the seed offline and guarantees zero hits.
+        r = c.post("/v1/ssp", json={
+            "id": ssp_id,
+            "provider": "lance",
+            "config": {"path": f"/tmp/lance-u27-{unique_suffix}"},
+        })
+        assert r.status_code == 201, f"seed ssp failed: {r.text}"
         r = c.post("/v1/collections", json={
             "id": coll_id,
             "description": "ui-e2e empty",
             "embedder": {"provider_id": embed_pid, "model": "fake-embed"},
+            "search_provider_id": ssp_id,
         })
         assert r.status_code == 201, f"seed collection failed: {r.text}"
     cleanup_urls = [
         f"/v1/collections/{coll_id}",
+        f"/v1/ssp/{ssp_id}",
         f"/v1/embedding_providers/{embed_pid}",
     ]
     try:
