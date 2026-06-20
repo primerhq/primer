@@ -11,6 +11,7 @@ Covers:
 
 from __future__ import annotations
 
+import re
 import time
 
 import httpx
@@ -144,13 +145,19 @@ def test_u0029_graph_save_disabled_until_node_added(
             "GraphEditor diff detection"
         )
 
-        # Add a node — click "Add node" then "Terminal" in the
-        # dropdown. Terminal is the simplest add (no agent picker).
+        # Add a node — click "Add node" then "Tool call" in the dropdown.
+        # Tool call needs no agent picker and, added unconnected, yields
+        # only a SOFT "no incoming edges" warning (not a hard topology
+        # violation), so the diff dirties AND Save un-gates. (A second
+        # End node would instead trip the hard "End not reachable from
+        # Begin" rule, which legitimately keeps Save disabled.) Scope to
+        # the dropdown item so we don't click a node drawn on the canvas.
         page.get_by_role(
             "button", name="Add node", exact=True,
         ).first.click()
-        # Dropdown should appear; click "Terminal".
-        page.get_by_text("Terminal", exact=True).first.click()
+        tool_item = page.locator(".dd-item", has_text="Tool call").first
+        tool_item.wait_for(state="visible", timeout=5_000)
+        tool_item.click()
 
         # Save must now be enabled (diffCount > 0). Allow a brief
         # window for React to re-render.
@@ -163,7 +170,7 @@ def test_u0029_graph_save_disabled_until_node_added(
             page.wait_for_timeout(100)
         assert enabled, (
             "Save button did not become enabled after Add node → "
-            "Terminal; diffCount did not register the structural "
+            "Tool call; diffCount did not register the structural "
             "change"
         )
 
@@ -302,31 +309,23 @@ def test_u0041_create_agent_then_bind_to_session_flow(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0041 — Seed a workspace via API (the session-create modal
-    needs one to bind against). Open /agents, create a new agent
-    via the modal (lands on /agents/{new-id}). Click "Test agent"
-    in the page header — opens NewSessionModal with the new agent
-    pre-bound. Assert:
+    """U0041 — Open /agents, create a new agent via the modal (lands
+    on /agents/{new-id}), then start an interactive session bound to it
+    via the agent-detail "Chat" action. Assert:
 
-    * the NewSessionModal renders,
-    * the agent selector dropdown contains the new agent's id,
-    * submitting creates a session bound to the new agent + seeded
-      workspace.
+    * the create-modal flow navigates to the new agent's detail page,
+    * the agent-detail "Chat" action creates a chat and navigates to it,
+    * the created chat is bound to the freshly-created agent (verified
+      via the API).
 
-    Priority 1 — cross-page mutation feedback. The new agent
-    propagates from the modal's local optimistic state through the
-    list refetch invalidation to NewSessionModal's
-    useResource("new-session:agents") dropdown — without a manual
-    page reload.
+    Priority 1 — cross-page mutation feedback. The new agent created in
+    the modal is immediately usable for a bound conversation, without a
+    manual page reload.
     """
     provider_id = f"llm-u0041-{unique_suffix}"
     agent_id = f"ag-u0041-{unique_suffix}"
-    wp_id = f"wp-u0041-{unique_suffix}"
-    tpl_id = f"wt-u0041-{unique_suffix}"
-    workspace_id: str | None = None
-    created_session_id: str | None = None
+    created_chat_id: str | None = None
     _seed_llm_provider(base_url, provider_id)
-    workspace_id = _seed_workspace(base_url, wp_id, tpl_id, tmp_path)
 
     try:
         # 1. Open Agents list and create a new agent via the modal.
@@ -339,106 +338,46 @@ def test_u0041_create_agent_then_bind_to_session_flow(
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
 
-        # Fill the form. The agent-create modal has labelled inputs
-        # for id, description, provider, model, system prompt (per
-        # U0006's existing pattern). Fill just id (the rest auto-
-        # seeds from the only available LLM provider).
+        # Fill the form. Create stays disabled until a provider AND a
+        # model are selected, so fill id + provider + model.
         modal.locator("input#na-id").fill(agent_id)
-        # Pick the provider from the dropdown (only one option).
         modal.locator("select#na-llm-provider").select_option(
             value=provider_id,
         )
+        modal.locator("select#na-model").select_option("fake-model")
 
         # Submit.
         modal.get_by_role("button", name="Create").first.click()
 
         # Wait for nav to the agent detail page.
         page.wait_for_url(
-            lambda url: f"#/agents/{agent_id}" in url,
+            re.compile(rf"#/agents/{re.escape(agent_id)}"),
             timeout=10_000,
         )
         page.locator("h1.page-title").get_by_text(
             agent_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
 
-        # 2. Click "Test agent" in the page header — opens
-        # NewSessionModal with the new agent pre-bound.
-        page.get_by_role(
-            "button", name="Test agent",
-        ).first.click()
+        # 2. Click "Chat" in the page header — POSTs /chats {agent_id}
+        # and navigates to the chat detail route.
+        page.get_by_role("button", name="Chat", exact=True).first.click()
+        page.wait_for_url(re.compile(r"#/chats/.+"), timeout=15_000)
 
-        session_modal = page.locator(".modal").first
-        session_modal.wait_for(state="visible", timeout=5_000)
-
-        # 3. NewSessionModal has TWO selects (per app.jsx:552, 562):
-        # first is the Workspace dropdown, second is the Agent/Graph
-        # dropdown (which one renders depends on the "agent"/"graph"
-        # chip — "agent" is the default).
-        workspace_select = session_modal.locator("select").nth(0)
-        workspace_select.wait_for(state="visible", timeout=5_000)
-        ws_option_values = workspace_select.evaluate(
-            "(el) => Array.from(el.options).map((o) => o.value)"
-        )
-        assert workspace_id in ws_option_values, (
-            f"workspace {workspace_id!r} not in NewSessionModal "
-            f"workspace selector: {ws_option_values!r}"
-        )
-
-        agent_select = session_modal.locator("select").nth(1)
-        agent_select.wait_for(state="visible", timeout=5_000)
-        option_values = agent_select.evaluate(
-            "(el) => Array.from(el.options).map((o) => o.value)"
-        )
-        assert agent_id in option_values, (
-            f"new agent id {agent_id!r} not in NewSessionModal "
-            f"agent selector options: {option_values!r}"
-        )
-
-        # Pin the selected values and submit.
-        agent_select.select_option(value=agent_id)
-        workspace_select.select_option(value=workspace_id)
-
-        # Find the Create button inside this modal and click it.
-        session_modal.get_by_role(
-            "button", name="Create", exact=True,
-        ).first.click()
-
-        # Wait for the success toast.
-        page.get_by_text(
-            "Session created", exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
-
-        # Defence: confirm the session exists in storage and is
-        # bound to the new agent.
+        # 3. Confirm via the API that the chat is bound to the new agent.
+        created_chat_id = page.url.split("#/chats/")[-1].split("?")[0]
+        assert created_chat_id, f"could not parse chat id from {page.url!r}"
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
-            r = c.post("/v1/sessions/find", json={
-                "predicate": {
-                    "kind": "predicate",
-                    "op": "=",
-                    "left": {"kind": "field", "name": "binding.agent_id"},
-                    "right": {"kind": "value", "value": agent_id},
-                },
-                "page": {"kind": "offset", "offset": 0, "length": 5},
-            })
+            r = c.get(f"/v1/chats/{created_chat_id}")
             assert r.status_code == 200, r.text
-            items = r.json().get("items", [])
-            assert len(items) >= 1, (
-                f"no session in storage bound to new agent "
-                f"{agent_id!r}: {items!r}"
-            )
-            created_session_id = items[0]["id"]
-            assert items[0]["binding"]["agent_id"] == agent_id, (
-                f"session binding agent_id mismatch: {items[0]!r}"
+            assert r.json().get("agent_id") == agent_id, (
+                f"chat {created_chat_id!r} not bound to new agent "
+                f"{agent_id!r}: {r.text}"
             )
     finally:
         cleanup = []
-        if created_session_id:
-            cleanup.append(f"/v1/sessions/{created_session_id}")
-        if workspace_id:
-            cleanup.append(f"/v1/workspaces/{workspace_id}")
+        if created_chat_id:
+            cleanup.append(f"/v1/chats/{created_chat_id}")
         cleanup.extend([
-            f"/v1/workspace_templates/{tpl_id}",
-            f"/v1/workspace_providers/{wp_id}",
             f"/v1/agents/{agent_id}",
             f"/v1/llm_providers/{provider_id}",
         ])
