@@ -53,6 +53,7 @@ function App() {
     if (root === "ssp") return params.id ? "ssp-detail" : "semantic-search";
     if (root === "chats") return params.id ? "chat-detail" : "chats";
     if (root === "channels") {
+      if (path === "/channels/rules") return "channel-rules";
       if (path.startsWith("/channels/providers/") && params.id) return "channel-provider-detail";
       if (path.startsWith("/channels/providers")) return "channel-providers";
       if (path.startsWith("/channels/channels")) return "channels";
@@ -339,6 +340,7 @@ function App() {
       "internal-collections": "/subsystems/internal-collections",
       approvals: "/approvals",
       "channel-providers": "/channels/providers",
+      "channel-rules": "/channels/rules",
       channels: "/channels/channels",
       "channel-provider-detail": (e) => `/channels/providers/${e}`,
       chats: "/chats",
@@ -473,6 +475,17 @@ function App() {
       </>
     );
     pageBody = <ChannelProvidersPage onOpen={(id) => navigate("channel-provider-detail", id)} pushToast={pushToast} />;
+  } else if (page === "channel-rules") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb"><a onClick={() => navigate("dashboard")}>Channels</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Rules</span></div>
+          <h1 className="page-title">Channel rules</h1>
+          <div className="page-sub">Map channel events to platform actions</div>
+        </div>
+      </>
+    );
+    pageBody = <ChannelRulesPage pushToast={pushToast} />;
   } else if (page === "channel-provider-detail" && currentChannelProviderId) {
     pageHeader = (
       <>
