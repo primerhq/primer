@@ -21,7 +21,7 @@ class TriggerKind(str, Enum):
     DELAYED = "delayed"
     SCHEDULED = "scheduled"
     WEBHOOK = "webhook"
-    # CHANNEL = "channel"   # future
+    CHANNEL = "channel"
 
 
 class DelayedTriggerConfig(BaseModel):
@@ -61,8 +61,17 @@ class WebhookTriggerConfig(BaseModel):
     hmac_secret: SecretStr | None = None
 
 
+class ChannelTriggerConfig(BaseModel):
+    kind: Literal["channel"] = "channel"
+    provider_id: str
+    channel_id: str | None = None
+
+
 TriggerConfig = Annotated[
-    DelayedTriggerConfig | ScheduledTriggerConfig | WebhookTriggerConfig,
+    DelayedTriggerConfig
+    | ScheduledTriggerConfig
+    | WebhookTriggerConfig
+    | ChannelTriggerConfig,
     Field(discriminator="kind"),
 ]
 
@@ -151,6 +160,7 @@ class Subscription(Identifiable):
 
 __all__ = [
     "AgentFreshSubConfig",
+    "ChannelTriggerConfig",
     "ChatMessageSubConfig",
     "DelayedTriggerConfig",
     "GraphFreshSubConfig",
