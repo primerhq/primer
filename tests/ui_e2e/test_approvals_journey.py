@@ -210,11 +210,12 @@ async def _inject_approval_park_async(
             updated_at = now()
         WHERE id = $1
     """
-    # UI bringup uses the docker-compose `primer` DB; the API e2e
-    # bringup uses `primer_e2e`. Honour the env override if present so
-    # both contexts work.
+    # The ui_e2e server is brought up against the `primer_e2e` DB (see
+    # tests/.e2e/config.yaml). Default to it; honour the env override so
+    # an alternate bringup (e.g. the docker-compose `primer` DB) still
+    # works.
     import os
-    db = os.environ.get("PRIMER_UI_E2E_DB", "primer")
+    db = os.environ.get("PRIMER_UI_E2E_DB", "primer_e2e")
     conn = await asyncpg.connect(
         host="localhost", port=5432,
         user="primer", password="primer", database=db,
