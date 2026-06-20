@@ -1103,10 +1103,17 @@ function App() {
             <div style={{ flex: 1, minWidth: 0 }}>
               <div className="title">{t.title}</div>
               {t.detail && <div className="detail">{t.detail}</div>}
-              {t.reqId && (
+              {(t.requestId || t.reqId) && (
                 <div className="req-id">
-                  request-id <span style={{ color: "var(--text)" }}>{t.reqId}</span>{" · "}
-                  <a>copy</a>
+                  request-id <span style={{ color: "var(--text)" }}>{t.requestId || t.reqId}</span>{" · "}
+                  <a
+                    onClick={() => {
+                      const rid = t.requestId || t.reqId;
+                      if (rid && navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(rid).catch(() => {});
+                      }
+                    }}
+                  >copy</a>
                 </div>
               )}
             </div>

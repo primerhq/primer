@@ -181,13 +181,14 @@ def test_u0032_toast_renders_request_id_on_5xx(
         new_btn.wait_for(state="visible", timeout=10_000)
         new_btn.click()
 
-        # Modal opens. Fill the minimum-viable fields: id + provider.
+        # Modal opens. Fill the minimum-viable fields. Create stays
+        # disabled until a provider AND a model are selected, so all
+        # three are required to actually fire the mocked POST.
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
-        # Agent id input — first textbox in the modal.
-        textboxes = modal.get_by_role("textbox").all()
-        assert len(textboxes) >= 1, "no textboxes in NewAgentModal"
-        textboxes[0].fill(f"ag-32-{unique_suffix}")
+        modal.locator("#na-id").fill(f"ag-32-{unique_suffix}")
+        modal.locator("#na-llm-provider").select_option(pid)
+        modal.locator("#na-model").select_option("fake-model")
 
         # Click "Create" — mocked response will return our 500.
         create_btn = page.get_by_role(
@@ -421,16 +422,19 @@ def test_u0083_session_detail_last_error_panel_renders(
 def test_u0084_session_detail_turns_panel_header_toggles(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0084 — Session detail Turns-timeline panel renders with
-    ``turnsOpen=true`` by default (session-detail.jsx:37). Click
-    the panel header → ``setTurnsOpen(!turnsOpen)`` flips →
-    panel body content (the empty-state copy or turn rows) hides.
-    Click again → body reappears.
+    """U0084 — Session detail turn-log surface renders + responds to
+    selection.
 
-    Reframed from the original U0084 ("TurnRow collapse") because
-    the placeholder-LLM session may not populate any turns row;
-    the OUTER panel collapse is the testable contract on every
-    session regardless of dispatch outcome.
+    The turn-log view moved from an inline collapsible "Turns timeline"
+    panel to a dedicated "Turn log" tab on the session detail page
+    (session-detail.jsx ``tabs`` + ``TurnLogTab``). The tab surface is
+    rendered through ``MobileTabs`` at the mobile breakpoint, so this
+    test drives it at a mobile viewport: select the "Turn log" tab → the
+    empty-state copy ("No turn-log entries yet") for a CREATED session
+    becomes visible; switch away to "Overview" → it hides; switch back →
+    it reappears. This is the current testable contract on every session
+    regardless of dispatch outcome (the placeholder-LLM session never
+    populates a turn row).
     """
     pid = f"llm-84-{unique_suffix}"
     aid = f"ag-84-{unique_suffix}"
@@ -462,66 +466,34 @@ def test_u0084_session_detail_turns_panel_header_toggles(
                 0, f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
             )
 
+        # Drive the tabbed session-detail at the mobile breakpoint so the
+        # MobileTabs surface (which hosts the Turn log tab) renders.
+        page.set_viewport_size({"width": 375, "height": 812})
         page.goto(
             f"{console_url}#/sessions/{sid}",
             wait_until="domcontentloaded",
         )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
+        # At the mobile breakpoint the sidebar nav is collapsed behind a
+        # drawer; wait directly on the tab strip the detail page renders.
+        turn_log_tab = page.get_by_role("tab", name="Turn log").first
+        turn_log_tab.wait_for(state="visible", timeout=20_000)
 
-        # The panel body is the next sibling inside the parent .panel.
-        # When turnsOpen=true, the body is in the DOM and visible.
-        # session-detail.jsx renders "No turns yet — session is
-        # No turns yet." for a CREATED session with empty
-        # turns (line 249). Use that copy as the visible-when-open
-        # signal.
-        no_turns_copy = page.get_by_text(
-            "No turns yet", exact=False,
-        ).first
-        # CREATED + no turns + open panel → copy is visible.
-        no_turns_copy.wait_for(state="visible", timeout=10_000)
+        empty_copy = page.get_by_text("No turn-log entries yet", exact=False).first
 
-        # Click the panel header via direct DOM dispatch to bypass any
-        # Playwright synthetic-event weirdness on .panel-h with nested
-        # icon/span children. session-detail.jsx:234 wires onClick on
-        # the .panel-h div itself, so dispatching click on that
-        # element triggers React's setTurnsOpen.
-        def _click_panel(label: str) -> bool:
-            return page.evaluate(
-                """(label) => {
-                    const els = document.querySelectorAll('.panel-h');
-                    for (const el of els) {
-                        if (el.textContent.includes(label)) {
-                            el.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }""",
-                label,
-            )
+        # Select the Turn log tab → empty-state copy for a CREATED
+        # session becomes visible.
+        turn_log_tab.click()
+        expect(empty_copy).to_be_visible(timeout=10_000)
 
-        assert _click_panel("Turns timeline"), (
-            "could not locate .panel-h for Turns timeline"
-        )
+        # Switch to the Overview tab → the turn-log content is no longer
+        # mounted (tab panels swap their content).
+        page.get_by_role("tab", name="Overview").first.click()
+        expect(empty_copy).to_have_count(0, timeout=5_000)
 
-        # Body content gone within ~3s (state flushes).
-        deadline = time.monotonic() + 3.0
-        collapsed = False
-        while time.monotonic() < deadline:
-            if page.get_by_text(
-                "No turns yet", exact=False,
-            ).count() == 0:
-                collapsed = True
-                break
-            page.wait_for_timeout(200)
-        assert collapsed, "Turns-timeline panel didn't collapse on header click"
-
-        # Click again → re-opens.
-        assert _click_panel("Turns timeline")
+        # Switch back to Turn log → the empty-state copy reappears.
+        page.get_by_role("tab", name="Turn log").first.click()
         expect(
-            page.get_by_text("No turns yet", exact=False).first
-        ).to_be_visible(timeout=3_000)
+            page.get_by_text("No turn-log entries yet", exact=False).first
+        ).to_be_visible(timeout=10_000)
     finally:
         _cleanup(base_url, cleanup_urls)

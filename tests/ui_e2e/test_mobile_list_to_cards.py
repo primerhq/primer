@@ -4,6 +4,8 @@ a card navigates to the corresponding detail route."""
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 pytest.importorskip("playwright")
@@ -54,8 +56,19 @@ def test_mobile_workspaces_tap_card_opens_detail(
     page.set_viewport_size({"width": 375, "height": 812})
     page.goto(f"{console_url}#/workspaces")
     page.wait_for_load_state("domcontentloaded")
+    # The card list is populated by an async fetch; give it time to
+    # settle before counting so we don't read an empty pre-fetch DOM
+    # (which would otherwise mask a real navigation regression as a
+    # spurious skip).
+    page.wait_for_load_state("networkidle", timeout=10_000)
     cards = page.locator(".card-interactive")
-    if cards.count() == 0:
+    try:
+        cards.first.wait_for(state="visible", timeout=10_000)
+    except Exception:
         pytest.skip("no workspaces seeded in this environment")
     cards.first.click()
-    expect(page).to_have_url(lambda u: "/workspaces/" in u and not u.endswith("/workspaces"))
+    # Tapping a card navigates to the per-workspace detail route, i.e.
+    # the hash gains a "/workspaces/<id>" segment (a non-empty id after
+    # the trailing slash). ``to_have_url`` takes a string or regex, not
+    # a callable, so match the detail-route shape with a pattern.
+    expect(page).to_have_url(re.compile(r"#/workspaces/.+"))

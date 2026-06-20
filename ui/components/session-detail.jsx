@@ -1661,16 +1661,12 @@ function TurnLogTab({ sessionId, sessionStatus, binding }) {
     },
   );
 
-  if (log.loading && !log.data) {
-    return <div className="muted text-sm" style={{ padding: 16 }}>Loading turn log…</div>;
-  }
-  if (log.error) {
-    return <Banner kind="error" title="Could not load turn log" detail={log.error.message || log.error.title || ""} />;
-  }
   const items = log.data?.items || [];
 
   // Build the set of known node ids from the items so the picker is
-  // populated as soon as we have at least one event.
+  // populated as soon as we have at least one event. This hook MUST run
+  // on every render (before any early return) so hook order stays stable
+  // across the loading -> loaded transition (React error #310 otherwise).
   const nodeIds = React.useMemo(() => {
     if (!isGraph) return [];
     const set = new Set();
@@ -1688,6 +1684,13 @@ function TurnLogTab({ sessionId, sessionStatus, binding }) {
     }
     return Array.from(set).sort();
   }, [items, isGraph]);
+
+  if (log.loading && !log.data) {
+    return <div className="muted text-sm" style={{ padding: 16 }}>Loading turn log…</div>;
+  }
+  if (log.error) {
+    return <Banner kind="error" title="Could not load turn log" detail={log.error.message || log.error.title || ""} />;
+  }
 
   const scopePicker = isGraph ? (
     <div style={{ display: "flex", gap: 6, alignItems: "center", padding: "0 12px 8px" }}>
