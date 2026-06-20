@@ -21,8 +21,9 @@ from primer.model.workspace import (
 
 def test_reply_binding_model_defaults_and_roundtrip():
     assert ReplyBinding(channel_id="ch-1").anchor is None
+    assert ReplyBinding(channel_id="ch-1").quiet is False
     dumped = ReplyBinding(channel_id="ch-1", anchor="ts-9").model_dump()
-    assert dumped == {"channel_id": "ch-1", "anchor": "ts-9"}
+    assert dumped == {"channel_id": "ch-1", "anchor": "ts-9", "quiet": False}
     assert ReplyBinding.model_validate(dumped) == ReplyBinding(
         channel_id="ch-1", anchor="ts-9"
     )

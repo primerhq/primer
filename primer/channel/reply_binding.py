@@ -43,6 +43,14 @@ class ReplyBinding(BaseModel):
             "thread ts) the reply attaches to. None posts to the channel root."
         ),
     )
+    quiet: bool = Field(
+        default=False,
+        description=(
+            "Per-binding quiet mode: when True the lifecycle relay suppresses "
+            "the start ack and the final result for this session (gates still "
+            "forward). Per spec 8 this is per-binding overridable."
+        ),
+    )
 
 
 class _ExplicitReplyTarget(BaseModel):
@@ -54,6 +62,13 @@ class _ExplicitReplyTarget(BaseModel):
     anchor: str | None = Field(
         default=None,
         description="Optional thread/message anchor inside the channel.",
+    )
+    quiet: bool = Field(
+        default=False,
+        description=(
+            "Per-binding quiet mode: suppress the lifecycle relay (start ack "
+            "and final result) for this target."
+        ),
     )
 
 
