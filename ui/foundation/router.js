@@ -46,6 +46,7 @@
     { pattern: "/ssp",                             page: "SemanticSearchListPage" },
     { pattern: "/ssp/:id",                         page: "SemanticSearchDetailPage" },
     { pattern: "/approvals",                       page: "ApprovalsPage" },
+    { pattern: "/channels/rules",                  page: "ChannelRulesPage" },
     { pattern: "/channels/providers",              page: "ChannelProvidersPage" },
     { pattern: "/channels/providers/:id",          page: "ChannelProviderDetailPage" },
     { pattern: "/channels/channels",               page: "ChannelsListPage" },
