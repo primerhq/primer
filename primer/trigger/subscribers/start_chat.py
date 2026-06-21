@@ -82,9 +82,16 @@ class StartChatDispatcher:
         )
         await chats_storage.create(chat)
 
+        # Seed the chat with the subscription's rendered template when one is
+        # set; otherwise default to the firing message's own text rather than
+        # the JSON-dumped fire context (which render_payload returns for a null
+        # template) - the agent must answer the user's message, not a blob.
+        seed_text = rendered_payload if sub.payload_template else (
+            event.text or rendered_payload
+        )
         await append_user_message(
             chat=chat,
-            parts=[{"type": "text", "text": rendered_payload}],
+            parts=[{"type": "text", "text": seed_text}],
             storage_provider=deps.storage_provider,
             attribution={
                 "trigger_id": sub.trigger_id,
