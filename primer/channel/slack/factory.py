@@ -35,17 +35,23 @@ logger = logging.getLogger(__name__)
 _HANDLERS_INSTALLED: set[str] = set()
 
 
-async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> None:
-    """Normalize a fresh inbound Slack message event and route it through the
-    channel-event path (correlation-first, else fire channel triggers).
+async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> bool:
+    """Normalize a fresh inbound Slack message event and, when a channel-trigger
+    rule matches it, fire that rule.
+
+    Returns ``True`` iff a rule matched and was dispatched - in which case the
+    caller MUST skip the legacy chat-surface dispatch, so the message is not
+    delivered twice (once as a rule action, once as a default chat message).
+    Returns ``False`` for correlated replies and unmatched messages, leaving
+    the caller's chat dispatch to own delivery.
 
     The Slack ``event`` dict is already the raw provider payload, so the
     normalizer envelope is just ``{"type": "message", "payload": event}``. Best
-    effort: any failure is logged and swallowed so it never breaks the existing
-    chat-surface dispatch."""
+    effort: any failure is logged and swallowed (returning ``False``) so it
+    never breaks the chat-surface dispatch."""
     router = adapter._event_router()
     if router is None:
-        return
+        return False
     try:
         from primer.channel.slack.normalizer import SlackEventNormalizer
 
@@ -54,10 +60,16 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> N
             {"type": "message", "payload": event},
         )
         if normalized is None:
-            return
+            return False
+        if not await router.has_matching_rule(
+            event=normalized, channel=adapter._channel,
+        ):
+            return False
         await router.route_event(event=normalized, channel=adapter._channel)
+        return True
     except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
         logger.exception("slack: channel-event routing failed")
+        return False
 
 
 def _install_handlers(provider_id: str, app: Any) -> None:
@@ -364,14 +376,16 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         if getattr(adapter, "_sp", None) is None:
             return
         sender_name = event.get("user") or "user"
+        # Rule path first: if a channel-trigger rule matches, it owns this
+        # message - skip the chat dispatch so it is not delivered twice (once
+        # as the rule action, once as a default chat message).
+        if await _route_channel_event(adapter, provider_id, event):
+            return
         await adapter.handle_inbound_chat_message(
             thread_ts=thread_ts, message_ts=event.get("ts", ""),
             sender_name=sender_name, text=event.get("text", ""),
             files=event.get("files"),
         )
-        # Normalized-event path: a fresh inbound message may also fire channel
-        # triggers (correlation-first, else fire rules).
-        await _route_channel_event(adapter, provider_id, event)
 
 
 async def _slack_factory(

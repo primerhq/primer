@@ -92,6 +92,19 @@ class ChannelInboundRouter:
                 event_type=event_type, provider=provider,
             ).inc()
 
+    async def has_matching_rule(self, *, event, channel: Channel) -> bool:
+        """Read-only: does any enabled channel-trigger subscription's matcher
+        match this event?
+
+        Correlated replies never match (they belong to the chat/session
+        correlation path). Adapter inbound handlers call this to decide whether
+        the rule path OWNS this event (fire the rule, skip the default
+        chat-surface dispatch) or not (let the chat dispatch deliver it). This
+        keeps a single message from being delivered twice - once by the rule
+        path and once by the legacy chat dispatch.
+        """
+        return await self._count_matched_bindings(event=event, channel=channel)
+
     async def _count_matched_bindings(self, *, event, channel: Channel) -> bool:
         """Read-only pre-pass: does any channel-trigger subscription's
         ``event_matcher`` match this event? Pure counting helper for the
