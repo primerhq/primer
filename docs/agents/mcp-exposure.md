@@ -177,7 +177,7 @@ The agent should:
   the audit log. From the agent's side, treat such a tool as
   uncallable and do not retry.
 - **Yielding tools are also invisible.** The agent will not see
-  `trigger::subscribe_to_trigger`, `misc::ask_user`, etc. Those
+  `trigger::subscribe_to_trigger`, `system::ask_user`, etc. Those
   primitives are unavailable outside of primer's own agent runtime.
 - **The allowlist is a *set*, not a *prefix*.** There's no
   `system::*` wildcard. Each tool is listed by full scoped id. Tools

@@ -137,7 +137,7 @@ The transitions:
 Yielding tools as a class are not exposed over MCP. The specific
 yields in primer:
 
-- `misc::ask_user` - pause to ask a question of the operator.
+- `system::ask_user` - pause to ask a question of the operator.
 - `trigger::subscribe_to_trigger` - wait for a named trigger to
   fire.
 - `_approval` - internal yield used by tool approval (not a tool the
