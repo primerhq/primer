@@ -200,7 +200,7 @@ Sessions on a workspace are run with
 `workspaces::cancel_workspace_session`. See
 [sessions](sessions.md) for the full set.
 
-Note: `workspaces::watch_files` exists inside a session (it yields
+Note: `workspace_ext::watch_files` exists inside a session (it yields
 until a watched file changes) but is NOT exposable over MCP because
 it needs an active `AgentSession`. External agents wanting
 change-detection should poll `read_workspace_file` instead.
