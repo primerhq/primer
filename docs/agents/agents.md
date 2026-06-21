@@ -19,9 +19,9 @@ mcp_tools:
 
 An **Agent** is primer's atomic unit of "an LLM with a job". Every
 agent is a stored row describing: a system prompt (one or more
-TextPart fragments), the LLM provider/model that runs it, the
-toolset(s) it has access to, any response_format constraint, a
-max-turns cap, and optional start/end event hooks. Agents don't
+string segments), the LLM provider/model that runs it, the scoped
+tools it has access to, an optional sampling temperature, and a
+max-tool-turns cap. Agents don't
 run by themselves - they're invoked inside a context (a chat, a
 session, a graph node, a fresh-session subscription) and that
 context owns the LLM loop and history persistence.
@@ -57,22 +57,32 @@ routing between them (use a [graph](graphs.md) via
 
 An `Agent` row carries:
 - `id`, `description` (free text; embedded for search).
-- `system_prompt` - a list of `TextPart` fragments. Concatenated at
-  invoke time. Splitting into fragments lets the operator inject
-  context (e.g. a workspace-specific preamble) without rewriting
-  the base prompt.
-- `llm` - `{provider_id, model, config}`. Provider must exist as
+- `system_prompt` - a list of strings, joined by the runtime at
+  invoke time (adapters that support a multi-segment system prompt
+  emit it directly; others join the segments with blank lines).
+  Splitting into fragments lets the operator inject context (e.g. a
+  workspace-specific preamble) without rewriting the base prompt.
+- `model` - `{provider_id, model_name}`. The provider must exist as
   an `LLMProvider` row.
-- `tools` - list of toolset references. Each is `{toolset_id,
-  tool_names?}` - leaving `tool_names` empty includes every tool
-  from that toolset.
-- `response_format` - optional structured-output schema. When set,
-  the LLM is instructed to produce JSON matching the schema and
-  the parsed result lands in `NodeOutput.parsed` for graph
-  consumers.
-- `max_turns` - safety cap; agent stops with an error if exceeded.
+- `temperature` - optional sampling temperature; `null` defers to
+  the LLM adapter's default.
+- `tools` - a list of scoped tool id strings, each of the form
+  `<toolset_id>__<tool_name>` (e.g. `system__list_files`). The runtime
+  exposes exactly the listed tools - never a whole toolset - and an
+  empty list means no tools. (Workspace tools are not listed here;
+  they are composed onto the agent automatically when it attaches to
+  a workspace.)
+- `max_tool_turns` - cap on tool-call rounds within a single turn
+  before the turn is force-stopped (default 50; `null` means
+  unbounded).
+- `compaction_prompt` - optional list of strings guiding how the
+  runtime compacts history; empty falls back to the default.
 - `harness_id` - non-null for agents installed by a harness;
   blocks public CRUD.
+
+Structured output is configured on a **graph node** (its
+`output_schema`), not on the agent; the agent itself has no
+`response_format` field.
 
 The executor responsibilities, per turn:
 
@@ -114,8 +124,8 @@ What's worth knowing:
   agent's prompt or toolset list mid-session; next turn sees the
   edit. This is sometimes the feature (hot-config) and sometimes
   the bug (tool disappeared).
-- The agent's `response_format` becomes a `NodeOutput.parsed`
-  payload when the agent runs inside a graph; chat/session
+- Structured output is a graph-node feature: a graph node with an
+  `output_schema` populates `NodeOutput.parsed`; chat and session
   contexts return only the text.
 - Agents can call other agents. Either statically (a graph node
   invokes another agent) or dynamically via the system toolset
@@ -131,10 +141,12 @@ Agents are managed via standard CRUD plus the semantic search tool.
 - `system::get_agent` - fetch the row including `system_prompt`,
   `tools`, `response_format`, `llm`.
 - `system::create_agent` - body fields: optional `id`,
-  `description`, `system_prompt`, `llm`, `tools`, optional
-  `response_format`, `max_turns` (default 20). Omit `id` and the
-  server assigns `agent-<hex>` (e.g. `agent-3f9a1c8d`); supply one
-  to use it verbatim. Immutable after creation.
+  `description`, `system_prompt` (list of strings), `model`
+  (`{provider_id, model_name}`), `tools` (list of
+  `<toolset_id>__<tool_name>` strings), optional `temperature` and
+  `max_tool_turns` (default 50). Omit `id` and the server assigns
+  `agent-<hex>` (e.g. `agent-3f9a1c8d`); supply one to use it
+  verbatim. The id is immutable after creation.
 - `system::update_agent` - partial update. Editing a harness-
   managed agent (`harness_id` set) returns 409.
 - `system::delete_agent` - cascade-blocked if any chat references
@@ -162,17 +174,14 @@ in a fresh workspace.
     "id": "summarise-document",
     "description": "Summarises a document file into 200 words or fewer.",
     "system_prompt": [
-      {"text": "You receive a document file path as input. Read the file, produce a concise summary (max 200 words), and write it to summary.md in the same directory."}
+      "You receive a document file path as input. Read the file, produce a concise summary (max 200 words), and write it to summary.md in the same directory."
     ],
-    "llm": {
+    "model": {
       "provider_id": "lp-claude",
-      "model": "claude-sonnet-4-6",
-      "config": {}
+      "model_name": "claude-sonnet-4-6"
     },
-    "tools": [
-      {"toolset_id": "system", "tool_names": ["get_document_content"]}
-    ],
-    "max_turns": 5
+    "tools": ["system__get_document_content"],
+    "max_tool_turns": 5
   }
 }
 ```
@@ -259,13 +268,13 @@ Read the description + system_prompt to confirm fit.
 - **`harness_id` makes an agent immutable through CRUD.** Use
   `harness::harness__sync` after upstream changes, not
   `system::update_agent`.
-- **`response_format` only populates `NodeOutput.parsed` in
-  graph contexts.** Chat and session contexts return text only;
-  the parsed JSON is not separately surfaced via these contexts.
-- **`max_turns` is a safety cap, not a quality control.** It
-  exists to stop runaways. Setting it too low causes legitimate
-  multi-step work to fail with "max turns exceeded"; too high
-  lets pathological loops burn tokens. 20 is a reasonable default.
+- **Structured output lives on graph nodes, not agents.** A graph
+  node's `output_schema` populates `NodeOutput.parsed`; chat and
+  session contexts return text only.
+- **`max_tool_turns` is a safety cap, not a quality control.** It
+  caps tool-call rounds within a turn to stop runaways. Setting it
+  too low causes legitimate multi-step work to fail; too high lets
+  pathological loops burn tokens. The default is 50.
 - **Tool calls can yield.** A tool returning `Yielded(...)` parks
   the agent. See [yielding](yielding.md) for what happens then.
   Outside primer (over MCP) yielding tools are invisible.
