@@ -649,6 +649,246 @@ class TestSubgraphExecution:
         )
         assert inner_msgs.exists()
 
+    async def test_subgraph_end_output_propagates_to_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """A subgraph node's output must be the child's End output, so a
+        downstream parent node can consume it.
+
+        Regression: ``_stream_subgraph_node`` used to assemble the node
+        output only from child ``text-delta`` events (which never matched)
+        and drop the ``_GraphEndOutputEvent``, leaving ``nodes.<sub>.text``
+        empty in the parent.
+        """
+        from primer.graph.base import _GraphEndOutputEvent
+
+        inner_graph = Graph(
+            id="inner",
+            description="agent then a shaped end output",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="inner-A", agent_id="x"),
+                _EndNode(id="inner-exit", output_template="INNER_END_OUTPUT"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="inner-A"),
+                _StaticEdge(from_node="inner-A", to_node="inner-exit"),
+            ],
+        )
+        outer_graph = Graph(
+            id="outer",
+            description="subgraph then consume its output",
+            nodes=[
+                _BeginNode(id="begin"),
+                _GraphNodeRef(id="SUB", graph_id="inner"),
+                _EndNode(
+                    id="exit",
+                    output_template="outer-got:{{ nodes.SUB.text }}",
+                ),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="SUB"),
+                _StaticEdge(from_node="SUB", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(
+            scripts=[
+                [
+                    TextDelta(text="inner-chatter", index=0),
+                    Done(stop_reason="stop", raw_reason="stop"),
+                ]
+            ]
+        )
+
+        async def graph_resolver(graph_id: str) -> Graph:
+            return inner_graph
+
+        repo = await _make_state_repo(tmp_path)
+        executor = await _build_executor(
+            graph=outer_graph,
+            llm=llm,
+            state_repo=repo,
+            graph_session_id="gsid-outer-out",
+            agents={"x": _agent("x")},
+            graph_resolver=graph_resolver,
+        )
+        events = await _drain(executor.invoke([]))
+
+        outer_end = [
+            e
+            for e in events
+            if isinstance(e, _GraphEndOutputEvent) and e.end_node_id == "exit"
+        ]
+        assert outer_end, "outer graph emitted no end output"
+        # The subgraph's End output (not its inner agent chatter, not empty).
+        assert outer_end[-1].text == "outer-got:INNER_END_OUTPUT"
+
+    async def test_failed_subgraph_fails_the_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """A child graph that ends ``failed`` must fail the parent's graph
+        node, not be silently swallowed.
+
+        Regression: ``_stream_subgraph_node`` used to forward the child's
+        ``_GraphErrorEvent`` to taps and then return a normal (successful)
+        ``NodeOutput``, so the parent advanced past the broken subgraph.
+        """
+        inner_graph = Graph(
+            id="inner",
+            description="a node that fails (unresolvable agent)",
+            nodes=[
+                _BeginNode(id="begin"),
+                # agent_resolver does agents[id] -> KeyError for a missing id,
+                # failing this node inside the child so the child yields a
+                # terminal _GraphErrorEvent (the path the fix must catch).
+                _AgentNodeRef(id="inner-A", agent_id="ghost-agent"),
+                _EndNode(id="inner-exit"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="inner-A"),
+                _StaticEdge(from_node="inner-A", to_node="inner-exit"),
+            ],
+        )
+        outer_graph = Graph(
+            id="outer",
+            description="subgraph then a node that must NOT run",
+            nodes=[
+                _BeginNode(id="begin"),
+                _GraphNodeRef(id="SUB", graph_id="inner"),
+                _AgentNodeRef(id="after", agent_id="x"),
+                _EndNode(id="exit"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="SUB"),
+                _StaticEdge(from_node="SUB", to_node="after"),
+                _StaticEdge(from_node="after", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(
+            scripts=[
+                [
+                    TextDelta(text="should-not-run", index=0),
+                    Done(stop_reason="stop", raw_reason="stop"),
+                ]
+            ]
+        )
+
+        async def graph_resolver(graph_id: str) -> Graph:
+            return inner_graph
+
+        repo = await _make_state_repo(tmp_path)
+        executor = await _build_executor(
+            graph=outer_graph,
+            llm=llm,
+            state_repo=repo,
+            graph_session_id="gsid-outer-fail",
+            agents={"x": _agent("x")},
+            graph_resolver=graph_resolver,
+        )
+        await _drain(executor.invoke([]))
+
+        outer_state = json.loads(
+            (executor.state_root / "state.json").read_text(encoding="utf-8")
+        )
+        assert outer_state["status"] == "ended"
+        # The parent FAILS rather than silently completing.
+        assert outer_state["ended_reason"] == "failed"
+        assert outer_state["node_states"]["SUB"]["status"] == "failed"
+        # The downstream node must never have run.
+        assert (
+            outer_state["node_states"].get("after", {}).get("status")
+            != "ended"
+        )
+
+    async def test_fanout_over_subgraph_uses_distinct_child_state(
+        self, tmp_path: Path
+    ) -> None:
+        """Each broadcast fan-out instance of a subgraph node runs in its OWN
+        child state subtree, not a shared one.
+
+        Regression: ``_build_sub_executor`` derived the child gsid from the
+        bare node id, so concurrent fan-out instances of the same subgraph
+        node all wrote to one ``<gsid>__<node>`` tree (a checkpoint race).
+        """
+        inner_graph = Graph(
+            id="worker-sg",
+            description="one worker",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="work", agent_id="x"),
+                _EndNode(id="w-exit", output_template="W_OUT"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="work"),
+                _StaticEdge(from_node="work", to_node="w-exit"),
+            ],
+        )
+        outer_graph = Graph(
+            id="outer",
+            description="fan-out over a subgraph",
+            nodes=[
+                _BeginNode(id="begin"),
+                _FanOutNode(
+                    id="split",
+                    specs=[
+                        FanOutSpec(
+                            kind="broadcast",
+                            target_node_id="worker",
+                            count=2,
+                        )
+                    ],
+                ),
+                _GraphNodeRef(
+                    id="worker",
+                    graph_id="worker-sg",
+                    input_template="item {{ fanout_index }}",
+                ),
+                _FanInNode(id="gather", aggregate_template="done"),
+                _EndNode(id="exit", output_template="{{ nodes.gather.text }}"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="split"),
+                _StaticEdge(from_node="worker", to_node="gather"),
+                _StaticEdge(from_node="gather", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(
+            scripts=[
+                [
+                    TextDelta(text="w", index=0),
+                    Done(stop_reason="stop", raw_reason="stop"),
+                ]
+            ]
+        )
+
+        async def graph_resolver(graph_id: str) -> Graph:
+            return inner_graph
+
+        repo = await _make_state_repo(tmp_path)
+        executor = await _build_executor(
+            graph=outer_graph,
+            llm=llm,
+            state_repo=repo,
+            graph_session_id="gsid-fanout",
+            agents={"x": _agent("x")},
+            graph_resolver=graph_resolver,
+        )
+        await _drain(executor.invoke([]))
+
+        graphs_dir = repo.path / "graphs"
+        # Each instance has its OWN subtree (not one shared __worker dir).
+        for i in (0, 1):
+            assert (
+                graphs_dir / f"gsid-fanout__worker[{i}]" / "state.json"
+            ).exists(), f"missing distinct child state for worker[{i}]"
+            assert (
+                graphs_dir
+                / f"gsid-fanout__worker[{i}]"
+                / "nodes"
+                / "work"
+                / "messages.jsonl"
+            ).exists()
+
 
 # ===========================================================================
 # Workspace augmentation (system_prompt fragment + workspace tools)

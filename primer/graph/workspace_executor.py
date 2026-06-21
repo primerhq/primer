@@ -558,16 +558,21 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         self,
         parent_node: _GraphNodeRef,
         sub_graph: Graph,
+        *,
+        instance_suffix: str = "",
     ) -> "WorkspaceGraphExecutor":
         """Build a child executor with its own state subtree.
 
-        Child uses ``<parent_gsid>__<parent_node_id>`` as its
+        Child uses ``<parent_gsid>__<parent_node_id><instance_suffix>`` as its
         graph_session_id so its files live at
-        ``graphs/<parent_gsid>__<node_id>/`` and commits stay
-        attributable. ``::`` is avoided in the path because Windows
-        treats colons specially in NTFS streams.
+        ``graphs/<parent_gsid>__<node_id><instance_suffix>/`` and commits stay
+        attributable. ``instance_suffix`` (e.g. ``"[0]"``) keeps concurrent
+        fan-out instances of the same node in SEPARATE state subtrees instead
+        of clobbering one shared ``state.json`` / ``nodes/`` tree. ``::`` is
+        avoided in the path because Windows treats colons specially in NTFS
+        streams.
         """
-        sub_gsid = f"{self._graph_session_id}__{parent_node.id}"
+        sub_gsid = f"{self._graph_session_id}__{parent_node.id}{instance_suffix}"
         return WorkspaceGraphExecutor(
             graph=sub_graph,
             agent_resolver=self._raw_agent_resolver,

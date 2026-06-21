@@ -140,6 +140,17 @@ from primer.graph._checkpoint import _CheckpointMixin  # noqa: E402
 from primer.graph._agent_node import _AgentNodeMixin  # noqa: E402
 
 
+class _SubgraphFailed(Exception):
+    """A child graph (a ``graph`` node's delegate) ended ``failed``.
+
+    Raised by :meth:`_BaseGraphExecutor._stream_subgraph_node` so the parent's
+    graph node is recorded as a FAILED node (via the standard
+    ``_NodeDone(error=...)`` path) instead of silently succeeding with empty
+    output. Honors a fan-out spec's ``on_failure`` policy like any other node
+    failure.
+    """
+
+
 class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
     """Pregel-style graph runtime base class with live event streaming."""
 
@@ -616,8 +627,14 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
         self,
         parent_node: _GraphNodeRef,
         sub_graph: Graph,
+        *,
+        instance_suffix: str = "",
     ) -> "_BaseGraphExecutor":
         """Build a child executor for a subgraph node.
+
+        ``instance_suffix`` (e.g. ``"[0]"``) disambiguates concurrent fan-out
+        instances of the SAME subgraph node so their child state does not
+        collide; it is empty for a plain (non-fan-out) subgraph node.
 
         Default raises :class:`ConfigError`; concrete classes that
         support subgraph composition override this.
@@ -1252,6 +1269,13 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
         if ended_reason is None:
             ended_reason = "completed"
 
+        # Expose the terminal outcome so a parent subgraph node can detect a
+        # failed child: a node-execution failure ends the run "failed" without
+        # yielding a terminal _GraphErrorEvent, so the event stream alone is
+        # not enough to tell success from failure.
+        self._last_ended_reason = ended_reason
+        self._last_ended_detail = ended_detail
+
         await self._save_state(
             iteration=context.iteration,
             node_states=node_states,
@@ -1648,7 +1672,17 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                 "to be passed to the executor's constructor"
             )
         sub_graph = await self._graph_resolver(node.graph_id)
-        sub_executor = await self._build_sub_executor(node, sub_graph)
+        # Fan-out instances of the SAME subgraph node share node.id; give each
+        # its own child state subtree (``<node>[i]``) so concurrent broadcast/
+        # map instances don't collide on one state.json / nodes/ tree.
+        instance_suffix = ""
+        if extra_scope is not None:
+            fanout_index = extra_scope.get("fanout_index")
+            if fanout_index is not None:
+                instance_suffix = f"[{fanout_index}]"
+        sub_executor = await self._build_sub_executor(
+            node, sub_graph, instance_suffix=instance_suffix
+        )
 
         rendered = render_input_template(
             node.input_template, context=context, extra_scope=extra_scope
@@ -1663,9 +1697,21 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
         # :class:`StreamEvent`s and don't survive ``_wrap_event``'s
         # ``.type`` access — forward them as-is so the parent's
         # aggregator can pass them on to taps.
+        # Two terminal events carry the child's actual result: capture them
+        # (don't merely forward to taps). The streamed text-delta accumulation
+        # is only a FALLBACK for stubs / node-level text with no end-output
+        # event -- it must NOT shadow the canonical End output. Mirrors
+        # primer.graph.invoke_graph's two-channel handling.
         text_buf: list[str] = []
+        end_output: _GraphEndOutputEvent | None = None
+        sub_error: _GraphErrorEvent | None = None
         async for sub_event in sub_executor.invoke(sub_input):
-            if isinstance(sub_event, (_GraphErrorEvent, _GraphEndOutputEvent)):
+            if isinstance(sub_event, _GraphEndOutputEvent):
+                end_output = sub_event
+                await queue.put(sub_event)  # type: ignore[arg-type]
+                continue
+            if isinstance(sub_event, _GraphErrorEvent):
+                sub_error = sub_event
                 await queue.put(sub_event)  # type: ignore[arg-type]
                 continue
             await queue.put(
@@ -1677,6 +1723,35 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                 if delta:
                     text_buf.append(delta)
 
+        # A failed child must fail the parent node, not be silently swallowed
+        # (otherwise the parent advances past a broken subgraph). A child can
+        # fail two ways: a terminal _GraphErrorEvent (tool / routing / approval
+        # failures) or a node-execution failure that ends the run "failed" with
+        # NO terminal event -- so check the child's recorded outcome as well.
+        # The raise surfaces as a FAILED node via _NodeDone(error=...) and
+        # honors a fan-out spec's on_failure policy.
+        child_ended = getattr(sub_executor, "_last_ended_reason", None)
+        if sub_error is not None or child_ended == "failed":
+            detail = (
+                sub_error.message
+                if sub_error is not None
+                else getattr(sub_executor, "_last_ended_detail", None)
+                or "child graph ended failed"
+            )
+            raise _SubgraphFailed(
+                f"subgraph {node.graph_id!r} (node {node.id!r}) failed: {detail}"
+            )
+
+        # The child's End-node output is the canonical subgraph result; expose
+        # its text + parsed to the parent. Fall back to streamed text only when
+        # no end-output event was observed (e.g. a stub / node-level stream).
+        if end_output is not None:
+            return NodeOutput(
+                text=end_output.text,
+                parsed=end_output.parsed,
+                history=[],
+                iteration=context.iteration,
+            )
         return NodeOutput(
             text="".join(text_buf),
             parsed=None,

@@ -350,6 +350,8 @@ class GraphExecutor(_BaseGraphExecutor):
         self,
         parent_node: _GraphNodeRef,
         sub_graph: Graph,
+        *,
+        instance_suffix: str = "",
     ) -> "GraphExecutor":
         """Open a fresh nested thread and build a child :class:`GraphExecutor`.
 
@@ -358,11 +360,13 @@ class GraphExecutor(_BaseGraphExecutor):
         ``parent_session_id``-style scoping isn't modelled at the
         :class:`GraphThread` row level today, but the row's ``title``
         records the parent thread + node so callers can correlate.
+        ``instance_suffix`` (e.g. ``"[0]"``) keeps concurrent fan-out instances
+        of the same subgraph node in distinct sub-threads.
         """
         sub_thread = await GraphExecutor.open_thread(
             graph=sub_graph,
             thread_storage=self._threads,
-            title=f"sub:{self._thread_id}/{parent_node.id}",
+            title=f"sub:{self._thread_id}/{parent_node.id}{instance_suffix}",
         )
         return GraphExecutor(
             graph=sub_graph,
