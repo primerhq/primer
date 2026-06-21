@@ -56,8 +56,8 @@ session that waits for a trigger" cost-effective at scale.
 
 A `Session` row carries:
 - `id`, `workspace_id`, `agent_id` (or `graph_id` for graph sessions).
-- `status` - `RUNNING | WAITING | PAUSED | ENDED`. High-level
-  lifecycle position.
+- `status` - `CREATED | RUNNING | WAITING | PAUSED | ENDED`.
+  High-level lifecycle position.
 - `claimed_by` - worker id when running.
 - `parked_status`, `parked_event_key`, `parked_until` - yield state
   (same fields as chats).
@@ -65,9 +65,10 @@ A `Session` row carries:
 
 Per-session state lives at workspace-relative path
 `.state/sessions/<session_id>/`. That subtree carries the LLM
-message history (as commits to the workspace's git state repo), the
-tool output cache, and `waiting.json` (when the session is paused
-or waiting on external input).
+message history (as commits to the workspace's git state repo) and
+`waiting.json` (when the session is paused or waiting on external
+input). Large tool outputs are cached separately under
+`.tmp/<session_id>/`.
 
 Session tools (`ls`, `read`, `write`, `edit`, `glob`, `grep`,
 `exec`) are composed onto the agent at session start - they're NOT
