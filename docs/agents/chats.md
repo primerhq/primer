@@ -1,7 +1,7 @@
 ---
 slug: chats
 title: Chats - multi-turn conversations with agents
-summary: How chat turns are claimed, run, parked, cancelled, and resumed; the WS protocol and message-stream contract; auto-compaction.
+summary: How chat turns are claimed, run, soft-yielded, cancelled, and resumed; the WS protocol and message-stream contract; auto-compaction.
 related: [agents, yielding, tool-approval, channels]
 # Chats are NOT available over MCP; they are driven via the REST API
 # and the operator console. For headless MCP execution use a session
@@ -23,8 +23,8 @@ assistant responses. The whole conversation is a series of
 as they arrive."
 
 Chats are created and driven through the REST API (`POST /v1/chats`,
-the WebSocket message stream, `POST /v1/chats/{id}/cancel`, and so on)
-and the operator console. They are NOT a system entity and there is
+the WebSocket message stream including its `interrupt` cancel signal,
+and so on) and the operator console. They are NOT a system entity and there is
 NO chat MCP toolset, so an external MCP-connected agent cannot create
 or drive a chat directly.
 
@@ -47,28 +47,32 @@ laptop.
 
 Chats are also where most of primer's complex execution semantics
 land: auto-compaction (history gets summarised at 90% context),
-yield-pause-and-resume (an `ask_user` inside the agent parks the
-chat until a reply lands), cancellation mid-stream, and turn drain
-loops (multiple queued user messages process FIFO until the queue
-is empty).
+soft-yield (an `ask_user` or approval inside the agent ends the turn
+conversationally and waits for the human's next message, rather than
+parking), cancellation mid-stream, and turn drain loops (multiple
+queued user messages process FIFO until the queue is empty).
 
 ## Mental model
 
 A `Chat` row carries:
-- `id`, `agent_id` (the agent that runs every turn).
+- `id`, `agent_id` (the chat's current agent; it runs the next turn
+  and is switchable mid-chat via `POST /v1/chats/{id}/agent`).
 - `turn_status` - `idle | claimable | running`. The next state
   transition.
-- `claimed_by` - worker id when running.
-- `parked_status`, `parked_event_key`, `parked_until` - yield state
-  when a tool has paused the turn.
-- `cancel_requested_at` - set when the operator clicks cancel.
+- `pending_tool_call` - the soft-yield gate. A chat never parks: when
+  a tool yields (`ask_user` or an approval gate) the turn ends
+  conversationally and the pending call is recorded here, to be
+  resolved by the human's next message (consumed as that call's
+  `tool_result`).
+- `pending_handoff` - a queued agent switch, applied at the next turn.
+- `cancel_requested_at` - set when cancellation is requested.
 
 A `ChatMessage` row is the unit of conversation history:
 - `chat_id`, `seq` (monotonic per chat - gaps are impossible).
-- `kind` - one of: `user_message`, `assistant_token`,
-  `assistant_message`, `tool_call`, `tool_result`, `yielded`,
-  `resumed`, `done`, `error`, `cancelled`, `compaction_marker`,
-  `usage`.
+- `kind` - one of: `user_message`, `assistant_token`, `tool_call`,
+  `tool_result`, `done`, `cancelled`, `error`, `compaction_marker`.
+  (`yielded` and `resumed` exist in the enum but are never written on
+  the chat soft-yield path, since chats never park.)
 - `payload` - kind-specific JSON.
 
 The high-level turn pipeline:
@@ -109,9 +113,10 @@ substitute the summary.
 - `claimable` → `running` - worker claimed.
 - `running` → `idle` - drain loop exited (no queued user_messages
   left). Written as a `done` row.
-- `running` → `idle` (with yielded marker) - a tool in the turn
-  yielded. The `parked_*` fields are set. The chat is now waiting
-  for an external event.
+- `running` → `idle` (soft-yield) - a tool yielded (`ask_user` or an
+  approval gate). The turn ends conversationally and
+  `pending_tool_call` is recorded; the chat waits for the human's
+  next message rather than parking.
 - `running` → `idle` (with cancelled marker) - operator cancelled.
 - `running` → `idle` (with error marker) - worker crashed or the
   LLM errored.
@@ -120,21 +125,21 @@ Disconnecting the WebSocket doesn't affect any of these. The chat
 row keeps its `turn_status`; the worker keeps running. Reconnect
 replays.
 
-Parked-then-resumed flow:
+Soft-yield-and-resume flow:
 
-- The tool returns `Yielded(...)`. The drain loop's catch block
-  writes a `yielded` message, sets `parked_*` fields on the chat
-  row, releases the lease.
-- External event fires (channel reply, trigger fire). The publisher
-  marks the chat resumable.
-- A worker claims, calls the tool's `resume()`, gets back the
-  result. Writes a `resumed` row + the synthetic `tool_result` row.
-- Continues the agent loop in the same turn - the LLM sees the
-  result and proceeds.
+- The tool raises a yield (`ask_user` or an approval gate). The
+  dispatcher records `pending_tool_call` on the chat row and ends the
+  turn conversationally (the question or approval prompt is the last
+  assistant message). The chat goes `idle` - no park slot, no held
+  lease.
+- The human's next `user_message` is consumed as the pending call's
+  `tool_result` (an approval reply is parsed as approve/reject).
+- The next turn continues the agent loop with that result in history -
+  the LLM sees the answer and proceeds.
 
 Cancellation:
-- Operator POSTs `/v1/chats/{id}/cancel`. The handler sets
-  `cancel_requested_at`.
+- The client sends an `interrupt` message over the chat WebSocket.
+  The handler sets `cancel_requested_at` and publishes a cancel event.
 - The worker's per-token loop checks for cancel between tokens. On
   detection: stop streaming, write a `cancelled` row, release the
   lease. Mid-tool-call: tool runs to completion (we don't kill
@@ -163,15 +168,18 @@ API and the operator console:
 
 - `POST /v1/chats` - create a chat. Body needs `agent_id` and an
   optional initial `user_message` content.
-- `GET /v1/chats/{id}` - fetch the row (turn_status, parked state,
-  cancel state).
+- `GET /v1/chats/{id}` - fetch the row (turn_status, pending-gate
+  state, cancel state).
 - `GET /v1/chats/{id}/messages?cursor=<seq>` - paginated messages
   by seq (the cursor query used for replay).
 - WebSocket `/v1/chats/{id}/ws` - send a `user_message` and stream
   the assistant response. This is the actual "send and wait"
   interaction; it requires the WS handshake.
-- `POST /v1/chats/{id}/cancel` - request cancellation of the
-  current turn.
+- WebSocket `interrupt` message - request cancellation of the
+  current turn (sets `cancel_requested_at` + publishes a cancel
+  event). There is no REST cancel route; cancellation rides the same
+  WebSocket. (`POST /v1/chats/{id}/agent` switches the chat's agent,
+  and `POST /v1/chats/{id}/compact` forces a compaction.)
 
 For an external agent connected over MCP, there is no way to create
 or drive a chat directly. Two honest options:
@@ -189,8 +197,8 @@ or drive a chat directly. Two honest options:
 
 ### Workflow 1 - agent inspects an in-flight chat
 
-**Goal.** Agent wants to know if chat `ch-foo` is currently parked
-on `ask_user` so it can post the answer.
+**Goal.** Agent wants to know if chat `ch-foo` is waiting on an
+`ask_user` answer so it can post the reply.
 
 1. Fetch the chat row over REST (`GET /v1/chats/ch-foo`).
 
@@ -200,16 +208,15 @@ Returns:
   "id": "ch-foo",
   "agent_id": "support-bot",
   "turn_status": "idle",
-  "parked_status": "parked",
-  "parked_event_key": "ask_user:sid-A:tc-12",
-  "parked_until": "2026-06-03T17:00:00Z"
+  "pending_tool_call": {"...": "the ask_user call awaiting a reply"}
 }
 ```
 
-2. The `parked_event_key` reveals: this chat is waiting for an
-   `ask_user` reply against `sid-A:tc-12`. To resume it, route a
-   reply through the channel system (or whatever path the operator
-   set up).
+2. A non-null `pending_tool_call` means the chat is mid-soft-yield:
+   the agent asked a question and the turn ended. To answer, send the
+   reply as the next `user_message` (over the WebSocket, or via a
+   channel-forwarded reply); it is consumed as that call's
+   `tool_result` and the agent continues.
 
 ### Workflow 2 - agent queues work for another chat via trigger
 
@@ -255,13 +262,14 @@ The subscription dispatcher appends a `user_message` row to
   The cursor protocol fills any gap. Code that conflates "WS
   connected" with "turn running" gets confused.
 - **Drain is FIFO across all queued user_messages since the last
-  terminal.** A user sending five messages while the chat is parked
-  produces five turns in order on resume - not one merged turn,
+  terminal.** A user sending five messages while a turn is in flight
+  produces five turns in order on drain - not one merged turn,
   not "drop all but the latest".
-- **Approval pending + new user_message = approval auto-rejected.**
-  The new turn supersedes the pending approval. Operators see this
-  in the chat history as a `tool_result` with `rejected: superseded
-  by new user input`.
+- **A pending gate is resolved by the next user message.** When the
+  agent is mid soft-yield on an `ask_user` or approval, the human's
+  next message is consumed as that call's `tool_result` (an approval
+  reply is parsed as approve/reject). Switching the chat's agent also
+  auto-resolves a pending gate first.
 - **Cancellation is between tokens.** Mid-tool-call cancellation
   lets the tool finish (we don't interrupt external HTTP). The
   cancel takes effect at the next LLM-token boundary.
@@ -285,9 +293,9 @@ The subscription dispatcher appends a `user_message` row to
 
 - [agents](agents.md) - every chat is bound to an agent that runs
   each turn.
-- [yielding](yielding.md) - tool yields pause chat turns the same
-  way they pause sessions.
-- [tool-approval](tool-approval.md) - approval prompts park
-  chats; new user turns supersede pending approvals.
-- [channels](channels.md) - channel-forwarded `ask_user` and
-  approval prompts unpark chats from external messaging.
+- [yielding](yielding.md) - tool yields end a chat turn
+  conversationally (soft-yield), unlike sessions, which park.
+- [tool-approval](tool-approval.md) - approval prompts soft-yield
+  chats; the next user message resolves them.
+- [channels](channels.md) - channel-forwarded replies resolve a
+  chat's pending `ask_user` / approval gate.
