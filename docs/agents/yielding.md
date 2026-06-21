@@ -13,20 +13,24 @@ mcp_tools: []
 A **yielding tool** is a tool whose handler returns a `Yielded`
 sentinel instead of a normal result. When the tool execution manager
 sees that sentinel, it doesn't dispatch and wait - it parks the
-calling session (or chat or graph node) into storage, releases the
-worker lease, and exits. The session stays parked, consuming zero
-compute, until some external event fires the event key the yield is
-registered against. A worker then claims the resumable row, calls the
-tool's `resume()` hook with the event payload, and the tool produces
-the result the agent will see on its next turn.
+calling session or graph node into storage, releases the worker
+lease, and exits. The session stays parked, consuming zero compute,
+until some external event fires the event key the yield is registered
+against. A worker then claims the resumable row, calls the tool's
+`resume()` hook with the event payload, and the tool produces the
+result the agent will see on its next turn. (The chat surface is the
+exception: there `ask_user` and approval gates soft-yield - the turn
+ends conversationally and the human's next message resolves the call,
+with no park slot. See [chats](chats.md).)
 
 This is the primitive behind every "wait for the user to do X" tool
-in primer. `ask_user` parks on a `ask_user:{sid}:{tcid}` key and
-resumes when the user replies in a channel. `subscribe_to_trigger`
-parks on a `trigger:{trigger_id}` key and resumes when the trigger
-fires. Tool approval reuses the same primitive - a `_approval` yield
-parks the call until the operator's decision arrives. The shape is
-always identical: yield → park → external event → resume.
+in primer. In a session or graph, `ask_user` parks on an
+`ask_user:{sid}:{tcid}` key and resumes when the user replies in a
+channel. `subscribe_to_trigger` parks on a `trigger:{trigger_id}` key
+and resumes when the trigger fires. Tool approval reuses the same
+primitive - a `_approval` yield parks the call until the operator's
+decision arrives. In a session or graph the shape is always
+identical: yield → park → external event → resume.
 
 Yielding tools are powerful, but they're also unavailable over MCP.
 The MCP transport has no pause/resume mechanism - `tools/call` is a
@@ -64,14 +68,17 @@ needs to know which subscription to update on fire.
 
 Session state during a park:
 
-- `parked_status="parked"` - the high-level lifecycle position.
-- `parked_event_key="trigger:tg-foo"` - what's being waited on.
+- `parked_status="parked"` - the high-level lifecycle position
+  (`parked` | `resumable`).
+- `parked_event_key="trigger:tg-foo"` - what's being waited on, for a
+  single-event park. A multi-event park uses `parked_event_keys` (a
+  list) instead.
 - `parked_until=<timestamp>` - null if no timeout, else the deadline.
-- `parked_tool_name="subscribe_to_trigger"` - the tool that yielded.
-- `parked_state_blob={...}` - the LLM message buffer + agent state
-  needed to continue the turn after resume. Persisted as JSON so the
-  resume worker can run on a different process from the parker.
-- `parked_resume_metadata={...}` - the tool's opaque payload.
+- `parked_at=<timestamp>` - when the park was recorded.
+- `parked_state={...}` - the LLM message buffer, agent state, and the
+  tool's opaque resume metadata needed to continue the turn after
+  resume. Persisted as JSON so the resume worker can run on a
+  different process from the parker.
 
 When the event fires:
 1. Whatever published the event calls `ClaimEngine.mark_resumable(
@@ -209,8 +216,9 @@ session.
   resumes. This is sometimes the feature ("hot-edit my agent while
   it's parked") and sometimes the bug ("the tool I expected is no
   longer in the toolset").
-- **`parked_state_blob` only carries LLM messages, not snapshots of
-  external state.** If the tool's external state (a subscription row,
+- **`parked_state` only carries LLM messages + agent state, not
+  snapshots of external state.** If the tool's external state (a
+  subscription row,
   a watched file) is mutated by another actor while parked, the
   resume handler sees the current state, not the parked-time state.
 - **Timeouts are wall-clock, not turn-based.** A `Yielded(timeout=300)`
