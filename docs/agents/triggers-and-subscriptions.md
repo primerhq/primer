@@ -30,7 +30,7 @@ that's waiting). The pair is the primer answer to "wake my agent at
 3am every day", "kick off a new analysis when this Slack channel
 gets a message", "ping me when the cron deadline passes".
 
-There are three trigger kinds and four subscription kinds. The
+There are four trigger kinds and five subscription kinds. The
 trigger kinds determine **how** firing happens; the subscription
 kinds determine **what** the fire dispatches to. The cartesian
 product is fully supported - any trigger kind can be subscribed to
@@ -54,32 +54,40 @@ trigger-specific extras like `fire_now`). For most agent code the
 ## Mental model
 
 A `Trigger` row:
-- `id` - operator-chosen identifier.
-- `kind` - `delayed | scheduled | webhook | channel`. Determines the
-  fire mechanism.
-- `config` - discriminated union keyed by kind. For `delayed`:
-  `{fire_at: <timestamp>}`. For `scheduled`: `{cron: "<5-field>",
-  catch_up: "one|all|none"}`. For `webhook`:
-  `{token: "<32-hex-server-minted>", hmac_secret: "<optional>"}`.
-  For `channel`: `{provider_id: "...", channel_id: "<optional>"}` -
-  the event-source anchor (omit `channel_id` for a provider-wide
-  trigger, needed for room-level events).
-- `payload_template` - a Jinja2 template rendered with the fire's
-  context. Produces the body that subscribers receive.
+- `id` - stable identifier (auto-generated if omitted).
+- `slug` - human-friendly unique id (required on create); `name` -
+  display name (required on create).
+- `config` - discriminated union keyed by an inner `kind`. For
+  `delayed`: `{kind: "delayed", fire_at: <timestamp>}`. For
+  `scheduled`: `{kind: "scheduled", cron: "<5-field>", timezone:
+  "UTC", catchup: "one|all|none"}`. For `webhook`: `{kind: "webhook",
+  token: "<32-hex-server-minted>", hmac_secret: "<optional>"}`. For
+  `channel`: `{kind: "channel", provider_id: "...", channel_id:
+  "<optional>"}` - the event-source anchor (omit `channel_id` for a
+  provider-wide trigger).
 - `enabled` - bool. Disabled triggers don't fire.
 - `next_fire_at` - computed at create/update for `scheduled`
   triggers; used by the claim engine to know when to claim.
+
+Note: the `payload_template` lives on the **subscription**, not the
+trigger - each subscription renders its own body from the fire
+context (see the `Subscription` row below).
 
 A `Subscription` row:
 - `id` - operator-chosen.
 - `trigger_id` - the parent trigger.
 - `kind` - `chat_message | agent_fresh_session | graph_fresh_session
-  | parked_session`. Determines the dispatch target.
+  | parked_session | start_chat`. Determines the dispatch target.
 - `config` - discriminated by kind. For `chat_message`:
   `{chat_id: "..."}`. For `agent_fresh_session`: `{agent_id: "...",
   workspace_id: "..."}`. For `graph_fresh_session`: `{graph_id: "...",
-  workspace_id: "..."}`. For `parked_session`: dynamic - created at
-  yield time by `subscribe_to_trigger`.
+  workspace_id: "..."}`. For `start_chat`: `{agent_id: "..."}` (opens
+  a fresh chat with that agent; used by channel rules). For
+  `parked_session`: dynamic - created at yield time by
+  `subscribe_to_trigger`.
+- `payload_template` - optional Jinja2 template rendered against the
+  fire context; the rendered text is what this subscription dispatches
+  (the chat user_message, the session's initial instruction, etc.).
 - `event_matcher` - optional `EventMatcher` (channel triggers only).
   When present, only channel events that match the predicate dispatch
   this subscription; `None` (the default, and the only option for
@@ -120,9 +128,9 @@ The fire pipeline:
 3. The fire builds a context dict (the trigger metadata + any
    kind-specific fire context - channel payload, scheduled
    timestamp).
-4. `payload_template` is rendered.
-5. Every enabled subscription gets dispatched in parallel.
-   Per-kind dispatcher:
+4. Every enabled subscription gets dispatched in parallel. Each
+   subscription renders its own `payload_template` against the fire
+   context, then runs its per-kind dispatcher:
    - `chat_message` - appends a user_message to the chat. Drain
      loop picks it up.
    - `agent_fresh_session` - creates a new session for the agent in
@@ -162,12 +170,12 @@ on the lease means no two workers fire the same scheduled instance.
 Catch-up policy for scheduled triggers handles what happens when
 the server was down across a fire window:
 
-- `catch_up: one` (default) - fire once, with the most recent
+- `catchup: one` (default) - fire once, with the most recent
   missed timestamp. Then schedule the next fire normally.
-- `catch_up: all` - fire once per missed instance, in order. Useful
+- `catchup: all` - fire once per missed instance, in order. Useful
   for triggers where each instance has meaningful state (don't skip
   a daily report just because the server was down).
-- `catch_up: none` - skip missed fires entirely; schedule next fire
+- `catchup: none` - skip missed fires entirely; schedule next fire
   for the next future instance.
 
 ## MCP tools
@@ -181,9 +189,10 @@ agent is doing generic entity CRUD.
 
 - `trigger::list` - paginated listing. Same shape as system list.
 - `trigger::get` - fetch by id.
-- `trigger::create` - body needs `id`, `kind`, `config`,
-  `payload_template`, optional `enabled`. Validates the cron
-  expression / fire_at timestamp at create time.
+- `trigger::create` - body needs `slug`, `name`, `config` (the
+  `kind` is the discriminator inside `config`), optional `description`
+  and `enabled`. Validates the cron expression / fire_at timestamp at
+  create time. (`payload_template` is set per subscription, not here.)
 - `trigger::update` - partial update. Editing `cron` recomputes
   `next_fire_at`. Editing kind is rejected.
 - `trigger::delete` - cascade-deletes subscriptions.
@@ -217,10 +226,9 @@ of the `summarise-overnight-alerts` agent in workspace `ws-ops`.
 {
   "tool": "trigger::create",
   "arguments": {
-    "id": "tg-morning-summary",
-    "kind": "scheduled",
-    "config": {"cron": "0 9 * * 1-5", "catch_up": "one"},
-    "payload_template": "Summarise overnight alerts from {{ scheduled_for }}.",
+    "slug": "tg-morning-summary",
+    "name": "Morning alert summary",
+    "config": {"kind": "scheduled", "cron": "0 9 * * 1-5", "catchup": "one"},
     "enabled": true
   }
 }
@@ -232,13 +240,13 @@ of the `summarise-overnight-alerts` agent in workspace `ws-ops`.
 {
   "tool": "trigger::create_subscription",
   "arguments": {
-    "id": "sub-morning-summary",
     "trigger_id": "tg-morning-summary",
-    "kind": "agent_fresh_session",
     "config": {
+      "kind": "agent_fresh_session",
       "agent_id": "summarise-overnight-alerts",
       "workspace_id": "ws-ops"
     },
+    "payload_template": "Summarise overnight alerts from {{ scheduled_for }}.",
     "enabled": true
   }
 }
@@ -386,7 +394,7 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   the yield out). Don't try to CRUD them - they appear and
   disappear with the yielding tool.
 - **Catch-up policy matters after downtime.** A nightly trigger
-  with `catch_up: all` will fire 5 times when the server starts
+  with `catchup: all` will fire 5 times when the server starts
   after a 5-day outage. Operators tuning recovery should know
   which policy each trigger uses.
 - **`payload_template` runs Jinja2 against a fire-time context.**
