@@ -311,3 +311,84 @@ class TestStatusTransitions:
         finally:
             await session.aclose()
             await backend.aclose()
+
+
+# ===========================================================================
+# Sandbox (container/k8s) state-repo parity
+# ===========================================================================
+
+
+class _NoPathStateRepo:
+    """Minimal sandbox-like StateRepo: serves history via ``read_state_file``
+    only, with NO ``path`` attribute.
+
+    This mirrors :class:`SandboxStateRepo`, whose state lives in the workspace
+    pod and exposes no local filesystem ``path``. Reaching for ``._state.path``
+    raised ``AttributeError`` and broke every agent session on a container/k8s
+    backend on its first turn (FINDINGS F-K8S-AGENT). The executor must read
+    history through the ``StateRepo.read_state_file`` protocol instead.
+    """
+
+    def __init__(self, files: dict[str, bytes]) -> None:
+        self._files = dict(files)
+
+    async def read_state_file(self, path: str) -> bytes | None:
+        return self._files.get(path)
+
+
+class TestSandboxStateRepoParity:
+    @pytest.mark.asyncio
+    async def test_history_read_uses_read_state_file_not_path(
+        self, tmp_path: Path
+    ) -> None:
+        """Loading history must not touch ``._state.path`` (absent on sandbox)."""
+        backend, _, session = await _build_session(tmp_path)
+        real_state = session._state
+        try:
+            prior = Message(role="user", parts=[TextPart(text="earlier turn")])
+            rel = f"sessions/{session.session_id}/messages.jsonl"
+            # Swap in a sandbox-like repo that has NO ``path`` attribute.
+            session._state = _NoPathStateRepo(  # type: ignore[assignment]
+                {rel: (prior.model_dump_json() + "\n").encode("utf-8")}
+            )
+
+            llm = _FakeLLM(
+                scripts=[
+                    [
+                        TextDelta(text="reply", index=0),
+                        Done(stop_reason="stop", raw_reason="stop"),
+                    ]
+                ]
+            )
+            mgr = ToolExecutionManager.for_workspace(
+                toolset_providers={}, session=session
+            )
+            executor = WorkspaceAgentExecutor(
+                agent=_agent(),
+                llm=llm,  # type: ignore[arg-type]
+                llm_model=_model(),
+                tool_manager=mgr,
+                session=session,
+            )
+
+            # Reading history must succeed (no AttributeError on ._state.path)
+            # and surface the prior turn loaded via read_state_file.
+            history = await executor._read_messages_jsonl()
+            assert any(
+                p.type == "text" and p.text == "earlier turn"
+                for m in history
+                for p in m.parts
+            )
+
+            text = await executor._read_messages_jsonl_text()
+            assert "earlier turn" in text
+
+            # An absent file returns empty rather than raising.
+            session._state = _NoPathStateRepo({})  # type: ignore[assignment]
+            assert await executor._read_messages_jsonl() == []
+            assert await executor._read_messages_jsonl_text() == ""
+        finally:
+            # Restore the real repo so aclose()'s status commit works.
+            session._state = real_state  # type: ignore[assignment]
+            await session.aclose()
+            await backend.aclose()

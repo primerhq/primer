@@ -18,7 +18,6 @@ import asyncio
 import json
 import logging
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 from primer.agent.base import _BaseAgentExecutor
@@ -257,47 +256,49 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
 
     # ---- Internals -------------------------------------------------------
 
-    def _state_path(self) -> Path:
-        """Return the path to this session's slot under ``.state/sessions/``."""
-        return (
-            self._session._state.path  # type: ignore[attr-defined]
-            / "sessions"
-            / self._session.session_id
-        )
+    def _messages_jsonl_rel(self) -> str:
+        """Return the ``messages.jsonl`` path relative to the state repo root.
 
-    def _messages_jsonl_path(self) -> Path:
-        return self._state_path() / "messages.jsonl"
+        Forward-slash, ``.state``-relative (e.g.
+        ``"sessions/sess-1/messages.jsonl"``) -- the contract of
+        :meth:`StateRepo.read_state_file`, which both the local and sandbox
+        (container/k8s) backends implement. Using the protocol read instead
+        of a direct ``self._session._state.path`` filesystem access is what
+        lets agent sessions run on sandbox backends, whose state lives in the
+        workspace pod and exposes no local ``.path`` (see FINDINGS F-K8S-AGENT).
+        """
+        return f"sessions/{self._session.session_id}/messages.jsonl"
 
     async def _read_messages_jsonl(self) -> list[Message]:
-        path = self._messages_jsonl_path()
+        raw = await self._session._state.read_state_file(self._messages_jsonl_rel())
+        if not raw:
+            return []
+        text = raw.decode("utf-8")
 
-        def _read() -> list[Message]:
-            if not path.exists():
-                return []
+        def _parse() -> list[Message]:
             out: list[Message] = []
-            with path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.rstrip("\n")
-                    if not line:
-                        continue
-                    # messages.jsonl is shared between the LLM conversation
-                    # history (role/parts Messages, written by AgentSession +
-                    # _persist_turn) and the session event log
-                    # (seq/kind/ts SessionMessageRecords, written by the
-                    # dispatch WorkspaceMessageWriter for WS replay). Only the
-                    # Message-shaped lines are LLM history; skip the event
-                    # records so a resumed/multi-turn session can reload its
-                    # history without choking on them (see FINDINGS F10b).
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not (isinstance(obj, dict) and "role" in obj and "parts" in obj):
-                        continue
-                    out.append(Message.model_validate(obj))
+            for line in text.splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                # messages.jsonl is shared between the LLM conversation
+                # history (role/parts Messages, written by AgentSession +
+                # _persist_turn) and the session event log
+                # (seq/kind/ts SessionMessageRecords, written by the
+                # dispatch WorkspaceMessageWriter for WS replay). Only the
+                # Message-shaped lines are LLM history; skip the event
+                # records so a resumed/multi-turn session can reload its
+                # history without choking on them (see FINDINGS F10b).
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not (isinstance(obj, dict) and "role" in obj and "parts" in obj):
+                    continue
+                out.append(Message.model_validate(obj))
             return out
 
-        return await asyncio.to_thread(_read)
+        return await asyncio.to_thread(_parse)
 
     async def _appended_jsonl(self, new_messages: list[Message]) -> str:
         existing = await self._read_messages_jsonl_text()
@@ -306,14 +307,10 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         return existing + "\n".join(m.model_dump_json() for m in new_messages) + "\n"
 
     async def _read_messages_jsonl_text(self) -> str:
-        path = self._messages_jsonl_path()
-
-        def _read() -> str:
-            if not path.exists():
-                return ""
-            return path.read_text(encoding="utf-8")
-
-        return await asyncio.to_thread(_read)
+        raw = await self._session._state.read_state_file(self._messages_jsonl_rel())
+        if not raw:
+            return ""
+        return raw.decode("utf-8")
 
     async def _fetch_last_assistant_text(self) -> str | None:
         """Return the text of the most recent assistant message, or None."""
