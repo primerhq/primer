@@ -18,8 +18,10 @@ before they execute. The mechanism is a generalisation of an
 must click approve), policy (evaluate a Rego rule against the call
 arguments), and llm (ask a judge model whether to allow). All three
 share a common shape: at LLM-call time, before the tool actually
-dispatches, the gate runs. If it says block, the call is parked
-exactly like a yielding tool. If it says allow, dispatch proceeds.
+dispatches, the gate runs. If it says block, the call yields - parked
+like a yielding tool in a session or graph, or soft-yielded (the turn
+ends, resolved by the next reply) on a chat. If it says allow,
+dispatch proceeds.
 
 A policy is identified by `(toolset_id, tool_name)` - a wildcard tool
 name is not supported in v1; one row per concrete tool. Policies are
