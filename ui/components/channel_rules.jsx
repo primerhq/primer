@@ -148,6 +148,11 @@ function CR_replyLabel(rt) {
   return "default";
 }
 
+// Flat, uniform rules table: one row per binding (Subscription) across every
+// channel trigger, matching the shared `.tbl` layout used by Chats/Providers.
+// Columns: Provider / Channel / Event / Match / Action / Reply / (delete). A
+// toolbar carries a text filter, a provider filter, Refresh, and a single
+// "New rule" button whose modal selects the provider.
 function ChannelRulesPage({ pushToast }) {
   const { isMobile } = useViewport();
   const providers = useResource("cr-providers", (signal) => apiFetch("GET", "/channel_providers?limit=200", null, { signal }), {});
@@ -155,6 +160,9 @@ function ChannelRulesPage({ pushToast }) {
   // The list endpoint filters by kind server-side; we keep the client-side
   // config.kind guard as a belt-and-braces check.
   const triggers = useResource("cr-triggers", (signal) => apiFetch("GET", "/triggers?kind=channel", null, { signal }), {});
+  const [q, setQ] = React.useState("");
+  const [provFilter, setProvFilter] = React.useState("");
+  const [showNew, setShowNew] = React.useState(false);
 
   if (providers.error && !providers.data) {
     return <Banner kind="error" title={providers.error.title || "Couldn't load channel providers"} detail={providers.error.detail || providers.error.message} actions={<Btn size="sm" icon="refresh" onClick={providers.refetch}>Retry</Btn>} />;
@@ -168,99 +176,150 @@ function ChannelRulesPage({ pushToast }) {
   if (provs.length === 0) {
     return <Banner kind="info" title="No channel providers yet" detail="Register a Slack, Telegram, or Discord provider under Channels first, then add rules here." />;
   }
+
+  const provById = {};
+  provs.forEach((p) => { provById[p.id] = p; });
+  const ql = q.trim().toLowerCase();
+  const shownTrigs = trigs.filter((t) => {
+    const pid = (t.config && t.config.provider_id) || "";
+    if (!provById[pid]) return false; // skip triggers whose provider is gone
+    if (provFilter && pid !== provFilter) return false;
+    if (ql) {
+      const room = (t.config && t.config.channel_id) || "";
+      if (!(pid.toLowerCase().includes(ql) || room.toLowerCase().includes(ql))) return false;
+    }
+    return true;
+  });
+
   return (
     <div className="col" style={{ gap: 14 }}>
-      {provs.map((p) => <CR_ProviderSection key={p.id} provider={p} triggers={trigs.filter((t) => t.config && t.config.provider_id === p.id)} pushToast={pushToast} onChanged={() => { triggers.refetch(); }} />)}
-      {isMobile && <Fab icon="plus" label="New rule" onClick={() => {}} />}
+      <div className="filter-bar">
+        <div className="input-icon">
+          <Icon name="search" size={13} className="icon" />
+          <input className="input" placeholder="Filter rules…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <div className="sep-v" />
+        <select className="select" value={provFilter} onChange={(e) => setProvFilter(e.target.value)}>
+          <option value="">all providers</option>
+          {provs.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
+        </select>
+        <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+          <Btn size="sm" kind="ghost" icon="refresh" onClick={() => triggers.refetch()}>Refresh</Btn>
+          <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)}>New rule</Btn>
+        </div>
+      </div>
+
+      <div className="tbl-wrap">
+        <table className="tbl" data-testid="channel-rules-table">
+          <thead>
+            <tr>
+              <th>Provider</th>
+              <th>Channel</th>
+              <th>Event</th>
+              <th>Match</th>
+              <th>Action</th>
+              <th>Reply</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {shownTrigs.length === 0 ? (
+              <tr><td colSpan={7} className="muted text-sm" style={{ textAlign: "center", padding: 18 }}>No rules yet. Add one to route a channel event to an action.</td></tr>
+            ) : shownTrigs.map((t) => (
+              <CR_TriggerRows key={t.id} trigger={t} provider={provById[(t.config && t.config.provider_id)]} pushToast={pushToast} onChanged={() => { triggers.refetch(); }} />
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {showNew && (
+        <CR_RuleModal
+          providers={provs}
+          allTriggers={trigs}
+          initialProviderId={provFilter || (provs[0] && provs[0].id)}
+          onClose={() => setShowNew(false)}
+          onChanged={() => { triggers.refetch(); }}
+          pushToast={pushToast}
+        />
+      )}
+      {isMobile && <Fab icon="plus" label="New rule" onClick={() => setShowNew(true)} />}
     </div>
   );
 }
 window.ChannelRulesPage = ChannelRulesPage;
 
-// Per-provider section: provider header + the rooms (channel triggers)
-// it owns and their bindings, plus a "New rule" button that opens the
-// capability-aware CR_RuleModal.
-function CR_ProviderSection({ provider, triggers, pushToast, onChanged }) {
-  const [showNew, setShowNew] = React.useState(false);
-  const provider_id = provider.id;
-
-  return (
-    <div className="card" style={{ padding: 0 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center", padding: "12px 14px", borderBottom: "1px solid var(--border)" }}>
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
-          <Icon name="bell" size={14} className="muted" />
-          <span className="mono" style={{ fontWeight: 600 }}>{provider_id}</span>
-          <span className="pill"><span className="mono text-sm">{provider.provider || "unknown"}</span></span>
-        </div>
-        <Btn size="sm" kind="primary" icon="plus" onClick={() => setShowNew(true)}>New rule</Btn>
-      </div>
-
-      <div className="col" style={{ gap: 0 }}>
-        {triggers.length === 0 && (
-          <div className="empty" style={{ padding: 18 }}>
-            <div className="sub">No rules yet for this provider. Add one to route an event to an action.</div>
-          </div>
-        )}
-        {triggers.map((t) => <CR_TriggerRows key={t.id} trigger={t} pushToast={pushToast} onChanged={onChanged} />)}
-      </div>
-
-      {showNew && (
-        <CR_RuleModal
-          provider={provider}
-          triggers={triggers}
-          onClose={() => setShowNew(false)}
-          onChanged={onChanged}
-          pushToast={pushToast}
-        />
-      )}
-    </div>
-  );
-}
-
-// Renders one channel trigger's room label + each of its bindings
-// (Subscriptions) as a row with event_type, matcher summary, action,
-// reply_target, and a delete button.
-function CR_TriggerRows({ trigger, pushToast, onChanged }) {
+// Renders one channel trigger's bindings (Subscriptions) as flat `.tbl` rows,
+// each carrying the provider, room, event_type, matcher summary, action, and
+// reply_target plus a delete button. A trigger with no bindings still renders
+// one placeholder row so its room stays visible. Returns a fragment of <tr>
+// so the rows live directly inside the shared table's <tbody>.
+function CR_TriggerRows({ trigger, provider, pushToast, onChanged }) {
   const subsKey = "cr-subs-" + trigger.id;
   const subs = useResource(subsKey, (signal) => apiFetch("GET", "/triggers/" + encodeURIComponent(trigger.id) + "/subscriptions", null, { signal }), {});
   const room = (trigger.config && trigger.config.channel_id) || "(all rooms)";
   const items = (subs.data && subs.data.items) || [];
+  const provId = (trigger.config && trigger.config.provider_id) || "";
+  const provType = (provider && provider.provider) || "unknown";
 
   const del = useMutation(
     (subscription_id) => apiFetch("DELETE", "/triggers/" + encodeURIComponent(trigger.id) + "/subscriptions/" + encodeURIComponent(subscription_id)),
     { invalidates: [subsKey], onSuccess: () => { subs.refetch(); if (typeof onChanged === "function") onChanged(); if (typeof pushToast === "function") pushToast({ kind: "warning", title: "Rule deleted" }); }, onError: CR_toastErr(pushToast, "Delete rule failed") }
   );
 
+  const providerCell = (
+    <span className="row" style={{ gap: 6, alignItems: "center" }}>
+      <span className="mono">{provId}</span>
+      <span className="pill"><span className="mono text-sm">{provType}</span></span>
+    </span>
+  );
+
+  if (items.length === 0) {
+    return (
+      <tr data-testid={`channel-rule-empty-${trigger.id}`}>
+        <td>{providerCell}</td>
+        <td className="mono muted">{room}</td>
+        <td className="muted text-sm" colSpan={5}>no bindings</td>
+      </tr>
+    );
+  }
   return (
-    <div className="col" style={{ gap: 0, borderBottom: "1px solid var(--border)" }}>
-      <div className="row" style={{ gap: 6, alignItems: "center", padding: "8px 14px" }}>
-        <Icon name="command" size={12} className="muted" />
-        <span className="mono text-sm muted">{room}</span>
-      </div>
-      {items.length === 0 ? (
-        <div className="muted text-sm" style={{ padding: "0 14px 10px 28px" }}>no bindings</div>
-      ) : items.map((s) => (
-        <div key={s.id} className="row" style={{ gap: 10, alignItems: "center", padding: "6px 14px 8px 28px", flexWrap: "wrap" }}>
-          <span className="pill"><span className="mono text-sm">{(s.event_matcher && s.event_matcher.event_type) || "?"}</span></span>
-          <span className="muted text-sm">{CR_matcherSummary(s.event_matcher)}</span>
-          <Icon name="chevron-right" size={12} className="muted" />
-          <span className="mono text-sm">{(s.config && s.config.kind) || "?"}</span>
-          <span className="muted text-sm mono">reply: {CR_replyLabel(s.reply_target)}</span>
-          <div style={{ marginLeft: "auto" }}>
-            <Btn size="sm" kind="ghost" icon="trash" onClick={() => del.mutate(s.id)} disabled={del.loading}>Delete</Btn>
-          </div>
-        </div>
+    <React.Fragment>
+      {items.map((s) => (
+        <tr key={s.id} data-testid={`channel-rule-row-${s.id}`}>
+          <td>{providerCell}</td>
+          <td className="mono muted">{room}</td>
+          <td><span className="pill"><span className="mono text-sm">{(s.event_matcher && s.event_matcher.event_type) || "?"}</span></span></td>
+          <td className="muted text-sm">{CR_matcherSummary(s.event_matcher)}</td>
+          <td className="mono">{(s.config && s.config.kind) || "?"}</td>
+          <td className="mono muted text-sm">{CR_replyLabel(s.reply_target)}</td>
+          <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
+            <button
+              className="row-action"
+              title="Delete rule"
+              onClick={() => del.mutate(s.id)}
+              disabled={del.loading}
+              style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", padding: "2px 6px" }}
+            >
+              <Icon name="trash" size={13} />
+            </button>
+          </td>
+        </tr>
       ))}
-    </div>
+    </React.Fragment>
   );
 }
 
-// The capability-aware rule editor. Renders the event picker (warning on
-// unsupported / prerequisite-bearing types from the static per-provider
-// taxonomy), the matcher predicate fields, the action select with its
-// per-action config fields, and the ReplyTarget select. Creates the binding
-// (creating the channel trigger first if the room has none yet).
-function CR_RuleModal({ provider, triggers, onClose, onChanged, pushToast }) {
+// The capability-aware rule editor. Renders a provider picker, the event
+// picker (warning on unsupported / prerequisite-bearing types from the static
+// per-provider taxonomy), the matcher predicate fields, the action select with
+// its per-action config fields, and the ReplyTarget select. Creates the
+// binding (creating the channel trigger first if the room has none yet).
+function CR_RuleModal({ providers, allTriggers, initialProviderId, onClose, onChanged, pushToast }) {
+  const provList = providers || [];
+  const [providerId, setProviderId] = React.useState(initialProviderId || (provList[0] && provList[0].id) || "");
+  const provider = provList.find((p) => p.id === providerId) || provList[0] || { id: providerId };
+  // The channel triggers owned by the selected provider (find-or-create scope).
+  const triggers = (allTriggers || []).filter((t) => t.config && t.config.provider_id === providerId);
   const capEvents = CR_capEventsFor(provider.provider);
 
   const [channelId, setChannelId] = React.useState("");
@@ -338,8 +397,15 @@ function CR_RuleModal({ provider, triggers, onClose, onChanged, pushToast }) {
   );
 
   return (
-    <Modal title={"New rule · " + provider.id} onClose={onClose} footer={footer}>
+    <Modal title="New rule" onClose={onClose} footer={footer}>
       <div className="col" style={{ gap: 12 }}>
+        <label className="field">
+          <span className="lbl">Provider</span>
+          <select className="select mono" value={providerId} onChange={(e) => setProviderId(e.target.value)}>
+            {provList.map((p) => <option key={p.id} value={p.id}>{p.id} ({p.provider || "unknown"})</option>)}
+          </select>
+        </label>
+
         <label className="field">
           <span className="lbl">Room / channel id</span>
           <input className="input mono" placeholder="(blank = all rooms)" value={channelId} onChange={(e) => setChannelId(e.target.value)} />

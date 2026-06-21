@@ -190,6 +190,8 @@ function TR_TriggerList() {
   const safePage = Math.min(page, pages - 1);
   const start = safePage * TR_PAGE_SIZE;
   const rows = items.slice(start, start + TR_PAGE_SIZE);
+  const from = total === 0 ? 0 : start + 1;
+  const to = start + rows.length;
 
   // Clamp back into range if the set shrinks (delete) under us.
   React.useEffect(() => {
@@ -241,19 +243,18 @@ function TR_TriggerList() {
       {items.length > 0 && (
         <div
           data-testid="triggers-grid"
-          className="panel"
-          style={{ padding: 0, overflow: "hidden" }}
+          className="tbl-wrap"
         >
-          <table className="table" data-testid="triggers-table" style={{ width: "100%", fontSize: 12 }}>
+          <table className="tbl" data-testid="triggers-table">
             <thead>
               <tr>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Name</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Kind</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Schedule</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Next fire</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Created</th>
-                <th style={{ textAlign: "right", padding: "8px 12px" }}>Actions</th>
+                <th style={{ textAlign: "left" }}>Name</th>
+                <th style={{ textAlign: "left" }}>Kind</th>
+                <th style={{ textAlign: "left" }}>Schedule</th>
+                <th style={{ textAlign: "left" }}>Status</th>
+                <th style={{ textAlign: "left" }}>Next fire</th>
+                <th style={{ textAlign: "left" }}>Created</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -267,35 +268,14 @@ function TR_TriggerList() {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {total > 0 && pages > 1 && (
-        <div
-          data-testid="triggers-pager"
-          style={{ display: "flex", gap: 8, alignItems: "center", justifyContent: "flex-end" }}
-        >
-          <Btn
-            size="sm"
-            kind="ghost"
-            icon="chevron-left"
-            onClick={() => setPage(Math.max(0, safePage - 1))}
-            disabled={safePage === 0}
-          >
-            Prev
-          </Btn>
-          <span className="muted text-sm">
-            Page {safePage + 1} of {pages} · {total} {total === 1 ? "trigger" : "triggers"}
-          </span>
-          <Btn
-            size="sm"
-            kind="ghost"
-            icon="chevron-right"
-            onClick={() => setPage(Math.min(pages - 1, safePage + 1))}
-            disabled={safePage >= pages - 1}
-          >
-            Next
-          </Btn>
+          <div className="tbl-foot">
+            <span className="tabular">Showing <strong style={{ color: "var(--text)" }}>{from}</strong>–<strong style={{ color: "var(--text)" }}>{to}</strong> of <strong style={{ color: "var(--text)" }}>{total}</strong></span>
+            <div className="pager">
+              <button disabled={safePage === 0} onClick={() => setPage(safePage - 1)}><Icon name="chevron-left" size={12} /></button>
+              <span className="muted text-sm tabular" style={{ padding: "0 8px" }}>Page {safePage + 1} of {pages}</span>
+              <button disabled={safePage + 1 >= pages} onClick={() => setPage(safePage + 1)}><Icon name="chevron-right" size={12} /></button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -369,9 +349,9 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
     <tr
       data-testid={`trigger-row-${trigger.id}`}
       onClick={onOpen}
-      style={{ borderTop: "1px solid var(--border)", cursor: "pointer" }}
+      style={{ cursor: "pointer" }}
     >
-      <td style={{ padding: "8px 12px" }}>
+      <td>
         <div style={{ fontWeight: 600 }}>{trigger.name || trigger.slug}</div>
         <div className="mono muted text-sm" style={{ fontSize: 11 }}>{trigger.slug}</div>
         {trigger.last_fire_error && (
@@ -386,17 +366,17 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
           </span>
         )}
       </td>
-      <td style={{ padding: "8px 12px" }}>
+      <td>
         <span className="pill pill-paused" title={`Trigger kind: ${kind}`} style={{ fontSize: 10.5 }}>
           {kind}
         </span>
       </td>
-      <td style={{ padding: "8px 12px" }}>
+      <td>
         <span className="mono" style={{ fontSize: 11, wordBreak: "break-word" }}>
           {TR_scheduleLabel(trigger)}
         </span>
       </td>
-      <td style={{ padding: "8px 12px" }}>
+      <td>
         <span
           className={`pill ${enabled ? "pill-claimed" : "pill-ended"}`}
           title={enabled ? "Trigger is enabled" : "Trigger is disabled"}
@@ -405,13 +385,13 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
           {enabled ? "enabled" : "disabled"}
         </span>
       </td>
-      <td style={{ padding: "8px 12px" }} title={trigger.next_fire_at || ""}>
+      <td title={trigger.next_fire_at || ""}>
         <span className="mono">{TR_relTime(trigger.next_fire_at)}</span>
       </td>
-      <td style={{ padding: "8px 12px" }} title={trigger.created_at || ""}>
+      <td title={trigger.created_at || ""}>
         <span className="mono">{TR_relTime(trigger.created_at)}</span>
       </td>
-      <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }} onClick={stop}>
+      <td style={{ textAlign: "right", whiteSpace: "nowrap" }} onClick={stop}>
         <Btn
           size="sm"
           kind="ghost"

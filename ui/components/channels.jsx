@@ -710,13 +710,13 @@ function ChannelsPage({ onNavigate, pushToast }) {
             {filtered.map((c) => {
               const p = providerItems.find((x) => x.id === c.provider_id);
               return (
-                <tr key={c.id}>
+                <tr key={c.id} onClick={() => setEditing(c)} style={{ cursor: "pointer" }}>
                   <td className="mono">{c.id}</td>
                   <td>
                     <a
                       className="mono"
                       style={{ color: "var(--accent)", cursor: "pointer", marginRight: 6 }}
-                      onClick={() => onNavigate("channel-provider-detail", c.provider_id)}
+                      onClick={(e) => { e.stopPropagation(); onNavigate("channel-provider-detail", c.provider_id); }}
                     >
                       {c.provider_id}
                     </a>
@@ -724,23 +724,23 @@ function ChannelsPage({ onNavigate, pushToast }) {
                   </td>
                   <td className="mono muted">{c.external_id}</td>
                   <td>{c.label}</td>
-                  <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }}>
+                  <td style={{ textAlign: "right", paddingRight: 12, whiteSpace: "nowrap" }} onClick={(e) => e.stopPropagation()}>
                     <button
-                      className="icon-btn"
-                      style={{ width: 22, height: 22, marginRight: 4 }}
+                      className="row-action"
                       title="Edit channel"
-                      onClick={() => setEditing(c)}
+                      onClick={(e) => { e.stopPropagation(); setEditing(c); }}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", padding: "2px 6px", marginRight: 4 }}
                     >
-                      <Icon name="edit" size={10} />
+                      <Icon name="edit" size={13} />
                     </button>
                     <button
-                      className="icon-btn"
-                      style={{ width: 22, height: 22 }}
+                      className="row-action"
                       title="Delete channel"
-                      onClick={() => del.mutate(c.id)}
+                      onClick={(e) => { e.stopPropagation(); del.mutate(c.id); }}
                       disabled={del.loading}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", padding: "2px 6px" }}
                     >
-                      <Icon name="trash" size={10} />
+                      <Icon name="trash" size={13} />
                     </button>
                   </td>
                 </tr>

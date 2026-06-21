@@ -219,7 +219,6 @@ function HarnessList() {
       )}
 
       {items.length > 0 && !isMobile && (
-        <>
         <div className="tbl-wrap">
           <table className="tbl">
             <thead>
@@ -227,9 +226,9 @@ function HarnessList() {
                 <th>Name</th>
                 <th>Source</th>
                 <th>Version</th>
-                <th style={{ width: 120 }}>Status</th>
-                <th style={{ width: 120 }}>Tracked</th>
-                <th style={{ width: 90, textAlign: "right" }}>Actions</th>
+                <th>Status</th>
+                <th>Tracked</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -324,38 +323,17 @@ function HarnessList() {
               })}
             </tbody>
           </table>
-        </div>
-        {totalPages > 1 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span className="muted text-sm">
-              Showing <strong style={{ color: "var(--text)" }}>{pageStart + 1}</strong>–
-              <strong style={{ color: "var(--text)" }}>{pageEnd}</strong> of{" "}
-              <strong style={{ color: "var(--text)" }}>{items.length}</strong>
-            </span>
-            <div className="pager" style={{ display: "flex", alignItems: "center", gap: 6, marginLeft: "auto" }}>
-              <Btn
-                size="sm"
-                kind="ghost"
-                icon="chevron-left"
-                disabled={safePage === 1}
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                data-testid="harness-page-prev"
-              >Previous</Btn>
-              <span className="muted text-sm tabular" style={{ padding: "0 6px" }}>
-                Page {safePage} of {totalPages}
-              </span>
-              <Btn
-                size="sm"
-                kind="ghost"
-                iconRight="chevron-right"
-                disabled={safePage === totalPages}
-                onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                data-testid="harness-page-next"
-              >Next</Btn>
+          {totalPages > 1 && (
+            <div className="tbl-foot">
+              <span className="tabular">Showing <strong style={{ color: "var(--text)" }}>{pageStart + 1}</strong>–<strong style={{ color: "var(--text)" }}>{pageEnd}</strong> of <strong style={{ color: "var(--text)" }}>{items.length}</strong></span>
+              <div className="pager">
+                <button disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}><Icon name="chevron-left" size={12} /></button>
+                <span className="muted text-sm tabular" style={{ padding: "0 8px" }}>Page {safePage} of {totalPages}</span>
+                <button disabled={safePage >= totalPages} onClick={() => setPage(safePage + 1)}><Icon name="chevron-right" size={12} /></button>
+              </div>
             </div>
-          </div>
-        )}
-        </>
+          )}
+        </div>
       )}
 
       {isMobile && (
