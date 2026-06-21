@@ -1,4 +1,7 @@
 """Capture light+dark screenshots of every docs embed, from fixtures only.
+# NOTE: the docs corpus + fixtures now live in the primerhq.github.io repo.
+# Repoint the fixture/registry paths (and embed_harness serving paths) at that
+# checkout (docs_source/_fixtures) before regenerating fixtures or embeds.
 
 This is a BUILD-ONLY harness: there is no live primer backend. We
 

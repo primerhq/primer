@@ -58,7 +58,7 @@ jobs:
 
       - name: Run docs hygiene suite
         run: |
-          uv run pytest tests/docs/ tests/user_docs/ -q --tb=short
+          uv run pytest tests/docs/ -q --tb=short
 
   coverage:
     name: Coverage

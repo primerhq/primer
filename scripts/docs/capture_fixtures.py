@@ -1,4 +1,7 @@
 """Capture real API responses as embed fixtures.
+# NOTE: the docs corpus + fixtures now live in the primerhq.github.io repo.
+# Repoint the fixture/registry paths (and embed_harness serving paths) at that
+# checkout (docs_source/_fixtures) before regenerating fixtures or embeds.
 
   PRIMER_BASE=http://127.0.0.1:8000 uv run python scripts/docs/capture_fixtures.py
 
