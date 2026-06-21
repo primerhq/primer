@@ -14,8 +14,11 @@ mcp_tools:
   - system::create_channel
   - system::update_channel
   - system::delete_channel
-  - system::set_workspace_channel_association
-  - system::clear_workspace_channel_association
+  - system::set_reply_binding
+  - system::clear_reply_binding
+  - system::create_channel_binding
+  - system::list_channel_bindings
+  - system::delete_channel_binding
 ---
 
 # Channels - multi-platform messaging
@@ -32,20 +35,26 @@ Slack channel, one Discord guild channel, one Telegram chat. Its
 start primer chats (with which agent, allowed switches, and output
 verbosity).
 
-Channels also serve as the bridge between a running primer session
-that needs human input (an `ask_user` yield, a tool-approval gate)
-and the human responsible for answering. When a workspace has a
-channel association, all session gates from that workspace's sessions
-forward to the associated channel automatically. Channels are also
-the source side for channel-kind triggers: a message in a watched
-channel can fire a trigger that spins up a fresh agent.
+A channel is one room used by two independent surfaces. **Inbound:**
+a raw provider event is normalized into a `ChannelEvent`, matched
+against bindings, and dispatched to an action (start a chat, run a
+session, resume a parked session). **Outbound:** whatever a session
+sends back (an `ask_user` yield, a tool-approval gate, an `inform`,
+the final result) follows a reply binding to a channel and thread.
 
-The vocabulary is three layers. A **ChannelProvider** holds the
-integration-level credentials: which platform, what tokens, what
-OAuth scope. A **Channel** is a specific room within that provider
-with its own per-room config. A **Workspace** can have a
-`channel_association` pointing at a Channel; session gates from that
-workspace forward to that channel.
+The inbound side rides the trigger system: a `channel`-kind trigger
+is the event-source anchor, and each binding is a `Subscription` on
+it that pairs an `EventMatcher` with an action and a `reply_target`.
+The outbound side is the unified reply binding: a session's
+`reply_binding` (set per-session by a rule's `reply_target`, else the
+workspace-standing `Workspace.reply_binding`) decides where it posts.
+
+The vocabulary is layered. A **ChannelProvider** holds the
+integration-level credentials. A **Channel** is a specific room with
+its own per-room config. A **channel trigger** anchors inbound events
+for a provider (and optionally one room); **bindings** map matchers to
+actions on it. A **Workspace** can carry a `reply_binding` pointing at
+a Channel; session traffic from that workspace forwards there.
 
 A **ChannelCorrelation** is the persistent routing record keyed on
 `(channel_id, anchor)` where anchor is a thread id (Slack/Discord)
@@ -89,10 +98,27 @@ ChatConfig (inside `config.chats`):
   sends only the last assistant turn; `"all"` streams every turn.
 
 Workspace:
-- `channel_association: {channel_id} | null` - the single Channel
-  this workspace's session gates forward to. Set at create time or
-  mutated via `set_workspace_channel_association` /
-  `clear_workspace_channel_association`.
+- `reply_binding: {channel_id} | null` - the single Channel this
+  workspace's session traffic forwards to (the standing outbound
+  binding). Set at create time or mutated via `set_reply_binding` /
+  `clear_reply_binding`.
+
+ChannelEvent (normalized inbound envelope):
+- `type` - `message.posted` or `command.invoked` (v1 core).
+- `surface` - `dm | channel | thread`.
+- `mentions_bot`, `command` (`{name, args}`), `sender`
+  (`{external_id, roles, is_bot}`), `text`, `room_external_id`.
+
+EventMatcher (the binding predicate, AND of present fields):
+- `event_type` (required), `surface`, `command_name`, `mentions_bot`,
+  `sender_roles_any`, `sender_ids_any`, `text_pattern` (regex),
+  `room_external_ids`. Omitted fields are unconstrained.
+
+ReplyTarget (where the action's reply goes):
+- `source_thread` (default) | `source_room` | `dm_sender` | `none`,
+  or an explicit `{channel_id, anchor}`. For session actions the
+  resolved target becomes a session-scoped reply binding that wins
+  over the workspace-standing one.
 
 ChannelCorrelation (DB, internal):
 - Keyed `(channel_id, anchor)`.
@@ -112,10 +138,10 @@ The dispatch flow for an `ask_user`:
 
 1. Tool returns `Yielded(tool_name="ask_user", ...)`.
 2. Worker parks the session.
-3. The dispatcher posts the prompt to the channel associated with the
-   workspace. The message carries a `Workspace: <name> · Session:
-   <label>` attribution header so the human knows which workflow is
-   asking.
+3. The dispatcher resolves the reply binding (session-scoped first,
+   then the workspace `reply_binding`) and posts the prompt there. The
+   message carries a `Workspace: <name> / Session: <label>` attribution
+   header so the human knows which workflow is asking.
 4. The adapter writes a `ChannelCorrelation(kind="session")` row for
    the reply anchor.
 
@@ -136,7 +162,7 @@ Tool approval forwarding works identically, producing a
 
 A ChannelProvider has no lifecycle beyond its config. A Channel has
 no lifecycle state (config is mutable via PUT). A Workspace's
-`channel_association` is mutable at any time.
+`reply_binding` is mutable at any time.
 
 The **dispatch attempt** has these moments:
 
@@ -181,20 +207,35 @@ system toolset for completeness but agents rarely need to touch them.
   `config.chats.enabled=true` and `config.chats.default_agent=<id>`
   to allow incoming messages to start chats on this room.
 
-### Workspace channel association
+### Workspace reply binding
 
-- `system::set_workspace_channel_association` - sets
-  `workspace.channel_association` to `{channel_id}`. Body:
-  `workspace_id`, `channel_id`. Returns `{ok: true, workspace_id,
-  channel_id}`. Overwrites any existing association.
-- `system::clear_workspace_channel_association` - sets
-  `workspace.channel_association` to null. Body: `workspace_id`.
-  Returns `{ok: true, workspace_id}`.
+- `system::set_reply_binding` - sets `workspace.reply_binding` to
+  `{channel_id}`. Body: `workspace_id`, `channel_id`. Overwrites any
+  existing binding.
+- `system::clear_reply_binding` - sets `workspace.reply_binding` to
+  null. Body: `workspace_id`.
 
-After setting an association, all `ask_user`, `tool_approval`, and
-`inform` gates from sessions in that workspace forward to the
-associated channel. No per-gate flags; the association implies all
-gates forward.
+After setting a reply binding, all `ask_user`, `tool_approval`, and
+`inform` gates plus the start ack and final result from sessions in
+that workspace forward to the bound channel. No per-gate flags; the
+binding implies all of it forwards (a per-binding quiet mode can
+suppress the acks while still forwarding gates).
+
+### Inbound channel bindings
+
+- `system::create_channel_binding` - create a `matcher -> action`
+  binding (a Subscription) on a `channel`-kind trigger. Body:
+  `trigger_id`, `event_matcher`, `config` (the action), optional
+  `reply_target`, `payload_template`, `parallelism`, `enabled`. An
+  unknown trigger returns `type=trigger_not_found`.
+- `system::list_channel_bindings` - list the bindings on a channel
+  trigger. Body: `trigger_id`.
+- `system::delete_channel_binding` - remove one binding while keeping
+  the trigger. Body: `trigger_id`, `subscription_id`.
+
+The `channel` trigger itself is created with the regular trigger tools
+(`trigger::create` with `config.kind="channel"` and a `provider_id`,
+optional `channel_id`).
 
 ## Workflows
 
@@ -236,11 +277,11 @@ Slack channel #ops-pager.
    }
    ```
 
-3. Associate the workspace:
+3. Bind the workspace:
 
    ```json
    {
-     "tool": "system::set_workspace_channel_association",
+     "tool": "system::set_reply_binding",
      "arguments": {
        "workspace_id": "ws-incidents",
        "channel_id": "ch-ops-pager"
@@ -250,7 +291,7 @@ Slack channel #ops-pager.
 
 4. Next time a session in `ws-incidents` yields with `ask_user`, a
    Slack message appears in #ops-pager (with a `Workspace: incidents
-   · Session: <label>` header) with the question. A reply resumes
+   / Session: <label>` header) with the question. A reply resumes
    the session.
 
 ### Workflow 2 - enable chats on a Telegram room
@@ -285,7 +326,7 @@ Slack channel #ops-pager.
 2. Incoming DMs now start a chat with the `helpdesk` agent. The
    conversation persists across messages in the same Telegram chat.
 
-### Workflow 3 - inspect channels and check workspace association
+### Workflow 3 - inspect channels and check the reply binding
 
 **Goal.** Agent wants to see which channel a workspace forwards to.
 
@@ -298,7 +339,7 @@ Slack channel #ops-pager.
 }
 ```
 
-Returns the workspace row; `channel_association` is either
+Returns the workspace row; `reply_binding` is either
 `{"channel_id": "ch-ops-pager"}` or `null`.
 
 2. List channels if you need to enumerate available channels:
@@ -310,20 +351,122 @@ Returns the workspace row; `channel_association` is either
 }
 ```
 
+### Workflow 4 - map a slash command to a fresh session
+
+**Goal.** When someone runs `/deploy` in a Slack channel, run the
+`deployer` agent and reply in the originating thread.
+
+1. Create the `channel`-kind trigger (the event-source anchor):
+
+```json
+{
+  "tool": "trigger::create",
+  "arguments": {
+    "slug": "slack-deploy-anchor",
+    "name": "Slack deploy command",
+    "config": {
+      "kind": "channel",
+      "provider_id": "cp-slack",
+      "channel_id": "ch-deploys"
+    },
+    "enabled": true
+  }
+}
+```
+
+2. Create the binding that maps the matcher to the action. Request:
+
+```json
+{
+  "tool": "system::create_channel_binding",
+  "arguments": {
+    "trigger_id": "slack-deploy-anchor",
+    "event_matcher": {
+      "event_type": "command.invoked",
+      "command_name": "deploy"
+    },
+    "config": {
+      "kind": "agent_fresh_session",
+      "workspace_id": "ws-ops",
+      "agent_id": "deployer"
+    },
+    "reply_target": "source_thread"
+  }
+}
+```
+
+Response (the created Subscription):
+
+```json
+{
+  "id": "sub-deploy-1",
+  "trigger_id": "slack-deploy-anchor",
+  "event_matcher": {
+    "event_type": "command.invoked",
+    "command_name": "deploy"
+  },
+  "config": {
+    "kind": "agent_fresh_session",
+    "workspace_id": "ws-ops",
+    "agent_id": "deployer"
+  },
+  "reply_target": "source_thread",
+  "parallelism": "skip",
+  "enabled": true
+}
+```
+
+Now every `/deploy` in `ch-deploys` runs the `deployer` agent. The
+`source_thread` reply target makes that session's start ack, gates,
+and final result land back in the same thread.
+
+### Workflow 5 - park a workflow on a channel event
+
+**Goal.** A running session waits until a `command.invoked` event
+matching `approve` arrives, then resumes.
+
+```json
+{
+  "tool": "workspace_ext::subscribe_to_channel_event",
+  "arguments": {
+    "trigger_id": "slack-deploy-anchor",
+    "event_matcher": {
+      "event_type": "command.invoked",
+      "command_name": "approve"
+    }
+  }
+}
+```
+
+This is a yielding tool: it persists a one-shot `parked_session`
+binding on the channel trigger and parks the calling session. When a
+matching event fires the trigger, the session resumes with the event
+in its tool result. Omit `event_matcher` to resume on any event for
+the trigger.
+
 ## Gotchas
 
-- **Association implies all gates forward.** There are no per-gate
-  flags. If a workspace is associated with a channel, all `ask_user`,
+- **A reply binding implies all gates forward.** There are no per-gate
+  flags. If a workspace has a `reply_binding`, all `ask_user`,
   `tool_approval`, and `inform` gates from its sessions forward to
-  that channel.
+  that channel (plus the start ack and final result, unless the
+  binding is quiet).
+- **Session-scoped reply binding wins over the workspace one.** A
+  channel rule's `reply_target` sets a per-session binding anchored to
+  the originating thread, which takes precedence over the workspace
+  `reply_binding`.
+- **Correlation-first inbound.** A reply that continues an existing
+  conversation (a known thread with a parked session or a bound chat)
+  is handled by the correlation store and never reaches the rules;
+  only fresh events are matched against bindings.
 - **One channel, many workspaces.** A single channel can serve
   multiple workspaces simultaneously. Each workspace's session gates
   open a separate thread or message on the channel, attributed with
-  a `Workspace: <name> · Session: <label>` header.
+  a `Workspace: <name> / Session: <label>` header.
 - **Chats and session gates coexist on the same channel.** A channel
   with `config.chats.enabled=true` handles both incoming user
-  messages (chats) and session gate replies from workspace
-  associations. ChannelCorrelation rows keep them separate.
+  messages (chats) and session gate replies from reply bindings.
+  ChannelCorrelation rows keep them separate.
 - **`config.chats.default_agent` is required when
   `config.chats.enabled=true`.** Omitting it returns `422`.
 - **`/agent` switching is gated by `allow_agent_switch`.** It is off by

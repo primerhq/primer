@@ -102,12 +102,12 @@ class WorkspaceCreateBody(BaseModel):
             "extra files, additional init commands)."
         ),
     )
-    channel_association: WorkspaceChannelLink | None = Field(
+    reply_binding: WorkspaceChannelLink | None = Field(
         default=None,
         description=(
-            "Optional channel association to set at create time. "
+            "Optional reply binding to set at create time. "
             "When set, the workspace row is created with this "
-            "channel_association already populated."
+            "reply_binding already populated."
         ),
     )
 
@@ -467,7 +467,7 @@ async def create_workspace(
         created_at=datetime.now(timezone.utc),
         phase="running",
         runtime_meta=live.runtime_meta,
-        channel_association=body.channel_association,
+        reply_binding=body.reply_binding,
     )
     await workspace_storage.create(row)
     return row
@@ -512,29 +512,29 @@ async def rename_workspace(
     return updated
 
 
-class _ChannelAssociationBody(BaseModel):
-    """Body of ``PUT /v1/workspaces/{id}/channel_association``."""
+class _ReplyBindingBody(BaseModel):
+    """Body of ``PUT /v1/workspaces/{id}/reply_binding``."""
 
-    channel_id: str = Field(..., min_length=1, description="Channel id to associate.")
+    channel_id: str = Field(..., min_length=1, description="Channel id to bind.")
 
 
 @workspace_router.put(
-    "/workspaces/{workspace_id}/channel_association",
+    "/workspaces/{workspace_id}/reply_binding",
     response_model=WorkspaceRow,
-    summary="Set the channel association for a Workspace",
+    summary="Set the reply binding for a Workspace",
     responses=common_responses(404, 409, 422, 500),
 )
-async def set_workspace_channel_association(
+async def set_workspace_reply_binding(
     workspace_id: str = Path(..., description="Workspace id"),
-    body: _ChannelAssociationBody = Body(...),
+    body: _ReplyBindingBody = Body(...),
     workspace_storage=Depends(get_workspace_storage),
     sp=Depends(get_storage_provider),
 ) -> WorkspaceRow:
-    """Attach a Channel to this workspace.
+    """Attach a Channel reply binding to this workspace.
 
     After this call, session gates (ask_user / tool_approval) on this
-    workspace forward to the designated channel. Validates that the
-    channel exists and that the workspace is not in a terminating phase.
+    workspace forward to the bound channel. Validates that the channel
+    exists and that the workspace is not in a terminating phase.
     """
     from primer.model.channel import Channel
 
@@ -548,7 +548,7 @@ async def set_workspace_channel_association(
                 "error": "workspace_terminating",
                 "message": (
                     f"Workspace {workspace_id!r} is terminating and "
-                    "cannot have its channel association changed."
+                    "cannot have its reply binding changed."
                 ),
             },
         )
@@ -564,32 +564,32 @@ async def set_workspace_channel_association(
             },
         )
     updated = row.model_copy(
-        update={"channel_association": WorkspaceChannelLink(channel_id=body.channel_id)}
+        update={"reply_binding": WorkspaceChannelLink(channel_id=body.channel_id)}
     )
     await workspace_storage.update(updated)
     return updated
 
 
 @workspace_router.delete(
-    "/workspaces/{workspace_id}/channel_association",
+    "/workspaces/{workspace_id}/reply_binding",
     status_code=204,
-    summary="Clear the channel association for a Workspace",
+    summary="Clear the reply binding for a Workspace",
     responses=common_responses(404, 500),
 )
-async def clear_workspace_channel_association(
+async def clear_workspace_reply_binding(
     workspace_id: str = Path(..., description="Workspace id"),
     workspace_storage=Depends(get_workspace_storage),
 ) -> None:
-    """Detach the channel association from this workspace.
+    """Detach the reply binding from this workspace.
 
     After this call, session gates on this workspace are no longer
-    forwarded to any channel. No-ops silently if the association was
+    forwarded to any channel. No-ops silently if the binding was
     already cleared.
     """
     row = await workspace_storage.get(workspace_id)
     if row is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
-    updated = row.model_copy(update={"channel_association": None})
+    updated = row.model_copy(update={"reply_binding": None})
     await workspace_storage.update(updated)
 
 

@@ -51,7 +51,7 @@ class _RecordingDispatcher:
     def __init__(self) -> None:
         self.calls: list[PromptEnvelope] = []
 
-    async def dispatch_prompt(self, *, envelope: PromptEnvelope) -> list:
+    async def dispatch_prompt(self, *, envelope: PromptEnvelope, session=None) -> list:
         self.calls.append(envelope)
         return [{"ok": True}]
 

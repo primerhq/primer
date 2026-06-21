@@ -43,7 +43,13 @@ def _provider():
 async def test_workspace_ext_tool_ids():
     provider = _provider()
     names = {t.id async for t in provider.list_tools()}
-    assert names == {"sleep", "watch_files", "invoke_graph", "subscribe_to_trigger"}
+    assert names == {
+        "sleep",
+        "watch_files",
+        "invoke_graph",
+        "subscribe_to_trigger",
+        "subscribe_to_channel_event",
+    }
 
 
 @pytest.mark.asyncio
@@ -55,7 +61,13 @@ async def test_workspace_ext_tools_carry_toolset_id():
 
 def test_all_four_tools_yield():
     provider = _provider()
-    for name in ("sleep", "watch_files", "invoke_graph", "subscribe_to_trigger"):
+    for name in (
+        "sleep",
+        "watch_files",
+        "invoke_graph",
+        "subscribe_to_trigger",
+        "subscribe_to_channel_event",
+    ):
         assert provider.is_yielding(name) is True, name
 
 
@@ -66,6 +78,7 @@ def test_requires_session_flags_preserved():
     assert provider.requires_session("watch_files") is True
     assert provider.requires_session("invoke_graph") is True
     assert provider.requires_session("subscribe_to_trigger") is True
+    assert provider.requires_session("subscribe_to_channel_event") is True
 
 
 @pytest.mark.asyncio
@@ -91,6 +104,7 @@ async def test_scoped_ids_via_tool_manager():
         "workspace_ext__watch_files",
         "workspace_ext__invoke_graph",
         "workspace_ext__subscribe_to_trigger",
+        "workspace_ext__subscribe_to_channel_event",
     }
 
 

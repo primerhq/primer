@@ -52,6 +52,111 @@ class ChannelInboundRouter:
             claim_engine=self._claim_engine,
         )
 
+    async def route_event(self, *, event, channel: Channel) -> None:
+        """Route a normalized :class:`ChannelEvent` correlation-first, else fire
+        channel triggers.
+
+        This is the typed inbound entry for the event-driven path. The legacy
+        :meth:`route` stays the fallback for the rejection-reason reply path.
+        """
+        from primer.channel.event_dispatch import ChannelEventRouter
+        from primer.observability import metrics
+        from primer.trigger.subscribers import DispatchDeps
+
+        event_type = getattr(event.type, "value", event.type)
+        provider = getattr(event.provider, "value", event.provider)
+        metrics.channel_events_normalized_total.labels(
+            event_type=event_type, provider=provider,
+        ).inc()
+
+        fire_deps = DispatchDeps(
+            storage_provider=self._sp,
+            claim_engine=self._claim_engine,
+            scheduler=None,
+            event_bus=self._bus,
+        )
+        router = ChannelEventRouter(
+            storage_provider=self._sp,
+            correlation_store=self._correlation,
+            fire_deps=fire_deps,
+            event_bus=self._bus,
+        )
+        matched = await self._count_matched_bindings(event=event, channel=channel)
+        if matched:
+            metrics.channel_events_matched_total.labels(
+                event_type=event_type, provider=provider,
+            ).inc()
+        await router.route_event(event=event, channel=channel)
+        if matched:
+            metrics.channel_events_dispatched_total.labels(
+                event_type=event_type, provider=provider,
+            ).inc()
+
+    async def has_matching_rule(self, *, event, channel: Channel) -> bool:
+        """Read-only: does any enabled channel-trigger subscription's matcher
+        match this event?
+
+        Correlated replies never match (they belong to the chat/session
+        correlation path). Adapter inbound handlers call this to decide whether
+        the rule path OWNS this event (fire the rule, skip the default
+        chat-surface dispatch) or not (let the chat dispatch deliver it). This
+        keeps a single message from being delivered twice - once by the rule
+        path and once by the legacy chat dispatch.
+        """
+        return await self._count_matched_bindings(event=event, channel=channel)
+
+    async def _count_matched_bindings(self, *, event, channel: Channel) -> bool:
+        """Read-only pre-pass: does any channel-trigger subscription's
+        ``event_matcher`` match this event? Pure counting helper for the
+        matched/dispatched metrics; never mutates state and never fires."""
+        from primer.channel.event_dispatch import ChannelEventRouter
+        from primer.model.event_matcher import matches as _matches
+        from primer.model.storage import OffsetPage, Op
+        from primer.model.trigger import Subscription
+        from primer.storage.q import Q
+        from primer.trigger.subscribers import DispatchDeps
+
+        # A correlated reply never fans out to rules; no rule match in that case.
+        channel_id = event.channel_id or (channel.id if channel is not None else None)
+        if event.thread_anchor and channel_id is not None:
+            record = await self._correlation.lookup(channel_id, event.thread_anchor)
+            if record is not None:
+                return False
+
+        resolver = ChannelEventRouter(
+            storage_provider=self._sp,
+            correlation_store=self._correlation,
+            fire_deps=DispatchDeps(
+                storage_provider=self._sp,
+                claim_engine=self._claim_engine,
+                scheduler=None,
+                event_bus=self._bus,
+            ),
+            event_bus=self._bus,
+        )
+        triggers = await resolver._resolve_channel_triggers(
+            event.provider_id, channel_id,
+        )
+        if not triggers:
+            return False
+        subs_storage = self._sp.get_storage(Subscription)
+        for trigger in triggers:
+            q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger.id)
+            offset = 0
+            while offset < 10_000:
+                page = await subs_storage.find(
+                    q.build(), OffsetPage(offset=offset, length=200),
+                )
+                for sub in page.items:
+                    if not sub.enabled or sub.event_matcher is None:
+                        continue
+                    if _matches(sub.event_matcher, event):
+                        return True
+                if len(page.items) < 200:
+                    break
+                offset += 200
+        return False
+
     async def route(
         self,
         *,

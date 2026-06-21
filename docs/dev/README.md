@@ -153,9 +153,10 @@ flowchart TD
 - [chats](subsystems/chats.md) - the WebSocket-driven conversational surface: a
   long-lived `Chat` plus append-only message log whose turns are detached onto the
   worker pool and reuse the yielding-tool park machinery.
-- [channels](subsystems/channels.md) - the outbound and inbound bridge that forwards a
-  parked session's `ask_user` and approval prompts to Slack, Telegram, and Discord and
-  routes the human reply back onto the event bus.
+- [channels](subsystems/channels.md) - the event-to-action bridge for Slack, Telegram, and
+  Discord: inbound provider events are normalized and matched against `channel`-trigger
+  bindings to drive actions, while outbound session traffic (gates, lifecycle, final result)
+  follows a unified reply binding back to the room.
 - [knowledge](subsystems/knowledge.md) - how documents and the platform's own entities
   become searchable: the load-split-embed-store ingestion pipeline and the
   internal-collections semantic index of agents, graphs, collections, and tools.

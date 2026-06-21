@@ -48,6 +48,16 @@ pytestmark = [
         os.environ.get("PRIMER_RUN_UI_E2E") != "1",
         reason="UI e2e tests require PRIMER_RUN_UI_E2E=1 + a running primer server",
     ),
+    pytest.mark.skipif(
+        not os.environ.get("PRIMER_E2E_LLM_BASE_URL"),
+        reason=(
+            "the feedback-loop journey needs a real LLM that emits the "
+            "`complete` flag; set PRIMER_E2E_LLM_BASE_URL (the "
+            "OpenAI-compatible base ending in /v1), PRIMER_E2E_LLM_MODEL, "
+            "and PRIMER_E2E_LLM_API_KEY. Without a reachable LLM the graph "
+            "loop never terminates, so the test is skipped rather than hung."
+        ),
+    ),
     smk("SMK-UI-04"),
 ]
 
@@ -79,13 +89,20 @@ def test_graph_builder_feedback_loop_journey(
         # 1. Seed prerequisites via API (LLM provider, two agents,
         #    a workspace). The graph itself is built in the UI.
         # ------------------------------------------------------------------
+        # A real, reachable LLM is required (guaranteed present by the
+        # module skipif): the decider must actually emit the structured
+        # {complete, summary} so the conditional branch can terminate.
+        model_name = os.environ.get("PRIMER_E2E_LLM_MODEL", "google/gemma-4-e4b")
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             r = c.post("/v1/llm_providers", json={
                 "id": llm_id,
-                "provider": "ollama",
-                "config": {"url": "http://127.0.0.1:9999"},
+                "provider": "openchat",
+                "config": {
+                    "url": os.environ["PRIMER_E2E_LLM_BASE_URL"],
+                    "api_key": os.environ.get("PRIMER_E2E_LLM_API_KEY", ""),
+                },
                 "models": [
-                    {"name": "fake-model", "context_length": 4096},
+                    {"name": model_name, "context_length": 32_768},
                 ],
                 "limits": {"max_concurrency": 1},
             })
@@ -100,7 +117,7 @@ def test_graph_builder_feedback_loop_journey(
                     "id": aid,
                     "description": desc,
                     "model": {
-                        "provider_id": llm_id, "model_name": "fake-model",
+                        "provider_id": llm_id, "model_name": model_name,
                     },
                     "tools": [],
                     "system_prompt": [f"you are the {desc}"],
@@ -235,24 +252,34 @@ def test_graph_builder_feedback_loop_journey(
         #    ``question`` field (the dynamic Begin-schema form), submit.
         # ------------------------------------------------------------------
         assert workspace_id_created is not None
+        # The session-create modal is launched from the Sessions list
+        # page (the per-workspace "New session" button was removed; the
+        # modal carries its own workspace selector).
         page.goto(
-            f"{console_url}#/workspaces/{workspace_id_created}/sessions",
+            f"{console_url}#/sessions",
             wait_until="domcontentloaded",
         )
         page.get_by_role("button", name="New session", exact=False).first.click()
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=10_000)
 
-        # Switch the binding to "graph" and pick our graph by id.
-        graph_radio = modal.get_by_text("Graph", exact=False).first
-        if graph_radio.count() > 0:
-            graph_radio.click()
-        modal.get_by_role(
-            "combobox", name="Graph", exact=False,
-        ).first.select_option(value=graph_id)
+        # Switch the binding to "graph" via the chip, then pick our graph.
+        modal.get_by_text("graph", exact=True).first.click()
+        # The binding select (Agent/Graph) is the first <select>; the
+        # workspace select is the second.
+        selects = modal.locator("select.select")
+        selects.nth(0).select_option(value=graph_id)
+        selects.nth(1).select_option(value=workspace_id_created)
 
         # The dynamic Begin-schema form renders a ``question`` text input.
-        question_input = modal.get_by_label("question", exact=False).first
+        # Its label is not programmatically associated with the control
+        # (no htmlFor/id), so scope to the .field whose label reads
+        # "question" and grab the input within it.
+        question_field = modal.locator(
+            ".field", has=page.locator(".field-label", has_text="question")
+        ).first
+        question_field.wait_for(state="visible", timeout=10_000)
+        question_input = question_field.locator("input, textarea").first
         question_input.fill("Is the answer 42?")
 
         modal.get_by_role("button", name="Create", exact=True).click()
@@ -274,7 +301,9 @@ def test_graph_builder_feedback_loop_journey(
                 if r.status_code == 200:
                     items = r.json().get("items", [])
                     if items:
-                        sid = items[0]["id"]
+                        # The workspace-sessions list item keys the id as
+                        # ``session_id`` (not ``id``).
+                        sid = items[0]["session_id"]
                         rs = c.get(
                             f"/v1/workspaces/{workspace_id_created}/sessions/{sid}",
                         )

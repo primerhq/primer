@@ -110,21 +110,25 @@ def test_u0114_policy_modal_rego_compile_error_renders_inline(
     tool_name = f"u0114-tool-{unique_suffix}"
 
     try:
-        # ----- 1. Navigate /approvals → Policies tab ----------------
+        # ----- 1. Open the policy modal from the Tools page ---------
+        # The approval-policy authoring surface moved off the Approvals
+        # page onto the per-tool Tools table: each row's Add/Edit button
+        # opens the same AP_NewPolicyModal (which still carries free-form
+        # id / toolset / tool inputs we override below).
         page.goto(
-            f"{console_url}#/approvals",
+            f"{console_url}#/tools",
             wait_until="domcontentloaded",
         )
-        policies_tab = page.locator(
-            "[data-testid='approvals-tab-policies']",
-        )
-        expect(policies_tab).to_be_visible(timeout=15_000)
-        policies_tab.click()
+        page.locator("h1.page-title").get_by_text(
+            "Tools", exact=False,
+        ).first.wait_for(state="visible", timeout=15_000)
 
-        # ----- 2. New policy modal opens ----------------------------
-        new_btn = page.get_by_role("button", name="New policy", exact=True)
-        expect(new_btn).to_be_visible(timeout=10_000)
-        new_btn.click()
+        # ----- 2. New policy modal opens via a tool row -------------
+        add_btn = page.get_by_role("button", name="Add", exact=True).or_(
+            page.get_by_role("button", name="Edit", exact=True)
+        ).first
+        expect(add_btn).to_be_visible(timeout=15_000)
+        add_btn.click()
 
         modal = page.locator(".modal").first
         expect(modal).to_be_visible(timeout=5_000)
@@ -202,10 +206,12 @@ def test_u0114_policy_modal_rego_compile_error_renders_inline(
             ".toast", has_text="Policy created",
         )
         expect(success_toast).to_be_visible(timeout=10_000)
-        # Policies table refetches and contains the new row.
-        policy_row = page.locator(
-            f"[data-testid='approvals-policy-row-{policy_id}']",
-        )
-        expect(policy_row).to_be_visible(timeout=10_000)
+        # The policy now exists in storage (the policies table that used
+        # to live on the Approvals page was removed; verify via the API).
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            r = c.get(f"/v1/tool_approval_policies/{policy_id}")
+            assert r.status_code == 200, (
+                f"policy {policy_id!r} not persisted after create: {r.text}"
+            )
     finally:
         _cleanup(base_url, [policy_id])

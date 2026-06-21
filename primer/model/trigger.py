@@ -10,6 +10,12 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field, SecretStr, field_validator
 
 from primer.model.common import Identifiable
+from primer.model.event_matcher import EventMatcher
+
+# NOTE: ``Subscription.reply_target`` carries a ``ReplyTarget`` defined in a
+# later part. Pydantic 2.13 rejects an unresolved string forward-ref on import,
+# so the field is typed ``object | None`` for now; the part that defines
+# ``ReplyTarget`` narrows the annotation and calls ``Subscription.model_rebuild()``.
 
 
 # ---------------------------------------------------------------------------
@@ -21,7 +27,7 @@ class TriggerKind(str, Enum):
     DELAYED = "delayed"
     SCHEDULED = "scheduled"
     WEBHOOK = "webhook"
-    # CHANNEL = "channel"   # future
+    CHANNEL = "channel"
 
 
 class DelayedTriggerConfig(BaseModel):
@@ -61,8 +67,17 @@ class WebhookTriggerConfig(BaseModel):
     hmac_secret: SecretStr | None = None
 
 
+class ChannelTriggerConfig(BaseModel):
+    kind: Literal["channel"] = "channel"
+    provider_id: str
+    channel_id: str | None = None
+
+
 TriggerConfig = Annotated[
-    DelayedTriggerConfig | ScheduledTriggerConfig | WebhookTriggerConfig,
+    DelayedTriggerConfig
+    | ScheduledTriggerConfig
+    | WebhookTriggerConfig
+    | ChannelTriggerConfig,
     Field(discriminator="kind"),
 ]
 
@@ -104,6 +119,7 @@ class SubscriptionKind(str, Enum):
     AGENT_FRESH_SESSION = "agent_fresh_session"
     GRAPH_FRESH_SESSION = "graph_fresh_session"
     PARKED_SESSION = "parked_session"
+    START_CHAT = "start_chat"
 
 
 class ChatMessageSubConfig(BaseModel):
@@ -130,9 +146,14 @@ class ParkedSessionSubConfig(BaseModel):
     parked_at: datetime
 
 
+class StartChatSubConfig(BaseModel):
+    kind: Literal["start_chat"] = "start_chat"
+    agent_id: str
+
+
 SubscriptionConfig = Annotated[
     ChatMessageSubConfig | AgentFreshSubConfig
-    | GraphFreshSubConfig | ParkedSessionSubConfig,
+    | GraphFreshSubConfig | ParkedSessionSubConfig | StartChatSubConfig,
     Field(discriminator="kind"),
 ]
 
@@ -142,6 +163,11 @@ class Subscription(Identifiable):
     config: SubscriptionConfig
     payload_template: str | None = None  # Jinja2 rendered against fire context
     parallelism: Literal["skip", "queue"] = "skip"
+    event_matcher: EventMatcher | None = None
+    # ``reply_target`` carries a ``ReplyTarget`` defined in a later part. Until
+    # that part lands (and calls ``Subscription.model_rebuild()``), the field is
+    # typed as ``object | None`` so the model stays fully defined and importable.
+    reply_target: object | None = None
     enabled: bool = True
     description: str | None = None
     last_fired_at: datetime | None = None
@@ -151,11 +177,13 @@ class Subscription(Identifiable):
 
 __all__ = [
     "AgentFreshSubConfig",
+    "ChannelTriggerConfig",
     "ChatMessageSubConfig",
     "DelayedTriggerConfig",
     "GraphFreshSubConfig",
     "ParkedSessionSubConfig",
     "ScheduledTriggerConfig",
+    "StartChatSubConfig",
     "Subscription",
     "SubscriptionConfig",
     "SubscriptionKind",

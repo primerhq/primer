@@ -20,6 +20,64 @@ logger = logging.getLogger(__name__)
 _HANDLERS_INSTALLED: set[str] = set()
 
 
+async def _route_channel_event(adapter: Any, provider_id: str, msg: Any) -> bool:
+    """Normalize a fresh inbound PTB message and, when a channel-trigger rule
+    matches it, fire that rule.
+
+    Returns ``True`` iff a rule matched and was dispatched - in which case the
+    caller MUST skip the legacy chat-surface dispatch, so the message is not
+    delivered twice (once as a rule action, once as a default chat message).
+    Returns ``False`` for correlated replies and unmatched messages, leaving
+    the caller's chat dispatch to own delivery.
+
+    Builds the small dict envelope ``{"type": "message", "payload": {...}}`` the
+    provider :class:`TelegramEventNormalizer` consumes (so the normalizer stays
+    SDK-free), normalizes it, and - when a :class:`ChannelEvent` results - hands
+    it to the adapter's event router. A best-effort path: any failure is logged
+    and swallowed (returning ``False``) so it never breaks the chat-surface
+    dispatch."""
+    router = adapter._event_router()
+    if router is None:
+        return False
+    try:
+        from primer.channel.telegram.normalizer import TelegramEventNormalizer
+
+        chat = msg.chat
+        sender = msg.from_user
+        entities = [
+            {
+                "type": getattr(e, "type", None),
+                "offset": getattr(e, "offset", 0),
+                "length": getattr(e, "length", 0),
+            }
+            for e in (msg.entities or [])
+        ]
+        payload = {
+            "message_id": msg.message_id,
+            "chat": {
+                "id": getattr(chat, "id", None),
+                "type": getattr(chat, "type", None),
+            },
+            "from": {
+                "id": getattr(sender, "id", None) if sender else None,
+                "full_name": getattr(sender, "full_name", None) if sender else None,
+            },
+            "text": msg.text or msg.caption or "",
+            "entities": entities,
+        }
+        normalizer = TelegramEventNormalizer(provider_id=provider_id)
+        event = await normalizer.normalize({"type": "message", "payload": payload})
+        if event is None:
+            return False
+        if not await router.has_matching_rule(event=event, channel=adapter._channel):
+            return False
+        await router.route_event(event=event, channel=adapter._channel)
+        return True
+    except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
+        logger.exception("telegram: channel-event routing failed")
+        return False
+
+
 def _install_handlers(provider_id: str, app: Any) -> None:
     if provider_id in _HANDLERS_INSTALLED:
         return
@@ -115,6 +173,11 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         ))
         if not msg.reply_to_message and getattr(adapter, "_sp", None) is not None:
             sender_name = msg.from_user.full_name if msg.from_user else "user"
+            # Rule path first: if a channel-trigger rule matches, it owns this
+            # message - skip the chat dispatch so it is not delivered twice
+            # (once as the rule action, once as a default chat message).
+            if await _route_channel_event(adapter, provider_id, msg):
+                return
             if has_media:
                 notice = await adapter.handle_inbound_chat_media(
                     sender_name=sender_name, msg=msg)

@@ -41,12 +41,14 @@ from uuid import uuid4
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.model.chat import Tool, ToolCallResult, ToolExample
+from primer.model.event_matcher import EventMatcher
 from primer.model.trigger import (
     ParkedSessionSubConfig,
     Subscription,
     SubscriptionConfig,
     Trigger,
     TriggerConfig,
+    TriggerKind,
 )
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._describe import make_tool
@@ -166,6 +168,14 @@ class _SubUpdateArgs(BaseModel):
 
 class _SubscribeArgs(BaseModel):
     trigger_id: str = Field(..., min_length=1, description="Trigger id to subscribe to.")
+
+
+class _SubscribeChannelArgs(BaseModel):
+    trigger_id: str = Field(..., min_length=1, description="Channel trigger id to subscribe to.")
+    event_matcher: EventMatcher | None = Field(
+        default=None,
+        description="Predicate gating which channel event resumes this session (AND of present fields). Omit to resume on any event for the trigger.",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +429,39 @@ TOOL_SUBSCRIBE = make_tool(
             args={"trigger_id": "trg-1"},
             returns="the fire context on next fire",
             note="yielding: parks the session until the trigger fires",
+        ),
+    ],
+    yields=True,
+    requires_session=True,
+)
+
+TOOL_SUBSCRIBE_CHANNEL = make_tool(
+    id="subscribe_to_channel_event",
+    toolset_id=TRIGGER_TOOLSET_ID,
+    purpose=(
+        "Park the calling session until a matching channel event fires the "
+        "given channel trigger, then resume with the event in the tool result."
+    ),
+    when=(
+        "Use when a workflow should wait for a specific channel event (e.g. a "
+        "slash command in a watched room) before continuing. Validates the "
+        "trigger exists, is enabled, and is a channel-kind trigger, else "
+        "returns ``type=trigger_not_found_or_disabled``. Persists a one-shot "
+        "parked_session subscription carrying the matcher; the channel "
+        "dispatch loop resumes the session only on a matching event."
+    ),
+    args_schema=_SubscribeChannelArgs.model_json_schema(),
+    examples=[
+        ToolExample(
+            args={
+                "trigger_id": "trg-ch-1",
+                "event_matcher": {
+                    "event_type": "command.invoked",
+                    "command_name": "approve",
+                },
+            },
+            returns="the channel event on the next matching fire",
+            note="yielding: parks the session until a matching channel event",
         ),
     ],
     yields=True,
@@ -793,6 +836,85 @@ def _make_subscribe_handler(
         await storage_provider.get_storage(Subscription).create(sub)
         return Yielded(
             tool_name="subscribe_to_trigger",
+            event_key=f"trigger:{args.trigger_id}",
+            timeout=None,  # honour the global yield cap
+            resume_metadata={
+                "subscription_id": sub_id,
+                "trigger_id": args.trigger_id,
+            },
+        )
+
+    return _handler
+
+
+def _make_subscribe_channel_handler(
+    storage_provider: "StorageProvider",
+) -> ToolHandler:
+    """Yielding-tool handler for ``subscribe_to_channel_event``.
+
+    Generalizes :func:`_make_subscribe_handler` to a channel trigger gated
+    by an :class:`EventMatcher`. The session parks and only a matching
+    channel event resumes it via the existing ``parked_session`` dispatcher
+    path; the matcher is stored on the one-shot :class:`Subscription` so the
+    channel dispatch loop can honour it before resuming.
+
+    The resume key (``trigger:<id>``) and ``resume_metadata`` shape match
+    ``subscribe_to_trigger`` so the existing resume bridge works unchanged.
+
+    The Subscription row is written BEFORE returning :class:`Yielded` so a
+    fire racing the park still finds the row.
+    """
+
+    async def _handler(
+        arguments: dict[str, Any],
+        *,
+        ctx: ToolContext,
+    ) -> ToolCallResult | Yielded:
+        try:
+            args = _SubscribeChannelArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_validation(exc)
+
+        trigger_storage = storage_provider.get_storage(Trigger)
+        trigger = await trigger_storage.get(args.trigger_id)
+        if (
+            trigger is None
+            or not trigger.enabled
+            or trigger.config.kind != TriggerKind.CHANNEL.value
+        ):
+            return _err(
+                f"channel trigger {args.trigger_id!r} does not exist, is "
+                "disabled, or is not a channel-kind trigger",
+                error_type="trigger_not_found_or_disabled",
+            )
+
+        # Chat-only callers have no session to park; refuse rather than
+        # write an orphan row the dispatcher would just skip on fire.
+        if ctx.session_id is None:
+            return _err(
+                "subscribe_to_channel_event requires a session-bound caller; "
+                "chat-only invocations have no session to park",
+                error_type="trigger_not_found_or_disabled",
+            )
+
+        sub_id = f"sb-{uuid4().hex[:12]}"
+        sub = Subscription(
+            id=sub_id,
+            trigger_id=args.trigger_id,
+            config=ParkedSessionSubConfig(
+                session_id=ctx.session_id,
+                tool_call_id=ctx.tool_call_id,
+                parked_at=datetime.now(timezone.utc),
+            ),
+            event_matcher=args.event_matcher,
+            payload_template=None,
+            parallelism="skip",  # field unused for parked_session
+            enabled=True,
+            created_at=datetime.now(timezone.utc),
+        )
+        await storage_provider.get_storage(Subscription).create(sub)
+        return Yielded(
+            tool_name="subscribe_to_channel_event",
             event_key=f"trigger:{args.trigger_id}",
             timeout=None,  # honour the global yield cap
             resume_metadata={

@@ -1,21 +1,20 @@
-"""Tests for workspace channel-association tools in the system toolset."""
+"""Tests for workspace reply-binding tools in the system toolset."""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry
-from primer.model.channel import Channel, ChannelProvider
+from primer.model.channel import Channel
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.storage import CursorPageResponse, OffsetPageResponse
 from primer.model.workspace import Workspace, WorkspaceChannelLink, WorkspaceRuntimeMeta
-from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
+from primer.toolset.system import build_system_toolset
 
 
 # ===========================================================================
@@ -144,29 +143,23 @@ def _make_channel(ch_id: str = "chan-1") -> Channel:
 
 
 @pytest.mark.asyncio
-async def test_set_workspace_channel_association_is_exposed(system_toolset):
+async def test_set_reply_binding_is_exposed(system_toolset):
     tools = {t.id async for t in system_toolset.list_tools()}
-    assert "set_workspace_channel_association" in tools
+    assert "set_reply_binding" in tools
 
 
 @pytest.mark.asyncio
-async def test_clear_workspace_channel_association_is_exposed(system_toolset):
+async def test_clear_reply_binding_is_exposed(system_toolset):
     tools = {t.id async for t in system_toolset.list_tools()}
-    assert "clear_workspace_channel_association" in tools
+    assert "clear_reply_binding" in tools
 
 
 @pytest.mark.asyncio
-async def test_create_workspace_channel_association_is_not_exposed(system_toolset):
-    """The old CRUD association tool must not appear (model is deleted)."""
+async def test_old_channel_association_tools_are_not_exposed(system_toolset):
+    """The renamed-away association tools must not appear."""
     tools = {t.id async for t in system_toolset.list_tools()}
-    assert "create_workspace_channel_association" not in tools
-
-
-@pytest.mark.asyncio
-async def test_create_chat_channel_association_is_not_exposed(system_toolset):
-    """The old chat channel association CRUD tool must not appear."""
-    tools = {t.id async for t in system_toolset.list_tools()}
-    assert "create_chat_channel_association" not in tools
+    assert "set_workspace_channel_association" not in tools
+    assert "clear_workspace_channel_association" not in tools
 
 
 # ===========================================================================
@@ -175,14 +168,14 @@ async def test_create_chat_channel_association_is_not_exposed(system_toolset):
 
 
 @pytest.mark.asyncio
-async def test_set_workspace_channel_association_persists(sp: _SP, system_toolset):
+async def test_set_reply_binding_persists(sp: _SP, system_toolset):
     ws = _make_workspace()
     ch = _make_channel()
     await sp.get_storage(Workspace).create(ws)
     await sp.get_storage(Channel).create(ch)
 
     result = await system_toolset.call(
-        tool_name="set_workspace_channel_association",
+        tool_name="set_reply_binding",
         arguments={"workspace_id": "ws-1", "channel_id": "chan-1"},
     )
     assert not result.is_error, result.output
@@ -191,17 +184,16 @@ async def test_set_workspace_channel_association_persists(sp: _SP, system_toolse
     assert payload["workspace_id"] == "ws-1"
     assert payload["channel_id"] == "chan-1"
 
-    # Confirm the association was persisted in storage
     stored = await sp.get_storage(Workspace).get("ws-1")
     assert stored is not None
-    assert stored.channel_association is not None
-    assert stored.channel_association.channel_id == "chan-1"
+    assert stored.reply_binding is not None
+    assert stored.reply_binding.channel_id == "chan-1"
 
 
 @pytest.mark.asyncio
-async def test_set_workspace_channel_association_unknown_workspace(sp: _SP, system_toolset):
+async def test_set_reply_binding_unknown_workspace(sp: _SP, system_toolset):
     result = await system_toolset.call(
-        tool_name="set_workspace_channel_association",
+        tool_name="set_reply_binding",
         arguments={"workspace_id": "no-such-ws", "channel_id": "chan-1"},
     )
     assert result.is_error
@@ -210,12 +202,12 @@ async def test_set_workspace_channel_association_unknown_workspace(sp: _SP, syst
 
 
 @pytest.mark.asyncio
-async def test_set_workspace_channel_association_unknown_channel(sp: _SP, system_toolset):
+async def test_set_reply_binding_unknown_channel(sp: _SP, system_toolset):
     ws = _make_workspace("ws-2")
     await sp.get_storage(Workspace).create(ws)
 
     result = await system_toolset.call(
-        tool_name="set_workspace_channel_association",
+        tool_name="set_reply_binding",
         arguments={"workspace_id": "ws-2", "channel_id": "no-such-channel"},
     )
     assert result.is_error
@@ -224,15 +216,15 @@ async def test_set_workspace_channel_association_unknown_channel(sp: _SP, system
 
 
 @pytest.mark.asyncio
-async def test_clear_workspace_channel_association_removes_link(sp: _SP, system_toolset):
+async def test_clear_reply_binding_removes_link(sp: _SP, system_toolset):
     ws = _make_workspace("ws-3")
     ws = ws.model_copy(
-        update={"channel_association": WorkspaceChannelLink(channel_id="chan-x")}
+        update={"reply_binding": WorkspaceChannelLink(channel_id="chan-x")}
     )
     await sp.get_storage(Workspace).create(ws)
 
     result = await system_toolset.call(
-        tool_name="clear_workspace_channel_association",
+        tool_name="clear_reply_binding",
         arguments={"workspace_id": "ws-3"},
     )
     assert not result.is_error, result.output
@@ -242,13 +234,13 @@ async def test_clear_workspace_channel_association_removes_link(sp: _SP, system_
 
     stored = await sp.get_storage(Workspace).get("ws-3")
     assert stored is not None
-    assert stored.channel_association is None
+    assert stored.reply_binding is None
 
 
 @pytest.mark.asyncio
-async def test_clear_workspace_channel_association_unknown_workspace(sp: _SP, system_toolset):
+async def test_clear_reply_binding_unknown_workspace(sp: _SP, system_toolset):
     result = await system_toolset.call(
-        tool_name="clear_workspace_channel_association",
+        tool_name="clear_reply_binding",
         arguments={"workspace_id": "no-such-ws"},
     )
     assert result.is_error

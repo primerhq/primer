@@ -7,7 +7,7 @@ height every Create button is reachable).
 
 Tests in this file share a small per-test LLM provider fixture (an
 ``ollama`` provider with a fake URL) because the New agent form's LLM
-provider dropdown is empty without one — and an empty dropdown means
+provider dropdown is empty without one - and an empty dropdown means
 the form cannot be submitted, which short-circuits the behaviors under
 test.
 """
@@ -22,7 +22,7 @@ import pytest
 
 
 # ---------------------------------------------------------------------------
-# Helpers — sync httpx client + seeded LLM provider context manager
+# Helpers - sync httpx client + seeded LLM provider context manager
 # ---------------------------------------------------------------------------
 
 
@@ -69,7 +69,7 @@ def _seeded_llm_provider(
             # deleted by a created agent's DELETE; tolerate 404.
             try:
                 c.delete(f"/v1/llm_providers/{pid}")
-            except Exception:  # noqa: BLE001 — best-effort
+            except Exception:  # noqa: BLE001 - best-effort
                 pass
 
 
@@ -82,7 +82,7 @@ def _delete_agent_if_exists(base_url: str, agent_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# U0006 — happy-path create: modal closes, success toast, row appears
+# U0006 - happy-path create: modal closes, success toast, row appears
 # ---------------------------------------------------------------------------
 
 
@@ -92,7 +92,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0006 — Filling and submitting the New agent form (with an
+    """U0006 - Filling and submitting the New agent form (with an
     API-seeded LLM provider) closes the modal, surfaces a success
     toast, and the operator lands on the new agent's detail page.
 
@@ -104,7 +104,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
       * URL navigates to `#/agents/<new-id>` and the detail-page
         title renders the new agent id (the list refetches in the
         background via mutation.invalidates, but the visible surface
-        is the detail page — operators just created an entity and
+        is the detail page - operators just created an entity and
         the UX takes them to it)
     """
     with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
@@ -132,7 +132,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             # get_by_label substring matches (which hit strict-mode
             # violations when labels share words). When the JSX
             # changes, the test breaks deterministically with a clear
-            # "no such locator" — exactly what we want.
+            # "no such locator" - exactly what we want.
             modal.locator("#na-id").fill(agent_id)
             modal.locator("#na-description").fill(
                 f"u0006 seed {unique_suffix}",
@@ -140,7 +140,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             # The LLM provider dropdown was seeded; pick our row.
             modal.locator("#na-llm-provider").select_option(provider_id)
             # Model dropdown auto-seeds to the first option once the
-            # provider's models load — give the populate effect a tick.
+            # provider's models load - give the populate effect a tick.
             modal.locator("#na-model").select_option("fake-model")
 
             # Submit.
@@ -168,7 +168,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
 
 
 # ---------------------------------------------------------------------------
-# U0007 — agent create 422 renders per-field inline errors, not a toast
+# U0007 - agent create 422 renders per-field inline errors, not a toast
 # ---------------------------------------------------------------------------
 
 
@@ -178,7 +178,7 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0007 — Submitting the New agent form with an invalid
+    """U0007 - Submitting the New agent form with an invalid
     ``temperature`` (one that fails server-side validation) surfaces
     the 422 as an inline field-help error under the offending input,
     NOT as a generic error toast.
@@ -210,9 +210,14 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
         modal.locator("#na-description").fill("u0007 422 probe")
         modal.locator("#na-llm-provider").select_option(provider_id)
         modal.locator("#na-model").select_option("fake-model")
-        # The deliberate bad value — violates Agent.temperature's
+        # Temperature lives on the "Advanced" tab of the form - switch to
+        # it and wait for the input before filling.
+        modal.get_by_test_id("agent-tab-advanced").click()
+        temperature_input = modal.locator("#na-temperature")
+        temperature_input.wait_for(state="visible", timeout=5_000)
+        # The deliberate bad value - violates Agent.temperature's
         # documented ``ge=0.0`` constraint.
-        modal.locator("#na-temperature").fill("-0.5")
+        temperature_input.fill("-0.5")
 
         modal.get_by_role("button", name="Create").click()
 
@@ -233,7 +238,7 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
         red_helps = modal.locator('.field-help[style*="--red"]')
         red_helps.first.wait_for(state="visible", timeout=5_000)
 
-        # No error toast — 422 should NOT surface as a toast per spec §3.
+        # No error toast - 422 should NOT surface as a toast per spec §3.
         # Use a short wait_for absence; if a toast slipped through, this
         # catches it. We do NOT use the "Create failed" text from the
         # general onError because that's reserved for non-422 paths.
@@ -249,7 +254,7 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
 
 
 # ---------------------------------------------------------------------------
-# U0020 — Agent delete confirms, removes the entity, navigates to list,
+# U0020 - Agent delete confirms, removes the entity, navigates to list,
 # and surfaces a success toast
 # ---------------------------------------------------------------------------
 
@@ -260,7 +265,7 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0020 — From an agent's detail page, clicking Delete opens the
+    """U0020 - From an agent's detail page, clicking Delete opens the
     confirm modal; confirming closes the dialog, navigates back to
     /agents, surfaces a success toast ("Agent deleted"), and the
     agent is absent from the backend (verified via API).
@@ -272,7 +277,7 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
       * success toast appears
       * row is gone from storage
 
-    Priority 1 (mutation feedback — destructive). Setup seeds the
+    Priority 1 (mutation feedback - destructive). Setup seeds the
     agent directly via API so the test exercises only the delete
     flow.
     """
@@ -303,7 +308,7 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
             )
 
             # Click the Delete button in the page header. The header
-            # has Test agent + Delete + Back buttons — `name="Delete"`
+            # has Test agent + Delete + Back buttons - `name="Delete"`
             # uniquely matches the danger one.
             page.get_by_role("button", name="Delete").first.click()
 

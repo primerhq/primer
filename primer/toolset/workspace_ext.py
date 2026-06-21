@@ -58,6 +58,8 @@ from primer.toolset.workspaces import (
 )
 from primer.toolset.trigger import (
     TOOL_SUBSCRIBE,
+    TOOL_SUBSCRIBE_CHANNEL,
+    _make_subscribe_channel_handler,
     _make_subscribe_handler,
 )
 
@@ -184,6 +186,12 @@ def build_workspace_ext_toolset(
             # bare id, args schema, and yield/session flags are preserved.
             TOOL_SUBSCRIBE.model_copy(update={"toolset_id": toolset_id}),
             _make_subscribe_handler(storage_provider),
+        ),
+        "subscribe_to_channel_event": (
+            # Channel-event variant: parks a workspace session until a
+            # matching channel event fires; keep it out of chat context too.
+            TOOL_SUBSCRIBE_CHANNEL.model_copy(update={"toolset_id": toolset_id}),
+            _make_subscribe_channel_handler(storage_provider),
         ),
     }
 

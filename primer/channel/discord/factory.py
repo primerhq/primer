@@ -32,6 +32,70 @@ logger = logging.getLogger(__name__)
 _HANDLERS_INSTALLED: set[str] = set()
 
 
+async def _route_channel_event(
+    adapter: Any, provider_id: str, message: "discord.Message",
+) -> bool:
+    """Normalize a fresh inbound Discord message and, when a channel-trigger
+    rule matches it, fire that rule.
+
+    Returns ``True`` iff a rule matched and was dispatched - in which case the
+    caller MUST skip the legacy chat-surface dispatch, so the message is not
+    delivered twice (once as a rule action, once as a default chat message).
+    Returns ``False`` for correlated replies and unmatched messages, leaving
+    the caller's chat dispatch to own delivery.
+
+    Builds the small dict envelope ``{"type": "message", "payload": {...}}`` the
+    provider :class:`DiscordEventNormalizer` consumes (so the normalizer stays
+    SDK-free) - deriving the channel ``kind`` discriminator from the runtime
+    ``discord`` channel type. Best effort: any failure is logged and swallowed
+    (returning ``False``) so it never breaks the chat-surface dispatch."""
+    router = adapter._event_router()
+    if router is None:
+        return False
+    try:
+        from primer.channel.discord.normalizer import DiscordEventNormalizer
+
+        ch = message.channel
+        if isinstance(ch, discord.Thread):
+            ch_kind = "thread"
+            parent_id = getattr(ch, "parent_id", None)
+        elif isinstance(ch, discord.DMChannel):
+            ch_kind = "dm"
+            parent_id = None
+        else:
+            ch_kind = "text"
+            parent_id = None
+        author = message.author
+        payload = {
+            "id": message.id,
+            "content": message.content or "",
+            "author": {
+                "id": getattr(author, "id", None) if author else None,
+                "name": getattr(author, "name", None) if author else None,
+                "display_name": getattr(author, "display_name", None)
+                if author
+                else None,
+                "bot": bool(getattr(author, "bot", False)) if author else False,
+            },
+            "channel": {
+                "id": getattr(ch, "id", None),
+                "kind": ch_kind,
+                "parent_id": parent_id,
+            },
+        }
+        normalizer = DiscordEventNormalizer(provider_id=provider_id)
+        event = await normalizer.normalize({"type": "message", "payload": payload})
+        if event is None:
+            return False
+        if not await router.has_matching_rule(event=event, channel=adapter._channel):
+            return False
+        await router.route_event(event=event, channel=adapter._channel)
+        return True
+    except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
+        logger.exception("discord: channel-event routing failed")
+        return False
+
+
 def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
     if provider_id in _HANDLERS_INSTALLED:
         return
@@ -188,6 +252,11 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 getattr(message.author, "display_name", None)
                 or getattr(message.author, "name", None) or "user"
             )
+            # Rule path first: if a channel-trigger rule matches, it owns this
+            # message - skip the chat dispatch so it is not delivered twice
+            # (once as the rule action, once as a default chat message).
+            if await _route_channel_event(adapter, provider_id, message):
+                return
             await adapter.handle_inbound_chat_message(
                 thread_id=str(thread_id), message_id=str(message.id),
                 sender_name=sender_name, text=message.content or "",
@@ -204,6 +273,11 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             getattr(message.author, "display_name", None)
             or getattr(message.author, "name", None) or "user"
         )
+        # Rule path first: if a channel-trigger rule matches, it owns this
+        # message - skip the chat dispatch so it is not delivered twice (once
+        # as the rule action, once as a default chat message).
+        if await _route_channel_event(adapter, provider_id, message):
+            return
         await adapter.handle_inbound_chat_message(
             thread_id=None, message_id=str(message.id),
             sender_name=sender_name, text=message.content or "",

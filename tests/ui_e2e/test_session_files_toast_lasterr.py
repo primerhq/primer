@@ -2,21 +2,21 @@
 
 Covers backlog items:
 
-* U0032 — Toast renders copy-able request-id on a 5xx error from a
+* U0032 - Toast renders copy-able request-id on a 5xx error from a
   UI mutation (page.route mock injects a 500 with
   ``extensions.request_id``; the new-agent modal's create path
   surfaces the toast with "request-id <rid>" + a "copy" link).
-* U0080 — Workspace Files tab directory drill-down: clicking a
+* U0080 - Workspace Files tab directory drill-down: clicking a
   directory row in the lazy tree renders its children
-  (reframed from URL ``?path=`` query — the actual UI uses an
+  (reframed from URL ``?path=`` query - the actual UI uses an
   in-tree expand pattern, not URL navigation). Skip-soft if the
   container can't reach the workspace's backend path.
-* U0083 — Session detail "Last error" panel renders when the
+* U0083 - Session detail "Last error" panel renders when the
   backend session row has ``last_error`` populated. Seed a
   graph-bound session against a placeholder LLM so the worker
   fast-fails and the row converges with ``last_error``.
-* U0084 — Session detail Turns-timeline PANEL toggles via header
-  click (reframed from per-row TurnRow collapse — testing the
+* U0084 - Session detail Turns-timeline PANEL toggles via header
+  click (reframed from per-row TurnRow collapse - testing the
   outer panel is exercise-able regardless of whether any turns
   were recorded by the placeholder-LLM fast-fail path).
 """
@@ -122,21 +122,21 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 
 
 # ===========================================================================
-# U0032 — Toast renders copy-able request-id on 5xx error
+# U0032 - Toast renders copy-able request-id on 5xx error
 # ===========================================================================
 
 
 def test_u0032_toast_renders_request_id_on_5xx(
     page, base_url, console_url, unique_suffix,
 ) -> None:
-    """U0032 — Mock POST /v1/agents to return 500 with an RFC 7807
+    """U0032 - Mock POST /v1/agents to return 500 with an RFC 7807
     envelope containing ``extensions.request_id``. Open the New
     agent modal, fill the required fields, click Create → the
     error toast (``kind=error``) must contain the literal text
     ``request-id <rid>`` and a ``copy`` link (per chrome.jsx:525-532).
 
     Pins the documented "5xx surfaces copy-able request-id" toast
-    contract — operators reach this affordance from any failing
+    contract - operators reach this affordance from any failing
     mutation, this test uses agent-create as the representative
     mutation surface.
     """
@@ -145,7 +145,7 @@ def test_u0032_toast_renders_request_id_on_5xx(
     rid_marker = f"req-test-{unique_suffix}"
     cleanup_urls = [f"/v1/llm_providers/{pid}"]
 
-    # Intercept the POST /v1/agents only — leave list-fetch GETs alone.
+    # Intercept the POST /v1/agents only - leave list-fetch GETs alone.
     def _on_post_agents(route):
         method = route.request.method
         if method == "POST":
@@ -181,15 +181,16 @@ def test_u0032_toast_renders_request_id_on_5xx(
         new_btn.wait_for(state="visible", timeout=10_000)
         new_btn.click()
 
-        # Modal opens. Fill the minimum-viable fields: id + provider.
+        # Modal opens. Fill the minimum-viable fields. Create stays
+        # disabled until a provider AND a model are selected, so all
+        # three are required to actually fire the mocked POST.
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
-        # Agent id input — first textbox in the modal.
-        textboxes = modal.get_by_role("textbox").all()
-        assert len(textboxes) >= 1, "no textboxes in NewAgentModal"
-        textboxes[0].fill(f"ag-32-{unique_suffix}")
+        modal.locator("#na-id").fill(f"ag-32-{unique_suffix}")
+        modal.locator("#na-llm-provider").select_option(pid)
+        modal.locator("#na-model").select_option("fake-model")
 
-        # Click "Create" — mocked response will return our 500.
+        # Click "Create" - mocked response will return our 500.
         create_btn = page.get_by_role(
             "button", name="Create", exact=True,
         ).first
@@ -219,28 +220,28 @@ def test_u0032_toast_renders_request_id_on_5xx(
 
 
 # ===========================================================================
-# U0080 — Workspace Files tab directory drill-down (in-tree expand)
+# U0080 - Workspace Files tab directory drill-down (in-tree expand)
 # ===========================================================================
 
 
 def test_u0080_workspace_files_dir_drilldown_renders_children(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0080 — Seed a workspace + write ``dir1/a.txt`` via the API
+    """U0080 - Seed a workspace + write ``dir1/a.txt`` via the API
     files endpoint. Navigate to ``#/workspaces/<id>?tab=files``,
     wait for the tree to render, click the ``dir1`` row → assert
     the child file ``a.txt`` becomes visible (lazy expand via the
     DirectoryNode setOpen handler).
 
     Skip-soft when the primer-app container can't reach the host
-    tmp_path the workspace provider points at — the PUT files
+    tmp_path the workspace provider points at - the PUT files
     call fails 5xx, same root cause as U0072.
     """
     wp_id = f"wp-80-{unique_suffix}"
     tpl_id = f"tpl-80-{unique_suffix}"
     # Use a container-internal path (primer-app linux container can't
     # reach host Windows tmp_path that pytest's tmp_path fixture
-    # provides — workspace materialise + file ops would crash or
+    # provides - workspace materialise + file ops would crash or
     # silently fall back). /tmp inside the container is writable.
     container_path = f"/tmp/u0080-{unique_suffix}"
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -276,7 +277,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
             )
             if r.status_code >= 500:
                 pytest.skip(
-                    f"workspace files PUT returned {r.status_code} — "
+                    f"workspace files PUT returned {r.status_code} - "
                     f"primer-app container likely can't reach host tmp_path "
                     f"(same root cause as U0072). text={r.text[:200]!r}"
                 )
@@ -290,11 +291,11 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
             state="visible", timeout=20_000,
         )
 
-        # Wait for the file tree to render — the dir1 row must show up.
+        # Wait for the file tree to render - the dir1 row must show up.
         dir1_row = page.get_by_text("dir1", exact=False).first
         dir1_row.wait_for(state="visible", timeout=15_000)
 
-        # Initially a.txt is NOT in the DOM (lazy — closed branch).
+        # Initially a.txt is NOT in the DOM (lazy - closed branch).
         # Click dir1 → toggles open → fetches /files?path=dir1 → renders.
         dir1_row.click()
 
@@ -307,20 +308,20 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
 
 
 # ===========================================================================
-# U0083 — Session detail "Last error" panel renders for failed graph session
+# U0083 - Session detail "Last error" panel renders for failed graph session
 # ===========================================================================
 
 
 def test_u0083_session_detail_last_error_panel_renders(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0083 — Mock GET /v1/sessions/{sid} to return a row whose
+    """U0083 - Mock GET /v1/sessions/{sid} to return a row whose
     ``last_error`` payload is populated (RFC 7807 envelope shape).
     Navigate to ``#/sessions/<id>`` → the "Last error" panel
     (session-detail.jsx:262) renders with the literal "Last error"
     header + type subscript + the title/detail copy when expanded.
 
-    Pins the documented session-detail last_error render — the
+    Pins the documented session-detail last_error render - the
     only operator-facing surface for the session's failure
     payload. Using page.route here (instead of relying on the
     worker to actually populate last_error on a fast-fail path)
@@ -414,23 +415,26 @@ def test_u0083_session_detail_last_error_panel_renders(
 
 
 # ===========================================================================
-# U0084 — Session detail Turns-timeline panel header toggle
+# U0084 - Session detail Turns-timeline panel header toggle
 # ===========================================================================
 
 
 def test_u0084_session_detail_turns_panel_header_toggles(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0084 — Session detail Turns-timeline panel renders with
-    ``turnsOpen=true`` by default (session-detail.jsx:37). Click
-    the panel header → ``setTurnsOpen(!turnsOpen)`` flips →
-    panel body content (the empty-state copy or turn rows) hides.
-    Click again → body reappears.
+    """U0084 - Session detail turn-log surface renders + responds to
+    selection.
 
-    Reframed from the original U0084 ("TurnRow collapse") because
-    the placeholder-LLM session may not populate any turns row;
-    the OUTER panel collapse is the testable contract on every
-    session regardless of dispatch outcome.
+    The turn-log view moved from an inline collapsible "Turns timeline"
+    panel to a dedicated "Turn log" tab on the session detail page
+    (session-detail.jsx ``tabs`` + ``TurnLogTab``). The tab surface is
+    rendered through ``MobileTabs`` at the mobile breakpoint, so this
+    test drives it at a mobile viewport: select the "Turn log" tab → the
+    empty-state copy ("No turn-log entries yet") for a CREATED session
+    becomes visible; switch away to "Overview" → it hides; switch back →
+    it reappears. This is the current testable contract on every session
+    regardless of dispatch outcome (the placeholder-LLM session never
+    populates a turn row).
     """
     pid = f"llm-84-{unique_suffix}"
     aid = f"ag-84-{unique_suffix}"
@@ -462,66 +466,34 @@ def test_u0084_session_detail_turns_panel_header_toggles(
                 0, f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
             )
 
+        # Drive the tabbed session-detail at the mobile breakpoint so the
+        # MobileTabs surface (which hosts the Turn log tab) renders.
+        page.set_viewport_size({"width": 375, "height": 812})
         page.goto(
             f"{console_url}#/sessions/{sid}",
             wait_until="domcontentloaded",
         )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
+        # At the mobile breakpoint the sidebar nav is collapsed behind a
+        # drawer; wait directly on the tab strip the detail page renders.
+        turn_log_tab = page.get_by_role("tab", name="Turn log").first
+        turn_log_tab.wait_for(state="visible", timeout=20_000)
 
-        # The panel body is the next sibling inside the parent .panel.
-        # When turnsOpen=true, the body is in the DOM and visible.
-        # session-detail.jsx renders "No turns yet — session is
-        # No turns yet." for a CREATED session with empty
-        # turns (line 249). Use that copy as the visible-when-open
-        # signal.
-        no_turns_copy = page.get_by_text(
-            "No turns yet", exact=False,
-        ).first
-        # CREATED + no turns + open panel → copy is visible.
-        no_turns_copy.wait_for(state="visible", timeout=10_000)
+        empty_copy = page.get_by_text("No turn-log entries yet", exact=False).first
 
-        # Click the panel header via direct DOM dispatch to bypass any
-        # Playwright synthetic-event weirdness on .panel-h with nested
-        # icon/span children. session-detail.jsx:234 wires onClick on
-        # the .panel-h div itself, so dispatching click on that
-        # element triggers React's setTurnsOpen.
-        def _click_panel(label: str) -> bool:
-            return page.evaluate(
-                """(label) => {
-                    const els = document.querySelectorAll('.panel-h');
-                    for (const el of els) {
-                        if (el.textContent.includes(label)) {
-                            el.click();
-                            return true;
-                        }
-                    }
-                    return false;
-                }""",
-                label,
-            )
+        # Select the Turn log tab → empty-state copy for a CREATED
+        # session becomes visible.
+        turn_log_tab.click()
+        expect(empty_copy).to_be_visible(timeout=10_000)
 
-        assert _click_panel("Turns timeline"), (
-            "could not locate .panel-h for Turns timeline"
-        )
+        # Switch to the Overview tab → the turn-log content is no longer
+        # mounted (tab panels swap their content).
+        page.get_by_role("tab", name="Overview").first.click()
+        expect(empty_copy).to_have_count(0, timeout=5_000)
 
-        # Body content gone within ~3s (state flushes).
-        deadline = time.monotonic() + 3.0
-        collapsed = False
-        while time.monotonic() < deadline:
-            if page.get_by_text(
-                "No turns yet", exact=False,
-            ).count() == 0:
-                collapsed = True
-                break
-            page.wait_for_timeout(200)
-        assert collapsed, "Turns-timeline panel didn't collapse on header click"
-
-        # Click again → re-opens.
-        assert _click_panel("Turns timeline")
+        # Switch back to Turn log → the empty-state copy reappears.
+        page.get_by_role("tab", name="Turn log").first.click()
         expect(
-            page.get_by_text("No turns yet", exact=False).first
-        ).to_be_visible(timeout=3_000)
+            page.get_by_text("No turn-log entries yet", exact=False).first
+        ).to_be_visible(timeout=10_000)
     finally:
         _cleanup(base_url, cleanup_urls)

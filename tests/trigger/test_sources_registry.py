@@ -10,6 +10,10 @@ def test_registry_has_delayed_and_scheduled():
     assert "scheduled" in SOURCES
 
 
+def test_registry_has_channel():
+    assert "channel" in SOURCES
+
+
 def test_get_source_unknown_raises():
     with pytest.raises(KeyError):
         get_source("bogus")

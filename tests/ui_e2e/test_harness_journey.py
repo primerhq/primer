@@ -147,10 +147,13 @@ def test_harness_register_fetch_install_via_rest(tmp_path: Path, base_url: str) 
         assert agent["harness_id"] == hid
         assert agent["model"]["provider_id"] == f"e2e-llm-{suffix}"
 
-        # PUT to the managed agent should be rejected
+        # PUT to the managed agent should be rejected. The generic
+        # managed-entity guard (wired via _crud's managed_by_field) now
+        # returns code "managed_entity" (see tests/api/
+        # test_managed_entity_locks.py for the canonical contract).
         r = c.put(f"/v1/agents/{expected_agent_id}", json=agent)
         assert r.status_code == 409, r.text
-        assert r.json()["detail"]["code"] == "managed_by_harness"
+        assert r.json()["detail"]["code"] == "managed_entity"
 
         # Cleanup: delete (uninstall) the harness
         r = c.delete(f"/v1/harnesses/{hid}")

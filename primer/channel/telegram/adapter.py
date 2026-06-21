@@ -313,6 +313,24 @@ class TelegramChannelAdapter(ChannelAdapter):
             self._sp, CorrelationStore(self._sp), event_bus=self._bus,
             claim_engine=self._claim_engine, gate_inbox=gate_inbox)
 
+    def _event_router(self):
+        """Build a ChannelInboundRouter for the normalized-event path, or None
+        when chat-surface dispatch is not configured (no storage provider).
+
+        Mirrors :meth:`_inbound_router`; the caller routes a normalized
+        ``ChannelEvent`` through :meth:`ChannelInboundRouter.route_event`."""
+        if self._sp is None:
+            return None
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.correlation import CorrelationStore
+        from primer.channel.inbound_router import ChannelInboundRouter
+        gate_inbox = ChatResponseInbox(
+            storage_provider=self._sp, event_bus=self._bus,
+            claim_engine=self._claim_engine)
+        return ChannelInboundRouter(
+            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
+            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
+
     async def _extract_media_parts(self, msg) -> tuple[list, str]:
         """Download every attachment on ``msg`` and build artifact-backed
         chat media parts. Returns ``(parts, skipped_note)`` where

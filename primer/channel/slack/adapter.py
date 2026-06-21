@@ -158,7 +158,11 @@ class SlackChannelAdapter(ChannelAdapter):
     async def post_chat_message(
         self, text: str, *, thread_ts: str | None = None,
     ) -> dict:
-        """Outbound chat relay: stream into the thread (native) or post whole."""
+        """Outbound chat relay: post the reply to the channel/thread.
+
+        Channel replies are not addressed to a single user, so native
+        ``chat.startStream`` (an assistant-only API needing a recipient) does
+        not apply; ``stream_or_post`` posts the message whole."""
         from primer.channel.slack.streaming import stream_or_post
         if self._conn is None:
             raise ProviderError("SlackChannelAdapter used before initialize()")
@@ -286,6 +290,24 @@ class SlackChannelAdapter(ChannelAdapter):
     def _inbound_router(self):
         """Build a ChannelInboundRouter from the adapter's wiring, or None when
         chat-surface dispatch is not configured (no storage provider)."""
+        if self._sp is None:
+            return None
+        from primer.channel.chat_inbox import ChatResponseInbox
+        from primer.channel.correlation import CorrelationStore
+        from primer.channel.inbound_router import ChannelInboundRouter
+        gate_inbox = ChatResponseInbox(
+            storage_provider=self._sp, event_bus=self._bus,
+            claim_engine=self._claim_engine)
+        return ChannelInboundRouter(
+            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
+            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
+
+    def _event_router(self):
+        """Build a ChannelInboundRouter for the normalized-event path, or None
+        when chat-surface dispatch is not configured (no storage provider).
+
+        Mirrors :meth:`_inbound_router`; the caller routes a normalized
+        ``ChannelEvent`` through :meth:`ChannelInboundRouter.route_event`."""
         if self._sp is None:
             return None
         from primer.channel.chat_inbox import ChatResponseInbox

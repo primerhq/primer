@@ -29,7 +29,7 @@ Subsystems exercised in one test:
   5. Channel CRUD with `provider_id` reference integrity
   6. WorkspaceProvider + Template + Workspace ladder
   7. Workspace channel association via the focused
-     `PUT /workspaces/{id}/channel_association` route (the channel
+     `PUT /workspaces/{id}/reply_binding` route (the channel
      link is a field on the workspace, not a standalone row)
   8. Agent CRUD with model + tools list referencing the toolset
   9. Three independent cascade-block 409 envelopes - pin the detail
@@ -79,7 +79,7 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
       5. Seed Channel under the ChannelProvider.
       6. Seed WorkspaceProvider + Template + Workspace ladder.
       7. Link the channel to the workspace via
-         PUT /workspaces/{id}/channel_association.
+         PUT /workspaces/{id}/reply_binding.
       8. Seed Agent with the user toolset in its first-class tools list.
       9. Cascade-block primer — try each DELETE in the WRONG order
          and assert the 409 envelope carries the blocking row id:
@@ -180,13 +180,13 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         workspace_id = r.json()["id"]
         seeded_urls.append(f"/v1/workspaces/{workspace_id}")
 
-        # ----- 7. Link channel to workspace (channel_association field) ---
+        # ----- 7. Link channel to workspace (reply_binding field) ---
         r = await client.put(
-            f"/v1/workspaces/{workspace_id}/channel_association",
+            f"/v1/workspaces/{workspace_id}/reply_binding",
             json={"channel_id": ch_id},
         )
         assert r.status_code == 200, r.text
-        assert r.json().get("channel_association", {}).get("channel_id") == ch_id, (
+        assert r.json().get("reply_binding", {}).get("channel_id") == ch_id, (
             r.text
         )
 
@@ -271,7 +271,7 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         r = await client.delete(f"/v1/toolsets/{toolset_id}")
         assert r.status_code in (200, 204), r.text
 
-        # Delete workspace → the channel_association field goes with it.
+        # Delete workspace → the reply_binding field goes with it.
         r = await client.delete(f"/v1/workspaces/{workspace_id}")
         assert r.status_code in (200, 204), r.text
 

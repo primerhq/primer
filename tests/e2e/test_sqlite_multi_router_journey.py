@@ -29,7 +29,7 @@ Subsystems exercised in one test:
      pool running in this in-process app)
   6. ToolApprovalPolicy CRUD (§2 surface)
   7. ChannelProvider + Channel CRUD + workspace channel link via
-     PUT /workspaces/{id}/channel_association (§3 surface)
+     PUT /workspaces/{id}/reply_binding (§3 surface)
   8. SemanticSearchProvider CRUD (§7 surface)
   9. InternalCollections config probe (GET — confirms the router
      mounts cleanly against SQLite even when no config is set)
@@ -269,15 +269,15 @@ async def test_t0852_sqlite_multi_router_crud_journey(tmp_path: Path) -> None:
                 },
             )
             assert r.status_code == 201, r.text
-            # Link the channel to the workspace (channel_association is a
+            # Link the channel to the workspace (reply_binding is a
             # field on the Workspace row now, set via a focused PUT route).
             r = await client.put(
-                f"/v1/workspaces/{workspace_id}/channel_association",
+                f"/v1/workspaces/{workspace_id}/reply_binding",
                 json={"channel_id": ch_id},
             )
             assert r.status_code == 200, r.text
             assert (
-                r.json().get("channel_association", {}).get("channel_id")
+                r.json().get("reply_binding", {}).get("channel_id")
                 == ch_id
             ), r.text
 

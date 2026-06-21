@@ -11,6 +11,8 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from primer.model.channel_event import ChannelEvent
+from primer.model.event_matcher import matches
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Subscription, Trigger
 from primer.storage.q import Q
@@ -27,6 +29,7 @@ from primer.trigger.subscribers import chat_message as _cm  # noqa: F401
 from primer.trigger.subscribers import agent_fresh_session as _afs  # noqa: F401
 from primer.trigger.subscribers import graph_fresh_session as _gfs  # noqa: F401
 from primer.trigger.subscribers import parked_session as _ps  # noqa: F401
+from primer.trigger.subscribers import start_chat as _sc  # noqa: F401
 
 
 logger = logging.getLogger(__name__)
@@ -121,6 +124,27 @@ async def fire_trigger(
 
     results: list[dict] = []
     for sub in enabled_subs:
+        # Channel-event predicate: a sub with an event_matcher only fires when
+        # the inbound ChannelEvent (carried in fire_context["event"]) matches.
+        # A None matcher preserves today's time/webhook behavior (always fires).
+        # A non-matching sub records an ok=True, skipped=True result so it is
+        # visible but non-failing and isolated per-sub.
+        if sub.event_matcher is not None:
+            raw_event = fire_context.get("event")
+            event = (
+                ChannelEvent.model_validate(raw_event)
+                if raw_event is not None
+                else None
+            )
+            if event is None or not matches(sub.event_matcher, event):
+                results.append({
+                    "subscription_id": sub.id,
+                    "ok": True,
+                    "skipped": True,
+                    "error_code": "skipped_no_match",
+                    "error_message": "event_matcher did not match",
+                })
+                continue
         try:
             rendered = render_payload(sub.payload_template, fire_context)
         except PayloadTemplateError as exc:

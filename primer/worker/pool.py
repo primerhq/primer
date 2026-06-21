@@ -1866,6 +1866,7 @@ class WorkerPool:
             dispatcher=self._channel_dispatcher,
             workspace_id=agent_session.workspace_id,
             session_id=agent_session.session_id,
+            session=session,
             workspace_registry=self._workspace_registry,
             artifact_registry=self._artifact_storage_registry,
         ))

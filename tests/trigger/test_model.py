@@ -12,7 +12,29 @@ from primer.model.trigger import (
     ChatMessageSubConfig, AgentFreshSubConfig,
     GraphFreshSubConfig, ParkedSessionSubConfig,
 )
+from primer.model.event_matcher import EventMatcher
+from primer.model.channel_event import NormalizedEventType
 from primer.int.claim import ClaimKind
+
+
+def test_subscription_event_matcher_field():
+    s = Subscription(
+        id="sb-m", trigger_id="tr-c",
+        config=ChatMessageSubConfig(chat_id="cn-1"),
+        event_matcher=EventMatcher(
+            event_type=NormalizedEventType.MESSAGE_POSTED, command_name=None,
+        ),
+        created_at=datetime.now(timezone.utc),
+    )
+    assert s.event_matcher.event_type == NormalizedEventType.MESSAGE_POSTED
+    assert s.reply_target is None
+
+    s2 = Subscription(
+        id="sb-n", trigger_id="tr-c",
+        config=ChatMessageSubConfig(chat_id="cn-1"),
+        created_at=datetime.now(timezone.utc),
+    )
+    assert s2.event_matcher is None
 
 
 def test_claim_kind_has_trigger():

@@ -77,7 +77,7 @@ async def test_post_chat_message_no_attribution(monkeypatch):
     """Chat relay must not include attribution."""
     captured: list[str] = []
 
-    async def _fake_stream_or_post(*, client, channel, thread_ts, text):
+    async def _fake_stream_or_post(*, client, channel, thread_ts, text, team_id=None):
         captured.append(text)
 
     import primer.channel.slack.streaming as _streaming_mod

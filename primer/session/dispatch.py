@@ -243,6 +243,26 @@ async def run_one_session_turn(
         input_message_count=0,
     ))
 
+    # Post a start acknowledgement on the FIRST turn of a channel-triggered
+    # session: when a reply binding resolves, the operator who triggered the
+    # session over a channel sees a "started" signal. Guarded so a missing
+    # dispatcher or a relay failure never blocks the turn; no-ops for
+    # non-channel sessions (no binding) and quiet bindings.
+    if session.turn_no == 0 and deps.channel_dispatcher is not None:
+        try:
+            from primer.channel.session_relay import post_session_start_ack
+
+            await post_session_start_ack(
+                dispatcher=deps.channel_dispatcher,
+                session=session,
+                storage_provider=deps.storage_provider,
+            )
+        except Exception:  # never block the turn on a relay failure
+            logger.warning(
+                "session %s: start-ack relay failed", session_id,
+                exc_info=True,
+            )
+
     cancel_requested = False
     cancel_reason: str = "operator_interrupt"
 
@@ -364,6 +384,7 @@ async def run_one_session_turn(
                 already_sent=set(),
                 workspace_name=ws_name,
                 session_label=sess_label,
+                session=session,
             )
         else:
             await _dispatch_to_channels(
@@ -550,6 +571,39 @@ async def run_one_session_turn(
         finish_reason=last_done_reason,
     ))
     await turn_log.aclose()
+
+    # Final-result relay: on a clean terminal completion, post the last-turn
+    # assistant text to the session's reply binding so a channel-triggered
+    # session reports its outcome. Derived from the just-flushed
+    # messages.jsonl (the source of truth) via the ported window scan. No-ops
+    # for non-channel / quiet bindings and when the derived text is empty.
+    if (
+        new_status == SessionStatus.ENDED
+        and ended_reason == "completed"
+        and deps.channel_dispatcher is not None
+    ):
+        try:
+            from primer.channel.session_relay import (
+                post_session_final_result,
+                read_session_final_text,
+            )
+
+            final_text = await read_session_final_text(
+                deps.workspace_io, session_id,
+            )
+            if final_text:
+                await post_session_final_result(
+                    dispatcher=deps.channel_dispatcher,
+                    session=session,
+                    storage_provider=deps.storage_provider,
+                    text=final_text,
+                )
+        except Exception:  # never block release on a relay failure
+            logger.warning(
+                "session %s: final-result relay failed", session_id,
+                exc_info=True,
+            )
+
     return ReleaseOutcome(success=True, drop_lease=True)
 
 

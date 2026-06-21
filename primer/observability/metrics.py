@@ -142,6 +142,35 @@ ws_replay_backlog_seconds = Histogram(
     registry=registry,
 )
 
+# ---------------------------------------------------------------------------
+# Channel-event metrics
+# ---------------------------------------------------------------------------
+
+channel_events_normalized_total = Counter(
+    "channel_events_normalized_total",
+    "Total channel events normalized to a ChannelEvent, by normalized type and provider.",
+    ["event_type", "provider"],
+    registry=registry,
+)
+channel_events_matched_total = Counter(
+    "channel_events_matched_total",
+    "Total channel events that matched at least one binding's event_matcher, by normalized type and provider.",
+    ["event_type", "provider"],
+    registry=registry,
+)
+channel_events_dispatched_total = Counter(
+    "channel_events_dispatched_total",
+    "Total channel events whose matched binding dispatched an action, by normalized type and provider.",
+    ["event_type", "provider"],
+    registry=registry,
+)
+reply_binding_resolutions_total = Counter(
+    "reply_binding_resolutions_total",
+    "Total reply-binding resolutions, by winning scope (session / workspace / none).",
+    ["scope"],
+    registry=registry,
+)
+
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -166,6 +195,8 @@ def reset_for_test() -> None:
     global claim_active_count  # noqa: PLW0603
     global ws_connections_active, ws_frames_sent_total  # noqa: PLW0603
     global ws_session_duration_seconds, ws_replay_backlog_seconds  # noqa: PLW0603
+    global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
+    global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
 
@@ -248,6 +279,30 @@ def reset_for_test() -> None:
         ["kind"],
         registry=registry,
     )
+    channel_events_normalized_total = Counter(
+        "channel_events_normalized_total",
+        "Total channel events normalized to a ChannelEvent, by normalized type and provider.",
+        ["event_type", "provider"],
+        registry=registry,
+    )
+    channel_events_matched_total = Counter(
+        "channel_events_matched_total",
+        "Total channel events that matched at least one binding's event_matcher, by normalized type and provider.",
+        ["event_type", "provider"],
+        registry=registry,
+    )
+    channel_events_dispatched_total = Counter(
+        "channel_events_dispatched_total",
+        "Total channel events whose matched binding dispatched an action, by normalized type and provider.",
+        ["event_type", "provider"],
+        registry=registry,
+    )
+    reply_binding_resolutions_total = Counter(
+        "reply_binding_resolutions_total",
+        "Total reply-binding resolutions, by winning scope (session / workspace / none).",
+        ["scope"],
+        registry=registry,
+    )
 
 
 __all__ = [
@@ -270,4 +325,9 @@ __all__ = [
     "ws_frames_sent_total",
     "ws_session_duration_seconds",
     "ws_replay_backlog_seconds",
+    # Channel events
+    "channel_events_normalized_total",
+    "channel_events_matched_total",
+    "channel_events_dispatched_total",
+    "reply_binding_resolutions_total",
 ]

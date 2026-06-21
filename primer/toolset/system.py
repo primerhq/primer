@@ -96,6 +96,18 @@ from primer.model.channel import (
     Channel,
     ChannelProvider,
 )
+from primer.model.event_matcher import EventMatcher
+from primer.channel.reply_binding import ReplyTarget
+from primer.model.trigger import SubscriptionConfig
+from primer.trigger.service import (
+    ServiceDeps,
+    SubscriptionNotFound,
+    TriggerNotFound,
+    create_subscription,
+    delete_subscription,
+    get_trigger,
+    list_subscriptions,
+)
 from primer.model.tool_approval import ToolApprovalPolicy
 from primer.model.workspace import (
     Workspace,
@@ -1903,23 +1915,31 @@ def build_system_toolset(
         _invalidate_ssp_handler,
     )
 
-    # ---- Workspace channel-association tools -------------------------
-    class _SetWorkspaceChannelAssociationArgs(BaseModel):
+    # ---- Workspace reply-binding tools -------------------------------
+    class _SetReplyBindingArgs(BaseModel):
         workspace_id: str = Field(
             ..., min_length=1, description="Id of the Workspace to update."
         )
         channel_id: str = Field(
-            ..., min_length=1, description="Id of the Channel to associate."
+            ..., min_length=1, description="Id of the Channel to bind replies to."
+        )
+        anchor: str | None = Field(
+            default=None,
+            description=(
+                "Optional standing room anchor (e.g. a Slack thread ts) the "
+                "workspace's outbound replies attach to. Omit to post to the "
+                "channel root."
+            ),
         )
 
     _workspace_storage = storage_provider.get_storage(Workspace)
     _channel_storage = storage_provider.get_storage(Channel)
 
-    async def _set_workspace_channel_association_handler(
+    async def _set_reply_binding_handler(
         arguments: dict[str, Any],
     ) -> ToolCallResult:
         try:
-            args = _SetWorkspaceChannelAssociationArgs.model_validate(arguments)
+            args = _SetReplyBindingArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         ws = await _workspace_storage.get(args.workspace_id)
@@ -1936,8 +1956,9 @@ def build_system_toolset(
             )
         updated = ws.model_copy(
             update={
-                "channel_association": WorkspaceChannelLink(
-                    channel_id=args.channel_id
+                "reply_binding": WorkspaceChannelLink(
+                    channel_id=args.channel_id,
+                    anchor=args.anchor,
                 )
             }
         )
@@ -1950,44 +1971,47 @@ def build_system_toolset(
                 "ok": True,
                 "workspace_id": args.workspace_id,
                 "channel_id": args.channel_id,
+                "anchor": args.anchor,
             }
         )
 
-    registry["set_workspace_channel_association"] = (
+    registry["set_reply_binding"] = (
         make_tool(
-            id="set_workspace_channel_association",
+            id="set_reply_binding",
             toolset_id=SYSTEM_TOOLSET_ID,
             purpose=(
-                "Associate a Channel with a Workspace so that session "
-                "gates (ask_user / tool_approval) forward to that channel."
+                "Set the standing workspace reply binding so that session "
+                "traffic (gates / inform / lifecycle / final result) replies "
+                "to a channel."
             ),
             when=(
-                "Use when you want session gates on a workspace to notify "
-                "a Slack / Telegram / Discord channel; pass both ids and "
-                "the association is stored on the Workspace row. Returns "
-                "``type=not-found`` for unknown workspace or channel."
+                "Use when you want a workspace's session traffic to reply to "
+                "a Slack / Telegram / Discord channel; pass both ids (and an "
+                "optional ``anchor``) and the reply binding is stored on the "
+                "Workspace row. Returns ``type=not-found`` for unknown "
+                "workspace or channel."
             ),
-            args_schema=_SetWorkspaceChannelAssociationArgs.model_json_schema(),
+            args_schema=_SetReplyBindingArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={"workspace_id": "ws-1", "channel_id": "chan-1"},
-                    returns="``{ok: true, workspace_id, channel_id}``",
+                    returns="``{ok: true, workspace_id, channel_id, anchor}``",
                 )
             ],
         ),
-        _set_workspace_channel_association_handler,
+        _set_reply_binding_handler,
     )
 
-    class _ClearWorkspaceChannelAssociationArgs(BaseModel):
+    class _ClearReplyBindingArgs(BaseModel):
         workspace_id: str = Field(
             ..., min_length=1, description="Id of the Workspace to update."
         )
 
-    async def _clear_workspace_channel_association_handler(
+    async def _clear_reply_binding_handler(
         arguments: dict[str, Any],
     ) -> ToolCallResult:
         try:
-            args = _ClearWorkspaceChannelAssociationArgs.model_validate(arguments)
+            args = _ClearReplyBindingArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
         ws = await _workspace_storage.get(args.workspace_id)
@@ -1996,27 +2020,27 @@ def build_system_toolset(
                 f"Workspace {args.workspace_id!r} does not exist",
                 error_type="not-found",
             )
-        updated = ws.model_copy(update={"channel_association": None})
+        updated = ws.model_copy(update={"reply_binding": None})
         try:
             await _workspace_storage.update(updated)
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="storage-error")
         return _ok({"ok": True, "workspace_id": args.workspace_id})
 
-    registry["clear_workspace_channel_association"] = (
+    registry["clear_reply_binding"] = (
         make_tool(
-            id="clear_workspace_channel_association",
+            id="clear_reply_binding",
             toolset_id=SYSTEM_TOOLSET_ID,
             purpose=(
-                "Remove the channel association from a Workspace so that "
-                "session gates are no longer forwarded to any channel."
+                "Clear the standing workspace reply binding so that session "
+                "traffic is no longer forwarded to any channel."
             ),
             when=(
                 "Use when you want to detach the channel from a workspace; "
-                "safe to call even if no association is set (no-op). "
+                "safe to call even if no reply binding is set (no-op). "
                 "Returns ``type=not-found`` for an unknown workspace."
             ),
-            args_schema=_ClearWorkspaceChannelAssociationArgs.model_json_schema(),
+            args_schema=_ClearReplyBindingArgs.model_json_schema(),
             examples=[
                 ToolExample(
                     args={"workspace_id": "ws-1"},
@@ -2024,7 +2048,196 @@ def build_system_toolset(
                 )
             ],
         ),
-        _clear_workspace_channel_association_handler,
+        _clear_reply_binding_handler,
+    )
+
+    # ---- Inbound channel-binding (Subscription) tools ----------------
+    # A "binding" is a Subscription on a ``channel`` trigger: a normalized
+    # event matcher -> platform action. These delegate to the same
+    # primer.trigger.service mutation path the REST router uses, so the
+    # toolset stays a thin wrapper.
+    class _CreateChannelBindingArgs(BaseModel):
+        trigger_id: str = Field(
+            ..., min_length=1, description="Id of the channel trigger to bind to."
+        )
+        event_matcher: EventMatcher | None = Field(
+            default=None,
+            description=(
+                "Predicate gating which channel events fire this binding "
+                "(AND of present fields). Omit to match every event on the "
+                "trigger."
+            ),
+        )
+        config: SubscriptionConfig = Field(
+            ...,
+            description=(
+                "Action discriminated union: start_chat / chat_message / "
+                "agent_fresh_session / graph_fresh_session."
+            ),
+        )
+        reply_target: ReplyTarget | None = Field(
+            default=None,
+            description=(
+                "Where the action's outbound reply goes; defaults to the "
+                "source thread."
+            ),
+        )
+        payload_template: str | None = None
+        parallelism: str = "skip"
+        description: str | None = Field(default=None, max_length=2000)
+        enabled: bool = True
+
+    def _binding_deps() -> ServiceDeps:
+        return ServiceDeps(storage_provider=storage_provider)
+
+    async def _create_channel_binding_handler(
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        try:
+            args = _CreateChannelBindingArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        try:
+            sub = await create_subscription(
+                trigger_id=args.trigger_id,
+                config=args.config,
+                event_matcher=args.event_matcher,
+                reply_target=args.reply_target,
+                payload_template=args.payload_template,
+                parallelism=args.parallelism,
+                description=args.description,
+                enabled=args.enabled,
+                deps=_binding_deps(),
+            )
+        except TriggerNotFound as exc:
+            return _err(str(exc), error_type="trigger_not_found")
+        return _ok(sub)
+
+    registry["create_channel_binding"] = (
+        make_tool(
+            id="create_channel_binding",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose=(
+                "Create an inbound channel binding (a matcher -> action "
+                "subscription) on a channel trigger."
+            ),
+            when=(
+                "Use when mapping a normalized channel event (message.posted "
+                "/ command.invoked) to a platform action (start_chat / "
+                "chat_message / agent_fresh_session / graph_fresh_session). "
+                "The trigger must already exist as a channel-kind trigger; "
+                "unknown trigger returns ``type=trigger_not_found``."
+            ),
+            args_schema=_CreateChannelBindingArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={
+                        "trigger_id": "trg-ch-1",
+                        "event_matcher": {
+                            "event_type": "command.invoked",
+                            "command_name": "deploy",
+                        },
+                        "config": {
+                            "kind": "agent_fresh_session",
+                            "workspace_id": "ws-1",
+                            "agent_id": "deployer",
+                        },
+                        "reply_target": "source_thread",
+                    },
+                    returns="the created Subscription",
+                    note="slash /deploy -> run the deployer agent, reply in-thread",
+                ),
+            ],
+        ),
+        _create_channel_binding_handler,
+    )
+
+    class _ListChannelBindingsArgs(BaseModel):
+        trigger_id: str = Field(
+            ..., min_length=1, description="Id of the channel trigger."
+        )
+
+    async def _list_channel_bindings_handler(
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        try:
+            args = _ListChannelBindingsArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        deps = _binding_deps()
+        try:
+            await get_trigger(trigger_id=args.trigger_id, deps=deps)
+        except TriggerNotFound as exc:
+            return _err(str(exc), error_type="trigger_not_found")
+        items = await list_subscriptions(trigger_id=args.trigger_id, deps=deps)
+        return _ok(items)
+
+    registry["list_channel_bindings"] = (
+        make_tool(
+            id="list_channel_bindings",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="List the inbound channel bindings on a channel trigger.",
+            when=(
+                "Use when you need every binding (matcher -> action "
+                "subscription) for a given ``trigger_id``; returns an array "
+                "of Subscription rows, or ``type=trigger_not_found`` if the "
+                "trigger does not exist."
+            ),
+            args_schema=_ListChannelBindingsArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"trigger_id": "trg-ch-1"},
+                    returns="the channel bindings of trg-ch-1",
+                ),
+            ],
+        ),
+        _list_channel_bindings_handler,
+    )
+
+    class _DeleteChannelBindingArgs(BaseModel):
+        trigger_id: str = Field(
+            ..., min_length=1, description="Id of the channel trigger."
+        )
+        subscription_id: str = Field(
+            ..., min_length=1, description="Id of the binding (Subscription) to delete."
+        )
+
+    async def _delete_channel_binding_handler(
+        arguments: dict[str, Any],
+    ) -> ToolCallResult:
+        try:
+            args = _DeleteChannelBindingArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        try:
+            await delete_subscription(
+                trigger_id=args.trigger_id,
+                subscription_id=args.subscription_id,
+                deps=_binding_deps(),
+            )
+        except SubscriptionNotFound as exc:
+            return _err(str(exc), error_type="subscription_not_found")
+        return _ok({"ok": True})
+
+    registry["delete_channel_binding"] = (
+        make_tool(
+            id="delete_channel_binding",
+            toolset_id=SYSTEM_TOOLSET_ID,
+            purpose="Delete one inbound channel binding from a channel trigger.",
+            when=(
+                "Use when removing a single binding (Subscription) while "
+                "keeping the trigger and its other bindings. Returns "
+                "``{ok: true}`` or ``type=subscription_not_found``."
+            ),
+            args_schema=_DeleteChannelBindingArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"trigger_id": "trg-ch-1", "subscription_id": "sb-1"},
+                    returns="``{ok: true}``",
+                ),
+            ],
+        ),
+        _delete_channel_binding_handler,
     )
 
     # ---- Provider-specific fetch_models ------------------------------

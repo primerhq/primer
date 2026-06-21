@@ -60,6 +60,12 @@ primer = "primer.cli:app"
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.uv]
+# The docs group carries the markdown-it stack that scripts/docs/build_site.py
+# (and its tests/docs/ build tests) import. Install it by default so the test
+# suite has its dependencies without a separate --group docs sync.
+default-groups = ["dev", "docs"]
+
 [tool.uv.workspace]
 members = ["primectl"]
 
@@ -109,6 +115,7 @@ addopts = "-m 'not distributed' -n auto --dist loadscope"
 markers = [
     "distributed: requires testcontainers + multiprocess (deselect with -m 'not distributed')",
     "smk(ids, status): map this test to one or more docs/tests SMK ids; status full|partial",
+    "requires_llm: needs a reachable real LLM (set PRIMER_E2E_LLM_BASE_URL + PRIMER_E2E_LLM_MODEL + PRIMER_E2E_LLM_API_KEY); the mock-LLM lane deselects with -m 'not requires_llm'",
 ]
 
 [tool.coverage.run]

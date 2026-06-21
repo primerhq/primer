@@ -321,6 +321,8 @@ async def create_subscription(
     parallelism: str = "skip",
     description: str | None = None,
     enabled: bool = True,
+    event_matcher=None,
+    reply_target=None,
     deps: ServiceDeps,
 ) -> Subscription:
     """Create a subscription bound to ``trigger_id``.
@@ -347,6 +349,8 @@ async def create_subscription(
         parallelism=parallelism,
         enabled=enabled,
         description=description,
+        event_matcher=event_matcher,
+        reply_target=reply_target,
         created_at=_now(),
     )
     await subs_storage.create(sub)
@@ -366,6 +370,8 @@ async def update_subscription(
     parallelism: str | None = None,
     enabled: bool | None = None,
     description: Any = _UNSET,
+    event_matcher: Any = _UNSET,
+    reply_target: Any = _UNSET,
     deps: ServiceDeps,
 ) -> Subscription:
     """Partial update.
@@ -386,6 +392,10 @@ async def update_subscription(
         sub.enabled = enabled
     if description is not _UNSET:
         sub.description = description
+    if event_matcher is not _UNSET:
+        sub.event_matcher = event_matcher
+    if reply_target is not _UNSET:
+        sub.reply_target = reply_target
     await subs_storage.update(sub)
     return sub
 

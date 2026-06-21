@@ -52,7 +52,7 @@ class _Disp:
     def __init__(self):
         self.envelopes = []
 
-    async def dispatch_prompt(self, *, envelope):
+    async def dispatch_prompt(self, *, envelope, session=None):
         self.envelopes.append(envelope)
         return [{"ok": True}]
 

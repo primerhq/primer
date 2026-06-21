@@ -5,7 +5,7 @@ its own test here. Setup creates the backend precondition via API
 (httpx), then asserts the UI renders the documented surface.
 
 Covers:
-* U0008 — T0711 anomaly banner on toolset detail Tools tab when an
+* U0008 - T0711 anomaly banner on toolset detail Tools tab when an
   MCP-HTTP toolset points at an unreachable URL (server returns 500).
 
 UI spec §5 documents this surface as required.
@@ -28,12 +28,12 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0008 — Create an MCP-HTTP toolset via API pointing at an
+    """U0008 - Create an MCP-HTTP toolset via API pointing at an
     unreachable URL. Opening its detail page's Tools tab must render
     the documented T0711 anomaly banner (not a generic Error nor a
     blank-page crash).
 
-    Priority 3 — anomaly surface. The Tools tab calls
+    Priority 3 - anomaly surface. The Tools tab calls
     GET /v1/toolsets/{id}/tools which leaks 500 /errors/internal
     when the MCP-HTTP transport's upstream is unreachable. The UI
     detects (tools.error.status === 500 && config.transport === "http")
@@ -42,7 +42,7 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
     toolset_id = f"ts-u0008-{unique_suffix}"
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         # Create MCP-HTTP toolset pointing at a deliberately
-        # unreachable URL — port 9999 on localhost is unlikely to
+        # unreachable URL - port 9999 on localhost is unlikely to
         # have anything listening.
         r = c.post("/v1/toolsets", json={
             "id": toolset_id,
@@ -73,7 +73,7 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
         page.get_by_role("tab", name="Tools").first.click()
 
         # The anomaly banner has title "Tools list unavailable" and
-        # detail mentioning T0711. Wait for the banner — the fetch
+        # detail mentioning T0711. Wait for the banner - the fetch
         # has to actually hit the backend + 500 first.
         page.get_by_text("Tools list unavailable", exact=False).first.wait_for(
             state="visible", timeout=15_000,
@@ -83,8 +83,8 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
         # banner detail (so a copy-edit that drops it gets caught).
         page_text = page.locator("body").inner_text()
         assert "T0711" in page_text, (
-            "T0711 reference missing from the rendered anomaly banner — "
-            f"copy drift?\n(body text — truncated for readability):\n"
+            "T0711 reference missing from the rendered anomaly banner - "
+            f"copy drift?\n(body text - truncated for readability):\n"
             f"{page_text[:1500]}"
         )
     finally:
@@ -101,11 +101,11 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0018 — Reloading the browser on an agent detail deep-link
+    """U0018 - Reloading the browser on an agent detail deep-link
     with ``?tab=tools`` re-renders the same tab selected, not the
     default Config tab.
 
-    Priority 6 — routing. The tab is read from routerQuery.tab and
+    Priority 6 - routing. The tab is read from routerQuery.tab and
     validated against AGENT_TABS (agents.jsx:363). Reload preserves
     the URL hash + query so the tab choice survives.
     """
@@ -144,7 +144,7 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
         # similar; using role+name + aria-selected is robust.
         tools_tab = page.get_by_role("tab", name="Tools").first
         tools_tab.wait_for(state="visible", timeout=5_000)
-        # Tab should already be selected before reload — sanity check.
+        # Tab should already be selected before reload - sanity check.
         # If not selected, the tab routing is broken (Config would be
         # default).
         assert tools_tab.get_attribute("aria-selected") == "true" \
@@ -154,7 +154,7 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
             f"class={tools_tab.get_attribute('class')!r}"
         )
 
-        # Reload — the URL + query should survive.
+        # Reload - the URL + query should survive.
         page.reload(wait_until="domcontentloaded")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
@@ -167,7 +167,7 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
             tools_tab_after.get_attribute("aria-selected") == "true"
             or "active" in (tools_tab_after.get_attribute("class") or "")
         ), (
-            "Tools tab lost its selected state after reload — "
+            "Tools tab lost its selected state after reload - "
             "deep-link ?tab= query not preserved. "
             f"aria-selected={tools_tab_after.get_attribute('aria-selected')!r}, "
             f"class={tools_tab_after.get_attribute('class')!r}"
@@ -196,17 +196,17 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0013 — Opening any session detail page renders the documented
-    T0399 / T0555 / T0611 stale-cache notice block ("workspace path
-    is known to drift after signals") under the live status panel.
+    """U0013 - Opening a session detail page renders cleanly and does
+    NOT surface the obsolete dev-only "Reads are authoritative" stale-
+    cache banner (T0399 / T0555 / T0611).
 
-    Priority 3 — anomaly surface. The notice is unconditional per
-    design §3.7 (session-detail.jsx:413-422): every session detail
-    view must surface it so operators interpret nested workspace
-    paths as informational, not authoritative. This test seeds the
-    minimal precondition (agent + workspace + CREATED session)
-    through the API and asserts the banner copy + the three documented
-    references are present.
+    That info banner was intentionally removed in commit f4e56585
+    ("drop stale spec annotations") because it referenced internal
+    ticket ids end users have no context for; the removal is also
+    pinned by tests/ui/test_stale_spec_annotations_removed.py. This
+    e2e asserts the live rendered page matches that decision: the
+    detail page loads (title carries the session id, the References
+    panel renders) and none of the removed banner copy appears.
 
     Setup ladder mirrors test_t0042 (test_sessions_top_level.py:42-):
     LLM provider → agent → workspace provider → workspace template →
@@ -220,7 +220,7 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
     workspace_id: str | None = None
     session_id: str | None = None
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        # 1. LLM provider — placeholder (no upstream call).
+        # 1. LLM provider - placeholder (no upstream call).
         r = c.post("/v1/llm_providers", json={
             "id": provider_id,
             "provider": "ollama",
@@ -283,24 +283,23 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
             state="visible", timeout=10_000,
         )
 
-        # The stale-cache banner copy ("Reads are authoritative") is the
-        # documented title; the detail line carries the three test
-        # references. Asserting both ensures we don't accidentally match
-        # an unrelated banner.
-        page.get_by_text("Reads are authoritative", exact=False).first.wait_for(
-            state="visible", timeout=5_000,
-        )
-        page.get_by_text("T0399", exact=False).first.wait_for(
-            state="visible", timeout=5_000,
+        # The References panel is part of the detail page proper - wait
+        # for it so we know the page body (not just the title) rendered
+        # before asserting the banner's absence.
+        page.get_by_text("References", exact=False).first.wait_for(
+            state="visible", timeout=10_000,
         )
 
-        # Defence: all three references appear together in the same
-        # detail line — pins the exact contract from §3.7. Use one
-        # locator to keep the assertion contained.
-        notice = page.get_by_text(
-            "T0399 / T0555 / T0611", exact=False,
-        ).first
-        notice.wait_for(state="visible", timeout=5_000)
+        # The removed dev-only banner must NOT appear. Its title copy and
+        # the three internal ticket ids it carried are all gone.
+        assert page.get_by_text("Reads are authoritative", exact=False).count() == 0, (
+            "obsolete 'Reads are authoritative' stale-cache banner is back"
+        )
+        for ticket in ("T0399", "T0555", "T0611"):
+            assert page.get_by_text(ticket, exact=False).count() == 0, (
+                f"removed dev-only ticket reference {ticket} is back on the "
+                "session detail page"
+            )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             for url in (
@@ -325,13 +324,13 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0009 — An agent bound to TWO toolsets — one that loads
-    cleanly and one whose ``/tools`` endpoint 500-leaks — renders the
+    """U0009 - An agent bound to TWO toolsets - one that loads
+    cleanly and one whose ``/tools`` endpoint 500-leaks - renders the
     good toolset's tools and the bad toolset's T0711 banner side by
     side. The page must NOT blank out; the failure must be confined
     to the offending toolset's panel.
 
-    Priority 3 — anomaly surface. Implements the per-toolset
+    Priority 3 - anomaly surface. Implements the per-toolset
     isolation contract documented at agents.jsx:638-700: each
     bound toolset is rendered by its own ``<ToolsetSection>`` and
     a ``tools.error?.status === 500`` only collapses that panel,
@@ -340,7 +339,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
     Good toolset: the built-in ``misc`` internal toolset (always
     available, returns 5 tools per primer/toolset/misc.py).
     Bad toolset: an MCP-HTTP toolset pointing at an unreachable
-    URL — identical pattern to U0008's T0711 trigger.
+    URL - identical pattern to U0008's T0711 trigger.
     """
     provider_id = f"llm-u0009-{unique_suffix}"
     agent_id = f"ag-u0009-{unique_suffix}"
@@ -399,7 +398,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
 
         # Good toolset panel renders the misc id as a header. At
         # least one of the 5 misc tools (e.g. uuid_v4) must appear
-        # as a clickable row — confirms the panel rendered through
+        # as a clickable row - confirms the panel rendered through
         # to ToolEntry rows.
         page.locator(".panel-h:has(.mono:text('misc'))").first.wait_for(
             state="visible", timeout=15_000,
@@ -408,7 +407,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
             state="visible", timeout=10_000,
         )
 
-        # Bad toolset panel renders the documented T0711 banner —
+        # Bad toolset panel renders the documented T0711 banner -
         # both the title ("Tools list unavailable") and the T0711
         # reference are required (same contract as U0008).
         page.get_by_text("Tools list unavailable", exact=False).first.wait_for(
@@ -419,13 +418,13 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
         )
 
         # Defence: the page-title is still rendered (no blank crash).
-        # The agent detail h1 carries the agent id — if a render
+        # The agent detail h1 carries the agent id - if a render
         # error blew up the whole AgentToolsTab, the title would
         # still be visible via the page chrome, but the panels
         # wouldn't be. The asserts above already prove the panels
         # are present; this is a final structural sanity check.
         assert page.locator("h1.page-title").first.is_visible(), (
-            "agent detail title disappeared after Tools tab render — "
+            "agent detail title disappeared after Tools tab render - "
             "page may have blanked out instead of isolating the failure"
         )
 

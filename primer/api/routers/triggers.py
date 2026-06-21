@@ -43,6 +43,8 @@ from primer.api.deps import (
     get_event_bus,
     get_storage_provider,
 )
+from primer.channel.reply_binding import ReplyTarget
+from primer.model.event_matcher import EventMatcher
 from primer.model.trigger import (
     Subscription,
     SubscriptionConfig,
@@ -101,6 +103,8 @@ class SubscriptionCreateBody(BaseModel):
     parallelism: str = "skip"
     description: str | None = Field(default=None, max_length=2000)
     enabled: bool = True
+    event_matcher: EventMatcher | None = None
+    reply_target: ReplyTarget | None = None
 
 
 class SubscriptionUpdateBody(BaseModel):
@@ -112,6 +116,8 @@ class SubscriptionUpdateBody(BaseModel):
     parallelism: str | None = None
     enabled: bool | None = None
     description: str | None = None
+    event_matcher: EventMatcher | None = None
+    reply_target: ReplyTarget | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +339,8 @@ async def create_subscription_endpoint(
             parallelism=body.parallelism,
             description=body.description,
             enabled=body.enabled,
+            event_matcher=body.event_matcher,
+            reply_target=body.reply_target,
             deps=deps,
         )
     except TriggerNotFound as exc:
@@ -420,6 +428,10 @@ async def update_subscription_endpoint(
         kwargs["enabled"] = body.enabled
     if "description" in sent:
         kwargs["description"] = body.description
+    if "event_matcher" in sent:
+        kwargs["event_matcher"] = body.event_matcher
+    if "reply_target" in sent:
+        kwargs["reply_target"] = body.reply_target
     try:
         sub = await update_subscription(
             trigger_id=trigger_id,

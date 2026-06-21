@@ -104,9 +104,15 @@ def _seed_full_set(base_url: str, suffix: str, ws_root: Path) -> dict[str, str]:
         r = c.post("/v1/graphs", json={
             "id": ids["graph"],
             "description": "journey graph",
-            "nodes": [{"kind": "agent", "id": "n1", "agent_id": ids["agent"]}],
-            "edges": [],
-            "entry_node_id": "n1",
+            "nodes": [
+                {"kind": "begin", "id": "begin"},
+                {"kind": "agent", "id": "n1", "agent_id": ids["agent"]},
+                {"kind": "end", "id": "end"},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "n1"},
+                {"kind": "static", "from_node": "n1", "to_node": "end"},
+            ],
         })
         assert r.status_code == 201, f"seed graph failed: {r.text}"
     return ids

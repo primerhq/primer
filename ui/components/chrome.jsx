@@ -60,6 +60,7 @@ const NAV = [
     group: "Communication",
     items: [
       { id: "channels", label: "Channels", icon: "bell", countKey: "channels" },
+      { id: "channel-rules", label: "Rules", icon: "filter" },
     ],
   },
   {

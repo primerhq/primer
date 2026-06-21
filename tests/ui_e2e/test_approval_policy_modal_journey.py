@@ -136,19 +136,25 @@ def test_u0110_policy_modal_llm_judge_journey(
         provider_row = page.locator("tbody tr", has_text=pid)
         expect(provider_row.first).to_be_visible(timeout=15_000)
 
-        # --- 2. Navigate /approvals → Policies tab -----------------
+        # --- 2. Open the policy modal from the Tools page ----------
+        # The approval-policy authoring surface moved off the Approvals
+        # page onto the per-tool Tools table: each row's Add/Edit button
+        # opens the same AP_NewPolicyModal (free-form id / toolset / tool
+        # inputs are still editable, so we override them below).
         page.goto(
-            f"{console_url}#/approvals",
+            f"{console_url}#/tools",
             wait_until="domcontentloaded",
         )
-        policies_tab = page.locator("[data-testid='approvals-tab-policies']")
-        expect(policies_tab).to_be_visible(timeout=15_000)
-        policies_tab.click()
+        page.locator("h1.page-title").get_by_text(
+            "Tools", exact=False,
+        ).first.wait_for(state="visible", timeout=15_000)
 
-        # --- 3. Click "New policy" → modal opens -------------------
-        new_btn = page.get_by_role("button", name="New policy", exact=True)
-        expect(new_btn).to_be_visible(timeout=10_000)
-        new_btn.click()
+        # --- 3. Open the New-policy modal via a tool row -----------
+        add_btn = page.get_by_role("button", name="Add", exact=True).or_(
+            page.get_by_role("button", name="Edit", exact=True)
+        ).first
+        expect(add_btn).to_be_visible(timeout=15_000)
+        add_btn.click()
 
         modal = page.locator(".modal").first
         expect(modal).to_be_visible(timeout=5_000)
@@ -206,43 +212,26 @@ def test_u0110_policy_modal_llm_judge_journey(
         # Modal closes on success.
         expect(modal).not_to_be_visible(timeout=5_000)
 
-        # --- 9. Policies table renders the new row -----------------
-        policy_row = page.locator(
-            f"[data-testid='approvals-policy-row-{policy_id}']",
-        )
-        expect(policy_row).to_be_visible(timeout=10_000)
-        # Type pill shows llm.
-        expect(policy_row).to_contain_text("llm")
-
-        # --- 10. Toggle enabled → "Policy updated" toast -----------
-        enabled_box = policy_row.locator(
-            f"[data-testid='approvals-policy-enabled-{policy_id}']",
-        )
-        expect(enabled_box).to_be_checked()
-        enabled_box.click()
-        update_toast = page.locator(".toast", has_text="Policy updated")
-        expect(update_toast).to_be_visible(timeout=10_000)
-        expect(enabled_box).not_to_be_checked(timeout=5_000)
-
-        # --- 11. Click delete → confirmation modal -----------------
-        del_btn = policy_row.locator(
-            f"[data-testid='approvals-policy-delete-{policy_id}']",
-        )
-        del_btn.click()
-
-        # Confirm modal renders with "Delete policy {id}?" title.
-        confirm_modal = page.locator(
-            ".modal", has_text=f"Delete policy {policy_id}?",
-        )
-        expect(confirm_modal).to_be_visible(timeout=5_000)
-
-        # --- 12. Confirm delete → toast + row gone ------------------
-        confirm_modal.get_by_role("button", name="Delete", exact=True).click()
-        delete_toast = page.locator(".toast", has_text="Policy deleted")
-        expect(delete_toast).to_be_visible(timeout=10_000)
-
-        # Row disappears within the next refetch cycle (mutation
-        # invalidates approvals:policies).
-        expect(policy_row).not_to_be_visible(timeout=10_000)
+        # --- 9. The policy persisted with the LLM-judge config -----
+        # The Approvals-page policies table (with inline toggle/delete)
+        # was removed; verify the created policy via the API instead.
+        # This still pins the provider/model selection threading through
+        # the modal into the stored ToolApprovalPolicy.
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            r = c.get(f"/v1/tool_approval_policies/{policy_id}")
+            assert r.status_code == 200, (
+                f"policy {policy_id!r} not persisted after create: {r.text}"
+            )
+            row = r.json()
+            approval = row.get("approval") or {}
+            assert approval.get("type") == "llm", (
+                f"expected an llm-judge policy, got {approval!r}"
+            )
+            assert approval.get("provider_id") == pid, (
+                f"policy provider_id mismatch: {approval!r}"
+            )
+            assert approval.get("model") == judge_model, (
+                f"policy model mismatch: {approval!r}"
+            )
     finally:
         _cleanup(base_url, pid, [policy_id])
