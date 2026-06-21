@@ -158,7 +158,11 @@ class SlackChannelAdapter(ChannelAdapter):
     async def post_chat_message(
         self, text: str, *, thread_ts: str | None = None,
     ) -> dict:
-        """Outbound chat relay: stream into the thread (native) or post whole."""
+        """Outbound chat relay: post the reply to the channel/thread.
+
+        Channel replies are not addressed to a single user, so native
+        ``chat.startStream`` (an assistant-only API needing a recipient) does
+        not apply; ``stream_or_post`` posts the message whole."""
         from primer.channel.slack.streaming import stream_or_post
         if self._conn is None:
             raise ProviderError("SlackChannelAdapter used before initialize()")
