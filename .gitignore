@@ -266,3 +266,6 @@ LAUNCH-*.md
 OPEN-SOURCE-LAUNCH-STRATEGY.md
 docs/OPEN-SOURCE-LAUNCH-STRATEGY.md
 docs/.launch/
+
+# Local clone of the docs Pages repo (deployed separately)
+/primerhq.github.io/
