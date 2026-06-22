@@ -44,6 +44,7 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.model.provider import SemanticSearchProvider
+from primer.search.run import run_collection_search
 
 
 logger = logging.getLogger(__name__)
@@ -358,8 +359,21 @@ async def search_collection(
     # that as "nothing indexed yet" and return an empty hits list rather
     # than surfacing a 400, matching list_indexed_documents and the
     # docstring's empty-collection contract.
+    #
+    # run_collection_search honours the collection's `search` config
+    # (cross-encoder rerank + MMR) when set, falling back to a plain
+    # vector search otherwise -- reusing the query vector we already
+    # embedded above so the no-config path does not double-embed.
     try:
-        hits = await store.search(collection_id, vector, body.top_k)
+        hits = await run_collection_search(
+            collection=coll,
+            embedder=embedder,
+            store=store,
+            query=body.query,
+            top_k=body.top_k,
+            cross_encoder_resolver=registry,
+            query_vector=vector,
+        )
     except BadRequestError as exc:
         if "is not registered" not in str(exc):
             raise

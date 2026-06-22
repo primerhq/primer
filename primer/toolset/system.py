@@ -1337,6 +1337,7 @@ def _collection_extras(
         # via the collection's search_provider_id.
         from primer.model.chat import TextPart
         from primer.model.except_ import BadRequestError
+        from primer.search.run import run_collection_search
 
         try:
             embedder = await provider_registry.get_embedder(
@@ -1358,8 +1359,20 @@ def _collection_extras(
         # indexed vectors yet is unknown to the store catalogue and search
         # raises BadRequestError("...is not registered..."). Treat that as
         # "nothing indexed yet" -> empty hits (matches the REST route).
+        #
+        # run_collection_search applies the collection's `search` config
+        # (cross-encoder rerank + MMR) when set, reusing the query vector
+        # we already embedded so the no-config path does not double-embed.
         try:
-            hits = await store.search(args.collection_id, vector, args.top_k)
+            hits = await run_collection_search(
+                collection=coll,
+                embedder=embedder,
+                store=store,
+                query=args.query,
+                top_k=args.top_k,
+                cross_encoder_resolver=provider_registry,
+                query_vector=vector,
+            )
         except BadRequestError as exc:
             if "is not registered" not in str(exc):
                 return _err_from_primer(exc, error_type="search-error")
