@@ -25,6 +25,14 @@ class Rule:
     emit_text: str | None = None
     emit_tool: str | None = None
     emit_args: dict[str, Any] = field(default_factory=dict)
+    # Tool-call id to emit. Defaults to ``"call_0"`` (the historical fixed id
+    # most tests rely on). Override it when a single chat/session issues
+    # SEVERAL tool calls that must be told apart by id on resume -- e.g. a
+    # chat that searches, asks, then later trips an approval gate: a fixed id
+    # makes the resume's id-based reply lookup match the FIRST call_0, not the
+    # gated one. Real providers always mint unique ids, so this only matters
+    # for the scripted mock.
+    emit_tool_call_id: str | None = None
 
     def matches(self, req: dict[str, Any]) -> bool:
         msgs = req.get("messages", [])
@@ -124,7 +132,7 @@ def build_app(registry: ScriptRegistry) -> Starlette:
                 tc = [
                     {
                         "index": 0,
-                        "id": "call_0",
+                        "id": rule.emit_tool_call_id or "call_0",
                         "type": "function",
                         "function": {
                             "name": rule.emit_tool,
