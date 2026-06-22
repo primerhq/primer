@@ -150,6 +150,18 @@ class SandboxWorkspace(Workspace):
         return self._runtime_meta
 
     @property
+    def gone(self) -> bool:
+        """Delegate to the underlying sandbox's ``gone`` flag.
+
+        :class:`WSSandbox` exposes ``gone`` (true once its
+        :class:`RuntimeClient` self-evicts on a 404 handshake); sandbox
+        impls without a runtime client (e.g. the test ``FakeSandbox``)
+        don't expose it, so we default to ``False``. The backend cache
+        evicts a workspace whose ``gone`` is ``True``.
+        """
+        return bool(getattr(self._sandbox, "gone", False))
+
+    @property
     def sandbox(self) -> Sandbox:
         """The underlying :class:`Sandbox` handle.
 

@@ -118,6 +118,23 @@ class Workspace(ABC):
         """
         return None
 
+    @property
+    def gone(self) -> bool:
+        """``True`` when the underlying runtime has confirmed the workspace
+        is destroyed and this handle is dead.
+
+        Backends backed by a :class:`RuntimeClient` (container / k8s)
+        override this to delegate to the client's ``gone`` flag, which the
+        reconnect loop sets after a 404 handshake. A backend cache that
+        hands out cached handles MUST evict a handle whose ``gone`` is
+        ``True`` rather than returning the dead handle.
+
+        Default implementation returns ``False`` so backends without a
+        runtime client (the local FS backend) opt in by override rather
+        than being broken by the new property.
+        """
+        return False
+
     # ---------- Tool surface ----------------------------------------------
 
     @abstractmethod

@@ -28,13 +28,12 @@ will persist the URL+token on the workspace row for re-attach.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import secrets
 import uuid
 
-from primer.int.workspace import Workspace, WorkspaceBackend
+from primer.int.workspace import Workspace
 from primer.model.except_ import ConfigError, NotFoundError
 from pydantic import SecretStr
 
@@ -47,7 +46,8 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.workspace.files import FileResolvers, resolve_file_sources
+from primer.workspace.base_backend import BaseWorkspaceBackend
+from primer.workspace.files import FileResolvers
 from primer.workspace.runtime.adapter import ContainerRuntimeAdapter
 from primer.workspace.runtime.url import build_runtime_url
 from primer.workspace.sandbox.workspace import SandboxWorkspace
@@ -90,7 +90,7 @@ def _adapter_for(cfg: ContainerWorkspaceConfig) -> ContainerRuntimeAdapter:
     raise ConfigError(f"unknown runtime kind {cfg.runtime!r}")
 
 
-class ContainerWorkspaceBackend(WorkspaceBackend):
+class ContainerWorkspaceBackend(BaseWorkspaceBackend):
     """Materialises workspaces as long-lived containers."""
 
     def __init__(
@@ -99,13 +99,12 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
         *,
         adapter: ContainerRuntimeAdapter | None = None,
     ) -> None:
+        super().__init__()
         self._config = config
         self._adapter = adapter if adapter is not None else _adapter_for(
             config,
         )
         self._workspaces: dict[str, SandboxWorkspace] = {}
-        self._lock = asyncio.Lock()
-        self._initialised = False
 
     async def initialize(self) -> None:
         await self._adapter.initialize()
@@ -136,15 +135,10 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
             )
         spec = template.backend
 
-        env: dict = dict(template.env)
-        files = list(template.files)
-        init_cmds = list(template.init_commands)
-        if overrides is not None:
-            env.update(overrides.env)
-            files = files + list(overrides.files)
-            init_cmds = init_cmds + list(overrides.init_commands)
-
-        env_str = {k: v.get_secret_value() for k, v in env.items()}
+        merged = self.merge_overrides(template, overrides)
+        files = merged.files
+        init_cmds = merged.init_commands
+        env_str = merged.env_unwrapped()
 
         workspace_id = _generate_workspace_id()
         # ``workspace-<id>`` is also the docker container's hostname; the
@@ -218,21 +212,18 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
             )
 
             # Resolve every FileSource variant (inline/url/document/secret)
-            # up-front via the central helper; the sandbox writes the
-            # resulting bytes. document/secret resolvers are supplied by the
-            # orchestration layer (WorkspaceRegistry.materialise) via the
-            # resolvers bundle; when absent, those kinds raise.
-            resolved_files = await resolve_file_sources(
-                files,
-                document_resolver=resolvers.document_resolver if resolvers else None,
-                secret_resolver=resolvers.secret_resolver if resolvers else None,
-            )
-            for rf in resolved_files:
+            # up-front via the shared helper; the sandbox writes the
+            # resulting bytes.
+            async def _write(rf):
                 await sandbox.write_file(
                     f"{spec.workdir}/{rf.path}",
                     rf.content,
                     mode=int(rf.mode, 8) if rf.mode else None,
                 )
+
+            await self.materialize_files_on_backend(
+                files, _write, resolvers=resolvers,
+            )
             for cmd in init_cmds:
                 res = await sandbox.exec(
                     cmd, workdir=spec.workdir, env=env_str,
@@ -256,6 +247,15 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
                 workspace_root=spec.workdir,
             )
         except Exception:
+            # Close the inner RuntimeClient (WS + aiohttp session) FIRST:
+            # remove() only deletes the daemon-side container + volume and
+            # would otherwise leak the in-process connection on rollback.
+            aclose = getattr(sandbox, "aclose", None)
+            if aclose is not None:
+                try:
+                    await aclose()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("rollback sandbox aclose failed: %s", exc)
             try:
                 await sandbox.remove()
             except Exception as exc:  # noqa: BLE001
@@ -270,15 +270,16 @@ class ContainerWorkspaceBackend(WorkspaceBackend):
             self._workspaces[workspace_id] = ws
         return ws
 
-    async def get(
+    async def _reattach(
         self,
         workspace_id: str,
-        *,
-        template: WorkspaceTemplate | None = None,
+        template: WorkspaceTemplate | None,
     ) -> Workspace | None:
-        cached = self._workspaces.get(workspace_id)
-        if cached is not None:
-            return cached
+        """Re-attach to a live container after a cache miss.
+
+        Called by :meth:`BaseWorkspaceBackend.get` only once the cache
+        lookup (with gone-eviction) misses.
+        """
         name = f"{_NAME_PREFIX}{workspace_id}"
         sandbox = await self._adapter.get_sandbox(name)
         if sandbox is None:

@@ -14,7 +14,7 @@ import secrets
 import uuid
 from typing import Any
 
-from primer.int.workspace import Workspace, WorkspaceBackend
+from primer.int.workspace import Workspace
 from primer.model.except_ import ConfigError, NotFoundError
 from pydantic import SecretStr
 
@@ -29,7 +29,8 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
     KubernetesTemplateConfig,
 )
-from primer.workspace.files import FileResolvers, resolve_file_sources
+from primer.workspace.base_backend import BaseWorkspaceBackend
+from primer.workspace.files import FileResolvers
 from primer.workspace.k8s.httproute import build_httproute_manifest
 from primer.workspace.k8s.naming import k8s_object_name
 from primer.workspace.runtime.runtime_client import RuntimeClient
@@ -250,7 +251,7 @@ def _build_statefulset_manifest(
     }
 
 
-class KubernetesWorkspaceBackend(WorkspaceBackend):
+class KubernetesWorkspaceBackend(BaseWorkspaceBackend):
     """Materialises workspaces as single-replica StatefulSets."""
 
     def __init__(
@@ -262,14 +263,13 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
         custom_objects=None,
         ws_api=None,
     ) -> None:
+        super().__init__()
         self._config = config
         self._core_v1 = core_v1
         self._apps_v1 = apps_v1
         self._custom_objects = custom_objects
         self._ws_api = ws_api
         self._workspaces: dict[str, SandboxWorkspace] = {}
-        self._lock = asyncio.Lock()
-        self._initialised = False
 
     async def initialize(self) -> None:
         if self._initialised:
@@ -417,36 +417,27 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
 
         try:
             # Resolve every FileSource variant (inline/url/document/secret)
-            # up-front via the central helper; the sandbox writes the
-            # resulting bytes via the WS runtime. document/secret resolvers
-            # are supplied by the orchestration layer
-            # (WorkspaceRegistry.materialise) via the resolvers bundle; when
-            # absent, those kinds raise.
-            files = list(template.files) + (
-                list(overrides.files) if overrides else []
-            )
-            resolved_files = await resolve_file_sources(
-                files,
-                document_resolver=resolvers.document_resolver if resolvers else None,
-                secret_resolver=resolvers.secret_resolver if resolvers else None,
-            )
+            # up-front via the shared helper; the sandbox writes the
+            # resulting bytes via the WS runtime.
+            merged = self.merge_overrides(template, overrides)
             workdir = template.backend.workdir
-            for rf in resolved_files:
+
+            async def _write(rf):
                 await sandbox.write_file(
                     f"{workdir}/{rf.path}",
                     rf.content,
                     mode=int(rf.mode, 8) if rf.mode else None,
                 )
+
+            await self.materialize_files_on_backend(
+                merged.files, _write, resolvers=resolvers,
+            )
             # Run template init_commands in the pod, mirroring the
             # container backend: files land first, then each init command
             # execs via the same runtime client; a non-zero exit surfaces
             # as a ConfigError rather than being silently swallowed.
-            env = dict(template.env)
-            init_cmds = list(template.init_commands)
-            if overrides is not None:
-                env.update(overrides.env)
-                init_cmds = init_cmds + list(overrides.init_commands)
-            env_str = {k: v.get_secret_value() for k, v in env.items()}
+            init_cmds = merged.init_commands
+            env_str = merged.env_unwrapped()
             for cmd in init_cmds:
                 res = await sandbox.exec(
                     cmd, workdir=workdir, env=env_str,
@@ -627,19 +618,19 @@ class KubernetesWorkspaceBackend(WorkspaceBackend):
                 )
             await asyncio.sleep(1.0)
 
-    async def get(
+    async def _reattach(
         self,
         workspace_id: str,
-        *,
-        template: WorkspaceTemplate | None = None,
+        template: WorkspaceTemplate | None,
     ) -> Workspace | None:
-        cached = self._workspaces.get(workspace_id)
-        if cached is not None:
-            return cached
-        # Re-attach: the StatefulSet may exist from a previous process.
-        # We need a template to materialise the SandboxWorkspace wrapper;
-        # without one, return None and let the API layer re-issue with
-        # the template loaded from storage.
+        """Re-attach to a workspace's StatefulSet after a cache miss.
+
+        Called by :meth:`BaseWorkspaceBackend.get` only once the cache
+        lookup (with gone-eviction) misses. The StatefulSet may exist from
+        a previous process. We need a template to materialise the
+        SandboxWorkspace wrapper; without one, return None and let the API
+        layer re-issue with the template loaded from storage.
+        """
         if template is None:
             return None
         if not isinstance(template.backend, KubernetesTemplateConfig):

@@ -27,20 +27,16 @@ import shutil
 import signal
 import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from primer.int.workspace import Workspace, WorkspaceBackend
+from primer.int.workspace import Workspace
 from primer.model.except_ import BadRequestError, NotFoundError, SubprocessTimeoutError
 from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.workspace.files import FileResolvers, ResolvedFile, resolve_file_sources
+from primer.workspace.base_backend import BaseWorkspaceBackend
+from primer.workspace.files import FileResolvers, ResolvedFile
 from primer.workspace.local.workspace import LocalWorkspace
-
-
-if TYPE_CHECKING:
-    from pydantic import SecretStr
 
 
 logger = logging.getLogger(__name__)
@@ -50,12 +46,7 @@ def _generate_workspace_id() -> str:
     return f"ws-{uuid.uuid4().hex[:16]}"
 
 
-def _resolve_env(env: "dict[str, SecretStr]") -> dict[str, str]:
-    """Unwrap SecretStr values for use as a real process environment."""
-    return {k: v.get_secret_value() for k, v in env.items()}
-
-
-class LocalWorkspaceBackend(WorkspaceBackend):
+class LocalWorkspaceBackend(BaseWorkspaceBackend):
     """:class:`WorkspaceProvider` backed by ordinary directories on disk.
 
     Stores every workspace under ``<root>/<workspace_id>/``. Workspaces
@@ -69,11 +60,10 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         *,
         subprocess_timeout_seconds: float = 120.0,
     ) -> None:
+        super().__init__()
         self._root = Path(root)
         self._subprocess_timeout_seconds = subprocess_timeout_seconds
         self._workspaces: dict[str, LocalWorkspace] = {}
-        self._lock = asyncio.Lock()
-        self._initialised = False
 
     @property
     def root(self) -> Path:
@@ -110,17 +100,8 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         _warn_unenforced(template)
 
         # Merge template + overrides (merge-then-extend semantics).
-        merged_env = dict(template.env)
-        if overrides is not None:
-            merged_env.update(overrides.env)
-        merged_files = list(template.files) + (
-            list(overrides.files) if overrides else []
-        )
-        merged_init = list(template.init_commands) + (
-            list(overrides.init_commands) if overrides else []
-        )
-
-        env_str = _resolve_env(merged_env)
+        merged = self.merge_overrides(template, overrides)
+        env_str = merged.env_unwrapped()
 
         workspace_id = _generate_workspace_id()
         ws_root = self._root / workspace_id
@@ -128,18 +109,14 @@ class LocalWorkspaceBackend(WorkspaceBackend):
 
         try:
             # Resolve every FileSource variant (inline/url/document/secret)
-            # up-front via the central helper; the backend just writes the
-            # resulting bytes. document/secret resolvers are supplied by the
-            # orchestration layer (WorkspaceRegistry.materialise) via the
-            # resolvers bundle; when absent, those kinds raise.
-            resolved_files = await resolve_file_sources(
-                merged_files,
-                document_resolver=resolvers.document_resolver if resolvers else None,
-                secret_resolver=resolvers.secret_resolver if resolvers else None,
+            # up-front via the shared helper; the backend just writes the
+            # resulting bytes to disk.
+            await self.materialize_files_on_backend(
+                merged.files,
+                lambda rf: self._materialise_resolved_file(ws_root, rf),
+                resolvers=resolvers,
             )
-            for rf in resolved_files:
-                await self._materialise_resolved_file(ws_root, rf)
-            for cmd in merged_init:
+            for cmd in merged.init_commands:
                 await self._run_init_command(ws_root, cmd, env_str)
             ws = await LocalWorkspace.materialise(
                 workspace_id=workspace_id,
@@ -161,14 +138,12 @@ class LocalWorkspaceBackend(WorkspaceBackend):
             self._workspaces[workspace_id] = ws
         return ws
 
-    async def get(
+    async def _reattach(
         self,
         workspace_id: str,
-        *,
-        template: WorkspaceTemplate | None = None,
+        template: WorkspaceTemplate | None,
     ) -> Workspace | None:
-        """Resolve a live :class:`LocalWorkspace`, re-attaching from disk
-        if this process didn't materialise it.
+        """Re-attach a :class:`LocalWorkspace` from disk after a cache miss.
 
         The on-disk directory ``<root>/<workspace_id>/`` survives api
         restarts; rebuilding the in-memory ``LocalWorkspace`` from it
@@ -177,11 +152,10 @@ class LocalWorkspaceBackend(WorkspaceBackend):
         sub-paths and the env to re-derive); when the caller doesn't
         supply one and the workspace isn't already in the in-memory
         cache, we cannot safely re-attach and return ``None``.
+
+        Called by :meth:`BaseWorkspaceBackend.get` only after the cache
+        lookup (with gone-eviction) misses.
         """
-        async with self._lock:
-            cached = self._workspaces.get(workspace_id)
-            if cached is not None:
-                return cached
         if not self._initialised:
             await self.initialize()
         ws_root = self._root / workspace_id
@@ -194,7 +168,7 @@ class LocalWorkspaceBackend(WorkspaceBackend):
                 workspace_id,
             )
             return None
-        env_str = _resolve_env(dict(template.env))
+        env_str = {k: v.get_secret_value() for k, v in template.env.items()}
         try:
             ws = await LocalWorkspace.materialise(
                 workspace_id=workspace_id,
@@ -210,7 +184,7 @@ class LocalWorkspaceBackend(WorkspaceBackend):
             )
             return None
         async with self._lock:
-            # Re-check after the lock — a concurrent caller may have
+            # Re-check after the lock: a concurrent caller may have
             # materialised the same workspace while we were rebuilding.
             existing = self._workspaces.get(workspace_id)
             if existing is not None:

@@ -38,6 +38,18 @@ from primer.model.workspace_session import (
     WaitingState,
 )
 from primer.model.workspace import CommitInfo, Op
+from primer.workspace.state_helpers import (
+    TRAILER_AGENT as _TRAILER_AGENT,
+    TRAILER_CALL as _TRAILER_CALL,
+    TRAILER_OP as _TRAILER_OP,
+    TRAILER_SESSION as _TRAILER_SESSION,
+    TRAILER_TOOL as _TRAILER_TOOL,
+    TRAILER_WORKSPACE as _TRAILER_WORKSPACE,
+    VALID_OPS as _VALID_OPS,
+    build_message as _build_message,
+    validate_relative_path as _validate_relative_path,
+    validate_session_id as _validate_session_id,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -51,28 +63,10 @@ logger = logging.getLogger(__name__)
 _AUTHOR_NAME = "primer"
 _AUTHOR_EMAIL = "primer@local"
 
-# Trailer keys -- machine-readable identifiers in the commit body.
-_TRAILER_WORKSPACE = "X-Primer-Workspace"
-_TRAILER_SESSION = "X-Primer-Session"
-_TRAILER_AGENT = "X-Primer-Agent"
-_TRAILER_OP = "X-Primer-Op"
-_TRAILER_TOOL = "X-Primer-Tool"
-_TRAILER_CALL = "X-Primer-Call"
-
-# Allowed values of the ``op`` trailer (canonical type lives in
-# ``primer.model.workspace.Op``; this set is the runtime validator).
-_VALID_OPS: frozenset[str] = frozenset(
-    [
-        "attach",
-        "message",
-        "user_instruction",
-        "tool_call",
-        "tool_result",
-        "memory_write",
-        "todo_update",
-        "status_change",
-    ]
-)
+# Trailer keys, the valid-op set, the commit-message builder, and the
+# path / session-id validators are shared with SandboxStateRepo via
+# :mod:`primer.workspace.state_helpers` (imported above under the same
+# private names so call sites stay unchanged).
 
 
 # ===========================================================================
@@ -656,51 +650,8 @@ class _GitCommandError(RuntimeError):
         )
 
 
-def _validate_session_id(session_id: str) -> None:
-    """Reject session ids that would let writes escape the slot."""
-    if not session_id:
-        raise ValueError("session_id must be non-empty")
-    if "/" in session_id or "\\" in session_id or session_id in (".", ".."):
-        raise ValueError(f"session_id contains illegal characters: {session_id!r}")
-    if "\x00" in session_id:
-        raise ValueError("session_id contains a null byte")
-
-
-def _validate_relative_path(rel: str) -> None:
-    """Reject paths that would escape the session slot."""
-    if not rel:
-        raise ValueError("path must be non-empty")
-    if rel.startswith("/") or rel.startswith("\\"):
-        raise ValueError(f"path must be relative: {rel!r}")
-    parts = Path(rel).parts
-    if any(part == ".." for part in parts):
-        raise ValueError(f"path must not contain '..': {rel!r}")
-    if "\x00" in rel:
-        raise ValueError("path contains a null byte")
-
-
-def _build_message(
-    *,
-    subject: str,
-    workspace_id: str,
-    session_id: str,
-    agent_id: str,
-    op: str,
-    tool: str | None,
-    call_id: str | None,
-) -> str:
-    """Build a commit message with trailers in the order the spec dictates."""
-    trailers = [
-        f"{_TRAILER_WORKSPACE}: {workspace_id}",
-        f"{_TRAILER_SESSION}: {session_id}",
-        f"{_TRAILER_AGENT}: {agent_id}",
-        f"{_TRAILER_OP}: {op}",
-    ]
-    if tool is not None:
-        trailers.append(f"{_TRAILER_TOOL}: {tool}")
-    if call_id is not None:
-        trailers.append(f"{_TRAILER_CALL}: {call_id}")
-    return f"{subject}\n\n" + "\n".join(trailers) + "\n"
+# ``_validate_session_id`` / ``_validate_relative_path`` / ``_build_message``
+# are imported from :mod:`primer.workspace.state_helpers` at module top.
 
 
 _RECORD_SEP = "\x1e"

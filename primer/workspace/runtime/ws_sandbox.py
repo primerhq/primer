@@ -76,6 +76,17 @@ class WSSandbox(Sandbox):
     def id(self) -> str:
         return self._container_id
 
+    @property
+    def gone(self) -> bool:
+        """``True`` once the underlying :class:`RuntimeClient` self-evicts.
+
+        The runtime client sets its ``gone`` flag when a reconnect attempt
+        is rejected with a 404 handshake (the backend reports the
+        workspace/pod no longer exists). A backend cache that holds this
+        sandbox MUST evict it rather than handing out the dead handle.
+        """
+        return self._client.gone
+
     # ------------------------------------------------------------------
     # Execution
     # ------------------------------------------------------------------
@@ -273,6 +284,18 @@ class WSSandbox(Sandbox):
             raise NotImplementedError(
                 "WSSandbox.remove() requires a ContainerHandle or a subclass override."
             )
+
+    async def aclose(self) -> None:
+        """Close the underlying :class:`RuntimeClient`.
+
+        Tears down the persistent WebSocket connection and the aiohttp
+        session it owns.  ``stop()`` / ``remove()`` only touch container
+        orchestration (the daemon-side container + volume); the in-process
+        WS + aiohttp session outlive them unless this is called.  Callers
+        rolling back a half-built workspace MUST ``aclose()`` so those
+        resources don't leak.
+        """
+        await self._client.aclose()
 
     # ------------------------------------------------------------------
     # Path resolution

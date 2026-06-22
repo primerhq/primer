@@ -196,3 +196,70 @@ async def test_init_command_failure_rolls_back(tmp_path: Path) -> None:
     # Nothing should remain registered.
     assert await backend.list() == []
     await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_evicts_gone_cached_handle_and_reattaches(
+    tmp_path: Path,
+) -> None:
+    """Regression for the dead-handle cache bug: once a cached workspace's
+    runtime client goes ``gone`` (the runtime self-evicts on a 404
+    handshake), ``get()`` must evict it from the cache and re-attach a
+    fresh handle rather than returning the dead one.
+    """
+    adapter = _FakeAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    template = _template()
+    ws = await backend.create(template)
+    wid = ws.id
+
+    # Warm path: the cached handle is live and returned as-is.
+    assert await backend.get(wid, template=template) is ws
+
+    # Simulate the runtime self-evicting: the underlying sandbox reports
+    # gone, so SandboxWorkspace.gone is True for the cached handle.
+    ws.sandbox.gone = True
+    assert ws.gone is True
+
+    # The adapter still has a live (non-gone) sandbox under the same name
+    # (e.g. a fresh pod/container that came back); a fresh re-attach picks
+    # it up. Swap in a brand-new sandbox so we can prove a new handle.
+    name = f"workspace-{wid}"
+    fresh = _TrackingFakeSandbox(
+        root=tmp_path / name, sandbox_id=name, adapter=adapter,
+    )
+    fresh.mapped_host_port = 32100
+    adapter._sandboxes[name] = fresh
+
+    # get() must NOT return the gone handle: it evicts + re-attaches.
+    reattached = await backend.get(wid, template=template)
+    assert reattached is not None
+    assert reattached is not ws, "get() returned the dead, gone handle"
+    assert reattached.gone is False
+    # The fresh handle is now cached and stable on the next call.
+    assert await backend.get(wid, template=template) is reattached
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_returns_none_when_gone_handle_cannot_reattach(
+    tmp_path: Path,
+) -> None:
+    """If the cached handle is gone AND the backing sandbox is also gone
+    (adapter no longer has it), get() returns None after eviction."""
+    adapter = _FakeAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+    template = _template()
+    ws = await backend.create(template)
+    wid = ws.id
+
+    ws.sandbox.gone = True
+    # Remove the backing sandbox so re-attach finds nothing.
+    adapter._sandboxes.pop(f"workspace-{wid}", None)
+
+    assert await backend.get(wid, template=template) is None
+    # The dead handle was evicted from the cache.
+    assert wid not in backend._workspaces
+    await backend.aclose()
