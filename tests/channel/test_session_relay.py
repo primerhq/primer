@@ -1,12 +1,18 @@
-"""Session lifecycle relay: start ack + final-result post to the reply binding.
+"""Session lifecycle relay: final-result post to the reply binding.
 
-:func:`post_session_start_ack` and :func:`post_session_final_result`
-(``primer/channel/session_relay.py``) are the session-side analogues of the
-chat relay helpers. They resolve the session's reply binding via
-:func:`resolve_reply_binding`, post an ``inform``-kind
-:class:`PromptEnvelope` through the :class:`ChannelDispatcher`, and return
-whether any channel was reached. A binding marked ``quiet`` suppresses both;
-a session with no binding is silent (preserves today's non-channel behavior).
+:func:`post_session_final_result` (``primer/channel/session_relay.py``) is the
+session-side analogue of the chat relay helpers. It resolves the session's
+reply binding via :func:`resolve_reply_binding`, posts an ``inform``-kind
+:class:`PromptEnvelope` through the :class:`ChannelDispatcher`, and returns
+whether any channel was reached. A binding marked ``quiet`` suppresses it; an
+empty text suppresses it; a session with no binding is silent (preserves
+today's non-channel behavior).
+
+There is deliberately NO start acknowledgement: per-session Discord/Slack
+threads are created LAZILY on the first real outbound post, so an unconditional
+"started" ack would open an empty thread for every session in a binding-bearing
+workspace. The dropped start ack is covered by the lazy-thread regression in
+``test_session_lifecycle_lazy_thread.py``.
 """
 
 from __future__ import annotations
@@ -20,10 +26,7 @@ from pydantic import SecretStr
 from primer.channel.dispatcher import ChannelDispatcher
 from primer.channel.null_adapter import NullChannelAdapter
 from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
-from primer.channel.session_relay import (
-    post_session_final_result,
-    post_session_start_ack,
-)
+from primer.channel.session_relay import post_session_final_result
 from primer.model.workspace import (
     Workspace,
     WorkspaceChannelLink,
@@ -97,28 +100,6 @@ class _Registry:
 
 
 @pytest.mark.asyncio
-async def test_start_ack_posts_to_binding():
-    sp = _SP()
-    sp.get_storage(Workspace).put(_make_workspace())
-    reg = _Registry(sp)
-    d = ChannelDispatcher(registry=reg)
-    session = _FakeSession(
-        workspace_id="ws-relay",
-        metadata={SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-sess"}},
-    )
-
-    reached = await post_session_start_ack(
-        dispatcher=d, session=session, storage_provider=sp,
-    )
-
-    assert reached is True
-    posted = reg.adapters["ch-sess"].posted
-    assert len(posted) == 1
-    assert posted[0].kind == "inform"
-    assert posted[0].session_id == session.id
-
-
-@pytest.mark.asyncio
 async def test_final_result_posts_to_binding():
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace())
@@ -141,7 +122,28 @@ async def test_final_result_posts_to_binding():
 
 
 @pytest.mark.asyncio
-async def test_quiet_binding_suppresses_ack_and_final():
+async def test_empty_final_result_is_silent():
+    """An empty derived text opens no thread: no adapter is even requested."""
+    sp = _SP()
+    sp.get_storage(Workspace).put(_make_workspace())
+    reg = _Registry(sp)
+    d = ChannelDispatcher(registry=reg)
+    session = _FakeSession(
+        workspace_id="ws-relay",
+        metadata={SESSION_REPLY_BINDING_KEY: {"channel_id": "ch-sess"}},
+    )
+
+    reached = await post_session_final_result(
+        dispatcher=d, session=session, storage_provider=sp, text="",
+    )
+
+    assert reached is False
+    assert reg.requested == []
+    assert reg.adapters == {}
+
+
+@pytest.mark.asyncio
+async def test_quiet_binding_suppresses_final():
     sp = _SP()
     sp.get_storage(Workspace).put(_make_workspace())
     reg = _Registry(sp)
@@ -153,14 +155,10 @@ async def test_quiet_binding_suppresses_ack_and_final():
         },
     )
 
-    ack = await post_session_start_ack(
-        dispatcher=d, session=session, storage_provider=sp,
-    )
     final = await post_session_final_result(
         dispatcher=d, session=session, storage_provider=sp, text="done",
     )
 
-    assert ack is False
     assert final is False
     assert reg.requested == []
     assert reg.adapters == {}
@@ -174,13 +172,10 @@ async def test_no_binding_is_silent():
     d = ChannelDispatcher(registry=reg)
     session = _FakeSession(workspace_id="ws-relay", metadata={})
 
-    ack = await post_session_start_ack(
-        dispatcher=d, session=session, storage_provider=sp,
-    )
     final = await post_session_final_result(
         dispatcher=d, session=session, storage_provider=sp, text="done",
     )
 
-    assert ack is False
     assert final is False
     assert reg.requested == []
+    assert reg.adapters == {}

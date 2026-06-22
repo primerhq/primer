@@ -243,25 +243,17 @@ async def run_one_session_turn(
         input_message_count=0,
     ))
 
-    # Post a start acknowledgement on the FIRST turn of a channel-triggered
-    # session: when a reply binding resolves, the operator who triggered the
-    # session over a channel sees a "started" signal. Guarded so a missing
-    # dispatcher or a relay failure never blocks the turn; no-ops for
-    # non-channel sessions (no binding) and quiet bindings.
-    if session.turn_no == 0 and deps.channel_dispatcher is not None:
-        try:
-            from primer.channel.session_relay import post_session_start_ack
-
-            await post_session_start_ack(
-                dispatcher=deps.channel_dispatcher,
-                session=session,
-                storage_provider=deps.storage_provider,
-            )
-        except Exception:  # never block the turn on a relay failure
-            logger.warning(
-                "session %s: start-ack relay failed", session_id,
-                exc_info=True,
-            )
+    # Intentionally no start acknowledgement here. Per-session channel threads
+    # are created LAZILY: the first eager post to a workspace's reply binding
+    # is what GET-OR-CREATES the Discord/Slack per-session thread, so posting a
+    # "started" ack on turn 0 of EVERY session that happens to run in a
+    # binding-bearing workspace (background/graph/test sessions included) opened
+    # an empty thread the session never used. There is no per-session
+    # channel-origin marker to gate on -- channel-triggered sessions reach the
+    # channel through the same workspace-standing Workspace.reply_binding every
+    # other session uses -- so the start ack is dropped entirely. A thread now
+    # forms only on the first REAL outbound signal: a gate forward / inform
+    # (post_prompt) or a non-empty final result.
 
     cancel_requested = False
     cancel_reason: str = "operator_interrupt"
