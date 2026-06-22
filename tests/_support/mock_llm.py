@@ -21,6 +21,7 @@ class Rule:
     when_last_user_contains: str | None = None
     when_tool_result: bool | None = None
     when_tool_offered: str | None = None
+    when_last_tool_result_contains: str | None = None
     emit_text: str | None = None
     emit_tool: str | None = None
     emit_args: dict[str, Any] = field(default_factory=dict)
@@ -29,6 +30,9 @@ class Rule:
         msgs = req.get("messages", [])
         last_user = next(
             (m for m in reversed(msgs) if m.get("role") == "user"), {}
+        )
+        last_tool = next(
+            (m for m in reversed(msgs) if m.get("role") == "tool"), {}
         )
         has_tool_result = any(m.get("role") == "tool" for m in msgs)
         offered = {
@@ -46,6 +50,15 @@ class Rule:
             return False
         if self.when_tool_offered and not any(
             self.when_tool_offered in (name or "") for name in offered
+        ):
+            return False
+        # Discriminate sequential tool-call chains by the content of the most
+        # recent tool-role message (e.g. a watch_files resume vs a
+        # put_document result), which user/offered predicates cannot see.
+        if (
+            self.when_last_tool_result_contains
+            and self.when_last_tool_result_contains
+            not in str(last_tool.get("content", ""))
         ):
             return False
         return True
