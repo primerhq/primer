@@ -1,4 +1,4 @@
-"""E2E: full-lifecycle session relay (start ack + final result) to the binding.
+"""E2E: session final-result relay to the binding, with LAZY thread creation.
 
 Drives ``run_one_session_turn`` offline against a stub executor that streams a
 short assistant message and ends ``completed``. The session carries a
@@ -8,10 +8,11 @@ stamps when a channel event spawns a session), resolved through the real
 :meth:`ChannelRegistry.for_session` path to a captured
 :class:`NullChannelAdapter`.
 
-Asserts the adapter received BOTH lifecycle posts in order:
-
-  1. the start ack on the first turn (``turn_no == 0``); and
-  2. the final result (the streamed assistant text) on clean completion.
+Asserts the adapter received EXACTLY ONE post -- the final result (the streamed
+assistant text) on clean completion. There is deliberately NO start ack: a
+per-session thread is created LAZILY on the first real outbound post, so an
+unconditional turn-0 ack would open an empty thread for every session in a
+binding-bearing workspace.
 
 Pure in-process orchestration: no HTTP, no LLM, no Postgres, no real network.
 Gated behind ``PRIMER_RUN_E2E`` like the other in-process journeys.
@@ -35,6 +36,7 @@ from primer.int.claim import ClaimKind, Lease
 from primer.model.chat import Done, TextDelta
 from primer.model.workspace import (
     Workspace,
+    WorkspaceChannelLink,
     WorkspaceRuntimeMeta,
 )
 from primer.model.workspace_session import (
@@ -87,6 +89,22 @@ class _StreamingExecutor:
     async def invoke(self, messages: list[Any], **kwargs: Any):
         yield TextDelta(text="All ", index=0)
         yield TextDelta(text="finished.", index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+
+class _SilentExecutor:
+    """Completes cleanly without emitting any assistant text.
+
+    Models a background/graph/test session that runs in a binding-bearing
+    workspace but produces nothing the operator should see: no gate, no
+    inform, no assistant output. Such a session must open NO thread.
+    """
+
+    last_done_reason = "stop"
+
+    async def invoke(self, messages: list[Any], **kwargs: Any):
+        if False:  # pragma: no cover - generator with no yields
+            yield None
         yield Done(stop_reason="stop", raw_reason="stop")
 
 
@@ -175,10 +193,80 @@ async def test_channel_session_lifecycle_relay_journey() -> None:
 
     adapter = registry.adapters["ch-sess"]
     posted = adapter.posted
-    # The start ack (first) and the final result (last) both landed on the
-    # binding channel.
-    assert len(posted) == 2, [p.prompt for p in posted]
-    assert posted[0].kind == "inform"
-    assert posted[0].prompt == "Started working on your request."
+    # Exactly ONE post: the final result. No turn-0 start ack -- the thread is
+    # created lazily by this first (and only) real outbound post.
+    assert len(posted) == 1, [p.prompt for p in posted]
     assert posted[-1].kind == "inform"
     assert posted[-1].prompt == "All finished."
+
+
+@pytest.mark.asyncio
+async def test_silent_session_in_bound_workspace_opens_no_thread() -> None:
+    """Regression: a background session that never posts opens NO thread.
+
+    The workspace carries a workspace-STANDING reply binding (the exact bug
+    scenario: every session in the workspace resolves it), and the session has
+    no session-scoped binding -- it is an ordinary background/graph/test
+    session. The executor completes cleanly without emitting any assistant
+    text. With lazy thread creation, ``post_prompt`` is never called and no
+    adapter is even requested, so no empty thread is opened.
+    """
+    from tests.conftest import _FakeStorageProvider
+
+    sp = _FakeStorageProvider()
+
+    # Workspace-standing binding: shared by every session in this workspace.
+    ws = Workspace(
+        id="ws-silent",
+        template_id="tpl-s",
+        provider_id="wp-s",
+        created_at=_now(),
+        runtime_meta=WorkspaceRuntimeMeta(
+            url="ws://localhost:5959",
+            token=SecretStr("runtime-token"),
+        ),
+        reply_binding=WorkspaceChannelLink(channel_id="ch-standing"),
+    )
+    await sp.get_storage(Workspace).create(ws)
+
+    # An ordinary background session: NO session-scoped reply binding.
+    session = WorkspaceSession(
+        id="s-silent",
+        workspace_id="ws-silent",
+        binding=AgentSessionBinding(agent_id="ag-s"),
+        status=SessionStatus.RUNNING,
+        created_at=_now(),
+        turn_status="running",
+        turn_no=0,
+        metadata={},
+    )
+    await sp.get_storage(WorkspaceSession).create(session)
+
+    registry = _Registry()
+    registry.bind(sp)
+    dispatcher = ChannelDispatcher(registry=registry)
+
+    bus = InMemoryEventBus()
+    await bus.initialize()
+    try:
+        async def _build_executor(_session: WorkspaceSession):
+            return _SilentExecutor()
+
+        deps = SessionDispatchDeps(
+            storage_provider=sp,
+            workspace_io=_FakeWorkspaceIO(),
+            event_bus=bus,
+            build_executor=_build_executor,
+            channel_dispatcher=dispatcher,
+        )
+
+        outcome = await run_one_session_turn(_make_lease(session.id), deps)
+    finally:
+        await bus.aclose()
+
+    assert outcome.success is True
+    assert outcome.park is None
+
+    # No adapter was ever requested -> no thread get-or-created -> no empty
+    # thread. The whole point of the lazy fix.
+    assert registry.adapters == {}

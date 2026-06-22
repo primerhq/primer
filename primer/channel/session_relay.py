@@ -1,19 +1,25 @@
-"""Full-lifecycle session relay: start ack + final result to the reply binding.
+"""Final-result session relay: post the last-turn outcome to the reply binding.
 
 Symmetric with the chat relay helpers in :mod:`primer.channel.chat_dispatcher`,
 but for workspace sessions. When a channel event spawns a session the inbound
 router stamps a per-session reply binding into ``session.metadata`` (see
-:data:`primer.channel.reply_binding.SESSION_REPLY_BINDING_KEY`). These helpers
-let the worker turn loop post two lifecycle signals to that binding:
+:data:`primer.channel.reply_binding.SESSION_REPLY_BINDING_KEY`); otherwise the
+session resolves the workspace-standing :attr:`Workspace.reply_binding`. This
+helper lets the worker turn loop post one lifecycle signal to that binding:
 
-* :func:`post_session_start_ack` -- a short "started" acknowledgement on the
-  first turn of a channel-triggered session; and
 * :func:`post_session_final_result` -- the last-turn assistant text when the
   session reaches a clean terminal completion.
 
-Both no-op (return ``False``) when the session has no reply binding (a
-non-channel session stays silent, preserving today's behavior) or when the
-resolved binding is marked ``quiet`` (per-binding suppression, spec 8).
+There is deliberately NO start acknowledgement: the first eager post to a
+binding is what GET-OR-CREATES the per-session Discord/Slack thread, so an
+unconditional "started" ack opened an empty thread for every session running in
+a binding-bearing workspace. Threads now form LAZILY -- only on the first real
+gate forward / ``inform`` (``post_prompt``) or a non-empty final result.
+
+:func:`post_session_final_result` no-ops (returns ``False``) when the derived
+text is empty, when the session has no reply binding (a non-channel session
+stays silent), or when the resolved binding is marked ``quiet`` (per-binding
+suppression, spec 8).
 """
 
 from __future__ import annotations
@@ -26,8 +32,6 @@ from primer.channel.reply_binding import resolve_reply_binding
 
 
 _log = logging.getLogger(__name__)
-
-_START_ACK_TEXT = "Started working on your request."
 
 
 def _count_reached(results: list) -> int:
@@ -76,25 +80,6 @@ async def _post_lifecycle(
         )
         return False
     return _count_reached(results) > 0
-
-
-async def post_session_start_ack(
-    *,
-    dispatcher,
-    session,
-    storage_provider,
-) -> bool:
-    """Post the start acknowledgement to the session's reply binding.
-
-    Returns ``True`` when at least one channel was reached, ``False`` when
-    the session has no binding or the binding is quiet.
-    """
-    return await _post_lifecycle(
-        dispatcher=dispatcher,
-        session=session,
-        storage_provider=storage_provider,
-        text=_START_ACK_TEXT,
-    )
 
 
 async def post_session_final_result(
@@ -198,6 +183,5 @@ async def read_session_final_text(workspace_io, session_id: str) -> str | None:
 __all__ = [
     "derive_session_final_text",
     "post_session_final_result",
-    "post_session_start_ack",
     "read_session_final_text",
 ]
