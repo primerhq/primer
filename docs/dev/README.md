@@ -8,11 +8,11 @@ it reflects what the code does now rather than what any one spec proposed: where
 the implementation diverged from a spec, this set describes the implementation and
 records the divergence in a per-doc "Historical decisions" callout. It is not a
 changelog, not the spec archive, and not user-facing documentation. The changelog
-lives in git history, the spec archive stays under `docs/superpowers/specs/`, and
-the operator-facing and agent-facing docs live under `primer/ai_docs/` and the
-`/docs` console surface. Read this set when you need to understand or extend a
-subsystem; read the specs only when you need the original rationale behind a
-decision this set summarises.
+lives in git history, the spec archive stays under `docs/superpowers/specs/`, the
+agent-facing docs live under `docs/agents/`, and the operator-facing docs live in
+a separate external repo (the `primerhq.github.io` Pages site). Read this set when
+you need to understand or extend a subsystem; read the specs only when you need the
+original rationale behind a decision this set summarises.
 
 ## Subsystem dependency graph
 

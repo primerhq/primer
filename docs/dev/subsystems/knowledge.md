@@ -120,7 +120,7 @@ sequenceDiagram
 | Bootstrap progress | `InternalCollectionsBootstrapStatus` row at `_internal_collections_bootstrap_status` via `Storage[T]` | Singleton; survives navigation and process restart. |
 | Per-event ingest failures | `IngestFailure` rows via `Storage[T]` | Append-only audit; the future global retry scheduler reads them. |
 | Reserved `Collection` metadata rows | `Collection` rows via `Storage[T]` | Stamped `system=True` and `search_provider_id`. |
-| AI-docs source | Markdown files shipped under `primer/ai_docs/*.md` | Walked at bootstrap; files starting with `_` are skipped; `content_hash` in `Document.meta` skips unchanged files. |
+| AI-docs source | Markdown files under the agent-docs directory (`docs/agents/*.md` by default, resolved via `resolve_ai_docs_dir()`; `primer/ai_docs/` is a legacy fallback) | Walked recursively at bootstrap; files starting with `_` are skipped; `content_hash` in `Document.meta` skips unchanged files. |
 | Operator config (embedder, model, SSP, rerank) | Fields on `InternalCollectionsConfig` | Configured at runtime via the activation API. |
 
 ## 8. Public surfaces

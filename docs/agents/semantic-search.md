@@ -67,7 +67,8 @@ Once activated, the subsystem does two things:
    embedding dimensionality, creates the vector-store backings,
    then walks the existing entity rows (agents, graphs, user
    collections, every toolset's tools, and every markdown file in
-   `primer/ai_docs/`) and embeds them. The first four collections
+   the agent-docs directory, which resolves to `docs/agents/` by
+   default) and embeds them. The first four collections
    store one vector per entity. The fifth - `_internal_ai_docs` -
    uses [primer/ingest/](../../primer/ingest/)'s `DocumentIngester`
    to chunk each markdown file by section and embed each chunk
@@ -118,8 +119,8 @@ safe - collections are re-materialised idempotently and per-entity
 records are upserted by id.
 
 The `_internal_ai_docs` collection has its own micro-lifecycle: on
-each bootstrap run, every `*.md` file under `primer/ai_docs/` is
-hashed (sha256). The hash is compared to the existing
+each bootstrap run, every `*.md` file under the agent-docs directory
+(`docs/agents/` by default) is hashed (sha256). The hash is compared to the existing
 `Document.meta['content_hash']` - equal hashes mean "no change, skip
 re-embedding"; different hashes mean "re-ingest with replace=True"
 which drops prior chunks and re-embeds. New files create new

@@ -2,7 +2,7 @@
 slug: sessions
 title: Sessions - long-running workspace agent runs
 summary: Headless agent execution inside a workspace, with file I/O, pause/resume control, and waiting.json state surfaces.
-related: [workspaces, agents, yielding, chats]
+related: [workspaces, agents, yielding, chats, tool-approval, graphs]
 mcp_tools:
   - workspaces::create_workspace_session
   - workspaces::get_workspace_session
@@ -134,6 +134,24 @@ The transitions are driven via REST routes and the matching
 
 The worker pool reads these flags between turns and acts on them.
 
+## Where your session actually runs
+
+A session is not pinned to the process that created it. Under the
+remote-worker / Kubernetes topology, primer runs a pool of workers
+(possibly across many processes, and in k8s across many pods), and any
+free worker can claim the session. The worker that runs the first turn
+may not be the one that runs the next, and the process that handled
+`create_workspace_session` may never touch the session again. After a
+park-and-resume, a different worker entirely usually picks it back up.
+
+The practical consequence: do not assume locality. Drive a session
+through its durable, storage-backed surface - poll
+`workspaces::get_workspace_session` (or the REST endpoints) for state;
+do not hold a handle and expect the originating process to still own the
+work. State lives in storage and in the workspace's git-backed
+`.state/`, both of which any worker reads, which is exactly what lets a
+parked session resume on whatever worker is free hours or days later.
+
 Multi-session coordination: sessions on the same workspace can
 share state via `.state/shared/` (a workspace-relative directory).
 This is the primer-blessed channel for "agent A produces a file
@@ -240,8 +258,29 @@ Returns `status="waiting"`, `parked_status="parked"`,
 }
 ```
 
-3. Operator answers by POSTing the reply (via the operator UI or
-   a channel-forwarded reply). The session resumes.
+3. Operator answers by POSTing the reply (via the operator UI, a
+   channel-forwarded reply, or the REST resume endpoints below). The
+   session resumes.
+
+These are the REST endpoints for inspecting and answering a parked
+session, all rooted at `/v1/sessions/{session_id}`:
+
+```text
+GET  /v1/sessions/{session_id}/ask_user/pending
+POST /v1/sessions/{session_id}/ask_user/respond   {"tool_call_id": "...", "response": ...}
+POST /v1/sessions/{session_id}/yields/{tool_call_id}/cancel
+```
+
+`ask_user/pending` returns the `tool_call_id`, the `prompt`, and the
+optional `response_schema` (404 when the session is not parked on an
+`ask_user`); `ask_user/respond` validates the `response` against that
+schema and resumes the session; `yields/{tool_call_id}/cancel` skips one
+in-flight yield without ending the session (the tool sees a cancelled
+result and the agent's turn continues). The same endpoints answer a
+graph session parked mid-run on an `ask_user` node (see
+[graphs](graphs.md)). Tool-approval parks have their own pair
+(`tool_approval/pending` + `tool_approval/respond`); see
+[tool-approval](tool-approval.md).
 
 ## Gotchas
 
@@ -289,6 +328,11 @@ Returns `status="waiting"`, `parked_status="parked"`,
 - [agents](agents.md) - the agent defines what a session does;
   the session is one instance of running an agent.
 - [yielding](yielding.md) - yields are how sessions transition
-  to WAITING.
+  to WAITING; covers the `ask_user/pending` + `ask_user/respond`
+  resume endpoints in depth.
+- [tool-approval](tool-approval.md) - the approval-gate park and its
+  own `tool_approval/pending` + `tool_approval/respond` endpoints.
+- [graphs](graphs.md) - a graph session can park mid-run on an
+  `ask_user` node and resume over the same endpoints.
 - [chats](chats.md) - the human-in-the-loop sibling of sessions;
   same yield mechanics, different lifecycle.

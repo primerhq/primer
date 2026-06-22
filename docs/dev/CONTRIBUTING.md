@@ -114,7 +114,11 @@ a one-line reason; it may not simply be omitted.
 
 - Update the relevant subsystem doc under `docs/dev/subsystems/` and any
   architecture doc whose contract shifted.
-- Add or update operator markdown under `primer/user_docs/<section>/<feature>.md`.
+- Update the agent-usage doc under `docs/agents/<feature>.md` when the
+  agent-visible behaviour changes.
+- The operator-facing docs now live in a separate external repo (the
+  `primerhq.github.io` Pages site); update them there when an operator-visible
+  surface changes.
 - Update the MCP tool description for any new operation.
 
 ## 3. PR conventions

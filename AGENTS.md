@@ -63,8 +63,11 @@ files a task touches (never `git add -A`).
     a live server, `tests/ui_e2e/` Playwright, `tests/distributed/`,
     `tests/docs/` hygiene.
   - `docs/dev/` - the authoritative developer reference (architecture +
-    subsystems). `docs/agents/` - agent-usage docs served as internal AI docs.
-    `primer/user_docs/` - the operator-facing console docs.
+    subsystems). `docs/agents/` - agent-usage docs served as internal AI docs
+    (ingested into the `_internal_ai_docs` collection; see
+    `docs/agents/_README.md`). The operator-facing console docs now live in a
+    separate external repo (the `primerhq.github.io` Pages site), not in this
+    tree.
   - `skills/` - guidance for agents using a primer deployment (not contribution).
 
 ---
@@ -113,9 +116,11 @@ checklist.
    tools in the appropriate toolset under `primer/toolset/` (built with
    `make_tool`, registered for internal-collection ingestion, callable over
    `POST /v1/mcp`), so agents and MCP clients can use it.
-4. **Docs** - update BOTH the operator docs in `primer/user_docs/` AND the
-   agent-usage docs in `docs/agents/`, plus the dev docs in
-   `docs/dev/subsystems/` and `docs/dev/architecture/` as the change warrants.
+4. **Docs** - update the agent-usage docs in `docs/agents/` plus the dev docs
+   in `docs/dev/subsystems/` and `docs/dev/architecture/` as the change
+   warrants. The operator-facing docs now live in a separate external repo (the
+   `primerhq.github.io` Pages site); update them there when an operator-visible
+   surface changes.
 5. **Unit tests** - add or extend unit tests for new models, helpers, routes,
    and components.
 6. **E2E tests** - add or extend end-to-end coverage under `tests/e2e/` (or

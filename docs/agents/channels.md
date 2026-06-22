@@ -2,7 +2,7 @@
 slug: channels
 title: Channels - multi-platform messaging
 summary: How primer routes ask_user / tool approval prompts to Slack, Telegram, and Discord, and how channel events drive chats and workspace session gates.
-related: [triggers-and-subscriptions, tool-approval, yielding]
+related: [triggers-and-subscriptions, tool-approval, yielding, graphs]
 mcp_tools:
   - system::list_channel_providers
   - system::get_channel_provider
@@ -498,5 +498,8 @@ the trigger.
   prompts via the same dispatcher.
 - [yielding](yielding.md) - `ask_user` is the canonical yielding
   tool that channels forward.
+- [graphs](graphs.md) - a graph that parks mid-run on an `ask_user`
+  node forwards the prompt to a bound channel; the operator's reply
+  there resumes the graph (graph human-in-the-loop).
 - [triggers-and-subscriptions](triggers-and-subscriptions.md) -
   `channel` kind triggers source events from channel inboxes.

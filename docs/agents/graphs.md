@@ -2,7 +2,7 @@
 slug: graphs
 title: Graphs - multi-step agent orchestration
 summary: How primer composes agents, tools, and sub-graphs into directed graphs with Jinja-templated node inputs, conditional routing, fan-out/fan-in parallelism, and supersteps; how to author graphs and invoke them.
-related: [agents, sessions, semantic-search]
+related: [agents, sessions, channels, yielding, semantic-search]
 mcp_tools:
   - system::list_graphs
   - system::get_graph
@@ -35,12 +35,24 @@ Use a graph when you need several steps chained with conditional
 routing or parallelism between them; not when one agent with one
 toolset does the whole job (use a single [agent](agents.md)).
 
-Graphs run to completion in one invocation. There is no mid-graph
-pause in v1 (yielding tools inside an agent node still work, but they
-pause the agent within that node, not the graph topology). So a graph
-is right for deterministic multi-step work (extract -> analyse ->
-write report), not for waiting for a human between steps. For that,
-use chats or sessions.
+Graphs can pause mid-run to wait for a human. A graph parks the whole
+run (not just the agent inside one node) when it hits a
+human-in-the-loop point: a `tool_call` node whose tool is the
+value-yielding `system__ask_user`, an `agent` node that calls
+`ask_user` during its turn, or a `tool_call` that trips a tool-approval
+gate. The park is checkpointed to storage, so the run holds no compute
+while it waits and resumes later when the human answers. Multiple nodes
+in one superstep can park at once (multi-event park): the run collects
+every pending human-interaction node, parks on all of them, and
+re-parks until the human has answered each one, so concurrent branches
+that each need a human do not serialise. The answer arrives over a
+[channel](channels.md) (Slack / Telegram / Discord) or over the REST
+resume endpoints (see Workflow 7 below). A graph is therefore good both
+for deterministic multi-step work (extract -> analyse -> write report)
+AND for workflows that pause for a human between steps. Reach for a
+[chat](chats.md) instead when the whole interaction is a back-and-forth
+conversation rather than a mostly-automated pipeline with a few human
+checkpoints.
 
 The execution model is **Pregel-style supersteps**. At each superstep
 a ready set of nodes runs in parallel; when each finishes, edges out
@@ -529,6 +541,72 @@ hands the candidates to the judge via its `input_template` reading the
 following `agent` node instead of doing the selection inside the
 `aggregate_template`.)
 
+### Workflow 7 - a graph that asks a human mid-run
+
+**Goal.** Pause the graph for a human decision, then route on the
+answer. A `tool_call` node calls the value-yielding `system__ask_user`;
+the run parks until the operator replies, the reply lands in
+`nodes.confirm.text`, and a `json_path` router sends the run down the
+approve or reject branch. The same shape works with an `agent` node that
+calls `ask_user` during its turn; either way the whole graph parks, not
+just the node.
+
+```json
+{
+  "entity": {
+    "id": "deploy-with-approval",
+    "description": "Plan a deploy, ask a human to approve, then act on the answer.",
+    "nodes": [
+      {"id": "start", "kind": "begin"},
+      {"id": "plan", "kind": "agent", "agent_id": "deploy-planner",
+       "input_template": "Draft the deploy plan for: {{ initial_input.change }}"},
+      {"id": "confirm", "kind": "tool_call", "tool_id": "system__ask_user",
+       "arguments": {"prompt": "Approve this deploy plan? Reply approve or reject.\n\n{{ nodes.plan.text }}",
+                     "response_schema": {"type": "string", "enum": ["approve", "reject"]}}},
+      {"id": "do_deploy", "kind": "agent", "agent_id": "deployer",
+       "input_template": "Execute the approved plan:\n{{ nodes.plan.text }}"},
+      {"id": "end_ok", "kind": "end", "output_template": "deployed: {{ nodes.do_deploy.text }}"},
+      {"id": "end_no", "kind": "end", "output_template": "rejected by operator"}
+    ],
+    "edges": [
+      {"kind": "static", "from_node": "start", "to_node": "plan"},
+      {"kind": "static", "from_node": "plan", "to_node": "confirm"},
+      {"kind": "conditional", "from_node": "confirm", "router": {
+        "kind": "json_path",
+        "branches": [{"conditions": [{"path": "", "op": "eq", "value": "approve"}], "to_node": "do_deploy"}],
+        "default_to": "end_no"
+      }},
+      {"kind": "static", "from_node": "do_deploy", "to_node": "end_ok"}
+    ]
+  }
+}
+```
+
+Run it with a graph-bound session as in Workflow 1. When the `confirm`
+node fires, the session parks: `get_workspace_session` returns
+`status="waiting"`. There are two ways to answer.
+
+Over a channel: if the graph session has a channel reply binding, primer
+forwards the `ask_user` prompt to the bound Slack / Telegram / Discord
+room; the operator's reply there resumes the graph. See
+[channels](channels.md).
+
+Over REST: read the pending prompt and post the answer. These are the
+same parked-session resume endpoints sessions and chats use:
+
+```text
+GET  /v1/sessions/{session_id}/ask_user/pending
+POST /v1/sessions/{session_id}/ask_user/respond   {"tool_call_id": "...", "response": "approve"}
+```
+
+`ask_user/pending` returns the `tool_call_id`, the `prompt`, and the
+`response_schema`; POST the operator's `response` (validated against that
+schema) to `ask_user/respond` and the graph resumes from its checkpoint,
+routing on the reply. To skip a pending decision instead of answering it,
+`POST /v1/sessions/{session_id}/yields/{tool_call_id}/cancel`. If several
+nodes parked at once, answer each `tool_call_id` in turn; the run
+re-parks until every pending decision is resolved, then advances.
+
 ## Gotchas
 
 - **The template variable is `initial_input`, not `input`.** With
@@ -564,12 +642,25 @@ following `agent` node instead of doing the selection inside the
   registered at app startup; inspectors see only the `callable_id`.
 - **One workspace per graph session.** Every node runs in the same
   workspace; files written by node A are visible to node B.
-- **Per-agent-node concerns.** Auto-compaction, tool approval, and
-  yielding are per-agent-node, not per-graph.
+- **Auto-compaction is per-agent-node.** Each agent node compacts its
+  own history independently; there is no graph-wide compaction.
+- **Human-in-the-loop parks the whole graph, not just one node.** When
+  a node hits an `ask_user` (value-yield) or a tool-approval gate, the
+  executor checkpoints the run, parks the session WAITING, and resumes
+  the graph from the checkpoint once the human answers. If several nodes
+  in the same superstep park, the run parks on all of them and re-parks
+  until each is answered (multi-event park), so concurrent branches that
+  each need a human run in parallel rather than one-at-a-time. Answer
+  over a channel or over REST (`POST
+  /v1/sessions/{id}/ask_user/respond`); see Workflow 7.
 
 ## Related
 
 - [agents](agents.md) - each agent node wraps a stored Agent.
 - [sessions](sessions.md) - a graph runs inside a graph session.
+- [channels](channels.md) - a mid-graph `ask_user` park is answered
+  over a channel (Slack / Telegram / Discord) or over REST.
+- [yielding](yielding.md) - the park/resume mechanics a mid-graph
+  `ask_user` pause rides on.
 - [semantic-search](semantic-search.md) - `search::search_graphs` is
   the discovery path.
