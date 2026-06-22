@@ -130,6 +130,57 @@ def _make_parked_session(
     return sess
 
 
+def _make_graph_toolcall_ask_user_session(
+    *,
+    session_id: str,
+    tool_call_id: str,
+    event_key: str,
+    prompt: str,
+    response_schema: dict | None = None,
+) -> WorkspaceSession:
+    """Build a graph session parked on a tool_call ``system__ask_user`` node.
+
+    Mirrors what :meth:`Graph.snapshot_state` writes for a value-yielding
+    tool_call park: the OUTER yield is typed ``_approval`` (the graph park
+    label), the real ask_user prompt lives in ``pending_dispatch``
+    (``kind="ask_user"``), and the wake key is the ``pending_toolcalls``
+    entry's ``parked_event_key``.
+    """
+    now = datetime.now(timezone.utc)
+    sess = WorkspaceSession(
+        id=session_id, workspace_id="ws-x",
+        binding=GraphSessionBinding(graph_id="g-x"),
+        status=SessionStatus.RUNNING, created_at=now,
+    )
+    sess.parked_status = "parked"
+    sess.parked_event_key = event_key
+    sess.parked_event_keys = [event_key]
+    sess.parked_at = now
+    sess.parked_until = now + timedelta(seconds=600)
+    resume_md = {"prompt": prompt, "response_schema": response_schema,
+                 "tool_call_id": tool_call_id}
+    sess.parked_state = {
+        "schema_version": 1,
+        "tool_call_id": tool_call_id,
+        "yielded": {"tool_name": "_approval", "event_key": event_key,
+                    "timeout": 600.0, "resume_metadata": {},
+                    "event_keys": [event_key]},
+        "llm_messages": [], "turn_no": 1, "started_at": now.isoformat(),
+        "resume_event_payload": None,
+        "graph_checkpoint": {
+            "pending_agent_yields": [],
+            "pending_toolcalls": [
+                {"node_id": "ask", "tool_call_id": tool_call_id,
+                 "parked_event_key": event_key, "arguments": {"prompt": prompt},
+                 "tool_name": "ask_user", "resume_metadata": resume_md}],
+            "pending_dispatch": [
+                {"kind": "ask_user", "tool_call_id": tool_call_id,
+                 "resume_metadata": resume_md}],
+        },
+    }
+    return sess
+
+
 async def _seed_session(app, sess: WorkspaceSession) -> None:
     """Insert the session row into storage.
 
@@ -195,6 +246,26 @@ class TestAskUserPending:
     async def test_pending_404_for_unknown_session(self, app, client):
         resp = await client.get("/v1/sessions/does-not-exist/ask_user/pending")
         assert resp.status_code == 404
+
+    async def test_pending_returns_prompt_for_graph_toolcall_ask_user(
+        self, app, client,
+    ):
+        """A graph tool_call ask_user park (outer yield _approval) surfaces
+        its prompt from the checkpoint's pending_dispatch, not a 404."""
+        schema = {"type": "object", "properties": {"y": {"type": "string"}}}
+        sess = _make_graph_toolcall_ask_user_session(
+            session_id="sess-tcp", tool_call_id="tc-p",
+            event_key="ask_user:sess-tcp:tc-p",
+            prompt="Approve access to prod?", response_schema=schema,
+        )
+        await _seed_session(app, sess)
+        resp = await client.get("/v1/sessions/sess-tcp/ask_user/pending")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["tool_call_id"] == "tc-p"
+        assert body["prompt"] == "Approve access to prod?"
+        assert body["response_schema"] == schema
+        assert "parked_at" in body
 
     async def test_pending_404_when_park_is_not_ask_user(self, app, client):
         # A sleep park has no prompt — the endpoint must not leak it.
@@ -302,6 +373,56 @@ class TestAskUserRespond:
         assert row is not None and row.parked_status == "resumable"
         # multi-event accumulation map carries the reply
         assert row.parked_state["resume_event_payloads"]["tc-g"]["payload"] == {"response": "blue"}
+
+    async def test_respond_accepts_graph_toolcall_ask_user_park(
+        self, app, client,
+    ):
+        """A graph TOOL_CALL ask_user node (tool_id=system__ask_user) parks
+        with the outer yield typed _approval; the real prompt + event key
+        live in the checkpoint's pending_dispatch (kind=ask_user) +
+        pending_toolcalls. The respond endpoint must recognise it, validate,
+        and publish to the tool_call's parked_event_key so the graph resumes
+        with the operator reply as the node result.
+        """
+        now = datetime.now(timezone.utc)
+        ek = "ask_user:sess-tc:tc-tool"
+        sess = _make_graph_toolcall_ask_user_session(
+            session_id="sess-tc", tool_call_id="tc-tool",
+            event_key=ek, prompt="Approve access?",
+        )
+        await _seed_session(app, sess)
+        resp = await client.post(
+            "/v1/sessions/sess-tc/ask_user/respond",
+            json={"tool_call_id": "tc-tool", "response": "approve"},
+        )
+        assert resp.status_code == 202
+        storage = app.state.storage_provider.get_storage(WorkspaceSession)
+        row = None
+        for _ in range(50):
+            await asyncio.sleep(0.02)
+            row = await storage.get("sess-tc")
+            if row is not None and row.parked_status == "resumable":
+                break
+        assert row is not None and row.parked_status == "resumable"
+        assert row.parked_state["resume_event_payloads"]["tc-tool"]["payload"] == {
+            "response": "approve"
+        }
+
+    async def test_respond_graph_toolcall_ask_user_unknown_tcid_404(
+        self, app, client,
+    ):
+        now = datetime.now(timezone.utc)
+        ek = "ask_user:sess-tc2:tc-tool"
+        sess = _make_graph_toolcall_ask_user_session(
+            session_id="sess-tc2", tool_call_id="tc-tool",
+            event_key=ek, prompt="Approve access?",
+        )
+        await _seed_session(app, sess)
+        resp = await client.post(
+            "/v1/sessions/sess-tc2/ask_user/respond",
+            json={"tool_call_id": "nope", "response": "x"},
+        )
+        assert resp.status_code == 404
 
     async def test_respond_graph_park_unknown_tcid_404(self, app, client):
         now = datetime.now(timezone.utc)

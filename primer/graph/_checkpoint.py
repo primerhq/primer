@@ -161,6 +161,13 @@ class _CheckpointMixin:
                     "tool_call_id": p.tool_call_id,
                     "parked_event_key": p.parked_event_key,
                     "arguments": dict(p.arguments),
+                    # The bare tool_name the suspended tool stamped + its
+                    # resume_metadata. "_approval" / None -> approval gate
+                    # (bypass re-dispatch on resume); a value-yielding name
+                    # (e.g. "ask_user") -> the node result IS the operator
+                    # reply (resume hook on the operator payload).
+                    "tool_name": p.tool_name,
+                    "resume_metadata": dict(p.resume_metadata or {}),
                 }
                 for p in self._pending_toolcalls
             ],
@@ -189,23 +196,43 @@ class _CheckpointMixin:
             # ``primer.worker.yield_runtime.merge_pending_dispatch``) so their
             # resume_metadata lives in the blob once, not twice.
             "pending_dispatch": [
-                {
-                    "kind": "_approval",
-                    "tool_call_id": p.tool_call_id,
-                    "resume_metadata": {
-                        "original_call": {
-                            "id": p.tool_call_id,
-                            "name": getattr(
-                                next((n for n in self._graph.nodes
-                                      if n.id == p.node_id), None),
-                                "tool_id", "<unknown>",
-                            ),
-                            "arguments": dict(p.arguments),
-                        },
-                    },
-                }
+                self._toolcall_dispatch_entry(p)
                 for p in self._pending_toolcalls
             ],
+        }
+
+    def _toolcall_dispatch_entry(self, p) -> dict[str, Any]:
+        """Build the channel/REST dispatch entry for a pending tool-call node.
+
+        A **value-yielding** tool_call (e.g. ``system__ask_user``) carries the
+        tool's own ``tool_name`` + ``resume_metadata`` so the channel sends a
+        real ask_user prompt (not an "Approve ask_user(...)" gate) and the REST
+        ask_user endpoints can recognise + answer it. Anything else (an
+        approval gate, or a legacy park with no ``tool_name``) keeps the
+        ``_approval`` shape with the denormalised ``original_call``.
+        """
+        from primer.graph._node_refs import _is_value_yield_toolcall
+
+        if _is_value_yield_toolcall(p):
+            return {
+                "kind": p.tool_name,
+                "tool_call_id": p.tool_call_id,
+                "resume_metadata": dict(p.resume_metadata or {}),
+            }
+        return {
+            "kind": "_approval",
+            "tool_call_id": p.tool_call_id,
+            "resume_metadata": {
+                "original_call": {
+                    "id": p.tool_call_id,
+                    "name": getattr(
+                        next((n for n in self._graph.nodes
+                              if n.id == p.node_id), None),
+                        "tool_id", "<unknown>",
+                    ),
+                    "arguments": dict(p.arguments),
+                },
+            },
         }
 
     def restore_state(self, payload: dict[str, Any]) -> None:
@@ -275,6 +302,10 @@ class _CheckpointMixin:
                 tool_call_id=raw["tool_call_id"],
                 parked_event_key=raw["parked_event_key"],
                 arguments=dict(raw.get("arguments") or {}),
+                # Older checkpoints predate these fields; ``None`` /
+                # ``{}`` keep the approval-gate (bypass re-dispatch) path.
+                tool_name=raw.get("tool_name"),
+                resume_metadata=dict(raw.get("resume_metadata") or {}),
             )
             for raw in (payload.get("pending_toolcalls") or [])
         ]

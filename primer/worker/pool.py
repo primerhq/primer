@@ -1111,8 +1111,13 @@ class WorkerPool:
                 )
                 # An approval gate is a pending tool-call yield (NOT an ask_user
                 # agent yield, which carries agent_tool_result). Persist the
-                # resolved decision for that gate exactly once per reply.
-                if agent_tool_result is None:
+                # resolved decision for that gate exactly once per reply. A
+                # value-yielding tool_call (ask_user) is NOT an approval gate:
+                # its result is the operator's reply, fed back by the executor,
+                # so skip the approval record for it.
+                if agent_tool_result is None and not self._graph_value_yield_toolcall(
+                    ck, tcid,
+                ):
                     await self._write_approval_record_for_graph(
                         session=session, checkpoint=ck, tcid=tcid, payload=payload,
                     )
@@ -1142,6 +1147,33 @@ class WorkerPool:
         # Drained to completion (the graph's own state.json carries the
         # real ended_reason; the session row mirrors _GraphTurnDriver).
         return await self._end_session(session, reason="completed")
+
+    def _graph_value_yield_toolcall(self, checkpoint, tcid) -> bool:
+        """True when ``tcid`` is a pending tool_call node that suspended on a
+        value-yielding tool (e.g. ``ask_user``) rather than an approval gate.
+
+        Such a node's result is the operator's reply (fed back by the executor
+        via the tool's resume hook), so the worker must NOT write an approval
+        record for it nor classify the reply as an approve/reject decision.
+        """
+        from primer.graph._node_refs import _PendingToolCall, _is_value_yield_toolcall
+
+        raw = next(
+            (e for e in (checkpoint.get("pending_toolcalls") or [])
+             if e.get("tool_call_id") == tcid),
+            None,
+        )
+        if raw is None:
+            return False
+        entry = _PendingToolCall(
+            node_id=raw["node_id"],
+            tool_call_id=raw["tool_call_id"],
+            parked_event_key=raw["parked_event_key"],
+            arguments=dict(raw.get("arguments") or {}),
+            tool_name=raw.get("tool_name"),
+            resume_metadata=dict(raw.get("resume_metadata") or {}),
+        )
+        return _is_value_yield_toolcall(entry)
 
     def _graph_nested_agent_yield(self, checkpoint, tcid):
         """Return the parked agent-node entry for ``tcid`` IFF it carries a

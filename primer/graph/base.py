@@ -105,6 +105,7 @@ if TYPE_CHECKING:
     from primer.model.agent import Agent
     from primer.model.chat import ToolResultPart
     from primer.model.provider import LLMModel
+    from primer.model.yield_ import YieldCancelled, YieldTimeout
 
 
 logger = logging.getLogger(__name__)
@@ -128,7 +129,9 @@ from primer.graph._node_refs import (  # noqa: E402
     _RoutingFailed,
     _ToolApprovalRejected,
     _ToolCallOutputResult,
+    _is_value_yield_toolcall,
     _map_toolcall_result,
+    _resume_value_yield_toolcall,
     _materialise_begin_output,
     _render_end_output,
     _render_fanin_output,
@@ -284,6 +287,7 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
         *,
         resumed_tcid: str | None = None,
         agent_tool_result: "Message | None" = None,
+        toolcall_payload: "dict[str, Any] | YieldTimeout | YieldCancelled | None" = None,
     ) -> AsyncIterator[StreamEvent]:
         """Restore from a checkpoint and continue graph execution.
 
@@ -360,6 +364,81 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                 )
                 completed_ids.append(entry.node_id)
                 continue
+            if _is_value_yield_toolcall(entry):
+                # Value-yielding tool_call node (e.g. ``system__ask_user``):
+                # the node's RESULT is the operator's reply, not a re-run of
+                # the tool. Run the tool's resume hook on the operator payload
+                # and feed the hook output back as the tool result -- mirrors
+                # how an agent-node ask_user yield is resumed via its hook.
+                try:
+                    result = _resume_value_yield_toolcall(
+                        tool_name=entry.tool_name or "",
+                        resume_metadata=entry.resume_metadata or {},
+                        tool_call_id=entry.tool_call_id,
+                        payload=toolcall_payload,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- map to node failure
+                    fail_out = NodeOutput(
+                        text="", parsed=None, history=[],
+                        iteration=context.iteration, error=str(exc),
+                        ended_detail="tool_execution_failed",
+                    )
+                    context.nodes[entry.node_id] = fail_out
+                    node_states[entry.node_id] = NodeRuntimeState(
+                        status=NodeRuntimeStatus.FAILED,
+                        last_run_iteration=context.iteration,
+                        last_run_at=datetime.now(timezone.utc),
+                        error=str(exc),
+                    )
+                    yield _GraphErrorEvent(  # type: ignore[misc]
+                        code="tool_execution_failed", message=str(exc),
+                        node_id=entry.node_id,
+                    )
+                    await self._save_state(
+                        iteration=context.iteration, node_states=node_states,
+                        status=SessionStatus.ENDED, ended_reason="failed",
+                        ended_detail="tool_execution_failed",
+                    )
+                    return
+                mapped = _map_toolcall_result(
+                    result, output_schema=node_def.output_schema
+                )
+                if mapped.error_code is not None:
+                    fail_out = NodeOutput(
+                        text=mapped.text, parsed=None, history=[],
+                        iteration=context.iteration,
+                        error=mapped.error_message or mapped.error_code,
+                        ended_detail=mapped.error_code,
+                    )
+                    context.nodes[entry.node_id] = fail_out
+                    node_states[entry.node_id] = NodeRuntimeState(
+                        status=NodeRuntimeStatus.FAILED,
+                        last_run_iteration=context.iteration,
+                        last_run_at=datetime.now(timezone.utc),
+                        error=mapped.error_message or mapped.error_code,
+                    )
+                    yield _GraphErrorEvent(  # type: ignore[misc]
+                        code=mapped.error_code,
+                        message=mapped.error_message or mapped.error_code,
+                        node_id=entry.node_id,
+                    )
+                    await self._save_state(
+                        iteration=context.iteration, node_states=node_states,
+                        status=SessionStatus.ENDED, ended_reason="failed",
+                        ended_detail=mapped.error_code,
+                    )
+                    return
+                context.nodes[entry.node_id] = NodeOutput(
+                    text=mapped.text, parsed=mapped.parsed, history=[],
+                    iteration=context.iteration,
+                )
+                node_states[entry.node_id] = NodeRuntimeState(
+                    status=NodeRuntimeStatus.ENDED,
+                    last_run_iteration=context.iteration,
+                    last_run_at=datetime.now(timezone.utc),
+                )
+                completed_ids.append(entry.node_id)
+                continue
             try:
                 result = await self._dispatch_toolcall_with_bypass(
                     node_def, entry.arguments
@@ -379,6 +458,10 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                         tool_call_id=yld.tool_call_id,
                         parked_event_key=yld.yielded.event_key,
                         arguments=entry.arguments,
+                        tool_name=yld.yielded.tool_name,
+                        resume_metadata=dict(
+                            yld.yielded.resume_metadata or {}
+                        ),
                     )
                 )
                 continue
@@ -1533,6 +1616,10 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                             tool_call_id=yld.tool_call_id,
                             parked_event_key=yld.yielded.event_key,
                             arguments=args,
+                            tool_name=yld.yielded.tool_name,
+                            resume_metadata=dict(
+                                yld.yielded.resume_metadata or {}
+                            ),
                         )
                     )
                     await queue.put(

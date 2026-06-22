@@ -88,14 +88,33 @@ async def resume_graph_from_checkpoint(
     """
     # Local import to keep this module's import surface tiny — the
     # worker pool imports it lazily inside _handle_resume.
-    from primer.graph.base import _ToolApprovalRejected
+    from primer.graph._node_refs import _is_value_yield_toolcall
+    from primer.graph.base import _ToolApprovalRejected, _PendingToolCall
     from primer.model.yield_ import YieldToWorker
 
     decision, reason = _decision_from_payload(payload)
 
-    # Only the tool_call-approval rejection path uses the bypass override;
-    # an agent-node yield carries its result via ``agent_tool_result``.
-    if decision != "approved" and agent_tool_result is None:
+    # A value-yielding tool_call node (e.g. ``system__ask_user``) does NOT
+    # gate on an approve/reject decision: its node result IS the operator's
+    # reply, computed by the executor from ``toolcall_payload`` via the tool's
+    # resume hook. Detect that pending entry so we (a) hand the raw payload to
+    # the executor and (b) skip the rejection bypass override below (which only
+    # applies to approval gates).
+    value_yield_toolcall = any(
+        isinstance(p, _PendingToolCall)
+        and p.tool_call_id == resumed_tcid
+        and _is_value_yield_toolcall(p)
+        for p in _pending_toolcalls_from(checkpoint)
+    ) if resumed_tcid is not None else False
+
+    # Only the tool_call-approval rejection path uses the bypass override; an
+    # agent-node yield carries its result via ``agent_tool_result``, and a
+    # value-yielding tool_call carries it via ``toolcall_payload``.
+    if (
+        decision != "approved"
+        and agent_tool_result is None
+        and not value_yield_toolcall
+    ):
         rejection_reason = reason or "rejected"
 
         async def _rejecting_dispatch(node, arguments):  # type: ignore[no-untyped-def]
@@ -109,12 +128,35 @@ async def resume_graph_from_checkpoint(
             checkpoint,
             resumed_tcid=resumed_tcid,
             agent_tool_result=agent_tool_result,
+            toolcall_payload=payload if value_yield_toolcall else None,
         ):
             pass
     except YieldToWorker as yld:
         repark = yld
 
     return decision, repark
+
+
+def _pending_toolcalls_from(checkpoint: dict[str, Any]) -> "list[Any]":
+    """Reconstruct the checkpoint's ``_PendingToolCall`` entries.
+
+    Used only to classify whether the resumed entry is a value-yielding
+    tool_call (ask_user) before we restore the executor's full state; reads
+    the same ``pending_toolcalls`` list :meth:`Graph.restore_state` consumes.
+    """
+    from primer.graph.base import _PendingToolCall
+
+    return [
+        _PendingToolCall(
+            node_id=raw["node_id"],
+            tool_call_id=raw["tool_call_id"],
+            parked_event_key=raw["parked_event_key"],
+            arguments=dict(raw.get("arguments") or {}),
+            tool_name=raw.get("tool_name"),
+            resume_metadata=dict(raw.get("resume_metadata") or {}),
+        )
+        for raw in (checkpoint.get("pending_toolcalls") or [])
+    ]
 
 
 __all__ = ["resume_graph_from_checkpoint"]

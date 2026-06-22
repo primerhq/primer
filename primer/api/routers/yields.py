@@ -92,6 +92,36 @@ def _tool_call_id_for(blob: dict[str, Any]) -> str | None:
     return metadata.get("tool_call_id")
 
 
+def _graph_ask_user_dispatch(
+    blob: dict[str, Any],
+    *,
+    tool_call_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a graph ask_user dispatch entry from a graph checkpoint, or None.
+
+    A graph ``tool_call`` node whose tool is the value-yielding ``ask_user``
+    parks the session with the OUTER yield typed ``_approval`` (the graph park
+    label), but the real ask_user prompt lives in the checkpoint's
+    ``pending_dispatch`` as a ``{"kind": "ask_user", "tool_call_id",
+    "resume_metadata": {prompt, response_schema, ...}}`` entry. The two
+    yields.py endpoints consult this so a graph tool_call ask_user park is
+    answerable over REST exactly like an agent-session ask_user park.
+
+    ``tool_call_id`` (POST path) selects a specific pending entry; the GET path
+    omits it and takes the first ask_user entry.
+    """
+    checkpoint = blob.get("graph_checkpoint")
+    if not checkpoint:
+        return None
+    for entry in checkpoint.get("pending_dispatch") or []:
+        if entry.get("kind") != "ask_user":
+            continue
+        if tool_call_id is not None and entry.get("tool_call_id") != tool_call_id:
+            continue
+        return entry
+    return None
+
+
 # ===========================================================================
 # GET /v1/sessions/{id}/ask_user/pending
 # ===========================================================================
@@ -131,6 +161,22 @@ async def get_ask_user_pending(
         )
     yielded = blob.get("yielded") or {}
     if yielded.get("tool_name") != "ask_user":
+        # A graph tool_call ask_user park labels the outer yield ``_approval``;
+        # the real ask_user prompt lives in the graph checkpoint. Surface it
+        # so the operator-facing panel renders the same way as an agent park.
+        graph_entry = _graph_ask_user_dispatch(blob)
+        if graph_entry is not None:
+            gmeta = graph_entry.get("resume_metadata") or {}
+            return AskUserPendingResponse(
+                tool_call_id=graph_entry.get("tool_call_id", ""),
+                prompt=gmeta.get("prompt", ""),
+                response_schema=gmeta.get("response_schema"),
+                parked_at=(
+                    sess.parked_at.isoformat()
+                    if sess.parked_at is not None
+                    else gmeta.get("parked_at_iso", "")
+                ),
+            )
         raise NotFoundError(
             f"Session {session_id!r} is parked on a different tool"
         )
@@ -234,21 +280,43 @@ async def post_ask_user_respond(
              and e.get("tool_name") == "ask_user"),
             None,
         )
-        if ay is None:
+        if ay is not None:
+            ay_meta = ay.get("resume_metadata") or {}
+            _validate_response_against_schema(
+                response=body.response, schema=ay_meta.get("response_schema"),
+            )
+            ay_event_key = ay.get("event_key")
+            if not ay_event_key:
+                raise NotFoundError(
+                    f"Session {session_id!r} agent yield is missing event_key"
+                )
+            await event_bus.publish(ay_event_key, {"response": body.response})
+            return {"status": "accepted"}
+        # A graph tool_call ask_user node: its prompt + schema live in
+        # pending_dispatch; the wake key is the matching pending_toolcalls
+        # entry's parked_event_key. Publishing the operator response there
+        # lets the graph resume adapter feed it back as the node's result.
+        disp = _graph_ask_user_dispatch(blob, tool_call_id=body.tool_call_id)
+        tc = next(
+            (e for e in (checkpoint.get("pending_toolcalls") or [])
+             if e.get("tool_call_id") == body.tool_call_id),
+            None,
+        )
+        if disp is None or tc is None:
             raise NotFoundError(
                 f"No pending ask_user prompt with tool_call_id "
                 f"{body.tool_call_id!r} on session {session_id!r}"
             )
-        ay_meta = ay.get("resume_metadata") or {}
+        disp_meta = disp.get("resume_metadata") or {}
         _validate_response_against_schema(
-            response=body.response, schema=ay_meta.get("response_schema"),
+            response=body.response, schema=disp_meta.get("response_schema"),
         )
-        ay_event_key = ay.get("event_key")
-        if not ay_event_key:
+        tc_event_key = tc.get("parked_event_key")
+        if not tc_event_key:
             raise NotFoundError(
-                f"Session {session_id!r} agent yield is missing event_key"
+                f"Session {session_id!r} tool_call yield is missing event_key"
             )
-        await event_bus.publish(ay_event_key, {"response": body.response})
+        await event_bus.publish(tc_event_key, {"response": body.response})
         return {"status": "accepted"}
     if yielded.get("tool_name") != "ask_user":
         raise NotFoundError(

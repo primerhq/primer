@@ -11,6 +11,7 @@ back-compat).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -261,6 +262,63 @@ def _map_toolcall_result(
         # Schema validates non-objects too; NodeOutput.parsed is dict-only.
         return _ToolCallOutputResult(text=text, parsed=None, error_code=None)
     return _ToolCallOutputResult(text=text, parsed=parsed_obj, error_code=None)
+
+
+def _is_value_yield_toolcall(entry: "_PendingToolCall") -> bool:
+    """True when a pending tool_call node suspended on a **value-yielding**
+    tool (e.g. ``ask_user``) rather than on an approval gate.
+
+    A value-yielding tool's node RESULT is the operator's reply, so on resume
+    the executor runs the tool's resume hook on the operator payload instead of
+    re-dispatching the call with ``bypass_approval=True`` (the approval-gate
+    path). The discriminator is the bare ``tool_name`` the tool stamped onto
+    its :class:`~primer.model.yield_.Yielded` at suspend time:
+
+    * ``"_approval"`` (or ``None`` for a legacy park) -> approval gate.
+    * anything with a registered resume hook -> value-yield.
+
+    ``None`` (a park written before ``tool_name`` was captured) falls through
+    to the approval path so old checkpoints keep their original behaviour.
+    """
+    name = entry.tool_name
+    if not name or name == "_approval":
+        return False
+    from primer.worker.yield_resume_registry import has_resume_hook
+
+    return has_resume_hook(name)
+
+
+def _resume_value_yield_toolcall(
+    *,
+    tool_name: str,
+    resume_metadata: dict[str, Any],
+    tool_call_id: str,
+    payload: "dict[str, Any] | Any",
+) -> "ToolResultPart":
+    """Run a value-yielding tool's resume hook and shape a ToolResultPart.
+
+    Mirrors :meth:`primer.worker.pool.WorkerPool._graph_agent_tool_result`
+    for an agent-node ask_user yield, but for a **tool_call** node: the hook
+    turns the operator payload (``{"response": ...}``) / timeout / cancel into
+    the tool result the node's downstream consumers read via ``nodes.<id>.text``.
+    """
+    from primer.model.chat import ToolResultPart
+    from primer.worker.yield_resume_registry import get_resume_hook
+
+    hook = get_resume_hook(tool_name)
+    hook_result = hook(resume_metadata or {}, payload)
+    # The resume hooks in-tree are synchronous; guard against an async hook
+    # to keep this helper usable if one is added later.
+    if asyncio.iscoroutine(hook_result):  # pragma: no cover -- all hooks sync
+        raise RuntimeError(
+            f"resume hook for {tool_name!r} is async; tool_call resume only "
+            "supports synchronous hooks"
+        )
+    return ToolResultPart(
+        id=tool_call_id,
+        output=hook_result.output,
+        error=hook_result.is_error,
+    )
 
 
 def _resolve_toolcall_arguments(
@@ -626,12 +684,29 @@ class _PendingToolCall:
         Replaying with the same dict + ``bypass_approval=True`` keeps
         the resumed call semantically identical to a freshly-approved
         first dispatch.
+    tool_name
+        The bare name the underlying tool stamped onto its
+        :class:`~primer.model.yield_.Yielded` when it suspended. For an
+        approval gate this is ``"_approval"`` (re-dispatch with bypass on
+        resume). For a **value-yielding** tool (``"ask_user"``) the node's
+        result IS the operator's reply, so the resume path runs the tool's
+        resume hook on the operator payload rather than re-dispatching.
+        ``None`` for a legacy park written before this field existed; the
+        resume path treats ``None`` as the bypass-re-dispatch (approval)
+        case so old parks keep their byte-identical behaviour.
+    resume_metadata
+        The ``Yielded.resume_metadata`` the underlying tool stamped (e.g.
+        ask_user's ``prompt`` / ``response_schema`` / ``tool_call_id``).
+        Surfaced to the channel/REST ask_user prompt + handed to the
+        resume hook. Empty for an approval gate.
     """
 
     node_id: str
     tool_call_id: str
     parked_event_key: str
     arguments: dict[str, Any]
+    tool_name: str | None = None
+    resume_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
