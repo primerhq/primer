@@ -15,7 +15,13 @@ import pytest
 
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent, AgentModel
-from primer.model.except_ import ConflictError, NotFoundError, ValidationError
+from primer.model.except_ import (
+    ConfigError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
+from primer.model.storage import OffsetPage
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace_session import (
     AgentSessionBinding,
@@ -268,6 +274,70 @@ async def test_create_session_works_with_seeded_agent(
     )
     assert isinstance(sess.binding, AgentSessionBinding)
     assert sess.binding.agent_id == "ag-1"
+
+
+# ---------------------------------------------------------------------------
+# Config guard: auto_start with no ClaimEngine must RAISE, not silently hang
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_session_auto_start_with_none_claim_engine_raises(
+    fake_storage_provider, fake_scheduler,
+):
+    """auto_start=True + claim_engine=None must raise ConfigError.
+
+    Regression for the "None-deps silently hangs a session" class: with no
+    ClaimEngine the row flips to RUNNING but is never claimed by any worker,
+    hanging forever. The factory must fail loud at construction instead.
+    """
+    bad_deps = SessionFactoryDeps(
+        storage_provider=fake_storage_provider,
+        claim_engine=None,
+        scheduler=fake_scheduler,
+        workspace_registry=None,
+    )
+    with pytest.raises(ConfigError, match="ClaimEngine"):
+        await create_session(
+            workspace_id="ws-1",
+            binding=_binding(),
+            initial_instructions="go",
+            graph_input=None,
+            auto_start=True,
+            metadata={},
+            deps=bad_deps,
+        )
+    # The row must NOT have been persisted as RUNNING -- the guard fires
+    # before any storage write that could strand a never-claimed session.
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    page = await storage.find(None, OffsetPage(offset=0, length=50))
+    assert all(s.status != SessionStatus.RUNNING for s in page.items)
+
+
+@pytest.mark.asyncio
+async def test_create_session_no_auto_start_with_none_claim_engine_ok(
+    fake_storage_provider, fake_scheduler,
+):
+    """auto_start=False + claim_engine=None is legitimate: the session stays
+    CREATED with no lease until an explicit resume performs its own upsert.
+    The guard must NOT fire on this path.
+    """
+    deps = SessionFactoryDeps(
+        storage_provider=fake_storage_provider,
+        claim_engine=None,
+        scheduler=fake_scheduler,
+        workspace_registry=None,
+    )
+    sess = await create_session(
+        workspace_id="ws-1",
+        binding=_binding(),
+        initial_instructions=None,
+        graph_input=None,
+        auto_start=False,
+        metadata={},
+        deps=deps,
+    )
+    assert sess.status == SessionStatus.CREATED
 
 
 # ---------------------------------------------------------------------------

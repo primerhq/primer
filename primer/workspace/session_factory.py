@@ -37,7 +37,12 @@ from typing import Any
 
 from primer.int.claim import ClaimKind
 from primer.model.agent import Agent
-from primer.model.except_ import ConflictError, NotFoundError, ValidationError
+from primer.model.except_ import (
+    ConfigError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
 from primer.model.graph import Graph
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace_session import (
@@ -59,9 +64,18 @@ logger = logging.getLogger(__name__)
 class SessionFactoryDeps:
     """Bundle of collaborators :func:`create_session` needs.
 
-    ``workspace_registry`` is optional: when present (today: REST
-    router), the factory will allocate the on-disk session slot via the
-    backend. When ``None`` (today: trigger dispatcher's existing-session
+    ``storage_provider``, ``claim_engine`` and ``scheduler`` are
+    load-bearing and intentionally have NO ``None`` default: an
+    ``auto_start=True`` create needs a real ``ClaimEngine`` to register
+    the lease (without it the row flips RUNNING but is never claimed and
+    hangs forever -- :func:`create_session` raises ``ConfigError`` to
+    surface that loudly). Type them ``Any`` (not ``Any | None``) so a
+    ``None`` is a construction-time signal rather than a silent runtime
+    skip.
+
+    ``workspace_registry`` is legitimately optional: when present (today:
+    REST router) the factory allocates the on-disk session slot via the
+    backend; when ``None`` (today: trigger dispatcher's existing-session
     target case) the factory just writes the scheduler-visible row.
     """
 
@@ -267,6 +281,23 @@ async def create_session(
     its own setup (e.g., on-disk slot allocation) before the row lands
     in storage. When ``None``, a fresh ``sess-<hex>`` id is generated.
     """
+    # Config guard: an auto_start session that has no ClaimEngine to register
+    # with flips to RUNNING but is NEVER claimed by any worker -- it hangs in
+    # RUNNING forever (the "None-deps silently hangs a session" class of bug;
+    # see the webhook background-task path that historically passed
+    # claim_engine=None). Fail loud at construction instead of stranding the
+    # row. The non-auto_start path is exempt: it deliberately leaves the row
+    # in CREATED with no lease until an explicit resume/start (which performs
+    # its own upsert), so a None claim_engine there is legitimate.
+    if auto_start and deps.claim_engine is None:
+        raise ConfigError(
+            "create_session(auto_start=True) requires a ClaimEngine: with "
+            "deps.claim_engine=None the session would flip to RUNNING but "
+            "never be claimed by a worker, hanging forever. Thread the real "
+            "claim_engine into SessionFactoryDeps (and DispatchDeps for the "
+            "trigger/webhook dispatch paths)."
+        )
+
     sid = session_id if session_id is not None else f"sess-{uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc)
 
@@ -304,12 +335,13 @@ async def create_session(
                 sid, exc,
             )
 
-    # Forward-compat ClaimEngine upsert - only when the session is
-    # actually starting now (auto_start=True). When auto_start=False the
-    # session stays in CREATED with no lease, so the worker never claims
-    # it. The explicit-start path (POST .../resume) performs its own
-    # upsert when the operator later transitions the row to RUNNING.
-    if auto_start and deps.claim_engine is not None:
+    # ClaimEngine upsert - only when the session is actually starting now
+    # (auto_start=True). When auto_start=False the session stays in CREATED
+    # with no lease, so the worker never claims it. The explicit-start path
+    # (POST .../resume) performs its own upsert when the operator later
+    # transitions the row to RUNNING. The claim_engine-None case is impossible
+    # here: the auto_start guard at the top of this function already raised.
+    if auto_start:
         try:
             await deps.claim_engine.upsert(ClaimKind.SESSION, sid)
         except Exception as exc:  # noqa: BLE001

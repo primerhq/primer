@@ -45,15 +45,34 @@ class SubscriptionDispatchResult(BaseModel):
 class DispatchDeps:
     """Collaborators the dispatchers may need.
 
+    ``storage_provider`` and ``claim_engine`` are load-bearing for the
+    fresh-session dispatchers (``agent_fresh_session`` /
+    ``graph_fresh_session``), which create an ``auto_start=True`` session.
+    ``claim_engine`` is therefore typed ``Any`` (NOT ``Any | None``) and
+    has no default: a ``None`` here lets a fresh session flip to RUNNING
+    with no claimer and hang forever. The webhook background-task path
+    historically passed ``claim_engine=None`` -- that is fixed (it now
+    threads the live engine from ``app.state``), and
+    :func:`primer.workspace.session_factory.create_session` raises
+    ``ConfigError`` as the runtime backstop for any path that still
+    forgets it.
+
+    ``scheduler`` is legitimately optional: the channel-event and
+    manual-fire paths (``primer.trigger.service.fire_trigger_now``,
+    ``primer.channel.inbound_router``) pass ``scheduler=None`` because
+    they do not drive the scheduler -- the ClaimEngine upsert is the
+    worker's wake-up path there, and ``create_session`` swallows the
+    absent-scheduler enqueue best-effort.
+
     ``workspace_registry`` and ``event_bus`` are optional because not
-    every dispatcher uses them — ``chat_message`` doesn't need either,
+    every dispatcher uses them -- ``chat_message`` doesn't need either,
     ``parked_session`` reaches for the event bus, the fresh-session
     dispatchers may want the workspace registry for slot allocation.
     """
 
     storage_provider: Any
     claim_engine: Any
-    scheduler: Any
+    scheduler: Any | None = None
     workspace_registry: Any | None = None
     event_bus: Any | None = None
 

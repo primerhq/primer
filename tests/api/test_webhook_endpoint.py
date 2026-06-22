@@ -204,7 +204,9 @@ async def test_webhook_dispatches_via_background_task(client, fake_storage_provi
     )
     dispatched = []
 
-    async def fake_dispatch(trigger_id, extra_context, sp, event_bus):
+    async def fake_dispatch(
+        trigger_id, extra_context, sp, event_bus, *args, **kwargs
+    ):
         dispatched.append({"trigger_id": trigger_id, "ctx": extra_context})
 
     with patch(
@@ -233,7 +235,7 @@ async def test_webhook_payload_maps_headers_query(client, fake_storage_provider)
     )
     captured = []
 
-    async def capture(trigger_id, extra_context, sp, event_bus):
+    async def capture(trigger_id, extra_context, sp, event_bus, *args, **kwargs):
         captured.append(extra_context)
 
     with patch(

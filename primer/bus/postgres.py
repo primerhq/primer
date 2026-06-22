@@ -74,11 +74,16 @@ class _PostgresSubscription(EventSubscription):
         release,
         reconnect_seconds: float,
         on_reconnect=None,
+        on_close=None,
     ) -> None:
         self._acquire = acquire
         self._release = release
         self._reconnect_seconds = reconnect_seconds
         self._on_reconnect = on_reconnect
+        # Called once on aclose so the parent bus can drop this subscription
+        # from its registry (prevents an unbounded _subs leak when many
+        # short-lived subscriptions open and close over the bus's lifetime).
+        self._on_close = on_close
         self._queue: asyncio.Queue = asyncio.Queue()
         self._conn = None
         self._closed = False
@@ -99,6 +104,11 @@ class _PostgresSubscription(EventSubscription):
         if self._closed:
             return
         self._closed = True
+        # Drop ourselves from the parent bus's registry so a long-lived bus
+        # doesn't accumulate dead subscriptions. Idempotent + guarded by the
+        # _closed flag above so a double aclose() only deregisters once.
+        if self._on_close is not None:
+            self._on_close(self)
         # Stop the supervisor; it drops the listener + releases the
         # connection in its finally block.
         if self._supervisor is not None:
@@ -230,8 +240,13 @@ class PostgresEventBus(EventBus):
         self._storage = storage
         self._reconnect_seconds = reconnect_seconds
         self._closed = False
-        # Track live subscriptions so aclose can drop them.
-        self._subs: list[_PostgresSubscription] = []
+        # Track live subscriptions so aclose can drop them. A set (not a list)
+        # so each subscription's aclose() can deregister itself in O(1) and a
+        # double aclose() is a harmless no-op -- without that deregistration
+        # the bus accumulated a dead _PostgresSubscription per subscribe()
+        # for its entire lifetime (an unbounded leak under high subscribe/
+        # close churn, e.g. one short-lived subscription per session turn).
+        self._subs: set[_PostgresSubscription] = set()
         # Metric: number of LISTEN reconnects across all subscriptions.
         self._listen_reconnects_total: int = 0
 
@@ -244,9 +259,18 @@ class PostgresEventBus(EventBus):
         if self._closed:
             return
         self._closed = True
+        # Iterate a snapshot: each sub.aclose() deregisters itself via the
+        # on_close hook, mutating self._subs mid-loop, so we must not iterate
+        # the live set directly.
         for sub in list(self._subs):
             await sub.aclose()
         self._subs.clear()
+
+    def _unsubscribe(self, sub: "_PostgresSubscription") -> None:
+        """Drop *sub* from the live registry. Idempotent (discard, not
+        remove) so a sub that closes after the bus already cleared the set
+        -- or closes twice -- never raises."""
+        self._subs.discard(sub)
 
     async def publish(
         self,
@@ -277,9 +301,10 @@ class PostgresEventBus(EventBus):
             release=self._storage.pool.release,
             reconnect_seconds=self._reconnect_seconds,
             on_reconnect=_bump_reconnects,
+            on_close=self._unsubscribe,
         )
         sub._start()
-        self._subs.append(sub)
+        self._subs.add(sub)
         return sub
 
     def metrics_snapshot(self) -> dict[str, Any]:

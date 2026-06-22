@@ -40,7 +40,11 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
-from primer.api.deps import get_event_bus, get_storage_provider
+from primer.api.deps import (
+    get_claim_engine,
+    get_event_bus,
+    get_storage_provider,
+)
 from primer.trigger.dispatch import fire_trigger
 from primer.trigger.fire_id import make_fire_id
 from primer.trigger.service import (
@@ -117,14 +121,26 @@ async def _dispatch_webhook(
     extra_context: dict,
     storage_provider: Any,
     event_bus: Any,
+    claim_engine: Any = None,
+    scheduler: Any = None,
+    workspace_registry: Any = None,
 ) -> None:
-    """Background task: fire subscriptions for a received webhook."""
+    """Background task: fire subscriptions for a received webhook.
+
+    ``claim_engine`` / ``scheduler`` / ``workspace_registry`` are resolved
+    from ``app.state`` by the request handler and threaded through here.
+    They MUST be real for the fresh-session subscription kinds
+    (``agent_fresh_session`` / ``graph_fresh_session``), which create an
+    ``auto_start=True`` session: a ``claim_engine=None`` there flips the
+    session to RUNNING but never claims it, hanging it forever (now a
+    loud ConfigError at create time rather than a silent hang).
+    """
     try:
         dispatch_deps = DispatchDeps(
             storage_provider=storage_provider,
-            claim_engine=None,
-            scheduler=None,
-            workspace_registry=None,
+            claim_engine=claim_engine,
+            scheduler=scheduler,
+            workspace_registry=workspace_registry,
             event_bus=event_bus,
         )
         result = await fire_trigger(
@@ -230,14 +246,28 @@ async def receive_webhook(
         "webhook_method": request.method,
     }
 
-    # Fire and forget
+    # Fire and forget. Resolve the live claim_engine / scheduler /
+    # workspace_registry from app.state HERE (request scope, where app.state
+    # is reachable) and thread them into the background task. The
+    # fresh-session subscription dispatchers create auto_start sessions that
+    # require a real ClaimEngine; passing None used to flip a session to
+    # RUNNING with no claimer (silent hang). Resolution is best-effort: a
+    # deployment that runs without these wired simply has no fresh-session
+    # subscriptions to dispatch (the create_session guard raises loudly if
+    # one is attempted).
     event_bus = get_event_bus(request)
+    claim_engine = get_claim_engine(request)
+    scheduler = getattr(request.app.state, "scheduler", None)
+    workspace_registry = getattr(request.app.state, "workspace_registry", None)
     background_tasks.add_task(
         _dispatch_webhook,
         trigger.id,
         extra_context,
         sp,
         event_bus,
+        claim_engine,
+        scheduler,
+        workspace_registry,
     )
 
     return {"delivery_id": delivery_id, "status": "accepted"}

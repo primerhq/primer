@@ -140,3 +140,32 @@ async def test_aclose_releases_connection_and_stops_supervisor():
     with pytest.raises(StopAsyncIteration):
         await sub.__anext__()
     await bus.aclose()
+
+
+async def test_sub_aclose_deregisters_from_bus_registry():
+    """A closed subscription must drop itself from the bus's ``_subs`` set so a
+    long-lived bus does not leak a dead subscription per subscribe()/close
+    cycle. Regression for the unbounded ``_subs`` leak under subscribe/close
+    churn (e.g. one short-lived subscription per session turn).
+    """
+    pool = _FakePool()
+    bus = PostgresEventBus(_FakeStorage(pool), reconnect_seconds=0.01)
+    await bus.initialize()
+
+    # Open and close many short-lived subscriptions; the registry must not
+    # grow without bound.
+    for _ in range(20):
+        sub = bus.subscribe()
+        assert sub in bus._subs
+        await sub.aclose()
+        assert sub not in bus._subs
+
+    assert len(bus._subs) == 0
+
+    # A double aclose() is a harmless no-op (idempotent discard).
+    sub = bus.subscribe()
+    await sub.aclose()
+    await sub.aclose()
+    assert sub not in bus._subs
+
+    await bus.aclose()
