@@ -1586,8 +1586,10 @@ class _BaseGraphExecutor(_CheckpointMixin, _AgentNodeMixin, ABC):
                 # mapping; Phase 6 wires the approval-yielding path
                 # (`_GraphToolCallYield`).
                 try:
-                    args = _resolve_toolcall_arguments(node, context)
-                except Exception as exc:  # noqa: BLE001 — Jinja / JSON parse
+                    args = _resolve_toolcall_arguments(
+                        node, context, extra_scope=extra_scope
+                    )
+                except Exception as exc:  # noqa: BLE001 -- Jinja / JSON parse
                     await queue.put(
                         _NodeDone(
                             node_id=node_id,

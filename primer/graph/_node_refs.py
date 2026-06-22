@@ -324,6 +324,8 @@ def _resume_value_yield_toolcall(
 def _resolve_toolcall_arguments(
     node: "_ToolCallNode",
     context: "GraphContext",
+    *,
+    extra_scope: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Resolve a ToolCallNode's arguments against the GraphContext.
 
@@ -335,11 +337,20 @@ def _resolve_toolcall_arguments(
     * Otherwise: walk ``arguments`` recursively. Any string leaf is rendered
       as a Jinja template against GraphContext; non-string leaves pass through
       unchanged.
+
+    ``extra_scope`` carries the per-fan-out-instance vars (``fanout_index``,
+    ``fanout_item``) when this ToolCall node is a fan-out target (Spec B §2.1).
+    Without it, a ``map``/``broadcast`` ToolCall target referencing
+    ``{{ fanout_item.* }}`` would hit ``StrictUndefined`` and fail every
+    instance with ``template_error`` (mirrors the agent/subgraph node paths,
+    which already thread ``extra_scope``).
     """
     from primer.graph.template import render_template_safely
 
     if node.arguments_template:
-        text = render_template_safely(node.arguments_template, context)
+        text = render_template_safely(
+            node.arguments_template, context, extra_scope=extra_scope
+        )
         try:
             result = json.loads(text)
         except json.JSONDecodeError as exc:
@@ -354,7 +365,9 @@ def _resolve_toolcall_arguments(
 
     def _walk(value: Any) -> Any:
         if isinstance(value, str):
-            return render_template_safely(value, context)
+            return render_template_safely(
+                value, context, extra_scope=extra_scope
+            )
         if isinstance(value, dict):
             return {k: _walk(v) for k, v in value.items()}
         if isinstance(value, list):
