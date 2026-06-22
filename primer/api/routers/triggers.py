@@ -34,7 +34,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -293,12 +293,28 @@ async def rotate_token_endpoint(
     summary="Synchronously fire a trigger",
 )
 async def fire_now_endpoint(
+    request: Request,
     trigger_id: str = Path(...),
     sp=Depends(get_storage_provider),
     claim_engine=Depends(get_claim_engine),
     event_bus=Depends(get_event_bus),
 ) -> JSONResponse:
-    deps = _deps(sp, claim_engine, event_bus)
+    # fire_now is the one trigger service call that actually DISPATCHES
+    # subscriptions, so it needs the scheduler + workspace_registry threaded
+    # through to DispatchDeps. The fresh-session dispatchers require a live
+    # workspace_registry to allocate the on-disk session slot (without it the
+    # fired session is created but never runs). Resolve both from app.state
+    # the same way the webhook router does; both are best-effort (a
+    # deployment without them simply cannot dispatch fresh-session subs).
+    deps = ServiceDeps(
+        storage_provider=sp,
+        claim_engine=claim_engine,
+        event_bus=event_bus,
+        scheduler=getattr(request.app.state, "scheduler", None),
+        workspace_registry=getattr(
+            request.app.state, "workspace_registry", None
+        ),
+    )
     try:
         result = await fire_now(trigger_id=trigger_id, deps=deps)
     except TriggerNotFound as exc:

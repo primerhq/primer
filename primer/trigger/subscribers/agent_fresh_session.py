@@ -32,7 +32,7 @@ from primer.trigger.subscribers import (
 )
 from primer.workspace.session_factory import (
     SessionFactoryDeps,
-    create_session,
+    start_workspace_session,
 )
 
 
@@ -58,6 +58,27 @@ class AgentFreshSessionDispatcher:
             if skip is not None:
                 return skip
 
+        # Go through start_workspace_session (NOT create_session) so the
+        # on-disk session slot is allocated via the workspace backend before
+        # the row is auto-started. create_session alone persists the
+        # scheduler-visible row but never allocates the
+        # .state/sessions/<sid>/ directory, so the worker's
+        # workspace.get_session(sid) returns None and the agent turn never
+        # runs (the session silently ends with no transcript). This is the
+        # same canonical path the REST route + create_workspace_session MCP
+        # tool use. Requires a live workspace_registry: fire paths that lack
+        # one (and so cannot allocate a slot) surface a loud dispatch_failed
+        # below rather than a silent never-runs.
+        if deps.workspace_registry is None:
+            return SubscriptionDispatchResult(
+                ok=False,
+                error_code="dispatch_failed",
+                error_message=(
+                    "agent_fresh_session requires a workspace_registry to "
+                    "allocate the on-disk session slot; the fire path did "
+                    "not thread one"
+                ),
+            )
         factory_deps = SessionFactoryDeps(
             storage_provider=deps.storage_provider,
             claim_engine=deps.claim_engine,
@@ -65,7 +86,7 @@ class AgentFreshSessionDispatcher:
             workspace_registry=deps.workspace_registry,
         )
         try:
-            session = await create_session(
+            session = await start_workspace_session(
                 workspace_id=sub.config.workspace_id,
                 binding=AgentSessionBinding(agent_id=sub.config.agent_id),
                 initial_instructions=rendered_payload,
@@ -77,6 +98,7 @@ class AgentFreshSessionDispatcher:
                     "fire_id": fire_id,
                     "fired_at": fire_context.get("fired_at"),
                 },
+                parent_session_id=None,
                 deps=factory_deps,
             )
         except Exception as exc:  # noqa: BLE001 — defensive perimeter

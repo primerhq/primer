@@ -31,7 +31,7 @@ from primer.trigger.subscribers import (
 )
 from primer.workspace.session_factory import (
     SessionFactoryDeps,
-    create_session,
+    start_workspace_session,
 )
 
 
@@ -89,6 +89,24 @@ class GraphFreshSessionDispatcher:
                         error_message=f"session {s.id!r} still in-flight",
                     )
 
+        # Use start_workspace_session (NOT create_session) so the on-disk
+        # graph-holder slot is allocated via the workspace backend before
+        # the row auto-starts. create_session alone never allocates the
+        # .state/sessions/<sid>/ directory, so the worker's
+        # workspace.get_session(sid) returns None and the graph never runs
+        # (the session silently ends with no transcript). This mirrors the
+        # canonical REST + create_workspace_session path and requires a live
+        # workspace_registry.
+        if deps.workspace_registry is None:
+            return SubscriptionDispatchResult(
+                ok=False,
+                error_code="dispatch_failed",
+                error_message=(
+                    "graph_fresh_session requires a workspace_registry to "
+                    "allocate the on-disk session slot; the fire path did "
+                    "not thread one"
+                ),
+            )
         factory_deps = SessionFactoryDeps(
             storage_provider=deps.storage_provider,
             claim_engine=deps.claim_engine,
@@ -96,7 +114,7 @@ class GraphFreshSessionDispatcher:
             workspace_registry=deps.workspace_registry,
         )
         try:
-            session = await create_session(
+            session = await start_workspace_session(
                 workspace_id=sub.config.workspace_id,
                 binding=GraphSessionBinding(graph_id=sub.config.graph_id),
                 initial_instructions=None,
@@ -109,6 +127,7 @@ class GraphFreshSessionDispatcher:
                     "fired_at": fire_context.get("fired_at"),
                     "graph_input": graph_input,
                 },
+                parent_session_id=None,
                 deps=factory_deps,
             )
         except Exception as exc:  # noqa: BLE001 — defensive perimeter

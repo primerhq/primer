@@ -96,6 +96,21 @@ async def test_agent_fresh_creates_session(
     assert sess.metadata.get("fire_id") == "fire-tr-1-100"
     assert sess.metadata.get("fired_at") == "2026-06-01T09:00:00+00:00"
 
+    # Regression guard: the dispatcher MUST allocate the on-disk session
+    # slot (via start_workspace_session -> live_workspace.start_session),
+    # not just persist the scheduler-visible row. Without the slot the
+    # worker's workspace.get_session(sid) returns None and the agent turn
+    # never runs (the session silently ends with no transcript). Assert the
+    # fake workspace recorded a start_session for THIS session id.
+    live_ws = fake_workspace_registry.workspaces.get(seeded_workspace.id)
+    assert live_ws is not None, "no on-disk slot allocated for the workspace"
+    assert [s["id"] for s in live_ws.started_slots] == [res.artefact_id], (
+        "dispatcher did not allocate the on-disk session slot for the "
+        "fired session (slot allocation is what makes it runnable)"
+    )
+    # The slot's initial instructions match the rendered payload.
+    assert live_ws.started_slots[0]["instructions"] == "run a check"
+
 
 @pytest.mark.asyncio
 async def test_agent_fresh_skips_when_subscription_busy(
@@ -203,6 +218,16 @@ async def test_graph_fresh_parses_payload_as_json(
     # The factory folds graph_input onto metadata for GraphSessionBinding;
     # the dispatcher also stamps it directly so both routes carry it.
     assert sess.metadata.get("graph_input") == {"tenant_id": "acme"}
+
+    # Regression guard: the graph dispatcher MUST allocate the on-disk
+    # graph-holder slot (start_workspace_session uses a synthetic
+    # ``graph:<id>`` agent binding) or the worker's
+    # workspace.get_session(sid) returns None and the graph never runs.
+    live_ws = fake_workspace_registry.workspaces.get(seeded_workspace.id)
+    assert live_ws is not None, "no on-disk slot allocated for the workspace"
+    assert [s["id"] for s in live_ws.started_slots] == [res.artefact_id], (
+        "graph dispatcher did not allocate the on-disk session slot"
+    )
 
 
 @pytest.mark.asyncio

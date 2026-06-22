@@ -49,12 +49,54 @@ class _FakeClaimEngine:
         self.upserts.append((kind, entity_id, priority))
 
 
-class _FakeWorkspaceRegistry:
-    """No-op registry — dispatchers only consult it for fresh-session
-    slot allocation, which the in-memory tests skip."""
+class _FakeWorkspace:
+    """Records the on-disk session slot allocations the fresh-session
+    dispatchers drive via ``start_session(binding, id=sid, ...)``.
 
-    def get(self, workspace_id: str) -> Any | None:
-        return None
+    The real ``Workspace.start_session`` allocates the
+    ``.state/sessions/<sid>/`` directory; the fresh-session dispatchers MUST
+    drive it (via ``start_workspace_session``) so the worker's
+    ``workspace.get_session(sid)`` can find the slot and actually run the
+    agent/graph. The previous no-op double let the slot-allocation gap go
+    unnoticed (the dispatcher used to call ``create_session`` directly and
+    never allocated a slot); this double captures every allocation so the
+    test can assert it happened."""
+
+    def __init__(self, workspace_id: str) -> None:
+        self.id = workspace_id
+        self.started_slots: list[dict[str, Any]] = []
+
+    async def start_session(
+        self,
+        binding: Any,
+        *,
+        id: str,
+        instructions: Any = None,
+        parent_session_id: Any = None,
+    ) -> None:
+        self.started_slots.append(
+            {
+                "id": id,
+                "binding": binding,
+                "instructions": instructions,
+                "parent_session_id": parent_session_id,
+            }
+        )
+
+
+class _FakeWorkspaceRegistry:
+    """Hands out a per-id :class:`_FakeWorkspace` and remembers it so the
+    test can inspect which on-disk slots the dispatcher allocated."""
+
+    def __init__(self) -> None:
+        self.workspaces: dict[str, _FakeWorkspace] = {}
+
+    async def get_workspace(self, workspace_id: str) -> _FakeWorkspace:
+        ws = self.workspaces.get(workspace_id)
+        if ws is None:
+            ws = _FakeWorkspace(workspace_id)
+            self.workspaces[workspace_id] = ws
+        return ws
 
 
 class _FakeEventBus:

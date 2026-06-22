@@ -74,11 +74,21 @@ class ServiceDeps:
     ``claim_engine`` and ``event_bus`` may be None — the service then
     treats lease upserts / bus pulses as no-ops. The REST surface in
     tests does not wire a claim engine; production lifespan does.
+
+    ``scheduler`` and ``workspace_registry`` are only consumed by
+    :func:`fire_now`, which threads them into the dispatch ``DispatchDeps``.
+    The fresh-session dispatchers (``agent_fresh_session`` /
+    ``graph_fresh_session``) need a live ``workspace_registry`` to allocate
+    the on-disk session slot; without it a fired session is created but
+    never runs. They are optional here so the CRUD service functions (which
+    never fire) can keep building ``ServiceDeps`` without them.
     """
 
     storage_provider: Any
     claim_engine: Any | None = None
     event_bus: Any | None = None
+    scheduler: Any | None = None
+    workspace_registry: Any | None = None
 
 
 def _now() -> datetime:
@@ -298,7 +308,8 @@ async def fire_now(*, trigger_id: str, deps: ServiceDeps):
     dispatch_deps = DispatchDeps(
         storage_provider=deps.storage_provider,
         claim_engine=deps.claim_engine,
-        scheduler=None,
+        scheduler=deps.scheduler,
+        workspace_registry=deps.workspace_registry,
         event_bus=deps.event_bus,
     )
     return await fire_trigger(
