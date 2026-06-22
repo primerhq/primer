@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import logging
 import shutil
 import tarfile
 import time
@@ -46,6 +47,8 @@ from primer.workspace.tool import WorkspaceTool
 
 
 _TAR_CHUNK_BYTES = 64 * 1024
+
+logger = logging.getLogger(__name__)
 
 
 def _generate_session_id() -> str:
@@ -220,7 +223,12 @@ class LocalWorkspace(Workspace):
         status: SessionStatus | None = None,
     ) -> list[SessionInfo]:
         out: list[SessionInfo] = []
-        for session in self._sessions.values():
+        for session in list(self._sessions.values()):
+            # Heal cross-process / cross-instance status staleness before
+            # filtering / returning (see ``get_session``): a session ended by
+            # a worker writes ``session.json`` on disk but leaves this cached
+            # handle at RUNNING, so an unrefreshed list would mis-report it.
+            await session.refresh_from_disk()
             info = await session.info()
             if agent_id is not None and info.agent_id != agent_id:
                 continue
@@ -230,9 +238,37 @@ class LocalWorkspace(Workspace):
         out.sort(key=lambda i: i.started_at, reverse=True)
         return out
 
+    async def _refresh_cached_session(
+        self, session: AgentSession, session_id: str,
+    ) -> None:
+        """Best-effort re-sync of a cached handle's status from disk.
+
+        Delegates to :meth:`AgentSession.refresh_from_disk`; swallows any
+        I/O error so a transient read failure degrades to the (stale but
+        present) cached view rather than raising out of ``get_session``.
+        """
+        try:
+            await session.refresh_from_disk()
+        except Exception:  # noqa: BLE001 -- advisory freshness, never fatal
+            logger.debug(
+                "get_session: refresh_from_disk failed for %s", session_id,
+                exc_info=True,
+            )
+
     async def get_session(self, session_id: str) -> AgentSession | None:
         cached = self._sessions.get(session_id)
         if cached is not None:
+            # Cross-process / cross-instance freshness: a cached handle holds
+            # an in-memory ``SessionInfo`` snapshot that goes stale when the
+            # turn ran through a DIFFERENT workspace instance (e.g. a worker
+            # process, or a worker-mode workspace cache distinct from the API
+            # process's). The authoritative status is committed to
+            # ``session.json`` on shared disk by the dispatch terminal
+            # transition; re-read it and refresh the cached handle when the
+            # cached view is still non-terminal but disk has moved on. Skip
+            # the disk read entirely once the cached view is already ENDED
+            # (terminal is immutable, so it can never go stale).
+            await self._refresh_cached_session(cached, session_id)
             return cached
         # Cross-process rehydration: the session may have been created on a
         # different process (e.g. the API process allocated the slot via

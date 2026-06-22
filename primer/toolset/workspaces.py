@@ -605,6 +605,41 @@ def build_workspaces_toolset(
     def _workspace_storage():
         return storage_provider.get_storage(WorkspaceRow)
 
+    def _session_row_storage():
+        from primer.model.workspace_session import WorkspaceSession
+
+        return storage_provider.get_storage(WorkspaceSession)
+
+    async def _reconcile_session_info(info):
+        """Overlay the durable session row's terminal status onto a slot view.
+
+        ``get_workspace_session`` / ``list_workspace_sessions`` read the
+        workspace's on-disk slot (``session.json``), but a session ended by
+        the worker/dispatch (clean completion, cancel, fail-closed) updates
+        the scheduler-visible ``WorkspaceSession`` row FIRST -- and on a
+        different process / workspace-cache instance the slot can lag. The
+        durable row is the same one ``GET /v1/sessions/{id}`` serves, so
+        these MCP session tools stay faithful thin wrappers by preferring
+        the row's status/ended_reason when the row is terminal but the slot
+        view is not. Returns the (possibly updated) SessionInfo; never
+        raises -- a storage miss degrades to the slot view unchanged.
+        """
+        from primer.model.workspace_session import SessionStatus
+
+        if info.status == SessionStatus.ENDED:
+            return info
+        try:
+            row = await _session_row_storage().get(info.session_id)
+        except Exception:  # noqa: BLE001 -- advisory reconciliation
+            return info
+        if row is None or row.status != SessionStatus.ENDED:
+            return info
+        return info.model_copy(update={
+            "status": SessionStatus.ENDED,
+            "ended_reason": row.ended_reason,
+            "ended_at": row.ended_at,
+        })
+
     async def _inv_provider(eid: str) -> None:
         await workspace_registry.invalidate(eid)
 
@@ -1040,6 +1075,7 @@ def build_workspaces_toolset(
             scheduler=scheduler,
             claim_engine=claim_engine,
             event_bus=event_bus,
+            workspace_registry=workspace_registry,
         )
         try:
             session = await cancel_session(
@@ -1087,11 +1123,12 @@ def build_workspaces_toolset(
             return _err_from_primer(exc, error_type="not-found")
         sessions = await ws.list_sessions()
         sliced = sessions[args.offset : args.offset + args.limit]
+        reconciled = [await _reconcile_session_info(s) for s in sliced]
         return _ok(
             {
-                "items": [s.model_dump(mode="json") for s in sliced],
+                "items": [s.model_dump(mode="json") for s in reconciled],
                 "offset": args.offset,
-                "length": len(sliced),
+                "length": len(reconciled),
                 "total": len(sessions),
             }
         )
@@ -1135,8 +1172,8 @@ def build_workspaces_toolset(
                 f"workspace {args.workspace_id!r}",
                 error_type="not-found",
             )
-        info = await session.info()
-        status = await session.status()
+        info = await _reconcile_session_info(await session.info())
+        status = info.status
         return _ok(
             {
                 "info": info.model_dump(mode="json"),

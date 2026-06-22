@@ -414,6 +414,50 @@ class TestWorkspaceSessions:
         with pytest.raises(ConflictError):
             await ws.start_session(_binding(), id="dup")
 
+    async def test_get_session_heals_stale_cached_status_from_disk(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """A cached handle whose in-memory status went stale (the turn ran
+        through a different process / workspace-cache instance that committed
+        ENDED to ``session.json``) is re-synced from disk on ``get_session``.
+
+        Regression for the MCP ``get_workspace_session`` /
+        ``list_workspace_sessions`` "session stuck running forever" bug: the
+        worker writes ENDED to disk but the API process's cached handle held
+        a RUNNING snapshot, so the workspace tools reported a terminated
+        session as still running.
+        """
+        ws = await provider.create(_template())
+        session = await ws.start_session(_binding(), id="sess-heal-1")
+        # Commit ENDED to disk (this is what the worker's dispatch terminal
+        # transition does), then forcibly revert the in-memory snapshot to
+        # RUNNING to simulate a cache that missed the cross-process update.
+        await session.set_status(SessionStatus.ENDED, ended_reason="completed")
+        from primer.model.workspace_session import SessionStatus as _S
+        session._info = session._info.model_copy(update={"status": _S.RUNNING})
+        assert await session.status() == SessionStatus.RUNNING  # stale
+
+        healed = await ws.get_session("sess-heal-1")
+        assert healed is session
+        assert await healed.status() == SessionStatus.ENDED
+        assert (await healed.info()).ended_reason == "completed"
+
+    async def test_list_sessions_heals_stale_cached_status_from_disk(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """``list_sessions`` also re-syncs each cached handle from disk so a
+        worker-ended session isn't reported as RUNNING in the list view."""
+        ws = await provider.create(_template())
+        session = await ws.start_session(_binding(), id="sess-heal-2")
+        await session.set_status(SessionStatus.ENDED, ended_reason="cancelled")
+        from primer.model.workspace_session import SessionStatus as _S
+        session._info = session._info.model_copy(update={"status": _S.RUNNING})
+
+        ended = await ws.list_sessions(status=SessionStatus.ENDED)
+        assert [i.session_id for i in ended] == ["sess-heal-2"]
+        running = await ws.list_sessions(status=SessionStatus.RUNNING)
+        assert running == []
+
 
 # ===========================================================================
 # LocalWorkspace — file browsing

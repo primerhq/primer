@@ -531,6 +531,7 @@ async def run_one_session_turn(
             session,
             new_status=SessionStatus.ENDED,
             ended_reason="cancelled",
+            executor=executor,
         )
         await turn_log.aclose()
         return ReleaseOutcome(success=True, drop_lease=True)
@@ -550,6 +551,7 @@ async def run_one_session_turn(
         session,
         new_status=new_status,
         ended_reason=ended_reason,
+        executor=executor,
     )
 
     await _safe_turn_log(turn_log, TurnLogCompleted(
@@ -738,8 +740,24 @@ async def _transition_session_status(
     *,
     new_status: SessionStatus,
     ended_reason: str | None = None,
+    executor=None,
 ) -> None:
-    """Update the WorkspaceSession row in storage. Idempotent on no-op."""
+    """Update the WorkspaceSession row in storage. Idempotent on no-op.
+
+    When ``new_status`` is ENDED and an ``executor`` is supplied, the
+    terminal status is ALSO mirrored onto the executor's on-disk
+    :class:`AgentSession` slot (``session.json``). The scheduler-visible
+    row (postgres) and the workspace-visible slot (on disk) are two
+    separate views of the same session: the worker decides ENDED here and
+    writes the row, but the executor's AgentSession was left at RUNNING
+    after a clean ``stop`` turn (it only self-ends on internal error /
+    WAITING). Without this mirror the workspace tools that read the slot
+    -- ``workspaces__get_workspace_session`` /
+    ``list_workspace_sessions`` (and the cross-process rehydration in
+    ``LocalWorkspace.get_session``) -- report a terminated session as
+    permanently ``running``, because the worker ran in a different process
+    (or workspace-cache instance) than the one those reads resolve.
+    """
     # Re-read the current row so we don't overwrite concurrent changes.
     fresh = await session_storage.get(session.id)
     if fresh is None:
@@ -759,6 +777,38 @@ async def _transition_session_status(
         logger.exception(
             "dispatch: failed to transition session %s to %s",
             session.id, new_status.value,
+        )
+    if new_status == SessionStatus.ENDED:
+        await _sync_agent_session_ended(executor, ended_reason)
+
+
+async def _sync_agent_session_ended(executor, ended_reason: str | None) -> None:
+    """Mirror a terminal ENDED transition onto the on-disk AgentSession slot.
+
+    Commits ``session.json`` (status=ENDED) so the workspace-side reads
+    (``get_session`` / ``list_sessions``) agree with the scheduler row.
+    Best-effort: a missing executor / already-ENDED slot / commit failure
+    must never block the lease release, so every branch is swallowed with a
+    log. ``ended_reason`` is constrained to the three terminal reasons the
+    AgentSession transition table accepts; an unknown value falls back to
+    ``"completed"`` so the on-disk slot still reaches a terminal state.
+    """
+    inner = getattr(executor, "session", None) if executor is not None else None
+    set_status = getattr(inner, "set_status", None)
+    if set_status is None:
+        return
+    try:
+        current = await inner.status()
+        if current == SessionStatus.ENDED:
+            return
+        reason = ended_reason if ended_reason in (
+            "completed", "failed", "cancelled",
+        ) else "completed"
+        await set_status(SessionStatus.ENDED, ended_reason=reason)
+    except Exception:  # noqa: BLE001 -- advisory; never block release
+        logger.warning(
+            "dispatch: failed to mirror ENDED onto AgentSession slot",
+            exc_info=True,
         )
 
 

@@ -340,6 +340,36 @@ class AgentSession:
         """Full :class:`SessionInfo` (timestamps, ended_reason, etc.)."""
         return self._info
 
+    async def refresh_from_disk(self) -> None:
+        """Re-sync the in-memory :class:`SessionInfo` from ``session.json``.
+
+        The cached ``_info`` is a snapshot taken when this handle was built;
+        when the session's turn ran through a DIFFERENT handle (a worker
+        process, or a worker-mode workspace cache distinct from this one),
+        the authoritative terminal status is committed to ``session.json``
+        on shared disk but this handle's ``_info`` is never updated. Callers
+        that read status across the process / cache boundary
+        (``LocalWorkspace.get_session`` / ``list_sessions``) invoke this so
+        the read reflects disk.
+
+        No-op once this handle is already ENDED (terminal is immutable) and
+        when disk has no slot. Only ADVANCES the cached status toward the
+        on-disk one; it never rewinds a locally-set terminal state.
+        """
+        if self._info.status == SessionStatus.ENDED:
+            return
+        disk = await self._state.load_session_info(self.session_id)
+        if disk is None:
+            return
+        # Adopt disk only when it is at/ahead of the cached view. The only
+        # cross-boundary staleness we need to heal is "disk ENDED, cache
+        # still RUNNING/WAITING"; adopting a terminal disk view is always
+        # safe and is the case the workspace tools depend on.
+        if disk.status == SessionStatus.ENDED:
+            async with self._lock:
+                if self._info.status != SessionStatus.ENDED:
+                    self._info = disk
+
     async def append_instruction(self, content: str) -> Instruction:
         """Queue a user instruction for delivery to the next turn.
 

@@ -517,6 +517,64 @@ async def test_clean_completion_transitions_to_ended_completed(
     assert row.ended_at is not None
 
 
+class _RecordingSlotSession:
+    """Minimal AgentSession stand-in for the slot-mirror assertion."""
+
+    def __init__(self) -> None:
+        self._status = SessionStatus.RUNNING
+        self.calls: list[tuple] = []
+
+    async def status(self):
+        return self._status
+
+    async def set_status(self, status, *, ended_reason=None, **_kw):
+        self.calls.append((status, ended_reason))
+        self._status = status
+
+
+class _ExecutorWithSession(FakeExecutor):
+    def __init__(self, events, session) -> None:
+        super().__init__(events)
+        self.session = session
+
+
+@pytest.mark.asyncio
+async def test_clean_completion_mirrors_ended_onto_agent_session_slot(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """The dispatch terminal transition mirrors ENDED onto the executor's
+    on-disk AgentSession slot, so the workspace-side reads
+    (``get_workspace_session`` / ``list_*``) don't report a finished
+    worker-run session as still ``running``. The executor leaves its
+    AgentSession at RUNNING after a clean ``stop`` (dispatch decides ENDED),
+    so without the mirror the slot would stay RUNNING forever.
+    """
+    slot = _RecordingSlotSession()
+    fake_executor = _ExecutorWithSession(
+        [TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")],
+        slot,
+    )
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+    assert outcome.success is True
+    # The scheduler row AND the on-disk slot both reached ENDED/completed.
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    assert (await storage.get(seeded_session.id)).status == SessionStatus.ENDED
+    assert slot.calls == [(SessionStatus.ENDED, "completed")]
+
+
 @pytest.mark.asyncio
 async def test_executor_error_transitions_to_ended_failed(
     seeded_session: WorkspaceSession,

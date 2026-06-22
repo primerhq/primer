@@ -254,6 +254,7 @@ async def cancel_session(
     engine=Depends(get_claim_engine),
     event_bus=Depends(get_event_bus),
     storage_provider=Depends(get_storage_provider),
+    workspace_registry=Depends(get_workspace_registry),
 ) -> WorkspaceSession:
     """Hard cancel.
 
@@ -281,6 +282,7 @@ async def cancel_session(
         scheduler=scheduler,
         claim_engine=engine,
         event_bus=event_bus,
+        workspace_registry=workspace_registry,
     )
     return await _cancel_session_helper(
         workspace_id=workspace_id, session_id=session_id, deps=deps,

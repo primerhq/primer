@@ -368,6 +368,44 @@ class SessionCancelDeps:
     scheduler: Any
     claim_engine: Any
     event_bus: Any | None = None
+    # Optional: when present, an INLINE cancel (created/waiting/paused, i.e.
+    # no worker is leasing the turn) also mirrors the terminal status onto
+    # the workspace's on-disk AgentSession slot (``session.json``) so the
+    # workspace-side reads (``get_workspace_session`` / ``list_*``) agree
+    # with the scheduler row. Absent it, the inline-cancel path still
+    # updates the scheduler row (back-compat); only the on-disk mirror is
+    # skipped.
+    workspace_registry: Any | None = None
+
+
+async def _mirror_inline_cancel_to_slot(
+    *, workspace_id: str, session_id: str, deps: SessionCancelDeps,
+) -> None:
+    """Best-effort: commit ENDED/cancelled onto the on-disk AgentSession.
+
+    Only the inline-cancel path needs this: a RUNNING cancel is converged
+    by the worker's dispatch terminal transition (which already mirrors the
+    slot), but a created/waiting/paused session is ended here without a
+    worker ever touching its slot. Never raises -- a registry / slot /
+    commit failure must not fail the cancel (the authoritative scheduler
+    row is already written by the caller).
+    """
+    registry = getattr(deps, "workspace_registry", None)
+    if registry is None:
+        return
+    try:
+        ws = await registry.get_workspace(workspace_id)
+        session = await ws.get_session(session_id)
+        if session is None:
+            return
+        if (await session.status()) == SessionStatus.ENDED:
+            return
+        await session.set_status(SessionStatus.ENDED, ended_reason="cancelled")
+    except Exception:  # noqa: BLE001 -- advisory; never block the cancel
+        logger.warning(
+            "cancel_session: failed to mirror inline cancel onto slot for %s",
+            session_id, exc_info=True,
+        )
 
 
 async def cancel_session(
@@ -402,6 +440,12 @@ async def cancel_session(
         s.ended_reason = "cancelled"
         s.ended_at = datetime.now(timezone.utc)
         await sessions.update(s)
+        # Mirror onto the on-disk slot so workspace-side reads agree (no
+        # worker runs for an inline-cancelled session, so nothing else
+        # would update session.json).
+        await _mirror_inline_cancel_to_slot(
+            workspace_id=workspace_id, session_id=session_id, deps=deps,
+        )
         # Drop the lease -- session is gone, no point claiming it.
         if deps.claim_engine is not None:
             await deps.claim_engine.delete_lease(ClaimKind.SESSION, session_id)

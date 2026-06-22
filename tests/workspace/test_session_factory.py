@@ -658,6 +658,80 @@ async def test_cancel_session_created_ends_immediately_and_drops_lease(
     assert rehydrated.status == SessionStatus.ENDED
 
 
+class _SlotSession:
+    """Minimal AgentSession stand-in that records set_status calls."""
+
+    def __init__(self, status=SessionStatus.CREATED) -> None:
+        self._status = status
+        self.set_status_calls: list[tuple] = []
+
+    async def status(self):
+        return self._status
+
+    async def set_status(self, status, *, ended_reason=None, **_kw):
+        self.set_status_calls.append((status, ended_reason))
+        self._status = status
+
+
+class _SlotWorkspace:
+    def __init__(self, session) -> None:
+        self._session = session
+
+    async def get_session(self, session_id):
+        return self._session
+
+
+class _SlotRegistry:
+    def __init__(self, ws) -> None:
+        self._ws = ws
+
+    async def get_workspace(self, workspace_id):
+        return self._ws
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_created_mirrors_ended_onto_slot(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    """Inline-cancel of a CREATED session also commits ENDED/cancelled onto
+    the on-disk AgentSession slot via the workspace registry, so the
+    workspace-side reads (``get_workspace_session`` / ``list_*``) agree with
+    the scheduler row instead of reporting a stale ``running``/``created``.
+    """
+    await _seed_session(fake_storage_provider, status=SessionStatus.CREATED)
+    slot = _SlotSession()
+    deps = SessionCancelDeps(
+        storage_provider=fake_storage_provider,
+        scheduler=fake_scheduler,
+        claim_engine=fake_claim_engine,
+        workspace_registry=_SlotRegistry(_SlotWorkspace(slot)),
+    )
+
+    out = await cancel_session(
+        workspace_id="ws-1", session_id="sess-cancel-1", deps=deps,
+    )
+
+    assert out.status == SessionStatus.ENDED
+    # The slot was driven to ENDED/cancelled exactly once.
+    assert slot.set_status_calls == [(SessionStatus.ENDED, "cancelled")]
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_created_no_registry_still_ends_row(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    """Back-compat: without a workspace_registry the inline cancel still
+    ends the scheduler row (the slot mirror is simply skipped)."""
+    await _seed_session(fake_storage_provider, status=SessionStatus.CREATED)
+    deps = _cancel_deps(fake_storage_provider, fake_scheduler, fake_claim_engine)
+
+    out = await cancel_session(
+        workspace_id="ws-1", session_id="sess-cancel-1", deps=deps,
+    )
+    assert out.status == SessionStatus.ENDED
+    assert out.ended_reason == "cancelled"
+
+
 @pytest.mark.asyncio
 async def test_cancel_session_already_ended_raises_conflict(
     fake_storage_provider, fake_scheduler, fake_claim_engine,
