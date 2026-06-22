@@ -133,11 +133,19 @@ def app(
         fake_storage_provider,  # type: ignore[arg-type]
         factory=_FakeBackendForSessions,
     )
-    return create_test_app(
+    _app = create_test_app(
         storage_provider=fake_storage_provider,  # type: ignore[arg-type]
         provider_registry=fake_provider_registry,
         workspace_registry=workspace_registry,
     )
+    # create_session(auto_start=True) now raises ConfigError -> 503 when no
+    # ClaimEngine is wired (a RUNNING row with no lease would hang forever).
+    # The test factory leaves app.state.claim_engine unset, so attach a passive
+    # spy engine here (mirrors the app_with_engine fixture). It only records
+    # upsert/delete_lease calls, so it does not alter the behaviour of the
+    # auto_start=False / resume / cancel / delete tests that also use `app`.
+    _app.state.claim_engine = _FakeClaimEngine()
+    return _app
 
 
 @pytest.fixture
