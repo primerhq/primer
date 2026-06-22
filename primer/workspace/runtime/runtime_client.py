@@ -133,6 +133,12 @@ class RuntimeClient:
         self._reconnect_task: asyncio.Task[None] | None = None
 
         self._closed = False
+        # Set when the runtime server reports the workspace no longer exists
+        # (a 404 on the WS handshake). Once gone, reconnecting can never
+        # succeed, so the reconnect loop gives up and the client tears itself
+        # down. Callers (e.g. a per-workspace client cache) can read
+        # :attr:`gone` to evict the dead client.
+        self._gone = False
         self._connected = asyncio.Event()
         self._lock = asyncio.Lock()
 
@@ -193,6 +199,17 @@ class RuntimeClient:
         capability checks against the connected runtime.
         """
         return self._negotiated_version
+
+    @property
+    def gone(self) -> bool:
+        """``True`` once the runtime confirmed the workspace is destroyed.
+
+        The reconnect loop sets this when a connect attempt is rejected with
+        a 404 handshake (the backend says the workspace/pod no longer
+        exists). A gone client has stopped its reconnect loop and closed
+        itself; a per-workspace client cache should evict it.
+        """
+        return self._gone
 
     # ------------------------------------------------------------------
     # Per-op public methods
@@ -646,8 +663,28 @@ class RuntimeClient:
             q.put_nowait(_STREAM_CLOSED)
         self._streams.clear()
 
+    @staticmethod
+    def _is_workspace_gone(exc: BaseException) -> bool:
+        """True if *exc* means the workspace/runtime no longer exists.
+
+        A WS handshake rejected with HTTP 404 is unambiguous: the backend
+        (or the gateway routing to its pod) reports the workspace endpoint
+        is gone. Reconnecting can never succeed in that case, so the
+        reconnect loop must give up rather than retry forever.
+        """
+        return (
+            isinstance(exc, aiohttp.WSServerHandshakeError)
+            and exc.status == 404
+        )
+
     async def _reconnect_loop(self) -> None:
-        """Reconnect with exponential back-off whenever the WS closes."""
+        """Reconnect with exponential back-off whenever the WS closes.
+
+        Retries transient failures forever, but gives up permanently if the
+        runtime reports the workspace is gone (a 404 handshake): the loop
+        marks the client closed/gone and tears down so it can be evicted
+        from any per-workspace cache instead of spinning forever.
+        """
         delays = list(self._RECONNECT_DELAYS)
         attempt = 0
         try:
@@ -667,6 +704,21 @@ class RuntimeClient:
                     attempt = 0  # reset backoff on success
                     logger.info("Reconnected successfully")
                 except Exception as exc:  # noqa: BLE001
+                    if self._is_workspace_gone(exc):
+                        logger.info(
+                            "Workspace gone (404 on reconnect to %s); "
+                            "stopping reconnect loop and evicting client",
+                            self._url,
+                        )
+                        self._gone = True
+                        # Tear ourselves down so the cache can drop us and the
+                        # session/streams release. Spawn it as a task: aclose()
+                        # cancels this very task, so awaiting it here would
+                        # cancel us mid-await.
+                        asyncio.create_task(  # noqa: RUF006
+                            self.aclose(), name="runtime-evict-gone"
+                        )
+                        return
                     logger.warning("Reconnect failed: %s", exc)
         except asyncio.CancelledError:
             raise

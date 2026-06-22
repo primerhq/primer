@@ -608,6 +608,100 @@ async def test_heartbeat_force_reconnect_on_dead_server(
 
 
 # ---------------------------------------------------------------------------
+# Test: reconnect to a deleted workspace (404) gives up instead of looping
+# ---------------------------------------------------------------------------
+
+
+async def test_reconnect_404_stops_loop_and_marks_gone(
+    fake_runtime: tuple[_FakeRuntime, str],
+) -> None:
+    """A 404 handshake on reconnect must terminate the loop, not retry forever.
+
+    Regression for the worker leaking a RuntimeClient + a reconnect task per
+    deleted workspace: when the backend (pod/route) is torn down, ws_connect
+    is rejected with HTTP 404. Reconnecting can never succeed, so the loop
+    must give up, mark the client ``gone``, and tear itself down so a
+    per-workspace cache can evict it -- rather than spamming
+    ``Reconnect failed: 404 ...`` forever.
+    """
+    runtime, url = fake_runtime
+
+    # Speed the loop up so the test does not wait on the real backoff.
+    original_delays = RuntimeClient._RECONNECT_DELAYS
+    RuntimeClient._RECONNECT_DELAYS = (0.01,)  # type: ignore[assignment]
+    try:
+        client = await _connected_client(url)
+        assert client._connected.is_set()
+
+        # Repoint the client at a path with no registered route. aiohttp
+        # answers ws_connect to an unmapped path with HTTP 404, i.e. a
+        # WSServerHandshakeError(status=404) -- the same signal the gateway
+        # returns once the workspace pod/route is gone.
+        client._url = url.rstrip("/") + "/ws-deleted-workspace/"  # type: ignore[attr-defined]
+
+        # Force a disconnect so the reconnect loop fires against the dead URL.
+        if client._ws is not None:  # type: ignore[attr-defined]
+            await client._ws.close()  # type: ignore[attr-defined]
+        client._connected.clear()  # type: ignore[attr-defined]
+
+        # Within a bounded window the loop must give up: client gone + closed,
+        # and its reconnect task finished (not spinning).
+        async def _await_gone() -> None:
+            while not client.gone:
+                await asyncio.sleep(0.01)
+
+        await asyncio.wait_for(_await_gone(), timeout=3.0)
+
+        assert client.gone is True
+        # The loop self-closes via aclose(); give that spawned task a tick.
+        await asyncio.sleep(0.05)
+        assert client._closed is True  # type: ignore[attr-defined]
+        assert not client._connected.is_set()  # type: ignore[attr-defined]
+
+        reconnect_task = client._reconnect_task  # type: ignore[attr-defined]
+        assert reconnect_task is not None
+        assert reconnect_task.done()
+    finally:
+        RuntimeClient._RECONNECT_DELAYS = original_delays  # type: ignore[assignment]
+        await client.aclose()
+
+
+async def test_reconnect_transient_error_keeps_retrying(
+    fake_runtime: tuple[_FakeRuntime, str],
+) -> None:
+    """A non-404 (transient) reconnect failure must NOT give up.
+
+    Confirms the 404 short-circuit is narrow: a connection-refused style
+    failure (server briefly down) still leaves the loop retrying and the
+    client not marked gone.
+    """
+    runtime, url = fake_runtime
+
+    original_delays = RuntimeClient._RECONNECT_DELAYS
+    RuntimeClient._RECONNECT_DELAYS = (0.02,)  # type: ignore[assignment]
+    try:
+        client = await _connected_client(url)
+
+        # Repoint at a dead port so ws_connect raises ClientConnectorError
+        # (a transient failure, NOT a 404 handshake rejection).
+        client._url = "ws://127.0.0.1:1/"  # type: ignore[attr-defined]
+        if client._ws is not None:  # type: ignore[attr-defined]
+            await client._ws.close()  # type: ignore[attr-defined]
+        client._connected.clear()  # type: ignore[attr-defined]
+
+        # Let several reconnect attempts run; the client must keep trying.
+        await asyncio.sleep(0.2)
+        assert client.gone is False
+        assert client._closed is False  # type: ignore[attr-defined]
+        reconnect_task = client._reconnect_task  # type: ignore[attr-defined]
+        assert reconnect_task is not None
+        assert not reconnect_task.done()
+    finally:
+        RuntimeClient._RECONNECT_DELAYS = original_delays  # type: ignore[assignment]
+        await client.aclose()
+
+
+# ---------------------------------------------------------------------------
 # Test: aclose is idempotent
 # ---------------------------------------------------------------------------
 
