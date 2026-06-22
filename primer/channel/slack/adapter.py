@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 
 from primer.channel.adapter import (
-    ChannelAdapter, PromptEnvelope, ResponseEnvelope,
+    BoundedDict, ChannelAdapter, PromptEnvelope,
     attribution_header, session_thread_label,
 )
 from primer.channel.slack.connection import SLACK_CONNECTIONS
@@ -66,7 +66,15 @@ class SlackChannelAdapter(ChannelAdapter):
         self._artifacts = artifact_registry
         self._conn: Any | None = None
         # session_id → root message ts (the per-session conversation thread).
-        self._session_threads: dict[str, str] = {}
+        # Bounded so a long-lived bot does not grow this map without limit; an
+        # evicted session simply re-opens its thread on the next prompt.
+        self._session_threads: BoundedDict = BoundedDict()
+
+    def _user_id_key(self) -> str:
+        return "slack_user_id"
+
+    def _user_id_default(self) -> str:
+        return ""
 
     async def initialize(self) -> None:
         self._conn = await SLACK_CONNECTIONS.acquire(self._provider)
@@ -180,21 +188,20 @@ class SlackChannelAdapter(ChannelAdapter):
         if self._conn is None:
             raise ProviderError("SlackChannelAdapter used before initialize()")
         client = _get_web_client(self._conn)
-        sent = 0
-        for part in parts:
-            data = getattr(part, "data", None)
-            if not data:
-                continue
-            filename = getattr(part, "filename", None) or "file"
-            kwargs = {
-                "channel": self._channel.external_id,
-                "file": data, "filename": filename,
-            }
-            if thread_ts:
-                kwargs["thread_ts"] = thread_ts
-            await client.files_upload_v2(**kwargs)
-            sent += 1
+        sent = await self._send_media_parts((client, thread_ts), parts)
         return {"sent": sent}
+
+    async def _send_media_part(self, target: Any, part: Any) -> None:
+        client, thread_ts = target
+        data = getattr(part, "data", None)
+        filename = getattr(part, "filename", None) or "file"
+        kwargs = {
+            "channel": self._channel.external_id,
+            "file": data, "filename": filename,
+        }
+        if thread_ts:
+            kwargs["thread_ts"] = thread_ts
+        await client.files_upload_v2(**kwargs)
 
     async def _session_root_ts(self, client: Any, session_id: str) -> str:
         """Get-or-create the root message ts for this session's thread.
@@ -214,35 +221,8 @@ class SlackChannelAdapter(ChannelAdapter):
         return ts
 
     # ----- inbound helpers (called from handlers in factory.py) -----------
-
-    async def _handle_decision(
-        self,
-        *,
-        ws: str, sid: str, tcid: str,
-        decision: str, reason: str | None,
-        slack_user_id: str | None,
-    ) -> None:
-        await self._inbox.handle_response(ResponseEnvelope(
-            kind="tool_approval",
-            workspace_id=ws, session_id=sid, tool_call_id=tcid,
-            response=None, decision=decision, reason=reason,
-            platform_metadata={"slack_user_id": slack_user_id or ""},
-        ))
-
-    async def _handle_text_reply(
-        self,
-        *,
-        ws: str, sid: str, tcid: str,
-        text: str,
-        slack_user_id: str | None,
-    ) -> None:
-        await self._inbox.handle_response(ResponseEnvelope(
-            kind="ask_user",
-            workspace_id=ws, session_id=sid, tool_call_id=tcid,
-            response=text,
-            decision=None, reason=None,
-            platform_metadata={"slack_user_id": slack_user_id or ""},
-        ))
+    # _handle_decision / _handle_text_reply / _inbound_router / _event_router
+    # / _resolve_thread_chat are inherited from ChannelAdapter.
 
     async def handle_inbound_chat_message(
         self, *, thread_ts: str | None, message_ts: str,
@@ -286,49 +266,6 @@ class SlackChannelAdapter(ChannelAdapter):
         # Resolve the resulting chat for callers/tests (side-effect already done).
         thread_external_id = thread_ts or message_ts
         return await self._resolve_thread_chat(thread_external_id)
-
-    def _inbound_router(self):
-        """Build a ChannelInboundRouter from the adapter's wiring, or None when
-        chat-surface dispatch is not configured (no storage provider)."""
-        if self._sp is None:
-            return None
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.correlation import CorrelationStore
-        from primer.channel.inbound_router import ChannelInboundRouter
-        gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
-        return ChannelInboundRouter(
-            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
-            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
-
-    def _event_router(self):
-        """Build a ChannelInboundRouter for the normalized-event path, or None
-        when chat-surface dispatch is not configured (no storage provider).
-
-        Mirrors :meth:`_inbound_router`; the caller routes a normalized
-        ``ChannelEvent`` through :meth:`ChannelInboundRouter.route_event`."""
-        if self._sp is None:
-            return None
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.correlation import CorrelationStore
-        from primer.channel.inbound_router import ChannelInboundRouter
-        gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
-        return ChannelInboundRouter(
-            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
-            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
-
-    async def _resolve_thread_chat(self, thread_external_id: str):
-        """Look up the chat bound to (this channel, thread_external_id)."""
-        from primer.channel.chat_router import ChatChannelRouter
-        from primer.channel.correlation import CorrelationStore
-        router = ChatChannelRouter(
-            storage_provider=self._sp,
-            correlation_store=CorrelationStore(self._sp))
-        return await router._find_thread_chat(
-            channel_id=self._channel.id, thread_external_id=thread_external_id)
 
     async def _collect_inbound_media(
         self, text: str, files: list[dict] | None,

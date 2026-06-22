@@ -243,7 +243,7 @@ async def test_handle_decision_publishes(monkeypatch):
     try:
         await adapter._handle_decision(
             workspace_id="ws", session_id="s", tool_call_id="tc",
-            decision="approved", reason=None, discord_user_id=1234,
+            decision="approved", reason=None, user_id=1234,
         )
     finally:
         await adapter.aclose()

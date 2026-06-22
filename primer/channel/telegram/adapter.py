@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict
 from typing import Any
 
 from primer.channel.adapter import (
-    ChannelAdapter, PromptEnvelope, ResponseEnvelope, attribution_header,
+    DEFAULT_CACHE_MAXSIZE, BoundedDict, ChannelAdapter, PromptEnvelope,
+    attribution_header,
 )
 from primer.channel.telegram.connection import TELEGRAM_CONNECTIONS
 from primer.channel.telegram.render import (
@@ -22,30 +22,14 @@ from primer.model.except_ import ProviderError
 
 logger = logging.getLogger(__name__)
 
-# Max correlation entries kept per adapter. Sized for a busy bot's recent
-# in-flight prompts; older entries are evicted (their parks, if still open,
-# fall back to the storage row on resume).
-_CACHE_MAXSIZE = 10_000
+# Backwards-compatible aliases. The bounded-map primitive now lives on the
+# adapter base (shared by every provider); these names are kept so existing
+# imports keep working.
+_CACHE_MAXSIZE = DEFAULT_CACHE_MAXSIZE
+_BoundedDict = BoundedDict
 
 # Agents shown per page in the /agent inline-keyboard picker.
 _AGENTS_PER_PAGE = 8
-
-
-class _BoundedDict(OrderedDict):
-    """An insertion-ordered dict that evicts the oldest entry once it
-    exceeds ``maxsize``. Re-inserting an existing key refreshes its
-    recency (move-to-end)."""
-
-    def __init__(self, *, maxsize: int) -> None:
-        super().__init__()
-        self._maxsize = maxsize
-
-    def __setitem__(self, key, value) -> None:
-        if key in self:
-            self.move_to_end(key)
-        super().__setitem__(key, value)
-        while len(self) > self._maxsize:
-            self.popitem(last=False)
 
 
 class TelegramChannelAdapter(ChannelAdapter):
@@ -77,6 +61,9 @@ class TelegramChannelAdapter(ChannelAdapter):
         # reply is correlated by the message it replies to (no visible
         # token in the message body).
         self._reply_targets: _BoundedDict = _BoundedDict(maxsize=_CACHE_MAXSIZE)
+
+    def _user_id_key(self) -> str:
+        return "telegram_user_id"
 
     def remember_reply_target(
         self, *, message_id: int, ids: dict[str, str], kind: str,
@@ -193,41 +180,6 @@ class TelegramChannelAdapter(ChannelAdapter):
         # only runs in real deployments after restart).
         return None
 
-    async def _handle_decision(
-        self, *,
-        workspace_id: str, session_id: str, tool_call_id: str,
-        decision: str, reason: str | None,
-        telegram_user_id: int | None,
-    ) -> None:
-        await self._inbox.handle_response(ResponseEnvelope(
-            kind="tool_approval",
-            workspace_id=workspace_id,
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-            response=None, decision=decision, reason=reason,
-            platform_metadata={
-                "telegram_user_id": telegram_user_id or 0,
-            },
-        ))
-
-    async def _handle_text_reply(
-        self, *,
-        workspace_id: str, session_id: str, tool_call_id: str,
-        text: str,
-        telegram_user_id: int | None,
-    ) -> None:
-        await self._inbox.handle_response(ResponseEnvelope(
-            kind="ask_user",
-            workspace_id=workspace_id,
-            session_id=session_id,
-            tool_call_id=tool_call_id,
-            response=text,
-            decision=None, reason=None,
-            platform_metadata={
-                "telegram_user_id": telegram_user_id or 0,
-            },
-        ))
-
     async def handle_inbound_chat_text(
         self, *, sender_name: str, text: str,
     ) -> str | None:
@@ -294,42 +246,6 @@ class TelegramChannelAdapter(ChannelAdapter):
             channel=self._channel, anchor=None, reply_to=None,
             is_thread_channel=False, sender=sender_name, text=text)
         return None
-
-    def _inbound_router(self):
-        """Build a ChannelInboundRouter from the adapter's wiring, or None when
-        chat-surface dispatch is not configured (no storage provider).
-
-        Telegram is single-type (``is_thread_channel=False``); the router falls
-        to the active-chat path for every non-command message."""
-        if self._sp is None:
-            return None
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.correlation import CorrelationStore
-        from primer.channel.inbound_router import ChannelInboundRouter
-        gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
-        return ChannelInboundRouter(
-            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
-            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
-
-    def _event_router(self):
-        """Build a ChannelInboundRouter for the normalized-event path, or None
-        when chat-surface dispatch is not configured (no storage provider).
-
-        Mirrors :meth:`_inbound_router`; the caller routes a normalized
-        ``ChannelEvent`` through :meth:`ChannelInboundRouter.route_event`."""
-        if self._sp is None:
-            return None
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.correlation import CorrelationStore
-        from primer.channel.inbound_router import ChannelInboundRouter
-        gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
-        return ChannelInboundRouter(
-            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
-            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
 
     async def _extract_media_parts(self, msg) -> tuple[list, str]:
         """Download every attachment on ``msg`` and build artifact-backed
@@ -497,28 +413,26 @@ class TelegramChannelAdapter(ChannelAdapter):
     ) -> dict[str, Any]:
         """Outbound media relay: upload each hydrated media part (inline bytes)
         to the channel via the matching Telegram send method."""
-        import io
         if self._app is None:
             raise ProviderError("TelegramChannelAdapter used before initialize()")
-        sent = 0
-        for part in parts:
-            data = getattr(part, "data", None)
-            if not data:
-                continue
-            mime = (getattr(part, "mime_type", None) or "").lower()
-            filename = getattr(part, "filename", None) or "file"
-            buf = io.BytesIO(data)
-            chat_id = self._channel.external_id
-            if mime.startswith("image/"):
-                await self._app.bot.send_photo(chat_id=chat_id, photo=buf)
-            elif mime.startswith("audio/"):
-                await self._app.bot.send_audio(chat_id=chat_id, audio=buf)
-            else:
-                buf.name = filename
-                await self._app.bot.send_document(
-                    chat_id=chat_id, document=buf, filename=filename)
-            sent += 1
+        sent = await self._send_media_parts(None, parts)
         return {"sent": sent}
+
+    async def _send_media_part(self, target: Any, part: Any) -> None:
+        import io
+        data = getattr(part, "data", None)
+        mime = (getattr(part, "mime_type", None) or "").lower()
+        filename = getattr(part, "filename", None) or "file"
+        buf = io.BytesIO(data)
+        chat_id = self._channel.external_id
+        if mime.startswith("image/"):
+            await self._app.bot.send_photo(chat_id=chat_id, photo=buf)
+        elif mime.startswith("audio/"):
+            await self._app.bot.send_audio(chat_id=chat_id, audio=buf)
+        else:
+            buf.name = filename
+            await self._app.bot.send_document(
+                chat_id=chat_id, document=buf, filename=filename)
 
 
 __all__ = ["TelegramChannelAdapter"]

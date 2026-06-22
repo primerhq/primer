@@ -139,7 +139,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             await adapter._handle_decision(
                 workspace_id=ws, session_id=sid, tool_call_id=tcid,
                 decision="approved", reason=None,
-                discord_user_id=interaction.user.id if interaction.user else None,
+                user_id=interaction.user.id if interaction.user else None,
             )
             return
 
@@ -162,7 +162,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                 await adapter._handle_decision(
                     workspace_id=ws, session_id=sid, tool_call_id=tcid,
                     decision="rejected", reason=reason_text or None,
-                    discord_user_id=submitted.user.id if submitted.user else None,
+                    user_id=submitted.user.id if submitted.user else None,
                 )
                 try:
                     if original_message is not None:
@@ -201,7 +201,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             await adapter._handle_decision(
                 workspace_id=ws, session_id=sid, tool_call_id=tcid,
                 decision="rejected", reason=reason or None,
-                discord_user_id=interaction.user.id if interaction.user else None,
+                user_id=interaction.user.id if interaction.user else None,
             )
 
     async def _on_message(message: discord.Message):
@@ -235,7 +235,7 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
                         session_id=rec.session_id,
                         tool_call_id=rec.tool_call_id,
                         text=message.content or "",
-                        discord_user_id=message.author.id if message.author else None,
+                        user_id=message.author.id if message.author else None,
                     )
                     try:
                         await CorrelationStore(sp).clear(

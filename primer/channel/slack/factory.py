@@ -93,9 +93,9 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             return
         user_id = body.get("user", {}).get("id")
         await adapter._handle_decision(
-            ws=ws, sid=sid, tcid=tcid,
+            workspace_id=ws, session_id=sid, tool_call_id=tcid,
             decision="approved", reason=None,
-            slack_user_id=user_id,
+            user_id=user_id,
         )
         # Replace the buttons with an "Approved by @user" note.
         from primer.channel.slack.render import build_decided_blocks
@@ -182,9 +182,9 @@ def _install_handlers(provider_id: str, app: Any) -> None:
             return
         for adapter in entry.adapters_by_channel_id.values():
             await adapter._handle_decision(
-                ws=ws, sid=sid, tcid=tcid,
+                workspace_id=ws, session_id=sid, tool_call_id=tcid,
                 decision="rejected", reason=reason,
-                slack_user_id=user_id,
+                user_id=user_id,
             )
             break  # first wins; the inbox dedupes anyway
         # Replace the buttons on the original message with a "Rejected" note.
@@ -359,10 +359,10 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     rec = None
                 if rec is not None and rec.kind == "session":
                     await adapter._handle_text_reply(
-                        ws=rec.workspace_id, sid=rec.session_id,
-                        tcid=rec.tool_call_id,
+                        workspace_id=rec.workspace_id, session_id=rec.session_id,
+                        tool_call_id=rec.tool_call_id,
                         text=event.get("text", ""),
-                        slack_user_id=event.get("user"),
+                        user_id=event.get("user"),
                     )
                     try:
                         await CorrelationStore(sp).clear(

@@ -180,7 +180,7 @@ async def test_handle_decision_publishes_envelope(monkeypatch):
         await adapter._handle_decision(
             workspace_id="ws", session_id="s", tool_call_id="tc",
             decision="rejected", reason="no thanks",
-            telegram_user_id=1234,
+            user_id=1234,
         )
     finally:
         await adapter.aclose()

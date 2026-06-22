@@ -129,7 +129,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                 return
             await adapter._handle_decision(
                 **ids, decision="approved", reason=None,
-                telegram_user_id=cq.from_user.id if cq.from_user else None,
+                user_id=cq.from_user.id if cq.from_user else None,
             )
             try:
                 await context.bot.edit_message_text(
@@ -208,7 +208,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     session_id=rec.session_id,
                     tool_call_id=rec.tool_call_id,
                     text=msg.text or "",
-                    telegram_user_id=user_id,
+                    user_id=user_id,
                 )
                 try:
                     await CorrelationStore(sp).clear(
@@ -230,7 +230,7 @@ def _install_handlers(provider_id: str, app: Any) -> None:
         if kind == "reject":
             await adapter._handle_decision(
                 **ids, decision="rejected", reason=msg.text or "",
-                telegram_user_id=user_id,
+                user_id=user_id,
             )
 
     app.add_handler(CallbackQueryHandler(_on_callback))

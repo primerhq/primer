@@ -35,6 +35,40 @@ def _get_channel_storage(request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Warm-adapter invalidation hooks
+#
+# Channel / ChannelProvider adapters warm once and cache their live gateway
+# (Discord/Slack WS, Telegram poller). A config edit through these routers must
+# flush the warm adapter so the next inbound/relay rebuilds it lazily with the
+# new config; otherwise the running process keeps serving the stale connection
+# until restart.
+# ---------------------------------------------------------------------------
+
+
+def _channel_registry(request: Request):
+    """Return the per-process ChannelRegistry, or None when channels are not
+    wired on this app (e.g. minimal test apps). Invalidation is then a no-op."""
+    return getattr(request.app.state, "channel_registry", None)
+
+
+async def _invalidate_channel(entity_id: str, request: Request) -> None:
+    """Flush the warm adapter for the edited/deleted channel so it rebuilds
+    lazily with the new config."""
+    registry = _channel_registry(request)
+    if registry is not None:
+        await registry.invalidate(channel_id=entity_id)
+
+
+async def _invalidate_provider_channels(entity_id: str, request: Request) -> None:
+    """A provider edit (e.g. rotated bot token) affects every channel that
+    shares its connection, so flush the whole warm-adapter cache; each channel
+    rebuilds lazily against the new provider config on next use."""
+    registry = _channel_registry(request)
+    if registry is not None:
+        await registry.invalidate(channel_id=None)
+
+
+# ---------------------------------------------------------------------------
 # ChannelProvider router
 # ---------------------------------------------------------------------------
 
@@ -45,6 +79,8 @@ def make_channel_provider_router() -> APIRouter:
         storage_dep=_get_channel_provider_storage,
         plural="channel_providers",
         tag="channel_providers",
+        on_update=_invalidate_provider_channels,
+        on_delete=_invalidate_provider_channels,
         references=[
             # Cascade-block: a ChannelProvider must not be deleted while a
             # Channel still references it via ``provider_id`` (§3 invariant).
@@ -107,6 +143,8 @@ def make_channel_router() -> APIRouter:
         plural="channels",
         tag="channels",
         on_pre_create=_channel_on_pre_create,
+        on_update=_invalidate_channel,
+        on_delete=_invalidate_channel,
     )
 
 

@@ -138,8 +138,9 @@ async def test_slack_ask_user_writes_store_and_clears_on_reply(
             rec2 = None
         assert rec2 is not None and rec2.kind == "session"
         await adapter._handle_text_reply(
-            ws=rec2.workspace_id, sid=rec2.session_id, tcid=rec2.tool_call_id,
-            text="my answer", slack_user_id="U99",
+            workspace_id=rec2.workspace_id, session_id=rec2.session_id,
+            tool_call_id=rec2.tool_call_id,
+            text="my answer", user_id="U99",
         )
         await CorrelationStore(sp).clear(adapter._channel.id, root_ts)
 
@@ -274,7 +275,7 @@ async def test_discord_ask_user_writes_store_and_reply_resolves(
             session_id=rec2.session_id,
             tool_call_id=rec2.tool_call_id,
             text="blue",
-            discord_user_id=7,
+            user_id=7,
         )
         await CorrelationStore(sp).clear(adapter._channel.id, str(thread_id))
 
@@ -384,7 +385,7 @@ async def test_telegram_ask_user_writes_store_and_reply_resolves(
             session_id=rec2.session_id,
             tool_call_id=rec2.tool_call_id,
             text="yes",
-            telegram_user_id=55,
+            user_id=55,
         )
         await CorrelationStore(sp).clear(adapter._channel.id, str(message_id))
 

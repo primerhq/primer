@@ -6,7 +6,7 @@ import logging
 from typing import Any
 
 from primer.channel.adapter import (
-    ChannelAdapter, PromptEnvelope, ResponseEnvelope,
+    BoundedDict, ChannelAdapter, PromptEnvelope,
     attribution_header, format_tool_args, session_thread_label,
 )
 from primer.channel.discord.connection import DISCORD_CONNECTIONS
@@ -55,8 +55,13 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._claim_engine = claim_engine
         self._artifacts = artifact_registry
         self._client: Any | None = None
-        # session_id → discord Thread id (one conversation thread per session)
-        self._session_threads: dict[str, int] = {}
+        # session_id → discord Thread id (one conversation thread per session).
+        # Bounded so a long-lived bot does not grow this map without limit; an
+        # evicted session simply re-opens its thread on the next prompt.
+        self._session_threads: BoundedDict = BoundedDict()
+
+    def _user_id_key(self) -> str:
+        return "discord_user_id"
 
     async def initialize(self) -> None:
         self._client = await DISCORD_CONNECTIONS.acquire(self._provider)
@@ -167,34 +172,6 @@ class DiscordChannelAdapter(ChannelAdapter):
         )
         self._session_threads[session_id] = thread.id
         return thread
-
-    async def _handle_decision(
-        self, *,
-        workspace_id: str, session_id: str, tool_call_id: str,
-        decision: str, reason: str | None,
-        discord_user_id: int | None,
-    ) -> None:
-        await self._inbox.handle_response(ResponseEnvelope(
-            kind="tool_approval",
-            workspace_id=workspace_id, session_id=session_id,
-            tool_call_id=tool_call_id,
-            response=None, decision=decision, reason=reason,
-            platform_metadata={"discord_user_id": discord_user_id or 0},
-        ))
-
-    async def _handle_text_reply(
-        self, *,
-        workspace_id: str, session_id: str, tool_call_id: str,
-        text: str,
-        discord_user_id: int | None,
-    ) -> None:
-        await self._inbox.handle_response(ResponseEnvelope(
-            kind="ask_user",
-            workspace_id=workspace_id, session_id=session_id,
-            tool_call_id=tool_call_id,
-            response=text, decision=None, reason=None,
-            platform_metadata={"discord_user_id": discord_user_id or 0},
-        ))
 
     async def _chat_thread_name(self, thread_ts: str) -> str:
         """Build a friendly thread name: "{agent label}: {first words}".
@@ -326,19 +303,13 @@ class DiscordChannelAdapter(ChannelAdapter):
         parts = await hydrate_media_dicts(self._artifacts, media)
         await self._send_media_parts(thread, parts)
 
-    async def _send_media_parts(self, target: Any, parts: list) -> int:
+    async def _send_media_part(self, target: Any, part: Any) -> None:
         import io
 
         import discord
-        sent = 0
-        for part in parts:
-            data = getattr(part, "data", None)
-            if not data:
-                continue
-            filename = getattr(part, "filename", None) or "file"
-            await target.send(file=discord.File(io.BytesIO(data), filename=filename))
-            sent += 1
-        return sent
+        data = getattr(part, "data", None)
+        filename = getattr(part, "filename", None) or "file"
+        await target.send(file=discord.File(io.BytesIO(data), filename=filename))
 
     async def post_chat_media(
         self, parts: list, *, thread_ts: str | None = None,
@@ -416,49 +387,6 @@ class DiscordChannelAdapter(ChannelAdapter):
         )
         thread_external_id = thread_id or message_id
         return await self._resolve_thread_chat(thread_external_id)
-
-    def _inbound_router(self):
-        """Build a ChannelInboundRouter, or None when chat-surface dispatch is
-        not configured (no storage provider)."""
-        if self._sp is None:
-            return None
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.correlation import CorrelationStore
-        from primer.channel.inbound_router import ChannelInboundRouter
-        gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
-        return ChannelInboundRouter(
-            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
-            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
-
-    def _event_router(self):
-        """Build a ChannelInboundRouter for the normalized-event path, or None
-        when chat-surface dispatch is not configured (no storage provider).
-
-        Mirrors :meth:`_inbound_router`; the caller routes a normalized
-        ``ChannelEvent`` through :meth:`ChannelInboundRouter.route_event`."""
-        if self._sp is None:
-            return None
-        from primer.channel.chat_inbox import ChatResponseInbox
-        from primer.channel.correlation import CorrelationStore
-        from primer.channel.inbound_router import ChannelInboundRouter
-        gate_inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
-        return ChannelInboundRouter(
-            self._sp, CorrelationStore(self._sp), event_bus=self._bus,
-            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
-
-    async def _resolve_thread_chat(self, thread_external_id: str):
-        """Look up the chat bound to (this channel, thread_external_id)."""
-        from primer.channel.chat_router import ChatChannelRouter
-        from primer.channel.correlation import CorrelationStore
-        router = ChatChannelRouter(
-            storage_provider=self._sp,
-            correlation_store=CorrelationStore(self._sp))
-        return await router._find_thread_chat(
-            channel_id=self._channel.id, thread_external_id=thread_external_id)
 
 
 __all__ = ["DiscordChannelAdapter"]

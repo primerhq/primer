@@ -208,8 +208,8 @@ async def test_handle_decision_publishes_to_inbox(monkeypatch):
     await adapter.initialize()
     try:
         await adapter._handle_decision(
-            ws="ws", sid="s", tcid="tc",
-            decision="approved", reason=None, slack_user_id="U1",
+            workspace_id="ws", session_id="s", tool_call_id="tc",
+            decision="approved", reason=None, user_id="U1",
         )
     finally:
         await adapter.aclose()
@@ -237,8 +237,8 @@ async def test_handle_text_reply_publishes_ask_user(monkeypatch):
     await adapter.initialize()
     try:
         await adapter._handle_text_reply(
-            ws="ws", sid="s", tcid="tc",
-            text="here is my answer", slack_user_id="U1",
+            workspace_id="ws", session_id="s", tool_call_id="tc",
+            text="here is my answer", user_id="U1",
         )
     finally:
         await adapter.aclose()
