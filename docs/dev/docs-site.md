@@ -50,11 +50,11 @@ or env change so the console links to the real site.
 
 3. **Create a deploy token and add it as a secret.** Create a Personal Access
    Token (classic or fine-grained) with write access to the
-   `<DOCS_ORG>/<DOCS_ORG>.github.io` repo. In the `primerhq/primer` repo, add it
+   `<DOCS_ORG>/<DOCS_ORG>.github.io` repo. In the `codemug/primer` repo, add it
    under Settings -> Secrets and variables -> Actions as the secret
    `DOCS_DEPLOY_TOKEN`.
 
-4. **Set the org repo variable.** In the `primerhq/primer` repo, under
+4. **Set the org repo variable.** In the `codemug/primer` repo, under
    Settings -> Secrets and variables -> Actions -> Variables, add a variable
    named `DOCS_ORG` set to the org name from step 1. The workflow uses it to
    target `${{ vars.DOCS_ORG }}/${{ vars.DOCS_ORG }}.github.io`.

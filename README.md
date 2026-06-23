@@ -12,11 +12,11 @@
 <br>
 
 [![License](https://img.shields.io/badge/license-Apache_2.0-61d46a.svg)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/primerhq/primer/ci.yml?branch=main&label=build)](https://github.com/primerhq/primer/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/primerhq/primer/branch/main/graph/badge.svg)](https://codecov.io/gh/primerhq/primer)
+[![CI](https://img.shields.io/github/actions/workflow/status/codemug/primer/ci.yml?branch=main&label=build)](https://github.com/codemug/primer/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/codemug/primer/branch/main/graph/badge.svg)](https://codecov.io/gh/codemug/primer)
 [![Python](https://img.shields.io/badge/python-3.13+-3776ab.svg)](https://www.python.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-61d46a.svg)](CONTRIBUTING.md)
-[![Stars](https://img.shields.io/github/stars/primerhq/primer?style=flat&color=61d46a)](https://github.com/primerhq/primer/stargazers)
+[![Stars](https://img.shields.io/github/stars/codemug/primer?style=flat&color=61d46a)](https://github.com/codemug/primer/stargazers)
 
 [Quickstart](#quickstart) · [Features](#what-you-can-build) · [How it works](#how-it-works) · [Docs](#documentation) · [Contributing](CONTRIBUTING.md)
 
@@ -141,13 +141,13 @@ primer api                                       # API + in-process worker
 **Docker** (no Python toolchain required):
 
 ```bash
-docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest
+docker run --rm -p 8000:8000 ghcr.io/codemug/primer:latest
 ```
 
 **From source** (for contributors):
 
 ```bash
-git clone https://github.com/primerhq/primer.git
+git clone https://github.com/codemug/primer.git
 cd primer
 uv sync
 uv run primer api
