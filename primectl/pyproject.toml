@@ -26,4 +26,4 @@ packages = ["primectl"]
 
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = ["pytest>=9.1.1", "pytest-asyncio>=0.23"]
