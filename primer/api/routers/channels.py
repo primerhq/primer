@@ -51,12 +51,60 @@ def _channel_registry(request: Request):
     return getattr(request.app.state, "channel_registry", None)
 
 
+def _owns_inbound(request: Request) -> bool:
+    """True when this process owns inbound channel gateways and may therefore
+    open one live.
+
+    Opening a chat adapter starts its inbound listener (Telegram long-poll /
+    Slack socket / Discord gateway). A worker-only process must NOT do that --
+    it would be a SECOND inbound connection competing with the API's (Telegram
+    409, duplicate Slack/Discord deliveries); worker-only processes relay
+    outbound over the bus instead. Mirrors the ``owns_inbound`` gate that
+    ``_app_lifespan`` uses for the startup ``warm_chat_channels`` call. When the
+    config is absent (minimal test apps) default to True so the re-warm path is
+    exercised under test."""
+    config = getattr(request.app.state, "config", None)
+    mode = getattr(config, "runtime_mode", None) if config is not None else None
+    if mode is None:
+        return True
+    from primer.model.scheduler import RuntimeMode
+
+    return mode in (RuntimeMode.API, RuntimeMode.API_PLUS_WORKER)
+
+
 async def _invalidate_channel(entity_id: str, request: Request) -> None:
     """Flush the warm adapter for the edited/deleted channel so it rebuilds
-    lazily with the new config."""
+    lazily with the new config.
+
+    Used as the DELETE hook: the row is going away, so we only close any warm
+    adapter (no re-warm). The UPDATE hook is :func:`_invalidate_and_rewarm_channel`,
+    which additionally brings a newly chat-enabled channel online live."""
     registry = _channel_registry(request)
     if registry is not None:
         await registry.invalidate(channel_id=entity_id)
+
+
+async def _invalidate_and_rewarm_channel(entity_id: str, request: Request) -> None:
+    """Channel UPDATE hook: flush the stale warm adapter, then -- if the
+    freshly-saved row now has ``config.chats.enabled`` -- re-warm its inbound
+    gateway live so enabling chats no longer needs a server restart.
+
+    A chat is user-initiated, so unlike a session channel there is no outbound
+    park to lazily warm it; ``warm_chat_channels`` (boot only) was previously
+    the sole trigger. Re-warming here closes that gap. Best-effort: the registry
+    helper logs and swallows build failures so the CRUD response never fails;
+    the re-warm is also gated to inbound-owning processes (:func:`_owns_inbound`)
+    so a worker-only process never opens a competing inbound connection."""
+    registry = _channel_registry(request)
+    if registry is None:
+        return
+    # Invalidate first so a config edit on an already-warm channel still drops
+    # the stale gateway (the 2fa4338f behaviour); the re-warm then rebuilds it
+    # fresh against the new config when chats are enabled.
+    await registry.invalidate(channel_id=entity_id)
+    if not _owns_inbound(request):
+        return
+    await registry.rewarm_if_chat_enabled(entity_id)
 
 
 async def _invalidate_provider_channels(entity_id: str, request: Request) -> None:
@@ -143,7 +191,7 @@ def make_channel_router() -> APIRouter:
         plural="channels",
         tag="channels",
         on_pre_create=_channel_on_pre_create,
-        on_update=_invalidate_channel,
+        on_update=_invalidate_and_rewarm_channel,
         on_delete=_invalidate_channel,
     )
 

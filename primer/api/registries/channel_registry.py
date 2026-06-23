@@ -192,6 +192,53 @@ class ChannelRegistry:
             offset += 200
         return started
 
+    async def rewarm_if_chat_enabled(self, channel_id: str) -> bool:
+        """Re-warm the inbound adapter for ``channel_id`` iff its persisted
+        ``config.chats.enabled`` is True. Returns True when an adapter was
+        (re)built, False otherwise.
+
+        Used by the channel UPDATE hook: a chat is user-initiated and has no
+        outbound park to lazily warm it, so flipping ``chats.enabled`` false ->
+        true on an existing channel would otherwise stay dark until the next
+        ``warm_chat_channels`` (boot only). After :meth:`invalidate` has dropped
+        any stale adapter, this brings the fresh gateway online live by reading
+        the post-write row and calling :meth:`get_adapter` (build +
+        ``initialize()``) when chats are enabled. Best-effort: a build failure
+        is logged, not raised, so it never fails the CRUD response. No-op (and
+        returns False) when no storage_provider is wired or chats are disabled.
+
+        Mirrors the per-channel enabled-check + ``get_adapter`` of
+        :meth:`warm_chat_channels` for a single row.
+        """
+        if self._storage_provider is None:
+            return False
+        try:
+            channel = await self._channels.get(channel_id)
+        except Exception as exc:
+            logger.warning(
+                "rewarm_if_chat_enabled: failed to read %s: %s",
+                channel_id, exc,
+            )
+            return False
+        if channel is None:
+            return False
+        cfg = getattr(channel, "config", None)
+        chats = getattr(cfg, "chats", None) if cfg is not None else None
+        if chats is None or not getattr(chats, "enabled", False):
+            return False
+        try:
+            # get_adapter is idempotent: if invalidate already cleared the
+            # stale entry this rebuilds fresh; if something re-warmed it
+            # first, the cached adapter is returned (no double-warm).
+            await self.get_adapter(channel_id)
+        except Exception as exc:
+            logger.warning(
+                "rewarm_if_chat_enabled: failed to start %s: %s",
+                channel_id, exc,
+            )
+            return False
+        return True
+
     async def invalidate(self, *, channel_id: str | None = None) -> None:
         async with self._lock:
             if channel_id is None:
