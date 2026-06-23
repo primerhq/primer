@@ -165,6 +165,122 @@ async def switch_chat_agent(
     return chat
 
 
+class ChatSendMessageBody(BaseModel):
+    """Body of ``POST /v1/chats/{id}/messages``.
+
+    Mirrors the WebSocket ``user_message`` frame so the two send paths
+    accept an identical shape. Supply ``content`` (text-only) and/or
+    ``parts`` (structured / multimodal); at least one must be non-empty.
+    """
+
+    content: str | None = Field(
+        default=None,
+        description="Plain user text. Folded in as a leading TextPart.",
+    )
+    parts: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Structured (multimodal) parts, each a discriminated Part dict "
+            "(``{\"type\": \"text\"|\"image\"|\"document\"|\"audio\"|"
+            "\"video\", ...}``). Validated through the same Part union the "
+            "WebSocket path applies."
+        ),
+    )
+
+
+@chats_router.post(
+    "/chats/{chat_id}/messages",
+    response_model=ChatMessage,
+    status_code=202,
+    summary="Append a user message to a chat and wake the worker",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def send_chat_message(
+    body: ChatSendMessageBody,
+    chat_id: str = Path(...),
+    request: Request = None,  # type: ignore[assignment]
+    sp=Depends(get_storage_provider),
+    engine=Depends(get_claim_engine),
+) -> ChatMessage:
+    """Operator/CLI message-send over REST (no streaming).
+
+    The only client-to-chat send path other than the WebSocket
+    ``/v1/chats/{id}/ws`` recv loop. This is a thin wrapper that mirrors
+    that loop's persist + wake tail exactly: validate the frame with the
+    shared :func:`_parse_user_message_parts`, append the row through the
+    canonical :func:`primer.chat.enqueue.append_user_message` helper
+    (preserving the append-only history invariants), then flip
+    ``turn_status='claimable'``, publish ``chat-claimable``, and upsert
+    the :class:`~primer.int.claim.ClaimKind.CHAT` lease so a worker picks
+    up the turn. The reply is NOT streamed; the caller reads it back via
+    ``GET /v1/chats/{id}/messages?after_seq=`` using the returned row's
+    ``seq`` as the cursor.
+
+    Status codes:
+
+    * ``202`` - message appended and the turn was made claimable; body is
+      the persisted user_message :class:`ChatMessage`.
+    * ``404`` - no such chat.
+    * ``409`` - the chat has ended, or a worker turn is already in flight
+      (``turn_status='running'``). Appending into a running turn would
+      race the runner and break the append-only history, so the operator
+      must wait for it to drain (mirrors :func:`compact_chat`).
+    * ``422`` - the frame carried neither a non-empty ``content`` string
+      nor a non-empty ``parts`` list, or a part failed schema validation.
+    """
+    from primer.chat.enqueue import append_user_message
+
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+    if chat.status == "ended":
+        raise ConflictError(f"Chat {chat_id!r} has ended")
+    if chat.turn_status == "running":
+        raise ConflictError(
+            f"Chat {chat_id!r} has a turn in flight; "
+            "wait for it to finish before sending another message."
+        )
+
+    # Validate + normalise the frame through the same helper the WS
+    # recv loop uses so both send paths apply identical part validation.
+    try:
+        user_parts = _parse_user_message_parts(body.model_dump())
+    except ValueError as exc:
+        from primer.model.except_ import ValidationError as _ValidationError
+
+        raise _ValidationError(str(exc)) from exc
+
+    # Persist the user_message row + bump chat.last_seq / title via the
+    # canonical service helper. Do NOT reinvent the append.
+    row = await append_user_message(
+        chat=chat,
+        parts=user_parts,
+        storage_provider=sp,
+    )
+
+    # Flip turn_status to claimable and wake workers - the exact tail of
+    # the WS recv loop. Re-fetch so we update the freshest row.
+    latest = await chats_storage.get(chat_id)
+    if latest is not None and latest.status == "active":
+        latest.turn_status = "claimable"
+        await chats_storage.update(latest)
+        event_bus = getattr(request.app.state, "event_bus", None)
+        if event_bus is not None:
+            try:
+                await event_bus.publish("chat-claimable", {"chat_id": chat_id})
+            except Exception:  # noqa: BLE001 - never break the REST response
+                logger.exception(
+                    "send_chat_message: failed to publish claimable for "
+                    "chat %s", chat_id,
+                )
+        if engine is not None:
+            from primer.int.claim import ClaimKind
+            await engine.upsert(ClaimKind.CHAT, chat_id, priority=10)
+
+    return row
+
+
 @chats_router.get(
     "/chats",
     summary="List chats (paginated)",
@@ -1058,6 +1174,7 @@ def _parse_user_message_parts(frame: dict[str, Any]) -> list:
 
 __all__ = [
     "ChatCreateBody",
+    "ChatSendMessageBody",
     "ChatSwitchAgentBody",
     "CompactResponse",
     "chats_router",
@@ -1067,5 +1184,6 @@ __all__ = [
     "get_chat",
     "list_chat_messages",
     "list_chats",
+    "send_chat_message",
     "switch_chat_agent",
 ]
