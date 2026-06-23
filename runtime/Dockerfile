@@ -18,7 +18,7 @@
 #   package needed at container runtime.  Keep it in sync with
 #   primer/workspace/runtime/protocol.py on the worker side.
 
-FROM python:3.13-slim
+FROM python:3.14-slim
 
 LABEL runtime.primer.protocol="1"
 LABEL runtime.primer.version="1.0.0"
