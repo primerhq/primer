@@ -360,7 +360,7 @@ async def test_api_sigterm_with_open_ws_clean_reconnect(
             frame = json.loads(raw)
             if frame.get("seq") is not None:
                 last_seq_seen = max(last_seq_seen, int(frame["seq"]))
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass  # No frames yet — that's fine, we just need the WS up.
 
         # ------------------------------------------------------------------
@@ -372,7 +372,7 @@ async def test_api_sigterm_with_open_ws_clean_reconnect(
         try:
             while True:
                 await asyncio.wait_for(ws0.recv(), timeout=5.0)
-        except (asyncio.TimeoutError, ConnectionClosed, Exception):
+        except (TimeoutError, ConnectionClosed, Exception):
             pass
 
     # Give API#0 a moment to fully die and the Postgres bus to notice.
@@ -394,7 +394,7 @@ async def test_api_sigterm_with_open_ws_clean_reconnect(
             try:
                 raw = await asyncio.wait_for(ws1.recv(), timeout=5.0)
                 _ = json.loads(raw)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass  # No response yet; connection is still considered healthy.
             reconnect_success = True
     except Exception as exc:  # noqa: BLE001

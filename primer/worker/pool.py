@@ -342,7 +342,7 @@ class WorkerPool:
                             self._wake.wait(),
                             timeout=self.config.poll_interval_seconds,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                     continue
                 try:
@@ -362,7 +362,7 @@ class WorkerPool:
                             self._wake.wait(),
                             timeout=self.config.poll_interval_seconds,
                         )
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                     continue
                 self._claims_total += len(leases)

@@ -60,7 +60,6 @@ def test_appconfig_subprocess_timeout_env_override(monkeypatch):
 
 def test_appconfig_subprocess_timeout_yaml_override(tmp_path, monkeypatch):
     """subprocess_timeout_seconds: in config.yaml overrides the default."""
-    import os
     from primer.api.config import AppConfig
 
     cfg_file = tmp_path / "config.toml"

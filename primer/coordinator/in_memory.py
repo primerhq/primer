@@ -89,7 +89,7 @@ class InMemoryRateLimiter(RateLimiter):
         sem = await self._get_semaphore(key, max_concurrency)
         try:
             await asyncio.wait_for(sem.acquire(), timeout=timeout_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             return None
         return _InMemoryRateLimiterLease(sem)
 

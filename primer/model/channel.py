@@ -125,11 +125,7 @@ class DiscordChannelProviderConfig(BaseModel):
 
 
 ChannelProviderConfig = Annotated[
-    Union[
-        SlackChannelProviderConfig,
-        TelegramChannelProviderConfig,
-        DiscordChannelProviderConfig,
-    ],
+    SlackChannelProviderConfig | TelegramChannelProviderConfig | DiscordChannelProviderConfig,
     Field(description="Platform-specific config; must match parent provider."),
 ]
 

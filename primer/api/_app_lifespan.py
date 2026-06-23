@@ -1109,7 +1109,7 @@ def _make_lifespan(config: AppConfig):
                     await asyncio.wait_for(
                         workspace_probe_runner, timeout=2.0,
                     )
-                except (asyncio.TimeoutError, asyncio.CancelledError):
+                except (TimeoutError, asyncio.CancelledError):
                     pass
             except Exception:
                 logger.exception("workspace_probe stop failed")

@@ -105,7 +105,7 @@ async def _send_user_message(
         for _ in range(drain):
             try:
                 await asyncio.wait_for(ws.recv(), timeout=5.0)
-            except (asyncio.TimeoutError, Exception):  # noqa: BLE001
+            except (TimeoutError, Exception):  # noqa: BLE001
                 break
 
 

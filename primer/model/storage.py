@@ -194,7 +194,7 @@ class Predicate(BaseModel):
 
 
 Operand = Annotated[
-    Union[Predicate, FieldRef, Value],
+    Predicate | FieldRef | Value,
     Field(discriminator="kind"),
 ]
 """Type alias: an operand on either side of a :class:`Predicate`.
@@ -289,7 +289,7 @@ class CursorPage(BaseModel):
 
 
 PageRequest = Annotated[
-    Union[OffsetPage, CursorPage],
+    OffsetPage | CursorPage,
     Field(discriminator="kind"),
 ]
 """Type alias: a pagination request, either offset-based or cursor-based.

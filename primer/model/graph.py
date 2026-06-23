@@ -510,15 +510,7 @@ class _ToolCallNode(BaseModel):
 
 
 GraphNode = Annotated[
-    Union[
-        _AgentNodeRef,
-        _GraphNodeRef,
-        _BeginNode,
-        _EndNode,
-        _FanOutNode,
-        _FanInNode,
-        _ToolCallNode,
-    ],
+    _AgentNodeRef | _GraphNodeRef | _BeginNode | _EndNode | _FanOutNode | _FanInNode | _ToolCallNode,
     Field(discriminator="kind"),
 ]
 
@@ -623,7 +615,7 @@ class _CallableRouter(BaseModel):
 
 
 GraphRouter = Annotated[
-    Union[_JsonPathRouter, _CallableRouter],
+    _JsonPathRouter | _CallableRouter,
     Field(discriminator="kind"),
 ]
 
@@ -659,7 +651,7 @@ class _ConditionalEdge(BaseModel):
 
 
 GraphEdge = Annotated[
-    Union[_StaticEdge, _ConditionalEdge],
+    _StaticEdge | _ConditionalEdge,
     Field(discriminator="kind"),
 ]
 

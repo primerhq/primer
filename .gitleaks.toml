@@ -1,0 +1,45 @@
+# Gitleaks configuration for primer.
+#
+# Extends the upstream default ruleset (so we keep all the built-in secret
+# detectors) and adds a focused allowlist for the known, non-secret
+# placeholders that live in tests, examples, and UI form fields. Without
+# these entries gitleaks false-positives on test fixtures and blocks CI.
+#
+# Run locally:  gitleaks detect --config .gitleaks.toml --no-banner
+# Used by:      .github/workflows/ci.yml (secret-scan job) and the
+#               pre-commit gitleaks hook.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known test/example placeholders that are not real secrets"
+
+# Paths whose contents are fixtures, examples, or generated artifacts.
+paths = [
+    '''tests/.*''',
+    '''config\.example\.yaml''',
+    '''tests/testconfig\.example\.yaml''',
+    '''docker-compose\.yml''',
+    # UI source carries placeholder strings in form-field `placeholder=`
+    # attributes (e.g. a sample private-key header), never real material.
+    '''ui/.*\.jsx''',
+    # The vendored frontend libraries are third-party generated bundles.
+    '''ui/vendor/.*''',
+]
+
+# Literal placeholder values that may appear outside the allowlisted paths.
+regexes = [
+    # Slack bot/app token placeholders used across the channel tests and the
+    # example config (e.g. xoxb-1234567890-abc, xapp-test-token, xoxb-test).
+    '''xoxb-(test|[0-9]+-[a-z]+|t|v1|abc)''',
+    '''xapp-(test|test-token|[0-9]+-[A-Z0-9-]+-[0-9]+-[a-z]+|t|v1|abc|1-test)''',
+    # Local Postgres dev default documented in config.example.yaml.
+    '''password:\s*primer''',
+    # PEM header used as a UI form-field placeholder, not a real key.
+    '''-----BEGIN PRIVATE KEY-----''',
+]
+
+# Commits known to contain only placeholder material can be added here if a
+# historical scan ever flags them; left empty for now.
+commits = []

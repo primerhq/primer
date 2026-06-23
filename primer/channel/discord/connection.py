@@ -45,7 +45,7 @@ async def _start_client_as_task(
     # Wait for the gateway to reach READY (or timeout).
     try:
         await asyncio.wait_for(client.wait_until_ready(), timeout=ready_wait)
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         task.cancel()
         raise RuntimeError("discord gateway ready timeout") from exc
     return task
@@ -76,7 +76,7 @@ class _DiscordConnectionRegistry:
                     task = await _start_client_as_task(
                         client, cfg.bot_token.get_secret_value(),
                     )
-                except Exception as exc:
+                except Exception:
                     logger.exception(
                         "discord: failed to start client for %s", provider.id,
                     )

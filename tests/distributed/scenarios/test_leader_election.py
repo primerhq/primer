@@ -244,7 +244,7 @@ async def test_only_one_holder_at_a_time(
     # Final assertions
     # ------------------------------------------------------------------
     assert not violations, (
-        f"Double-hold detected during test:\n" + "\n".join(violations)
+        "Double-hold detected during test:\n" + "\n".join(violations)
     )
     assert new_holder is not None, (
         "Failover succeeded (wait_for passed) but new_holder was not set"

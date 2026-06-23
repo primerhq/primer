@@ -171,7 +171,7 @@ async def test_watch_cancel_closes_subscription(server: ServerFixture) -> None:
             assert extra.get("event") != "change", (
                 f"Unexpected change event after cancel: {extra}"
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass  # Expected: no more events
 
 

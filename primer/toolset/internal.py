@@ -42,7 +42,7 @@ logger = logging.getLogger(__name__)
 #     ToolCallResult OR Yielded.
 # The provider supports both; introspection on the handler's signature
 # picks the right call shape at dispatch time.
-ToolHandler = Callable[..., Awaitable[Union[ToolCallResult, Yielded]]]
+ToolHandler = Callable[..., Awaitable[ToolCallResult | Yielded]]
 """Async function that executes one tool call.
 
 Receives the parsed argument dict and (optionally) a

@@ -74,7 +74,7 @@ class WorkspaceProbeTask:
                 await asyncio.wait_for(
                     self._stop_event.wait(), timeout=self._interval
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
 
     def stop(self) -> None:

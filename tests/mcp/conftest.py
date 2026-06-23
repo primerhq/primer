@@ -12,7 +12,8 @@ would shadow the third-party ``mcp`` SDK package on the import path.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import pytest
 

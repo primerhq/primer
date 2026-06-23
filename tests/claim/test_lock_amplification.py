@@ -274,6 +274,6 @@ async def test_concurrent_workers_no_double_claim(
         )
 
     assert not stuck, (
-        f"Permanently stuck leases found (claimed but not released): "
+        "Permanently stuck leases found (claimed but not released): "
         + ", ".join(f"{r['kind']}:{r['entity_id']} → {r['claimed_by']}" for r in stuck)
     )

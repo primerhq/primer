@@ -110,7 +110,7 @@ class _SecretSource(BaseModel):
 
 
 FileSource = Annotated[
-    Union[_InlineSource, _UrlSource, _DocumentSource, _SecretSource],
+    _InlineSource | _UrlSource | _DocumentSource | _SecretSource,
     Field(discriminator="kind"),
 ]
 """Type alias: where a :class:`FileMount`'s content comes from.
@@ -413,11 +413,7 @@ class KubernetesTemplateConfig(BaseModel):
 
 
 WorkspaceTemplateBackendConfig = Annotated[
-    Union[
-        LocalTemplateConfig,
-        ContainerTemplateConfig,
-        KubernetesTemplateConfig,
-    ],
+    LocalTemplateConfig | ContainerTemplateConfig | KubernetesTemplateConfig,
     Field(discriminator="kind"),
 ]
 
@@ -726,7 +722,7 @@ class ContainerdRuntimeConfig(BaseModel):
 
 
 ContainerRuntimeConfig = Annotated[
-    Union[DockerRuntimeConfig, PodmanRuntimeConfig, ContainerdRuntimeConfig],
+    DockerRuntimeConfig | PodmanRuntimeConfig | ContainerdRuntimeConfig,
     Field(discriminator="kind"),
 ]
 
@@ -745,7 +741,7 @@ class ContainerConnectionRemote(BaseModel):
 
 
 ContainerConnectionConfig = Annotated[
-    Union[ContainerConnectionSocket, ContainerConnectionRemote],
+    ContainerConnectionSocket | ContainerConnectionRemote,
     Field(discriminator="kind"),
 ]
 
@@ -770,7 +766,7 @@ class ContainerReachabilityBridge(BaseModel):
 
 
 ContainerReachabilityConfig = Annotated[
-    Union[ContainerReachabilityHostPort, ContainerReachabilityBridge],
+    ContainerReachabilityHostPort | ContainerReachabilityBridge,
     Field(discriminator="kind"),
 ]
 
@@ -838,7 +834,7 @@ class K8sConnectionServiceAccountToken(BaseModel):
 
 
 K8sConnectionConfig = Annotated[
-    Union[K8sConnectionInCluster, K8sConnectionKubeconfig, K8sConnectionServiceAccountToken],
+    K8sConnectionInCluster | K8sConnectionKubeconfig | K8sConnectionServiceAccountToken,
     Field(discriminator="kind"),
 ]
 
@@ -913,7 +909,7 @@ class K8sGatewayRoutingPath(BaseModel):
 
 
 K8sGatewayRouting = Annotated[
-    Union[K8sGatewayRoutingHostname, K8sGatewayRoutingPath],
+    K8sGatewayRoutingHostname | K8sGatewayRoutingPath,
     Field(discriminator="kind"),
 ]
 
@@ -946,7 +942,7 @@ class K8sReachabilityGateway(BaseModel):
 
 
 K8sReachabilityConfig = Annotated[
-    Union[K8sReachabilityInCluster, K8sReachabilityIngress, K8sReachabilityGateway],
+    K8sReachabilityInCluster | K8sReachabilityIngress | K8sReachabilityGateway,
     Field(discriminator="kind"),
 ]
 
@@ -992,11 +988,7 @@ class KubernetesWorkspaceConfig(BaseModel):
 
 
 WorkspaceProviderConfig = Annotated[
-    Union[
-        LocalWorkspaceConfig,
-        ContainerWorkspaceConfig,
-        KubernetesWorkspaceConfig,
-    ],
+    LocalWorkspaceConfig | ContainerWorkspaceConfig | KubernetesWorkspaceConfig,
     Field(discriminator="kind"),
 ]
 

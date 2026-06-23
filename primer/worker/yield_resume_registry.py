@@ -42,8 +42,8 @@ from primer.model.yield_ import YieldCancelled, YieldTimeout
 #     YieldCancelled instance.
 # Returns the ToolCallResult the LLM will see as the tool's response.
 ResumeHook = Callable[
-    [dict[str, Any], Union[dict[str, Any], YieldTimeout, YieldCancelled]],
-    Union[ToolCallResult, Awaitable[ToolCallResult]],
+    [dict[str, Any], dict[str, Any] | YieldTimeout | YieldCancelled],
+    ToolCallResult | Awaitable[ToolCallResult],
 ]
 
 

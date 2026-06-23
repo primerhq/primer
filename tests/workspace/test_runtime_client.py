@@ -265,7 +265,7 @@ class _FakeRuntime:
         while not ws.closed:
             try:
                 item = await asyncio.wait_for(q.get(), timeout=0.1)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             if item is None:
                 break

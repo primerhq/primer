@@ -181,7 +181,6 @@ def test_telegram_poll_timeout_bounds():
 def test_discord_config_requires_long_token():
     import pytest
     from pydantic import SecretStr, ValidationError
-    from primer.model.channel import DiscordChannelProviderConfig
     with pytest.raises(ValidationError):
         DiscordChannelProviderConfig(bot_token=SecretStr("tiny"))
     cfg = DiscordChannelProviderConfig(
@@ -192,7 +191,6 @@ def test_discord_config_requires_long_token():
 
 def test_discord_config_enable_dms_toggles():
     from pydantic import SecretStr
-    from primer.model.channel import DiscordChannelProviderConfig
     cfg = DiscordChannelProviderConfig(
         bot_token=SecretStr("a" * 60), enable_dms=False,
     )

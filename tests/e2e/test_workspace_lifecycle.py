@@ -10368,7 +10368,7 @@ async def test_t0730_workspaces_cursor_walk_visits_each_exactly_once(
             if cursor is None:
                 break
         else:
-            pytest.fail(f"cursor walk did not terminate within 40 pages")
+            pytest.fail("cursor walk did not terminate within 40 pages")
 
         # Each seeded id appears exactly once (set semantics — and
         # the cursor invariant from T0044 says no id should repeat).

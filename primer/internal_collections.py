@@ -260,7 +260,7 @@ class InternalCollectionsSubsystem:
                 pass
             try:
                 await asyncio.wait_for(self._worker_task, timeout=5)
-            except asyncio.TimeoutError:  # pragma: no cover
+            except TimeoutError:  # pragma: no cover
                 self._worker_task.cancel()
         self._worker_task = None
 

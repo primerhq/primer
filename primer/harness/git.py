@@ -85,7 +85,7 @@ async def _run(args: list[str], **kwargs) -> tuple[int, str, str]:
                 proc.communicate(),
                 timeout=_GIT_TIMEOUT_SECONDS,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             proc.kill()
             await proc.communicate()
             raise HarnessGitError("subprocess_error", "git command timed out") from exc
@@ -261,7 +261,7 @@ async def fetch_harness_metadata(
             stdout_b, stderr_b = await asyncio.wait_for(
                 proc.communicate(), timeout=_GIT_TIMEOUT_SECONDS,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             raise HarnessGitError(
                 "subprocess_error", "git rev-parse timed out",
             ) from exc
@@ -297,7 +297,7 @@ async def _get_head_sha(clone_dir: str) -> str:
         stdout_b, _ = await asyncio.wait_for(
             proc.communicate(), timeout=_GIT_TIMEOUT_SECONDS,
         )
-    except (asyncio.TimeoutError, FileNotFoundError):
+    except (TimeoutError, FileNotFoundError):
         return ""
     if proc.returncode != 0:
         return ""

@@ -24,7 +24,8 @@ write so the entity + body are durable before any embedding work begins.
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Protocol
+from typing import Any, Protocol
+from collections.abc import Awaitable, Callable
 
 from pydantic import BaseModel
 

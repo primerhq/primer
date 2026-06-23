@@ -39,7 +39,7 @@ def _lmstudio_reachable(host: str = "localhost", port: int = 1234) -> bool:
     try:
         sock.connect((host, port))
         return True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
     finally:
         sock.close()

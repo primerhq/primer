@@ -7,7 +7,7 @@ limit on ``custom_id`` is plenty for short primer IDs.
 
 from __future__ import annotations
 
-from typing import Callable, Coroutine, Awaitable
+from collections.abc import Callable, Coroutine, Awaitable
 
 import discord
 from discord import ButtonStyle, ui

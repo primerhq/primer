@@ -54,7 +54,7 @@ def _lmstudio_port_open(
     try:
         sock.connect((host, port))
         return True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
     finally:
         sock.close()

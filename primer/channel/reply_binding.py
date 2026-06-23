@@ -73,10 +73,7 @@ class _ExplicitReplyTarget(BaseModel):
 
 
 ReplyTarget = Annotated[
-    Union[
-        Literal["source_thread", "source_room", "dm_sender", "none"],
-        _ExplicitReplyTarget,
-    ],
+    Literal["source_thread", "source_room", "dm_sender", "none"] | _ExplicitReplyTarget,
     Field(
         description=(
             "Where an action's outbound reply goes. One of the relative "

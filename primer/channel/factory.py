@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from primer.channel.adapter import ChannelAdapter
 from primer.model.channel import (

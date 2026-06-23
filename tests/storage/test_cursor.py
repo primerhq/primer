@@ -25,7 +25,7 @@ class _Sample(Identifiable):
 class _SampleNullable(Identifiable):
     name: str
     count: int
-    maybe: Optional[str] = None
+    maybe: str | None = None
 
 
 def test_encode_decode_roundtrip_with_no_orderby():

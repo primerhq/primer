@@ -15,7 +15,7 @@ from primer.storage.sqlite import SqliteStorageProvider
 class _Doc(Identifiable):
     title: str
     count: int = 0
-    note: Optional[str] = None
+    note: str | None = None
     secret: SecretStr | None = None
     tags: list[str] | None = None
 

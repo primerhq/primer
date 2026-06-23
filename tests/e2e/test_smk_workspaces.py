@@ -456,8 +456,8 @@ async def test_container_backend_graph_session(authed_client, mock_llm, unique_s
         assert diag.status_code in (200, 201), diag.text
         assert diag.json()["exit_code"] == 0, diag.json()
         assert diag.json()["stdout"].strip(), (
-            f"no graph state dirs found in pod .state/graphs after graph session "
-            f"(stdout empty)"
+            "no graph state dirs found in pod .state/graphs after graph session "
+            "(stdout empty)"
         )
         assert sid in diag.json()["stdout"], (
             f"session state dir {sid!r} missing from pod .state/graphs: "

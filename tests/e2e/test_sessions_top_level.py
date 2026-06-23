@@ -344,7 +344,7 @@ async def test_t0040_top_level_sessions_filter_by_workspace_id(
         for item in items:
             assert item["workspace_id"] == wid_a, item
     finally:
-        for wid, sid in ((wid_a, locals().get("sid_a")), (wid_b, locals().get("sid_b"))):
+        for wid, _sid in ((wid_a, locals().get("sid_a")), (wid_b, locals().get("sid_b"))):
             if wid is not None:
                 await client.delete(f"/v1/workspaces/{wid}")
         await _teardown_setup(client, env)
@@ -625,7 +625,7 @@ async def test_t0120_top_level_sessions_three_way_filter_intersects(
             assert sid_other not in ids, sid_other
     finally:
         # Cancel + delete sessions
-        for wid, sids in (
+        for wid, _sids in (
             (workspace_a, ["sid_AA", "sid_AB"]),
             (workspace_b, ["sid_BA", "sid_BB"]),
         ):

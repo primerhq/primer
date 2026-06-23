@@ -272,7 +272,7 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
                 proc.communicate(),
                 timeout=self._subprocess_timeout_seconds,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             # Kill the entire process group so child processes spawned by
             # the shell (e.g. a "sleep" inside "apt-get install") don't
             # keep the pipes open and cause proc.wait() to hang.
@@ -282,7 +282,7 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
                 pass
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
             raise SubprocessTimeoutError(
                 f"init_command timed out after "

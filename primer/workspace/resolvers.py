@@ -10,7 +10,8 @@ per materialisation and passes the results down via ``FileResolvers``.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
 
 from primer.knowledge.indexing import document_body_text
 from primer.model.collection import Document

@@ -622,7 +622,7 @@ class RuntimeClient:
                 try:
                     await asyncio.wait_for(ws.ping(), timeout=self._HEARTBEAT_INTERVAL_S)
                     missed = 0
-                except (asyncio.TimeoutError, ConnectionError, aiohttp.ClientError):
+                except (TimeoutError, ConnectionError, aiohttp.ClientError):
                     missed += 1
                     logger.warning(
                         "Heartbeat ping failed (%d/%d)",
@@ -808,7 +808,7 @@ class RuntimeClient:
                 break
             try:
                 item = await asyncio.wait_for(q.get(), timeout=0.1)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 continue
             if item is _STREAM_CLOSED:
                 break

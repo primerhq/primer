@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import time
 from contextvars import ContextVar
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 from mcp.server.lowlevel import Server
 from mcp.shared.exceptions import McpError

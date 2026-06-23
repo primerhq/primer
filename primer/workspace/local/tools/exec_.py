@@ -150,7 +150,7 @@ class Exec(WorkspaceTool):
                 proc.communicate(),
                 timeout=args.timeout_ms / 1000.0,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             try:
                 proc.kill()
             except ProcessLookupError:

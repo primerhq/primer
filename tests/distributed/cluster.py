@@ -23,7 +23,8 @@ import sys
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 from urllib.parse import urlparse
 
 import httpx
@@ -280,7 +281,7 @@ class TestCluster:
                         ),
                         timeout=remaining,
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass
 
         # SIGKILL stragglers.

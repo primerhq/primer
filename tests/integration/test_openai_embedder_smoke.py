@@ -45,7 +45,7 @@ def _lmstudio_reachable(
     try:
         sock.connect((host, port))
         return True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
     finally:
         sock.close()

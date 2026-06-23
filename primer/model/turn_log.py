@@ -96,16 +96,7 @@ class TurnLogSuperstepEnded(_TurnLogBase):
 
 
 TurnLogEvent = Annotated[
-    Union[
-        TurnLogStarted,
-        TurnLogCompleted,
-        TurnLogFailed,
-        TurnLogYielded,
-        TurnLogResumed,
-        TurnLogCancelled,
-        TurnLogSuperstepStarted,
-        TurnLogSuperstepEnded,
-    ],
+    TurnLogStarted | TurnLogCompleted | TurnLogFailed | TurnLogYielded | TurnLogResumed | TurnLogCancelled | TurnLogSuperstepStarted | TurnLogSuperstepEnded,
     Field(discriminator="kind"),
 ]
 

@@ -277,9 +277,9 @@ def test_u0004_graph_bound_session_ended_status_polls_without_refresh(
                 break
             page.wait_for_timeout(500)
         assert terminal_seen, (
-            f"graph-bound session detail never reflected a terminal "
-            f"status within 15s - polling stalled or status caption "
-            f"regression"
+            "graph-bound session detail never reflected a terminal "
+            "status within 15s - polling stalled or status caption "
+            "regression"
         )
     finally:
         cleanup = []

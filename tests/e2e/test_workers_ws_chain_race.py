@@ -460,9 +460,9 @@ async def test_t0812_park_resume_worker_claim_chain(
             if final_status != "parked":
                 break
         assert final_status != "parked", (
-            f"worker pool never claimed+released the resumable row; "
-            f"parked_status remained 'parked' after 25s -- "
-            f"the leases row may not have been found by the claim query"
+            "worker pool never claimed+released the resumable row; "
+            "parked_status remained 'parked' after 25s -- "
+            "the leases row may not have been found by the claim query"
         )
     finally:
         await _cleanup(client, cleanup_urls)

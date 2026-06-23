@@ -78,7 +78,7 @@ class LlmApprovalConfig(BaseModel):
 
 
 ApprovalConfig = Annotated[
-    Union[RequiredApprovalConfig, PolicyApprovalConfig, LlmApprovalConfig],
+    RequiredApprovalConfig | PolicyApprovalConfig | LlmApprovalConfig,
     Field(discriminator="type"),
 ]
 

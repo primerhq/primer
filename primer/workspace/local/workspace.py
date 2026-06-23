@@ -500,7 +500,7 @@ class LocalWorkspace(Workspace):
             )
             exit_code = proc.returncode if proc.returncode is not None else -1
             duration = time.perf_counter() - start
-        except asyncio.TimeoutError:
+        except TimeoutError:
             # Capture the timeout boundary BEFORE we wait on the kill —
             # the duration field reports the deadline, not the cleanup.
             duration = time.perf_counter() - start

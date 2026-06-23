@@ -2619,8 +2619,8 @@ async def test_t0299_search_concurrent_with_agent_update_clean(
             await asyncio.sleep(0.5)
         else:
             pytest.fail(
-                f"agent not re-indexed with updated marker after "
-                f"concurrent PUT+search load"
+                "agent not re-indexed with updated marker after "
+                "concurrent PUT+search load"
             )
     finally:
         if agent_created:

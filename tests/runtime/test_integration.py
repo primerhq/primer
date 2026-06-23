@@ -31,7 +31,7 @@ import time
 import warnings
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -363,7 +363,7 @@ async def test_watch_latency(tmp_path: Path) -> None:
                 log.info("watch latency: %.2f ms (target <100 ms)", latency_ms)
                 print(f"\n[test_watch_latency] event latency={latency_ms:.2f}ms")
                 _assert_latency("watch_event", latency_ms, target_ms=100.0)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pytest.fail("Watch change event did not arrive within 5 s")
             finally:
                 watch_task.cancel()

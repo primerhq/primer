@@ -1061,7 +1061,6 @@ async def test_claim_engine_upsert_on_create(
         assert resp.status_code == 201, resp.text
         sid = resp.json()["id"]
 
-    from primer.int.claim import ClaimKind
     assert (ClaimKind.SESSION, sid) in engine.upserted, (
         f"Expected engine.upsert(SESSION, {sid!r}) but got: {engine.upserted!r}"
     )
@@ -1334,7 +1333,7 @@ async def test_find_sessions_cursor_pagination_covers_all_once(
     2+2+1). Verifies complete coverage with no duplicates.
     """
     seeded_ids: list[str] = []
-    for i in range(5):
+    for _i in range(5):
         r = await sessions_client.post(
             f"/v1/workspaces/{seeded_workspace.id}/sessions",
             json={"binding": {"kind": "graph", "graph_id": seeded_graph.id}},

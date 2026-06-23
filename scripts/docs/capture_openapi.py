@@ -3,7 +3,9 @@
 Run against a live server:
   PRIMER_BASE=http://127.0.0.1:8000 uv run python scripts/docs/capture_openapi.py
 """
-import json, os, urllib.request
+import json
+import os
+import urllib.request
 
 base = os.environ.get("PRIMER_BASE", "http://127.0.0.1:8000")
 out = "tests/_docs_fixtures/openapi.json"

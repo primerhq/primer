@@ -125,7 +125,7 @@ class ExaConfig(BaseModel):
 
 
 WebSearchProviderConfig = Annotated[
-    Union[DuckDuckGoConfig, TavilyConfig, FirecrawlConfig, ExaConfig],
+    DuckDuckGoConfig | TavilyConfig | FirecrawlConfig | ExaConfig,
     Field(discriminator="type"),
 ]
 
@@ -210,7 +210,7 @@ class AggregatedProviderConfig(BaseModel):
 
 
 ActiveProviderConfig = Annotated[
-    Union[SingleProviderConfig, AggregatedProviderConfig],
+    SingleProviderConfig | AggregatedProviderConfig,
     Field(discriminator="mode"),
 ]
 

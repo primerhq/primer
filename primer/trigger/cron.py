@@ -5,7 +5,7 @@ Spec §4.2, §8. Pure functions; all I/O-free.
 
 from __future__ import annotations
 from datetime import datetime, timezone
-from typing import Iterator
+from collections.abc import Iterator
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter

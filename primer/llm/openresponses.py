@@ -981,7 +981,7 @@ class OpenResponsesLLM(LLM):
                                     tokens_in = event.input_tokens
                                     tokens_out = event.output_tokens
                                 yield event
-                    except asyncio.TimeoutError as exc:
+                    except TimeoutError as exc:
                         from primer.model.except_ import ProviderTimeoutError
                         timeout_val = self._request_timeout_seconds
                         logger.error(

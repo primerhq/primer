@@ -68,7 +68,7 @@ class _AppHandle:
 @asynccontextmanager
 async def _boot_app(
     *, auto_bootstrap: bool, db_path: Path
-) -> AsyncGenerator[_AppHandle, None]:
+) -> AsyncGenerator[_AppHandle]:
     """Context manager: boot the real app lifespan + an httpx client.
 
     Tears down cleanly on exit regardless of test outcome.

@@ -53,7 +53,7 @@ def _get_gauge_value(gauge, *label_values):
         if s.name.endswith("_total") is False and not s.name.endswith("_created")
     }
     label_dict = dict(zip([ln for ln in gauge._labelnames], label_values))
-    for (lbl_items, name), value in samples.items():
+    for (lbl_items, _name), value in samples.items():
         if dict(lbl_items) == label_dict:
             return value
     return 0.0
@@ -153,7 +153,7 @@ async def test_chat_send_loop_increments_frame_counter():
             _send_loop_instrumented(ws, "chat-x", FakeStorage(), fake_tick_sub(), 0, kind="chat"),
             timeout=2.0,
         )
-    except (StopAsyncIteration, asyncio.TimeoutError):
+    except (TimeoutError, StopAsyncIteration):
         pass
 
     assert _get_counter_value(m.ws_frames_sent_total, "chat") == 2.0

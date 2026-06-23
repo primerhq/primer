@@ -351,7 +351,7 @@ def test_tiered_help_desk_cli(base_url, mock_llm, unique_suffix, tmp_path):
             after = _messages(pc, chat_id)
             joined = json.dumps(after)
             assert _REFUND_PATH in joined, "switch dropped the prior KB history"
-            assert any("900 dollar charge" in str((it.get("payload") or {}))
+            assert any("900 dollar charge" in str(it.get("payload") or {})
                        for it in after), "switch dropped the original request"
 
             # === 4. The specialist's refund tripped the approval gate ===

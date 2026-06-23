@@ -451,7 +451,6 @@ class OllamaLLM(LLM):
         messages: list[Message],
         tools: list[Tool] | None = None,
     ) -> int:
-        import asyncio
         return await asyncio.to_thread(
             count_tokens_hf, model=model, messages=messages, tools=tools,
         )
@@ -577,7 +576,7 @@ class OllamaLLM(LLM):
                                     tokens_in = ev.input_tokens
                                     tokens_out = ev.output_tokens
                                 yield ev
-                    except asyncio.TimeoutError as exc:
+                    except TimeoutError as exc:
                         from primer.model.except_ import ProviderTimeoutError
                         timeout_val = self._request_timeout_seconds
                         logger.error(

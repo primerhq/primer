@@ -31,7 +31,8 @@ the safe identifier pattern ``^[A-Za-z_][A-Za-z0-9_]*$``.
 from __future__ import annotations
 
 import re
-from typing import Any, Sequence
+from typing import Any
+from collections.abc import Sequence
 
 from pydantic import BaseModel
 

@@ -35,7 +35,8 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+from collections.abc import Callable
 
 import httpx
 import pytest

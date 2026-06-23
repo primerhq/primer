@@ -30,7 +30,7 @@ def _ollama_reachable(host: str = "localhost", port: int = 11434) -> bool:
     try:
         sock.connect((host, port))
         return True
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
     finally:
         sock.close()

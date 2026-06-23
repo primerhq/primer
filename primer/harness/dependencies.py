@@ -10,7 +10,8 @@ git I/O. The fetcher signature is:
 
 from __future__ import annotations
 
-from typing import Awaitable, Callable, NamedTuple
+from typing import NamedTuple
+from collections.abc import Awaitable, Callable
 
 from primer.model.harness import ResolvedDependency
 

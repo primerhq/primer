@@ -25,7 +25,7 @@ def compute_tag(
     Still used for the Approve/Reject button ``callback_data`` (invisible
     to the user, <= 64 bytes per Telegram's limit).
     """
-    raw = f"{workspace_id}|{session_id}|{tool_call_id}".encode("utf-8")
+    raw = f"{workspace_id}|{session_id}|{tool_call_id}".encode()
     digest = hashlib.sha256(raw).digest()[:12]
     return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
 

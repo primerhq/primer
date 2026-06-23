@@ -262,7 +262,7 @@ def test_app_builder_cli(base_url, mock_llm, unique_suffix, tmp_path):
             if hits:
                 break
             time.sleep(1.0)
-        assert hits, f"the doc the agent seeded via put_document is not searchable"
+        assert hits, "the doc the agent seeded via put_document is not searchable"
 
         # --- (3) The assembled app RUNS. Wire the graph_fresh_session
         # subscription (call trigger subscriptions) and fire it once. -------

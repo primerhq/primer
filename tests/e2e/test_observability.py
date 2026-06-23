@@ -448,8 +448,8 @@ async def test_t0355_log_extra_fields_promoted_to_top_level(
     # Soft assert: at least one record had top-level extras
     if not found_with_extras:
         print(
-            f"[T0355] no records with top-level extras observed; the "
-            f"no-nested-`extra` invariant is still pinned"
+            "[T0355] no records with top-level extras observed; the "
+            "no-nested-`extra` invariant is still pinned"
         )
 
 

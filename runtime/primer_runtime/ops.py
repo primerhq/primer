@@ -122,7 +122,7 @@ async def _run_git(state_dir: str, *args: str, allow_empty_repo: bool = False) -
             proc.communicate(),
             timeout=timeout,
         )
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:
@@ -323,7 +323,7 @@ async def list_dir(args: dict, workspace_root: str) -> dict:
     def _list() -> list[dict]:
         try:
             entries_raw = list(os.scandir(resolved))
-        except NotADirectoryError as exc:
+        except NotADirectoryError:
             raise OpError(ErrorCode.ENOTDIR, f"Not a directory: {raw_path!r}")
         except FileNotFoundError:
             raise OpError(ErrorCode.ENOENT, f"No such file or directory: {raw_path!r}")
@@ -415,7 +415,7 @@ async def _ensure_state_repo(state_dir: str) -> None:
     )
     try:
         _, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         try:
             proc.kill()
         except ProcessLookupError:
@@ -443,7 +443,7 @@ async def _ensure_state_repo(state_dir: str) -> None:
         )
         try:
             await asyncio.wait_for(proc2.communicate(), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             try:
                 proc2.kill()
             except ProcessLookupError:

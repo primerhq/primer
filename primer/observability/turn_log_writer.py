@@ -28,7 +28,8 @@ import json
 import logging
 import traceback
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Awaitable, Callable
+from typing import TYPE_CHECKING
+from collections.abc import Awaitable, Callable
 
 from primer.model.except_ import (
     AuthenticationError,

@@ -258,7 +258,7 @@ class OpenRouterLLM(LLM):
                     ):
                         for event in _translate_chunk(raw, state):
                             yield event
-                except asyncio.TimeoutError as exc:
+                except TimeoutError as exc:
                     from primer.model.except_ import ProviderTimeoutError
                     timeout_val = self._request_timeout_seconds
                     logger.error(

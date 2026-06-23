@@ -183,7 +183,7 @@ async def test_chat_ws_streams_when_worker_on_other_process(
                         frames_received.append(frame)
                         # Any frame proves the bus delivered the tick.
                         return
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         continue
         except Exception as exc:  # noqa: BLE001
             ws_error = exc
@@ -221,7 +221,7 @@ async def test_chat_ws_streams_when_worker_on_other_process(
     # Wait for the WS reader to collect at least one frame (up to 30s).
     try:
         await asyncio.wait_for(ws_task, timeout=30.0)
-    except asyncio.TimeoutError:
+    except TimeoutError:
         ws_task.cancel()
         try:
             await ws_task
@@ -350,7 +350,7 @@ async def test_session_ws_streams_when_worker_on_other_process(
                             frame = json.loads(raw)
                             frames_received.append(frame)
                             return
-                        except asyncio.TimeoutError:
+                        except TimeoutError:
                             continue
             except Exception as exc:  # noqa: BLE001
                 ws_error = exc
@@ -392,7 +392,7 @@ async def test_session_ws_streams_when_worker_on_other_process(
 
         try:
             await asyncio.wait_for(ws_task, timeout=5.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             ws_task.cancel()
             try:
                 await ws_task

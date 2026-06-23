@@ -60,7 +60,7 @@ class ExaFetchConfig(BaseModel):
 
 
 WebFetchProviderConfig = Annotated[
-    Union[LocalFetchConfig, JinaFetchConfig, FirecrawlFetchConfig, ExaFetchConfig],
+    LocalFetchConfig | JinaFetchConfig | FirecrawlFetchConfig | ExaFetchConfig,
     Field(discriminator="type"),
 ]
 
@@ -112,7 +112,7 @@ class AggregatedFetchConfig(BaseModel):
 
 
 ActiveFetchConfig = Annotated[
-    Union[SingleFetchConfig, AggregatedFetchConfig],
+    SingleFetchConfig | AggregatedFetchConfig,
     Field(discriminator="mode"),
 ]
 

@@ -369,8 +369,8 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
                 break
             page.wait_for_timeout(500)
         assert terminal_seen, (
-            f"session status never transitioned to a terminal value "
-            f"within 15s after cancel"
+            "session status never transitioned to a terminal value "
+            "within 15s after cancel"
         )
 
         # Defence: the Cancel button is now disabled (the page

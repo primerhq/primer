@@ -609,7 +609,7 @@ class LocalStateRepo:
                 proc.communicate(),
                 timeout=self._subprocess_timeout_seconds,
             )
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             try:
                 proc.kill()
             except ProcessLookupError:

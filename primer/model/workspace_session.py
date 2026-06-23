@@ -124,7 +124,7 @@ class _ToolApprovalWaiting(BaseModel):
 
 
 WaitingState = Annotated[
-    Union[_UserInputWaiting, _ToolApprovalWaiting],
+    _UserInputWaiting | _ToolApprovalWaiting,
     Field(discriminator="kind"),
 ]
 """Type alias: a discriminated union describing what a ``WAITING`` session

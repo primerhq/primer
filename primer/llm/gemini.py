@@ -986,7 +986,7 @@ class GeminiLLM(LLM):
                                     tokens_in = ev.input_tokens
                                     tokens_out = ev.output_tokens
                                 yield ev
-                    except asyncio.TimeoutError as exc:
+                    except TimeoutError as exc:
                         from primer.model.except_ import ProviderTimeoutError
                         timeout_val = self._request_timeout_seconds
                         logger.error(

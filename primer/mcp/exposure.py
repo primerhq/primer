@@ -26,7 +26,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from typing import Any
+from collections.abc import AsyncIterator
 
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.mcp.safety import is_exposable, tool_scoped_id

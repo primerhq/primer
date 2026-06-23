@@ -309,7 +309,7 @@ async def test_t0856_null_channel_adapter_dispatch_and_inbox_journey(
                     "an ask_user event onto the bus, but the subscription "
                     "received nothing within 2s"
                 )
-                expected_key = f"ask_user:sess-t856:tc-t856"
+                expected_key = "ask_user:sess-t856:tc-t856"
                 assert event.event_key == expected_key, (
                     f"event_key mismatch: expected {expected_key!r}, "
                     f"got {event.event_key!r}"

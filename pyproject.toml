@@ -81,12 +81,14 @@ packages = ["primer"]
 dev = [
     "grpcio-tools>=1.81.1",
     "playwright>=1.60.0",
+    "pre-commit>=4.0.0",
     "pytest>=9.1.0",
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-playwright>=0.8.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
+    "ruff>=0.15.18",
     "testcontainers[postgres]>=4.14.2",
 ]
 docs = [
@@ -165,3 +167,61 @@ exclude_lines = [
 # Per-module overrides — adapter modules ramp up to 90% as they land.
 # Until primer/llm/* and primer/embedder/* contain code, the gate is
 # effectively a no-op because there are no covered statements yet.
+
+[tool.ruff]
+# Match the codebase: Python 3.13, 88-column source.
+target-version = "py313"
+line-length = 88
+extend-exclude = [
+    ".venv",
+    "ui/vendor",
+    "primerhq.github.io",
+    "dogfood",
+]
+
+[tool.ruff.lint]
+# The intended long-term standard. CI runs `ruff check` (lint only); we do
+# NOT run `ruff format` yet (a one-shot format would reformat ~1000 of ~1450
+# files, an unreviewable diff). Format adoption is a tracked follow-up.
+select = ["E", "F", "I", "UP", "B"]
+ignore = [
+    # --- Intentional patterns, never enforce -------------------------------
+    "B008",   # function-call-in-default: this is the FastAPI `Depends()` /
+              # typer `Argument()`/`Option()` idiom used throughout the API
+              # and CLI. Flagging it is a false positive for this stack.
+    "E402",   # module-import-not-at-top: a handful of modules import after a
+              # capability guard or sys.path setup on purpose.
+    # --- Deferred to the format-adoption follow-up -------------------------
+    "E501",   # line-too-long (~1300 hits): cannot be safely auto-fixed; line
+              # rewrapping belongs to the deferred `ruff format` adoption.
+    # --- Deferred bulk-mechanical rules ------------------------------------
+    # Each of these would rewrite 130-760 files in a single sweep, burying
+    # the meaningful changes. They are mechanical and safe; we will adopt
+    # them in their own dedicated commits after launch rather than on the
+    # release-eve DX pass. Tracked as a follow-up.
+    "I001",   # import sorting (~760 files)
+    "UP017",  # datetime.timezone.utc -> datetime.UTC (~250 files)
+    "UP037",  # remove-quotes-from-annotations (~130 files)
+    "F401",   # unused-import (~265 files; many are test re-exports)
+    # --- Pre-existing residual we are not fixing in the DX pass ------------
+    # These are real-but-isolated style/bug-class findings in production code
+    # that pre-date this change. Fixing them edits live logic and is out of
+    # scope for a tooling pass; reported as follow-ups (incl. two genuine
+    # bug-class hits: B023 in primer/bus/postgres.py, B025 in
+    # primer/toolset/misc.py).
+    "B017",   # assert-raises-exception (test patterns)
+    "B023",   # function-uses-loop-variable
+    "B025",   # duplicate-try-block-exception
+    "B904",   # raise-without-from-inside-except
+    "B905",   # zip-without-explicit-strict (autofix is unsafe)
+    "E701",   # multiple-statements-on-one-line-colon
+    "E702",   # multiple-statements-on-one-line-semicolon
+    "E741",   # ambiguous-variable-name
+    "F811",   # redefinition (mostly pytest fixtures)
+    "F821",   # undefined-name (mostly TYPE_CHECKING-only annotation names)
+    "F841",   # unused local var (some intentional in tests)
+    "UP007",  # use-pep604-annotation (Optional[X] -> X | None)
+    "UP042",  # str-enum -> StrEnum (behavioural; manual)
+    "UP046",  # non-pep695-generic (class generics; manual)
+    "UP047",  # non-pep695-generic-function
+]

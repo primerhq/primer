@@ -24,7 +24,8 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Awaitable, Callable
+from typing import Any
+from collections.abc import Awaitable, Callable
 
 from primer.int.claim import ClaimKind, Lease, ParkRequest, ReleaseOutcome
 from primer.int.event_bus import EventBus
