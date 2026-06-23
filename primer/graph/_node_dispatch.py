@@ -5,13 +5,13 @@ loop drives: resolve a (possibly synthesized fan-out) node id to its
 definition, run one node of any kind, and recurse into subgraph nodes.
 It mixes into :class:`primer.graph.base._BaseGraphExecutor`:
 
-* ``_resolve_node_def`` — map a node id (incl. ``"worker[2]"`` fan-out
+* ``_resolve_node_def`` - map a node id (incl. ``"worker[2]"`` fan-out
   instances) to its node definition;
-* ``_stream_node`` — run one node of any kind, pushing live events to a
+* ``_stream_node`` - run one node of any kind, pushing live events to a
   queue then a terminal ``_NodeDone`` (FanOut dispatch, FanIn / End / Begin
   data-shaping, ToolCall dispatch + approval-yield park, Agent / subgraph
   delegation, and the agent-node yield-park handling);
-* ``_stream_subgraph_node`` — recurse into a child graph, forwarding its
+* ``_stream_subgraph_node`` - recurse into a child graph, forwarding its
   events under the parent node id and capturing its End / error outcome.
 
 It is a mixin, not a standalone class: the methods read the executor's

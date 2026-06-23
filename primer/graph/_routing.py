@@ -6,11 +6,11 @@ resolve conditional (json_path / callable) routers, and gate FanIn
 targets on upstream completion. It mixes into
 :class:`primer.graph.base._BaseGraphExecutor`:
 
-* ``_compute_next_ready`` — walk outgoing edges from the just-ran set,
+* ``_compute_next_ready`` - walk outgoing edges from the just-ran set,
   resolve every edge to a concrete target, and admit the next ready set
   (deferring FanIn targets until their upstreams are complete);
-* ``_fanin_ready`` — decide whether a FanIn node may fire yet;
-* ``_evaluate_conditional`` — resolve a single conditional edge to its
+* ``_fanin_ready`` - decide whether a FanIn node may fire yet;
+* ``_evaluate_conditional`` - resolve a single conditional edge to its
   target node id (json_path branch match / callable router resolve).
 
 It is a mixin, not a standalone class: the methods read the executor's
