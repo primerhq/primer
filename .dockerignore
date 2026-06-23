@@ -32,12 +32,14 @@ tests/.e2e/server.stdout
 tests/.e2e/config.yaml
 tests/.e2e/env.sh
 
-# Docs + research + scratch
-docs
+# Research + scratch (docs/ itself IS copied into the image by the
+# Dockerfile for the agent-docs resolver; only the internal, gitignored
+# planning tree under docs/superpowers must never enter the build context).
+docs/superpowers
 research
 progress.md
 
-# Mockup screenshots — not needed in the image; the UI is JS/CSS/HTML
+# Mockup screenshots - not needed in the image; the UI is JS/CSS/HTML
 ui/*.png
 
 # Claude / agent harness state

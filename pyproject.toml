@@ -1,5 +1,5 @@
 [project]
-name = "primer"
+name = "primer-ai"
 version = "0.0.1"
 description = "Microagents framework"
 readme = "README.md"
@@ -77,6 +77,12 @@ packages = ["primer"]
 # corpus + fixtures moved out to the primerhq.github.io repo, so there is
 # nothing docs-related under primer/ left to exclude from the wheel.
 
+[tool.hatch.build.targets.wheel.force-include]
+# Ship the operator-console source inside the wheel. The repo-root `ui/`
+# tree is mapped to `primer/_ui` so an installed `primer-ai` serves the
+# console without a separate checkout; `_resolve_ui_dir()` prefers it.
+"ui" = "primer/_ui"
+
 [dependency-groups]
 dev = [
     "grpcio-tools>=1.81.1",
@@ -95,6 +101,9 @@ docs = [
     "markdown-it-py>=3",
     "mdit-py-plugins>=0.4",
 ]
+# python-semantic-release drives the lockstep version bump + tag + GitHub
+# release in the release workflow; synced via `uv sync --group release`.
+release = ["python-semantic-release>=9,<10"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -119,6 +128,8 @@ markers = [
     "distributed: requires testcontainers + multiprocess (deselect with -m 'not distributed')",
     "smk(ids, status): map this test to one or more docs/tests SMK ids; status full|partial",
     "requires_llm: needs a reachable real LLM (set PRIMER_E2E_LLM_BASE_URL + PRIMER_E2E_LLM_MODEL + PRIMER_E2E_LLM_API_KEY); the mock-LLM lane deselects with -m 'not requires_llm'",
+    "requires_cluster: e2e needs a live Kubernetes cluster (deselect with -m 'not requires_cluster')",
+    "requires_channel: e2e needs live channel credentials (deselect with -m 'not requires_channel')",
 ]
 
 [tool.coverage.run]
@@ -225,3 +236,18 @@ ignore = [
     "UP046",  # non-pep695-generic (class generics; manual)
     "UP047",  # non-pep695-generic-function
 ]
+
+[tool.semantic_release]
+tag_format = "v{version}"
+allow_zero_version = true
+version_toml = [
+    "pyproject.toml:project.version",
+    "runtime/pyproject.toml:project.version",
+    "primectl/pyproject.toml:project.version",
+]
+build_command = ""
+commit_message = "chore(release): {version} [skip ci]"
+commit_author = "github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
+
+[tool.semantic_release.branches.main]
+match = "main"

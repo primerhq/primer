@@ -129,32 +129,49 @@ Primer does not press "go" on the loop for you - it gives you the orchestration 
 
 ## Quickstart
 
-**Requirements:** Python 3.13, [`uv`](https://github.com/astral-sh/uv), and (optionally) Postgres - see `docker-compose.yml` for a one-command setup.
+Pick whichever install fits. All three start the same server zero-config on an embedded SQLite database - perfect for a first look.
+
+**pipx** (isolated CLI install; needs Python 3.13+):
 
 ```bash
-# 1. Clone and install
+pipx install primer-ai
+primer api                                       # API + in-process worker
+```
+
+**Docker** (no Python toolchain required):
+
+```bash
+docker run --rm -p 8000:8000 ghcr.io/codemug/primer:latest
+```
+
+**From source** (for contributors):
+
+```bash
 git clone https://github.com/codemug/primer.git
 cd primer
 uv sync
-
-# 2. Start the API (includes an in-process worker)
 uv run primer api
-
-# 3. Verify, then open the console
-curl http://localhost:8000/v1/health      # -> {"status":"ok"}
 ```
 
-Open the operator console at **http://localhost:8000/console/**.
-
-With no `--config` flag, Primer runs zero-config on an embedded SQLite database (`~/.primer/db/data.sqlite`, in-memory scheduling) - perfect for a first look. For multi-process or production use, point it at Postgres:
+Then verify and open the console:
 
 ```bash
-docker compose up -d postgres            # or: podman compose up -d postgres
-cp config.example.yaml config.yaml       # set db.config.password to match
+curl http://localhost:8000/v1/health             # -> {"status":"ok"}
+```
+
+The operator console is at **http://localhost:8000/console/**.
+
+### Going to Postgres (multi-process, semantic search, production)
+
+Zero-config SQLite is single-process and ships without a vector store. For multiple workers, semantic search, or production, point Primer at Postgres:
+
+```bash
+docker compose up -d postgres                    # or: podman compose up -d postgres
+cp config.example.yaml config.yaml               # set db.config.password to match
 uv run primer api --config config.yaml
 ```
 
-`config.example.yaml` documents every field. Environment variables override file values: every `AppConfig` field maps to `PRIMER_<FIELD>` (nested fields use `__`, e.g. `PRIMER_DB__CONFIG__PASSWORD`).
+`config.example.yaml` documents every field. Environment variables override file values: every `AppConfig` field maps to `PRIMER_<FIELD>` (nested fields use `__`, e.g. `PRIMER_DB__CONFIG__PASSWORD`). The Docker image reads the same variables - set `PRIMER_DB_HOST` (and friends) and it renders a Postgres + pgvector config automatically; otherwise it runs the embedded-SQLite path above. For a SQLite database that survives container restarts, mount a volume at `/app/data`.
 
 ## How it works
 

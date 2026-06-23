@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re as _re
+import sys
 import uuid as _uuid
 from pathlib import Path
 
@@ -190,11 +191,34 @@ def _install_console_csp(app: FastAPI) -> None:
         return response
 
 
-# Directory containing the operator console (the bind-mounted ui/
-# folder at repo root). Computed once at import time; the production
-# factory guards on .is_dir() so a deployment that strips the directory
-# still boots without the console mount.
-_UI_DIR = Path(__file__).resolve().parent.parent.parent / "ui"
+# Directory containing the operator console. Computed once at import
+# time; the production factory guards on .is_dir() so a deployment that
+# strips the directory still boots without the console mount.
+def _resolve_ui_dir() -> Path:
+    """Locate the operator-console source tree.
+
+    Installed layout: ``ui/`` is force-included into the wheel at
+    ``primer/_ui`` (one dir above the ``primer/api`` package). Dev
+    layout: the repo-root ``ui/`` sits two dirs above the package.
+    Prefer the packaged copy so a ``pip install primer`` serves the
+    console.
+
+    The base path is read from the ``primer.api.app`` module's
+    ``__file__`` when available (it re-exports this helper and the
+    resolution tests monkeypatch it there); both that module and this
+    one live in ``primer/api`` so the path math is identical, and we
+    fall back to this module's location when ``app`` is not yet loaded.
+    """
+    app_mod = sys.modules.get("primer.api.app")
+    base_file = getattr(app_mod, "__file__", None) if app_mod else None
+    here = Path(base_file if base_file else __file__).resolve()
+    packaged = here.parent.parent / "_ui"
+    if packaged.is_dir():
+        return packaged
+    return here.parent.parent.parent / "ui"
+
+
+_UI_DIR = _resolve_ui_dir()
 
 
 # Request-id propagation. Honour an incoming X-Request-Id when it

@@ -5,17 +5,17 @@
 # .dockerignore keeps the build context small.
 #
 # Layer strategy:
-#   1. system deps + uv binary           — rarely changes
-#   2. pyproject.toml + uv.lock          — changes on dep bumps
-#   3. uv sync --no-install-project      — slow; cached on dep bumps only
-#   4. project source                    — changes on every code edit
-#   5. uv sync (installs project itself) — fast
+#   1. system deps + uv binary           - rarely changes
+#   2. pyproject.toml + uv.lock          - changes on dep bumps
+#   3. uv sync --no-install-project      - slow; cached on dep bumps only
+#   4. project source                    - changes on every code edit
+#   5. uv sync (installs project itself) - fast
 #
-# The primer package is installed editable (uv's default for `uv sync`)
-# because `primer/api/app.py` resolves the UI directory via
-# `Path(__file__).parent.parent.parent / "ui"`. With an editable
-# install that resolves to /app/ui (correct); a non-editable install
-# would resolve to a site-packages path that has no `ui/` subtree.
+# The console UI is resolved by `_resolve_ui_dir()` in primer/api/app.py:
+# it prefers the packaged copy (`primer/_ui`, force-included into the wheel)
+# and falls back to the repo-root `ui/` for an editable/dev checkout. So the
+# console works whether the package is installed editable (this image copies
+# `ui/` next to the source at /app/ui) or as a built wheel.
 
 FROM python:3.13-slim AS base
 
@@ -67,15 +67,16 @@ COPY docker/primer/entrypoint.sh /usr/local/bin/primer-entrypoint.sh
 RUN chmod +x /usr/local/bin/primer-entrypoint.sh
 
 # ----- Layer 5: install the project itself -----
-# Editable install (uv default) so /app/primer is the live tree —
+# Editable install (uv default) so /app/primer is the live tree -
 # necessary for the console mount's `_UI_DIR` path math.
 RUN uv sync --frozen --no-dev
 
-EXPOSE 8765
+EXPOSE 8000
 
-# Health: the FastAPI app exposes /v1/health (used by scripts/e2e/bringup.sh).
+# Health: the FastAPI app exposes /v1/health. Honour PRIMER_PORT (compose sets
+# 8765; a bare `docker run` defaults to 8000) so the check follows the server.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=6 \
-    CMD curl -fsS http://127.0.0.1:8765/v1/health || exit 1
+    CMD curl -fsS "http://127.0.0.1:${PRIMER_PORT:-8000}/v1/health" || exit 1
 
 # Entrypoint renders /app/config.yaml from PRIMER_* env vars, then
 # exec's CMD. The primer CLI requires --config; the rendered file is

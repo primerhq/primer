@@ -14,7 +14,7 @@
 # .runtime.ready appears.
 #
 # Protocol dependency:
-#   runtime/primer_runtime/protocol.py is a self-contained copy — no primer
+#   runtime/primer_runtime/protocol.py is a self-contained copy - no primer
 #   package needed at container runtime.  Keep it in sync with
 #   primer/workspace/runtime/protocol.py on the worker side.
 
@@ -34,7 +34,7 @@ RUN apt-get update \
 
 # Install runtime in its own directory so workspace files are not mixed in.
 WORKDIR /opt/primer-runtime
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY primer_runtime/ ./primer_runtime/
 
 # Install runtime package and its deps.  Using `pip install .` installs
@@ -44,7 +44,7 @@ COPY primer_runtime/ ./primer_runtime/
 RUN pip install --no-cache-dir aiohttp watchfiles pydantic && \
     pip install --no-cache-dir --no-deps .
 
-# Workspace dir — the real workspace is mounted by `docker run -v`; this
+# Workspace dir - the real workspace is mounted by `docker run -v`; this
 # fallback ensures the directory exists if no volume is provided.
 #
 # Mode 0777 so the runtime can write here regardless of the UID the

@@ -1,7 +1,8 @@
 [project]
 name = "primectl"
-dynamic = ["version"]
+version = "0.0.1"
 description = "kubectl-style CLI for the Primer API"
+readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "typer>=0.12",
@@ -19,9 +20,6 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["primectl"]
-
-[tool.hatch.version]
-path = "primectl/__init__.py"
 
 [dependency-groups]
 dev = ["pytest>=8", "pytest-asyncio>=0.23"]

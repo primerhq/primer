@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: primer
+          POSTGRES_PASSWORD: primer
+          POSTGRES_DB: primer_e2e
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U primer"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+      - name: Sync
+        run: |
+          uv sync --dev --group docs
+          uv pip install --no-deps ./primectl ./runtime
+      - name: Unit sweep
+        run: >-
+          uv run pytest tests/ -q
+          --ignore=tests/distributed --ignore=tests/ui_e2e
+          --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
+      - name: Render smoke config
+        run: |
+          mkdir -p tests/.e2e/logs
+          cat > tests/.e2e/config.yaml <<'EOF'
+          db:
+            provider: postgres
+            config:
+              hostname: localhost
+              port: 5432
+              database: primer_e2e
+              username: primer
+              password: primer
+              pool:
+                min_size: 5
+                max_size: 20
+          host: 127.0.0.1
+          port: 8765
+          log_level: info
+          log_json: true
+          log_file: ./tests/.e2e/logs/primer.log
+          scheduler:
+            provider: postgres
+            config: {}
+          vector_store:
+            provider: pgvector
+            config:
+              hostname: localhost
+              port: 5432
+              database: primer_e2e
+              username: primer
+              password: primer
+          EOF
+      - name: Enable pgvector
+        run: PGPASSWORD=primer psql -h localhost -U primer -d primer_e2e -c "CREATE EXTENSION IF NOT EXISTS vector;"
+      # Boot smoke: the packaged app must start against Postgres + pgvector and
+      # report healthy. We do NOT run the full tests/e2e suite here: it needs
+      # the external test rig (LLM endpoint, Docker/k3s workspace backends,
+      # live channels) that a release runner does not have, so it cannot pass
+      # hermetically. The unit sweep above is the substantive gate; this proves
+      # the built artifact boots.
+      - name: Smoke - boot the packaged app
+        run: |
+          uv run primer api --config tests/.e2e/config.yaml > tests/.e2e/logs/server.log 2>&1 &
+          for i in $(seq 1 60); do curl -sf http://localhost:8765/v1/health && break; sleep 1; done
+          if ! curl -sf http://localhost:8765/v1/health; then
+            echo "server did not become healthy; last 80 log lines:" >&2
+            tail -n 80 tests/.e2e/logs/server.log >&2 || true
+            exit 1
+          fi
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      released: ${{ steps.psr.outputs.released }}
+      version: ${{ steps.psr.outputs.version }}
+      tag: ${{ steps.psr.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Python Semantic Release
+        id: psr
+        uses: python-semantic-release/python-semantic-release@v9.21.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-pypi:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+      - uses: astral-sh/setup-uv@v4
+      - name: Build all three packages
+        run: |
+          uv build --wheel --sdist -o dist_primer .
+          uv build --wheel --sdist -o dist_primectl --package primectl
+          (cd runtime && uv build --wheel --sdist -o ../dist_runtime .)
+      - name: Upload primer
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN_PRIMER }}
+        run: uv run --with twine twine upload --skip-existing dist_primer/*
+      - name: Upload primer-runtime
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN_RUNTIME }}
+        run: uv run --with twine twine upload --skip-existing dist_runtime/*
+      - name: Upload primectl
+        env:
+          TWINE_USERNAME: __token__
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN_PRIMECTL }}
+        run: uv run --with twine twine upload --skip-existing dist_primectl/*
+
+  publish-images:
+    needs: release
+    if: needs.release.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build + push primer
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ghcr.io/codemug/primer:${{ needs.release.outputs.version }}
+            ghcr.io/codemug/primer:latest
+      - name: Build + push primer-runtime
+        uses: docker/build-push-action@v6
+        with:
+          context: ./runtime
+          file: ./runtime/Dockerfile
+          push: true
+          tags: |
+            ghcr.io/codemug/primer-runtime:${{ needs.release.outputs.version }}
+            ghcr.io/codemug/primer-runtime:latest

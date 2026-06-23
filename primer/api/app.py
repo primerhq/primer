@@ -69,6 +69,7 @@ from primer.api._app_middleware import (
     _CONSOLE_CSP,
     _GZipExceptMcp,
     _UI_DIR,
+    _resolve_ui_dir,
     _install_auth_middleware,
     _install_console_csp,
     _install_jsx_bundle,
