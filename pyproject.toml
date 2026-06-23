@@ -256,5 +256,5 @@ docs = [
 ]
 # python-semantic-release drives the lockstep version bump + tag + GitHub
 # release in the release workflow; synced via `uv sync --group release`.
-release = ["python-semantic-release>=9,<10"]
+release = ["python-semantic-release>=10.5.3,<11"]
 
