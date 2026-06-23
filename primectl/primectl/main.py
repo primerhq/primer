@@ -20,6 +20,8 @@ from primectl.commands import raw as _raw  # noqa: E402
 from primectl.commands import meta as _meta  # noqa: E402
 from primectl.commands import doc as _doc  # noqa: E402
 from primectl.commands import channel as _channel  # noqa: E402
+from primectl.commands import workspace as _workspace  # noqa: E402
+from primectl.commands import chat as _chat  # noqa: E402
 from primectl.commands.config_cmd import config_app  # noqa: E402
 
 _crud.register(app)
@@ -28,6 +30,8 @@ _raw.register(app)
 _meta.register(app)
 _doc.register(app)
 _channel.register(app)
+_workspace.register(app)
+_chat.register(app)
 app.add_typer(config_app, name="config")
 
 
