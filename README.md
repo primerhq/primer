@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/hero-dark.png">
-  <img alt="Primer - orchestrate fleets of small, context-optimized agents" src="docs/assets/hero-light.png" width="760">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/primerhq/primer/main/docs/assets/hero-dark.png">
+  <img alt="Primer - orchestrate fleets of small, context-optimized agents" src="https://raw.githubusercontent.com/primerhq/primer/main/docs/assets/hero-light.png" width="760">
 </picture>
 
 <br>
@@ -11,14 +11,13 @@
 
 <br>
 
-[![License](https://img.shields.io/badge/license-Apache_2.0-61d46a.svg)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/codemug/primer/ci.yml?branch=main&label=build)](https://github.com/codemug/primer/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/codemug/primer/branch/main/graph/badge.svg)](https://codecov.io/gh/codemug/primer)
+[![License](https://img.shields.io/badge/license-Apache_2.0-61d46a.svg)](https://github.com/primerhq/primer/blob/main/LICENSE)
+[![Release](https://img.shields.io/github/actions/workflow/status/primerhq/primer/release.yml?branch=main&label=release)](https://github.com/primerhq/primer/actions/workflows/release.yml)
 [![Python](https://img.shields.io/badge/python-3.13+-3776ab.svg)](https://www.python.org/)
-[![PRs welcome](https://img.shields.io/badge/PRs-welcome-61d46a.svg)](CONTRIBUTING.md)
-[![Stars](https://img.shields.io/github/stars/codemug/primer?style=flat&color=61d46a)](https://github.com/codemug/primer/stargazers)
+[![PRs welcome](https://img.shields.io/badge/PRs-welcome-61d46a.svg)](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
+[![Stars](https://img.shields.io/github/stars/primerhq/primer?style=flat&color=61d46a)](https://github.com/primerhq/primer/stargazers)
 
-[Quickstart](#quickstart) · [Features](#what-you-can-build) · [How it works](#how-it-works) · [Docs](#documentation) · [Contributing](CONTRIBUTING.md)
+[Quickstart](#quickstart) · [Features](#what-you-can-build) · [How it works](#how-it-works) · [Docs](#documentation) · [Contributing](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
 
 </div>
 
@@ -141,13 +140,13 @@ primer api                                       # API + in-process worker
 **Docker** (no Python toolchain required):
 
 ```bash
-docker run --rm -p 8000:8000 ghcr.io/codemug/primer:latest
+docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest
 ```
 
 **From source** (for contributors):
 
 ```bash
-git clone https://github.com/codemug/primer.git
+git clone https://github.com/primerhq/primer.git
 cd primer
 uv sync
 uv run primer api
@@ -188,13 +187,13 @@ At runtime, requests arrive from many edges (REST/console, MCP clients, chat cha
 
 ## Documentation
 
-- **Operator docs** - served at `/docs` when the server is running (start with [Introduction](primer/user_docs/getting-started/introduction.md) and the [Quickstart](primer/user_docs/getting-started/quickstart.md)).
-- **Agent-usage docs** - [`docs/agents/`](docs/agents/) - how to drive a running Primer instance from an AI agent over MCP.
-- **Developer docs** - [`docs/dev/`](docs/dev/) - architecture patterns and subsystem references. Start at [`docs/dev/README.md`](docs/dev/README.md).
+- **Operator docs** - served at `/docs` when the server is running.
+- **Agent-usage docs** - [`docs/agents/`](https://github.com/primerhq/primer/tree/main/docs/agents) - how to drive a running Primer instance from an AI agent over MCP.
+- **Developer docs** - [`docs/dev/`](https://github.com/primerhq/primer/tree/main/docs/dev) - architecture patterns and subsystem references. Start at [`docs/dev/README.md`](https://github.com/primerhq/primer/blob/main/docs/dev/README.md).
 
 ## Contributing
 
-Read [AGENTS.md](AGENTS.md) first - it is the authoritative contributor contract (project layout, the Definition of Done, how to run the suites, and the hard rules). [CONTRIBUTING.md](CONTRIBUTING.md) is the human-facing summary.
+Read [AGENTS.md](https://github.com/primerhq/primer/blob/main/AGENTS.md) first - it is the authoritative contributor contract (project layout, the Definition of Done, how to run the suites, and the hard rules). [CONTRIBUTING.md](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md) is the human-facing summary.
 
 ```bash
 uv sync
@@ -204,12 +203,12 @@ uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e \
   --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
 ```
 
-See [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) for community expectations.
+See [`CODE_OF_CONDUCT.md`](https://github.com/primerhq/primer/blob/main/CODE_OF_CONDUCT.md) for community expectations.
 
 ## Security
 
-Please report vulnerabilities privately - see [SECURITY.md](SECURITY.md).
+Please report vulnerabilities privately - see [SECURITY.md](https://github.com/primerhq/primer/blob/main/SECURITY.md).
 
 ## License
 
-Primer is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for the full text.
+Primer is licensed under the Apache License 2.0. See [LICENSE](https://github.com/primerhq/primer/blob/main/LICENSE) for the full text.

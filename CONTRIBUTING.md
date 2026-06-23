@@ -15,7 +15,7 @@ Primer uses an **issue-first** workflow so that work is tracked, agreed on, and
 not duplicated. Before you write any code:
 
 1. **Search existing issues first.** Look through the
-   [issue tracker](https://github.com/codemug/primer/issues), including closed
+   [issue tracker](https://github.com/primerhq/primer/issues), including closed
    issues, for an existing report or request that matches. If one already
    exists, comment there to say you would like to work on it rather than opening
    a duplicate.
@@ -23,7 +23,7 @@ not duplicated. Before you write any code:
    [bug report or feature request templates](.github/ISSUE_TEMPLATE/) to
    describe the problem or proposal, and wait for a maintainer to confirm the
    direction before investing in a large change. For open-ended questions, use
-   [Discussions](https://github.com/codemug/primer/discussions) instead of an
+   [Discussions](https://github.com/primerhq/primer/discussions) instead of an
    issue.
 3. **Open a pull request against that issue.** Branch off `main`, make the
    change, and reference the issue in the PR description with `Closes #<n>` (the
@@ -42,7 +42,7 @@ dependency and environment management. The stack is FastAPI + asyncio with
 Postgres + pgvector, and a vanilla-React (JSX, no build step) operator console.
 
 ```bash
-git clone https://github.com/codemug/primer
+git clone https://github.com/primerhq/primer
 cd primer
 uv sync
 docker compose up -d postgres
