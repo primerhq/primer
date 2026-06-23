@@ -1,0 +1,33 @@
+# Codecov configuration for primer.
+#
+# Coverage is produced by the `coverage` job in .github/workflows/ci.yml
+# (pytest-cov -> coverage.xml) and uploaded via codecov/codecov-action.
+# The hard CI gate lives in that job (--cov-fail-under=90, mirroring
+# [tool.coverage.report] fail_under in pyproject.toml); the targets below
+# keep the Codecov status checks in step with it.
+
+coverage:
+  status:
+    project:
+      default:
+        target: 90%
+        threshold: 1%
+    patch:
+      default:
+        target: 90%
+        threshold: 1%
+
+# Only the primer package is measured (see [tool.coverage.run] source).
+# Tests, the standalone docs site, and vendored UI assets are not project
+# coverage and would skew the number.
+ignore:
+  - "tests/**"
+  - "ui/**"
+  - "docs/**"
+  - "scripts/**"
+  - "primectl/**"
+  - "runtime/**"
+
+comment:
+  layout: "reach, diff, flags, files"
+  require_changes: true

@@ -124,6 +124,10 @@ jobs:
         run: uv sync --frozen
 
       - name: Run unit sweep with coverage
+        # --cov-fail-under wires the existing [tool.coverage.report]
+        # fail_under=90 into CI: pytest-cov's --cov-report does not enforce
+        # the threshold on its own, so the run fails here if coverage drops
+        # below 90%.
         run: |
           uv run pytest tests/ -q \
             --ignore=tests/distributed \
@@ -134,6 +138,7 @@ jobs:
             --cov=primer \
             --cov-report=term-missing:skip-covered \
             --cov-report=xml:coverage.xml \
+            --cov-fail-under=90 \
             --tb=short
 
       - name: Upload coverage report
@@ -141,3 +146,10 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+          token: ${{ secrets.CODECOV_TOKEN }}

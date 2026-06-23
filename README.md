@@ -13,6 +13,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache_2.0-61d46a.svg)](LICENSE)
 [![CI](https://img.shields.io/github/actions/workflow/status/codemug/primer/ci.yml?branch=main&label=build)](https://github.com/codemug/primer/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/codemug/primer/branch/main/graph/badge.svg)](https://codecov.io/gh/codemug/primer)
 [![Python](https://img.shields.io/badge/python-3.13+-3776ab.svg)](https://www.python.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-61d46a.svg)](CONTRIBUTING.md)
 [![Stars](https://img.shields.io/github/stars/codemug/primer?style=flat&color=61d46a)](https://github.com/codemug/primer/stargazers)
