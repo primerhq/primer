@@ -159,8 +159,8 @@ jobs:
           file: ./Dockerfile
           push: true
           tags: |
-            ghcr.io/codemug/primer:${{ needs.release.outputs.version }}
-            ghcr.io/codemug/primer:latest
+            ghcr.io/primerhq/primer:${{ needs.release.outputs.version }}
+            ghcr.io/primerhq/primer:latest
       - name: Build + push primer-runtime
         uses: docker/build-push-action@v6
         with:
@@ -168,5 +168,5 @@ jobs:
           file: ./runtime/Dockerfile
           push: true
           tags: |
-            ghcr.io/codemug/primer-runtime:${{ needs.release.outputs.version }}
-            ghcr.io/codemug/primer-runtime:latest
+            ghcr.io/primerhq/primer-runtime:${{ needs.release.outputs.version }}
+            ghcr.io/primerhq/primer-runtime:latest
