@@ -27,6 +27,41 @@ See [config.example.yaml](config.example.yaml) for the configuration shape
 (Postgres + providers). A newcomer should be able to go from clone to a running
 `/v1/health` in under ten minutes.
 
+### Pre-commit hooks
+
+Install the git hooks once so lint, formatting, secret scanning, and the
+doc-hygiene check run automatically on every commit:
+
+```bash
+uv run pre-commit install
+```
+
+The hooks (configured in [.pre-commit-config.yaml](.pre-commit-config.yaml))
+run ruff (`--fix`) and ruff-format on the files you touch, fix trailing
+whitespace / end-of-file, scan for secrets with gitleaks, and run the
+`tests/docs/` hygiene suite (the em-dash ban). To run them across the whole
+repo on demand:
+
+```bash
+uv run pre-commit run --all-files
+```
+
+### Common tasks (Makefile)
+
+A [Makefile](Makefile) wraps the same commands CI runs, so local green means
+CI green:
+
+```bash
+make setup          # uv sync
+make lint           # ruff check .
+make fmt            # ruff check --fix .
+make test           # narrowed unit sweep
+make cov            # unit sweep + coverage (enforces the 90% threshold)
+make docs-hygiene   # the tests/docs hygiene suite
+make serve          # uv run primer api
+make docker-build   # build the primer image
+```
+
 The repository layout is described in [AGENTS.md](AGENTS.md) section 2:
 `primer/<subsystem>/` is the backend, `ui/` the console, `primectl/` the CLI,
 `tests/` the test suites, and `docs/dev/` the authoritative developer reference
@@ -101,6 +136,9 @@ PR mechanics:
 
 ## Style
 
+- Python is linted with [ruff](https://docs.astral.sh/ruff/) (config in the
+  `[tool.ruff]` block of [pyproject.toml](pyproject.toml)); `make lint` and CI
+  run `ruff check`. Auto-fix safe findings with `make fmt`.
 - Never use the em-dash character (U+2014) in committed files. Use a regular
   hyphen, "to", or reword. The `tests/docs/` hygiene suite enforces this.
 - Match the conventions of the surrounding code; prefer small, focused files.

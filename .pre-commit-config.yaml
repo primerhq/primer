@@ -1,0 +1,48 @@
+# Pre-commit hooks for primer.
+#
+# Install once after `uv sync`:
+#     uv run pre-commit install
+# Run against everything on demand:
+#     uv run pre-commit run --all-files
+#
+# The ruff hooks use the same [tool.ruff] config in pyproject.toml that CI
+# uses, so local and CI results stay in lockstep. ruff-format runs only on
+# the files you touch (gradual format adoption); CI itself is lint-only for
+# now (see .github/workflows/ci.yml).
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.18
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown allows trailing whitespace for hard line breaks.
+        exclude: '\.md$'
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+        args: ["--config", ".gitleaks.toml"]
+
+  # Local hook: enforce the em-dash ban (U+2014) and the rest of the docs
+  # hygiene suite, the same gate CI runs. Uses the project's own uv env so
+  # it shares the pinned pytest stack.
+  - repo: local
+    hooks:
+      - id: docs-hygiene
+        name: docs hygiene (em-dash ban, links, frontmatter)
+        entry: uv run pytest tests/docs/ -q --tb=short
+        language: system
+        pass_filenames: false
+        files: '(^docs/dev/|^AGENTS\.md$|^tests/docs/)'

@@ -1,0 +1,20 @@
+# Normalize line endings: text files use LF in the repo.
+* text=auto eol=lf
+
+# Shell scripts must stay LF regardless of platform (they run in containers
+# and CI runners).
+*.sh text eol=lf
+
+# Lockfiles are tool-generated; keep them out of language stats and diff/
+# review noise.
+uv.lock linguist-generated=true
+runtime/uv.lock linguist-generated=true
+
+# Vendored third-party frontend bundles are not first-party source.
+ui/vendor/** linguist-vendored=true
+
+# Binary assets (avoid CRLF/LF munging).
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
