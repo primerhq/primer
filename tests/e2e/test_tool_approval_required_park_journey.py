@@ -45,6 +45,7 @@ import os
 import socket
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 
 import httpx
@@ -56,12 +57,21 @@ import pytest
 # test_lmstudio_full_execution_journey.py / T0037)
 # ---------------------------------------------------------------------------
 
-
-_LM_STUDIO_URL = "http://127.0.0.1:8080"
+# Host the user runs LM Studio on; sourced from the environment so no
+# machine-specific address is baked into the repo (default: local instance).
+_LM_STUDIO_URL = os.environ.get(
+    "PRIMER_E2E_LMSTUDIO_URL", "http://localhost:8080"
+).rstrip("/")
 _LM_STUDIO_API_KEY = os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN", "")
 
+_parsed = urlparse(_LM_STUDIO_URL)
+_LM_STUDIO_HOST = _parsed.hostname or "localhost"
+_LM_STUDIO_PORT = _parsed.port or 8080
 
-def _lmstudio_tcp_reachable(host: str = "127.0.0.1", port: int = 8080) -> bool:
+
+def _lmstudio_tcp_reachable(
+    host: str = _LM_STUDIO_HOST, port: int = _LM_STUDIO_PORT
+) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.5)
     try:

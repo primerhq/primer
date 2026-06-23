@@ -9,7 +9,7 @@ the turn reaches a terminal state and yields non-empty assistant output. We
 never assert exact content.
 
 Run:
-    export LMSTUDIO_API_KEY=codemugpc123
+    export LMSTUDIO_API_KEY=<your-lmstudio-key>
     PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest \
         tests/e2e/test_smk_real_llm.py -p no:cacheprovider -n0 -q
 """

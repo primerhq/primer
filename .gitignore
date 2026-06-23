@@ -219,9 +219,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 .idea
-# The in-UI documentation components live under ui/components/docs/
-# and the operator-facing markdown source lives under primer/user_docs/;
-# both are tracked frontend/source, not the gitignored docs/ spec area.
+# The in-UI documentation components live under ui/components/docs/ and are
+# tracked frontend source, not the gitignored docs/ spec area. (The
+# operator-facing markdown corpus moved out to the primerhq.github.io repo.)
 !ui/components/docs/
 !ui/components/docs/**
 
@@ -269,3 +269,7 @@ docs/.launch/
 
 # Local clone of the docs Pages repo (deployed separately)
 /primerhq.github.io/
+
+# Local agent/orchestration scratch (Claude Code + oh-my-claudecode state).
+.claude/
+.omc/

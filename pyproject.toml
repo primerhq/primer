@@ -61,9 +61,11 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.uv]
-# The docs group carries the markdown-it stack that scripts/docs/build_site.py
-# (and its tests/docs/ build tests) import. Install it by default so the test
-# suite has its dependencies without a separate --group docs sync.
+# The docs group carries the markdown-it stack used by the standalone docs
+# site build (the site source + build tooling now live in the
+# primerhq.github.io repo; the docs.yml deploy workflow installs this group).
+# Kept in the default groups so a docs checkout can build against this repo's
+# pinned stack without a separate --group docs sync.
 default-groups = ["dev", "docs"]
 
 [tool.uv.workspace]
@@ -71,10 +73,9 @@ members = ["primectl"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["primer"]
-# Docs are a standalone static site now, not a runtime concern. The
-# markdown + fixtures under primer/user_docs/ stay in the repo as build
-# inputs for scripts/docs/, but are not shipped in the wheel.
-exclude = ["primer/user_docs/**"]
+# Docs are a standalone static site, not a runtime concern. The markdown
+# corpus + fixtures moved out to the primerhq.github.io repo, so there is
+# nothing docs-related under primer/ left to exclude from the wheel.
 
 [dependency-groups]
 dev = [

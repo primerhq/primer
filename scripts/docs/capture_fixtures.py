@@ -1,16 +1,21 @@
 """Capture real API responses as embed fixtures.
-# NOTE: the docs corpus + fixtures now live in the primerhq.github.io repo.
-# Repoint the fixture/registry paths (and embed_harness serving paths) at that
-# checkout (docs_source/_fixtures) before regenerating fixtures or embeds.
 
-  PRIMER_BASE=http://127.0.0.1:8000 uv run python scripts/docs/capture_fixtures.py
+The docs corpus + fixtures live in the primerhq.github.io repo, so the output
+directory is sourced from PRIMER_DOCS_FIXTURES_DIR (default: a sibling
+../primerhq.github.io/docs_source/_fixtures checkout). This script stays in
+primer because it talks to a live primer API.
 
-Writes primer/user_docs/_fixtures/<embed>.json keyed by "<METHOD> <path>"
+  PRIMER_BASE=http://127.0.0.1:8000 \\
+    PRIMER_DOCS_FIXTURES_DIR=/path/to/primerhq.github.io/docs_source/_fixtures \\
+    uv run python scripts/docs/capture_fixtures.py
+
+Writes <fixtures-dir>/<embed>.json keyed by "<METHOD> <path>"
 (no /v1 prefix -- matching how the UI calls apiFetch, e.g. apiFetch("GET", "/workers", ...)).
 """
 import json
 import os
 import tempfile
+from pathlib import Path
 
 import httpx
 
@@ -24,7 +29,14 @@ USER = {
     "username": os.environ.get("PRIMER_DOCS_USER", "docs"),
     "password": os.environ.get("PRIMER_DOCS_PASS", "docs-password-123"),
 }
-OUT = "primer/user_docs/_fixtures"
+# Docs fixtures live in the primerhq.github.io repo. Point
+# PRIMER_DOCS_FIXTURES_DIR at that checkout's docs_source/_fixtures; the
+# default assumes a sibling clone next to this repo.
+_ROOT = Path(__file__).resolve().parents[2]
+OUT = os.environ.get(
+    "PRIMER_DOCS_FIXTURES_DIR",
+    str(_ROOT.parent / "primerhq.github.io" / "docs_source" / "_fixtures"),
+)
 os.makedirs(OUT, exist_ok=True)
 
 

@@ -27,6 +27,23 @@ from tests._support.testconfig import requires
 pytestmark = pytest.mark.asyncio
 
 
+def _k8s_runtime_image(tag: str) -> str:
+    """Cluster-pullable workspace-runtime image for the k8s lane.
+
+    ``PRIMER_K8S_RUNTIME_IMAGE`` overrides the whole reference. Otherwise the
+    image is built from ``PRIMER_K8S_REGISTRY`` (the in-cluster registry
+    host:port, default ``localhost:30500``) plus the requested tag, so no
+    machine-specific node address is baked into the repo.
+    """
+    import os
+
+    explicit = os.environ.get("PRIMER_K8S_RUNTIME_IMAGE")
+    if explicit:
+        return explicit
+    registry = os.environ.get("PRIMER_K8S_REGISTRY", "localhost:30500")
+    return f"{registry}/primer/workspace-runtime:{tag}"
+
+
 async def _ws(client, suffix, tmp_path):
     return await make_local_workspace(client, suffix=suffix, root=tmp_path)
 
@@ -549,10 +566,7 @@ async def test_kubernetes_backend(authed_client, unique_suffix):
     import os
 
     namespace = os.environ.get("PRIMER_K8S_NAMESPACE", "primer-workspaces")
-    runtime_image = os.environ.get(
-        "PRIMER_K8S_RUNTIME_IMAGE",
-        "127.0.0.1:30500/primer/workspace-runtime:1.0",
-    )
+    runtime_image = _k8s_runtime_image("1.0")
     wp = f"wpk-{unique_suffix}"
     tpl = f"tplk-{unique_suffix}"
     wid: str | None = None
@@ -691,10 +705,7 @@ async def test_kubernetes_backend_graph_session(authed_client, unique_suffix):
     import os
 
     namespace = os.environ.get("PRIMER_K8S_NAMESPACE", "primer-workspaces")
-    runtime_image = os.environ.get(
-        "PRIMER_K8S_RUNTIME_IMAGE",
-        "127.0.0.1:30500/primer/workspace-runtime:1.1",
-    )
+    runtime_image = _k8s_runtime_image("1.1")
     wp = f"wpkg-{unique_suffix}"
     tpl = f"tplkg-{unique_suffix}"
     wid: str | None = None
@@ -824,10 +835,7 @@ async def test_kubernetes_backend_gateway(authed_client, unique_suffix):
     import os
 
     namespace = os.environ.get("PRIMER_K8S_NAMESPACE", "primer-workspaces")
-    runtime_image = os.environ.get(
-        "PRIMER_K8S_RUNTIME_IMAGE",
-        "127.0.0.1:30500/primer/workspace-runtime:1.0",
-    )
+    runtime_image = _k8s_runtime_image("1.0")
     gateway_port = int(os.environ.get("PRIMER_K8S_GATEWAY_PORT", "32045"))
     ws_domain = os.environ.get("PRIMER_K8S_WS_DOMAIN", "ws.local")
     kubeconfig = os.environ.get("KUBECONFIG") or os.path.expanduser("~/.kube/config")

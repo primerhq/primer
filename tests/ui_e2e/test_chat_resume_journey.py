@@ -14,7 +14,8 @@ Pins the chat-turn-detachment contract end-to-end:
   via the tick router until the turn terminates with ``done``.
 
 Requires the LM Studio config from ``docs/testing/02-bringup.md``
-(``http://127.0.0.1:8080``; set ``PRIMER_E2E_LMSTUDIO_TOKEN`` to
+(point ``PRIMER_E2E_LMSTUDIO_URL`` at your host, default
+``http://localhost:8080``; set ``PRIMER_E2E_LMSTUDIO_TOKEN`` to
 the bearer token).
 """
 
@@ -29,7 +30,7 @@ from playwright.sync_api import expect
 
 
 _LMSTUDIO_URL = os.environ.get(
-    "PRIMER_E2E_LMSTUDIO_URL", "http://127.0.0.1:8080",
+    "PRIMER_E2E_LMSTUDIO_URL", "http://localhost:8080",
 )
 _LMSTUDIO_TOKEN = os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN", "")
 _LMSTUDIO_MODEL = os.environ.get(

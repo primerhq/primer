@@ -52,7 +52,7 @@ llm:
   mode: scripted
   real:
     provider_type: openchat      # the adapter type your server exposes
-    base_url: "http://127.0.0.1:8080/v1"
+    base_url: "http://localhost:8080/v1"   # your model server (e.g. LM Studio)
     api_key: "${PRIMER_TEST_LLM_KEY}"
     model: "qwen2.5-coder-7b-instruct"   # a chat model the endpoint serves
     # A small/fast model for llm-judged approval policies (may equal model).
@@ -62,7 +62,7 @@ llm:
 embedder:
   enabled: false
   provider_type: openai
-  base_url: "http://127.0.0.1:8080/v1"
+  base_url: "http://localhost:8080/v1"     # your embedding endpoint
   api_key: "${PRIMER_TEST_EMBED_KEY}"
   model: "text-embedding-nomic-embed-text-v1.5"
 
@@ -70,7 +70,7 @@ embedder:
 cross_encoder:
   enabled: false
   provider_type: openai
-  base_url: "http://127.0.0.1:8080/v1"
+  base_url: "http://localhost:8080/v1"     # your reranker endpoint
   api_key: "${PRIMER_TEST_RERANK_KEY}"
   model: "bge-reranker-v2-m3"
 

@@ -110,7 +110,7 @@
       if (!registry) throw new Error("DocsEmbedRegistry not defined in iframe");
       entry = registry[embedId];
       if (!entry) throw new Error("unknown embed id: " + embedId + " (valid: " + Object.keys(registry).join(",") + ")");
-      return iwin.fetch("/primer/user_docs/_fixtures/" + entry.fixtures + ".json").then(function (r) {
+      return iwin.fetch("/_fixtures/" + entry.fixtures + ".json").then(function (r) {
         if (!r.ok) throw new Error("fixture fetch -> " + r.status);
         return r.json();
       });

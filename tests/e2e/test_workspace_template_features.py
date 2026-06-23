@@ -63,8 +63,11 @@ def _host_base_url() -> str:
 
 
 def _incluster_base_url() -> str:
+    # In-cluster platform base url; sourced from the environment so no
+    # machine-specific node address is baked into the repo. The in-cluster
+    # lane only runs when this is pointed at a real deployment.
     return os.environ.get(
-        "PRIMER_K8S_INCLUSTER_BASE_URL", "http://127.0.0.1:30876"
+        "PRIMER_K8S_INCLUSTER_BASE_URL", "http://localhost:30876"
     ).rstrip("/")
 
 
@@ -178,10 +181,25 @@ def _k8s_incluster_config(suffix: str, kubeconfig: str) -> dict[str, Any]:
     }
 
 
+def _k8s_runtime_image(tag: str = "1.0") -> str:
+    """Cluster-pullable workspace-runtime image for the k8s targets.
+
+    ``PRIMER_K8S_RUNTIME_IMAGE`` overrides the whole reference; otherwise the
+    image is built from ``PRIMER_K8S_REGISTRY`` (the in-cluster registry
+    host:port, default ``localhost:30500``) plus the tag, so no machine-
+    specific node address is baked into the repo.
+    """
+    explicit = os.environ.get("PRIMER_K8S_RUNTIME_IMAGE")
+    if explicit:
+        return explicit
+    registry = os.environ.get("PRIMER_K8S_REGISTRY", "localhost:30500")
+    return f"{registry}/primer/workspace-runtime:{tag}"
+
+
 def _k8s_backend() -> dict[str, Any]:
     return {
         "kind": "kubernetes",
-        "image": "127.0.0.1:30500/primer/workspace-runtime:1.0",
+        "image": _k8s_runtime_image(),
         "entrypoint": ["python", "-m", "primer_runtime.server"],
         "pvc_size": "1Gi",
     }
@@ -523,8 +541,10 @@ async def test_seed_inline_file_and_mode(
 # Node IP of the host machine as seen from INSIDE the k3s cluster. The
 # in-cluster platform pod fetches the seed url at materialization time, so it
 # must be given a url that resolves from inside the cluster (the host's node
-# IP), NOT 127.0.0.1.
-_HOST_NODE_IP = "127.0.0.1"
+# IP), NOT 127.0.0.1. Sourced from PRIMER_K8S_HOST_NODE_IP so no machine-
+# specific address is baked into the repo; the in-cluster target only runs
+# when this is set to the real node IP.
+_HOST_NODE_IP = os.environ.get("PRIMER_K8S_HOST_NODE_IP", "localhost")
 
 
 @dataclass

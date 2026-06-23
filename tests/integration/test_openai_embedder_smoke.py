@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import socket
+from urllib.parse import urlparse
 
 import pytest
 from pydantic import HttpUrl, SecretStr
@@ -25,8 +26,20 @@ from primer.model.provider import (
     OpenAIEmbeddingFlavor,
 )
 
+# LM Studio host comes from the environment so no machine-specific address is
+# baked into the repo (default: local instance). The trailing /v1/ is the
+# OpenAI-compatible API base.
+_LMSTUDIO_URL = os.environ.get(
+    "PRIMER_E2E_LMSTUDIO_URL", "http://localhost:8080"
+).rstrip("/")
+_parsed = urlparse(_LMSTUDIO_URL)
+_LMSTUDIO_HOST = _parsed.hostname or "localhost"
+_LMSTUDIO_PORT = _parsed.port or 8080
 
-def _lmstudio_reachable(host: str = "127.0.0.1", port: int = 8080) -> bool:
+
+def _lmstudio_reachable(
+    host: str = _LMSTUDIO_HOST, port: int = _LMSTUDIO_PORT
+) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.5)
     try:
@@ -82,7 +95,7 @@ async def test_lmstudio_smoke() -> None:
         provider=EmbeddingProviderType.OPENAI,
         models=[EmbeddingModel(name=model_name)],
         config=OpenAIConfig(
-            url=HttpUrl("http://127.0.0.1:8080/v1/"),
+            url=HttpUrl(f"{_LMSTUDIO_URL}/v1/"),
             api_key=SecretStr(os.environ["PRIMER_E2E_LMSTUDIO_TOKEN"]),
             flavor=OpenAIEmbeddingFlavor.LMSTUDIO,
         ),

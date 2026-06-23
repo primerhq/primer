@@ -3,8 +3,9 @@
 Covers backlog items T0037 (resume→pause→resume→cancel walk) and
 T0056 (pause then resume returns to RUNNING).
 
-These tests require LM Studio reachable at ``http://127.0.0.1:8080``
-with at least one chat-completion model loaded (see
+These tests require LM Studio reachable at the URL given by
+``PRIMER_E2E_LMSTUDIO_URL`` (default ``http://localhost:8080``) with at
+least one chat-completion model loaded (see
 docs/testing/02-bringup.md § "Available local model server"). Set
 ``PRIMER_E2E_LMSTUDIO_TOKEN`` to the bearer token; the module probes LM
 Studio at collection time and `pytest.skip`s the whole file if the token
@@ -38,7 +39,11 @@ import httpx
 import pytest
 
 
-_LM_STUDIO_URL = "http://127.0.0.1:8080"
+# Host the user runs LM Studio on; sourced from the environment so no
+# machine-specific address is baked into the repo (default: local instance).
+_LM_STUDIO_URL = os.environ.get(
+    "PRIMER_E2E_LMSTUDIO_URL", "http://localhost:8080"
+).rstrip("/")
 _LM_STUDIO_API_KEY = os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN", "")
 
 

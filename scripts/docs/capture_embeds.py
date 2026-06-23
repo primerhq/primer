@@ -1,17 +1,20 @@
 """Capture light+dark screenshots of every docs embed, from fixtures only.
-# NOTE: the docs corpus + fixtures now live in the primerhq.github.io repo.
-# Repoint the fixture/registry paths (and embed_harness serving paths) at that
-# checkout (docs_source/_fixtures) before regenerating fixtures or embeds.
+
+The docs corpus + fixtures live in the primerhq.github.io repo, so the
+fixtures directory is sourced from PRIMER_DOCS_FIXTURES_DIR (default: a
+sibling ../primerhq.github.io/docs_source/_fixtures checkout). This harness
+stays in primer because it renders primer's live UI components.
 
 This is a BUILD-ONLY harness: there is no live primer backend. We
 
   1. build the console JSX bundle offline (build_jsx_bundle) into the embed
      harness dir as _app.js,
-  2. serve the worktree over a throwaway local http.server,
-  3. for each embed id in primer/user_docs/_fixtures/registry.json, load the
-     standalone harness page (scripts/docs/embed_harness/index.html) for
-     theme=light then theme=dark, wait for data-embed-status="done" (NOT a
-     fixed sleep), and screenshot the rendered embed host iframe into
+  2. serve the worktree over a throwaway local http.server, with the external
+     fixtures directory mounted at /_fixtures/,
+  3. for each embed id in the fixtures registry.json, load the standalone
+     harness page (scripts/docs/embed_harness/index.html) for theme=light
+     then theme=dark, wait for data-embed-status="done" (NOT a fixed sleep),
+     and screenshot the rendered embed host iframe into
      <out_dir>/_embeds/<id>-<theme>.png.
 
 The build later substitutes ```embed:<id>``` fences with a <picture> that
@@ -29,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import http.server
 import json
+import os
 import socketserver
 import sys
 import threading
@@ -38,7 +42,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HARNESS_DIR = ROOT / "scripts" / "docs" / "embed_harness"
 APP_JS = HARNESS_DIR / "_app.js"
-REGISTRY = ROOT / "primer" / "user_docs" / "_fixtures" / "registry.json"
+# Docs fixtures live in the primerhq.github.io repo. Point
+# PRIMER_DOCS_FIXTURES_DIR at that checkout's docs_source/_fixtures; the
+# default assumes a sibling clone next to this repo.
+FIXTURES_DIR = Path(
+    os.environ.get(
+        "PRIMER_DOCS_FIXTURES_DIR",
+        str(ROOT.parent / "primerhq.github.io" / "docs_source" / "_fixtures"),
+    )
+).resolve()
+REGISTRY = FIXTURES_DIR / "registry.json"
 HARNESS_URL_PATH = "/scripts/docs/embed_harness/index.html"
 
 THEMES = ("light", "dark")
@@ -63,6 +76,16 @@ def _start_server() -> tuple[socketserver.TCPServer, threading.Thread]:
     class Handler(http.server.SimpleHTTPRequestHandler):
         def __init__(self, *args, **kwargs):
             super().__init__(*args, directory=str(ROOT), **kwargs)
+
+        def translate_path(self, path):
+            # Fixtures live outside the worktree (in the primerhq.github.io
+            # checkout). Map the /_fixtures/ URL prefix onto FIXTURES_DIR so
+            # the harness page can fetch them over http.
+            clean = path.split("?", 1)[0].split("#", 1)[0]
+            if clean.startswith("/_fixtures/"):
+                rel = clean[len("/_fixtures/") :].lstrip("/")
+                return str(FIXTURES_DIR / rel)
+            return super().translate_path(path)
 
         def log_message(self, *args):  # silence per-request logging
             pass
@@ -134,6 +157,13 @@ def main() -> int:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else (ROOT / "dist" / "docs")
     out_dir = out_dir if out_dir.is_absolute() else (ROOT / out_dir)
 
+    if not REGISTRY.exists():
+        raise SystemExit(
+            f"fixtures registry not found at {REGISTRY}.\n"
+            "The docs corpus + fixtures live in the primerhq.github.io repo; "
+            "point PRIMER_DOCS_FIXTURES_DIR at that checkout's "
+            "docs_source/_fixtures directory."
+        )
     ids = json.loads(REGISTRY.read_text())["embeds"]
     print(f"{len(ids)} embed ids; {len(THEMES)} themes -> {len(ids) * len(THEMES)} PNGs expected", flush=True)
 

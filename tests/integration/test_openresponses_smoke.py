@@ -13,6 +13,7 @@ import socket
 import urllib.error
 import urllib.request
 from typing import cast
+from urllib.parse import urlparse
 
 import pytest
 from pydantic import HttpUrl, SecretStr
@@ -35,7 +36,19 @@ from primer.model.provider import (
 )
 
 
-def _lmstudio_port_open(host: str = "127.0.0.1", port: int = 8080) -> bool:
+# LM Studio host comes from the environment so no machine-specific address is
+# baked into the repo (default: local instance).
+_LMSTUDIO_URL = os.environ.get(
+    "PRIMER_E2E_LMSTUDIO_URL", "http://localhost:8080"
+).rstrip("/")
+_parsed = urlparse(_LMSTUDIO_URL)
+_LMSTUDIO_HOST = _parsed.hostname or "localhost"
+_LMSTUDIO_PORT = _parsed.port or 8080
+
+
+def _lmstudio_port_open(
+    host: str = _LMSTUDIO_HOST, port: int = _LMSTUDIO_PORT
+) -> bool:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(0.5)
     try:
@@ -50,7 +63,9 @@ def _lmstudio_port_open(host: str = "127.0.0.1", port: int = 8080) -> bool:
 _LMSTUDIO_API_KEY = os.environ.get("PRIMER_E2E_LMSTUDIO_TOKEN", "")
 
 
-def _lmstudio_has_model(host: str = "127.0.0.1", port: int = 8080) -> bool:
+def _lmstudio_has_model(
+    host: str = _LMSTUDIO_HOST, port: int = _LMSTUDIO_PORT
+) -> bool:
     """Return True iff LM Studio is reachable AND has at least one model loaded.
 
     Fast pre-check on the TCP port to avoid paying an HTTP timeout when the
@@ -137,7 +152,7 @@ async def test_lmstudio_smoke() -> None:
         provider=LLMProviderType.OPENRESPONSES,
         models=[LLMModel(name=model_name, context_length=8192)],
         config=OpenResponsesConfig(
-            url=HttpUrl("http://127.0.0.1:8080/v1/"),
+            url=HttpUrl(f"{_LMSTUDIO_URL}/v1/"),
             api_key=SecretStr(_LMSTUDIO_API_KEY),
             flavor=OpenResponsesFlavor.LMSTUDIO,
         ),
