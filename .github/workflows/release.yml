@@ -157,7 +157,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build + push primer
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
@@ -166,7 +166,7 @@ jobs:
             ghcr.io/primerhq/primer:${{ needs.release.outputs.version }}
             ghcr.io/primerhq/primer:latest
       - name: Build + push primer-runtime
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: ./runtime
           file: ./runtime/Dockerfile
