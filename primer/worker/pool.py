@@ -675,63 +675,9 @@ class WorkerPool:
     async def _write_approval_record_for_graph(
         self, *, session, checkpoint: dict, tcid, payload,
     ) -> None:
-        """Persist the resolved approval decision for a graph tool-call gate.
-
-        The gated call's metadata lives on the checkpoint's
-        ``pending_agent_yields`` entry for ``tcid``. We reshape it into the
-        ``parked_state`` blob form so the shared builder applies. Best-effort:
-        a missing entry or write failure is logged + swallowed.
-        """
-        from primer.agent.approval_record import (
-            record_from_parked_blob,
-            write_approval_record,
+        return await graph_resume_coordinator.write_approval_record_for_graph(
+            self, session=session, checkpoint=checkpoint, tcid=tcid, payload=payload,
         )
-        from primer.model.tool_approval import ToolApprovalRecord
-
-        # Two gate shapes resolve here. An agent-node ``_approval`` yield lives
-        # in ``pending_agent_yields`` and carries its own resume_metadata. A
-        # tool-call-node gate lives in ``pending_toolcalls`` and its
-        # ``original_call`` (tool_id + arguments) is denormalised into
-        # ``pending_dispatch``. Either way, reshape into the parked_state blob
-        # form the shared builder expects. A tcid that matches neither (or no
-        # tcid at all -> legacy drain) is skipped.
-        resume_metadata: dict | None = None
-        entry = next(
-            (e for e in (checkpoint.get("pending_agent_yields") or [])
-             if e.get("tool_call_id") == tcid),
-            None,
-        )
-        if entry is not None and entry.get("tool_name") == "_approval":
-            resume_metadata = entry.get("resume_metadata") or {}
-        else:
-            disp = next(
-                (d for d in (checkpoint.get("pending_dispatch") or [])
-                 if d.get("tool_call_id") == tcid),
-                None,
-            )
-            if disp is not None:
-                resume_metadata = disp.get("resume_metadata") or {}
-        if resume_metadata is None:
-            return
-        decision, reason = classify_approval_payload(payload)
-        blob = {
-            "tool_call_id": tcid,
-            "yielded": {"resume_metadata": resume_metadata},
-        }
-        record = record_from_parked_blob(
-            blob=blob,
-            decision=decision,
-            reason=reason,
-            agent_id=getattr(session.binding, "agent_id", None),
-            session_id=session.id,
-            requested_at=session.parked_at,
-        )
-        storage = (
-            self._storage.get_storage(ToolApprovalRecord)
-            if self._storage is not None
-            else None
-        )
-        await write_approval_record(storage, record)
 
     async def _resume_engine_session(self, engine_lease, session):
         """Drive a resumable park to its conclusion on the engine path.
@@ -1038,317 +984,39 @@ class WorkerPool:
         )
 
     async def _resume_graph_engine(self, session, parked):
-        """Resume a graph-bound session parked at a ToolCall approval.
-
-        Adapted from the (dead) _handle_graph_resume: always terminal (graph
-        sessions run to completion in one resume), so this returns a drop-lease
-        outcome with ENDED status written to the row."""
-        from primer.worker.graph_resume import resume_graph_from_checkpoint
-
-        sid = session.id
-        assert parked.graph_checkpoint is not None
-
-        if session.parked_at is None:
-            logger.error(
-                "resume: graph session %s resumable but parked_at=None -"
-                " ending failed", sid,
-            )
-            return await self._end_session(session, reason="failed")
-
-        resume_payload = classify_resume_payload(parked, parked_at=session.parked_at)
-        workspace = await self._load_workspace_for_persist(session.workspace_id)
-        try:
-            executor_or_driver = await self._build_graph_executor(session, workspace)
-        except Exception:
-            logger.exception(
-                "resume: failed to build graph executor for session %s -"
-                " ending failed", sid,
-            )
-            return await self._end_session(session, reason="failed")
-        executor = getattr(executor_or_driver, "_executor", executor_or_driver)
-
-        # Replies to drain this cycle. A multi-event park accumulates every
-        # reply that arrived into ``resume_event_payloads`` (tcid -> reply);
-        # we drain them ALL so a concurrent second reply isn't lost. A
-        # single-event park / timeout / cancel uses the singular path
-        # (classified payload, resumed_tcid from the fired key, or None for
-        # the legacy drain-all).
-        raw_state = session.parked_state or {}
-        payloads_map = raw_state.get("resume_event_payloads")
-        ck = parked.graph_checkpoint
-        if payloads_map:
-            replies = [
-                (tcid, (entry or {}).get("payload") or {})
-                for tcid, entry in payloads_map.items()
-            ]
-        else:
-            resume_event_key = raw_state.get("resume_event_key")
-            resumed_tcid = (
-                resume_event_key.rsplit(":", 1)[-1] if resume_event_key else None
-            )
-            replies = [(resumed_tcid, resume_payload.payload)]
-
-        repark = None
-        for tcid, payload in replies:
-            # Unified nested-yield: when the parked agent-node yielded from
-            # INSIDE a nested invoke_agent invocation, its pending entry carries
-            # a continuation ``frames`` stack. Run the continuation walk to
-            # unwind the subagent chain into a single tool_result FIRST; deliver
-            # that as the node's agent_tool_result (Deliver), or re-park the
-            # graph session on the deeper new leaf if a frame re-yielded
-            # (Repark). The no-nested-frames path below is UNCHANGED.
-            nested = self._graph_nested_agent_yield(ck, tcid)
-            if nested is not None:
-                cont = await self._resume_graph_continuation(
-                    session, parked, ck, nested, payload, workspace, executor,
-                )
-                if cont.repark_outcome is not None:
-                    return cont.repark_outcome
-                agent_tool_result = cont.agent_tool_result
-            else:
-                agent_tool_result = await self._graph_agent_tool_result(
-                    ck, tcid, payload,
-                )
-                # An approval gate is a pending tool-call yield (NOT an ask_user
-                # agent yield, which carries agent_tool_result). Persist the
-                # resolved decision for that gate exactly once per reply. A
-                # value-yielding tool_call (ask_user) is NOT an approval gate:
-                # its result is the operator's reply, fed back by the executor,
-                # so skip the approval record for it.
-                if agent_tool_result is None and not self._graph_value_yield_toolcall(
-                    ck, tcid,
-                ):
-                    await self._write_approval_record_for_graph(
-                        session=session, checkpoint=ck, tcid=tcid, payload=payload,
-                    )
-            try:
-                _decision, repark = await resume_graph_from_checkpoint(
-                    executor=executor,
-                    checkpoint=ck,
-                    payload=payload,
-                    resumed_tcid=tcid,
-                    agent_tool_result=agent_tool_result,
-                )
-            except Exception:
-                logger.exception(
-                    "resume: graph executor for session %s raised during"
-                    " resume drain - ending failed", sid,
-                )
-                return await self._end_session(session, reason="failed")
-            if repark is None:
-                break  # graph drained to completion
-            ck = repark.graph_checkpoint  # resume the next reply from here
-
-        if repark is not None:
-            # Human-interaction nodes still pending (not yet replied to) ->
-            # re-park on the remaining keys (no re-dispatch).
-            return self._repark_graph_outcome(session, repark)
-
-        # Drained to completion (the graph's own state.json carries the
-        # real ended_reason; the session row mirrors _GraphTurnDriver).
-        return await self._end_session(session, reason="completed")
+        return await graph_resume_coordinator.resume_graph_engine(
+            self, session, parked,
+        )
 
     def _graph_value_yield_toolcall(self, checkpoint, tcid) -> bool:
-        """True when ``tcid`` is a pending tool_call node that suspended on a
-        value-yielding tool (e.g. ``ask_user``) rather than an approval gate.
-
-        Such a node's result is the operator's reply (fed back by the executor
-        via the tool's resume hook), so the worker must NOT write an approval
-        record for it nor classify the reply as an approve/reject decision.
-        """
-        from primer.graph._node_refs import _PendingToolCall, _is_value_yield_toolcall
-
-        raw = next(
-            (e for e in (checkpoint.get("pending_toolcalls") or [])
-             if e.get("tool_call_id") == tcid),
-            None,
+        return graph_resume_coordinator.graph_value_yield_toolcall(
+            self, checkpoint, tcid,
         )
-        if raw is None:
-            return False
-        entry = _PendingToolCall(
-            node_id=raw["node_id"],
-            tool_call_id=raw["tool_call_id"],
-            parked_event_key=raw["parked_event_key"],
-            arguments=dict(raw.get("arguments") or {}),
-            tool_name=raw.get("tool_name"),
-            resume_metadata=dict(raw.get("resume_metadata") or {}),
-        )
-        return _is_value_yield_toolcall(entry)
 
     def _graph_nested_agent_yield(self, checkpoint, tcid):
-        """Return the parked agent-node entry for ``tcid`` IFF it carries a
-        nested continuation ``frames`` stack, else ``None``.
-
-        A non-empty ``frames`` marks a node that yielded from inside a nested
-        ``system__invoke_agent`` invocation; those resume through the
-        continuation walk (:meth:`_resume_graph_continuation`) rather than the
-        flat ask_user / approval path.
-        """
-        ay = next(
-            (e for e in (checkpoint.get("pending_agent_yields") or [])
-             if e.get("tool_call_id") == tcid),
-            None,
+        return graph_resume_coordinator.graph_nested_agent_yield(
+            self, checkpoint, tcid,
         )
-        if ay is None or not ay.get("frames"):
-            return None
-        return ay
 
     async def _resume_graph_continuation(
         self, session, parked, checkpoint, ay, payload, workspace, executor,
     ):
-        """Run the continuation walk for a graph-node's nested invoke_agent yield.
-
-        ``ay`` is the checkpoint's pending_agent_yield entry (with ``frames`` +
-        ``leaf``). Builds :class:`InvocationServices`, drives
-        :func:`resume_continuation` over the subagent chain, and returns a tiny
-        result carrying EITHER:
-
-        * ``agent_tool_result`` - a ``role="tool"`` Message wrapping the unwound
-          subagent result (keyed by the node's invoke_agent call id), to deliver
-          into the parked graph node as its ``agent_tool_result`` (Deliver), or
-        * ``repark_outcome`` - a ReleaseOutcome re-parking the GRAPH SESSION on
-          the deeper new leaf when a frame re-yielded (Repark). The graph itself
-          did NOT advance; only the nested subagent state changed.
-        """
-        from dataclasses import dataclass
-        from primer.model.chat import Message
-        from primer.worker.continuation import Repark, resume_continuation
-        from primer.worker.frames import frames_from_jsonable
-        from primer.model.yield_ import Yielded
-
-        @dataclass
-        class _ContResult:
-            agent_tool_result: "Message | None" = None
-            repark_outcome: "Any | None" = None
-
-        # Graph-session continuation: the subagent callables only need worker
-        # deps (storage / registry / approval), NOT an agent tool_manager - so
-        # bind the services with tool_manager=None (the GraphFrame callables,
-        # unused for a pure subagent yield, fail loudly if ever reached).
-        services = self._build_invocation_services(
-            session, workspace, executor, None,
-        )
-        frames = frames_from_jsonable(list(ay.get("frames") or []))
-        leaf = Yielded.from_jsonable(ay["leaf"])
-        outcome = await resume_continuation(frames, leaf, payload, services)
-        if isinstance(outcome, Repark):
-            return _ContResult(
-                repark_outcome=self._repark_graph_continuation(
-                    session, parked, checkpoint, ay, outcome,
-                ),
-            )
-        # Deliver: the tool_result is keyed by the node's invoke_agent call id
-        # (the outermost AgentFrame's tool_call_id), which pairs with the
-        # invoke_agent tool_use in the node's rehydrated history.
-        return _ContResult(
-            agent_tool_result=Message(role="tool", parts=[outcome.tool_result]),
+        return await graph_resume_coordinator.resume_graph_continuation(
+            self, session, parked, checkpoint, ay, payload, workspace, executor,
         )
 
     def _repark_graph_continuation(self, session, parked, checkpoint, ay, outcome):
-        """Re-park a GRAPH SESSION whose node's nested subagent re-yielded.
-
-        The graph did not advance: only the nested subagent chain changed.
-        Persist the SAME ``graph_checkpoint`` with this node's pending entry's
-        ``frames`` / ``leaf`` replaced by the reconstructed stack + new deeper
-        leaf, and park on the new leaf's event key. Mirrors
-        :meth:`_repark_graph_outcome` for the ParkRequest / timeout shape.
-        """
-        from copy import deepcopy
-        from datetime import timedelta
-        from primer.int.claim import ParkRequest, ReleaseOutcome
-        from primer.worker.frames import frames_to_jsonable
-
-        leaf = outcome.leaf
-        new_ck = deepcopy(checkpoint)
-        for e in new_ck.get("pending_agent_yields") or []:
-            if e.get("tool_call_id") == ay.get("tool_call_id"):
-                e["frames"] = frames_to_jsonable(list(outcome.frames))
-                e["leaf"] = leaf.to_jsonable()
-                # The node still awaits the SAME invoke_agent call, but the
-                # deeper leaf's event/metadata moved - re-point the entry's
-                # await key so the park + drain selection track the new leaf.
-                e["event_key"] = leaf.event_key
-                e["tool_name"] = leaf.tool_name
-                e["resume_metadata"] = dict(leaf.resume_metadata or {})
-                break
-
-        now = datetime.now(timezone.utc)
-        timeout = leaf.timeout if leaf.timeout is not None else 3600.0
-        parked_state = ParkedState(
-            yielded=leaf,
-            llm_messages=[],
-            turn_no=session.turn_no,
-            started_at=now,
-            tool_call_id=parked.tool_call_id,
-            graph_checkpoint=new_ck,
-        )
-        return ReleaseOutcome(
-            success=True,
-            drop_lease=True,
-            park=ParkRequest(
-                parked_state=parked_state.to_jsonable(),
-                parked_event_key=leaf.event_key,
-                parked_event_keys=getattr(leaf, "event_keys", None),
-                parked_until=now + timedelta(seconds=timeout),
-                parked_at=now,
-            ),
+        return graph_resume_coordinator.repark_graph_continuation(
+            self, session, parked, checkpoint, ay, outcome,
         )
 
     async def _graph_agent_tool_result(self, checkpoint, tcid, payload):
-        """Build the tool_result Message an agent-node yield continues from
-        (e.g. the ask_user answer). Returns None for tool_call approvals /
-        agent-node approvals (those take the bypass/verdict path) or when
-        the fired tcid is not a hook-backed agent yield."""
-        from primer.model.chat import Message, ToolResultPart
-
-        ay = next(
-            (e for e in (checkpoint.get("pending_agent_yields") or [])
-             if e.get("tool_call_id") == tcid),
-            None,
+        return await graph_resume_coordinator.graph_agent_tool_result(
+            self, checkpoint, tcid, payload,
         )
-        if ay is None or ay.get("tool_name") in (None, "_approval"):
-            return None
-        try:
-            hook = get_resume_hook(ay["tool_name"])
-            hook_result = hook(ay.get("resume_metadata") or {}, payload)
-            if asyncio.iscoroutine(hook_result):
-                hook_result = await hook_result
-            return Message(role="tool", parts=[ToolResultPart(
-                id=tcid or ay["tool_call_id"],
-                output=hook_result.output, error=hook_result.is_error)])
-        except Exception:
-            logger.exception("resume: ask_user hook raised for tcid %s", tcid)
-            return Message(role="tool", parts=[ToolResultPart(
-                id=tcid or ay["tool_call_id"], output="resume failed",
-                error=True)])
 
     def _repark_graph_outcome(self, session, repark):
-        """Build a ReleaseOutcome that re-parks a graph session on the
-        remaining human-interaction keys after one reply was resumed."""
-        from datetime import timedelta
-        from primer.int.claim import ParkRequest, ReleaseOutcome
-
-        now = datetime.now(timezone.utc)
-        timeout = repark.yielded.timeout if repark.yielded.timeout is not None else 3600.0
-        parked_state = ParkedState(
-            yielded=repark.yielded,
-            llm_messages=[],
-            turn_no=session.turn_no,
-            started_at=now,
-            tool_call_id=repark.tool_call_id,
-            graph_checkpoint=repark.graph_checkpoint,
-        )
-        return ReleaseOutcome(
-            success=True,
-            drop_lease=True,
-            park=ParkRequest(
-                parked_state=parked_state.to_jsonable(),
-                parked_event_key=repark.yielded.event_key,
-                parked_event_keys=repark.yielded.event_keys,
-                parked_until=now + timedelta(seconds=timeout),
-                parked_at=now,
-            ),
-        )
+        return graph_resume_coordinator.repark_graph_outcome(self, session, repark)
 
     def _repark_resumed_yield_outcome(self, session, parked, yld):
         """Re-park an AGENT session whose approval-gated tool, once approved,
@@ -1699,446 +1367,32 @@ class WorkerPool:
         return await self._workspace_registry.get_workspace(workspace_id)
 
     async def _build_executor(self, session: WorkspaceSession, workspace):
-        """Construct an executor for ``session`` against ``workspace``.
-
-        Dispatches on ``session.binding.kind``:
-
-        * ``'agent'``  -> :class:`WorkspaceAgentExecutor` driving the
-          on-disk :class:`AgentSession` allocated at create time.
-        * ``'graph'``  -> :class:`WorkspaceGraphExecutor` (deferred —
-          see :meth:`_build_graph_executor`).
-
-        Imports happen lazily inside the per-kind branch so this module
-        doesn't pull executor + LLM dependencies at startup.
-        """
-        if session.binding.kind == "agent":
-            return await self._build_agent_executor(session, workspace)
-        if session.binding.kind == "graph":
-            return await self._build_graph_executor(session, workspace)
-        raise ValueError(
-            f"unknown session binding kind: {session.binding.kind!r}"
-        )
+        return await executor_builders.build_executor(self, session, workspace)
 
     async def _build_session_executor(self, session: WorkspaceSession):
-        """Callable passed as ``SessionDispatchDeps.build_executor``.
-
-        Resolves the workspace for ``session.workspace_id`` then delegates
-        to :meth:`_build_executor`. The dispatch path consumes the
-        executor's streaming ``invoke()`` via ``async for``, so we
-        unwrap the legacy ``_TurnDriver``/``_GraphTurnDriver`` shim
-        (which exposes ``invoke`` as a non-iterable coroutine for the
-        old ``_run_one_turn`` path) and return the underlying streaming
-        executor.
-        """
-        workspace = await self._load_workspace_for_persist(session.workspace_id)
-        wrapped = await self._build_executor(session, workspace)
-        inner = getattr(wrapped, "_executor", None)
-        return inner if inner is not None else wrapped
+        return await executor_builders.build_session_executor(self, session)
 
     def _build_graph_invocation_services(
         self, *, workspace, workspace_session, graph_session_id: str,
     ):
-        """Build the GraphInvocationServices bundle for invoke_graph, or None
-        when this workspace can't host a child graph executor (no state_repo /
-        no holder session). Mirrors the per-node resolvers in
-        _build_graph_executor so an invoked graph nests under the session's
-        state with full parity (routers, approvals, subgraphs)."""
-        from primer.agent.tool_manager import ToolExecutionManager
-        from primer.graph.invoke_graph import GraphInvocationServices
-        from primer.graph.workspace_executor import WorkspaceGraphExecutor
-        from primer.model.agent import Agent
-        from primer.model.except_ import NotFoundError
-        from primer.model.graph import Graph
-
-        state_repo = getattr(workspace, "state_repo", None)
-        if state_repo is None or workspace_session is None:
-            return None
-
-        async def agent_resolver(agent_id: str):
-            row = await self._storage.get_storage(Agent).get(agent_id)
-            if row is None:
-                raise NotFoundError(f"Agent {agent_id!r} not found")
-            return row
-
-        async def llm_resolver(agent):
-            llm = await self._provider_registry.get_llm(agent.model.provider_id)
-            llm_model = await self._resolve_llm_model(agent)
-            return llm, llm_model
-
-        async def tool_manager_resolver(agent):
-            toolset_ids = _toolset_ids_from_scoped(agent.tools)
-            toolset_providers: dict = {}
-            for tid in toolset_ids:
-                toolset_providers[tid] = await self._provider_registry.get_toolset(tid)
-            return ToolExecutionManager.for_workspace(
-                toolset_providers=toolset_providers,
-                session=workspace_session,
-                approval_resolver=self._approval_resolver,
-                provider_registry=self._provider_registry,
-                tools=agent.tools,
-            )
-
-        async def graph_resolver(graph_id: str):
-            row = await self._storage.get_storage(Graph).get(graph_id)
-            if row is None:
-                raise NotFoundError(f"Graph {graph_id!r} not found")
-            return row
-
-        async def toolset_resolver(toolset_id: str):
-            return await self._provider_registry.get_toolset(toolset_id)
-
-        router_registry = getattr(self, "_router_registry", None)
-
-        async def build_child_executor(*, graph, gsid: str):
-            return WorkspaceGraphExecutor(
-                graph=graph,
-                agent_resolver=agent_resolver,
-                llm_resolver=llm_resolver,
-                tool_manager_resolver=tool_manager_resolver,
-                state_repo=state_repo,
-                graph_session_id=gsid,
-                workspace_session=workspace_session,
-                graph_resolver=graph_resolver,
-                router_registry=router_registry,
-                principal=None,
-                owns_session_lifecycle=False,
-                toolset_resolver=toolset_resolver,
-                approval_resolver=self._approval_resolver,
-            )
-
-        return GraphInvocationServices(
-            resolve_graph=graph_resolver,
-            build_child_executor=build_child_executor,
-            session_id=workspace_session.session_id,
-            workspace_id=workspace_session.workspace_id,
+        return executor_builders.build_graph_invocation_services(
+            self,
+            workspace=workspace,
+            workspace_session=workspace_session,
             graph_session_id=graph_session_id,
         )
 
     async def _build_agent_executor(self, session: WorkspaceSession, workspace):
-        """Build a turn-driver around :class:`WorkspaceAgentExecutor`.
-
-        Resolves the agent definition (snapshot first, falls back to
-        storage), the LLM via the provider registry, every toolset the
-        agent registered, and the on-disk :class:`AgentSession` slot
-        the API allocated at create time (id = ``session.id``).
-
-        Returns a small adapter (not the executor itself) that exposes
-        an awaitable ``invoke(messages)`` and a ``last_done_reason``
-        attribute. The adapter consumes the executor's async-generator
-        ``invoke`` to completion so the worker can await it as a single
-        coroutine rather than iterating the stream directly.
-        """
-        from primer.agent.tool_manager import ToolExecutionManager
-        from primer.agent.workspace_executor import WorkspaceAgentExecutor
-        from primer.model.agent import Agent
-        from primer.model.except_ import NotFoundError
-
-        binding = session.binding  # AgentSessionBinding
-        # Resolve the Agent: prefer the snapshot if the API froze one
-        # at create time, otherwise look up the live row.
-        agent = binding.agent_snapshot
-        if agent is None:
-            agent_storage = self._storage.get_storage(Agent)
-            agent = await agent_storage.get(binding.agent_id)
-            if agent is None:
-                raise NotFoundError(
-                    f"Agent {binding.agent_id!r} not found for session "
-                    f"{session.id!r}"
-                )
-
-        # Resolve the LLM adapter via the provider registry (cached).
-        llm = await self._provider_registry.get_llm(agent.model.provider_id)
-
-        # Resolve the LLMModel (provider's config row carries the
-        # context_length); used by the compaction strategy. The agent's
-        # ``model.model_name`` is the provider-side identifier.
-        llm_model = await self._resolve_llm_model(agent)
-
-        # agent.tools holds scoped tool ids (toolset_id__tool_name).
-        # Derive the unique toolset prefixes so we only resolve the
-        # toolset providers the agent actually needs.
-        toolset_ids = _toolset_ids_from_scoped(agent.tools)
-        toolset_providers: dict = {}
-        for toolset_id in toolset_ids:
-            provider = await self._provider_registry.get_toolset(toolset_id)
-            toolset_providers[toolset_id] = provider
-
-        # Get the on-disk AgentSession the API allocated at create
-        # time (Wave 2). The id matches session.id.
-        agent_session = await workspace.get_session(session.id)
-        if agent_session is None:
-            raise NotFoundError(
-                f"On-disk session slot for {session.id!r} missing on "
-                f"workspace {workspace.id!r}; was it allocated via "
-                "Workspace.start_session(..., id=sid)?"
-            )
-
-        # Build a workspace-aware ToolExecutionManager. The factory
-        # composes the agent's tool surface with the session's
-        # workspace tools and binds them to this AgentSession. The
-        # ``tools`` list is the agent's scoped-tool surface — the
-        # manager exposes exactly those tools to the LLM and rejects
-        # dispatch on anything else.
-        gis = self._build_graph_invocation_services(
-            workspace=workspace,
-            workspace_session=agent_session,
-            graph_session_id=session.id,
-        )
-        tool_manager = ToolExecutionManager.for_workspace(
-            toolset_providers=toolset_providers,
-            session=agent_session,
-            approval_resolver=self._approval_resolver,
-            provider_registry=self._provider_registry,
-            tools=agent.tools,
-            graph_invocation_services=gis,
-        )
-
-        from primer.agent.inform import SessionInformSink
-        tool_manager.set_inform_sink(SessionInformSink(
-            dispatcher=self._channel_dispatcher,
-            workspace_id=agent_session.workspace_id,
-            session_id=agent_session.session_id,
-            session=session,
-            workspace_registry=self._workspace_registry,
-            artifact_registry=self._artifact_storage_registry,
-        ))
-
-        executor = WorkspaceAgentExecutor(
-            agent=agent,
-            llm=llm,
-            llm_model=llm_model,
-            tool_manager=tool_manager,
-            session=agent_session,
-        )
-        return _TurnDriver(executor)
+        return await executor_builders.build_agent_executor(self, session, workspace)
 
     async def _build_graph_executor(self, session: WorkspaceSession, workspace):
-        """Build a turn-driver around :class:`WorkspaceGraphExecutor`.
-
-        Resolves the graph (snapshot first, falls back to storage),
-        the per-node agent + LLM + toolset resolvers (which mirror the
-        agent path), the workspace's git-backed state repo (required —
-        only :class:`primer.workspace.local.LocalWorkspace` exposes
-        one today; sandbox/container/k8s backends will need StateRepo
-        parity before they can host graph dispatch), and an optional
-        :class:`RouterRegistry` stashed on app.state at startup.
-
-        Unlike the agent path, the graph executor runs the WHOLE
-        graph in one ``invoke()`` call. The returned :class:`_GraphTurnDriver`
-        always reports ``last_done_reason = "graph_ended"`` so the
-        post-turn status mapper transitions the session straight to
-        ``ENDED`` — no re-enqueue.
-
-        Phase 2 scope:
-            - graph_resolver wired — subgraph nodes resolve from storage
-            - router_registry wired from app.state (None if no
-              callable routers registered → callable-router edges raise)
-            - workspace_session wired from the graph-holder slot
-              allocated by POST /workspaces/{id}/sessions; agents in
-              the graph receive composite system prompt augmentation
-              + workspace tools per-node. Falls back to None for
-              legacy graph-bound sessions created before the holder
-              allocation landed.
-        """
-        from primer.agent.tool_manager import ToolExecutionManager
-        from primer.graph.workspace_executor import WorkspaceGraphExecutor
-        from primer.model.agent import Agent
-        from primer.model.except_ import ConfigError, NotFoundError
-        from primer.model.graph import Graph
-
-        binding = session.binding  # GraphSessionBinding
-
-        # ① Resolve the Graph: snapshot first, then storage. Falls back
-        # gracefully so the executor sees a consistent definition even
-        # if the row is edited mid-session.
-        graph = binding.graph_snapshot
-        if graph is None:
-            graph_storage = self._storage.get_storage(Graph)
-            graph = await graph_storage.get(binding.graph_id)
-            if graph is None:
-                raise NotFoundError(
-                    f"Graph {binding.graph_id!r} not found for session "
-                    f"{session.id!r}"
-                )
-
-        # ② Workspace state-repo: required for the executor's git-backed
-        # state persistence. Only LocalWorkspace exposes one today.
-        # getattr-with-default tolerates legacy fakes that predate the
-        # state_repo addition to the ABC.
-        state_repo = getattr(workspace, "state_repo", None)
-        if state_repo is None:
-            raise ConfigError(
-                f"workspace {workspace.id!r} ({type(workspace).__name__}) "
-                "does not expose a state_repo; graph-bound sessions "
-                "require a workspace with StateRepo support "
-                "(LocalWorkspace or SandboxWorkspace)."
-            )
-
-        # ③ Per-node resolvers — closures over self so each resolver
-        # can use the same provider/storage caches as the agent path.
-
-        async def agent_resolver(agent_id: str):
-            agent_storage = self._storage.get_storage(Agent)
-            row = await agent_storage.get(agent_id)
-            if row is None:
-                raise NotFoundError(
-                    f"Agent {agent_id!r} referenced by graph "
-                    f"{graph.id!r} not found"
-                )
-            return row
-
-        async def llm_resolver(agent):
-            llm = await self._provider_registry.get_llm(
-                agent.model.provider_id
-            )
-            llm_model = await self._resolve_llm_model(agent)
-            return llm, llm_model
-
-        # ④ Holder AgentSession allocated by POST /workspaces/{id}/sessions
-        # (Phase 2). Optional — fall back to None for legacy graph-
-        # bound sessions that were created before holder allocation
-        # landed. With the holder, agents in the graph get composite
-        # system prompt augmentation + workspace tools per-node.
-        workspace_session = await workspace.get_session(session.id)
-
-        async def tool_manager_resolver(agent):
-            toolset_ids = _toolset_ids_from_scoped(agent.tools)
-            toolset_providers: dict = {}
-            for toolset_id in toolset_ids:
-                provider = await self._provider_registry.get_toolset(
-                    toolset_id
-                )
-                toolset_providers[toolset_id] = provider
-            if workspace_session is not None:
-                gis = self._build_graph_invocation_services(
-                    workspace=workspace,
-                    workspace_session=workspace_session,
-                    graph_session_id=session.id,
-                )
-                return ToolExecutionManager.for_workspace(
-                    toolset_providers=toolset_providers,
-                    session=workspace_session,
-                    approval_resolver=self._approval_resolver,
-                    provider_registry=self._provider_registry,
-                    tools=agent.tools,
-                    graph_invocation_services=gis,
-                )
-            return ToolExecutionManager(
-                toolset_providers=toolset_providers,
-                approval_resolver=self._approval_resolver,
-                provider_registry=self._provider_registry,
-                tools=agent.tools,
-            )
-
-        # ④ Optional handles wired in later phases.
-
-        async def graph_resolver(subgraph_id: str):
-            graph_storage = self._storage.get_storage(Graph)
-            row = await graph_storage.get(subgraph_id)
-            if row is None:
-                raise NotFoundError(
-                    f"Subgraph {subgraph_id!r} referenced by graph "
-                    f"{graph.id!r} not found"
-                )
-            return row
-
-        # RouterRegistry singleton stashed on app.state at startup
-        # (None if no callables registered). Pass through; the
-        # executor only needs it for _CallableRouter edges.
-        router_registry = getattr(self, "_router_registry", None)
-
-        # Structured graph input is persisted on the session row by the
-        # session-create handler as ``session.metadata['graph_input']``.
-        # Relay it into the executor so Begin materialises its NodeOutput
-        # from it and per-node templates (e.g. ``{{ initial_input.task }}``)
-        # render against the structured value. Without this the executor
-        # falls back to the (empty) messages list and any node reading a
-        # field of ``initial_input`` fails to render.
-        graph_input = (session.metadata or {}).get("graph_input")
-
-        # Resolve a toolset_id -> provider so tool_call nodes can invoke
-        # internal-toolset tools (web__web_search, system__...), not just
-        # workspace tools. Mirrors the agent path's per-toolset resolution.
-        async def toolset_resolver(toolset_id: str):
-            return await self._provider_registry.get_toolset(toolset_id)
-
-        executor = WorkspaceGraphExecutor(
-            graph=graph,
-            agent_resolver=agent_resolver,
-            llm_resolver=llm_resolver,
-            tool_manager_resolver=tool_manager_resolver,
-            state_repo=state_repo,
-            graph_session_id=session.id,
-            workspace_session=workspace_session,
-            graph_resolver=graph_resolver,
-            router_registry=router_registry,
-            graph_input=graph_input,
-            principal=None,
-            owns_session_lifecycle=True,
-            toolset_resolver=toolset_resolver,
-            approval_resolver=self._approval_resolver,
-        )
-        return _GraphTurnDriver(executor)
+        return await executor_builders.build_graph_executor(self, session, workspace)
 
     async def _resolve_llm_model(self, agent):
-        """Look up the :class:`LLMModel` row matching ``agent.model``.
-
-        Walks the configured :class:`LLMProvider`'s ``models`` list and
-        returns the entry whose ``name`` matches ``agent.model.model_name``.
-        Raises :class:`ConfigError` if the provider doesn't list the
-        requested model name.
-        """
-        from primer.model.except_ import ConfigError, NotFoundError
-        from primer.model.provider import LLMProvider
-
-        provider_storage = self._storage.get_storage(LLMProvider)
-        provider_row = await provider_storage.get(agent.model.provider_id)
-        if provider_row is None:
-            raise NotFoundError(
-                f"LLMProvider {agent.model.provider_id!r} not found "
-                f"for agent {agent.id!r}"
-            )
-        for m in provider_row.models:
-            if m.name == agent.model.model_name:
-                return m
-        raise ConfigError(
-            f"LLMProvider {agent.model.provider_id!r} does not list "
-            f"model {agent.model.model_name!r}; configured models: "
-            f"{[m.name for m in provider_row.models]}"
-        )
+        return await executor_builders.resolve_llm_model(self, agent)
 
     def _infer_post_turn_status(self, executor, session: WorkspaceSession) -> SessionStatus:
-        """Map the executor's last ``Done.stop_reason`` to a SessionStatus.
-
-        :class:`WorkspaceAgentExecutor` exposes the trailing stop reason
-        via :attr:`last_done_reason` (set after each ``invoke`` call).
-        The mapping mirrors what the executor itself decides for the
-        cases it handles:
-
-        * ``'end_turn'`` / ``'stop'`` / ``'stop_sequence'`` -> RUNNING
-          (more user-driven turns may follow).
-        * ``'tool_use'`` -> RUNNING (next turn dispatches tools).
-        * ``'max_tokens'`` / ``'error'`` / ``'content_filter'`` ->
-          WAITING (operator inspection needed).
-        * ``None`` (e.g. fake test executors that never iterate) ->
-          RUNNING (default; preserves the legacy behaviour).
-
-        Workspace-side WAITING transitions for explicit waits
-        (user-input prompt heuristic, tool-approval hand-off) are set
-        INSIDE :meth:`WorkspaceAgentExecutor.invoke` via
-        :meth:`AgentSession.set_status`. The post-turn re-read here
-        only handles cases where the executor exited cleanly without
-        having taken a wait.
-        """
-        last_reason = getattr(executor, "last_done_reason", None)
-        # Graph dispatch sets a sentinel — the graph executor runs the
-        # whole graph in one invoke() call, so there's no follow-up
-        # turn for the worker to schedule.
-        if last_reason == "graph_ended":
-            return SessionStatus.ENDED
-        if last_reason in ("max_tokens", "error", "content_filter"):
-            return SessionStatus.WAITING
-        return SessionStatus.RUNNING
+        return executor_builders.infer_post_turn_status(self, executor, session)
 
 
 class _TurnDriver:
@@ -2349,3 +1603,12 @@ class _WorkspaceIOShim:
             return await workspace.read_file(full_path)
         except Exception:  # noqa: BLE001
             return b""
+
+
+# Imported at the bottom so the helper modules (which import names defined
+# above, e.g. ``_toolset_ids_from_scoped`` / ``_TurnDriver`` / ``WorkerPool``)
+# resolve against a fully-initialised ``primer.worker.pool`` module and the
+# import cycle never bites. The WorkerPool delegators reference these by
+# attribute at call time.
+from primer.worker import executor_builders  # noqa: E402
+from primer.worker import graph_resume_coordinator  # noqa: E402
