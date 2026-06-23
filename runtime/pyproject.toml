@@ -15,6 +15,7 @@ primer-runtime = "primer_runtime.server:main"
 
 
 
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -30,6 +31,7 @@ testpaths = ["tests"]
 
 [tool.uv.sources]
 primer = { path = "../" }
+
 
 
 [dependency-groups]

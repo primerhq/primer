@@ -58,6 +58,7 @@ primer = "primer.cli:app"
 
 
 
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -236,6 +237,7 @@ commit_author = "github-actions[bot] <41898282+github-actions[bot]@users.noreply
 
 [tool.semantic_release.branches.main]
 match = "main"
+
 
 
 [dependency-groups]
