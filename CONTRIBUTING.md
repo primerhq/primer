@@ -29,7 +29,9 @@ not duplicated. Before you write any code:
    change, and reference the issue in the PR description with `Closes #<n>` (the
    PR template has a "Related issues" field for this). Every PR should trace
    back to an issue; for a genuinely trivial fix (a typo, an obvious one-liner)
-   you may describe it inline in the PR instead of filing a separate issue.
+   you may describe it inline in the PR instead of filing a separate issue. CI
+   enforces the issue link, so for such a trivial fix add the `no-issue` label
+   to the PR so the check passes.
 
 Security issues are the one exception: do NOT open a public issue. Report them
 privately as described in [SECURITY.md](SECURITY.md).
