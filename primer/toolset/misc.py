@@ -452,7 +452,7 @@ async def _calculate_handler(arguments: dict[str, Any]) -> ToolCallResult:
         result = _safe_eval(tree)
     except ValueError as exc:
         return _err(str(exc), error_type="bad-request")
-    except (ZeroDivisionError, OverflowError, ValueError) as exc:
+    except (ZeroDivisionError, OverflowError) as exc:
         return _err(
             f"evaluation error: {type(exc).__name__}: {exc}",
             error_type="bad-request",

@@ -191,8 +191,14 @@ class _PostgresSubscription(EventSubscription):
                 # reconnect. A healthy connection simply parks here.
                 dropped: asyncio.Event = asyncio.Event()
 
-                def _on_termination(_conn) -> None:
-                    dropped.set()
+                # Bind this iteration's event via a default argument so the
+                # listener sets its OWN event, not whatever ``dropped`` is
+                # bound to in a later iteration. The listener is never
+                # de-registered, so a stale closure left on a pooled
+                # connection could otherwise fire against the current
+                # iteration's event and trip a spurious reconnect.
+                def _on_termination(_conn, _ev: asyncio.Event = dropped) -> None:
+                    _ev.set()
 
                 try:
                     conn.add_termination_listener(_on_termination)
