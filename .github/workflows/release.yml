@@ -111,6 +111,11 @@ jobs:
         uses: python-semantic-release/python-semantic-release@v9.21.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # The first release spans ~1785 commits; the auto-generated
+          # notes exceed the GitHub release-body size limit (125k chars, 422).
+          # Skip the VCS release object here; the tag still pushes and PyPI +
+          # GHCR still publish.
+          vcs_release: "false"
 
   publish-pypi:
     needs: release
