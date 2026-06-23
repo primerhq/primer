@@ -336,6 +336,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const [temperature, setTemperature] = React.useState(
     existing?.temperature != null ? String(existing.temperature) : ""
   );
+  // response_format is a structured-output JSON Schema object stored on
+  // the agent. Held as raw text in the form (pretty-printed from the
+  // saved value on edit) + a parse-error flag; parsed to an object at
+  // submit time. Empty text == no structured output (omitted from body).
+  // Mirrors the graph editor's per-node response_format JSON field.
+  const [responseFormat, setResponseFormat] = React.useState(
+    existing?.response_format != null
+      ? JSON.stringify(existing.response_format, null, 2)
+      : ""
+  );
+  const [responseFormatError, setResponseFormatError] = React.useState(null);
   const [fieldErrors, setFieldErrors] = React.useState({});
   const [activeTab, setActiveTab] = React.useState("basic");
   const [toolFilter, setToolFilter] = React.useState("");
@@ -463,6 +474,20 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
 
   const submit = async () => {
     setFieldErrors({});
+    setResponseFormatError(null);
+    // response_format: parse the textarea once here so a malformed
+    // schema is caught client-side (jump to Advanced + show the error)
+    // before the request goes out. Empty text == no structured output.
+    let responseFormatValue = null;
+    if (responseFormat.trim() !== "") {
+      try {
+        responseFormatValue = JSON.parse(responseFormat);
+      } catch (e) {
+        setResponseFormatError(String(e.message || e));
+        setActiveTab("advanced");
+        return;
+      }
+    }
     // Agent.tools is the list of scoped tool ids — no separate
     // allowlist field; an empty list means no tools registered.
     const tools = [...selectedScopedIds].sort();
@@ -477,6 +502,12 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
     };
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
+    }
+    // PUT is a full replace, so always send response_format on edit
+    // (null clears a previously-set schema); on create only include it
+    // when set, matching the model default.
+    if (responseFormatValue !== null || isEdit) {
+      body.response_format = responseFormatValue;
     }
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
@@ -824,6 +855,46 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             />
             {fieldErrors["body.temperature"] && (
               <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.temperature"]}</div>
+            )}
+          </div>
+          <div className="field">
+            <label className="field-label" htmlFor="na-response-format">
+              Response format <span className="hint">optional · structured-output JSON Schema</span>
+            </label>
+            <textarea
+              id="na-response-format"
+              className="textarea mono"
+              value={responseFormat}
+              onChange={(e) => setResponseFormat(e.target.value)}
+              onBlur={() => {
+                // Validate-on-blur like the graph editor's GR_JsonField:
+                // empty == no schema (cleared), otherwise must parse.
+                if (responseFormat.trim() === "") {
+                  setResponseFormatError(null);
+                  return;
+                }
+                try {
+                  JSON.parse(responseFormat);
+                  setResponseFormatError(null);
+                } catch (e) {
+                  setResponseFormatError(String(e.message || e));
+                }
+              }}
+              rows={6}
+              placeholder={'{\n  "type": "object",\n  "properties": { "verdict": { "type": "string" } },\n  "required": ["verdict"]\n}'}
+              style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+              data-testid="agent-response-format"
+            />
+            <div className="field-help">
+              When set, the LLM is constrained to emit JSON matching this schema (same shape
+              as a graph agent-node's <span className="mono">response_format</span>). Leave blank
+              to run the agent unconstrained. Validated as a JSON Schema on save.
+            </div>
+            {responseFormatError && (
+              <div className="field-help" style={{ color: "var(--red)" }}>JSON parse: {responseFormatError}</div>
+            )}
+            {fieldErrors["body.response_format"] && (
+              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.response_format"]}</div>
             )}
           </div>
         </>

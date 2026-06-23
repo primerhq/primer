@@ -28,11 +28,32 @@ underlying agent definition has been edited or deleted.
 
 from __future__ import annotations
 
-from typing import ClassVar
+from typing import Any, ClassVar
 
-from pydantic import BaseModel, Field, PositiveInt
+from pydantic import BaseModel, Field, PositiveInt, field_validator
 
 from primer.model.common import Describeable
+
+
+def _validate_response_format_schema(
+    value: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Validate ``value`` against the JSON Schema 2020-12 meta-schema.
+
+    Mirrors the graph-node ``response_format`` validator
+    (:func:`primer.model.graph._validate_json_schema`): malformed
+    schemas are rejected at save time rather than at runtime, and
+    ``None`` (the default, unconstrained) passes through unchanged.
+    """
+    if value is None:
+        return value
+    import jsonschema as _js
+
+    try:
+        _js.Draft202012Validator.check_schema(value)
+    except _js.SchemaError as exc:
+        raise ValueError(f"invalid JSON Schema: {exc.message}") from exc
+    return value
 
 
 class AgentModel(BaseModel):
@@ -139,6 +160,18 @@ class Agent(Describeable):
             "the runtime falls back to its default compaction prompt."
         ),
     )
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional structured-output JSON Schema. When set, the "
+            "runtime forwards it as the agent's "
+            "``invoke(response_format=...)`` so the LLM is constrained "
+            "to emit JSON matching the schema. ``None`` (default) runs "
+            "the agent unconstrained. Validated against the JSON Schema "
+            "2020-12 meta-schema at save time; same shape and semantics "
+            "as a graph agent-node's per-node ``response_format``."
+        ),
+    )
     harness_id: str | None = Field(
         default=None,
         description=(
@@ -146,6 +179,10 @@ class Agent(Describeable):
             "Mutation through the public CRUD endpoints returns 409 — "
             "use the harness's sync/uninstall flow instead."
         ),
+    )
+
+    _validate_response_format = field_validator("response_format")(
+        _validate_response_format_schema
     )
 
 

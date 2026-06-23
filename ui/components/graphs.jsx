@@ -656,6 +656,11 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   const [edgeMode, setEdgeMode] = React.useState("static");  // "static" | "conditional"
   const [dragging, setDragging] = React.useState(null);
   const [showAddMenu, setShowAddMenu] = React.useState(false);
+  // Raw-spec import escape hatch (GAP-6): paste a full graph spec (the
+  // same JSON shape `PUT /graphs/{id}` / `primectl create graph -f`
+  // takes) and load it into the editor as an alternate to clicking the
+  // whole graph node-by-node. null = closed.
+  const [importOpen, setImportOpen] = React.useState(false);
   // Inline-create-agent flow. Holds the node id the user was editing
   // when they clicked '+ New agent' so the freshly-created agent can
   // be pinned to exactly that node on success — even if the user
@@ -730,6 +735,57 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   const onAutoLayout = () => {
     if (!window.primerVendor || !window.primerVendor.autoLayout) return;
     setDraft((d) => window.primerVendor.autoLayout(d));
+  };
+
+  // GAP-6 raw-spec import. Validates the parsed object has the minimal
+  // graph shape (nodes/edges arrays + a string entry_node_id), then
+  // loads it into the editor draft. We keep the current graph id (the
+  // PUT is keyed on the URL's graphId; a pasted spec may carry a
+  // different id, which we ignore so save can't silently retarget) and
+  // re-apply auto-layout to mint UI-only x/y like the initial seed.
+  // Throws a string on a shape problem so the modal can show it inline.
+  const applyImportedSpec = (spec) => {
+    if (spec === null || typeof spec !== "object" || Array.isArray(spec)) {
+      throw "Spec must be a JSON object with nodes / edges / entry_node_id.";
+    }
+    if (!Array.isArray(spec.nodes)) {
+      throw "`nodes` must be an array.";
+    }
+    if (spec.edges != null && !Array.isArray(spec.edges)) {
+      throw "`edges` must be an array when present.";
+    }
+    if (spec.entry_node_id != null && typeof spec.entry_node_id !== "string") {
+      throw "`entry_node_id` must be a string when present.";
+    }
+    const next = {
+      ...draft,
+      // Never let a pasted id retarget the PUT - keep the editor's id.
+      id: draft.id,
+      description: typeof spec.description === "string" ? spec.description : draft.description,
+      nodes: spec.nodes.map((n) => ({ ...n })),
+      edges: (spec.edges || []).map((e) => ({ ...e })),
+      entry_node_id: spec.entry_node_id ?? draft.entry_node_id,
+    };
+    if (spec.max_iterations != null) {
+      next.max_iterations = spec.max_iterations;
+    } else {
+      delete next.max_iterations;
+    }
+    const laid = (window.primerVendor && window.primerVendor.autoLayout)
+      ? window.primerVendor.autoLayout(next)
+      : next;
+    setDraft(laid);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setAddEdgeMode(null);
+    setImportOpen(false);
+    if (typeof pushToast === "function") {
+      pushToast({
+        kind: "info",
+        title: "Spec imported",
+        detail: `${(spec.nodes || []).length} node(s) loaded - review, then Save to persist.`,
+      });
+    }
   };
 
   const onAddNode = (kind) => {
@@ -983,6 +1039,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
           </button>
         </div>
         <Btn size="sm" kind="ghost" icon="refresh" onClick={onAutoLayout}>Auto-layout</Btn>
+        <Btn size="sm" kind="ghost" icon="code" onClick={() => setImportOpen(true)}>Import spec</Btn>
         <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 6 }}>
           {diffCount > 0 && <span className="muted text-sm tabular">· unsaved changes</span>}
           <Btn size="sm" kind="ghost" onClick={onDiscard} disabled={diffCount === 0}>Discard</Btn>
@@ -1107,7 +1164,92 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
           }}
         />
       )}
+
+      {importOpen && (
+        <GR_ImportSpecModal
+          currentDraft={draft}
+          onClose={() => setImportOpen(false)}
+          onApply={applyImportedSpec}
+        />
+      )}
     </div>
+  );
+}
+
+// GR_ImportSpecModal - raw graph-spec paste/import escape hatch (GAP-6).
+// Pre-fills the textarea with the current draft (coords stripped, same
+// body shape onSave PUTs) so it doubles as an export/edit surface, and
+// hands the parsed object to onApply, which validates the shape and
+// replaces the editor draft. Parse + shape errors render inline rather
+// than crashing the editor.
+function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
+  const _seedText = React.useMemo(() => {
+    if (!currentDraft) return "";
+    const body = {
+      id: currentDraft.id,
+      description: currentDraft.description,
+      nodes: (currentDraft.nodes || []).map(GR_stripCoords),
+      edges: (currentDraft.edges || []).map((e) => ({ ...e })),
+      entry_node_id: currentDraft.entry_node_id,
+      ...(currentDraft.max_iterations != null
+        ? { max_iterations: currentDraft.max_iterations }
+        : {}),
+    };
+    return JSON.stringify(body, null, 2);
+  }, [currentDraft]);
+
+  const [text, setText] = React.useState(_seedText);
+  const [error, setError] = React.useState(null);
+
+  const apply = () => {
+    let parsed;
+    try {
+      parsed = JSON.parse(text);
+    } catch (e) {
+      setError("JSON parse: " + String(e.message || e));
+      return;
+    }
+    try {
+      onApply(parsed);  // throws a string on a shape problem
+    } catch (e) {
+      setError(typeof e === "string" ? e : String(e.message || e));
+    }
+  };
+
+  return (
+    <Modal
+      title="Import graph spec"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn kind="primary" icon="check" onClick={apply}>Load into editor</Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label">
+          Graph spec JSON <span className="hint">same shape as PUT /graphs/{"{id}"} / primectl create graph -f</span>
+        </label>
+        <textarea
+          className="textarea mono"
+          rows={18}
+          value={text}
+          onChange={(e) => { setText(e.target.value); if (error) setError(null); }}
+          placeholder={'{\n  "nodes": [ ... ],\n  "edges": [ ... ],\n  "entry_node_id": "begin"\n}'}
+          style={{ width: "100%", fontFamily: "IBM Plex Mono", fontSize: 12 }}
+          data-testid="graph-import-spec"
+        />
+        <div className="field-help muted">
+          Loads the pasted spec into the visual editor (the graph id stays the editor's;
+          a pasted id is ignored so Save can't retarget another graph). Nothing is persisted
+          until you press Save. Coordinates are auto-laid-out on load.
+        </div>
+        {error && (
+          <div className="field-help" style={{ color: "var(--red)" }}>{error}</div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
