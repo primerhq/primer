@@ -9,6 +9,31 @@ workflow, and the Definition of Done) lives in [AGENTS.md](AGENTS.md).
 > Definition of Done, and the hard rules). The rules below are the human-facing
 > summary and do not override it.
 
+## Contribution workflow
+
+Primer uses an **issue-first** workflow so that work is tracked, agreed on, and
+not duplicated. Before you write any code:
+
+1. **Search existing issues first.** Look through the
+   [issue tracker](https://github.com/<org>/primer/issues), including closed
+   issues, for an existing report or request that matches. If one already
+   exists, comment there to say you would like to work on it rather than opening
+   a duplicate.
+2. **If nothing matches, open an issue first.** Use the
+   [bug report or feature request templates](.github/ISSUE_TEMPLATE/) to
+   describe the problem or proposal, and wait for a maintainer to confirm the
+   direction before investing in a large change. For open-ended questions, use
+   [Discussions](https://github.com/<org>/primer/discussions) instead of an
+   issue.
+3. **Open a pull request against that issue.** Branch off `main`, make the
+   change, and reference the issue in the PR description with `Closes #<n>` (the
+   PR template has a "Related issues" field for this). Every PR should trace
+   back to an issue; for a genuinely trivial fix (a typo, an obvious one-liner)
+   you may describe it inline in the PR instead of filing a separate issue.
+
+Security issues are the one exception: do NOT open a public issue. Report them
+privately as described in [SECURITY.md](SECURITY.md).
+
 ## Development setup
 
 Primer targets Python 3.13 and uses [uv](https://github.com/astral-sh/uv) for
@@ -148,9 +173,10 @@ PR mechanics:
 
 ## Reporting bugs and requesting features
 
-Open an issue using the templates under
-[.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/). For security issues, do not
-open a public issue; see [SECURITY.md](SECURITY.md).
+Follow the [issue-first contribution workflow](#contribution-workflow) above:
+search the existing issues, then file a new one using the templates under
+[.github/ISSUE_TEMPLATE/](.github/ISSUE_TEMPLATE/) (blank issues are disabled).
+For security issues, do not open a public issue; see [SECURITY.md](SECURITY.md).
 
 ## Code of conduct
 
