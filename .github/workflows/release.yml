@@ -125,17 +125,17 @@ jobs:
       - name: Upload primer
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN_PRIMER }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: uv run --with twine twine upload --skip-existing dist_primer/*
       - name: Upload primer-runtime
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN_RUNTIME }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: uv run --with twine twine upload --skip-existing dist_runtime/*
       - name: Upload primectl
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN_PRIMECTL }}
+          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
         run: uv run --with twine twine upload --skip-existing dist_primectl/*
 
   publish-images:
