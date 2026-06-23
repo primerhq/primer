@@ -1,6 +1,6 @@
 [project]
 name = "primer-ai"
-version = "0.0.1"
+version = "0.1.0"
 description = "Microagents framework"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -56,6 +56,7 @@ dependencies = [
 [project.scripts]
 primer = "primer.cli:app"
 
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
@@ -71,6 +72,7 @@ default-groups = ["dev", "docs"]
 [tool.uv.workspace]
 members = ["primectl"]
 
+
 [tool.hatch.build.targets.wheel]
 packages = ["primer"]
 # Docs are a standalone static site, not a runtime concern. The markdown
@@ -83,27 +85,6 @@ packages = ["primer"]
 # console without a separate checkout; `_resolve_ui_dir()` prefers it.
 "ui" = "primer/_ui"
 
-[dependency-groups]
-dev = [
-    "grpcio-tools>=1.81.1",
-    "playwright>=1.60.0",
-    "pre-commit>=4.0.0",
-    "pytest>=9.1.0",
-    "pytest-asyncio>=1.4.0",
-    "pytest-cov>=7.1.0",
-    "pytest-playwright>=0.8.0",
-    "pytest-xdist>=3.8.0",
-    "respx>=0.23.1",
-    "ruff>=0.15.18",
-    "testcontainers[postgres]>=4.14.2",
-]
-docs = [
-    "markdown-it-py>=3",
-    "mdit-py-plugins>=0.4",
-]
-# python-semantic-release drives the lockstep version bump + tag + GitHub
-# release in the release workflow; synced via `uv sync --group release`.
-release = ["python-semantic-release>=9,<10"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -131,6 +112,7 @@ markers = [
     "requires_cluster: e2e needs a live Kubernetes cluster (deselect with -m 'not requires_cluster')",
     "requires_channel: e2e needs live channel credentials (deselect with -m 'not requires_channel')",
 ]
+
 
 [tool.coverage.run]
 source = ["primer"]
@@ -178,6 +160,7 @@ exclude_lines = [
 # Per-module overrides — adapter modules ramp up to 90% as they land.
 # Until primer/llm/* and primer/embedder/* contain code, the gate is
 # effectively a no-op because there are no covered statements yet.
+
 
 [tool.ruff]
 # Match the codebase: Python 3.13, 88-column source.
@@ -237,6 +220,7 @@ ignore = [
     "UP047",  # non-pep695-generic-function
 ]
 
+
 [tool.semantic_release]
 tag_format = "v{version}"
 allow_zero_version = true
@@ -251,3 +235,26 @@ commit_author = "github-actions[bot] <41898282+github-actions[bot]@users.noreply
 
 [tool.semantic_release.branches.main]
 match = "main"
+
+[dependency-groups]
+dev = [
+    "grpcio-tools>=1.81.1",
+    "playwright>=1.60.0",
+    "pre-commit>=4.0.0",
+    "pytest>=9.1.0",
+    "pytest-asyncio>=1.4.0",
+    "pytest-cov>=7.1.0",
+    "pytest-playwright>=0.8.0",
+    "pytest-xdist>=3.8.0",
+    "respx>=0.23.1",
+    "ruff>=0.15.18",
+    "testcontainers[postgres]>=4.14.2",
+]
+docs = [
+    "markdown-it-py>=3",
+    "mdit-py-plugins>=0.4",
+]
+# python-semantic-release drives the lockstep version bump + tag + GitHub
+# release in the release workflow; synced via `uv sync --group release`.
+release = ["python-semantic-release>=9,<10"]
+

@@ -1,6 +1,6 @@
 [project]
 name = "primer-runtime"
-version = "1.0.0"
+version = "0.1.0"
 description = "Workspace runtime server - persistent in-container WS process"
 readme = "README.md"
 requires-python = ">=3.13"
@@ -13,12 +13,22 @@ dependencies = [
 [project.scripts]
 primer-runtime = "primer_runtime.server:main"
 
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["primer_runtime"]
+
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+
+[tool.uv.sources]
+primer = { path = "../" }
 
 [dependency-groups]
 dev = [
@@ -27,9 +37,3 @@ dev = [
     "pytest-asyncio>=0.24",
 ]
 
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-testpaths = ["tests"]
-
-[tool.uv.sources]
-primer = { path = "../" }
