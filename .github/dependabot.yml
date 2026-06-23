@@ -12,7 +12,7 @@ updates:
   - package-ecosystem: "uv"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 10
     groups:
       python-minor-patch:
@@ -29,7 +29,7 @@ updates:
   - package-ecosystem: "uv"
     directory: "/runtime"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 10
     groups:
       python-minor-patch:
@@ -46,7 +46,7 @@ updates:
   - package-ecosystem: "uv"
     directory: "/primectl"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
@@ -58,7 +58,7 @@ updates:
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     labels:
       - "dependencies"
       - "ci"
@@ -69,7 +69,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     labels:
       - "dependencies"
       - "docker"
@@ -79,7 +79,7 @@ updates:
   - package-ecosystem: "docker"
     directory: "/runtime"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
     labels:
       - "dependencies"
       - "docker"
