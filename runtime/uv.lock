@@ -1991,7 +1991,7 @@ docs = [
     { name = "markdown-it-py", specifier = ">=3" },
     { name = "mdit-py-plugins", specifier = ">=0.4" },
 ]
-release = [{ name = "python-semantic-release", specifier = ">=9,<10" }]
+release = [{ name = "python-semantic-release", specifier = ">=9,<11" }]
 
 [[package]]
 name = "primer-runtime"
