@@ -75,6 +75,13 @@ updates:
       - "docker"
     commit-message:
       prefix: "chore(docker)"
+    # Pinned to python:3.12-slim deliberately so `pipx install primer-ai[full]`
+    # works on stock 3.12; do not propose 3.13+ base-image bumps.
+    ignore:
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
 
   - package-ecosystem: "docker"
     directory: "/runtime"
@@ -85,3 +92,9 @@ updates:
       - "docker"
     commit-message:
       prefix: "chore(docker)"
+    # Pinned to python:3.12-slim deliberately (see /); ignore 3.13+ bumps.
+    ignore:
+      - dependency-name: "python"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"

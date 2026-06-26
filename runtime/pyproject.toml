@@ -3,7 +3,7 @@ name = "primer-runtime"
 version = "0.1.0"
 description = "Workspace runtime server - persistent in-container WS process"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "aiohttp>=3.11",
     "watchfiles>=1.0",
@@ -30,13 +30,13 @@ testpaths = ["tests"]
 
 
 [tool.uv.sources]
-primer = { path = "../" }
+primer-ai = { path = "../" }
 
 
 
 [dependency-groups]
 dev = [
-    "primer",
+    "primer-ai",
     "pytest>=9.0",
     "pytest-asyncio>=0.24",
 ]

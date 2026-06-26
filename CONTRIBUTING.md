@@ -37,7 +37,7 @@ privately as described in [SECURITY.md](SECURITY.md).
 
 ## Development setup
 
-Primer targets Python 3.13 and uses [uv](https://github.com/astral-sh/uv) for
+Primer targets Python 3.12 and uses [uv](https://github.com/astral-sh/uv) for
 dependency and environment management. The stack is FastAPI + asyncio with
 Postgres + pgvector, and a vanilla-React (JSX, no build step) operator console.
 
