@@ -96,3 +96,50 @@ def test_u0011_llm_provider_modal_shows_t0379_cross_validation_warning(
         "T0379 anomaly tag missing from the modal body — copy edit "
         "dropped the anomaly reference?\nModal text was:\n" + modal_text
     )
+
+
+def test_provider_create_disabled_until_model_name_filled(
+    page,
+    console_url: str,
+) -> None:
+    """Regression: the New provider modal's Create button must stay
+    disabled until every model row has its required fields filled.
+
+    Pre-fix, ``canSubmit`` only checked ``models.length > 0``. The
+    ``Add`` button seeds a row with blank fields, so adding a row and
+    leaving the name empty enabled Create; submitting then sent
+    ``models: [{}]``, which the API rejects with 422
+    ``body.models.0.name: Field required``. The fix requires every
+    non-optional model field to be non-empty before enabling Create.
+
+    Uses the embedding provider modal (single ``name`` model field, no
+    backend precondition): fill the required Base URL, add an empty model
+    row, assert Create is disabled, then type a model name and assert it
+    becomes enabled.
+    """
+    from playwright.sync_api import expect
+
+    page.goto(
+        console_url + "#/providers/embedding", wait_until="domcontentloaded"
+    )
+    page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
+
+    page.get_by_role("button", name="New embedding provider").first.click()
+    modal = page.locator(".modal").first
+    modal.wait_for(state="visible", timeout=5_000)
+
+    create_btn = modal.get_by_role("button", name="Create", exact=True)
+
+    # Fill the required Base URL so only the empty model row gates submit.
+    modal.get_by_placeholder("https://api.openai.com/v1").fill(
+        "http://localhost:1234/v1"
+    )
+
+    # Add a model row but leave its name blank — the regression case.
+    modal.get_by_role("button", name="Add", exact=True).click()
+    expect(modal.get_by_placeholder("Model name")).to_be_visible()
+    expect(create_btn).to_be_disabled()
+
+    # Typing a model name unblocks Create.
+    modal.get_by_placeholder("Model name").fill("text-embedding-test")
+    expect(create_btn).to_be_enabled()
