@@ -172,7 +172,14 @@ async def test_worker_only_mode_does_not_mount_entity_routers(
     mock_storage_provider: _FakeStorageProvider,
 ) -> None:
     """In WORKER-only mode only health + workers routers should mount;
-    entity routers (workspaces, sessions, etc.) must be absent."""
+    entity routers (workspaces, sessions, etc.) must be absent.
+
+    Asserts on the OpenAPI schema's registered paths rather than scanning
+    ``app.routes``: FastAPI 0.138 wraps ``include_router`` results in nested
+    ``_IncludedRouter`` containers whose leaf paths are no longer flatly
+    enumerable on ``app.routes``, but ``app.openapi()["paths"]`` is the
+    stable, prefix-resolved public surface.
+    """
     monkeypatch.setattr(
         "primer.api.app._build_storage_provider",
         lambda _cfg: mock_storage_provider,
@@ -185,7 +192,7 @@ async def test_worker_only_mode_does_not_mount_entity_routers(
         ),
     )
     app = create_app(cfg)
-    paths = {getattr(route, "path", "") for route in app.routes}
+    paths = set(app.openapi()["paths"].keys())
     assert any("/v1/health" in p for p in paths)
     assert any("/v1/workers" in p for p in paths)
     assert not any("/v1/workspaces" in p for p in paths)
