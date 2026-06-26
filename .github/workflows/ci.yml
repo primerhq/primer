@@ -1,0 +1,46 @@
+name: CI
+
+# Runs on every pull request and on pushes to main. This is the
+# substantive correctness gate: lint, docs hygiene, and the narrowed unit
+# sweep (the same commands `make lint` / `make docs-hygiene` / `make test`
+# run locally). Releasing is a separate, manually-dispatched workflow
+# (release.yml) so a merge never publishes by itself.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - name: Sync
+        run: |
+          uv sync --dev --group docs
+          uv pip install --no-deps ./primectl ./runtime
+      - name: Lint (ruff)
+        run: uv run ruff check .
+      - name: Docs hygiene
+        run: uv run pytest tests/docs/ -q --tb=short
+      # Narrowed unit sweep: excludes e2e / distributed / ui_e2e / integration /
+      # llm (those need a live server, multi-process Postgres, Playwright, or a
+      # real LLM). The Postgres-gated tests skip without PRIMER_PG_TEST_DSN, so
+      # this job needs no database service. The release workflow runs the
+      # Postgres-backed boot smoke before publishing.
+      - name: Unit sweep
+        run: >-
+          uv run pytest tests/ -q
+          --ignore=tests/distributed --ignore=tests/ui_e2e
+          --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm

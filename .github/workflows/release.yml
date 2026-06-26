@@ -1,8 +1,13 @@
 name: Release
 
+# Manual-only: a release is never cut by merging to main. A maintainer with
+# write access dispatches this from the Actions tab (or `gh workflow run
+# release.yml`) when they want to publish. python-semantic-release then
+# decides the version from the conventional commits since the last tag and,
+# if a release is warranted, publishes to PyPI + GHCR. Per-PR correctness is
+# gated separately by ci.yml.
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 concurrency:
   group: release
