@@ -220,7 +220,7 @@ const PROVIDER_KINDS_FIELDS = {
       ],
       modelFields: [
         { key: "name", label: "Model name", type: "text", flex: 2 },
-        { key: "max_pair_length", label: "Max pair length", type: "number", flex: 1, min: 1 },
+        { key: "max_pair_length", label: "Max pair length", type: "number", flex: 1, min: 1, optional: true },
       ],
     },
   },
@@ -791,6 +791,12 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
 
   const canSubmit = !!provider
     && models.length > 0
+    // Every model row must have its required fields filled. Model fields
+    // are required by default; only those flagged `optional` (e.g. a
+    // reranker's max_pair_length) may be blank. Without this, an empty
+    // model row (the Add button seeds blank fields) submitted
+    // `models: [{}]` and the API rejected it with a 422 on models.0.name.
+    && models.every((m) => def?.modelFields.every((f) => f.optional || String(m[f.key] ?? "").trim() !== ""))
     && def?.config.every((f) => !f.required || (configValues[f.key] != null && configValues[f.key] !== ""))
     && !create.loading;
 
