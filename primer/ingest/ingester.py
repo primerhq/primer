@@ -56,11 +56,13 @@ class DocumentIngester:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size!r}")
         if loader is None:
-            from primer.ingest.loaders.docling import DoclingLoader
+            # Route through the lazy package re-export so a missing 'docling'
+            # extra surfaces the install hint rather than a bare import error.
+            from primer.ingest.loaders import DoclingLoader
 
             loader = DoclingLoader()
         if splitter is None:
-            from primer.ingest.splitters.docling import DoclingSplitter
+            from primer.ingest.splitters import DoclingSplitter
 
             splitter = DoclingSplitter()
         self._collection = collection

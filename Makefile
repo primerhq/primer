@@ -19,8 +19,8 @@ help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
 
-setup: ## Install dependencies (uv sync)
-	uv sync
+setup: ## Install dependencies (uv sync --all-extras)
+	uv sync --all-extras
 
 test: ## Run the narrowed unit sweep (excludes e2e/distributed/ui_e2e/integration/llm)
 	uv run pytest tests/ -q $(PYTEST_IGNORES) --tb=short

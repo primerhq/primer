@@ -39,7 +39,13 @@ class VectorStoreProviderFactory:
 
             return PgVectorScaleStoreProvider(config.config)  # type: ignore[arg-type]
         if config.provider == VectorStoreProviderType.LANCE:
-            from primer.vector.lance import LanceVectorStoreProvider
+            try:
+                from primer.vector.lance import LanceVectorStoreProvider
+            except ModuleNotFoundError as exc:
+                raise ConfigError(
+                    "the LanceDB vector store needs the optional 'lance' "
+                    "extra; install it with: pip install 'primer-ai[lance]'"
+                ) from exc
 
             return LanceVectorStoreProvider(config.config)  # type: ignore[arg-type]
         raise ConfigError(

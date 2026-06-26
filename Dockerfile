@@ -56,8 +56,11 @@ WORKDIR /app
 # ----- Layer 2/3: dependency install (cached on pyproject+lock) -----
 # README.md is referenced by pyproject.toml's `readme = "README.md"`
 # field, so hatchling needs it present even for a deps-only sync.
+# --all-extras: the published image is batteries-included (primer-ai[full]),
+# shipping every optional backend (huggingface, docling, lance, channels,
+# docker, kubernetes). Slim is for pip/pipx users who opt out via extras.
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --frozen --no-install-project --no-dev
+RUN uv sync --all-extras --frozen --no-install-project --no-dev
 
 # ----- Layer 4: project source -----
 COPY primer ./primer
@@ -69,7 +72,7 @@ RUN chmod +x /usr/local/bin/primer-entrypoint.sh
 # ----- Layer 5: install the project itself -----
 # Editable install (uv default) so /app/primer is the live tree -
 # necessary for the console mount's `_UI_DIR` path math.
-RUN uv sync --frozen --no-dev
+RUN uv sync --all-extras --frozen --no-dev
 
 EXPOSE 8000
 

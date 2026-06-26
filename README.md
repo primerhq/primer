@@ -130,12 +130,14 @@ Primer does not press "go" on the loop for you - it gives you the orchestration 
 
 Pick whichever install fits. All three start the same server zero-config on an embedded SQLite database - perfect for a first look.
 
-**pipx** (isolated CLI install; needs Python 3.13+):
+**pipx** (isolated CLI install; needs Python 3.12+):
 
 ```bash
-pipx install primer-ai
+pipx install 'primer-ai[full]'                   # batteries-included
 primer api                                       # API + in-process worker
 ```
+
+The bare `pipx install primer-ai` installs a lean core (REST API, console, MCP, SQLite/Postgres storage, and the API-based LLM/embedder providers). The `[full]` extra adds the optional backends - local HuggingFace embeddings, Docling ingestion, LanceDB, Slack/Telegram/Discord channels, and the container/Kubernetes workspace backends - which pull a larger ML stack. You can also pick à la carte: `primer-ai[huggingface]`, `[docling]`, `[lance]`, `[channels]`, `[docker]`, `[kubernetes]`.
 
 **Docker** (no Python toolchain required):
 
@@ -148,7 +150,7 @@ docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest
 ```bash
 git clone https://github.com/primerhq/primer.git
 cd primer
-uv sync
+uv sync --all-extras
 uv run primer api
 ```
 
@@ -196,7 +198,7 @@ At runtime, requests arrive from many edges (REST/console, MCP clients, chat cha
 Read [AGENTS.md](https://github.com/primerhq/primer/blob/main/AGENTS.md) first - it is the authoritative contributor contract (project layout, the Definition of Done, how to run the suites, and the hard rules). [CONTRIBUTING.md](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md) is the human-facing summary.
 
 ```bash
-uv sync
+uv sync --all-extras
 docker compose up -d postgres
 # narrowed unit sweep (excludes e2e/distributed/ui_e2e):
 uv run pytest tests/ -q --ignore=tests/distributed --ignore=tests/ui_e2e \

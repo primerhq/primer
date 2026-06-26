@@ -19,6 +19,7 @@ below so external call sites keep working unchanged.
 from __future__ import annotations
 
 import asyncio
+import importlib
 import logging
 from contextlib import asynccontextmanager
 from collections.abc import AsyncIterator
@@ -35,13 +36,23 @@ from primer.api.registries import (
 )
 from primer.api.version import API_VERSION, APP_VERSION
 
-# Importing these modules registers channel adapter factories with
-# primer.channel.factory. Safe at module level; defers the
-# heavyweight platform-SDK imports until the first Channel of
-# that provider type is constructed.
-import primer.channel.slack.factory  # noqa: F401
-import primer.channel.telegram.factory  # noqa: F401
-import primer.channel.discord.factory  # noqa: F401
+# Importing these modules registers each channel adapter factory with
+# primer.channel.factory. Each platform SDK ships in the optional
+# ``channels`` extra, so a slim install may not have it; when a platform
+# package is absent we skip registering it, and ``build_adapter`` raises a
+# clear ConfigError if a Channel row later names that uninstalled provider.
+for _channel_factory_mod in (
+    "primer.channel.slack.factory",
+    "primer.channel.telegram.factory",
+    "primer.channel.discord.factory",
+):
+    try:
+        importlib.import_module(_channel_factory_mod)
+    except ModuleNotFoundError:
+        logging.getLogger(__name__).debug(
+            "channel platform not installed; skipping registration: %s",
+            _channel_factory_mod,
+        )
 from primer.model.scheduler import RuntimeMode
 from primer.toolset.misc import build_misc_toolset
 from primer.toolset.system import build_system_toolset
