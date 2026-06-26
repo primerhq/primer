@@ -3225,7 +3225,6 @@ name = "primer-ai"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "aiodocker" },
     { name = "aiohttp" },
     { name = "aiosqlite" },
     { name = "anthropic" },
@@ -3233,16 +3232,12 @@ dependencies = [
     { name = "asyncpg" },
     { name = "croniter" },
     { name = "ddgs" },
-    { name = "discord-py" },
-    { name = "docling" },
     { name = "fastapi" },
     { name = "google-genai" },
     { name = "grpcio" },
     { name = "itsdangerous" },
     { name = "jinja2" },
     { name = "jsonschema" },
-    { name = "kubernetes-asyncio" },
-    { name = "lancedb" },
     { name = "mcp" },
     { name = "mini-racer" },
     { name = "ollama" },
@@ -3259,18 +3254,48 @@ dependencies = [
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
-    { name = "python-telegram-bot" },
     { name = "pyyaml" },
     { name = "regopy" },
-    { name = "sentence-transformers" },
-    { name = "slack-bolt" },
-    { name = "slack-sdk" },
     { name = "tiktoken" },
     { name = "trafilatura" },
     { name = "transformers" },
     { name = "typer" },
     { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+channels = [
+    { name = "discord-py" },
+    { name = "python-telegram-bot" },
+    { name = "slack-bolt" },
+    { name = "slack-sdk" },
+]
+docker = [
+    { name = "aiodocker" },
+]
+docling = [
+    { name = "docling" },
+]
+full = [
+    { name = "aiodocker" },
+    { name = "discord-py" },
+    { name = "docling" },
+    { name = "kubernetes-asyncio" },
+    { name = "lancedb" },
+    { name = "python-telegram-bot" },
+    { name = "sentence-transformers" },
+    { name = "slack-bolt" },
+    { name = "slack-sdk" },
+]
+huggingface = [
+    { name = "sentence-transformers" },
+]
+kubernetes = [
+    { name = "kubernetes-asyncio" },
+]
+lance = [
+    { name = "lancedb" },
 ]
 
 [package.dev-dependencies]
@@ -3297,7 +3322,7 @@ release = [
 
 [package.metadata]
 requires-dist = [
-    { name = "aiodocker", specifier = ">=0.27.0" },
+    { name = "aiodocker", marker = "extra == 'docker'", specifier = ">=0.27.0" },
     { name = "aiohttp", specifier = ">=3.14.1" },
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "anthropic", specifier = ">=0.109.1" },
@@ -3305,16 +3330,16 @@ requires-dist = [
     { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "croniter", specifier = ">=6.2.2" },
     { name = "ddgs", specifier = ">=9.14.4" },
-    { name = "discord-py", specifier = ">=2.7.1" },
-    { name = "docling", specifier = ">=2.102.1" },
+    { name = "discord-py", marker = "extra == 'channels'", specifier = ">=2.7.1" },
+    { name = "docling", marker = "extra == 'docling'", specifier = ">=2.102.1" },
     { name = "fastapi", specifier = ">=0.136.3" },
     { name = "google-genai", specifier = ">=2.8.0" },
     { name = "grpcio", specifier = ">=1.81.1" },
     { name = "itsdangerous", specifier = ">=2.2.0" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "jsonschema", specifier = ">=4.26.0" },
-    { name = "kubernetes-asyncio", specifier = ">=36.1.0" },
-    { name = "lancedb", specifier = ">=0.33.0" },
+    { name = "kubernetes-asyncio", marker = "extra == 'kubernetes'", specifier = ">=36.1.0" },
+    { name = "lancedb", marker = "extra == 'lance'", specifier = ">=0.33.0" },
     { name = "mcp", specifier = ">=1.27.2" },
     { name = "mini-racer", specifier = ">=0.14.1" },
     { name = "ollama", specifier = ">=0.6.2" },
@@ -3327,16 +3352,17 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-logging", specifier = ">=0.63b1" },
     { name = "opentelemetry-sdk", specifier = ">=1.42.1" },
     { name = "pgvector", specifier = ">=0.4.2" },
+    { name = "primer-ai", extras = ["huggingface", "docling", "lance", "kubernetes", "docker", "channels"], marker = "extra == 'full'" },
     { name = "prometheus-client", specifier = ">=0.25.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "python-multipart", specifier = ">=0.0.32" },
-    { name = "python-telegram-bot", specifier = ">=22.8" },
+    { name = "python-telegram-bot", marker = "extra == 'channels'", specifier = ">=22.8" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "regopy", specifier = ">=1.4.0" },
-    { name = "sentence-transformers", specifier = ">=5.5.1" },
-    { name = "slack-bolt", specifier = ">=1.28.0" },
-    { name = "slack-sdk", specifier = ">=3.42.0" },
+    { name = "sentence-transformers", marker = "extra == 'huggingface'", specifier = ">=5.5.1" },
+    { name = "slack-bolt", marker = "extra == 'channels'", specifier = ">=1.28.0" },
+    { name = "slack-sdk", marker = "extra == 'channels'", specifier = ">=3.42.0" },
     { name = "tiktoken", specifier = ">=0.13.0" },
     { name = "trafilatura", specifier = ">=2.1.0" },
     { name = "transformers", specifier = ">=5.8.1" },
@@ -3344,6 +3370,7 @@ requires-dist = [
     { name = "tzdata", specifier = ">=2026.2" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.49.0" },
 ]
+provides-extras = ["huggingface", "docling", "lance", "kubernetes", "docker", "channels", "full"]
 
 [package.metadata.requires-dev]
 dev = [

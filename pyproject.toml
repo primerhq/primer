@@ -5,7 +5,6 @@ description = "Microagents framework"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aiodocker>=0.27.0",
     "aiosqlite>=0.22.1",
     "aiohttp>=3.14.1",
     "anthropic>=0.109.1",
@@ -14,14 +13,11 @@ dependencies = [
     "asyncpg>=0.31.0",
     "croniter>=6.2.2",
     "ddgs>=9.14.4",
-    "docling>=2.102.1",
     "fastapi>=0.136.3",
     "google-genai>=2.8.0",
     "grpcio>=1.81.1",
     "jinja2>=3.1.6",
     "jsonschema>=4.26.0",
-    "kubernetes-asyncio>=36.1.0",
-    "lancedb>=0.33.0",
     "mcp>=1.27.2",
     "ollama>=0.6.2",
     "openai>=2.41.1",
@@ -37,13 +33,8 @@ dependencies = [
     "pydantic>=2.13.4",
     "pydantic-settings>=2.14.1",
     "regopy>=1.4.0",
-    "discord.py>=2.7.1",
-    "python-telegram-bot>=22.8",
     "python-multipart>=0.0.32",
     "pyyaml>=6.0.3",
-    "sentence-transformers>=5.5.1",
-    "slack-bolt>=1.28.0",
-    "slack-sdk>=3.42.0",
     "tiktoken>=0.13.0",
     "trafilatura>=2.1.0",
     "transformers>=5.8.1",
@@ -52,6 +43,32 @@ dependencies = [
     "uvicorn[standard]>=0.49.0",
     "opentelemetry-instrumentation-logging>=0.63b1",
 ]
+
+# Optional feature dependencies. The default `pip install primer-ai` ships a
+# lean core (REST API + console + MCP + SQLite/Postgres storage + the
+# API-based LLM/embedder providers). Heavy, feature-specific backends live
+# behind extras so a first install does not pull a multi-GB ML/CUDA stack.
+# `primer-ai[full]` restores the batteries-included experience.
+[project.optional-dependencies]
+# Local HuggingFace embeddings + cross-encoder reranking (pulls torch).
+huggingface = ["sentence-transformers>=5.5.1"]
+# Rich multi-format document ingestion (PDF/DOCX/PPTX/HTML; pulls torch + OCR).
+docling = ["docling>=2.102.1"]
+# LanceDB embedded vector store (the alternative to the core pgvector backend).
+lance = ["lancedb>=0.33.0"]
+# Kubernetes workspace backend.
+kubernetes = ["kubernetes-asyncio>=36.1.0"]
+# Container (Docker / Podman) workspace backend.
+docker = ["aiodocker>=0.27.0"]
+# Slack / Telegram / Discord channels.
+channels = [
+    "discord.py>=2.7.1",
+    "python-telegram-bot>=22.8",
+    "slack-bolt>=1.28.0",
+    "slack-sdk>=3.42.0",
+]
+# Everything: the batteries-included install.
+full = ["primer-ai[huggingface,docling,lance,kubernetes,docker,channels]"]
 
 [project.scripts]
 primer = "primer.cli:app"

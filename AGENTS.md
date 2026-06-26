@@ -48,7 +48,9 @@ files a task touches (never `git add -A`).
 
 - **Stack:** Python 3.12, `uv`, FastAPI, asyncio, Postgres + pgvector, a
   vanilla-React (JSX, no build step) console.
-- **Setup:** `uv sync`; Postgres via `docker compose up -d postgres`; run with
+- **Setup:** `uv sync --all-extras` (the optional backends - huggingface,
+  docling, lance, channels, docker, kubernetes - live behind extras; the dev
+  and test env needs them all); Postgres via `docker compose up -d postgres`; run with
   `uv run primer api` (starts the API plus an in-process worker). A dogfood
   instance is expected to stay healthy on `:9000` between tasks.
 - **Layout:**

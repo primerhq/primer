@@ -44,7 +44,7 @@ Postgres + pgvector, and a vanilla-React (JSX, no build step) operator console.
 ```bash
 git clone https://github.com/primerhq/primer
 cd primer
-uv sync
+uv sync --all-extras
 docker compose up -d postgres
 uv run primer api   # starts the API plus an in-process worker; then GET /v1/health
 ```
@@ -78,7 +78,7 @@ A [Makefile](Makefile) wraps the same commands CI runs, so local green means
 CI green:
 
 ```bash
-make setup          # uv sync
+make setup          # uv sync --all-extras
 make lint           # ruff check .
 make fmt            # ruff check --fix .
 make test           # narrowed unit sweep
