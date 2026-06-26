@@ -3,7 +3,7 @@ name = "primer-ai"
 version = "0.1.0"
 description = "Microagents framework"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "aiodocker>=0.27.0",
     "aiosqlite>=0.22.1",
@@ -165,8 +165,8 @@ exclude_lines = [
 
 
 [tool.ruff]
-# Match the codebase: Python 3.13, 88-column source.
-target-version = "py313"
+# Match the codebase: Python 3.12, 88-column source.
+target-version = "py312"
 line-length = 88
 extend-exclude = [
     ".venv",

@@ -13,7 +13,7 @@
 
 [![License](https://img.shields.io/badge/license-Apache_2.0-61d46a.svg)](https://github.com/primerhq/primer/blob/main/LICENSE)
 [![Release](https://img.shields.io/github/actions/workflow/status/primerhq/primer/release.yml?branch=main&label=release)](https://github.com/primerhq/primer/actions/workflows/release.yml)
-[![Python](https://img.shields.io/badge/python-3.13+-3776ab.svg)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/python-3.12+-3776ab.svg)](https://www.python.org/)
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-61d46a.svg)](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
 [![Stars](https://img.shields.io/github/stars/primerhq/primer?style=flat&color=61d46a)](https://github.com/primerhq/primer/stargazers)
 

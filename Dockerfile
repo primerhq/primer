@@ -17,7 +17,7 @@
 # console works whether the package is installed editable (this image copies
 # `ui/` next to the source at /app/ui) or as a built wheel.
 
-FROM python:3.13-slim AS base
+FROM python:3.12-slim AS base
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

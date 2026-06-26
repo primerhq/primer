@@ -46,7 +46,7 @@ files a task touches (never `git add -A`).
 
 ## 2. Project setup and structure
 
-- **Stack:** Python 3.13, `uv`, FastAPI, asyncio, Postgres + pgvector, a
+- **Stack:** Python 3.12, `uv`, FastAPI, asyncio, Postgres + pgvector, a
   vanilla-React (JSX, no build step) console.
 - **Setup:** `uv sync`; Postgres via `docker compose up -d postgres`; run with
   `uv run primer api` (starts the API plus an in-process worker). A dogfood
