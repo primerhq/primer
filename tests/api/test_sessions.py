@@ -643,6 +643,48 @@ async def test_delete_ended_session_removes_row(
     assert await storage.get(sid) is None
 
 
+async def test_delete_session_survives_on_disk_cleanup_failure(
+    sessions_client, seeded_workspace, seeded_agent, app, monkeypatch,
+):
+    """DELETE must still remove the row (and return 204) when the
+    best-effort on-disk cleanup raises -- e.g. the workspace was deleted
+    before its session, so get_workspace() 404s.
+
+    Regression: the cleanup except-branch logged the caught exception
+    with extra={"message": str(exc)}. "message" is a reserved
+    LogRecord attribute, so logging.Logger.makeRecord raised KeyError
+    before the warning was emitted; that KeyError propagated out of the
+    handler as a 500 and the final sessions.delete() never ran. The row
+    was orphaned with no API path to remove it (the only delete route is
+    nested under the now-missing workspace)."""
+    from primer.model.workspace_session import WorkspaceSession
+
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={"binding": {"kind": "agent", "agent_id": seeded_agent.id}},
+    )
+    sid = create.json()["id"]
+    await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}/cancel"
+    )
+
+    # Force the best-effort cleanup to fail, mirroring a workspace that
+    # was deleted before its session.
+    async def _raise_workspace_gone(_workspace_id):
+        raise RuntimeError("workspace gone")
+
+    monkeypatch.setattr(
+        app.state.workspace_registry, "get_workspace", _raise_workspace_gone
+    )
+
+    resp = await sessions_client.delete(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}"
+    )
+    assert resp.status_code == 204, resp.text
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    assert await storage.get(sid) is None
+
+
 async def test_delete_created_session_auto_cancels_and_removes_row(
     sessions_client, seeded_workspace, seeded_agent, app,
 ):
