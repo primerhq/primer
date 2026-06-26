@@ -423,7 +423,10 @@ async def delete_session(
                 "session_id": session_id,
                 "workspace_id": workspace_id,
                 "exception": type(exc).__name__,
-                "message": str(exc),
+                # NB: not "message" -- that is a reserved LogRecord attribute
+                # and makeRecord() would raise KeyError, turning this
+                # best-effort log into a 500 that skips the row delete below.
+                "error": str(exc),
             },
         )
 
