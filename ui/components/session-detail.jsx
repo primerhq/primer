@@ -56,6 +56,20 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
   const isTerminal = session && SESSION_TERMINAL.has(session.status);
   const isGraph = (session?.binding?.kind || session?.binding_kind) === "graph";
 
+  // Worker liveness feed — lets the References panel report whether an
+  // in-flight session is actually being driven by a live worker (vs a
+  // RUNNING row whose worker died or never claimed = stalled). Polling
+  // pauses once the session reaches a terminal state.
+  const workersFeed = useResource(
+    `session-detail-workers:${sid}`,
+    (signal) => apiFetch("GET", `/workers`, null, { signal }),
+    {
+      pollMs: 4000,
+      pauseWhile: () => SESSION_TERMINAL.has(lastStatusRef.current),
+      deps: [sid],
+    }
+  );
+
   // Signal mutations. workspace-scoped endpoints per app spec §13.
   // All invalidate session-detail + sessions:list for fast feedback.
   const invalidates = [`session-detail:${sid}`, "sessions:list"];
@@ -190,6 +204,23 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
   const lastWorker = session.last_worker_id || session.worker_id;
   const boundAgent = session.binding?.agent_id || session.agent_id;
   const boundGraph = session.binding?.graph_id || session.graph_id;
+
+  // Run liveness for the References panel. Only meaningful while the run
+  // is in flight; a terminal run shows no liveness pill. A RUNNING row is
+  // "live" only when its owning worker is registered and active — a dead
+  // or missing worker means the run is stalled/orphaned, not progressing.
+  const runLiveness = (() => {
+    if (isTerminal) return null;
+    if (session.status === "paused") return { label: "paused", cls: "pill-paused" };
+    if (session.status === "created") return { label: "awaiting worker", cls: "pill-created" };
+    if (session.status === "running") {
+      if (!lastWorker) return { label: "starting", cls: "pill-created" };
+      const w = (workersFeed.data?.items || []).find((x) => x.id === lastWorker);
+      if (w && w.status === "active") return { label: "live", cls: "pill-running" };
+      return { label: "stalled", cls: "pill-failed" };
+    }
+    return null;
+  })();
   const lastError = session.last_error || session.error;
   const metadata = session.metadata || {};
 
@@ -432,6 +463,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                     <Icon name="graph" size={13} className="ico" />
                     <span className="label">Graph</span>
                     <span className="val"><a style={{ cursor: "pointer" }} onClick={() => navigate("/graphs/" + boundGraph)}>{boundGraph}</a></span>
+                    {runLiveness && (
+                      <span className={"pill " + runLiveness.cls}><span className="dot"></span>{runLiveness.label}</span>
+                    )}
                   </div>
                   <SD_GraphHealthPanel gid={boundGraph} />
                 </div>
