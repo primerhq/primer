@@ -1112,13 +1112,151 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
   );
 }
 
-// Defined fully in Task 5; minimal shell so the run view renders.
-function SD_NodeInspector({ node }) {
+// Short kind-aware descriptions shown in the inspector so the operator
+// knows what each node does without opening the graph editor.
+const SD_NODE_KIND_HINT = {
+  agent: "agent turn — runs an agent to completion",
+  begin: "begin — graph entry point",
+  end: "end — emits the graph's structured output",
+  tool_call: "tool call — invokes a single tool",
+  fan_out: "fan-out — spawns parallel branches",
+  fan_in: "fan-in — joins parallel branches",
+  graph: "subgraph — delegates to another graph",
+};
+
+// Per-node turn-log tail (existing endpoint). Read-on-completion: polls
+// while the node is non-terminal, stops once ended/failed.
+function SD_NodeTurnLog({ gid, rid, nodeId, nodeStatus }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const terminal = nodeStatus === "ended" || nodeStatus === "failed";
+  const log = useResource(
+    `run-node-turnlog:${rid}:${nodeId}`,
+    (s) => apiFetch(
+      "GET",
+      `/graphs/${encodeURIComponent(gid)}/runs/${encodeURIComponent(rid)}/nodes/${encodeURIComponent(nodeId)}/turn_log?limit=200`,
+      null,
+      { signal: s },
+    ),
+    { pollMs: terminal ? 0 : 4000, deps: [gid, rid, nodeId, nodeStatus] },
+  );
+  const items = log.data?.items || [];
+  if (log.error?.status === 404 || items.length === 0) {
+    return (
+      <div className="muted text-sm" style={{ padding: 12 }}>
+        no activity yet for this node
+      </div>
+    );
+  }
   return (
-    <div style={{ borderLeft: "1px solid var(--border)", padding: 14, minHeight: 500 }}>
-      {node
-        ? <div className="muted text-sm mono">node: {node.node_id} · {node.kind} · {node.status}</div>
-        : <div className="muted text-sm" style={{ textAlign: "center", padding: 20 }}>Select a node to inspect it.</div>}
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 12 }}>
+      {items.map((e, i) => <TurnLogRow key={`${e.seq}-${i}`} e={e} />)}
+    </div>
+  );
+}
+
+function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast }) {
+  const { useRouter } = window.primerApi;
+  const { navigate } = useRouter();
+  const nodeId = node && node.node_id;
+
+  // Node-attributed output read-on-completion: the assistant stream is
+  // read from the session WS frames carrying this node_id (graph failures
+  // + End records already do); the per-node turn-log below is the audit
+  // trail. Hooks run unconditionally (before the no-selection early
+  // return) so the hook order is stable across node selection. v1 shows
+  // the turn-log + node-attributed session frames; token-live per-node
+  // output is the documented fast-follow (spec §8).
+  const [frames, setFrames] = React.useState([]);
+  React.useEffect(() => {
+    setFrames([]);
+    if (!wid || !rid || !nodeId) return undefined;
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${window.location.host}/v1/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(rid)}/ws?cursor=0`;
+    let ws;
+    try { ws = new WebSocket(url); } catch { return undefined; }
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      if (typeof msg.seq !== "number") return;
+      const payload = msg.payload && typeof msg.payload === "object" ? msg.payload : {};
+      const frame = { ...payload, ...msg };
+      const fnode = frame.node_id || frame.end_node_id;
+      if (fnode !== nodeId) return;
+      setFrames((prev) => prev.some((p) => p.seq === frame.seq) ? prev : [...prev, frame]);
+    };
+    return () => { try { ws.close(); } catch { /* no-op */ } };
+  }, [wid, rid, nodeId]);
+
+  const coalesced = window._SLS_coalesceMessages(frames);
+
+  // Empty state: no node selected -> the session-level live stream (the
+  // run's End output), so the default view still shows the run's result.
+  if (!node) {
+    return (
+      <div style={{ borderLeft: "1px solid var(--border)", minHeight: 500 }}>
+        {wid
+          ? <SessionLiveStream sid={rid} wid={wid} session={session} pushToast={pushToast} />
+          : <div className="muted text-sm" style={{ textAlign: "center", padding: 30 }}>
+              Select a node to inspect it.
+            </div>}
+      </div>
+    );
+  }
+
+  const def = (graph?.nodes || []).find((n) => n.id === node.node_id) || {};
+  const tint = window.SD_RUN_STATE_TINT[node.status] || window.SD_RUN_STATE_TINT.pending;
+
+  // Subgraph node: a link to drill into the subgraph definition.
+  const subgraphLink = node.kind === "graph" && def.graph_id ? (
+    <div style={{ padding: 12 }}>
+      <a style={{ color: "var(--violet)", cursor: "pointer" }}
+        onClick={() => navigate("/graphs/" + def.graph_id)}>
+        Open subgraph {def.graph_id} →
+      </a>
+    </div>
+  ) : null;
+
+  return (
+    <div style={{ borderLeft: "1px solid var(--border)", minHeight: 500, display: "flex", flexDirection: "column" }}>
+      <div className="panel-h" style={{ borderBottom: `2px solid ${tint.border}` }}>
+        <span className="mono" style={{ fontWeight: 600 }}>{node.node_id}</span>
+        <span className="muted text-sm">· {node.kind}</span>
+        {node.kind === "agent" && def.agent_id && (
+          <a style={{ color: "var(--accent)", cursor: "pointer" }}
+            onClick={() => navigate("/agents/" + def.agent_id)}>{def.agent_id}</a>
+        )}
+        <div className="right">
+          <span className={`pill pill-${node.status === "ended" ? "ended" : node.status === "failed" ? "failed" : node.status === "running" ? "running" : "paused"}`}>
+            <span className="dot"></span>{node.status}
+          </span>
+        </div>
+      </div>
+      <div style={{ flex: 1, overflow: "auto", maxHeight: 480 }}>
+        <div className="muted text-sm" style={{ padding: "10px 14px 2px" }}>
+          {SD_NODE_KIND_HINT[node.kind] || node.kind}
+        </div>
+        {node.status === "failed" && node.error && (
+          <div style={{ padding: 12 }}>
+            <window._SLS_NodeErrorBadge error={node.error} code={null} />
+          </div>
+        )}
+        {/* Kind-aware stream/output via the SHARED frame renderer. */}
+        {subgraphLink}
+        {node.kind !== "graph" && coalesced.length > 0 && (
+          <div style={{ padding: "12px 14px" }}>
+            {coalesced.map((m, i) => (
+              <window._SLS_Frame key={m.seq != null ? m.seq : i} m={m} />
+            ))}
+          </div>
+        )}
+        {/* Per-node turn-log below the stream. */}
+        <div style={{ borderTop: "1px solid var(--border)" }}>
+          <div className="muted text-sm" style={{ padding: "8px 12px 0", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10.5 }}>
+            Turn log
+          </div>
+          <SD_NodeTurnLog gid={gid} rid={rid} nodeId={node.node_id} nodeStatus={node.status} />
+        </div>
+      </div>
     </div>
   );
 }
@@ -1126,6 +1264,7 @@ function SD_NodeInspector({ node }) {
 window.SD_GraphRunView = SD_GraphRunView;
 window.SD_RUN_STATE_TINT = SD_RUN_STATE_TINT;
 window.SD_NodeInspector = SD_NodeInspector;
+window.SD_NodeTurnLog = SD_NodeTurnLog;
 
 // =================================================================
 // Yielding-tools UI surfaces
