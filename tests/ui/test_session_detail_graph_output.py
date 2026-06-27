@@ -4,7 +4,9 @@ payload) as a collapsible block under the assistant message."""
 from __future__ import annotations
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[2] / "ui" / "components" / "session-detail.jsx"
+# The structured-output renderer (_SLS_Frame / _SLS_coalesceMessages) was
+# extracted into the shared session-frame.jsx module; assert against it there.
+SRC = Path(__file__).resolve().parents[2] / "ui" / "components" / "session-frame.jsx"
 
 
 def _src() -> str:
