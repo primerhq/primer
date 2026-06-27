@@ -536,8 +536,9 @@ function KN_UserCollectionListView({ collection, pushToast, onClose, titleBar })
           </div>
         </div>
       }
+      width="min(86vw, 1000px)"
     >
-      <div style={{ width: "min(86vw, 1000px)", maxWidth: "100%", minWidth: 0 }}>
+      <div style={{ width: "100%", minWidth: 0 }}>
         <div className="muted text-sm mb-3" style={{ overflowWrap: "anywhere" }}>
           <span className="mono">GET /v1/collections/{cid}/documents?prefix=</span>
         </div>
@@ -1012,9 +1013,10 @@ function KN_CollectionDocBrowserModal({ collection, pushToast, onClose }) {
           </div>
         </div>
       }
+      width="min(92vw, 1280px)"
     >
-      {/* Near-full-viewport wrapper so the two-pane explorer has room */}
-      <div style={{ width: "min(92vw, 1280px)", maxWidth: "100%", minWidth: 0 }}>
+      {/* The .modal element is widened via Modal's width prop; fill it. */}
+      <div style={{ width: "100%", minWidth: 0 }}>
 
         {/* Two-pane file explorer: tree left, content right */}
         <div style={{

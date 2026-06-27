@@ -124,7 +124,7 @@ function fmtDate(d) {
 // Modal — desktop: centered dialog. Mobile: bottom sheet via the
 // same API. Consumers (every form modal in the app) get the mobile
 // behavior automatically.
-const Modal = ({ title, onClose, children, footer, danger }) => {
+const Modal = ({ title, onClose, children, footer, danger, width }) => {
   const useViewport = (window.primerApi && window.primerApi.useViewport) || null;
   const vp = useViewport ? useViewport() : { isMobile: false };
   const isMobile = !!vp.isMobile;
@@ -165,7 +165,7 @@ const Modal = ({ title, onClose, children, footer, danger }) => {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
+      <div className="modal" style={width ? { width } : undefined} onClick={(e) => e.stopPropagation()}>
         <div className="modal-h">
           <span className="title" style={{ color: danger ? "var(--red)" : undefined }}>{title}</span>
           <button className="close" onClick={onClose}><Icon name="x" size={14} /></button>
