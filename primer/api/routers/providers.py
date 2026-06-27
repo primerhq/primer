@@ -242,10 +242,10 @@ async def discover_llm_models(
     endpoint deliberately bypasses the adapter for discovery and calls
     the provider's native list endpoint directly.
 
-    ``ollama``, ``openresponses``, ``openrouter``, ``anthropic``, and
-    ``gemini`` expose a live list-models API. Any other provider type
-    returns 400 and the frontend falls back to its curated
-    suggested-model list.
+    ``ollama``, ``openresponses``, ``openchat``, ``openrouter``,
+    ``anthropic``, and ``gemini`` expose a live list-models API. Any
+    other provider type returns 400 and the frontend falls back to its
+    curated suggested-model list.
     """
     # Validate the draft via the canonical model so config shape errors
     # surface cleanly. We never persist or run anything from the stub.
@@ -258,6 +258,10 @@ async def discover_llm_models(
     if body.provider == "ollama":
         result = await _probe_ollama_models(body.config)
     elif body.provider == "openresponses":
+        result = await _probe_openai_compatible_models(body.config)
+    elif body.provider == "openchat":
+        # OpenAI-compatible Chat Completions: same /v1/models probe as
+        # openresponses (both carry an OpenAI-style base URL).
         result = await _probe_openai_compatible_models(body.config)
     elif body.provider == "openrouter":
         try:
@@ -341,7 +345,7 @@ async def discover_llm_models(
     # verbatim, so skip the default for that branch. Gemini reports
     # inputTokenLimit for most models but not all, so seed the default
     # only where the helper omitted it.
-    if body.provider in ("ollama", "openresponses", "anthropic", "gemini"):
+    if body.provider in ("ollama", "openresponses", "openchat", "anthropic", "gemini"):
         for m in result.get("models", []):
             m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
     return result
