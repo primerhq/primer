@@ -15,6 +15,7 @@ attributable to the user-supplied template.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -29,6 +30,30 @@ from primer.model.graph import GraphContext
 logger = logging.getLogger(__name__)
 
 
+def _fromjson(value: Any) -> Any:
+    """``fromjson`` template filter: parse a JSON string into Python data.
+
+    A ``tool_call`` node's ``NodeOutput.parsed`` is only populated when the
+    node carries an ``output_schema`` AND the parsed value is a dict, so a
+    tool that returns a top-level JSON array (e.g. ``web_search``) leaves
+    ``parsed`` as ``None``. This filter lets a downstream node template over
+    the JSON ``text`` instead — ``{{ (nodes.search.text | fromjson)[0].url }}``.
+
+    Non-string values (already-parsed dict/list/scalar) pass through
+    unchanged, so the filter is idempotent. Invalid JSON raises
+    :class:`jinja2.TemplateError` so it surfaces through both render paths as
+    a template error (``render_input_template`` → ``BadRequestError``;
+    ``render_template_safely`` → ``ended_detail='template_error'``) rather
+    than an uncoded crash.
+    """
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError as exc:
+            raise TemplateError(f"fromjson: invalid JSON: {exc}") from exc
+    return value
+
+
 # Module-level shared environment. Sandboxed = blocks access to
 # dunder attributes / dangerous built-ins; StrictUndefined = raises
 # on missing attributes rather than silently emitting empty strings
@@ -39,6 +64,9 @@ _ENV: SandboxedEnvironment = SandboxedEnvironment(
     trim_blocks=False,
     lstrip_blocks=False,
 )
+# Custom filters. ``fromjson`` parses a JSON string (e.g. a tool_call node's
+# ``text`` output) so downstream nodes can index into it; see ``_fromjson``.
+_ENV.filters["fromjson"] = _fromjson
 
 
 def render_input_template(
