@@ -491,7 +491,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
       label: "Messages",
       content: (
         <div className="col" style={{ gap: 14, padding: 12 }}>
-          {liveStreamPanel || (
+          {isGraph && wid ? (
+            <SD_GraphRunView gid={boundGraph} rid={sid} wid={wid} session={session} pushToast={pushToast} />
+          ) : liveStreamPanel || (
             <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
               Live stream unavailable — session has no workspace_id.
             </div>
@@ -549,7 +551,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
           <div className="col" style={{ gap: 14 }}>
             {headerPanel}
             {instructionsPanel}
-            {liveStreamPanel}
+            {isGraph && wid
+              ? <SD_GraphRunView gid={boundGraph} rid={sid} wid={wid} session={session} pushToast={pushToast} />
+              : liveStreamPanel}
             {lastErrorPanel}
             {metadataPanel}
           </div>
@@ -933,6 +937,195 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
 }
 
 window.SessionLiveStream = SessionLiveStream;
+
+// =================================================================
+// SD_GraphRunView - two-pane graph run view (canvas + inspector)
+// =================================================================
+//
+// Left: the shared GR_Canvas (read-only) tinted by per-node status.
+// Right: the node inspector (SD_NodeInspector, fleshed out below). Status
+// comes from GET /v1/graphs/{gid}/runs/{rid}/node_states, polled every 2s
+// (paused once the session is terminal) and refetched immediately on a
+// superstep WS event so transitions feel live without a tight poll.
+
+const SD_RUN_STATE_TINT = {
+  pending: { border: "var(--border-strong)", glow: null, label: "pending" },
+  running: { border: "var(--accent)", glow: "0 0 0 4px var(--accent-dim)", label: "running" },
+  waiting: { border: "var(--amber)", glow: "0 0 0 4px var(--amber-dim, transparent)", label: "waiting" },
+  ended: { border: "var(--green)", glow: null, label: "ended" },
+  failed: { border: "var(--red)", glow: "0 0 0 4px var(--red-dim)", label: "failed" },
+};
+
+function SD_overallRunState(items) {
+  if (!items.length) return "idle";
+  const statuses = items.map((it) => it.status);
+  if (statuses.includes("failed")) return "failed";
+  if (statuses.includes("running")) return "running";
+  if (statuses.includes("waiting")) return "waiting";
+  if (statuses.every((s) => s === "ended")) return "ended";
+  return "idle";
+}
+
+// Overlays per-node status tint on top of the shared GR_Canvas without
+// editing GR_Canvas: we render GR_Canvas read-only and absolutely
+// position a tint ring per node using GR_NODE_SIZE for geometry.
+function SD_StatusCanvas({ graph, statusByNode, selectedNodeId, onSelectNode }) {
+  const draft = React.useMemo(() => {
+    const base = { ...graph, nodes: (graph.nodes || []).map((n) => ({ ...n })), edges: (graph.edges || []).map((e) => ({ ...e })) };
+    if (window.primerVendor && window.primerVendor.autoLayout) {
+      return window.primerVendor.autoLayout(base);
+    }
+    return base;
+  }, [graph]);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <window.GR_Canvas
+        draft={draft}
+        selectedNodeId={selectedNodeId}
+        selectedEdgeId={null}
+        addEdgeMode={null}
+        onNodeClick={(id) => onSelectNode(id)}
+        onEdgeClick={() => {}}
+        onNodeDoubleClick={() => {}}
+        onNodeMouseDown={() => {}}
+        onBackgroundClick={() => onSelectNode(null)}
+      />
+      {/* Status tint rings positioned over each node. */}
+      <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+        {(draft.nodes || []).map((n) => {
+          const st = statusByNode[n.id] || "pending";
+          const tint = SD_RUN_STATE_TINT[st] || SD_RUN_STATE_TINT.pending;
+          const sz = window.GR_NODE_SIZE[n.kind] || window.GR_NODE_SIZE.agent;
+          return (
+            <div
+              key={n.id}
+              data-testid={`run-node-${n.id}`}
+              data-status={st}
+              style={{
+                position: "absolute",
+                left: (n.x || 0) - 2,
+                top: (n.y || 0) - 2,
+                width: sz.w + 4,
+                height: sz.h + 4,
+                borderRadius: n.kind === "begin" || n.kind === "end" ? "50%" : 10,
+                border: `2px solid ${tint.border}`,
+                boxShadow: tint.glow || undefined,
+                animation: st === "running" ? "pulse 1.6s ease-in-out infinite" : undefined,
+              }}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const isTerminal = session && window.SESSION_TERMINAL.has(session.status);
+  const [selectedNodeId, setSelectedNodeId] = React.useState(null);
+
+  const graph = useResource(
+    `run-graph-def:${gid}`,
+    (s) => apiFetch("GET", `/graphs/${encodeURIComponent(gid)}`, null, { signal: s }),
+    { pollMs: 0, deps: [gid] },
+  );
+  const states = useResource(
+    `run-node-states:${rid}`,
+    (s) => apiFetch("GET", `/graphs/${encodeURIComponent(gid)}/runs/${encodeURIComponent(rid)}/node_states`, null, { signal: s }),
+    {
+      pollMs: isTerminal ? 0 : 2000,
+      deps: [gid, rid, session?.status],
+    },
+  );
+
+  // Superstep WS events trigger an immediate refetch so node transitions
+  // feel live without a tight poll. We subscribe read-only to the same
+  // session WS the live stream uses and refetch on superstep frames.
+  React.useEffect(() => {
+    if (!wid || !rid || isTerminal) return undefined;
+    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${proto}//${window.location.host}/v1/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(rid)}/ws?cursor=0`;
+    let ws;
+    try { ws = new WebSocket(url); } catch { return undefined; }
+    ws.onmessage = (ev) => {
+      let msg;
+      try { msg = JSON.parse(ev.data); } catch { return; }
+      const kind = msg && (msg.kind || (msg.payload && msg.payload.kind));
+      if (kind === "superstep_started" || kind === "superstep_ended" || kind === "done" || kind === "error") {
+        states.refetch();
+      }
+    };
+    return () => { try { ws.close(); } catch { /* no-op */ } };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wid, rid, isTerminal]);
+
+  const items = states.data?.items || [];
+  const statusByNode = React.useMemo(() => {
+    const out = {};
+    for (const it of items) out[it.node_id] = it.status;
+    return out;
+  }, [items]);
+  const overall = SD_overallRunState(items);
+  const supersteps = session?.turn_no ?? session?.turn_count ?? 0;
+
+  if (graph.loading && !graph.data) {
+    return <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading graph…</div>;
+  }
+  if (graph.error && !graph.data) {
+    return <Banner kind="error" title="Couldn't load graph" detail={graph.error.detail || graph.error.message} />;
+  }
+
+  const selectedItem = items.find((it) => it.node_id === selectedNodeId) || null;
+
+  return (
+    <div className="panel" style={{ overflow: "hidden" }}>
+      <div className="panel-h">
+        <Icon name="graph" size={13} style={{ color: "var(--violet)" }} />
+        <span>Run view</span>
+        <span className="sub">· superstep {supersteps}</span>
+        <div className="right">
+          <span className={`pill pill-${overall === "ended" ? "ended" : overall === "failed" ? "failed" : overall === "running" ? "running" : "paused"}`}>
+            <span className="dot"></span>{overall}
+          </span>
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 360px" }}>
+        <SD_StatusCanvas
+          graph={graph.data}
+          statusByNode={statusByNode}
+          selectedNodeId={selectedNodeId}
+          onSelectNode={setSelectedNodeId}
+        />
+        <SD_NodeInspector
+          gid={gid}
+          rid={rid}
+          wid={wid}
+          session={session}
+          node={selectedItem}
+          graph={graph.data}
+          pushToast={pushToast}
+        />
+      </div>
+    </div>
+  );
+}
+
+// Defined fully in Task 5; minimal shell so the run view renders.
+function SD_NodeInspector({ node }) {
+  return (
+    <div style={{ borderLeft: "1px solid var(--border)", padding: 14, minHeight: 500 }}>
+      {node
+        ? <div className="muted text-sm mono">node: {node.node_id} · {node.kind} · {node.status}</div>
+        : <div className="muted text-sm" style={{ textAlign: "center", padding: 20 }}>Select a node to inspect it.</div>}
+    </div>
+  );
+}
+
+window.SD_GraphRunView = SD_GraphRunView;
+window.SD_RUN_STATE_TINT = SD_RUN_STATE_TINT;
+window.SD_NodeInspector = SD_NodeInspector;
 
 // =================================================================
 // Yielding-tools UI surfaces
