@@ -2148,13 +2148,18 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
         const fd = new FormData();
         fd.append("file", arr[i]);
         const conv = await apiFetch("POST", "/documents/_convert_file", fd);
-        const docId = "doc-" + Math.random().toString(16).slice(2, 10);
-        await apiFetch("POST", "/documents", {
-          id: docId,
-          collection_id: collectionId,
-          name: conv.filename || arr[i].name,
-          meta: { text: conv.text || "" },
-        });
+        // User collections are path-addressed: upsert through the same
+        // PUT /collections/{id}/documents?path= contract the single-file
+        // flow uses, with the converted filename as the path. The earlier
+        // POST /documents shape omitted `path` (and put the body in
+        // `meta.text`), so every file 422'd with "Missing or invalid: path".
+        const docPath = conv.filename || arr[i].name;
+        await apiFetch(
+          "PUT",
+          `/collections/${encodeURIComponent(collectionId)}/documents` +
+            `?path=${encodeURIComponent(docPath)}`,
+          { content: conv.text || "", title: conv.filename || arr[i].name },
+        );
         created += 1;
         setStatus(i, "done");
       } catch (err) {
