@@ -85,6 +85,58 @@ class TestRender:
         assert "from C" in result
 
 
+class TestFromJsonFilter:
+    """The ``fromjson`` filter lets a node template over a tool_call node's
+    JSON ``text`` output -- e.g. web_search returns a top-level JSON array,
+    whose ``.parsed`` stays None (NodeOutput.parsed is dict-only), so the
+    only way to reach ``[0].url`` is to parse the text in the template."""
+
+    def test_parses_json_array_and_indexes(self) -> None:
+        ctx = _ctx(
+            nodes={
+                "search": NodeOutput(
+                    text='[{"url": "https://a.example/x", "title": "X"}, '
+                    '{"url": "https://b.example/y", "title": "Y"}]',
+                    iteration=0,
+                )
+            },
+        )
+        result = render_input_template(
+            "First: {{ (nodes.search.text | fromjson)[0].url }}", context=ctx
+        )
+        assert result == "First: https://a.example/x"
+
+    def test_parses_json_object(self) -> None:
+        ctx = _ctx(
+            nodes={"t": NodeOutput(text='{"k": "v"}', iteration=0)},
+        )
+        result = render_input_template(
+            "{{ (nodes.t.text | fromjson).k }}", context=ctx
+        )
+        assert result == "v"
+
+    def test_idempotent_on_already_parsed(self) -> None:
+        # A non-string (already-parsed) value passes through unchanged.
+        ctx = _ctx(
+            nodes={
+                "p": NodeOutput(
+                    text="{...}", parsed={"items": [1, 2, 3]}, iteration=0
+                )
+            },
+        )
+        result = render_input_template(
+            "{{ (nodes.p.parsed | fromjson)['items'][2] }}", context=ctx
+        )
+        assert result == "3"
+
+    def test_invalid_json_raises_bad_request(self) -> None:
+        ctx = _ctx(nodes={"bad": NodeOutput(text="not json{", iteration=0)})
+        with pytest.raises(BadRequestError, match="render error"):
+            render_input_template(
+                "{{ (nodes.bad.text | fromjson)[0] }}", context=ctx
+            )
+
+
 class TestErrors:
     def test_syntax_error_raises_bad_request(self) -> None:
         with pytest.raises(BadRequestError, match="syntax error"):
