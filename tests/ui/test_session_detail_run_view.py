@@ -17,10 +17,11 @@ def test_run_view_component_present() -> None:
 
 
 def test_run_view_reuses_shared_canvas() -> None:
-    # Reuse, not duplicate: the run view renders GR_Canvas / GR_NodeBox
-    # from the shared module rather than re-implementing node layout.
+    # Reuse, not duplicate: the run view renders the shared GR_Canvas and
+    # delegates per-node status tinting to it via the statusTint prop
+    # (rings live inside the canvas scroll, not a page-overflowing overlay).
     assert "GR_Canvas" in DETAIL
-    assert "GR_NODE_SIZE" in DETAIL
+    assert "statusTint" in DETAIL
 
 
 def test_run_view_polls_node_states() -> None:

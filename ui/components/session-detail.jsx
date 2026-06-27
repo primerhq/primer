@@ -1020,10 +1020,25 @@ function SD_StatusCanvas({ graph, statusByNode, selectedNodeId, onSelectNode }) 
     return base;
   }, [graph]);
 
+  // Per-node tint handed INTO the shared canvas so the status rings live
+  // inside its scroll container — they scroll with the nodes and never
+  // overflow the page. (The earlier external overlay sat outside that
+  // scroll and blew the layout wide, pushing the side rail off-screen.)
+  const statusTint = React.useMemo(() => {
+    const out = {};
+    for (const n of (draft.nodes || [])) {
+      const st = statusByNode[n.id] || "pending";
+      const t = SD_RUN_STATE_TINT[st] || SD_RUN_STATE_TINT.pending;
+      out[n.id] = { border: t.border, glow: t.glow, status: st };
+    }
+    return out;
+  }, [draft, statusByNode]);
+
   return (
-    <div style={{ position: "relative" }}>
+    <div style={{ minWidth: 0, overflow: "hidden" }}>
       <window.GR_Canvas
         draft={draft}
+        statusTint={statusTint}
         selectedNodeId={selectedNodeId}
         selectedEdgeId={null}
         addEdgeMode={null}
@@ -1033,32 +1048,6 @@ function SD_StatusCanvas({ graph, statusByNode, selectedNodeId, onSelectNode }) 
         onNodeMouseDown={() => {}}
         onBackgroundClick={() => onSelectNode(null)}
       />
-      {/* Status tint rings positioned over each node. */}
-      <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-        {(draft.nodes || []).map((n) => {
-          const st = statusByNode[n.id] || "pending";
-          const tint = SD_RUN_STATE_TINT[st] || SD_RUN_STATE_TINT.pending;
-          const sz = window.GR_NODE_SIZE[n.kind] || window.GR_NODE_SIZE.agent;
-          return (
-            <div
-              key={n.id}
-              data-testid={`run-node-${n.id}`}
-              data-status={st}
-              style={{
-                position: "absolute",
-                left: (n.x || 0) - 2,
-                top: (n.y || 0) - 2,
-                width: sz.w + 4,
-                height: sz.h + 4,
-                borderRadius: n.kind === "begin" || n.kind === "end" ? "50%" : 10,
-                border: `2px solid ${tint.border}`,
-                boxShadow: tint.glow || undefined,
-                animation: st === "running" ? "pulse 1.6s ease-in-out infinite" : undefined,
-              }}
-            />
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -1133,7 +1122,7 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
           </span>
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 360px" }}>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px" }}>
         <SD_StatusCanvas
           graph={graph.data}
           statusByNode={statusByNode}

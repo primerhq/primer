@@ -865,7 +865,10 @@ input, textarea, select { font: inherit; color: inherit; }
 
 .session-detail-grid {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  /* minmax(0, 1fr) so the primary column can shrink below its content's
+     intrinsic width — otherwise a wide run-view canvas blows the grid
+     past the viewport and pushes the side rail off-screen. */
+  grid-template-columns: minmax(0, 1fr) 360px;
   gap: 18px;
 }
 
