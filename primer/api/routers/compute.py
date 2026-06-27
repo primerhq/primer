@@ -20,6 +20,7 @@ already supports out of the box.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path, Query
+from pydantic import BaseModel
 
 from primer.api.deps import (
     get_agent_storage,
@@ -226,6 +227,125 @@ async def get_graph_node_turn_log(
         workspace_registry=workspace_registry,
         storage_provider=storage_provider,
     )
+
+
+class _NodeStateOut(BaseModel):
+    """One node's runtime snapshot for the run-view canvas + inspector."""
+
+    node_id: str
+    kind: str
+    status: str
+    iteration: int | None = None
+    last_run_at: str | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    duration_ms: int | None = None
+    error: str | None = None
+
+
+@graph_router.get(
+    "/graphs/{graph_id}/runs/{run_id}/node_states",
+    summary="Per-node runtime status snapshot for a graph run",
+    responses=common_responses(404, 500),
+)
+async def get_graph_run_node_states(
+    graph_id: str = Path(..., description="Graph id"),
+    run_id: str = Path(..., description="Run id (WorkspaceSession or GraphThread id)"),
+    graphs=Depends(get_graph_storage),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Project the persisted per-node ``NodeRuntimeState`` for a run,
+    joined with the graph definition so every node id carries its
+    ``kind``. Nodes that have not run yet (absent from the persisted
+    state map) surface as ``pending``.
+
+    Resolution mirrors the graph turn-log routes:
+    1. ``run_id`` is a WorkspaceSession bound to a graph -> read
+       ``<state_path>/graphs/<run_id>/state.json`` via the workspace.
+    2. ``run_id`` is a GraphThread -> read ``thread.node_states``.
+    3. Neither -> 404.
+    """
+    graph: Graph | None = await graphs.get(graph_id)
+    if graph is None:
+        raise NotFoundError(f"Graph {graph_id!r} does not exist")
+    kinds: dict[str, str] = {node.id: node.kind for node in graph.nodes}
+
+    state_map = await _load_run_node_states(
+        run_id=run_id,
+        sessions=sessions,
+        workspace_registry=workspace_registry,
+        storage_provider=storage_provider,
+    )
+
+    items: list[dict] = []
+    for node_id, kind in kinds.items():
+        ns = state_map.get(node_id) or {}
+        items.append(
+            _NodeStateOut(
+                node_id=node_id,
+                kind=kind,
+                status=ns.get("status", "pending"),
+                iteration=ns.get("last_run_iteration"),
+                last_run_at=ns.get("last_run_at"),
+                error=ns.get("error"),
+            ).model_dump()
+        )
+    return {"items": items, "run_id": run_id, "graph_id": graph_id}
+
+
+async def _load_run_node_states(
+    *,
+    run_id: str,
+    sessions,
+    workspace_registry,
+    storage_provider,
+) -> dict[str, dict]:
+    """Return ``{node_id: {status, last_run_iteration, last_run_at, error}}``
+    for ``run_id``, dispatching WorkspaceSession vs GraphThread exactly
+    like :func:`_serve_graph_turn_log`. Raises NotFoundError when neither
+    backend knows ``run_id``."""
+    import json
+
+    # 1. WorkspaceSession (workspace-backed graph): read state.json.
+    sess: WorkspaceSession | None = await sessions.get(run_id)
+    if sess is not None and isinstance(sess.binding, GraphSessionBinding):
+        workspace = await workspace_registry.get_workspace(sess.workspace_id)
+        if workspace is None:
+            return {}
+        state_path = getattr(workspace, "state_path", ".state")
+        rel = f"{state_path}/graphs/{run_id}/state.json"
+        try:
+            raw = await workspace.read_file(rel)
+        except Exception:  # noqa: BLE001 -- missing file -> empty state
+            return {}
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            return {}
+        node_states = payload.get("node_states")
+        return node_states if isinstance(node_states, dict) else {}
+
+    # 2. GraphThread (storage-backed graph): read thread.node_states.
+    from primer.model.graph import GraphThread
+
+    thread_storage = storage_provider.get_storage(GraphThread)
+    thread = await thread_storage.get(run_id)
+    if thread is not None:
+        return {
+            nid: {
+                "status": ns.status.value,
+                "last_run_iteration": ns.last_run_iteration,
+                "last_run_at": (
+                    ns.last_run_at.isoformat() if ns.last_run_at else None
+                ),
+                "error": ns.error,
+            }
+            for nid, ns in thread.node_states.items()
+        }
+
+    raise NotFoundError(f"Graph run {run_id!r} does not exist")
 
 
 async def _serve_graph_turn_log(
