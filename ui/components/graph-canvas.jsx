@@ -27,6 +27,7 @@ const GR_Canvas = React.forwardRef(function GR_Canvas(
     onNodeDoubleClick,
     onNodeMouseDown,
     onBackgroundClick,
+    statusTint,
   },
   ref,
 ) {
@@ -108,6 +109,34 @@ const GR_Canvas = React.forwardRef(function GR_Canvas(
             onMouseDown={(ev) => onNodeMouseDown(ev, n.id)}
           />
         ))}
+
+        {/* Optional per-node status tint (run view). Rendered INSIDE the
+            scroll container so the rings scroll with the nodes and never
+            overflow the page; the editor passes no statusTint. */}
+        {statusTint && draft.nodes.map((n) => {
+          const t = statusTint[n.id];
+          if (!t) return null;
+          const sz = GR_NODE_SIZE[n.kind] || GR_NODE_SIZE.agent;
+          return (
+            <div
+              key={`tint-${n.id}`}
+              data-testid={`run-node-${n.id}`}
+              data-status={t.status}
+              style={{
+                position: "absolute",
+                left: (n.x || 0) - 2,
+                top: (n.y || 0) - 2,
+                width: sz.w + 4,
+                height: sz.h + 4,
+                borderRadius: n.kind === "begin" || n.kind === "end" ? "50%" : 10,
+                border: `2px solid ${t.border}`,
+                boxShadow: t.glow || undefined,
+                animation: t.status === "running" ? "pulse 1.6s ease-in-out infinite" : undefined,
+                pointerEvents: "none",
+              }}
+            />
+          );
+        })}
 
         <div style={{
           position: "absolute",
