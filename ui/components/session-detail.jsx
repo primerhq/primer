@@ -426,11 +426,13 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                 </div>
               )}
               {isGraph && boundGraph && (
-                <div className="ref-row">
-                  <Icon name="graph" size={13} className="ico" />
-                  <span className="label">Graph</span>
-                  <span className="val"><a style={{ cursor: "pointer" }} onClick={() => navigate("/graphs/" + boundGraph)}>{boundGraph}</a></span>
-                  <span className="pill pill-failed"><span className="dot"></span>executor missing</span>
+                <div className="ref-row" style={{ flexDirection: "column", alignItems: "stretch", gap: 6 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <Icon name="graph" size={13} className="ico" />
+                    <span className="label">Graph</span>
+                    <span className="val"><a style={{ cursor: "pointer" }} onClick={() => navigate("/graphs/" + boundGraph)}>{boundGraph}</a></span>
+                  </div>
+                  <SD_GraphHealthPanel gid={boundGraph} />
                 </div>
               )}
               {wid && (
@@ -536,6 +538,9 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
       {/* Yielding-tools surfaces. Each polls /ask_user/pending (404 = nothing). */}
       <AskUserPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
       <ApprovalBannerPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
+      {isGraph && boundGraph && (
+        <SD_CannotRunBanner gid={boundGraph} session={session} />
+      )}
       {!isMobile && wid && (
         <WatchFilesPanel sid={sid} wid={wid} session={session} pushToast={pushToast} />
       )}
@@ -1791,3 +1796,84 @@ window.ApprovalBannerPanel = ApprovalBannerPanel;
 window.TurnLogTab = TurnLogTab;
 window.TurnLogRow = TurnLogRow;
 window.WorkspaceFailureChip = WorkspaceFailureChip;
+
+// =================================================================
+// Graph health (replaces the old hardcoded reference-status pill)
+// =================================================================
+
+// Real reference-resolution state from GET /v1/graphs/{id}/status.
+function SD_GraphHealthPanel({ gid }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const status = useResource(
+    `graph-status:${gid}`,
+    (s) => apiFetch("GET", `/graphs/${encodeURIComponent(gid)}/status`, null, { signal: s }),
+    { pollMs: 30000, deps: [gid] },
+  );
+  const ok = status.data?.ok;
+  const issues = status.data?.issues || [];
+  return (
+    <div className="ref-row" style={{ alignItems: "flex-start", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <Icon name={ok === true ? "check-circle" : ok === false ? "x-circle" : "info"} size={13}
+          style={{ color: ok === true ? "var(--green)" : ok === false ? "var(--red)" : "var(--text-3)" }} />
+        <span className="label" style={{ color: ok === false ? "var(--red)" : undefined }}>
+          {ok === true ? "All references resolve" : ok === false ? `${issues.length} issue${issues.length === 1 ? "" : "s"}` : "Checking references…"}
+        </span>
+      </div>
+      {ok === false && issues.map((iss, i) => (
+        <div key={i} className="muted text-sm mono" style={{ color: "var(--red)", paddingLeft: 19 }}>{iss}</div>
+      ))}
+    </div>
+  );
+}
+window.SD_GraphHealthPanel = SD_GraphHealthPanel;
+
+// Prominent body banner: "This graph cannot run: <first issue>" with the
+// full list expandable; or a neutral why-idle hint when ok-but-stuck.
+function SD_CannotRunBanner({ gid, session }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const [open, setOpen] = React.useState(false);
+  const status = useResource(
+    `graph-status:${gid}`,
+    (s) => apiFetch("GET", `/graphs/${encodeURIComponent(gid)}/status`, null, { signal: s }),
+    { pollMs: 30000, deps: [gid] },
+  );
+  const ok = status.data?.ok;
+  const issues = status.data?.issues || [];
+  const turn = session?.turn_no ?? session?.turn_count ?? 0;
+  const lastError = session?.last_error || session?.error;
+
+  if (ok === false && issues.length) {
+    return (
+      <div className="panel" style={{ borderColor: "oklch(0.7 0.2 25 / 0.5)" }} data-testid="graph-cannot-run">
+        <div className="panel-h" style={{ background: "var(--red-dim)", cursor: issues.length > 1 ? "pointer" : "default" }}
+          onClick={() => issues.length > 1 && setOpen((v) => !v)}>
+          {issues.length > 1 && <Icon name={open ? "chevron-down" : "chevron-right"} size={12} style={{ color: "var(--red)" }} />}
+          <Icon name="x-circle" size={13} style={{ color: "var(--red)" }} />
+          <span style={{ color: "var(--red)" }}>This graph cannot run: {issues[0]}</span>
+        </div>
+        {open && (
+          <div className="panel-body">
+            {issues.map((iss, i) => (
+              <div key={i} className="muted text-sm mono" style={{ color: "var(--red)" }}>{iss}</div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Why-idle: running, turn 0, references ok, no error -> neutral hint.
+  if (ok === true && session?.status === "running" && turn === 0 && !lastError) {
+    return (
+      <div className="panel" data-testid="graph-waiting-start">
+        <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px" }}>
+          <Icon name="info" size={13} className="muted" />
+          <span className="muted text-sm">Waiting to start its first turn.</span>
+        </div>
+      </div>
+    );
+  }
+  return null;
+}
+window.SD_CannotRunBanner = SD_CannotRunBanner;
