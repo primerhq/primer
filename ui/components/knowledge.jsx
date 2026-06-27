@@ -254,10 +254,17 @@ function KN_CollectionDetail({ c, pushToast, onOpenDocs, onNavigate, embedProvid
             <dt>docs</dt><dd className="mono num tabular">{docCount}</dd>
           </div>
           <div className="mt-3" style={{ display: "flex", gap: 6 }}>
-            <Btn size="sm" kind="primary" icon="doc" onClick={() => setListOpen(true)}>List documents</Btn>
-            {!isSystem && (
-              <Btn size="sm" kind="secondary" icon="box" onClick={() => setBrowseOpen(true)}>Browse by path</Btn>
-            )}
+            {/* User collections are path-addressed: "Documents" opens the
+                file-tree explorer. System/internal collections have no
+                editable path tree, so they keep the indexed-document list. */}
+            <Btn
+              size="sm"
+              kind="primary"
+              icon="doc"
+              onClick={() => (isSystem ? setListOpen(true) : setBrowseOpen(true))}
+            >
+              {isSystem ? "List documents" : "Documents"}
+            </Btn>
             <Btn size="sm" kind="ghost" icon="search" onClick={() => setSearchOpen(true)}>Search</Btn>
             {!isSystem && !isManaged && (
               <Btn size="sm" kind="secondary" icon="edit" onClick={() => setEditOpen(true)}>Edit</Btn>
@@ -657,10 +664,8 @@ function KN_UserCollectionListView({ collection, pushToast, onClose, titleBar })
 // affordances. Errors come back as RFC7807 (problem+json) and surface via
 // the shared toast (err.title / err.detail).
 
-// Build a flat, indented view of the path list. Entries are sorted by path;
-// each row carries its depth (slash count) so the list reads like a tree
-// without the bookkeeping of a real collapsible tree. Keeping it simple per
-// the task brief.
+// Build a flat, indented view of the path list. Kept for any callers that
+// still reference it, but the browser modal now uses _knBuildTree instead.
 function _knIndentRows(entries) {
   const sorted = [...entries].sort((a, b) =>
     (a.path || "").localeCompare(b.path || ""),
@@ -675,6 +680,139 @@ function _knIndentRows(entries) {
       leaf: segs[segs.length - 1],
     };
   });
+}
+
+// Convert a flat [{path, document_id, size}] list into a nested tree:
+//   { name, children: Map<name, node>, file: null | {path, size} }
+// Folder nodes have file=null; leaf nodes have file set and children empty.
+function _knBuildTree(entries) {
+  const root = { name: "", children: new Map(), file: null };
+  for (const e of entries) {
+    const segs = (e.path || "").split("/").filter(Boolean);
+    let node = root;
+    for (let i = 0; i < segs.length; i++) {
+      const seg = segs[i];
+      if (!node.children.has(seg)) {
+        node.children.set(seg, { name: seg, children: new Map(), file: null });
+      }
+      node = node.children.get(seg);
+      if (i === segs.length - 1) {
+        node.file = { path: e.path, size: e.size };
+      }
+    }
+  }
+  return root;
+}
+
+// Recursive tree-node component for the knowledge doc browser.
+// Mirrors WS_DirNode / WS_FileRow from workspaces.jsx.
+function KN_DocTreeNode({ node, depth, openDirs, toggleDir, selectedPath, selectPath }) {
+  const isRoot = depth === 0;
+  const isFolder = node.file === null;
+  const isOpen = openDirs.has(node.name === "" ? "__root__" : _knNodeKey(node, depth));
+
+  // Sort children: folders first, then files, alphabetical within each group.
+  const sorted = React.useMemo(() => {
+    const arr = [...node.children.values()];
+    arr.sort((a, b) => {
+      const af = a.file === null;
+      const bf = b.file === null;
+      if (af && !bf) return -1;
+      if (!af && bf) return 1;
+      return a.name.localeCompare(b.name);
+    });
+    return arr;
+  }, [node.children]);
+
+  const [hover, setHover] = React.useState(false);
+
+  if (isRoot) {
+    // Root renders children directly with no row of its own.
+    return (
+      <div>
+        {sorted.map((child) => (
+          <KN_DocTreeNode
+            key={child.name}
+            node={child}
+            depth={depth + 1}
+            openDirs={openDirs}
+            toggleDir={toggleDir}
+            selectedPath={selectedPath}
+            selectPath={selectPath}
+          />
+        ))}
+      </div>
+    );
+  }
+
+  const isSelected = !isFolder && node.file && node.file.path === selectedPath;
+  const indentPx = 12 + Math.max(0, depth - 1) * 14;
+  const size = !isFolder && node.file ? node.file.size : null;
+
+  const handleClick = () => {
+    if (isFolder) {
+      toggleDir(_knNodeKey(node, depth));
+    } else if (node.file) {
+      selectPath(node.file.path);
+    }
+  };
+
+  return (
+    <div>
+      <div
+        onClick={handleClick}
+        onMouseEnter={(ev) => { setHover(true); if (!isSelected) ev.currentTarget.style.background = "var(--bg-hover)"; }}
+        onMouseLeave={(ev) => { setHover(false); if (!isSelected) ev.currentTarget.style.background = "transparent"; }}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "3px 12px",
+          paddingLeft: indentPx,
+          cursor: "pointer",
+          background: isSelected ? "var(--accent-dim)" : "transparent",
+          color: isSelected ? "var(--text)" : "var(--text-2)",
+          fontSize: 12.5,
+        }}
+      >
+        {isFolder ? (
+          <>
+            <Icon name={isOpen ? "chevron-down" : "chevron-right"} size={10} className="muted" />
+            <Icon name="box" size={12} style={{ color: "var(--text-3)" }} />
+          </>
+        ) : (
+          <>
+            <span style={{ width: 10 }} />
+            <Icon name="doc" size={11} style={{ color: "var(--text-4)" }} />
+          </>
+        )}
+        <span className="mono" style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
+        {!isFolder && size != null && (
+          <span className="muted mono" style={{ fontSize: 10.5, marginLeft: "auto", flexShrink: 0 }}>
+            {size === 0 ? "0" : size < 1024 ? `${size}B` : `${(size / 1024).toFixed(1)}K`}
+          </span>
+        )}
+      </div>
+      {isFolder && isOpen && sorted.map((child) => (
+        <KN_DocTreeNode
+          key={child.name}
+          node={child}
+          depth={depth + 1}
+          openDirs={openDirs}
+          toggleDir={toggleDir}
+          selectedPath={selectedPath}
+          selectPath={selectPath}
+        />
+      ))}
+    </div>
+  );
+}
+
+// Stable key for a tree node based on name + depth (avoids full-path threading).
+// Since folder names at the same depth could theoretically collide in separate
+// branches we prefix with depth, which is sufficient for toggle identity.
+function _knNodeKey(node, depth) {
+  return `${depth}:${node.name}`;
 }
 
 function KN_CollectionDocBrowserModal({ collection, pushToast, onClose }) {
@@ -696,6 +834,16 @@ function KN_CollectionDocBrowserModal({ collection, pushToast, onClose }) {
   const [deleting, setDeleting] = React.useState(false);
   const [moving, setMoving] = React.useState(false);
   const [moveTo, setMoveTo] = React.useState("");
+  const [openDirs, setOpenDirs] = React.useState(() => new Set());
+  const [viewMode, setViewMode] = React.useState("rendered");
+
+  const toggleDir = React.useCallback((key) => {
+    setOpenDirs((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) { next.delete(key); } else { next.add(key); }
+      return next;
+    });
+  }, []);
 
   const listKey = `coll-doc-paths:${cid}:${appliedPrefix}`;
   const list = useResource(
@@ -834,12 +982,20 @@ function KN_CollectionDocBrowserModal({ collection, pushToast, onClose }) {
 
   const docMeta = doc.data?.document || null;
 
+  // Build tree from the flat document list for the file-explorer left pane.
+  const treeRoot = React.useMemo(
+    () => _knBuildTree(list.data?.documents ?? []),
+    [list.data],
+  );
+
+  const isMarkdown = selectedPath && selectedPath.toLowerCase().endsWith(".md");
+
   return (
     <Modal
       title={
         <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
           <Icon name="box" size={13} className="muted" />
-          <span>Documents in <span className="mono">{cid}</span></span>
+          <span>Browse <span className="mono">{cid}</span></span>
         </span>
       }
       onClose={onClose}
@@ -857,193 +1013,264 @@ function KN_CollectionDocBrowserModal({ collection, pushToast, onClose }) {
         </div>
       }
     >
-      <div style={{ width: "min(86vw, 1000px)", maxWidth: "100%", minWidth: 0 }}>
-        <div className="muted text-sm mb-3" style={{ overflowWrap: "anywhere" }}>
-          <span className="mono">GET /v1/collections/{cid}/documents?prefix=</span>
-        </div>
+      {/* Near-full-viewport wrapper so the two-pane explorer has room */}
+      <div style={{ width: "min(92vw, 1280px)", maxWidth: "100%", minWidth: 0 }}>
 
-        {/* Prefix filter */}
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <div className="input-icon" style={{ flex: 1 }}>
-            <Icon name="filter" size={13} className="icon" />
-            <input
-              className="input"
-              placeholder="Filter by path prefix… (Enter to apply)"
-              value={prefix}
-              onChange={(e) => setPrefix(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") setAppliedPrefix(prefix.trim()); }}
-              onBlur={() => setAppliedPrefix(prefix.trim())}
-            />
+        {/* Two-pane file explorer: tree left, content right */}
+        <div style={{
+          display: "grid",
+          gridTemplateColumns: "300px 1fr",
+          height: "calc(100vh - 220px)",
+          minHeight: 480,
+          fontSize: 12.5,
+          border: "1px solid var(--border)",
+          borderRadius: 6,
+          overflow: "hidden",
+        }}>
+
+          {/* Left: file tree */}
+          <div style={{ borderRight: "1px solid var(--border)", overflow: "auto", minHeight: 0, display: "flex", flexDirection: "column" }}>
+            {/* Tree header: prefix filter + controls */}
+            <div style={{ borderBottom: "1px solid var(--border)", padding: "8px 10px", flexShrink: 0, display: "flex", flexDirection: "column", gap: 6 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="mono muted" style={{ fontSize: 11, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {cid}
+                </span>
+                <button className="icon-btn" style={{ width: 22, height: 22, flexShrink: 0 }} title="Refresh" onClick={list.refetch}>
+                  <Icon name="refresh" size={10} />
+                </button>
+              </div>
+              <div className="input-icon" style={{ position: "relative" }}>
+                <Icon name="filter" size={11} className="icon" />
+                <input
+                  className="input"
+                  style={{ fontSize: 11.5, height: 26, paddingLeft: 24 }}
+                  placeholder="Prefix filter… (Enter)"
+                  value={prefix}
+                  onChange={(e) => setPrefix(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === "Enter") setAppliedPrefix(prefix.trim()); }}
+                  onBlur={() => setAppliedPrefix(prefix.trim())}
+                />
+              </div>
+              {appliedPrefix && (
+                <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <span className="muted mono" style={{ fontSize: 10.5, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    prefix: {appliedPrefix}
+                  </span>
+                  <button className="icon-btn" style={{ width: 18, height: 18, flexShrink: 0 }} title="Clear filter" onClick={() => { setPrefix(""); setAppliedPrefix(""); }}>
+                    <Icon name="x" size={9} />
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Tree body */}
+            <div style={{ flex: 1, overflow: "auto", padding: "6px 0" }}>
+              {list.loading && !list.data ? (
+                <div className="muted text-sm" style={{ padding: "12px 16px", textAlign: "center" }}>Loading…</div>
+              ) : list.error ? (
+                <div style={{ padding: "12px 16px", textAlign: "center" }}>
+                  <span style={{ color: "var(--red)", fontSize: 12 }}>{list.error.title || list.error.message}</span>
+                  <div style={{ marginTop: 6 }}>
+                    <a onClick={list.refetch} style={{ cursor: "pointer", fontSize: 12 }}>Retry</a>
+                  </div>
+                </div>
+              ) : (list.data?.documents ?? []).length === 0 ? (
+                <div className="muted text-sm" style={{ padding: "12px 16px", textAlign: "center" }}>
+                  {appliedPrefix
+                    ? `No documents under "${appliedPrefix}".`
+                    : "No documents in this collection yet."}
+                </div>
+              ) : (
+                <KN_DocTreeNode
+                  node={treeRoot}
+                  depth={0}
+                  openDirs={openDirs}
+                  toggleDir={toggleDir}
+                  selectedPath={selectedPath}
+                  selectPath={(p) => { openPath(p); setViewMode("rendered"); }}
+                />
+              )}
+            </div>
           </div>
-          {appliedPrefix && (
-            <Btn size="sm" kind="ghost" icon="x" onClick={() => { setPrefix(""); setAppliedPrefix(""); }}>Clear</Btn>
-          )}
-          <Btn size="sm" kind="ghost" icon="refresh" onClick={list.refetch}>Refresh</Btn>
-        </div>
 
-        {/* Two-pane layout: path list + content view */}
-        <div className="kn-doc-browser" style={{ display: "grid", gridTemplateColumns: "minmax(220px, 320px) 1fr", gap: 14, alignItems: "start" }}>
-          {/* Left: path list */}
-          <div className="tbl-wrap" style={{ maxHeight: 460, overflow: "auto" }}>
-            {list.loading && rows.length === 0 ? (
-              <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>Loading…</div>
-            ) : list.error ? (
-              <div style={{ padding: 16, textAlign: "center" }}>
-                <span style={{ color: "var(--red)" }}>{list.error.title || list.error.message}</span>
-                {" · "}<a onClick={list.refetch} style={{ cursor: "pointer" }}>Retry</a>
+          {/* Right: content pane */}
+          <div style={{ display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0, minHeight: 0 }}>
+
+            {/* Content pane header */}
+            <div style={{ display: "flex", alignItems: "center", padding: "8px 12px", borderBottom: "1px solid var(--border)", gap: 8, flexShrink: 0, flexWrap: "wrap" }}>
+              {creating ? (
+                <span className="mono muted" style={{ fontSize: 12 }}>New document</span>
+              ) : selectedPath ? (
+                <>
+                  <Icon name="doc" size={12} className="muted" />
+                  <span className="mono" style={{ fontSize: 12, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {selectedPath}
+                  </span>
+                  {docMeta?.size != null && (
+                    <span className="muted mono" style={{ fontSize: 10.5, flexShrink: 0 }}>
+                      {docMeta.size < 1024 ? `${docMeta.size}B` : `${(docMeta.size / 1024).toFixed(1)}K`}
+                    </span>
+                  )}
+                </>
+              ) : (
+                <span className="muted" style={{ fontSize: 12 }}>No document selected</span>
+              )}
+
+              {/* Actions in header */}
+              <div style={{ marginLeft: "auto", display: "flex", gap: 6, flexShrink: 0 }}>
+                {creating ? (
+                  <>
+                    <Btn size="sm" kind="primary" icon="plus" disabled={!newPath.trim() || save.loading} onClick={submitCreate}>
+                      {save.loading ? "Creating…" : "Create"}
+                    </Btn>
+                    <Btn size="sm" kind="ghost" onClick={() => setCreating(false)} disabled={save.loading}>Cancel</Btn>
+                  </>
+                ) : editing ? (
+                  <>
+                    <Btn size="sm" kind="primary" icon="check" disabled={save.loading} onClick={submitEdit}>
+                      {save.loading ? "Saving…" : "Save"}
+                    </Btn>
+                    <Btn size="sm" kind="ghost" onClick={() => {
+                      setEditing(false);
+                      setDraftTitle(docMeta?.title || "");
+                      setDraftContent(doc.data?.content || "");
+                    }} disabled={save.loading}>Discard</Btn>
+                  </>
+                ) : selectedPath ? (
+                  <>
+                    {isMarkdown && (
+                      <Btn
+                        size="sm"
+                        kind="ghost"
+                        onClick={() => setViewMode((m) => (m === "rendered" ? "raw" : "rendered"))}
+                        title={viewMode === "rendered" ? "Show raw markdown source" : "Render the markdown"}
+                      >
+                        {viewMode === "rendered" ? "Raw" : "Rendered"}
+                      </Btn>
+                    )}
+                    <Btn size="sm" kind="secondary" icon="edit" onClick={() => {
+                      setDraftTitle(docMeta?.title || "");
+                      setDraftContent(doc.data?.content || "");
+                      setEditing(true);
+                    }}>Edit</Btn>
+                    <Btn size="sm" kind="ghost" icon="external" onClick={() => { setMoveTo(selectedPath); setMoving(true); }}>Move</Btn>
+                    <Btn size="sm" kind="ghost" icon="trash" onClick={() => setDeleting(true)}>Delete</Btn>
+                  </>
+                ) : null}
               </div>
-            ) : rows.length === 0 ? (
-              <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>
-                {appliedPrefix
-                  ? `No documents under "${appliedPrefix}".`
-                  : "No documents in this collection yet."}
-              </div>
-            ) : (
-              rows.map((r) => (
+            </div>
+
+            {/* Content pane body */}
+            <div style={{ flex: 1, overflow: "auto", background: "var(--bg)", minHeight: 0 }}>
+              {creating ? (
+                <div style={{ padding: 16 }}>
+                  <div className="col" style={{ gap: 10 }}>
+                    <div className="muted text-sm mono" style={{ overflowWrap: "anywhere" }}>
+                      PUT /v1/collections/{cid}/documents?path=
+                    </div>
+                    <div className="field">
+                      <label className="field-label">Path</label>
+                      <input
+                        className="input mono"
+                        value={newPath}
+                        onChange={(e) => setNewPath(e.target.value)}
+                        placeholder="concepts/slo.md"
+                        style={{ width: "100%" }}
+                        autoFocus
+                      />
+                      <div className="field-help">POSIX-like; no leading/trailing slash, no empty or '.'/'..' segments.</div>
+                    </div>
+                    <div className="field">
+                      <label className="field-label">Title <span className="hint">optional; defaults to the path leaf</span></label>
+                      <input
+                        className="input"
+                        value={draftTitle}
+                        onChange={(e) => setDraftTitle(e.target.value)}
+                        style={{ width: "100%" }}
+                      />
+                    </div>
+                    <div className="field">
+                      <label className="field-label">Content</label>
+                      <textarea
+                        className="textarea mono"
+                        value={draftContent}
+                        onChange={(e) => setDraftContent(e.target.value)}
+                        style={{ width: "100%", minHeight: 300, fontSize: 12, lineHeight: 1.55 }}
+                        placeholder="Document body. Stored in the content store and indexed for search."
+                      />
+                    </div>
+                  </div>
+                </div>
+              ) : !selectedPath ? (
+                <div className="muted text-sm" style={{ padding: 40, textAlign: "center" }}>
+                  Select a document to view its content.
+                </div>
+              ) : doc.loading && !doc.data ? (
+                <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading…</div>
+              ) : doc.error ? (
+                <div style={{ padding: 16 }}>
+                  <Banner kind="error" title={doc.error.title || "Failed to load document"} detail={doc.error.detail || doc.error.message} />
+                </div>
+              ) : editing ? (
+                <div style={{ padding: 16, display: "flex", flexDirection: "column", gap: 10, height: "100%", boxSizing: "border-box" }}>
+                  <div className="muted text-sm mono" style={{ overflowWrap: "anywhere" }}>
+                    PUT /v1/collections/{cid}/documents?path={selectedPath}
+                  </div>
+                  <div className="field">
+                    <label className="field-label">Title</label>
+                    <input
+                      className="input"
+                      value={draftTitle}
+                      onChange={(e) => setDraftTitle(e.target.value)}
+                      style={{ width: "100%" }}
+                    />
+                  </div>
+                  <div className="field" style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+                    <label className="field-label">Content</label>
+                    <textarea
+                      className="textarea mono"
+                      value={draftContent}
+                      onChange={(e) => setDraftContent(e.target.value)}
+                      style={{ flex: 1, width: "100%", minHeight: 240, fontSize: 12, lineHeight: 1.55 }}
+                    />
+                  </div>
+                </div>
+              ) : isMarkdown && viewMode === "rendered" ? (
                 <div
-                  key={r.path}
-                  onClick={() => openPath(r.path)}
-                  className={selectedPath === r.path ? "selected" : ""}
-                  style={{
-                    cursor: "pointer",
-                    padding: "6px 8px",
-                    paddingLeft: 8 + r.depth * 14,
-                    borderBottom: "1px solid var(--border)",
-                    background: selectedPath === r.path ? "var(--accent-dim, rgba(56,189,248,0.08))" : "transparent",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    minWidth: 0,
-                  }}
-                  title={r.path}
+                  className="md-rendered"
+                  style={{ padding: 16, fontSize: 13, lineHeight: 1.6, color: "var(--text)" }}
                 >
-                  <Icon name="file" size={12} className="muted" />
-                  <span className="mono text-sm" style={{ flex: 1, minWidth: 0, overflowWrap: "anywhere" }}>{r.leaf}</span>
-                  <span className="muted tabular" style={{ fontSize: 10.5 }}>{r.size}</span>
+                  {typeof window.renderMarkdown === "function"
+                    ? window.renderMarkdown(doc.data?.content || "")
+                    : (
+                      <pre className="mono" style={{ margin: 0, whiteSpace: "pre-wrap", fontSize: 12 }}>
+                        {doc.data?.content || ""}
+                      </pre>
+                    )}
                 </div>
-              ))
-            )}
-          </div>
+              ) : (
+                <pre className="mono" style={{ margin: 0, padding: 16, fontSize: 12, lineHeight: 1.55, color: "var(--text-2)", whiteSpace: "pre-wrap" }}>
+                  {doc.data?.content || ""}
+                </pre>
+              )}
+            </div>
 
-          {/* Right: content view / editor / create form */}
-          <div style={{ minWidth: 0 }}>
-            {creating ? (
-              <div className="col" style={{ gap: 10 }}>
-                <div className="muted text-sm mono" style={{ overflowWrap: "anywhere" }}>
-                  PUT /v1/collections/{cid}/documents?path=
-                </div>
-                <div className="field">
-                  <label className="field-label">Path</label>
-                  <input
-                    className="input mono"
-                    value={newPath}
-                    onChange={(e) => setNewPath(e.target.value)}
-                    placeholder="concepts/slo.md"
-                    style={{ width: "100%" }}
-                    autoFocus
-                  />
-                  <div className="field-help">POSIX-like; no leading/trailing slash, no empty or '.'/'..' segments.</div>
-                </div>
-                <div className="field">
-                  <label className="field-label">Title <span className="hint">optional; defaults to the path leaf</span></label>
-                  <input
-                    className="input"
-                    value={draftTitle}
-                    onChange={(e) => setDraftTitle(e.target.value)}
-                    style={{ width: "100%" }}
-                  />
-                </div>
-                <div className="field">
-                  <label className="field-label">Content</label>
-                  <textarea
-                    className="textarea"
-                    value={draftContent}
-                    onChange={(e) => setDraftContent(e.target.value)}
-                    rows={12}
-                    placeholder="Document body. Stored in the content store and indexed for search."
-                  />
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <Btn kind="primary" icon="plus" disabled={!newPath.trim() || save.loading} onClick={submitCreate}>
-                    {save.loading ? "Creating…" : "Create"}
-                  </Btn>
-                  <Btn kind="ghost" onClick={() => setCreating(false)} disabled={save.loading}>Cancel</Btn>
-                </div>
-              </div>
-            ) : !selectedPath ? (
-              <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>
-                Select a document on the left to view its content, or create a new one.
-              </div>
-            ) : doc.loading && !doc.data ? (
-              <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading…</div>
-            ) : doc.error ? (
-              <Banner kind="error" title={doc.error.title || "Failed to load document"} detail={doc.error.detail || doc.error.message} />
-            ) : editing ? (
-              <div className="col" style={{ gap: 10 }}>
-                <div className="muted text-sm mono" style={{ overflowWrap: "anywhere" }}>
-                  PUT /v1/collections/{cid}/documents?path={selectedPath}
-                </div>
-                <div className="field">
-                  <label className="field-label">Title</label>
-                  <input
-                    className="input"
-                    value={draftTitle}
-                    onChange={(e) => setDraftTitle(e.target.value)}
-                    style={{ width: "100%" }}
-                  />
-                </div>
-                <div className="field">
-                  <label className="field-label">Content</label>
-                  <textarea
-                    className="textarea"
-                    value={draftContent}
-                    onChange={(e) => setDraftContent(e.target.value)}
-                    rows={14}
-                  />
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <Btn kind="primary" icon="check" disabled={save.loading} onClick={submitEdit}>
-                    {save.loading ? "Saving…" : "Save changes"}
-                  </Btn>
-                  <Btn kind="ghost" onClick={() => {
-                    setEditing(false);
-                    setDraftTitle(docMeta?.title || "");
-                    setDraftContent(doc.data?.content || "");
-                  }} disabled={save.loading}>Cancel</Btn>
-                </div>
-              </div>
-            ) : (
-              <div className="col" style={{ gap: 10, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
-                  <span className="mono" style={{ fontWeight: 600, overflowWrap: "anywhere", minWidth: 0 }}>{selectedPath}</span>
-                </div>
-                <div className="kv text-sm" style={{ gridTemplateColumns: "70px 1fr" }}>
-                  <dt>title</dt><dd>{docMeta?.title || <span className="muted">{_leafOf(selectedPath)}</span>}</dd>
-                  <dt>id</dt><dd className="mono muted text-sm">{docMeta?.id || "-"}</dd>
-                </div>
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                  <Btn size="sm" kind="secondary" icon="edit" onClick={() => {
-                    setDraftTitle(docMeta?.title || "");
-                    setDraftContent(doc.data?.content || "");
-                    setEditing(true);
-                  }}>Edit</Btn>
-                  <Btn size="sm" kind="ghost" icon="external" onClick={() => { setMoveTo(selectedPath); setMoving(true); }}>Move / rename</Btn>
-                  <Btn size="sm" kind="ghost" icon="trash" onClick={() => setDeleting(true)}>Delete</Btn>
-                </div>
-                <pre style={{
-                  whiteSpace: "pre-wrap",
-                  overflowWrap: "anywhere",
-                  wordBreak: "break-word",
-                  background: "var(--bg-1, var(--bg))",
-                  border: "1px solid var(--border)",
-                  borderRadius: 6,
-                  padding: 12,
-                  margin: 0,
-                  maxHeight: 360,
-                  overflow: "auto",
-                  fontSize: 12.5,
-                  lineHeight: 1.5,
-                }}>{doc.data?.content || ""}</pre>
+            {/* Metadata strip at bottom when viewing a doc */}
+            {!creating && !editing && selectedPath && docMeta && (
+              <div style={{ borderTop: "1px solid var(--border)", padding: "6px 12px", display: "flex", gap: 16, flexShrink: 0, flexWrap: "wrap" }}>
+                {docMeta.title && (
+                  <span className="muted text-sm">
+                    <span style={{ opacity: 0.6 }}>title</span>{" "}
+                    <span>{docMeta.title}</span>
+                  </span>
+                )}
+                {docMeta.id && (
+                  <span className="muted text-sm mono" style={{ fontSize: 10.5 }}>
+                    <span style={{ opacity: 0.6 }}>id</span>{" "}
+                    <span>{docMeta.id}</span>
+                  </span>
+                )}
               </div>
             )}
           </div>
