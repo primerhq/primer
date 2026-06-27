@@ -11,7 +11,9 @@ Spec B §5 / Phase 10.1.
 from __future__ import annotations
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[2] / "ui" / "components" / "session-detail.jsx"
+# The error-badge renderer (_SLS_NodeErrorBadge / _SLS_Frame) was extracted
+# into the shared session-frame.jsx module; assert against it there.
+SRC = Path(__file__).resolve().parents[2] / "ui" / "components" / "session-frame.jsx"
 
 
 def _src() -> str:
