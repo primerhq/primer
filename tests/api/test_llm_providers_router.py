@@ -204,3 +204,51 @@ class TestDiscoverGemini:
             or "401" in r.text
             or "invalid" in r.text.lower()
         )
+
+
+class TestDiscoverOpenChat:
+    """openchat is an OpenAI-compatible Chat Completions provider, so its
+    /v1/models endpoint is live-discoverable via the shared probe (same
+    path openresponses uses)."""
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_discovers_models_from_v1_models(self, client) -> None:
+        respx.get("http://oc-test.local/v1/models").mock(
+            return_value=httpx.Response(
+                200,
+                json={"data": [
+                    {"id": "llama-3.1-8b-instruct"},
+                    {"id": "qwen2.5-coder-7b"},
+                ]},
+            ),
+        )
+        r = await client.post(
+            "/v1/llm_providers/_discover_models",
+            json={
+                "provider": "openchat",
+                "config": {"url": "http://oc-test.local/v1", "flavor": "lmstudio"},
+            },
+        )
+        assert r.status_code == 200, r.text
+        body = r.json()
+        names = [m["name"] for m in body["models"]]
+        assert names == ["llama-3.1-8b-instruct", "qwen2.5-coder-7b"]
+        # /v1/models exposes no context window; the route seeds a default.
+        assert body["models"][0]["context_length"] > 0
+
+    @respx.mock
+    @pytest.mark.asyncio
+    async def test_unreachable_surfaces_4xx(self, client) -> None:
+        respx.get("http://oc-down.local/v1/models").mock(
+            side_effect=httpx.ConnectError("connection refused"),
+        )
+        r = await client.post(
+            "/v1/llm_providers/_discover_models",
+            json={
+                "provider": "openchat",
+                "config": {"url": "http://oc-down.local/v1", "flavor": "lmstudio"},
+            },
+        )
+        assert r.status_code >= 400
+        assert "probe failed" in r.text.lower()
