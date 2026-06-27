@@ -216,6 +216,7 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
                     {session.status === "cancelled" && "cancelled by operator"}
                   </span>
                 </div>
+                {!isGraph && <SD_AgentStatusLine session={session} sid={sid} />}
                 <dl className="kv">
                   <dt>bound</dt>
                   <dd>
@@ -510,6 +511,7 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
         <div className="col" style={{ gap: 14, padding: 12 }}>
           {signalsPanel}
           {instructionsPanel}
+          {!isGraph && <SD_AgentTurnTimeline sid={sid} session={session} />}
           {lastErrorPanel}
           {metadataPanel}
         </div>
@@ -556,6 +558,7 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
           <div className="col" style={{ gap: 14 }}>
             {headerPanel}
             {instructionsPanel}
+            {!isGraph && <SD_AgentTurnTimeline sid={sid} session={session} />}
             {isGraph && wid
               ? <SD_GraphRunView gid={boundGraph} rid={sid} wid={wid} session={session} pushToast={pushToast} />
               : liveStreamPanel}
@@ -1877,3 +1880,86 @@ function SD_CannotRunBanner({ gid, session }) {
   return null;
 }
 window.SD_CannotRunBanner = SD_CannotRunBanner;
+
+// =================================================================
+// Agent-session light additions (spec §7)
+// =================================================================
+
+// Status line derived from session status + the latest turn-log record.
+function SD_AgentStatusLine({ session, sid }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const isTerminal = SESSION_TERMINAL.has(session?.status);
+  const log = useResource(
+    `agent-status-tail:${sid}`,
+    (s) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}/turn_log?limit=1&offset=0`, null, { signal: s }),
+    { pollMs: isTerminal ? 0 : 5000, deps: [sid, session?.status] },
+  );
+  const last = (log.data?.items || [])[0];
+  let label = session?.status || "unknown";
+  let color = "var(--text-2)";
+  if (session?.status === "running") { label = "running"; color = "var(--accent)"; }
+  else if (session?.status === "paused") { label = "paused"; color = "var(--amber)"; }
+  else if (session?.status === "failed") { label = "failed"; color = "var(--red)"; }
+  else if (session?.status === "ended" || session?.status === "completed") { label = "ended"; color = "var(--green)"; }
+  if (last?.kind === "yielded" && last.yield_kind) {
+    label = `waiting on ${last.yield_kind}`;
+    color = "var(--amber)";
+  }
+  return (
+    <div className="text-sm mono" data-testid="agent-status-line"
+      style={{ color, display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+      <span className="dot" style={{ background: color, width: 7, height: 7, borderRadius: "50%", display: "inline-block" }}></span>
+      {label}
+    </div>
+  );
+}
+window.SD_AgentStatusLine = SD_AgentStatusLine;
+
+// Compact turn timeline: one TurnRow per turn-log record. Clicking a turn
+// is a future scroll-to-turn hook; v1 renders the expandable rows.
+function SD_AgentTurnTimeline({ sid, session }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const isTerminal = SESSION_TERMINAL.has(session?.status);
+  const log = useResource(
+    `agent-turn-timeline:${sid}`,
+    (s) => apiFetch("GET", `/sessions/${encodeURIComponent(sid)}/turn_log?limit=200`, null, { signal: s }),
+    { pollMs: isTerminal ? 0 : 5000, deps: [sid, session?.status] },
+  );
+  const records = log.data?.items || [];
+  // Project turn-log records into the TurnRow shape (model/tokens/dur/finish).
+  const turns = React.useMemo(() => records
+    .filter((e) => e.kind === "started" || e.kind === "completed" || e.kind === "failed")
+    .map((e) => ({
+      status: e.kind === "completed" ? "ended" : e.kind === "failed" ? "failed" : "running",
+      started_at: e.ts,
+      duration_ms: e.duration_ms,
+      tokens_in: e.input_tokens,
+      tokens_out: e.output_tokens,
+      output: e.finish_reason || e.yield_kind || null,
+      tool_calls: [],
+    })), [records]);
+
+  if (log.loading && !log.data) {
+    return <div className="muted text-sm" style={{ padding: 12 }}>Loading turns…</div>;
+  }
+  if (turns.length === 0) {
+    return (
+      <div className="panel">
+        <div className="panel-h"><Icon name="layers" size={13} /><span>Turn timeline</span></div>
+        <div className="panel-body"><div className="muted text-sm" style={{ padding: 8 }}>No turns yet.</div></div>
+      </div>
+    );
+  }
+  return (
+    <div className="panel">
+      <div className="panel-h">
+        <Icon name="layers" size={13} /><span>Turn timeline</span>
+        <span className="sub">· {turns.length} turn{turns.length === 1 ? "" : "s"}</span>
+      </div>
+      <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+        {turns.map((t, i) => <TurnRow key={i} turn={t} index={i} />)}
+      </div>
+    </div>
+  );
+}
+window.SD_AgentTurnTimeline = SD_AgentTurnTimeline;
