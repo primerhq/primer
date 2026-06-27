@@ -82,3 +82,36 @@ async def test_transport_error_raises_unavailable():
     def h(req): raise httpx.ConnectError("refused")
     with pytest.raises(WebFetchUnavailable):
         await _adapter(h).fetch(url="https://example.com")
+
+
+@pytest.mark.asyncio
+async def test_sends_browser_user_agent_not_default_httpx():
+    """Many sites (Wikipedia, Cloudflare-fronted hosts) 403 the default
+    ``python-httpx`` User-Agent. The local adapter must present a
+    browser-like UA so real web pages are fetchable."""
+    seen: dict[str, str] = {}
+
+    def h(req):
+        seen["ua"] = req.headers.get("user-agent", "")
+        return httpx.Response(200, headers={"content-type": "text/plain"}, text="ok")
+
+    await _adapter(h).fetch(url="https://en.wikipedia.org/wiki/Foo")
+    assert "python-httpx" not in seen["ua"].lower()
+    assert "mozilla" in seen["ua"].lower()
+
+
+@pytest.mark.asyncio
+async def test_user_agent_is_overridable():
+    """A caller may pin a custom UA (e.g. an honest bot identity)."""
+    seen: dict[str, str] = {}
+
+    def h(req):
+        seen["ua"] = req.headers.get("user-agent", "")
+        return httpx.Response(200, headers={"content-type": "text/plain"}, text="ok")
+
+    adapter = LocalAdapter(
+        client=httpx.AsyncClient(transport=httpx.MockTransport(h)),
+        user_agent="PrimerBot/1.0 (+https://primer.example)",
+    )
+    await adapter.fetch(url="https://example.com")
+    assert seen["ua"] == "PrimerBot/1.0 (+https://primer.example)"
