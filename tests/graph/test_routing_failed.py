@@ -230,3 +230,114 @@ async def test_no_match_no_default_emits_routing_failed() -> None:
     assert loaded.status == SessionStatus.ENDED
     assert loaded.ended_reason == "failed"
     assert loaded.ended_detail == "routing_failed"
+
+
+# Fenced JSON: the agent-node parse (`json.loads`) fails on a ```json
+# code fence, so NodeOutput.parsed is None. A json_path edge must treat
+# this as "no branch matched" -- route to default_to when set, else a
+# CODED routing_failed -- never an uncoded ConfigError the executor
+# swallows into a detail-less failure.
+_FENCED_JSON = '```json\n{"go": "end"}\n```'
+
+
+@pytest.mark.asyncio
+async def test_null_parsed_with_default_to_routes_to_default() -> None:
+    """A json_path source whose structured output doesn't parse (parsed is
+    None) routes to ``default_to`` instead of crashing the graph."""
+    graph = Graph(
+        id="g-null-parsed-default",
+        description="Begin -> A -> conditional (null parsed, default_to=end) -> end",
+        max_iterations=5,
+        nodes=[
+            _BeginNode(id="b"),
+            _AgentNodeRef(id="a", agent_id="x", response_format={"type": "object"}),
+            _EndNode(id="end"),
+        ],
+        edges=[
+            _StaticEdge(from_node="b", to_node="a"),
+            _ConditionalEdge(
+                from_node="a",
+                router=_JsonPathRouter(
+                    branches=[
+                        JsonPathBranch(
+                            conditions=[
+                                BranchCondition(path="go", op="eq", value="loop")
+                            ],
+                            to_node="a",
+                        )
+                    ],
+                    default_to="end",
+                ),
+            ),
+        ],
+    )
+    llm = _FakeLLM(
+        scripts=[
+            [
+                TextDelta(text=_FENCED_JSON, index=0),
+                Done(stop_reason="stop", raw_reason="stop"),
+            ]
+        ]
+    )
+    executor, thread, ts = await _build_executor(
+        graph=graph, llm=llm, agents={"x": _agent("x")}
+    )
+    events = await _drain(executor.invoke([]))
+    assert not [ev for ev in events if isinstance(ev, _GraphErrorEvent)]
+    loaded = await ts.get(thread.id)
+    assert loaded is not None
+    assert loaded.status == SessionStatus.ENDED
+    assert loaded.ended_reason == "completed"
+    assert loaded.ended_detail is None
+
+
+@pytest.mark.asyncio
+async def test_null_parsed_without_default_to_emits_routing_failed() -> None:
+    """A json_path source whose structured output doesn't parse and that has
+    no ``default_to`` ends with a CODED ``routing_failed`` (not an uncoded
+    ConfigError swallowed into ended_detail=None)."""
+    graph = Graph(
+        id="g-null-parsed-nofallback",
+        description="Begin -> A -> conditional (null parsed, no default) -> end",
+        max_iterations=5,
+        nodes=[
+            _BeginNode(id="b"),
+            _AgentNodeRef(id="a", agent_id="x", response_format={"type": "object"}),
+            _EndNode(id="end"),
+        ],
+        edges=[
+            _StaticEdge(from_node="b", to_node="a"),
+            _ConditionalEdge(
+                from_node="a",
+                router=_JsonPathRouter(
+                    branches=[
+                        JsonPathBranch(
+                            conditions=[
+                                BranchCondition(path="go", op="eq", value="end")
+                            ],
+                            to_node="end",
+                        )
+                    ],
+                ),
+            ),
+        ],
+    )
+    llm = _FakeLLM(
+        scripts=[
+            [
+                TextDelta(text=_FENCED_JSON, index=0),
+                Done(stop_reason="stop", raw_reason="stop"),
+            ]
+        ]
+    )
+    executor, thread, ts = await _build_executor(
+        graph=graph, llm=llm, agents={"x": _agent("x")}
+    )
+    events = await _drain(executor.invoke([]))
+    err = [ev for ev in events if isinstance(ev, _GraphErrorEvent)]
+    assert err and err[0].code == "routing_failed"
+    assert err[0].node_id == "a"
+    loaded = await ts.get(thread.id)
+    assert loaded is not None
+    assert loaded.ended_reason == "failed"
+    assert loaded.ended_detail == "routing_failed"

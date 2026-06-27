@@ -155,22 +155,34 @@ class _RoutingMixin:
             )
         router = edge.router
         if isinstance(router, _JsonPathRouter):
-            if source_output.parsed is None:
-                raise ConfigError(
-                    f"conditional edge from {edge.from_node!r} uses a "
-                    "json_path router but the source node has no parsed "
-                    "output (response_format is required)"
-                )
-            match = first_matching_branch(source_output.parsed, router.branches)
+            # ``parsed is None`` means the source node's structured output
+            # did not parse as JSON -- e.g. a model wrapped it in a ```json
+            # fence, or the node carries no ``response_format``. Treat it as
+            # "no branch matched" rather than crashing the whole graph: route
+            # to ``default_to`` when set, otherwise raise the CODED
+            # ``_RoutingFailed`` (``ended_detail='routing_failed'``) instead
+            # of an uncoded ``ConfigError`` the executor swallows into a
+            # detail-less failure.
+            parsed = source_output.parsed
+            match = (
+                first_matching_branch(parsed, router.branches)
+                if parsed is not None
+                else None
+            )
             if match is not None:
                 target = match.to_node
             elif router.default_to is not None:
                 target = router.default_to
             else:
+                why = (
+                    " (source produced no parsed JSON output)"
+                    if parsed is None
+                    else ""
+                )
                 raise _RoutingFailed(
                     edge.from_node,
                     f"json_path router on edge from {edge.from_node!r} "
-                    "matched no branch and has no default_to",
+                    f"matched no branch and has no default_to{why}",
                 )
         elif isinstance(router, _CallableRouter):
             target = await self._router_registry.resolve(
