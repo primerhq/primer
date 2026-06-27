@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 # Raw-response cap (pre-extraction); larger than http-request's 1 MB to fit PDFs.
 DEFAULT_RAW_BYTE_CAP = 5 * 1024 * 1024
 
+# Many hosts (Wikipedia, Cloudflare-fronted sites) reject httpx's default
+# ``python-httpx/x.y`` User-Agent with a 403. Present a mainstream browser UA
+# so ordinary human-readable pages are fetchable; callers may override.
+DEFAULT_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
 
 async def _extract_pdf(data: bytes) -> str:
     """Convert PDF bytes to markdown via docling. Module-level so tests can
@@ -46,16 +54,21 @@ class LocalAdapter(WebFetchAdapter):
         client: httpx.AsyncClient | None = None,
         raw_byte_cap: int = DEFAULT_RAW_BYTE_CAP,
         timeout: float = 30.0,
+        user_agent: str = DEFAULT_USER_AGENT,
     ) -> None:
         self._client = client or httpx.AsyncClient(timeout=timeout)
         self._owns_client = client is None
         self._raw_byte_cap = raw_byte_cap
         self._timeout = timeout
+        self._user_agent = user_agent
 
     async def fetch(self, *, url: str) -> FetchedPage:
         try:
             r = await self._client.get(
-                url, follow_redirects=True, timeout=self._timeout,
+                url,
+                follow_redirects=True,
+                timeout=self._timeout,
+                headers={"User-Agent": self._user_agent},
             )
         except httpx.HTTPError as exc:
             raise WebFetchUnavailable(
