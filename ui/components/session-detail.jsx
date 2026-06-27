@@ -745,6 +745,16 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   const [usage, setUsage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
   const wsRef = React.useRef(null);
   const scrollRef = React.useRef(null);
+  // Whether the session is terminal. A terminal run has no live frames to
+  // tail: the server accepts the socket, replays (often nothing), then
+  // closes — and since onopen resets the backoff, an unguarded reconnect
+  // loops forever at ~1s. Gate reconnects on this. Kept in a ref (seeded
+  // from the initial prop, refreshed as the prop changes) so a run that
+  // ends mid-stream also stops reconnecting without re-opening the socket.
+  const terminalRef = React.useRef(!!(session && SESSION_TERMINAL.has(session.status)));
+  React.useEffect(() => {
+    terminalRef.current = !!(session && SESSION_TERMINAL.has(session.status));
+  }, [session?.status]);
 
   const isRunning = session?.turn_status === "running" || session?.turn_status === "claimable";
 
@@ -833,8 +843,11 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
           }
           return;
         }
-        // Unexpected close - reconnect with exponential backoff.
-        if (!intentional) {
+        // Unexpected close - reconnect with exponential backoff. But a
+        // terminal session has nothing left to stream, so don't reconnect:
+        // the server closes after the (often empty) replay and we'd
+        // otherwise loop forever (onopen keeps resetting the backoff).
+        if (!intentional && !terminalRef.current) {
           reconnectTimer = setTimeout(() => {
             backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
             connect();
