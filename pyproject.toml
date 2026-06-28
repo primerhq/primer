@@ -123,7 +123,15 @@ pythonpath = [".", "runtime"]
 # module/class-scoped fixtures that break when their tests are split
 # across workers. To debug a single test serially, override with `-n0`
 # (e.g. `uv run pytest tests/api/test_chats.py -n0`).
-addopts = "-m 'not distributed' -n auto --dist loadscope"
+#
+# Per-test timeout (pytest-timeout): a hung test (e.g. a leaked thread that
+# deadlocks an xdist worker) otherwise blocks the whole run indefinitely.
+# 300s is a generous ceiling — the full sweep finishes in ~2.5 min, so real
+# tests run well under it; the timeout only trips a genuine hang, failing it
+# loudly with a stack dump instead of stalling. The `thread` method works
+# under xdist and across threads; pytest-timeout auto-disables under a
+# debugger, so pdb sessions aren't killed.
+addopts = "-m 'not distributed' -n auto --dist loadscope --timeout=300 --timeout-method=thread"
 markers = [
     "distributed: requires testcontainers + multiprocess (deselect with -m 'not distributed')",
     "smk(ids, status): map this test to one or more docs/tests SMK ids; status full|partial",
@@ -266,6 +274,7 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "pytest-cov>=7.1.0",
     "pytest-playwright>=0.8.0",
+    "pytest-timeout>=2.3.0",
     "pytest-xdist>=3.8.0",
     "respx>=0.23.1",
     "ruff>=0.15.18",
