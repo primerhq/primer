@@ -745,6 +745,35 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   const [usage, setUsage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
   const wsRef = React.useRef(null);
   const scrollRef = React.useRef(null);
+  const { apiFetch } = window.primerApi;
+  const historyCursorRef = React.useRef(0);
+  React.useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const res = await apiFetch("GET", `/sessions/${encodeURIComponent(sid)}/messages?limit=1000`);
+        if (!alive) return;
+        const items = (res && res.items) || [];
+        if (items.length) {
+          let maxSeq = 0;
+          for (const it of items) { if (typeof it.seq === "number" && it.seq > maxSeq) maxSeq = it.seq; }
+          historyCursorRef.current = maxSeq;
+          setMessages((prev) => {
+            const seen = new Set(prev.map((p) => p.seq));
+            const merged = [...prev];
+            for (const it of items) {
+              if (seen.has(it.seq)) continue;
+              const payload = it.payload && typeof it.payload === "object" ? it.payload : {};
+              merged.push({ ...payload, ...it });
+            }
+            merged.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+            return merged;
+          });
+        }
+      } catch (_e) { /* history is best-effort; WS still tails for live runs */ }
+    })();
+    return () => { alive = false; };
+  }, [sid]);  // eslint-disable-line react-hooks/exhaustive-deps
   // Whether the session is terminal. A terminal run has no live frames to
   // tail: the server accepts the socket, replays (often nothing), then
   // closes — and since onopen resets the backoff, an unguarded reconnect
@@ -772,9 +801,10 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
     let backoffMs = 1000;
     const MAX_BACKOFF_MS = 30000;
     let reconnectTimer = null;
-    // Track the highest seq seen. Starts at 0 (full replay on first
-    // connect); updated on each frame so reconnects resume cleanly.
-    let latestSeq = 0;
+    // Track the highest seq seen. Seeded from REST history so the live
+    // tail resumes with no gap and no full re-replay. Updated on each
+    // WS frame so reconnects also resume cleanly.
+    let latestSeq = historyCursorRef.current || 0;
 
     function connect() {
       if (intentional) return;
@@ -904,6 +934,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
 
   const coalesced = _SLS_coalesceMessages(messages);
   const isTerminalSession = session && SESSION_TERMINAL.has(session.status);
+  const isGraph = (session?.binding?.kind || session?.binding_kind) === "graph";
 
   // Fallback for the read-only TokenMeter when no `"usage"` envelope
   // has landed yet. Use the most recent turn's recorded tokens_in so
@@ -954,13 +985,23 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
         style={{ flex: 1, overflow: "auto", padding: "14px 18px", minHeight: 120, maxHeight: 480 }}
       >
         {coalesced.length === 0 && (
-          <div className="muted text-sm" style={{ textAlign: "center", padding: 20 }}>
-            {wsState === "connecting"
-              ? "Connecting to session stream…"
-              : wsState === "closed"
-                ? "Stream offline. No frames received or connection dropped."
-                : "No frames yet — session has not started a turn."}
-          </div>
+          terminalRef.current ? (
+            <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>
+              Session ended — no recorded output at the session level.
+              {isGraph ? " See the run view for per-node detail." : ""}
+            </div>
+          ) : (
+            <div className="muted text-sm" style={{ textAlign: "center", padding: 20 }}>
+              {wsState === "connecting"
+                ? "Connecting to session stream…"
+                : wsState === "closed"
+                  ? "Stream offline. No frames received or connection dropped."
+                  : "No frames yet — session has not started a turn."}
+            </div>
+          )
+        )}
+        {coalesced.length > 0 && terminalRef.current && (
+          <div className="muted text-sm" style={{ padding: "6px 12px" }}>Session ended</div>
         )}
         {coalesced.map((m, i) =>
           m.kind === "_assistant_message"
