@@ -137,6 +137,45 @@ class TestFromJsonFilter:
             )
 
 
+class TestStripFencesFilter:
+    """The ``strip_fences`` filter sanitises a model's code output before it is
+    written to a file — local models habitually wrap code in ```lang fences
+    (and add prose around it), which breaks a downstream ``python3`` run."""
+
+    def test_extracts_fenced_block_dropping_prose(self) -> None:
+        ctx = _ctx(
+            nodes={
+                "code": NodeOutput(
+                    text="Here is the file:\n```python\nprint('hi')\n```\nDone.",
+                    iteration=0,
+                )
+            },
+        )
+        result = render_input_template(
+            "{{ nodes.code.text | strip_fences }}", context=ctx
+        )
+        assert result == "print('hi')"
+
+    def test_idempotent_on_raw_code(self) -> None:
+        raw = "import sys\nprint(sys.argv)"
+        ctx = _ctx(nodes={"code": NodeOutput(text=raw, iteration=0)})
+        result = render_input_template(
+            "{{ nodes.code.text | strip_fences }}", context=ctx
+        )
+        assert result == raw
+
+    def test_strips_stray_unclosed_fence_marker_lines(self) -> None:
+        # No closing fence: the bare ```python marker line must be removed so
+        # the remaining text is valid source.
+        ctx = _ctx(
+            nodes={"code": NodeOutput(text="```python\nx = 1\ny = 2", iteration=0)},
+        )
+        result = render_input_template(
+            "{{ nodes.code.text | strip_fences }}", context=ctx
+        )
+        assert result == "x = 1\ny = 2"
+
+
 class TestErrors:
     def test_syntax_error_raises_bad_request(self) -> None:
         with pytest.raises(BadRequestError, match="syntax error"):
