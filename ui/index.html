@@ -35,6 +35,9 @@
      window.html2canvas synchronously. Loaded before _app.js so the
      embed preview iframe sees it on first render. -->
 <script src="vendor/html2canvas.min.js"></script>
+<!-- SPIKE: AntV G6 v5 (UMD global window.G6). Plain script so it loads before
+     _app.js — powers the optional G6 run-view canvas, toggled in the run view. -->
+<script src="vendor/g6.min.js"></script>
 <script src="_app.js"></script>
 
 <!-- The text/babel script tags below are the single source of truth
@@ -70,6 +73,7 @@
 <script type="text/babel" src="components/shared/mobile-tabs.jsx"></script>
 <script type="text/babel" src="components/shared/floating-action.jsx"></script>
 <script type="text/babel" src="components/graph-canvas.jsx"></script>
+<script type="text/babel" src="components/graph-g6-canvas.jsx"></script>
 <script type="text/babel" src="components/mock-data.jsx"></script>
 <script type="text/babel" src="components/predicate-builder.jsx"></script>
 

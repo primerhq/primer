@@ -1143,6 +1143,11 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = session && window.SESSION_TERMINAL.has(session.status);
   const [selectedNodeId, setSelectedNodeId] = React.useState(null);
+  // SPIKE: toggle the G6 (animated) run-view canvas vs the hand-rolled SVG
+  // one, persisted client-side so the choice survives reloads.
+  const [g6On, setG6On] = React.useState(() => {
+    try { return localStorage.getItem("primer.g6RunView") === "1"; } catch (_e) { return false; }
+  });
 
   const graph = useResource(
     `run-graph-def:${gid}`,
@@ -1203,19 +1208,37 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
         <Icon name="graph" size={13} style={{ color: "var(--violet)" }} />
         <span>Run view</span>
         <span className="sub">· superstep {supersteps}</span>
-        <div className="right">
+        <div className="right" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button
+            type="button"
+            className="pill"
+            title="Spike: G6 (animated) canvas vs the SVG one"
+            onClick={() => { const v = !g6On; setG6On(v); try { localStorage.setItem("primer.g6RunView", v ? "1" : "0"); } catch (_e) { /* no-op */ } }}
+            style={{ cursor: "pointer", borderColor: g6On ? "var(--violet)" : undefined, color: g6On ? "var(--violet)" : undefined }}
+          >
+            {g6On ? "⚡ G6" : "SVG"}
+          </button>
           <span className={`pill pill-${overall === "ended" ? "ended" : overall === "failed" ? "failed" : overall === "running" ? "running" : "paused"}`}>
             <span className="dot"></span>{overall}
           </span>
         </div>
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px" }}>
-        <SD_StatusCanvas
-          graph={graph.data}
-          statusByNode={statusByNode}
-          selectedNodeId={selectedNodeId}
-          onSelectNode={setSelectedNodeId}
-        />
+        {g6On && window.SD_G6Canvas ? (
+          <window.SD_G6Canvas
+            graph={graph.data}
+            statusByNode={statusByNode}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={setSelectedNodeId}
+          />
+        ) : (
+          <SD_StatusCanvas
+            graph={graph.data}
+            statusByNode={statusByNode}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={setSelectedNodeId}
+          />
+        )}
         <SD_NodeInspector
           gid={gid}
           rid={rid}
