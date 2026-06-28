@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 from jinja2 import StrictUndefined, TemplateError
@@ -54,6 +55,36 @@ def _fromjson(value: Any) -> Any:
     return value
 
 
+_FENCE_BLOCK_RE = re.compile(r"```[^\n]*\n(.*?)```", re.DOTALL)
+_FENCE_LINE_RE = re.compile(r"^\s*```")
+
+
+def _strip_fences(value: Any) -> Any:
+    """``strip_fences`` template filter: extract code from markdown fences.
+
+    Local models habitually wrap code in ```lang fenced blocks (and add prose
+    around them), which breaks a downstream ``python3``/shell run when the raw
+    text is written to a file. This filter sanitises that:
+
+    * If the text contains one or more complete ```...``` blocks, return the
+      concatenated block contents (surrounding prose dropped).
+    * Otherwise, if a stray/unclosed fence marker line is present, drop those
+      marker lines so the remaining text is valid source.
+    * Otherwise (already raw), return the text unchanged — idempotent.
+
+    Non-string values pass through unchanged.
+    """
+    if not isinstance(value, str):
+        return value
+    blocks = _FENCE_BLOCK_RE.findall(value)
+    if blocks:
+        return "\n\n".join(b.strip("\n") for b in blocks)
+    if "```" in value:
+        kept = [ln for ln in value.splitlines() if not _FENCE_LINE_RE.match(ln)]
+        return "\n".join(kept)
+    return value
+
+
 # Module-level shared environment. Sandboxed = blocks access to
 # dunder attributes / dangerous built-ins; StrictUndefined = raises
 # on missing attributes rather than silently emitting empty strings
@@ -67,6 +98,10 @@ _ENV: SandboxedEnvironment = SandboxedEnvironment(
 # Custom filters. ``fromjson`` parses a JSON string (e.g. a tool_call node's
 # ``text`` output) so downstream nodes can index into it; see ``_fromjson``.
 _ENV.filters["fromjson"] = _fromjson
+# ``strip_fences`` extracts code from markdown fences a model may add around
+# generated source, so a write-then-exec node gets clean content; see
+# ``_strip_fences``.
+_ENV.filters["strip_fences"] = _strip_fences
 
 
 def render_input_template(
