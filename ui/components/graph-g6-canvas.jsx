@@ -12,6 +12,26 @@ const _G6_COLORS = {
   violet: "#a78bfa", text: "#e6e8eb", sub: "#9aa4af", bg: "#0d0f12", edge: "#4b525c",
 };
 
+// Node-kind icons — reuse the console's icon language (24x24 stroke paths)
+// as SVG data-URIs so the canvas-rendered G6 nodes show type via iconSrc.
+// begin/end stay as circle SHAPES (no icon); the work nodes get an icon.
+const _G6_KIND_SVG = {
+  agent: '<circle cx="12" cy="9" r="3.5"/><path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6"/>',
+  tool_call: '<path d="M14 6l4-4 4 4-4 4M14 6L8 12M5 19l-3 3v-3h3l9-9 3 3-9 9z"/>',
+  fan_out: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M6 8.5v3a3 3 0 003 3h6a3 3 0 003-3v-3M12 14.5v.5"/>',
+  fan_in: '<g transform="rotate(180 12 12)"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M6 8.5v3a3 3 0 003 3h6a3 3 0 003-3v-3M12 14.5v.5"/></g>',
+  graph: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 7.5L11 16M16.5 7.5L13 16"/>',
+};
+function _g6IconUri(kind, stroke) {
+  const inner = _G6_KIND_SVG[kind];
+  if (!inner) return undefined;
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="'
+    + (stroke || _G6_COLORS.text) + '" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">'
+    + inner + '</svg>';
+  return "data:image/svg+xml," + encodeURIComponent(svg);
+}
+window._g6IconUri = _g6IconUri;
+
 function _g6NodeStates() {
   const mk = (c, halo) => ({
     stroke: c, lineWidth: 2, fill: c + "22",
@@ -95,17 +115,23 @@ function SD_G6Canvas({ graph, statusByNode, metaByNode, selectedNodeId, onSelect
             stroke: _G6_COLORS.neutral,
             lineWidth: 2,
             labelText: (d) => d.data.label,
+            labelPlacement: "center",
+            labelDx: 9,
             labelFill: _G6_COLORS.text,
             labelFontSize: 12,
             labelFontFamily: "IBM Plex Mono, monospace",
             labelLineHeight: 15,
+            iconSrc: (d) => _g6IconUri(d.data.kind),
+            iconWidth: 15,
+            iconHeight: 15,
+            iconX: -57,
           },
           state: _g6NodeStates(),
         },
         edge: {
           type: "polyline",
           style: { stroke: _G6_COLORS.edge, lineWidth: 1.5, endArrow: true, endArrowSize: 8, radius: 8 },
-          state: { active: { stroke: _G6_COLORS.green, lineWidth: 2, lineDash: [6, 6] } },
+          state: { active: { stroke: _G6_COLORS.green, lineWidth: 2, lineDash: [6, 6], endArrow: true } },
         },
         layout: { type: "dagre", rankdir: "LR", nodesep: 18, ranksep: 66 },
         behaviors: ["zoom-canvas", "drag-canvas"],
