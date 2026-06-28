@@ -1117,7 +1117,7 @@ function SD_StatusCanvas({ graph, statusByNode, metaByNode, selectedNodeId, onSe
 
   return (
     <div style={{ minWidth: 0, overflow: "hidden" }}>
-      <window.GR_G6Canvas
+      <window.GR_Canvas
         draft={draft}
         layout="dagre"
         statusTint={statusTint}

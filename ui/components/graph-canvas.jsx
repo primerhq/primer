@@ -1,503 +1,355 @@
-/* global React, Icon */
-// Shared read-only graph canvas primitives, extracted verbatim from
-// graphs.jsx so BOTH the graph editor (GR_GraphEditor) and the
-// session-detail run view (SD_GraphRunView) render identical layout
-// without duplicating node-size/edge math. No behavior change vs the
-// pre-extraction graphs.jsx; the run view adds a status overlay on top.
+/* global React, G6 */
+// Unified AntV G6 (v5) graph canvas — the single renderer behind the graph
+// editor (interactive) and the session run-view (read-only + status). One
+// component, one place for the G6 logic; a `layout` prop forks between the
+// editor's user-positioned nodes ("preset") and the run-view's auto layout
+// ("dagre"). Interaction callbacks are optional: when absent (run-view) the
+// canvas is read-only. Rendering parity lives here; interaction wiring is
+// layered on in the same file.
+//
+// Props: { draft, layout, selectedNodeId, selectedEdgeId, statusTint,
+//          metaByNode, onNodeClick, onEdgeClick, onNodeDoubleClick,
+//          onBackgroundClick, onMoveNode, onConnect, addEdgeMode }.
+// `draft` is { nodes:[{id,kind,x?,y?,...}], edges:[...] } (the editor draft
+// or the run-view graph — same shape). `layout`: "preset" | "dagre".
 
-const GR_NODE_SIZE = {
-  agent: { w: 150, h: 56 },
-  graph: { w: 150, h: 56 },
-  begin: { w: 22, h: 22 },
-  end: { w: 22, h: 22 },
-  // Spec B node kinds:
-  fan_out: { w: 170, h: 56 },
-  fan_in: { w: 150, h: 56 },
-  tool_call: { w: 170, h: 56 },
+const _G6_COLORS = {
+  neutral: "#3a3f47", green: "#34d399", amber: "#fbbf24", red: "#f87171",
+  violet: "#a78bfa", text: "#e6e8eb", sub: "#9aa4af", bg: "#0d0f12", edge: "#4b525c",
 };
 
-const GR_Canvas = React.forwardRef(function GR_Canvas(
-  {
-    draft,
-    selectedNodeId,
-    selectedEdgeId,
-    addEdgeMode,
-    onNodeClick,
-    onEdgeClick,
-    onNodeDoubleClick,
-    onNodeMouseDown,
-    onBackgroundClick,
-    statusTint,
-  },
-  ref,
-) {
-  // Compute canvas extent (auto-grow for far-flung nodes).
-  let maxX = 600;
-  let maxY = 380;
-  for (const n of draft.nodes) {
-    const sz = GR_NODE_SIZE[n.kind] || GR_NODE_SIZE.agent;
-    if ((n.x || 0) + sz.w + 40 > maxX) maxX = (n.x || 0) + sz.w + 40;
-    if ((n.y || 0) + sz.h + 40 > maxY) maxY = (n.y || 0) + sz.h + 40;
-  }
+// Node sizes by kind (also exported; consumers may read GR_NODE_SIZE).
+const GR_NODE_SIZE = {
+  begin: { w: 24, h: 24 }, end: { w: 24, h: 24 },
+  agent: { w: 152, h: 46 }, graph: { w: 152, h: 46 }, fan_in: { w: 152, h: 46 },
+  tool_call: { w: 168, h: 46 }, fan_out: { w: 168, h: 46 },
+};
+function _g6Size(kind) { return GR_NODE_SIZE[kind] || GR_NODE_SIZE.agent; }
+function _g6Tiny(kind) { return kind === "begin" || kind === "end"; }
 
-  return (
-    <div
-      ref={ref}
-      onClick={onBackgroundClick}
-      style={{
-        position: "relative",
-        minHeight: 500,
-        height: 500,
-        overflow: "auto",
-        background: "var(--bg)",
-        backgroundImage: "radial-gradient(circle, var(--border) 1px, transparent 1px)",
-        backgroundSize: "20px 20px",
-        userSelect: "none",
-        cursor: addEdgeMode ? "crosshair" : "default",
-      }}
-    >
-      <div style={{ position: "relative", width: maxX, height: maxY }}>
-        <svg
-          style={{ position: "absolute", inset: 0, pointerEvents: "none" }}
-          width={maxX}
-          height={maxY}
-        >
-          <defs>
-            <marker id="arrow-static" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L8,4 L0,8 z" fill="var(--text-3)" />
-            </marker>
-            <marker id="arrow-cond" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L8,4 L0,8 z" fill="var(--accent)" />
-            </marker>
-            {/* Smaller arrowhead for the FanOut implicit dashed edges so
-                they read as "configured, not wired". */}
-            <marker id="arrow-fanout" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto" markerUnits="strokeWidth">
-              <path d="M0,0 L6,3 L0,6 z" fill="var(--text-3)" />
-            </marker>
-          </defs>
-          {(draft.edges || []).map((e, i) => (
-            <GR_EdgePath
-              key={i}
-              edge={e}
-              nodes={draft.nodes}
-              selected={selectedEdgeId === i}
-              onClick={(ev) => { ev.stopPropagation(); if (onEdgeClick) onEdgeClick(i); }}
-            />
-          ))}
-          {/* Spec B §1.3: FanOut nodes have NO entries in `graph.edges`;
-              their downstream targets live on per-spec fields. Render
-              one dashed path per (FanOut, target) pair so the operator
-              sees the implicit wiring on the canvas without it counting
-              as a static edge. */}
-          <g className="fanout-implicit-edges">
-            {GR_collectFanOutImplicitEdges(draft.nodes).map(({ from, to }, i) => (
-              <GR_ImplicitFanOutEdge key={`fo-${i}`} from={from} to={to} />
-            ))}
-          </g>
-        </svg>
+// Node-kind icons — reuse the console icon language (24x24 stroke paths) as
+// SVG data-URIs so the canvas-rendered G6 nodes show type via iconSrc.
+const _G6_KIND_SVG = {
+  agent: '<circle cx="12" cy="9" r="3.5"/><path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6"/>',
+  tool_call: '<path d="M14 6l4-4 4 4-4 4M14 6L8 12M5 19l-3 3v-3h3l9-9 3 3-9 9z"/>',
+  fan_out: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M6 8.5v3a3 3 0 003 3h6a3 3 0 003-3v-3M12 14.5v.5"/>',
+  fan_in: '<g transform="rotate(180 12 12)"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M6 8.5v3a3 3 0 003 3h6a3 3 0 003-3v-3M12 14.5v.5"/></g>',
+  graph: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M7.5 7.5L11 16M16.5 7.5L13 16"/>',
+};
+function _g6IconUri(kind, stroke) {
+  const inner = _G6_KIND_SVG[kind];
+  if (!inner) return undefined;
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="'
+    + (stroke || _G6_COLORS.text) + '" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">'
+    + inner + '</svg>';
+  return "data:image/svg+xml," + encodeURIComponent(svg);
+}
 
-        {draft.nodes.map((n) => (
-          <GR_NodeBox
-            key={n.id}
-            node={n}
-            selected={selectedNodeId === n.id}
-            entry={draft.entry_node_id === n.id}
-            edgePicking={!!addEdgeMode}
-            edgePickStage={addEdgeMode && addEdgeMode.fromId === n.id ? "from" : null}
-            onClick={(ev) => { ev.stopPropagation(); onNodeClick(n.id); }}
-            onDoubleClick={(ev) => { ev.stopPropagation(); onNodeDoubleClick(n.id); }}
-            onMouseDown={(ev) => onNodeMouseDown(ev, n.id)}
-          />
-        ))}
-
-        {/* Optional per-node status tint (run view). Rendered INSIDE the
-            scroll container so the rings scroll with the nodes and never
-            overflow the page; the editor passes no statusTint. */}
-        {statusTint && draft.nodes.map((n) => {
-          const t = statusTint[n.id];
-          if (!t) return null;
-          const sz = GR_NODE_SIZE[n.kind] || GR_NODE_SIZE.agent;
-          return (
-            <div
-              key={`tint-${n.id}`}
-              data-testid={`run-node-${n.id}`}
-              data-status={t.status}
-              style={{
-                position: "absolute",
-                left: (n.x || 0) - 2,
-                top: (n.y || 0) - 2,
-                width: sz.w + 4,
-                height: sz.h + 4,
-                borderRadius: n.kind === "begin" || n.kind === "end" ? "50%" : 10,
-                border: `2px solid ${t.border}`,
-                boxShadow: t.glow || undefined,
-                animation: t.status === "running" ? "pulse 1.6s ease-in-out infinite" : undefined,
-                pointerEvents: "none",
-              }}
-            />
-          );
-        })}
-
-        <div style={{
-          position: "absolute",
-          bottom: 8,
-          left: 8,
-          fontSize: 10.5,
-          color: "var(--text-3)",
-          fontFamily: "IBM Plex Mono",
-          display: "flex",
-          gap: 14,
-          pointerEvents: "none",
-        }}>
-          <span>
-            <span style={{ display: "inline-block", width: 14, height: 2, background: "var(--text-3)", verticalAlign: "middle", marginRight: 4 }}></span>
-            static
-          </span>
-          <span>
-            <span style={{ display: "inline-block", width: 14, height: 0, borderTop: "1.5px dashed var(--accent)", verticalAlign: "middle", marginRight: 4 }}></span>
-            conditional
-          </span>
-          {addEdgeMode && (
-            <span style={{ color: "var(--accent)" }}>
-              {addEdgeMode.fromId ? "Click target node…" : "Click source node…"}
-            </span>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-});
-
-// ----------------------------------------------------------------------------
-// GR_NodeBox — begin / agent / graph / end nodes
-// ----------------------------------------------------------------------------
-
-function GR_NodeBox({ node, selected, entry, edgePicking, edgePickStage, onClick, onDoubleClick, onMouseDown }) {
-  const isBegin = node.kind === "begin";
-  const isEnd = node.kind === "end";
-  const isGraph = node.kind === "graph";
-
-  const baseStyle = {
-    position: "absolute",
-    left: node.x || 0,
-    top: node.y || 0,
-    cursor: edgePicking ? "crosshair" : "grab",
+// Per-status node state styles (the live "glow"); G6 tweens state changes.
+function _g6NodeStates() {
+  const mk = (c, halo) => ({
+    stroke: c, lineWidth: 2, fill: c + "22",
+    halo, haloStroke: c, haloStrokeOpacity: 0.32, haloLineWidth: halo ? 10 : 0,
+  });
+  return {
+    pending: mk(_G6_COLORS.neutral, false),
+    running: mk(_G6_COLORS.green, true),
+    waiting: mk(_G6_COLORS.amber, true),
+    ended: mk(_G6_COLORS.green, false),
+    failed: mk(_G6_COLORS.red, true),
+    pulse: { halo: true, haloStroke: _G6_COLORS.green, haloLineWidth: 20, haloStrokeOpacity: 0.15 },
+    selected: { stroke: _G6_COLORS.violet, lineWidth: 3, halo: true, haloStroke: _G6_COLORS.violet, haloStrokeOpacity: 0.4 },
   };
-
-  if (isBegin || isEnd) {
-    // Begin: hollow ring (accent); End: filled disk (text color).
-    const ringStyle = isBegin
-      ? {
-          background: selected ? "var(--accent-dim)" : "var(--bg-1)",
-          border: edgePickStage === "from"
-            ? "2px dashed var(--accent)"
-            : selected
-              ? "2px solid var(--accent)"
-              : "2px solid var(--accent)",
-        }
-      : {
-          background: selected ? "var(--accent)" : "var(--text)",
-          border: edgePickStage === "from"
-            ? "2px dashed var(--accent)"
-            : selected
-              ? "2px solid var(--accent)"
-              : "2px solid var(--border-strong)",
-        };
-    return (
-      <div onMouseDown={onMouseDown} onClick={onClick} onDoubleClick={onDoubleClick} style={baseStyle}>
-        <div style={{
-          width: 22,
-          height: 22,
-          borderRadius: "50%",
-          ...ringStyle,
-          boxShadow: selected ? "0 0 0 4px var(--accent-dim)" : undefined,
-        }} />
-        <div className="mono text-sm" style={{
-          color: selected ? "var(--accent)" : "var(--text-2)",
-          whiteSpace: "nowrap",
-          marginTop: 2,
-          fontSize: 11,
-        }}>
-          {entry ? "▶ " : ""}{node.id}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      onMouseDown={onMouseDown}
-      onClick={onClick}
-      onDoubleClick={onDoubleClick}
-      style={{
-        ...baseStyle,
-        width: GR_NODE_SIZE[node.kind].w,
-        height: GR_NODE_SIZE[node.kind].h,
-        borderRadius: 8,
-        background: isGraph ? "transparent" : "var(--bg-1)",
-        border: edgePickStage === "from"
-          ? "2px dashed var(--accent)"
-          : selected
-            ? "2px solid var(--accent)"
-            : `${isGraph ? "1.5px dashed" : "1.5px solid"} var(--border-strong)`,
-        boxShadow: selected ? "0 0 0 4px var(--accent-dim)" : "0 1px 0 rgba(0, 0, 0, 0.2)",
-        padding: "6px 10px",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "center",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 11 }}>
-        <Icon
-          name={isGraph ? "graph" : "agent"}
-          size={11}
-          style={{ color: isGraph ? "var(--violet)" : "var(--accent)" }}
-        />
-        <span className="mono" style={{ fontSize: 11, fontWeight: 500 }}>
-          {entry ? "▶ " : ""}{node.id}
-        </span>
-        <span className="muted" style={{ fontSize: 9.5, marginLeft: "auto" }}>
-          {node.kind}
-        </span>
-      </div>
-      <div className="mono muted text-sm" style={{
-        fontSize: 10.5,
-        marginTop: 3,
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-      }}>
-        {isGraph
-          ? (node.graph_id || <span style={{ color: "var(--red)" }}>(graph_id not set)</span>)
-          : (node.agent_id || <span style={{ color: "var(--red)" }}>(agent_id not set)</span>)}
-      </div>
-    </div>
-  );
 }
 
-// ----------------------------------------------------------------------------
-// GR_EdgePath — per-edge SVG router (static / conditional)
-// ----------------------------------------------------------------------------
-
-function GR_EdgePath({ edge, nodes, selected, onClick }) {
-  // For conditional edges with a json_path router, draw one curve per
-  // branch + an optional default-to curve. For static edges and
-  // callable-router conditionals, draw one curve to the single known
-  // target (callable routers expose no static target).
-  const from = nodes.find((n) => n.id === edge.from_node);
-  if (!from) return null;
-  const fromSize = GR_NODE_SIZE[from.kind] || GR_NODE_SIZE.agent;
-  const fx = (from.x || 0) + fromSize.w;
-  const fy = (from.y || 0) + fromSize.h / 2;
-
-  if (edge.kind === "static") {
-    const to = nodes.find((n) => n.id === edge.to_node);
-    if (!to) return null;
-    return (
-      <GR_SingleEdge
-        fx={fx}
-        fy={fy}
-        to={to}
-        dashed={false}
-        label={null}
-        selected={selected}
-        onClick={onClick}
-      />
-    );
-  }
-
-  // conditional
-  const router = edge.router || {};
-  if (router.kind === "json_path") {
-    const out = [];
-    const branches = router.branches || [];
-    for (let i = 0; i < branches.length; i += 1) {
-      const br = branches[i];
-      const to = nodes.find((n) => n.id === br.to_node);
-      if (!to) continue;
-      // Prefer the new `conditions` shape; fall back to the legacy `when`.
-      const condBits = (br.conditions || []).map((c) => {
-        if (c.op === "exists") return `${c.path}?`;
-        return `${c.path} ${c.op} ${JSON.stringify(c.value)}`;
-      });
-      const whenBits = Object.entries(br.when || {}).map(([k, v]) => `${k}=${v}`);
-      const label = (condBits.length ? condBits : whenBits).join(" ∧ ");
-      out.push(
-        <GR_SingleEdge
-          key={"b" + i}
-          fx={fx}
-          fy={fy}
-          to={to}
-          dashed
-          label={label}
-          selected={selected}
-          onClick={onClick}
-        />,
-      );
-    }
-    if (router.default_to) {
-      const to = nodes.find((n) => n.id === router.default_to);
-      if (to) {
-        out.push(
-          <GR_SingleEdge
-            key="def"
-            fx={fx}
-            fy={fy}
-            to={to}
-            dashed
-            label="(default)"
-            selected={selected}
-            onClick={onClick}
-          />,
-        );
-      }
-    }
-    // Branch-count badge near the source midpoint.
-    const badgeText = `${branches.length} branch${branches.length === 1 ? "" : "es"}`;
-    out.push(
-      <text
-        key="badge"
-        x={fx + 8}
-        y={fy - 8}
-        fontSize="9.5"
-        fontFamily="IBM Plex Mono"
-        fill="var(--accent)"
-        style={{ pointerEvents: "auto", cursor: "pointer" }}
-        onClick={onClick}
-      >
-        {badgeText}
-      </text>,
-    );
-    return <>{out}</>;
-  }
-
-  if (router.kind === "callable") {
-    // Callable routers have no static target — draw a stub arrow.
-    return (
-      <text x={fx + 12} y={fy} fontSize="10" fontFamily="IBM Plex Mono" fill="var(--accent)">
-        callable:{router.callable_id || "?"}
-      </text>
-    );
-  }
-  return null;
+function _g6Metric(meta) {
+  if (!meta) return "";
+  const tot = (meta.tin || 0) + (meta.tout || 0);
+  const parts = [];
+  if (tot) parts.push((tot >= 1000 ? (tot / 1000).toFixed(1) + "k" : String(tot)) + " tok");
+  if (meta.dur != null) parts.push((meta.dur / 1000).toFixed(1) + "s");
+  return parts.join("  ·  ");
+}
+function _g6Label(node, metaByNode) {
+  if (_g6Tiny(node.kind)) return "";
+  const m = _g6Metric(metaByNode && metaByNode[node.id]);
+  return m ? `${node.id}\n${m}` : node.id;
 }
 
-function GR_SingleEdge({ fx, fy, to, dashed, label, selected, onClick }) {
-  const toSize = GR_NODE_SIZE[to.kind] || GR_NODE_SIZE.agent;
-  const tx = to.x || 0;
-  const ty = (to.y || 0) + toSize.h / 2;
-  const mx = (fx + tx) / 2;
-  const path = `M ${fx} ${fy} C ${mx} ${fy}, ${mx} ${ty}, ${tx} ${ty}`;
-  const stroke = selected ? "var(--accent)" : (dashed ? "var(--accent)" : "var(--text-3)");
-  const marker = dashed ? "url(#arrow-cond)" : "url(#arrow-static)";
-  const strokeWidth = selected ? "3.2" : "1.6";
-  const interactive = typeof onClick === "function";
-  return (
-    <g style={interactive ? { pointerEvents: "auto", cursor: "pointer" } : undefined} onClick={onClick}>
-      {/* Invisible wide hit target for easier clicking on thin paths. */}
-      {interactive && (
-        <path
-          d={path}
-          stroke="transparent"
-          strokeWidth="12"
-          fill="none"
-        />
-      )}
-      <path
-        d={path}
-        stroke={stroke}
-        strokeWidth={strokeWidth}
-        fill="none"
-        strokeDasharray={dashed ? "5 4" : "0"}
-        markerEnd={marker}
-      />
-      {label && (
-        <text
-          x={mx}
-          y={(fy + ty) / 2 - 6}
-          textAnchor="middle"
-          fontSize="10"
-          fontFamily="IBM Plex Mono"
-          fill={stroke}
-        >
-          {label.length > 30 ? label.slice(0, 28) + "…" : label}
-        </text>
-      )}
-    </g>
-  );
-}
-
-// ----------------------------------------------------------------------------
-// FanOut implicit-edge collection + render.
-//
-// Spec B §1.3 forbids FanOut nodes from appearing as `from_node` in
-// `graph.edges` — their downstream targets are configured per-spec
-// (broadcast.target_node_id, tee.target_node_ids, map.target_node_id).
-// The editor renders these as dashed lines on the canvas so the operator
-// can see the implicit wiring without it counting as a static edge.
-//
-// `GR_collectFanOutImplicitEdges` flattens every (FanOut, target) pair,
-// de-duped so a spec listing the same target twice still draws once.
-// Targets that don't resolve to a known node are skipped silently — the
-// topology-violations banner already flags them.
-// ----------------------------------------------------------------------------
-
-function GR_collectFanOutImplicitEdges(nodes) {
-  if (!Array.isArray(nodes)) return [];
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const seen = new Set();
+// Edges by kind: static (one), conditional (one per branch target +
+// default_to), implicit fan-out (one per spec target). Each carries
+// data.etype + data.idx (index into draft.edges, or -1 for implicit) so the
+// canvas can style + map edge clicks back to the draft.
+function _g6Edges(draft) {
   const out = [];
-  for (const node of nodes) {
-    if (node.kind !== "fan_out") continue;
-    const specs = Array.isArray(node.specs) ? node.specs : [];
-    for (const spec of specs) {
-      const targets = [];
-      if (spec.kind === "broadcast" || spec.kind === "map") {
-        if (spec.target_node_id) targets.push(spec.target_node_id);
-      } else if (spec.kind === "tee") {
-        for (const tid of (spec.target_node_ids || [])) targets.push(tid);
+  const push = (s, t, etype, idx, label) => {
+    if (s && t) out.push({ id: `e${out.length}:${s}->${t}`, source: s, target: t, data: { etype, idx, label } });
+  };
+  (draft?.edges || []).forEach((e, idx) => {
+    if (e.kind === "conditional" && e.router) {
+      const seen = new Set();
+      for (const b of (e.router.branches || [])) {
+        if (b.to_node && !seen.has(b.to_node)) { seen.add(b.to_node); push(e.from_node, b.to_node, "conditional", idx, ""); }
       }
-      for (const tid of targets) {
-        const key = `${node.id}->${tid}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        const to = byId.get(tid);
-        if (!to) continue;  // unknown target — flagged elsewhere
-        out.push({ from: node, to });
+      const dft = e.router.default_to;
+      if (dft && !seen.has(dft)) push(e.from_node, dft, "conditional", idx, "else");
+    } else {
+      push(e.from_node || e.source, e.to_node || e.target, "static", idx, "");
+    }
+  });
+  // Implicit fan-out edges (FanOut.specs[].target_node_id), not in draft.edges.
+  for (const n of (draft?.nodes || [])) {
+    if (n.kind === "fan_out") {
+      for (const sp of (n.specs || [])) {
+        if (sp && sp.target_node_id) push(n.id, sp.target_node_id, "implicit", -1, "");
       }
     }
   }
   return out;
 }
 
-function GR_ImplicitFanOutEdge({ from, to }) {
-  const fromSize = GR_NODE_SIZE[from.kind] || GR_NODE_SIZE.agent;
-  const toSize = GR_NODE_SIZE[to.kind] || GR_NODE_SIZE.agent;
-  const fx = (from.x || 0) + fromSize.w;
-  const fy = (from.y || 0) + fromSize.h / 2;
-  const tx = to.x || 0;
-  const ty = (to.y || 0) + toSize.h / 2;
-  const mx = (fx + tx) / 2;
-  const path = `M ${fx} ${fy} C ${mx} ${fy}, ${mx} ${ty}, ${tx} ${ty}`;
+function _g6EdgeStateStyle() {
+  return {
+    selected: { stroke: _G6_COLORS.violet, lineWidth: 2.5 },
+    active: { stroke: _G6_COLORS.green, lineWidth: 2, lineDash: [6, 6], endArrow: true },
+  };
+}
+
+function GR_Canvas(props) {
+  const { draft, layout, selectedNodeId, selectedEdgeId, statusTint, metaByNode, addEdgeMode } = props;
+  const containerRef = React.useRef(null);
+  const graphRef = React.useRef(null);
+  const readyRef = React.useRef(false);
+  // Latest callbacks in a ref so changing them doesn't re-init G6.
+  const cb = React.useRef(props);
+  cb.current = props;
+
+  const topoKey = React.useMemo(() => {
+    const ns = (draft?.nodes || []).map((n) => `${n.id}:${n.kind}`).join(",");
+    const es = _g6Edges(draft).map((e) => e.id).join(",");
+    return (layout || "dagre") + "|" + ns + "|" + es;
+  }, [draft, layout]);
+
+  React.useEffect(() => {
+    if (!containerRef.current || !window.G6 || !draft) return undefined;
+    const G6 = window.G6;
+    const preset = layout === "preset";
+    // Mutating behaviors (drag/connect) only when the editor wires them;
+    // the run-view passes no onMoveNode/onConnect and stays read-only.
+    const interactive = !!(cb.current.onMoveNode || cb.current.onConnect);
+    const behaviors = ["zoom-canvas", "drag-canvas"];
+    if (interactive) {
+      behaviors.push({ type: "drag-element", key: "drag-node" });
+      behaviors.push({ type: "click-select", key: "sel", multiple: false });
+      behaviors.push({ type: "create-edge", key: "make-edge", trigger: "drag", style: { stroke: _G6_COLORS.violet, lineWidth: 1.5, lineDash: [4, 4], endArrow: true } });
+    }
+    const nodes = (draft.nodes || []).map((n) => {
+      const sz = _g6Size(n.kind);
+      const node = { id: n.id, data: { kind: n.kind, label: _g6Label(n, metaByNode) } };
+      if (preset) node.style = { x: (n.x || 0) + sz.w / 2, y: (n.y || 0) + sz.h / 2 };
+      return node;
+    });
+
+    let g;
+    try {
+      g = new G6.Graph({
+        container: containerRef.current,
+        autoResize: true,
+        background: _G6_COLORS.bg,
+        data: { nodes, edges: _g6Edges(draft) },
+        node: {
+          type: "rect",
+          style: {
+            size: (d) => { const s = _g6Size(d.data.kind); return [s.w, s.h]; },
+            radius: (d) => (_g6Tiny(d.data.kind) ? 12 : 8),
+            fill: _G6_COLORS.neutral + "22",
+            stroke: _G6_COLORS.neutral,
+            lineWidth: 2,
+            labelText: (d) => d.data.label,
+            labelPlacement: "center",
+            labelDx: 9,
+            labelFill: _G6_COLORS.text,
+            labelFontSize: 12,
+            labelFontFamily: "IBM Plex Mono, monospace",
+            labelLineHeight: 15,
+            iconSrc: (d) => _g6IconUri(d.data.kind),
+            iconWidth: 15,
+            iconHeight: 15,
+            iconX: -57,
+          },
+          state: _g6NodeStates(),
+        },
+        edge: {
+          type: "polyline",
+          style: {
+            stroke: (d) => (d.data.etype === "implicit" ? "#3b424b" : _G6_COLORS.edge),
+            lineWidth: 1.5,
+            lineDash: (d) => (d.data.etype === "static" ? undefined : [5, 5]),
+            endArrow: true,
+            endArrowSize: 8,
+            radius: 8,
+            labelText: (d) => d.data.label || "",
+            labelFill: _G6_COLORS.sub,
+            labelFontSize: 10,
+            labelBackground: true,
+            labelBackgroundFill: _G6_COLORS.bg,
+          },
+          state: _g6EdgeStateStyle(),
+        },
+        layout: preset ? { type: "preset" } : { type: "dagre", rankdir: "LR", nodesep: 18, ranksep: 66 },
+        behaviors,
+        autoFit: preset ? undefined : "view",
+        padding: 28,
+      });
+      graphRef.current = g;
+      readyRef.current = false;
+
+      g.on("node:click", (e) => { const id = e && (e.target?.id ?? e.itemId); if (id && cb.current.onNodeClick) cb.current.onNodeClick(id); });
+      g.on("node:dblclick", (e) => { const id = e && (e.target?.id ?? e.itemId); if (id && cb.current.onNodeDoubleClick) cb.current.onNodeDoubleClick(id); });
+      g.on("canvas:click", () => { if (cb.current.onBackgroundClick) cb.current.onBackgroundClick(); });
+      g.on("edge:click", (e) => {
+        const eid = e && (e.target?.id ?? e.itemId);
+        let idx;
+        try { const ed = g.getEdgeData ? g.getEdgeData(eid) : null; idx = ed && ed.data ? ed.data.idx : undefined; } catch (_e) { /* canvas */ }
+        if (typeof idx === "number" && idx >= 0 && cb.current.onEdgeClick) cb.current.onEdgeClick(idx);
+      });
+      if (interactive) {
+        const onDragEnd = () => {
+          if (!cb.current.onMoveNode) return;
+          for (const n of (draft.nodes || [])) {
+            try {
+              const pos = g.getElementPosition ? g.getElementPosition(n.id) : null;
+              if (pos && Array.isArray(pos)) {
+                const sz = _g6Size(n.kind);
+                cb.current.onMoveNode(n.id, Math.round((pos[0] - sz.w / 2) / 10) * 10, Math.round((pos[1] - sz.h / 2) / 10) * 10);
+              }
+            } catch (_e) { /* canvas */ }
+          }
+        };
+        g.on("afterdragelement", onDragEnd);
+        g.on("node:dragend", onDragEnd);
+        const onAddEdge = (evt) => {
+          try {
+            const ed = evt && (evt.edge || evt.data || evt);
+            const source = ed && (ed.source ?? ed.sourceNode ?? (ed.data && ed.data.source));
+            const target = ed && (ed.target ?? ed.targetNode ?? (ed.data && ed.data.target));
+            if (source && target && source !== target && cb.current.onConnect) cb.current.onConnect(source, target);
+          } catch (_e) { /* canvas */ }
+        };
+        g.on("afteraddedge", onAddEdge);
+        g.on("aftercreateedge", onAddEdge);
+        g.on("edge:create", onAddEdge);
+      }
+
+      Promise.resolve(g.render()).then(() => {
+        readyRef.current = true;
+        // Preset (editor) skips autoFit so user positions are honored, but on
+        // (re)mount / structural change we fit-when-overflowing so far-right
+        // nodes aren't clipped. topoKey excludes x/y, so this never fires on
+        // a drag — pan/zoom is preserved while editing.
+        if (preset) {
+          // Defer a tick so the container has settled at full width before we
+          // measure — fitting too early frames against a narrower canvas and
+          // clips the far nodes.
+          setTimeout(() => {
+            if (graphRef.current !== g) return;
+            try { g.fitView({ when: "overflow", padding: 24 }); }
+            catch (_e) { try { g.fitView(); } catch (_e2) { /* canvas */ } }
+          }, 60);
+        }
+      }).catch(() => {});
+    } catch (err) {
+      console.error("[GR_Canvas] init failed:", err);  // eslint-disable-line no-console
+    }
+
+    return () => {
+      readyRef.current = false;
+      try { graphRef.current && graphRef.current.destroy(); } catch (_e) { /* no-op */ }
+      graphRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [topoKey]);
+
+  // Status + selection as element states (animated; no relayout).
+  React.useEffect(() => {
+    const g = graphRef.current;
+    if (!g) return undefined;
+    const apply = () => {
+      try {
+        const s = {};
+        for (const n of (draft?.nodes || [])) {
+          const sel = n.id === selectedNodeId || (addEdgeMode && addEdgeMode.fromId === n.id);
+          if (statusTint) {
+            const st = (statusTint[n.id] && statusTint[n.id].status) || "pending";
+            s[n.id] = sel ? [st, "selected"] : [st];
+          } else {
+            s[n.id] = sel ? ["selected"] : [];
+          }
+        }
+        for (const e of _g6Edges(draft)) {
+          const states = [];
+          if (e.data.idx >= 0 && e.data.idx === selectedEdgeId) states.push("selected");
+          if (statusTint) {
+            const srcStatus = (statusTint[e.source] && statusTint[e.source].status) || "pending";
+            if (srcStatus === "running" || srcStatus === "ended") states.push("active");
+          }
+          s[e.id] = states;
+        }
+        g.setElementState(s);
+      } catch (_e) { /* canvas */ }
+    };
+    if (readyRef.current) apply();
+    else { const t = setTimeout(apply, 140); return () => clearTimeout(t); }
+    return undefined;
+  }, [statusTint, selectedNodeId, selectedEdgeId, draft, addEdgeMode]);
+
+  // Live token/duration metric — update labels as nodes finish (run-view).
+  React.useEffect(() => {
+    const g = graphRef.current;
+    if (!g || !readyRef.current || !metaByNode) return;
+    try {
+      g.updateNodeData((draft?.nodes || []).map((n) => ({
+        id: n.id, data: { kind: n.kind, label: _g6Label(n, metaByNode) },
+      })));
+      g.draw();
+    } catch (_e) { /* canvas */ }
+  }, [metaByNode, draft]);
+
+  // Running pulse (run-view).
+  React.useEffect(() => {
+    if (!statusTint) return undefined;
+    const running = (draft?.nodes || [])
+      .filter((n) => (statusTint[n.id] && statusTint[n.id].status) === "running")
+      .map((n) => n.id);
+    if (!running.length) return undefined;
+    let on = false;
+    const id = setInterval(() => {
+      const g = graphRef.current;
+      if (!g || !readyRef.current) return;
+      on = !on;
+      try {
+        const s = {};
+        for (const nid of running) {
+          const base = nid === selectedNodeId ? ["running", "selected"] : ["running"];
+          s[nid] = on ? [...base, "pulse"] : base;
+        }
+        g.setElementState(s);
+      } catch (_e) { /* canvas */ }
+    }, 680);
+    return () => clearInterval(id);
+  }, [statusTint, selectedNodeId, draft]);
+
   return (
-    <path
-      d={path}
-      stroke="var(--text-3)"
-      strokeWidth="1.4"
-      fill="none"
-      strokeDasharray="6 4"
-      markerEnd="url(#arrow-fanout)"
-      style={{ pointerEvents: "none" }}
-    />
+    <div style={{ minWidth: 0, overflow: "hidden" }}>
+      <div
+        ref={containerRef}
+        data-testid="graph-canvas"
+        style={{ width: "100%", height: 500, minHeight: 500, background: _G6_COLORS.bg }}
+      />
+    </div>
   );
 }
 
-Object.assign(window, {
-  GR_NODE_SIZE,
-  GR_Canvas,
-  GR_NodeBox,
-  GR_EdgePath,
-  GR_SingleEdge,
-  GR_collectFanOutImplicitEdges,
-  GR_ImplicitFanOutEdge,
-});
+window.GR_Canvas = GR_Canvas;
+window.GR_NODE_SIZE = GR_NODE_SIZE;
+window._g6IconUri = _g6IconUri;

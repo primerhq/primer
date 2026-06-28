@@ -1043,7 +1043,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
 
       {/* Editor + side panel */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 260px" }}>
-        <window.GR_G6Canvas
+        <window.GR_Canvas
           draft={draft}
           layout="preset"
           selectedNodeId={selectedNodeId}

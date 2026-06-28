@@ -7,12 +7,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
-SRC = (UI / "components" / "graph-g6-canvas.jsx").read_text(encoding="utf-8")
+SRC = (UI / "components" / "graph-canvas.jsx").read_text(encoding="utf-8")
 
 
 def test_exports_unified_canvas() -> None:
-    assert "function GR_G6Canvas" in SRC
-    assert "window.GR_G6Canvas" in SRC
+    assert "function GR_Canvas" in SRC
+    assert "window.GR_Canvas" in SRC
     assert "GR_NODE_SIZE" in SRC
 
 

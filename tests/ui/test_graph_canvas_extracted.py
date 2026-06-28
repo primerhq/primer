@@ -1,6 +1,6 @@
-"""The canvas primitives live in a shared module so the run view can
-reuse them. They must be registered in the bundle before graphs.jsx and
-the bundle must still transpile."""
+"""The canvas lives in a shared module (graph-canvas.jsx, now the G6
+renderer) so the run view and editor both reuse it. It must be registered
+in the bundle before graphs.jsx and the bundle must still transpile."""
 
 from __future__ import annotations
 
@@ -26,11 +26,10 @@ def _order() -> list[str]:
 def test_canvas_module_exists_and_exports() -> None:
     src = CANVAS.read_text(encoding="utf-8")
     assert "const GR_NODE_SIZE" in src
-    assert "GR_Canvas" in src
-    assert "function GR_NodeBox" in src
-    # window-attached so the run view (separate file) can reference them.
-    assert "window.GR_Canvas" in src or "GR_Canvas," in src
-    assert "GR_NODE_SIZE" in src
+    assert "function GR_Canvas" in src
+    # window-attached so the run view + editor (separate files) reference it.
+    assert "window.GR_Canvas" in src
+    assert "window.GR_NODE_SIZE" in src
 
 
 def test_canvas_definitions_removed_from_graphs() -> None:
