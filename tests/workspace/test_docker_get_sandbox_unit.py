@@ -191,3 +191,44 @@ async def test_get_sandbox_uses_configured_reachability(monkeypatch) -> None:
     monkeypatch.setattr(docker_mod, "_make_ws_sandbox", _fake_make)
     await adapter.get_sandbox("workspace-ws-1")
     assert isinstance(captured["reachability"], ContainerReachabilityBridge)
+
+
+# ---------------------------------------------------------------------------
+# create_sandbox -- provisioning-failure mapping
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_maps_image_pull_failure_to_config_error() -> None:
+    """A missing/un-pullable runtime image must surface as ConfigError
+    (-> 503 service-unavailable), not a raw aiodocker DockerError that would
+    escape the workspace-create request as an unhandled 500."""
+    from aiodocker import DockerError
+
+    from primer.model.except_ import ConfigError
+    from primer.model.workspace import ResourceLimits
+
+    docker = MagicMock()
+    docker.images.inspect = AsyncMock(side_effect=Exception("404 no such image"))
+    docker.images.pull = AsyncMock(
+        side_effect=DockerError(404, {"message": "no such image"}),
+    )
+    adapter = DockerRuntimeAdapter(_cfg(ContainerReachabilityHostPort()))
+    adapter._docker = docker
+
+    with pytest.raises(ConfigError):
+        await adapter.create_sandbox(
+            name="workspace-ws-1",
+            image="img:1",
+            command=["run"],
+            env={},
+            workdir="/w",
+            volume_name="vol",
+            volume_target="/data",
+            extra_mounts=[],
+            user=None,
+            resources=ResourceLimits(),
+            network="none",
+            pull_policy="if_missing",
+        )
+    docker.images.pull.assert_awaited_once()

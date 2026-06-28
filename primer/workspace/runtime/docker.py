@@ -17,6 +17,7 @@ import secrets
 from typing import Any, Literal
 
 from primer.int.sandbox import Sandbox
+from primer.model.except_ import ConfigError
 from primer.model.workspace import (
     ContainerReachabilityBridge,
     ContainerReachabilityConfig,
@@ -261,14 +262,25 @@ class DockerRuntimeAdapter(ContainerRuntimeAdapter):
         if token is None:
             token = secrets.token_urlsafe(32)
 
-        # Pull runtime image per policy.
-        if pull_policy == "always":
-            await self._docker.images.pull(runtime_image)
-        elif pull_policy == "if_missing":
-            try:
-                await self._docker.images.inspect(runtime_image)
-            except Exception:
+        # Pull runtime image per policy. A pull failure — the image is absent
+        # from every registry (e.g. a local-only name that was never built) —
+        # is a provisioning/config problem, not an internal error. Surface it
+        # as a ConfigError (503 service-unavailable) instead of letting the raw
+        # aiodocker DockerError escape the request as an unhandled 500.
+        from aiodocker import DockerError
+        try:
+            if pull_policy == "always":
                 await self._docker.images.pull(runtime_image)
+            elif pull_policy == "if_missing":
+                try:
+                    await self._docker.images.inspect(runtime_image)
+                except Exception:
+                    await self._docker.images.pull(runtime_image)
+        except DockerError as exc:
+            raise ConfigError(
+                f"container runtime image {runtime_image!r} is unavailable "
+                f"({exc}); the workspace cannot be provisioned"
+            ) from exc
 
         # Create the named volume.
         try:
