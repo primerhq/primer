@@ -23,9 +23,10 @@ def test_needs_attention_and_failed_filters() -> None:
 
 
 def test_attention_count_surfaced() -> None:
-    # Count of attention-needing sessions shown in the list and/or nav.
+    # The "N need attention" count is derived from the decoder and rendered
+    # as an in-list triage surface (the nav-dot is a deferred fast-follow).
     assert "needsAttention" in LIST
-    assert "session" in CHROME.lower()
+    assert "need attention" in LIST.lower()
 
 
 def test_bundle_transpiles() -> None:
