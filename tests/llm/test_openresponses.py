@@ -1022,6 +1022,32 @@ def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     return mock_instance
 
 
+class _RecordingStream:
+    """Fake SDK stream that records whether it was closed; can stall forever.
+
+    Used to assert the adapter aborts the upstream generation (frees the
+    backend slot) on every exit path.
+    """
+
+    def __init__(self, events: Any, *, stall: bool = False) -> None:
+        self._events = list(events)
+        self._stall = stall
+        self.closed = False
+
+    def __aiter__(self) -> "_RecordingStream":
+        return self
+
+    async def __anext__(self) -> Any:
+        if self._stall:
+            await asyncio.sleep(3600)
+        if not self._events:
+            raise StopAsyncIteration
+        return self._events.pop(0)
+
+    async def close(self) -> None:
+        self.closed = True
+
+
 class TestStream:
     async def test_unknown_model_raises_model_not_found(self) -> None:
         provider = _make_provider(models=["gpt-4o-mini"])
@@ -1032,6 +1058,46 @@ class TestStream:
                 messages=[Message(role="user", parts=[TextPart(text="hi")])],
             ):
                 pass
+
+    async def test_stream_closed_on_normal_completion(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        provider = _make_provider()
+        llm = OpenResponsesLLM(provider)
+        client = _patched_client(monkeypatch)
+        fake = _RecordingStream(
+            [
+                NS(type="response.created", response=NS(id="r", model="gpt-4o-mini")),
+                NS(type="response.completed", response=NS(usage=None)),
+            ]
+        )
+        client.responses.create.return_value = fake
+        async for _ in llm.stream(
+            model="gpt-4o-mini",
+            messages=[Message(role="user", parts=[TextPart(text="hi")])],
+        ):
+            pass
+        assert fake.closed is True
+
+    async def test_stream_closed_on_stall_timeout(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from primer.model.except_ import ProviderTimeoutError
+
+        provider = _make_provider()
+        llm = OpenResponsesLLM(provider)
+        llm._request_timeout_seconds = 0.05  # fail fast for the test
+        client = _patched_client(monkeypatch)
+        fake = _RecordingStream([], stall=True)
+        client.responses.create.return_value = fake
+        with pytest.raises(ProviderTimeoutError):
+            async for _ in llm.stream(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            ):
+                pass
+        # Stalled stream must still be aborted so the backend slot is freed.
+        assert fake.closed is True
 
     async def test_full_stream_emits_start_text_done(
         self, monkeypatch: pytest.MonkeyPatch

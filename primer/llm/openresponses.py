@@ -1014,6 +1014,25 @@ class OpenResponsesLLM(LLM):
                             message=err.message,
                         )
                         return
+                    finally:
+                        # Abort the upstream generation so a stalled, cancelled, or
+                        # errored stream releases the backend slot promptly. On a
+                        # max_concurrency:1 backend an unclosed SDK stream leaves the
+                        # HTTP request open and the model keeps generating, which
+                        # blocks every subsequent request behind it -- the root cause
+                        # of compounding stalls. Runs on every exit path (timeout
+                        # raise, error return, normal completion, and GeneratorExit
+                        # when the consumer cancels mid-stream).
+                        try:
+                            _closer = getattr(sdk_stream, "aclose", None) or getattr(
+                                sdk_stream, "close", None
+                            )
+                            if _closer is not None:
+                                _res = _closer()
+                                if hasattr(_res, "__await__"):
+                                    await _res
+                        except Exception:
+                            pass
                     _span.set_attribute("llm.usage.tokens_in", tokens_in)
                     _span.set_attribute("llm.usage.tokens_out", tokens_out)
                     _metrics.llm_tokens_total.labels(_provider_kind, "in").inc(tokens_in)
