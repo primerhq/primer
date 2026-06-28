@@ -62,6 +62,47 @@ def _make_agent(*, id: str = "ag-bot", harness_id: str | None = None) -> Agent:
 
 
 @pytest.mark.asyncio
+async def test_build_exports_document_content_inline(fake_storage_provider) -> None:
+    """A tracked Document exports its body as ``content_inline`` so the
+    inbound install can restore + index it (the entity spec has no content
+    field; without this the document ships as an empty shell)."""
+    from primer.model.collection import Document
+
+    docs = fake_storage_provider.get_storage(Document)
+    await docs.create(
+        Document(
+            id="doc-1",
+            collection_id="kb",
+            name="python",
+            path="python.md",
+            title="python",
+        )
+    )
+    await fake_storage_provider.get_content_store().upsert(
+        document_id="doc-1",
+        collection_id="kb",
+        path="python.md",
+        content="# Python\nUse EAFP and type hints.",
+    )
+
+    harness = _make_harness(
+        tracked_entities=[
+            TrackedEntity(
+                kind="document", source_id="doc-1", template_name="python-doc"
+            ),
+        ]
+    )
+    result = await build_outbound(harness, storage_provider=fake_storage_provider)
+    text = next(
+        f.rendered_text
+        for f in result.files
+        if f.template_path == "templates/python-doc.yaml"
+    )
+    assert "content_inline:" in text
+    assert "Use EAFP and type hints." in text
+
+
+@pytest.mark.asyncio
 async def test_build_renders_templates_and_schema(
     outbound_harness: Harness, fake_storage_provider
 ) -> None:
