@@ -1367,6 +1367,20 @@ function GR_localViolations(g, opts) {
     }
   }
 
+  // FanOut nodes reach their spec targets via IMPLICIT edges (a FanOut has
+  // no static outgoing edge — see fanout_has_outgoing_edges below), so the
+  // reachability + incoming-edge checks must treat each spec target as an
+  // edge from the FanOut. Without this, every FanOut target (and everything
+  // downstream, including End) is falsely flagged unreachable / orphaned.
+  const fanoutEdges = [];
+  for (const n of nodes) {
+    if (n.kind !== "fan_out") continue;
+    for (const sp of (Array.isArray(n.specs) ? n.specs : [])) {
+      if (sp.target_node_id) fanoutEdges.push([n.id, sp.target_node_id]);
+      for (const t of (sp.target_node_ids || [])) fanoutEdges.push([n.id, t]);
+    }
+  }
+
   // Forward reachability from Begin.
   if (begins.length === 1 && ends.length > 0) {
     const adj = new Map(nodes.map((n) => [n.id, []]));
@@ -1375,6 +1389,9 @@ function GR_localViolations(g, opts) {
       for (const t of edgeTargets(e)) {
         if (adj.has(t)) adj.get(e.from_node).push(t);
       }
+    }
+    for (const [f, t] of fanoutEdges) {
+      if (adj.has(f) && adj.has(t)) adj.get(f).push(t);
     }
     const reachable = new Set();
     const stack = [begins[0].id];
@@ -1391,12 +1408,16 @@ function GR_localViolations(g, opts) {
     }
   }
 
-  // Soft: orphan nodes (no incoming edge, not the Begin).
+  // Soft: orphan nodes (no incoming edge, not the Begin). FanOut spec
+  // targets have an implicit incoming edge from the FanOut.
   const incoming = new Map(nodes.map((n) => [n.id, 0]));
   for (const e of edges) {
     for (const t of edgeTargets(e)) {
       if (incoming.has(t)) incoming.set(t, incoming.get(t) + 1);
     }
+  }
+  for (const [, t] of fanoutEdges) {
+    if (incoming.has(t)) incoming.set(t, incoming.get(t) + 1);
   }
   for (const n of nodes) {
     if (n.kind === "begin") continue;
@@ -1473,6 +1494,11 @@ function GR_localViolations(g, opts) {
     for (const n of nodes) {
       if (n.kind !== "tool_call") continue;
       if (!n.tool_id) continue;  // empty tool_id is already flagged elsewhere
+      // Workspace tools (workspace__write / __read / __exec / __edit) are
+      // injected per-session when an agent attaches to a workspace, so they
+      // cannot appear in the static tool catalogue. They are valid ToolCall
+      // targets — don't flag them as unknown.
+      if (n.tool_id.startsWith("workspace__")) continue;
       if (!knownToolIds.has(n.tool_id)) {
         out.push({
           kind: "soft",
