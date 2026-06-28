@@ -572,8 +572,36 @@ function SessionDetail({ sid: sidProp, pushToast, onBack }) {
   return (
     <div className="col">
       {/* Yielding-tools surfaces. Each polls /ask_user/pending (404 = nothing). */}
-      <AskUserPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
-      <ApprovalBannerPanel sid={sid} sessionStatus={session.status} pushToast={pushToast} />
+      <AskUserPanel sid={sid} sessionStatus={session.status} session={session} pushToast={pushToast} />
+      <ApprovalBannerPanel sid={sid} sessionStatus={session.status} session={session} pushToast={pushToast} />
+      {(() => {
+        const st = window.describeSessionState(session);
+        if (!(st.group === "ended" || st.group === "failed" || st.group === "cancelled")) return null;
+        const color = st.tone === "green" ? "var(--green)" : st.tone === "red" ? "var(--red)" : "var(--text-3)";
+        return (
+          <div className="panel" data-testid="session-outcome" style={{ borderColor: st.tone === "red" ? "oklch(0.7 0.2 25 / 0.5)" : undefined }}>
+            <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px" }}>
+              <span className="dot" style={{ background: color, width: 8, height: 8, borderRadius: "50%", display: "inline-block" }}></span>
+              <span style={{ color, fontWeight: 600 }}>{st.label}</span>
+              {st.detail && <span className="muted text-sm">— {st.detail}</span>}
+            </div>
+          </div>
+        );
+      })()}
+      {(() => {
+        const st = window.describeSessionState(session);
+        if (st.group !== "waiting" || !st.waitingOn) return null;
+        // ask_user / approval / timer(sleep) / watch already have dedicated panels.
+        if (st.waitingOn !== "task") return null;
+        return (
+          <div className="panel" data-testid="session-waiting">
+            <div className="panel-body" style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px" }}>
+              <span className="muted text-sm">{st.label}</span>
+              <window.SessionCountdown to={st.countdownTo} prefix="· auto-resumes in " />
+            </div>
+          </div>
+        );
+      })()}
       {isGraph && boundGraph && (
         <SD_CannotRunBanner gid={boundGraph} session={session} />
       )}
@@ -1364,7 +1392,7 @@ window.SD_NodeTurnLog = SD_NodeTurnLog;
 // render; 404 = render nothing). Submit/Skip post to the real
 // endpoints; 422/500 are surfaced INLINE via data-testid="ask-user-error"
 // (U0051/U0060), success surfaces as a toast (U0049/U0050).
-function AskUserPanel({ sid, sessionStatus, pushToast }) {
+function AskUserPanel({ sid, sessionStatus, session, pushToast }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
 
@@ -1460,6 +1488,7 @@ function AskUserPanel({ sid, sessionStatus, pushToast }) {
         {parked_at && (
           <span className="sub muted">· waiting since {fmtDate(new Date(parked_at))}</span>
         )}
+        <window.SessionCountdown to={pending?.data?.parked_until || pending?.data?.timeout_at || session?.parked_until} prefix="auto-resumes in " />
       </div>
       <div className="panel-body" style={{ display: "flex", flexDirection: "column", gap: 12 }}>
         <div style={{ whiteSpace: "pre-wrap", color: "var(--text)" }}>{prompt}</div>
@@ -1609,6 +1638,7 @@ function SleepPanel({ sid, wid, session, pushToast }) {
         <div style={{ height: 6, background: "var(--bg-2)", borderRadius: 3, overflow: "hidden" }}>
           <div style={{ width: `${pct}%`, height: "100%", background: "var(--amber)", transition: "width 1s linear" }}></div>
         </div>
+        <window.SessionCountdown to={meta.resume_at || session?.parked_until} prefix="auto-resumes in " />
       </div>
     </div>
   );
@@ -1644,7 +1674,7 @@ function CancelYieldBtn({ sid, wid, tcid, pushToast }) {
 // (200 = render banner; 404 = render nothing) and renders ApprovalBanner
 // from approvals.jsx. The banner owns the respond mutation; this wrapper
 // owns the poll so session-detail can keep wiring concerns local.
-function ApprovalBannerPanel({ sid, sessionStatus, pushToast }) {
+function ApprovalBannerPanel({ sid, sessionStatus, session, pushToast }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = SESSION_TERMINAL.has(sessionStatus);
   const pending = useResource(
@@ -1658,7 +1688,10 @@ function ApprovalBannerPanel({ sid, sessionStatus, pushToast }) {
   if (pending.error?.status === 404) return null;
   if (!pending.data) return null;
   return (
-    <ApprovalBanner data={pending.data} scope="sessions" id={sid} pushToast={pushToast} />
+    <div>
+      <ApprovalBanner data={pending.data} scope="sessions" id={sid} pushToast={pushToast} />
+      <window.SessionCountdown to={pending.data?.parked_until || pending.data?.timeout_at || session?.parked_until} prefix="expires in " />
+    </div>
   );
 }
 
