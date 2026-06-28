@@ -10,7 +10,7 @@ GRAPHS = (UI / "components" / "graphs.jsx").read_text(encoding="utf-8")
 
 
 def test_editor_uses_g6_preset() -> None:
-    assert "GR_G6Canvas" in GRAPHS
+    assert "GR_Canvas" in GRAPHS
     assert 'layout="preset"' in GRAPHS
 
 

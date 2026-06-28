@@ -6,7 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 
 UI = Path(__file__).resolve().parents[2] / "ui"
-SRC = (UI / "components" / "graph-g6-canvas.jsx").read_text(encoding="utf-8")
+SRC = (UI / "components" / "graph-canvas.jsx").read_text(encoding="utf-8")
 
 
 def test_interaction_callbacks_wired() -> None:

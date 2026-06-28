@@ -9,7 +9,7 @@ SD = (UI / "components" / "session-detail.jsx").read_text(encoding="utf-8")
 
 
 def test_run_view_uses_g6_dagre() -> None:
-    assert "GR_G6Canvas" in SD
+    assert "GR_Canvas" in SD
     assert 'layout="dagre"' in SD
 
 
