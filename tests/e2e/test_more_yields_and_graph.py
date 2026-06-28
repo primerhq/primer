@@ -407,7 +407,14 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
         r = await client.post(
             "/v1/workspaces", json={"template_id": tpl_id},
         )
-        assert r.status_code in (200, 201), r.text
+        if r.status_code not in (200, 201):
+            # The container runtime can't provision the workspace (e.g. CI has
+            # no `primer/workspace-runtime:1.0` image). That must be a CLEAN
+            # rejection (503/4xx), never an unhandled 500 — see the DockerError
+            # -> ConfigError mapping in DockerRuntimeAdapter.create_sandbox.
+            assert r.status_code in (400, 422, 503), r.text
+            assert "internal" not in r.json().get("type", ""), r.json()
+            return
         wid = r.json()["id"]
         cleanup_urls.insert(0, f"/v1/workspaces/{wid}")
 
