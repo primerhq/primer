@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
@@ -185,6 +186,43 @@ class _FakePR:
 # ===========================================================================
 # Fixtures
 # ===========================================================================
+
+
+@pytest.fixture(autouse=True)
+def _stub_ingest_ai_docs(request):
+    """Stub bootstrap()'s AI-docs ingest to a no-op.
+
+    bootstrap() defaults to the production DocumentIngester (Docling + the
+    sentence-transformers OCR stack) walking ~30 real markdown files, which
+    costs 7-10s per call and dominated this file's runtime. No bootstrap-path
+    test asserts the doc-walk output, so stub it out — exactly as
+    tests/api/test_internal_collections.py already does.
+
+    TestAiDocsBootstrap exercises the real ingest seam directly with a fast
+    in-test ingester_factory, so it must run un-stubbed — EXCEPT
+    test_materialise_creates_ai_docs_collection_row, which calls bootstrap()
+    (and only asserts the collection row), so it keeps the stub.
+    """
+    cls = request.cls
+    real_ingest = (
+        cls is not None
+        and cls.__name__ == "TestAiDocsBootstrap"
+        and request.function.__name__
+        != "test_materialise_creates_ai_docs_collection_row"
+    )
+    if real_ingest:
+        yield
+        return
+
+    async def _noop(self, emit, counts, **kwargs):
+        counts["docs"] = 0
+        return 0
+
+    with patch(
+        "primer.internal_collections.InternalCollectionsSubsystem._ingest_ai_docs",
+        new=_noop,
+    ):
+        yield
 
 
 @pytest.fixture
