@@ -142,8 +142,12 @@ def _answer_ask_user(
     *,
     canned,
     has_canned: bool,
-) -> None:
-    """Resolve a pending ask_user park (interactive prompt or canned answer)."""
+) -> bool:
+    """Resolve a pending ask_user park (interactive prompt or canned answer).
+
+    Returns True if the answer was submitted, False if the park raced away (a
+    404 on respond — the resume already advanced past it; benign).
+    """
     tcid = pending.get("tool_call_id", "")
     prompt = pending.get("prompt", "")
     typer.echo(f"  ask_user: {prompt}")
@@ -151,12 +155,18 @@ def _answer_ask_user(
         response = canned
     else:
         response = typer.prompt("  your answer")
-    client.request(
-        "post",
-        f"/v1/sessions/{session_id}/ask_user/respond",
-        json={"tool_call_id": tcid, "response": response},
-    )
+    try:
+        client.request(
+            "post",
+            f"/v1/sessions/{session_id}/ask_user/respond",
+            json={"tool_call_id": tcid, "response": response},
+        )
+    except ApiError as exc:
+        if exc.status == 404:
+            return False
+        raise
     typer.echo("  -> answer submitted")
+    return True
 
 
 def _answer_tool_approval(
@@ -165,8 +175,12 @@ def _answer_tool_approval(
     pending: dict,
     *,
     auto_yes: bool,
-) -> None:
-    """Resolve a pending tool-approval park (interactive y/n or auto-approve)."""
+) -> bool:
+    """Resolve a pending tool-approval park (interactive y/n or auto-approve).
+
+    Returns True if the decision was submitted, False if the park raced away
+    (a 404 on respond — already resolved; benign).
+    """
     tcid = pending.get("tool_call_id", "")
     tool_name = pending.get("tool_name", "")
     args = pending.get("arguments") or {}
@@ -178,12 +192,18 @@ def _answer_tool_approval(
         decision = "approved"
     else:
         decision = "approved" if typer.confirm("  approve?") else "rejected"
-    client.request(
-        "post",
-        f"/v1/sessions/{session_id}/tool_approval/respond",
-        json={"tool_call_id": tcid, "decision": decision},
-    )
+    try:
+        client.request(
+            "post",
+            f"/v1/sessions/{session_id}/tool_approval/respond",
+            json={"tool_call_id": tcid, "decision": decision},
+        )
+    except ApiError as exc:
+        if exc.status == 404:
+            return False
+        raise
     typer.echo(f"  -> {decision}")
+    return True
 
 
 def _handle_park(
@@ -197,8 +217,14 @@ def _handle_park(
     """Answer whatever the session is parked on. Return True if handled.
 
     Probe ask_user first (a graph tool_call ask_user park labels its outer
-    yield ``_approval`` but is still served here), then tool_approval. A 404
-    on both means the park raced away; return False so the caller re-polls.
+    yield ``_approval`` but is still served here), then tool_approval. A 404 on
+    both means the park raced away; return False so the caller re-polls.
+
+    Re-answering a still-parked session on each poll is intentional: respond is
+    async (202 + a later worker resume), so a re-submit re-publishes the answer
+    and retries a resume that was slow or dropped. The respond helpers treat a
+    404 (the park already advanced) as benign rather than an error, so the
+    re-submit can never surface a spurious CLI failure.
     """
     ask = _pending(client, session_id, "ask_user")
     if ask is not None:

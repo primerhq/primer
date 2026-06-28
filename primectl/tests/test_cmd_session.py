@@ -165,6 +165,61 @@ def test_run_watch_park_respond_terminal_sequence(mock_session):
     assert "ended: completed" in result.output
 
 
+def test_run_watch_raced_respond_404_is_benign(mock_session):
+    """Regression: ask_user/respond is async (202 + a later worker resume), so
+    a slow host can have the park advance between the pending-GET and our
+    respond-POST. That POST then 404s ("no pending ask_user prompt"). The CLI
+    must treat it as benign and ride the row to ended, not surface exit 4."""
+    rows = iter([
+        {"id": "s1", "status": "running"},
+        {
+            "id": "s1", "status": "waiting", "parked_status": "parked",
+            "parked_state": {"yielded": {"tool_name": "ask_user"}},
+        },
+        _ended(),
+    ])
+    current = {"row": next(rows)}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        method = request.method
+        if method == "GET" and path == "/v1/sessions/s1":
+            return httpx.Response(200, json=current["row"])
+        if method == "GET" and path.endswith("/turn_log"):
+            return httpx.Response(200, json={"items": []})
+        if method == "GET" and path.endswith("/ask_user/pending"):
+            if current["row"].get("parked_state", {}).get(
+                "yielded", {}
+            ).get("tool_name") == "ask_user":
+                return httpx.Response(200, json={
+                    "tool_call_id": "tc-ask", "prompt": "Name?",
+                    "parked_at": "2026-06-23T00:00:00Z",
+                })
+            return httpx.Response(404, json={"detail": "no ask_user"})
+        if method == "GET" and path.endswith("/tool_approval/pending"):
+            return httpx.Response(404, json={"detail": "no approval"})
+        if method == "POST" and path.endswith("/ask_user/respond"):
+            # The park raced away before our answer landed -> 404 (benign).
+            current["row"] = next(rows)  # the resume already advanced us
+            return httpx.Response(404, json={
+                "detail": "Session 's1' has no pending ask_user prompt",
+            })
+        current["row"] = next(rows)  # POST create: running -> ask_user park
+        return httpx.Response(201, json={"id": "s1", "status": "running"})
+
+    mock_session.set_handler(handler)
+    result = runner.invoke(
+        app,
+        [
+            "session", "run", "ws1", "--agent", "a1",
+            "--answer", '"Ada"', "--yes", "--poll-interval", "0",
+        ],
+        obj=mock_session.session,
+    )
+    assert result.exit_code == 0, result.output
+    assert "ended: completed" in result.output
+
+
 def test_run_watch_create_error_surfaces(mock_session):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(404, json={"detail": "no such workspace"})
