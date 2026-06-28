@@ -113,7 +113,10 @@ def test_user_collection_document_list_views_render_paths(
         page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
         page.locator(f"tr:has-text('{collection_id}')").first.click()
 
-        page.get_by_role("button", name="List documents").first.click()
+        # User-collection detail panel: the primary button is "Documents"
+        # (opens the path-browser modal, which lists docs by path). "List
+        # documents" only renders for system collections post-consolidation.
+        page.get_by_role("button", name="Documents").first.click()
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
 

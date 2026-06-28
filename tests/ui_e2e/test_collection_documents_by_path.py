@@ -99,8 +99,11 @@ def test_collection_document_path_browser_full_journey(
         # Select the collection row to reveal the detail panel.
         page.locator(f"tr:has-text('{collection_id}')").first.click()
 
-        # Open the path-addressed browser.
-        page.get_by_role("button", name="Browse by path").first.click()
+        # Open the path-addressed browser. For a user collection the detail
+        # panel's primary button is labelled "Documents" (it opens the
+        # path-browser modal); the old "Browse by path" label was removed when
+        # the buttons were consolidated.
+        page.get_by_role("button", name="Documents").first.click()
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
 

@@ -91,9 +91,26 @@ class _FakeScheduler:
         self.enqueued.append(sid)
 
 
+class _NoopWorkspace:
+    """Live-workspace stub: start_session is a no-op (the channel flow only
+    needs the on-disk slot allocation call to succeed, not to persist)."""
+
+    async def start_session(
+        self, binding: Any, *, id: str,
+        instructions: Any = None, parent_session_id: Any = None,
+    ) -> None:
+        return None
+
+
 class _NoopWorkspaceRegistry:
     def get(self, workspace_id: str) -> Any | None:
         return None
+
+    async def get_workspace(self, workspace_id: str) -> _NoopWorkspace:
+        # The session factory (post-2271fa0d) allocates the on-disk session
+        # slot via get_workspace(...).start_session(...). Hand back a stub so
+        # the agent-fresh dispatcher completes and the session row is created.
+        return _NoopWorkspace()
 
 
 async def _provider(tmp_path: Path) -> SqliteStorageProvider:
