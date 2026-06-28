@@ -4,10 +4,14 @@ Default-skipped (tests/ui_e2e/conftest.py sets collect_ignore_glob for
 test_*.py unless PRIMER_RUN_UI_E2E=1). NOT part of CI's default pytest run.
 
 1. Seed a begin -> agent -> end graph + a graph-bound session, open the
-   session, see node status rings on the run-view canvas, click a node,
-   see its inspector (status pill + Turn log section).
+   session, assert the run-view G6 canvas mounts (a <canvas> the renderer
+   drew on), click the agent node (center of the begin->agent->end chain)
+   and see its inspector (Turn log section).
 2. Seed a graph whose agent node references a missing Agent, open a
    session bound to it, assert the 'This graph cannot run' banner.
+
+The run-view renders through window.GR_Canvas (AntV G6, canvas-backed), so
+nodes are pixels on a <canvas>, not per-node DOM elements.
 """
 
 from __future__ import annotations
@@ -87,13 +91,18 @@ def test_graph_run_view_journey(base_url, console_url, page, tmp_path) -> None:
     sid = _seed_graph_session(base_url, wid, "rv-graph")
 
     page.goto(f"{console_url}#/sessions/{sid}")
-    # Run view canvas renders a status ring per node (all pending pre-run).
-    expect(page.locator('[data-testid="run-node-begin"]')).to_be_visible()
-    expect(page.locator('[data-testid="run-node-drafter"]')).to_be_visible()
-    expect(page.locator('[data-testid="run-node-end"]')).to_be_visible()
-    # Click the drafter node -> inspector shows its id + a Turn log section.
-    page.locator('[data-testid="run-node-drafter"]').click(force=True)
-    expect(page.get_by_text("drafter", exact=False).first).to_be_visible()
+    # The G6 run-view canvas mounts: the container + a <canvas> it drew on.
+    canvas = page.locator('[data-testid="graph-canvas"]')
+    expect(canvas).to_be_visible()
+    expect(canvas.locator("canvas").first).to_be_visible()
+    # Let G6's async render + dagre autoFit settle before we measure/click —
+    # the chain lands at the canvas center once layout finishes.
+    page.wait_for_timeout(2000)
+    # The agent node sits at the center of a begin->agent->end chain (dagre
+    # LR + autoFit). Click center -> inspector shows the Turn log section.
+    box = canvas.bounding_box()
+    assert box is not None
+    page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
     expect(page.get_by_text("Turn log", exact=False)).to_be_visible()
 
 
