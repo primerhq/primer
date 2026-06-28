@@ -36,14 +36,16 @@ def _seed_agent(base_url: str, aid: str, pid: str) -> None:
 
 def _seed_workspace(base_url: str, wp: str, tpl: str, tmp_path) -> str:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        c.post("/v1/workspace_providers", json={
+        r = c.post("/v1/workspace_providers", json={
             "id": wp, "provider": "local",
             "config": {"kind": "local", "root_path": str(tmp_path)},
         })
-        c.post("/v1/workspace_templates", json={
+        assert r.status_code in (201, 409), r.text
+        r = c.post("/v1/workspace_templates", json={
             "id": tpl, "description": "tpl", "provider_id": wp,
             "backend": {"kind": "local"},
         })
+        assert r.status_code in (201, 409), r.text
         r = c.post("/v1/workspaces", json={"template_id": tpl})
         assert r.status_code == 201, r.text
         return r.json()["id"]
@@ -90,15 +92,20 @@ def test_cancelled_session_shows_outcome_banner(
 
 
 # ---------------------------------------------------------------------------
-# Journey 2: cancelled session appears under the "Failed" filter on the list
+# Journey 2: cancelled session shows a "Cancelled" outcome chip in the list
 # ---------------------------------------------------------------------------
 
 
-def test_cancelled_session_visible_under_failed_filter(
+def test_cancelled_session_shows_cancelled_chip_in_list(
     base_url, console_url, page, tmp_path,
 ) -> None:
-    """Seed + cancel an agent session, then open /sessions, click the
-    "Failed" chip, and assert the session id appears in the filtered list."""
+    """Seed + cancel an agent session, then open /sessions and assert that
+    the session row shows the "Cancelled" decoded-outcome chip.
+
+    Note: describeSessionState classifies a cancelled session as
+    group="cancelled", NOT group="failed", so it does NOT appear under the
+    "Failed" filter.  We assert the chip label directly instead.
+    """
     _seed_llm_provider(base_url, "sl-prov2")
     _seed_agent(base_url, "sl-agent2", "sl-prov2")
     wid = _seed_workspace(base_url, "sl-wp2", "sl-tpl2", tmp_path)
@@ -106,7 +113,9 @@ def test_cancelled_session_visible_under_failed_filter(
     _cancel_session(base_url, wid, sid)
 
     page.goto(f"{console_url}#/sessions")
-    page.get_by_text("Failed", exact=True).first.click()
     expect(page.get_by_text(sid[:8], exact=False).first).to_be_visible(
+        timeout=20_000,
+    )
+    expect(page.get_by_text("Cancelled", exact=False).first).to_be_visible(
         timeout=20_000,
     )
