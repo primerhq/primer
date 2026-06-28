@@ -60,6 +60,12 @@ def ows_stdio_mount() -> dict:
     from testconfig so the test stays in sync with the operator's config.
     """
     cfg = _ows_stdio_cfg()
+    if "command" not in cfg:
+        # No external stdio MCP configured (e.g. CI has no tests/testconfig.yaml,
+        # so load_config() returns the hermetic fallback with no `mcp` block).
+        # The @requires("mcp:stdio") gate can't catch this because Caps
+        # advertises mcp:stdio unconditionally, so skip here.
+        pytest.skip("no external stdio MCP configured (testconfig mcp.stdio.command absent)")
     stdio: dict = {"command": list(cfg["command"])}
     if cfg.get("env"):
         stdio["env"] = dict(cfg["env"])
