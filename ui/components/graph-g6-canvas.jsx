@@ -241,7 +241,23 @@ function GR_G6Canvas(props) {
         g.on("edge:create", onAddEdge);
       }
 
-      Promise.resolve(g.render()).then(() => { readyRef.current = true; }).catch(() => {});
+      Promise.resolve(g.render()).then(() => {
+        readyRef.current = true;
+        // Preset (editor) skips autoFit so user positions are honored, but on
+        // (re)mount / structural change we fit-when-overflowing so far-right
+        // nodes aren't clipped. topoKey excludes x/y, so this never fires on
+        // a drag — pan/zoom is preserved while editing.
+        if (preset) {
+          // Defer a tick so the container has settled at full width before we
+          // measure — fitting too early frames against a narrower canvas and
+          // clips the far nodes.
+          setTimeout(() => {
+            if (graphRef.current !== g) return;
+            try { g.fitView({ when: "overflow", padding: 24 }); }
+            catch (_e) { try { g.fitView(); } catch (_e2) { /* canvas */ } }
+          }, 60);
+        }
+      }).catch(() => {});
     } catch (err) {
       console.error("[GR_G6Canvas] init failed:", err);  // eslint-disable-line no-console
     }
