@@ -1,0 +1,115 @@
+name: E2E
+
+# Live-server e2e + Playwright UI journeys — the suites ci.yml's fast unit
+# gate excludes (they need a running server, Postgres, and a browser).
+#
+# ADVISORY / NON-BLOCKING: this workflow is intentionally NOT a required
+# status check. Browser + live-server tests are flakier than unit tests, so
+# a red run here surfaces a regression without blocking an unrelated merge.
+# Once it has proven stable, promote the `e2e` / `ui-e2e` jobs to required
+# checks in the branch-protection settings.
+#
+# Both jobs reuse the harness-proven bring-up scripts (scripts/e2e/*.sh):
+# `docker compose up -d postgres` (just the DB — no app image build), then a
+# host `uv run primer api`. The server serves /console too, so ui-e2e needs
+# no separate app container. Real LLMs are never required — tests/e2e uses a
+# mock-LLM fixture and tests/ui_e2e seeds a provider pointing at an
+# unreachable URL (it exercises the UI, never the model).
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: e2e (live server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+      - name: Sync
+        run: |
+          uv sync --all-extras --dev --group docs
+          uv pip install --no-deps ./primectl ./runtime
+      - name: Bring up Postgres + server
+        run: bash scripts/e2e/bringup.sh
+      - name: Run tests/e2e
+        # -n0: the e2e suite shares one live server + DB and must run serially
+        # (AGENTS.md — "saturates all cores and must run EXCLUSIVELY"); the
+        # default `-n auto` addopts would make it flaky. The marker expr keeps
+        # the addopts' `not distributed` AND deselects the markers needing real
+        # external systems (a live LLM, a Kubernetes cluster, live channels) —
+        # a CLI `-m` replaces the addopts `-m`, so `not distributed` is repeated.
+        run: >-
+          PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/e2e
+          -q --tb=short -n0
+          -m "not distributed and not requires_llm and not requires_cluster and not requires_channel"
+      - name: Tear down
+        if: always()
+        run: bash scripts/e2e/teardown.sh
+      - name: Server logs on failure
+        if: failure()
+        run: |
+          echo "::group::server.stdout"
+          tail -n 200 tests/.e2e/server.stdout 2>/dev/null || true
+          echo "::endgroup::"
+          echo "::group::primer.log"
+          tail -n 200 tests/.e2e/logs/primer.log 2>/dev/null || true
+          echo "::endgroup::"
+
+  ui-e2e:
+    name: ui-e2e (Playwright)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+          enable-cache: true
+      - name: Sync
+        run: |
+          uv sync --all-extras --dev --group docs
+          uv pip install --no-deps ./primectl ./runtime
+      - name: Install Playwright chromium
+        run: uv run playwright install --with-deps chromium
+      - name: Bring up Postgres + server (auth disabled)
+        # The UI journeys seed fixtures over plain httpx with no login, so the
+        # server runs with auth.enabled=false (see scripts/e2e/bringup.sh).
+        run: PRIMER_E2E_AUTH_DISABLED=1 bash scripts/e2e/bringup.sh
+      - name: Run tests/ui_e2e
+        # -n0 for the same exclusivity reason: the UI journeys drive one shared
+        # server + browser-against-DB state serially.
+        run: >-
+          PRIMER_RUN_UI_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/ui_e2e
+          -q --tb=short -n0 -m "not distributed"
+      - name: Tear down
+        if: always()
+        run: bash scripts/e2e/teardown.sh
+      - name: Server logs on failure
+        if: failure()
+        run: |
+          echo "::group::server.stdout"
+          tail -n 200 tests/.e2e/server.stdout 2>/dev/null || true
+          echo "::endgroup::"
+          echo "::group::primer.log"
+          tail -n 200 tests/.e2e/logs/primer.log 2>/dev/null || true
+          echo "::endgroup::"
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-e2e-artifacts
+          path: tests/ui_e2e/.state/artifacts/
+          if-no-files-found: ignore
