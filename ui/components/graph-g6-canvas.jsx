@@ -1,31 +1,21 @@
 /* global React, G6 */
 // SPIKE — AntV G6 v5 run-view canvas. A vendored-UMD alternative to the
 // hand-rolled SVG SD_StatusCanvas, to compare animation/reactive UX.
-// Same props as SD_StatusCanvas: { graph, statusByNode, selectedNodeId,
-// onSelectNode }. Gated behind an in-UI toggle (NOT the default). The
-// graph data + dagre layout are built ONCE on mount; per-node status and
-// selection are driven by G6 element STATES so live updates animate via
-// G6's state transitions without re-running layout.
+// Props: { graph, statusByNode, metaByNode, selectedNodeId, onSelectNode }.
+// Gated behind an in-UI toggle (NOT the default). Topology + dagre layout
+// are built ONCE on mount; per-node status/selection/pulse are driven by
+// G6 element STATES (animated, no relayout), and the per-node token/
+// duration metric updates via updateNodeData as a node finishes.
 
-// Concrete hex (the canvas can't read CSS vars); chosen to echo
-// SD_RUN_STATE_TINT so the side-by-side is apples-to-apples.
 const _G6_COLORS = {
-  neutral: "#3a3f47",
-  green: "#34d399",
-  amber: "#fbbf24",
-  red: "#f87171",
-  violet: "#a78bfa",
-  text: "#e6e8eb",
-  bg: "#0d0f12",
-  edge: "#4b525c",
+  neutral: "#3a3f47", green: "#34d399", amber: "#fbbf24", red: "#f87171",
+  violet: "#a78bfa", text: "#e6e8eb", sub: "#9aa4af", bg: "#0d0f12", edge: "#4b525c",
 };
 
-// Per-status node state styles. `halo` gives the live "glow"; G6 tweens
-// the style change so a node lighting up reads as an animation for free.
 function _g6NodeStates() {
   const mk = (c, halo) => ({
     stroke: c, lineWidth: 2, fill: c + "22",
-    halo, haloStroke: c, haloStrokeOpacity: 0.35, haloLineWidth: halo ? 10 : 0,
+    halo, haloStroke: c, haloStrokeOpacity: 0.32, haloLineWidth: halo ? 10 : 0,
   });
   return {
     pending: mk(_G6_COLORS.neutral, false),
@@ -33,6 +23,9 @@ function _g6NodeStates() {
     waiting: mk(_G6_COLORS.amber, true),
     ended: mk(_G6_COLORS.green, false),
     failed: mk(_G6_COLORS.red, true),
+    // Pulse is toggled on/off on running nodes; the halo tween reads as a
+    // breathing pulse without a custom keyframe.
+    pulse: { halo: true, haloStroke: _G6_COLORS.green, haloLineWidth: 20, haloStrokeOpacity: 0.15 },
     selected: { stroke: _G6_COLORS.violet, lineWidth: 3, halo: true, haloStroke: _G6_COLORS.violet, haloStrokeOpacity: 0.4 },
   };
 }
@@ -47,15 +40,29 @@ function _g6Edges(graph) {
   return edges;
 }
 
-function SD_G6Canvas({ graph, statusByNode, selectedNodeId, onSelectNode }) {
+// "1.2k tok · 0.4s" from a node_states meta blob.
+function _g6Metric(meta) {
+  if (!meta) return "";
+  const tot = (meta.tin || 0) + (meta.tout || 0);
+  const parts = [];
+  if (tot) parts.push((tot >= 1000 ? (tot / 1000).toFixed(1) + "k" : String(tot)) + " tok");
+  if (meta.dur != null) parts.push((meta.dur / 1000).toFixed(1) + "s");
+  return parts.join("  ·  ");
+}
+
+function _g6Label(node, metaByNode) {
+  if (node.kind === "begin" || node.kind === "end") return "";
+  const m = _g6Metric(metaByNode && metaByNode[node.id]);
+  return m ? `${node.id}\n${m}` : node.id;
+}
+
+function SD_G6Canvas({ graph, statusByNode, metaByNode, selectedNodeId, onSelectNode }) {
   const containerRef = React.useRef(null);
   const graphRef = React.useRef(null);
   const readyRef = React.useRef(false);
   const onSelectRef = React.useRef(onSelectNode);
   onSelectRef.current = onSelectNode;
 
-  // Stable identity of the topology so we only rebuild on structural change,
-  // not on every status poll.
   const topoKey = React.useMemo(() => {
     const ns = (graph?.nodes || []).map((n) => `${n.id}:${n.kind}`).join(",");
     const es = _g6Edges(graph).map((e) => e.id).join(",");
@@ -66,11 +73,11 @@ function SD_G6Canvas({ graph, statusByNode, selectedNodeId, onSelectNode }) {
   React.useEffect(() => {
     if (!containerRef.current || !window.G6 || !graph) return undefined;
     const G6 = window.G6;
+    const isTiny = (kind) => kind === "begin" || kind === "end";
     const nodes = (graph.nodes || []).map((n) => ({
       id: n.id,
-      data: { kind: n.kind, label: n.id },
+      data: { kind: n.kind, label: _g6Label(n, metaByNode) },
     }));
-    const isTiny = (kind) => kind === "begin" || kind === "end";
 
     let g;
     try {
@@ -82,37 +89,28 @@ function SD_G6Canvas({ graph, statusByNode, selectedNodeId, onSelectNode }) {
         node: {
           type: "rect",
           style: {
-            size: (d) => (isTiny(d.data.kind) ? [24, 24] : [148, 42]),
+            size: (d) => (isTiny(d.data.kind) ? [24, 24] : [150, 46]),
             radius: (d) => (isTiny(d.data.kind) ? 12 : 8),
             fill: _G6_COLORS.neutral + "22",
             stroke: _G6_COLORS.neutral,
             lineWidth: 2,
-            labelText: (d) => (isTiny(d.data.kind) ? "" : d.data.label),
+            labelText: (d) => d.data.label,
             labelFill: _G6_COLORS.text,
             labelFontSize: 12,
             labelFontFamily: "IBM Plex Mono, monospace",
+            labelLineHeight: 15,
           },
           state: _g6NodeStates(),
         },
         edge: {
           type: "polyline",
-          style: {
-            stroke: _G6_COLORS.edge,
-            lineWidth: 1.5,
-            endArrow: true,
-            endArrowSize: 8,
-            radius: 8,
-          },
-          state: {
-            active: { stroke: _G6_COLORS.green, lineWidth: 2, lineDash: [6, 6], stroke_opacity: 1 },
-          },
+          style: { stroke: _G6_COLORS.edge, lineWidth: 1.5, endArrow: true, endArrowSize: 8, radius: 8 },
+          state: { active: { stroke: _G6_COLORS.green, lineWidth: 2, lineDash: [6, 6] } },
         },
-        layout: { type: "dagre", rankdir: "LR", nodesep: 16, ranksep: 64 },
+        layout: { type: "dagre", rankdir: "LR", nodesep: 18, ranksep: 66 },
         behaviors: ["zoom-canvas", "drag-canvas"],
-        // Fit + center the whole graph in the pane on render (the topology
-        // is set once, so this runs once and won't fight status updates).
         autoFit: "view",
-        padding: 24,
+        padding: 28,
       });
       graphRef.current = g;
       readyRef.current = false;
@@ -123,10 +121,8 @@ function SD_G6Canvas({ graph, statusByNode, selectedNodeId, onSelectNode }) {
       });
       g.on("canvas:click", () => { if (onSelectRef.current) onSelectRef.current(null); });
 
-      const done = g.render();
-      Promise.resolve(done).then(() => { readyRef.current = true; }).catch(() => {});
+      Promise.resolve(g.render()).then(() => { readyRef.current = true; }).catch(() => {});
     } catch (err) {
-      // Spike: surface init failures in the console for iteration.
       console.error("[SD_G6Canvas] init failed:", err);  // eslint-disable-line no-console
     }
 
@@ -138,29 +134,62 @@ function SD_G6Canvas({ graph, statusByNode, selectedNodeId, onSelectNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey]);
 
-  // Apply per-node status + selection as element states (animated, no relayout).
+  // Status + selection + edge-flow as element states (animated, no relayout).
   React.useEffect(() => {
     const g = graphRef.current;
     if (!g) return;
     const apply = () => {
       try {
-        const nodeStates = {};
+        const s = {};
         for (const n of (graph?.nodes || [])) {
           const st = statusByNode[n.id] || "pending";
-          nodeStates[n.id] = n.id === selectedNodeId ? [st, "selected"] : [st];
+          s[n.id] = n.id === selectedNodeId ? [st, "selected"] : [st];
         }
-        // Light up edges leaving an active (running/ended) node so flow reads.
-        const edgeStates = {};
         for (const e of _g6Edges(graph)) {
           const srcStatus = statusByNode[e.source] || "pending";
-          edgeStates[e.id] = (srcStatus === "running" || srcStatus === "ended") ? ["active"] : [];
+          s[e.id] = (srcStatus === "running" || srcStatus === "ended") ? ["active"] : [];
         }
-        g.setElementState({ ...nodeStates, ...edgeStates });
+        g.setElementState(s);
       } catch (_e) { /* spike */ }
     };
     if (readyRef.current) apply();
-    else { const t = setTimeout(apply, 120); return () => clearTimeout(t); }
+    else { const t = setTimeout(apply, 140); return () => clearTimeout(t); }
     return undefined;
+  }, [statusByNode, selectedNodeId, graph]);
+
+  // Live token/duration metric — update node labels as nodes finish.
+  React.useEffect(() => {
+    const g = graphRef.current;
+    if (!g || !readyRef.current) return;
+    try {
+      g.updateNodeData((graph?.nodes || []).map((n) => ({
+        id: n.id, data: { kind: n.kind, label: _g6Label(n, metaByNode) },
+      })));
+      g.draw();
+    } catch (_e) { /* spike */ }
+  }, [metaByNode, graph]);
+
+  // Running pulse — breathe the halo on running nodes.
+  React.useEffect(() => {
+    const running = (graph?.nodes || [])
+      .filter((n) => (statusByNode[n.id] || "pending") === "running")
+      .map((n) => n.id);
+    if (!running.length) return undefined;
+    let on = false;
+    const id = setInterval(() => {
+      const g = graphRef.current;
+      if (!g || !readyRef.current) return;
+      on = !on;
+      try {
+        const s = {};
+        for (const nid of running) {
+          const base = nid === selectedNodeId ? ["running", "selected"] : ["running"];
+          s[nid] = on ? [...base, "pulse"] : base;
+        }
+        g.setElementState(s);
+      } catch (_e) { /* spike */ }
+    }, 680);
+    return () => clearInterval(id);
   }, [statusByNode, selectedNodeId, graph]);
 
   return (

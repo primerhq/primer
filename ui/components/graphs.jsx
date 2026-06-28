@@ -653,6 +653,10 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   const [selectedNodeId, setSelectedNodeId] = React.useState(null);
   const [selectedEdgeId, setSelectedEdgeId] = React.useState(null);  // index into draft.edges
   const [addEdgeMode, setAddEdgeMode] = React.useState(null);  // null | {fromId?}
+  // SPIKE: toggle the G6 editor canvas vs the hand-rolled SVG one.
+  const [g6EditOn, setG6EditOn] = React.useState(() => {
+    try { return localStorage.getItem("primer.g6Editor") === "1"; } catch (_e) { return false; }
+  });
   const [edgeMode, setEdgeMode] = React.useState("static");  // "static" | "conditional"
   const [dragging, setDragging] = React.useState(null);
   const [showAddMenu, setShowAddMenu] = React.useState(false);
@@ -1065,24 +1069,47 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
         <GR_ViolationsBanner violations={violations} />
       )}
 
+      {/* SPIKE: G6 editor toggle */}
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 6 }}>
+        <button
+          type="button"
+          className="pill"
+          title="Spike: G6 editor vs the SVG editor (drag nodes, drag node-to-node to wire an edge)"
+          onClick={() => { const v = !g6EditOn; setG6EditOn(v); try { localStorage.setItem("primer.g6Editor", v ? "1" : "0"); } catch (_e) { /* no-op */ } }}
+          style={{ cursor: "pointer", borderColor: g6EditOn ? "var(--violet)" : undefined, color: g6EditOn ? "var(--violet)" : undefined }}
+        >
+          {g6EditOn ? "⚡ G6 editor" : "SVG editor"}
+        </button>
+      </div>
+
       {/* Editor + side panel */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 260px" }}>
-        <GR_Canvas
-          ref={canvasRef}
-          draft={draft}
-          selectedNodeId={selectedNodeId}
-          selectedEdgeId={selectedEdgeId}
-          addEdgeMode={addEdgeMode}
-          onNodeClick={onNodeClick}
-          onEdgeClick={onEdgeClick}
-          onNodeDoubleClick={onNodeDoubleClick}
-          onNodeMouseDown={onNodeMouseDown}
-          onBackgroundClick={() => {
-            setSelectedNodeId(null);
-            setSelectedEdgeId(null);
-            if (addEdgeMode) setAddEdgeMode(null);
-          }}
-        />
+        {g6EditOn && window.GR_G6Editor ? (
+          <window.GR_G6Editor
+            draft={draft}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={(id) => { setSelectedNodeId(id); setSelectedEdgeId(null); }}
+            onCreateEdge={(source, target) => setDraft((d) => ({ ...d, edges: [...(d.edges || []), { kind: "static", from_node: source, to_node: target }] }))}
+            onMoveNode={(id, x, y) => setDraft((d) => ({ ...d, nodes: (d.nodes || []).map((n) => n.id === id ? { ...n, x, y } : n) }))}
+          />
+        ) : (
+          <GR_Canvas
+            ref={canvasRef}
+            draft={draft}
+            selectedNodeId={selectedNodeId}
+            selectedEdgeId={selectedEdgeId}
+            addEdgeMode={addEdgeMode}
+            onNodeClick={onNodeClick}
+            onEdgeClick={onEdgeClick}
+            onNodeDoubleClick={onNodeDoubleClick}
+            onNodeMouseDown={onNodeMouseDown}
+            onBackgroundClick={() => {
+              setSelectedNodeId(null);
+              setSelectedEdgeId(null);
+              if (addEdgeMode) setAddEdgeMode(null);
+            }}
+          />
+        )}
         <GR_SidePanel
           draft={draft}
           selected={selected}

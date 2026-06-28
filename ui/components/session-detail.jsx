@@ -1190,6 +1190,12 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
     for (const it of items) out[it.node_id] = it.status;
     return out;
   }, [items]);
+  // SPIKE: per-node token/duration meta for the G6 canvas badges.
+  const metaByNode = React.useMemo(() => {
+    const out = {};
+    for (const it of items) out[it.node_id] = { tin: it.tokens_in, tout: it.tokens_out, dur: it.duration_ms };
+    return out;
+  }, [items]);
   const overall = SD_overallRunState(items);
   const supersteps = session?.turn_no ?? session?.turn_count ?? 0;
 
@@ -1228,6 +1234,7 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
           <window.SD_G6Canvas
             graph={graph.data}
             statusByNode={statusByNode}
+            metaByNode={metaByNode}
             selectedNodeId={selectedNodeId}
             onSelectNode={setSelectedNodeId}
           />
