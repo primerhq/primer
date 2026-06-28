@@ -1,20 +1,34 @@
 /* global React, G6 */
-// SPIKE — AntV G6 v5 run-view canvas. A vendored-UMD alternative to the
-// hand-rolled SVG SD_StatusCanvas, to compare animation/reactive UX.
-// Props: { graph, statusByNode, metaByNode, selectedNodeId, onSelectNode }.
-// Gated behind an in-UI toggle (NOT the default). Topology + dagre layout
-// are built ONCE on mount; per-node status/selection/pulse are driven by
-// G6 element STATES (animated, no relayout), and the per-node token/
-// duration metric updates via updateNodeData as a node finishes.
+// Unified AntV G6 (v5) graph canvas — the single renderer behind the graph
+// editor (interactive) and the session run-view (read-only + status). One
+// component, one place for the G6 logic; a `layout` prop forks between the
+// editor's user-positioned nodes ("preset") and the run-view's auto layout
+// ("dagre"). Interaction callbacks are optional: when absent (run-view) the
+// canvas is read-only. Rendering parity lives here; interaction wiring is
+// layered on in the same file.
+//
+// Props: { draft, layout, selectedNodeId, selectedEdgeId, statusTint,
+//          metaByNode, onNodeClick, onEdgeClick, onNodeDoubleClick,
+//          onBackgroundClick, onMoveNode, onConnect, addEdgeMode }.
+// `draft` is { nodes:[{id,kind,x?,y?,...}], edges:[...] } (the editor draft
+// or the run-view graph — same shape). `layout`: "preset" | "dagre".
 
 const _G6_COLORS = {
   neutral: "#3a3f47", green: "#34d399", amber: "#fbbf24", red: "#f87171",
   violet: "#a78bfa", text: "#e6e8eb", sub: "#9aa4af", bg: "#0d0f12", edge: "#4b525c",
 };
 
-// Node-kind icons — reuse the console's icon language (24x24 stroke paths)
-// as SVG data-URIs so the canvas-rendered G6 nodes show type via iconSrc.
-// begin/end stay as circle SHAPES (no icon); the work nodes get an icon.
+// Node sizes by kind (also exported; consumers may read GR_NODE_SIZE).
+const GR_NODE_SIZE = {
+  begin: { w: 24, h: 24 }, end: { w: 24, h: 24 },
+  agent: { w: 152, h: 46 }, graph: { w: 152, h: 46 }, fan_in: { w: 152, h: 46 },
+  tool_call: { w: 168, h: 46 }, fan_out: { w: 168, h: 46 },
+};
+function _g6Size(kind) { return GR_NODE_SIZE[kind] || GR_NODE_SIZE.agent; }
+function _g6Tiny(kind) { return kind === "begin" || kind === "end"; }
+
+// Node-kind icons — reuse the console icon language (24x24 stroke paths) as
+// SVG data-URIs so the canvas-rendered G6 nodes show type via iconSrc.
 const _G6_KIND_SVG = {
   agent: '<circle cx="12" cy="9" r="3.5"/><path d="M5 20c0-3.5 3-6 7-6s7 2.5 7 6"/>',
   tool_call: '<path d="M14 6l4-4 4 4-4 4M14 6L8 12M5 19l-3 3v-3h3l9-9 3 3-9 9z"/>',
@@ -30,8 +44,8 @@ function _g6IconUri(kind, stroke) {
     + inner + '</svg>';
   return "data:image/svg+xml," + encodeURIComponent(svg);
 }
-window._g6IconUri = _g6IconUri;
 
+// Per-status node state styles (the live "glow"); G6 tweens state changes.
 function _g6NodeStates() {
   const mk = (c, halo) => ({
     stroke: c, lineWidth: 2, fill: c + "22",
@@ -43,24 +57,11 @@ function _g6NodeStates() {
     waiting: mk(_G6_COLORS.amber, true),
     ended: mk(_G6_COLORS.green, false),
     failed: mk(_G6_COLORS.red, true),
-    // Pulse is toggled on/off on running nodes; the halo tween reads as a
-    // breathing pulse without a custom keyframe.
     pulse: { halo: true, haloStroke: _G6_COLORS.green, haloLineWidth: 20, haloStrokeOpacity: 0.15 },
     selected: { stroke: _G6_COLORS.violet, lineWidth: 3, halo: true, haloStroke: _G6_COLORS.violet, haloStrokeOpacity: 0.4 },
   };
 }
 
-function _g6Edges(graph) {
-  const edges = [];
-  for (const e of (graph?.edges || [])) {
-    const s = e.from_node || e.source || e.from;
-    const t = e.to_node || e.target || e.to;
-    if (s && t) edges.push({ id: `e${edges.length}:${s}->${t}`, source: s, target: t });
-  }
-  return edges;
-}
-
-// "1.2k tok · 0.4s" from a node_states meta blob.
 function _g6Metric(meta) {
   if (!meta) return "";
   const tot = (meta.tin || 0) + (meta.tout || 0);
@@ -69,35 +70,73 @@ function _g6Metric(meta) {
   if (meta.dur != null) parts.push((meta.dur / 1000).toFixed(1) + "s");
   return parts.join("  ·  ");
 }
-
 function _g6Label(node, metaByNode) {
-  if (node.kind === "begin" || node.kind === "end") return "";
+  if (_g6Tiny(node.kind)) return "";
   const m = _g6Metric(metaByNode && metaByNode[node.id]);
   return m ? `${node.id}\n${m}` : node.id;
 }
 
-function SD_G6Canvas({ graph, statusByNode, metaByNode, selectedNodeId, onSelectNode }) {
+// Edges by kind: static (one), conditional (one per branch target +
+// default_to), implicit fan-out (one per spec target). Each carries
+// data.etype + data.idx (index into draft.edges, or -1 for implicit) so the
+// canvas can style + map edge clicks back to the draft.
+function _g6Edges(draft) {
+  const out = [];
+  const push = (s, t, etype, idx, label) => {
+    if (s && t) out.push({ id: `e${out.length}:${s}->${t}`, source: s, target: t, data: { etype, idx, label } });
+  };
+  (draft?.edges || []).forEach((e, idx) => {
+    if (e.kind === "conditional" && e.router) {
+      const seen = new Set();
+      for (const b of (e.router.branches || [])) {
+        if (b.to_node && !seen.has(b.to_node)) { seen.add(b.to_node); push(e.from_node, b.to_node, "conditional", idx, ""); }
+      }
+      const dft = e.router.default_to;
+      if (dft && !seen.has(dft)) push(e.from_node, dft, "conditional", idx, "else");
+    } else {
+      push(e.from_node || e.source, e.to_node || e.target, "static", idx, "");
+    }
+  });
+  // Implicit fan-out edges (FanOut.specs[].target_node_id), not in draft.edges.
+  for (const n of (draft?.nodes || [])) {
+    if (n.kind === "fan_out") {
+      for (const sp of (n.specs || [])) {
+        if (sp && sp.target_node_id) push(n.id, sp.target_node_id, "implicit", -1, "");
+      }
+    }
+  }
+  return out;
+}
+
+function _g6EdgeStateStyle() {
+  return {
+    selected: { stroke: _G6_COLORS.violet, lineWidth: 2.5 },
+    active: { stroke: _G6_COLORS.green, lineWidth: 2, lineDash: [6, 6], endArrow: true },
+  };
+}
+
+function GR_G6Canvas(props) {
+  const { draft, layout, selectedNodeId, selectedEdgeId, statusTint, metaByNode } = props;
   const containerRef = React.useRef(null);
   const graphRef = React.useRef(null);
   const readyRef = React.useRef(false);
-  const onSelectRef = React.useRef(onSelectNode);
-  onSelectRef.current = onSelectNode;
 
   const topoKey = React.useMemo(() => {
-    const ns = (graph?.nodes || []).map((n) => `${n.id}:${n.kind}`).join(",");
-    const es = _g6Edges(graph).map((e) => e.id).join(",");
-    return ns + "|" + es;
-  }, [graph]);
+    const ns = (draft?.nodes || []).map((n) => `${n.id}:${n.kind}`).join(",");
+    const es = _g6Edges(draft).map((e) => e.id).join(",");
+    return (layout || "dagre") + "|" + ns + "|" + es;
+  }, [draft, layout]);
 
-  // Build the G6 graph once per topology.
   React.useEffect(() => {
-    if (!containerRef.current || !window.G6 || !graph) return undefined;
+    if (!containerRef.current || !window.G6 || !draft) return undefined;
     const G6 = window.G6;
-    const isTiny = (kind) => kind === "begin" || kind === "end";
-    const nodes = (graph.nodes || []).map((n) => ({
-      id: n.id,
-      data: { kind: n.kind, label: _g6Label(n, metaByNode) },
-    }));
+    const preset = layout === "preset";
+    const nodes = (draft.nodes || []).map((n) => {
+      const sz = _g6Size(n.kind);
+      const node = { id: n.id, data: { kind: n.kind, label: _g6Label(n, metaByNode) } };
+      if (preset) node.style = { x: (n.x || 0) + sz.w / 2, y: (n.y || 0) + sz.h / 2 };
+      return node;
+    });
 
     let g;
     try {
@@ -105,12 +144,12 @@ function SD_G6Canvas({ graph, statusByNode, metaByNode, selectedNodeId, onSelect
         container: containerRef.current,
         autoResize: true,
         background: _G6_COLORS.bg,
-        data: { nodes, edges: _g6Edges(graph) },
+        data: { nodes, edges: _g6Edges(draft) },
         node: {
           type: "rect",
           style: {
-            size: (d) => (isTiny(d.data.kind) ? [24, 24] : [150, 46]),
-            radius: (d) => (isTiny(d.data.kind) ? 12 : 8),
+            size: (d) => { const s = _g6Size(d.data.kind); return [s.w, s.h]; },
+            radius: (d) => (_g6Tiny(d.data.kind) ? 12 : 8),
             fill: _G6_COLORS.neutral + "22",
             stroke: _G6_COLORS.neutral,
             lineWidth: 2,
@@ -130,26 +169,31 @@ function SD_G6Canvas({ graph, statusByNode, metaByNode, selectedNodeId, onSelect
         },
         edge: {
           type: "polyline",
-          style: { stroke: _G6_COLORS.edge, lineWidth: 1.5, endArrow: true, endArrowSize: 8, radius: 8 },
-          state: { active: { stroke: _G6_COLORS.green, lineWidth: 2, lineDash: [6, 6], endArrow: true } },
+          style: {
+            stroke: (d) => (d.data.etype === "implicit" ? "#3b424b" : _G6_COLORS.edge),
+            lineWidth: 1.5,
+            lineDash: (d) => (d.data.etype === "static" ? undefined : [5, 5]),
+            endArrow: true,
+            endArrowSize: 8,
+            radius: 8,
+            labelText: (d) => d.data.label || "",
+            labelFill: _G6_COLORS.sub,
+            labelFontSize: 10,
+            labelBackground: true,
+            labelBackgroundFill: _G6_COLORS.bg,
+          },
+          state: _g6EdgeStateStyle(),
         },
-        layout: { type: "dagre", rankdir: "LR", nodesep: 18, ranksep: 66 },
+        layout: preset ? { type: "preset" } : { type: "dagre", rankdir: "LR", nodesep: 18, ranksep: 66 },
         behaviors: ["zoom-canvas", "drag-canvas"],
-        autoFit: "view",
+        autoFit: preset ? undefined : "view",
         padding: 28,
       });
       graphRef.current = g;
       readyRef.current = false;
-
-      g.on("node:click", (e) => {
-        const id = (e && (e.target?.id ?? e.itemId ?? e.target?.config?.id)) || null;
-        if (id && onSelectRef.current) onSelectRef.current(id);
-      });
-      g.on("canvas:click", () => { if (onSelectRef.current) onSelectRef.current(null); });
-
       Promise.resolve(g.render()).then(() => { readyRef.current = true; }).catch(() => {});
     } catch (err) {
-      console.error("[SD_G6Canvas] init failed:", err);  // eslint-disable-line no-console
+      console.error("[GR_G6Canvas] init failed:", err);  // eslint-disable-line no-console
     }
 
     return () => {
@@ -160,45 +204,55 @@ function SD_G6Canvas({ graph, statusByNode, metaByNode, selectedNodeId, onSelect
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [topoKey]);
 
-  // Status + selection + edge-flow as element states (animated, no relayout).
+  // Status + selection as element states (animated; no relayout).
   React.useEffect(() => {
     const g = graphRef.current;
-    if (!g) return;
+    if (!g) return undefined;
     const apply = () => {
       try {
         const s = {};
-        for (const n of (graph?.nodes || [])) {
-          const st = statusByNode[n.id] || "pending";
-          s[n.id] = n.id === selectedNodeId ? [st, "selected"] : [st];
+        for (const n of (draft?.nodes || [])) {
+          if (statusTint) {
+            const st = (statusTint[n.id] && statusTint[n.id].status) || "pending";
+            s[n.id] = n.id === selectedNodeId ? [st, "selected"] : [st];
+          } else {
+            s[n.id] = n.id === selectedNodeId ? ["selected"] : [];
+          }
         }
-        for (const e of _g6Edges(graph)) {
-          const srcStatus = statusByNode[e.source] || "pending";
-          s[e.id] = (srcStatus === "running" || srcStatus === "ended") ? ["active"] : [];
+        for (const e of _g6Edges(draft)) {
+          const states = [];
+          if (e.data.idx >= 0 && e.data.idx === selectedEdgeId) states.push("selected");
+          if (statusTint) {
+            const srcStatus = (statusTint[e.source] && statusTint[e.source].status) || "pending";
+            if (srcStatus === "running" || srcStatus === "ended") states.push("active");
+          }
+          s[e.id] = states;
         }
         g.setElementState(s);
-      } catch (_e) { /* spike */ }
+      } catch (_e) { /* canvas */ }
     };
     if (readyRef.current) apply();
     else { const t = setTimeout(apply, 140); return () => clearTimeout(t); }
     return undefined;
-  }, [statusByNode, selectedNodeId, graph]);
+  }, [statusTint, selectedNodeId, selectedEdgeId, draft]);
 
-  // Live token/duration metric — update node labels as nodes finish.
+  // Live token/duration metric — update labels as nodes finish (run-view).
   React.useEffect(() => {
     const g = graphRef.current;
-    if (!g || !readyRef.current) return;
+    if (!g || !readyRef.current || !metaByNode) return;
     try {
-      g.updateNodeData((graph?.nodes || []).map((n) => ({
+      g.updateNodeData((draft?.nodes || []).map((n) => ({
         id: n.id, data: { kind: n.kind, label: _g6Label(n, metaByNode) },
       })));
       g.draw();
-    } catch (_e) { /* spike */ }
-  }, [metaByNode, graph]);
+    } catch (_e) { /* canvas */ }
+  }, [metaByNode, draft]);
 
-  // Running pulse — breathe the halo on running nodes.
+  // Running pulse (run-view).
   React.useEffect(() => {
-    const running = (graph?.nodes || [])
-      .filter((n) => (statusByNode[n.id] || "pending") === "running")
+    if (!statusTint) return undefined;
+    const running = (draft?.nodes || [])
+      .filter((n) => (statusTint[n.id] && statusTint[n.id].status) === "running")
       .map((n) => n.id);
     if (!running.length) return undefined;
     let on = false;
@@ -213,20 +267,22 @@ function SD_G6Canvas({ graph, statusByNode, metaByNode, selectedNodeId, onSelect
           s[nid] = on ? [...base, "pulse"] : base;
         }
         g.setElementState(s);
-      } catch (_e) { /* spike */ }
+      } catch (_e) { /* canvas */ }
     }, 680);
     return () => clearInterval(id);
-  }, [statusByNode, selectedNodeId, graph]);
+  }, [statusTint, selectedNodeId, draft]);
 
   return (
     <div style={{ minWidth: 0, overflow: "hidden" }}>
       <div
         ref={containerRef}
-        data-testid="g6-run-canvas"
+        data-testid="graph-canvas"
         style={{ width: "100%", height: 500, minHeight: 500, background: _G6_COLORS.bg }}
       />
     </div>
   );
 }
 
-window.SD_G6Canvas = SD_G6Canvas;
+window.GR_G6Canvas = GR_G6Canvas;
+window.GR_NODE_SIZE = GR_NODE_SIZE;
+window._g6IconUri = _g6IconUri;
