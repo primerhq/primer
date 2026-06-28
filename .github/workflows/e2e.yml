@@ -27,6 +27,12 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  # GitHub-hosted runners ship podman, but its socket isn't running — and the
+  # bring-up/teardown scripts autodetect podman first. Pin docker (the daemon
+  # that IS running on ubuntu-latest) so `compose up -d postgres` connects.
+  PRIMER_E2E_CONTAINER_RUNTIME: docker
+
 jobs:
   e2e:
     name: e2e (live server)
