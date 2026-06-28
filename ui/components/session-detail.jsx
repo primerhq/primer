@@ -1196,36 +1196,44 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
   const selectedItem = items.find((it) => it.node_id === selectedNodeId) || null;
 
   return (
-    <div className="panel" style={{ overflow: "hidden" }}>
-      <div className="panel-h">
-        <Icon name="graph" size={13} style={{ color: "var(--violet)" }} />
-        <span>Run view</span>
-        <span className="sub">· superstep {supersteps}</span>
-        <div className="right" style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          <span className={`pill pill-${overall === "ended" ? "ended" : overall === "failed" ? "failed" : overall === "running" ? "running" : "paused"}`}>
-            <span className="dot"></span>{overall}
-          </span>
+    <React.Fragment>
+      <div className="panel" style={{ overflow: "hidden" }}>
+        <div className="panel-h">
+          <Icon name="graph" size={13} style={{ color: "var(--violet)" }} />
+          <span>Run view</span>
+          <span className="sub">· superstep {supersteps}</span>
+          <div className="right" style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span className={`pill pill-${overall === "ended" ? "ended" : overall === "failed" ? "failed" : overall === "running" ? "running" : "paused"}`}>
+              <span className="dot"></span>{overall}
+            </span>
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px" }}>
+          <SD_StatusCanvas
+            graph={graph.data}
+            statusByNode={statusByNode}
+            metaByNode={metaByNode}
+            selectedNodeId={selectedNodeId}
+            onSelectNode={setSelectedNodeId}
+          />
+          <SD_NodeInspector
+            gid={gid}
+            rid={rid}
+            wid={wid}
+            session={session}
+            node={selectedItem}
+            graph={graph.data}
+            pushToast={pushToast}
+          />
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px" }}>
-        <SD_StatusCanvas
-          graph={graph.data}
-          statusByNode={statusByNode}
-          metaByNode={metaByNode}
-          selectedNodeId={selectedNodeId}
-          onSelectNode={setSelectedNodeId}
-        />
-        <SD_NodeInspector
-          gid={gid}
-          rid={rid}
-          wid={wid}
-          session={session}
-          node={selectedItem}
-          graph={graph.data}
-          pushToast={pushToast}
-        />
-      </div>
-    </div>
+      {/* Live event stream as a full-width panel BELOW the graph — it was
+          cramped into the 360px inspector column before. It now stays
+          readable and visible even while a node is selected on the right. */}
+      {wid && (
+        <SessionLiveStream sid={rid} wid={wid} session={session} pushToast={pushToast} />
+      )}
+    </React.Fragment>
   );
 }
 
@@ -1306,16 +1314,15 @@ function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast }) {
 
   const coalesced = window._SLS_coalesceMessages(frames);
 
-  // Empty state: no node selected -> the session-level live stream (the
-  // run's End output), so the default view still shows the run's result.
+  // Empty state: no node selected. The session-level live stream now lives in
+  // its own full-width panel below the graph (see SD_GraphRunView), so the
+  // inspector just prompts for a selection.
   if (!node) {
     return (
       <div style={{ borderLeft: "1px solid var(--border)", minHeight: 500 }}>
-        {wid
-          ? <SessionLiveStream sid={rid} wid={wid} session={session} pushToast={pushToast} />
-          : <div className="muted text-sm" style={{ textAlign: "center", padding: 30 }}>
-              Select a node to inspect it.
-            </div>}
+        <div className="muted text-sm" style={{ textAlign: "center", padding: 30 }}>
+          Select a node to inspect it.
+        </div>
       </div>
     );
   }
