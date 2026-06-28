@@ -675,6 +675,43 @@ async def _read_workspace_turn_log(
     }
 
 
+@top_session_router.get(
+    "/sessions/{session_id}/messages",
+    summary="Read the session's recorded message log (paginated)",
+    responses=common_responses(404, 500),
+)
+async def get_session_messages(
+    session_id: str = Path(..., description="Session id"),
+    limit: int = Query(default=200, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
+    after_seq: int | None = Query(default=None, ge=0),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+) -> dict:
+    """Return the recorded ``messages.jsonl`` rows for this session.
+
+    Unlike the WebSocket (which rejects ENDED sessions), this serves the
+    full recorded history for any status, so the console can render the
+    output of a finished run. Reuses the generic JSONL reader; a missing
+    file or absent workspace yields an empty log rather than a 5xx.
+    """
+    sess = await sessions.get(session_id)
+    if sess is None:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    workspace = await workspace_registry.get_workspace(sess.workspace_id)
+    if workspace is None:
+        return {"items": [], "total": 0, "offset": offset, "limit": limit}
+    state_path = getattr(workspace, "state_path", ".state")
+    rel = f"{state_path}/sessions/{session_id}/messages.jsonl"
+    return await _read_workspace_turn_log(
+        workspace=workspace,
+        relative_path=rel,
+        limit=limit,
+        offset=offset,
+        since_seq=after_seq,
+    )
+
+
 # ===========================================================================
 # WebSocket: live session stream + interrupt / tool_approval / ping
 # ===========================================================================
