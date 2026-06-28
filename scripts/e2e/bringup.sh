@@ -172,6 +172,19 @@ mcp_stdio_allowed_commands:
   - uv
 EOF
 
+# Optionally disable auth. Some suites seed fixtures over plain httpx with
+# no login (e.g. tests/ui_e2e, which exercises the console UI and never
+# drives the auth flow). Opt in with PRIMER_E2E_AUTH_DISABLED=1; unset (the
+# default) keeps the production default of auth.enabled=true, so tests/e2e —
+# which registers + logs in a real operator — is unaffected.
+if [[ "${PRIMER_E2E_AUTH_DISABLED:-0}" == "1" ]]; then
+    cat >> "$CONFIG" <<EOF
+auth:
+  enabled: false
+EOF
+    echo "[bringup] auth disabled (PRIMER_E2E_AUTH_DISABLED=1)" >&2
+fi
+
 # Merge storage/vector backend choice from tests/testconfig.yaml (if present).
 # render-server-config prints nothing when sqlite/lance are selected, so this
 # is a no-op for the default hermetic run.
