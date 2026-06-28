@@ -228,3 +228,86 @@ async def test_max_iterations_exceeded_ended_detail() -> None:
     assert loaded.status == SessionStatus.ENDED
     assert loaded.ended_reason == "failed"
     assert loaded.ended_detail == "max_iterations_exceeded"
+
+
+@pytest.mark.asyncio
+async def test_on_max_iterations_routes_to_node_instead_of_failing() -> None:
+    """Same looping graph, but ``on_max_iterations='exit'`` is set. When the
+    cycle bound trips, the executor routes to that node (here the End) and the
+    graph ends ``completed`` — no ``max_iterations_exceeded`` failure. This is
+    the guaranteed-finalize backstop: the cap becomes a safe landing, not a
+    cliff."""
+    graph = Graph(
+        id="g-max-iter-route",
+        description="Begin -> A -> A (forever, bounded) with on_max_iterations",
+        max_iterations=2,
+        on_max_iterations="exit",
+        nodes=[
+            _BeginNode(id="b"),
+            _AgentNodeRef(id="a", agent_id="x", response_format={"type": "object"}),
+            _EndNode(id="exit", output_template="done"),
+        ],
+        edges=[
+            _StaticEdge(from_node="b", to_node="a"),
+            _ConditionalEdge(
+                from_node="a",
+                router=_JsonPathRouter(
+                    branches=[
+                        JsonPathBranch(
+                            conditions=[
+                                BranchCondition(path="go", op="eq", value="a")
+                            ],
+                            to_node="a",
+                        )
+                    ],
+                    default_to="exit",
+                ),
+            ),
+        ],
+    )
+    llm = _FakeLLM(
+        scripts=[
+            [
+                TextDelta(text='{"go": "a"}', index=0),
+                Done(stop_reason="stop", raw_reason="stop"),
+            ]
+        ]
+    )
+
+    async def agent_resolver(agent_id: str):
+        return _agent(agent_id) if agent_id == "x" else None
+
+    async def llm_resolver(_agent: Agent):
+        return (llm, _model())
+
+    thread_storage: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
+    message_storage: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(
+        GraphNodeMessage
+    )
+    thread = await GraphExecutor.open_thread(
+        graph=graph,
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        title="t",
+    )
+    executor = GraphExecutor(
+        graph=graph,
+        agent_resolver=agent_resolver,
+        llm_resolver=llm_resolver,  # type: ignore[arg-type]
+        thread_storage=thread_storage,  # type: ignore[arg-type]
+        message_storage=message_storage,  # type: ignore[arg-type]
+        graph_thread_id=thread.id,
+    )
+
+    events = [ev async for ev in executor.invoke([])]
+    err_events = [
+        ev
+        for ev in events
+        if isinstance(ev, _GraphErrorEvent) and ev.code == "max_iterations_exceeded"
+    ]
+    assert not err_events, "expected NO max_iterations_exceeded failure"
+
+    loaded = await thread_storage.get(thread.id)
+    assert loaded is not None
+    assert loaded.status == SessionStatus.ENDED
+    assert loaded.ended_reason == "completed"
+    assert loaded.ended_detail != "max_iterations_exceeded"

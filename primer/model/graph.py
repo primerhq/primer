@@ -692,6 +692,18 @@ class Graph(Describeable):
             "Recommended for any graph that contains a cycle."
         ),
     )
+    on_max_iterations: str | None = Field(
+        default=None,
+        description=(
+            "Optional node id to route to (once) when ``max_iterations`` is "
+            "hit, INSTEAD of ending ``failed`` with "
+            "``ended_detail='max_iterations_exceeded'``. Use it to point a "
+            "bounded loop at its finalize/report node so the cap is a "
+            "graceful landing rather than a crash. Must reference an existing "
+            "node that can still reach an End. ``None`` keeps the hard-fail "
+            "behaviour."
+        ),
+    )
     harness_id: str | None = Field(
         default=None,
         description=(
@@ -720,6 +732,12 @@ class Graph(Describeable):
                     f"duplicate node id {n.id!r}; node ids must be unique within a graph"
                 )
             ids.add(n.id)
+
+        if self.on_max_iterations is not None and self.on_max_iterations not in ids:
+            raise ValueError(
+                f"on_max_iterations {self.on_max_iterations!r} does not match any "
+                "node id"
+            )
 
         begins = [n for n in self.nodes if n.kind == "begin"]
         ends = [n for n in self.nodes if n.kind == "end"]
