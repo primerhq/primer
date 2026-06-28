@@ -116,10 +116,13 @@ function _g6EdgeStateStyle() {
 }
 
 function GR_G6Canvas(props) {
-  const { draft, layout, selectedNodeId, selectedEdgeId, statusTint, metaByNode } = props;
+  const { draft, layout, selectedNodeId, selectedEdgeId, statusTint, metaByNode, addEdgeMode } = props;
   const containerRef = React.useRef(null);
   const graphRef = React.useRef(null);
   const readyRef = React.useRef(false);
+  // Latest callbacks in a ref so changing them doesn't re-init G6.
+  const cb = React.useRef(props);
+  cb.current = props;
 
   const topoKey = React.useMemo(() => {
     const ns = (draft?.nodes || []).map((n) => `${n.id}:${n.kind}`).join(",");
@@ -131,6 +134,15 @@ function GR_G6Canvas(props) {
     if (!containerRef.current || !window.G6 || !draft) return undefined;
     const G6 = window.G6;
     const preset = layout === "preset";
+    // Mutating behaviors (drag/connect) only when the editor wires them;
+    // the run-view passes no onMoveNode/onConnect and stays read-only.
+    const interactive = !!(cb.current.onMoveNode || cb.current.onConnect);
+    const behaviors = ["zoom-canvas", "drag-canvas"];
+    if (interactive) {
+      behaviors.push({ type: "drag-element", key: "drag-node" });
+      behaviors.push({ type: "click-select", key: "sel", multiple: false });
+      behaviors.push({ type: "create-edge", key: "make-edge", trigger: "drag", style: { stroke: _G6_COLORS.violet, lineWidth: 1.5, lineDash: [4, 4], endArrow: true } });
+    }
     const nodes = (draft.nodes || []).map((n) => {
       const sz = _g6Size(n.kind);
       const node = { id: n.id, data: { kind: n.kind, label: _g6Label(n, metaByNode) } };
@@ -185,12 +197,50 @@ function GR_G6Canvas(props) {
           state: _g6EdgeStateStyle(),
         },
         layout: preset ? { type: "preset" } : { type: "dagre", rankdir: "LR", nodesep: 18, ranksep: 66 },
-        behaviors: ["zoom-canvas", "drag-canvas"],
+        behaviors,
         autoFit: preset ? undefined : "view",
         padding: 28,
       });
       graphRef.current = g;
       readyRef.current = false;
+
+      g.on("node:click", (e) => { const id = e && (e.target?.id ?? e.itemId); if (id && cb.current.onNodeClick) cb.current.onNodeClick(id); });
+      g.on("node:dblclick", (e) => { const id = e && (e.target?.id ?? e.itemId); if (id && cb.current.onNodeDoubleClick) cb.current.onNodeDoubleClick(id); });
+      g.on("canvas:click", () => { if (cb.current.onBackgroundClick) cb.current.onBackgroundClick(); });
+      g.on("edge:click", (e) => {
+        const eid = e && (e.target?.id ?? e.itemId);
+        let idx;
+        try { const ed = g.getEdgeData ? g.getEdgeData(eid) : null; idx = ed && ed.data ? ed.data.idx : undefined; } catch (_e) { /* canvas */ }
+        if (typeof idx === "number" && idx >= 0 && cb.current.onEdgeClick) cb.current.onEdgeClick(idx);
+      });
+      if (interactive) {
+        const onDragEnd = () => {
+          if (!cb.current.onMoveNode) return;
+          for (const n of (draft.nodes || [])) {
+            try {
+              const pos = g.getElementPosition ? g.getElementPosition(n.id) : null;
+              if (pos && Array.isArray(pos)) {
+                const sz = _g6Size(n.kind);
+                cb.current.onMoveNode(n.id, Math.round((pos[0] - sz.w / 2) / 10) * 10, Math.round((pos[1] - sz.h / 2) / 10) * 10);
+              }
+            } catch (_e) { /* canvas */ }
+          }
+        };
+        g.on("afterdragelement", onDragEnd);
+        g.on("node:dragend", onDragEnd);
+        const onAddEdge = (evt) => {
+          try {
+            const ed = evt && (evt.edge || evt.data || evt);
+            const source = ed && (ed.source ?? ed.sourceNode ?? (ed.data && ed.data.source));
+            const target = ed && (ed.target ?? ed.targetNode ?? (ed.data && ed.data.target));
+            if (source && target && source !== target && cb.current.onConnect) cb.current.onConnect(source, target);
+          } catch (_e) { /* canvas */ }
+        };
+        g.on("afteraddedge", onAddEdge);
+        g.on("aftercreateedge", onAddEdge);
+        g.on("edge:create", onAddEdge);
+      }
+
       Promise.resolve(g.render()).then(() => { readyRef.current = true; }).catch(() => {});
     } catch (err) {
       console.error("[GR_G6Canvas] init failed:", err);  // eslint-disable-line no-console
@@ -212,11 +262,12 @@ function GR_G6Canvas(props) {
       try {
         const s = {};
         for (const n of (draft?.nodes || [])) {
+          const sel = n.id === selectedNodeId || (addEdgeMode && addEdgeMode.fromId === n.id);
           if (statusTint) {
             const st = (statusTint[n.id] && statusTint[n.id].status) || "pending";
-            s[n.id] = n.id === selectedNodeId ? [st, "selected"] : [st];
+            s[n.id] = sel ? [st, "selected"] : [st];
           } else {
-            s[n.id] = n.id === selectedNodeId ? ["selected"] : [];
+            s[n.id] = sel ? ["selected"] : [];
           }
         }
         for (const e of _g6Edges(draft)) {
@@ -234,7 +285,7 @@ function GR_G6Canvas(props) {
     if (readyRef.current) apply();
     else { const t = setTimeout(apply, 140); return () => clearTimeout(t); }
     return undefined;
-  }, [statusTint, selectedNodeId, selectedEdgeId, draft]);
+  }, [statusTint, selectedNodeId, selectedEdgeId, draft, addEdgeMode]);
 
   // Live token/duration metric — update labels as nodes finish (run-view).
   React.useEffect(() => {
