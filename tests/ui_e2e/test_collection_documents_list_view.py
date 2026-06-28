@@ -120,6 +120,11 @@ def test_user_collection_document_list_views_render_paths(
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
 
+        # The seeded doc lives under a collapsed "guides/" folder — the
+        # file-tree explorer defaults folders closed, so the leaf is not in the
+        # DOM until the folder row is expanded. Click the folder name to toggle.
+        modal.get_by_text("guides", exact=True).first.click()
+
         # The path leaf renders as a row (NOT an empty table).
         expect(modal.get_by_text(doc_leaf, exact=False).first).to_be_visible(
             timeout=10_000,
@@ -140,7 +145,9 @@ def test_user_collection_document_list_views_render_paths(
         page.locator("h1.page-title").get_by_text(
             "Documents", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
-        # The path-addressed browser renders inline; the seeded path is visible.
+        # The path-addressed browser renders inline (same component), so the
+        # "guides/" folder is collapsed here too — expand it before the leaf.
+        page.get_by_text("guides", exact=True).first.click()
         expect(page.get_by_text(doc_leaf, exact=False).first).to_be_visible(
             timeout=10_000,
         )

@@ -114,11 +114,17 @@ def test_collection_document_path_browser_full_journey(
             "Document body. Stored in the content store and indexed for search.",
         ).fill("# SLO\n\nNinety-nine point nine percent.")
         modal.get_by_role("button", name="Create").first.click()
+        # First create indexes the doc, which lazily downloads the embedding
+        # model on a cold container — allow generous time for that one-off.
         page.get_by_text("Document created", exact=False).first.wait_for(
-            state="visible", timeout=10_000,
+            state="visible", timeout=45_000,
         )
 
         # ---- list + open ----
+        # The leaf lives under a collapsed "concepts/" folder — the file-tree
+        # explorer defaults folders closed, so expand it before clicking the
+        # leaf (clicking a folder row toggles it open).
+        modal.get_by_text("concepts", exact=True).first.click()
         modal.locator(f"text={first_path.split('/')[-1]}").first.click()
         # Content pane shows the path + body.
         expect(modal.get_by_text(first_path, exact=False).first).to_be_visible()
@@ -127,21 +133,25 @@ def test_collection_document_path_browser_full_journey(
         modal.get_by_role("button", name="Edit").first.click()
         textarea = modal.locator("textarea.textarea").first
         textarea.fill("# SLO\n\nEdited body.")
-        modal.get_by_role("button", name="Save changes").first.click()
+        modal.get_by_role("button", name="Save", exact=True).first.click()
         page.get_by_text("Document saved", exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )
 
         # ---- move / rename ----
-        # "Move / rename" opens a nested modal whose primary action is
-        # labelled exactly "Move". Scope to that nested modal (the one
-        # that owns the new-path input) and match the button exactly so
-        # we don't accidentally re-target the "Move / rename" trigger
-        # behind the overlay.
-        modal.get_by_role("button", name="Move / rename").first.click()
+        # The header trigger is labelled exactly "Move"; it opens a nested
+        # modal whose primary action is also "Move". Scope the confirm to that
+        # nested modal (the one that owns the new-path input) and match exactly
+        # so we don't re-target the header trigger behind the overlay.
+        modal.get_by_role("button", name="Move", exact=True).first.click()
+        # `.last`: the :has() selector matches both the outer browse modal
+        # (which transitively contains the nested modal's input) and the nested
+        # move modal itself; the nested one renders later in the DOM, so .last
+        # scopes to it — otherwise the outer modal exposes two "Move" buttons
+        # (the header trigger + the nested confirm).
         move_modal = page.locator(
             ".modal:has(input[placeholder='new/path.md'])"
-        ).first
+        ).last
         move_modal.wait_for(state="visible", timeout=5_000)
         move_modal.get_by_placeholder("new/path.md").fill(moved_path)
         move_modal.get_by_role("button", name="Move", exact=True).click()
