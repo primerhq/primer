@@ -176,6 +176,14 @@ async def build_outbound(
             "name": te.template_name,
             "spec": templated,
         }
+        # A Document's body lives in the content store, out-of-band of the
+        # entity model (the spec has no content field). Export it as
+        # ``content_inline`` so the inbound install restores + indexes it;
+        # without this a tracked document ships as an empty shell.
+        if te.kind == "document":
+            body = await storage_provider.get_content_store().get(te.source_id)
+            if body is not None:
+                template_body["content_inline"] = body
         text = yaml.safe_dump(template_body, sort_keys=True)
         template_files.append(
             OutboundFile(
