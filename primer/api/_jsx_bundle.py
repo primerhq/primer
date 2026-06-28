@@ -25,6 +25,7 @@ import hashlib
 import json
 import logging
 import re
+from functools import cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -139,12 +140,23 @@ class JSXBundler:
         return etag, body
 
 
+@cache
 def build_jsx_bundle(ui_dir: Path) -> tuple[str, bytes]:
     """One-shot helper used at app startup.
 
     Returns ``("", b"")`` when the UI dir is missing or Babel can't be
     found — the route handler treats an empty body as "no bundle
     available" and returns 404 instead of crashing.
+
+    Memoized on ``ui_dir``: the bundle is a pure function of the UI directory
+    contents, and the ~700 KB Babel/V8 transpile is otherwise recomputed from
+    scratch on every ``create_app()`` and every ``tests/ui`` transpile check
+    (dozens of identical builds per process). The per-``docs_url`` preamble +
+    ETag are applied by the caller after this returns, so caching the raw
+    bundle does not affect docs-url behaviour. Production builds the bundle
+    once at startup, so the cache is invisible there; a process that needs a
+    fresh build (e.g. after editing UI files) can call
+    ``build_jsx_bundle.cache_clear()``.
     """
     if not ui_dir.is_dir():
         return "", b""
