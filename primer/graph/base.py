@@ -252,6 +252,10 @@ class _BaseGraphExecutor(
         # blocks (its routing decision is settled), and resume only re-admits
         # nodes that are pending anyway.
         self._admitted: set[str] = set()
+        # One-shot guard: once a ``max_iterations`` hit has been rerouted via
+        # ``graph.on_max_iterations``, the cap no longer trips (so the finalize
+        # tail can run to completion without re-triggering).
+        self._max_iter_routed: bool = False
         self._node_states: dict[str, NodeRuntimeState] = {}
 
         # Turn-log emission. Subclasses (WorkspaceGraphExecutor /
@@ -800,6 +804,7 @@ class _BaseGraphExecutor(
         )
         ready: set[str] = {_resolve_initial_ready_node(self._graph)}
         self._admitted = set(ready)
+        self._max_iter_routed = False
         ended_reason: str | None = None
         ended_detail: str | None = None
         # Phase 6 — expose mid-flight state on the executor so
@@ -845,7 +850,23 @@ class _BaseGraphExecutor(
             if (
                 self._graph.max_iterations is not None
                 and context.iteration >= self._graph.max_iterations
+                and not self._max_iter_routed
             ):
+                route_to = self._graph.on_max_iterations
+                if route_to is not None and route_to in self._nodes_by_id:
+                    # Graceful landing: route once to the configured node
+                    # (typically a finalize/report node) instead of failing.
+                    # ``_max_iter_routed`` keeps the cap from re-tripping while
+                    # the (acyclic) finalize tail runs to an End.
+                    self._max_iter_routed = True
+                    logger.warning(
+                        "graph %s hit max_iterations=%s; routing to "
+                        "on_max_iterations=%r instead of failing",
+                        self._graph.id, self._graph.max_iterations, route_to,
+                    )
+                    ready = {route_to}
+                    self._admitted.add(route_to)
+                    continue
                 yield _GraphErrorEvent(  # type: ignore[misc]
                     code="max_iterations_exceeded",
                     message=f"graph ran for {context.iteration} iterations",
