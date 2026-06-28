@@ -743,6 +743,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   // WS never carries one, we fall back below to the most recent turn's
   // tokens_in so the meter still surfaces something meaningful.
   const [usage, setUsage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
+  const [historyLoaded, setHistoryLoaded] = React.useState(false);
   const wsRef = React.useRef(null);
   const scrollRef = React.useRef(null);
   const { apiFetch } = window.primerApi;
@@ -770,7 +771,11 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
             return merged;
           });
         }
-      } catch (_e) { /* history is best-effort; WS still tails for live runs */ }
+        setHistoryLoaded(true);
+      } catch (_e) {
+        /* history is best-effort; WS still tails for live runs */
+        if (alive) setHistoryLoaded(true);
+      }
     })();
     return () => { alive = false; };
   }, [sid]);  // eslint-disable-line react-hooks/exhaustive-deps
@@ -796,7 +801,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   // the last received seq (latestSeq) so no frames are missed or
   // replayed in full. Terminal close code 4404 does not reconnect.
   React.useEffect(() => {
-    if (!wid || !sid) return;
+    if (!wid || !sid || !historyLoaded) return;
     let intentional = false;
     let backoffMs = 1000;
     const MAX_BACKOFF_MS = 30000;
@@ -896,7 +901,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
       try { wsRef.current && wsRef.current.close(); } catch { /* no-op */ }
       wsRef.current = null;
     };
-  }, [wid, sid]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wid, sid, historyLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Stick-to-bottom auto-scroll.
   const stickRef = React.useRef(true);
