@@ -36,6 +36,8 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
   const [sortDir, setSortDir] = React.useState("desc");
   const [selected, setSelected] = React.useState(() => new Set());
   const [page, setPage] = React.useState(1);
+  const [attnOnly, setAttnOnly] = React.useState(false);
+  const [failedOnly, setFailedOnly] = React.useState(false);
 
   // Confirmation modal state. ``confirm`` is { kind, sessions } where
   // ``kind`` is "delete" | "force-delete" | "bulk-delete" and
@@ -69,6 +71,11 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
 
   const items = list.data?.items ?? [];
 
+  const attnCount = React.useMemo(
+    () => (items || []).filter((s) => window.describeSessionState(s).needsAttention).length,
+    [items],
+  );
+
   // Apply UI filters client-side.
   const filtered = React.useMemo(() => {
     let arr = items;
@@ -90,8 +97,16 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
         ((s.workspace_id || "")).toLowerCase().includes(q)
       );
     }
+    if (attnOnly || failedOnly) {
+      arr = arr.filter((s) => {
+        const st = window.describeSessionState(s);
+        if (attnOnly && !st.needsAttention) return false;
+        if (failedOnly && st.group !== "failed") return false;
+        return true;
+      });
+    }
     return arr;
-  }, [items, statusSet, agentFilter, workspaceFilter, textQuery]);
+  }, [items, statusSet, agentFilter, workspaceFilter, textQuery, attnOnly, failedOnly]);
 
   const sorted = React.useMemo(() => {
     const arr = [...filtered];
@@ -435,10 +450,19 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
             <option key={w.id} value={w.id}>{w.id.slice(0, 14)}{w.id.length > 14 ? "…" : ""}</option>
           ))}
         </select>
+        <button type="button" className={"chip" + (attnOnly ? " active" : "")} onClick={() => { setAttnOnly((v) => !v); setPage(1); }}>Needs attention</button>
+        <button type="button" className={"chip" + (failedOnly ? " active" : "")} onClick={() => { setFailedOnly((v) => !v); setPage(1); }}>Failed</button>
         {selected.size > 0 && (
           <Btn size="sm" kind="danger" icon="trash" onClick={_openBulkDeleteConfirm}>Delete {selected.size}</Btn>
         )}
       </div>
+      {attnCount > 0 && (
+        <div style={{ padding: "4px 0 0" }}>
+          <a style={{ cursor: "pointer", color: "var(--amber)", fontSize: 12 }} onClick={() => { setAttnOnly(true); setPage(1); }}>
+            {attnCount} need attention
+          </a>
+        </div>
+      )}
 
       {isMobile ? (
         <CardList
@@ -522,7 +546,17 @@ function SessionsList({ onOpenSession, onNewSession, demoState, filterPreset }) 
                   <td onClick={(e) => { e.stopPropagation(); toggleRow(s.id); }} style={{ width: 36 }}>
                     <input type="checkbox" checked={selected.has(s.id)} onChange={() => toggleRow(s.id)} />
                   </td>
-                  <td><StatusPill status={s.status} /></td>
+                  <td>{(() => {
+                    const st = window.describeSessionState(s);
+                    const cls = st.tone === "green" ? "pill-ended" : st.tone === "red" ? "pill-failed" : st.tone === "amber" ? "pill-paused" : st.tone === "blue" ? "pill-running" : "";
+                    return (
+                      <span className={"pill " + cls} title={st.detail || ""}>
+                        <span className="dot"></span>{st.label}
+                        {st.detail ? <span className="muted" style={{ marginLeft: 4 }}>· {st.detail}</span> : null}
+                        {st.countdownTo ? <window.SessionCountdown to={st.countdownTo} prefix=" · " /> : null}
+                      </span>
+                    );
+                  })()}</td>
                   <td className="mono">{(s.id || "").length > 22 ? (s.id.slice(0, 22) + "…") : s.id}</td>
                   <td className="mono">
                     {isGraph ? (
