@@ -330,7 +330,11 @@ def test_u0109_approvals_operator_journey(
         # Pending tab is the default; it shows a count chip when at
         # least one row is parked. Wait for our seeded row to appear.
         row = page.locator(f"[data-testid='approval-row-{sid}']")
-        expect(row).to_be_visible(timeout=15_000)
+        # Generous timeout: this runs against a shared eval stack under CI
+        # load where the find + per-row pending fetches that drive the list
+        # can lag. The row is deterministic (the park is pre-injected), so a
+        # longer wait only absorbs latency, it never masks a missing row.
+        expect(row).to_be_visible(timeout=30_000)
         # The row should mention the inner tool name + policy id (these
         # come from resume_metadata.original_call.name / policy_id).
         expect(row).to_contain_text(inner_tool)
@@ -387,8 +391,12 @@ def test_u0109_approvals_operator_journey(
 
         # Session-detail's ApprovalBannerPanel polls /tool_approval/pending
         # and renders <ApprovalBanner> on 200 → data-testid='approval-banner'.
+        # The parked_state is intact (no lease → no resume cycle clears it), so
+        # the banner is deterministic; the only variable is mount + fetch
+        # latency under CI load, hence the generous timeout (this is the wait
+        # that occasionally tipped over 15s and flaked the run).
         banner = page.locator("[data-testid='approval-banner']")
-        expect(banner).to_be_visible(timeout=15_000)
+        expect(banner).to_be_visible(timeout=30_000)
         # Banner header includes the tool name from the same payload.
         expect(banner).to_contain_text(inner_tool)
 
