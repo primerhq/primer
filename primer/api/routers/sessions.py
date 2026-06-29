@@ -37,6 +37,7 @@ from primer.api.errors import common_responses
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
+from primer.session.mutation_lock import session_lifecycle_lock
 from primer.model.except_ import (
     ConflictError,
     NotFoundError,
@@ -178,31 +179,37 @@ async def resume_session(
       the scheduler.
     * 409 when the session is ENDED.
     """
-    s = await sessions.get(session_id)
-    if s is None or s.workspace_id != workspace_id:
-        raise NotFoundError(
-            f"Session {session_id!r} does not exist on workspace "
-            f"{workspace_id!r}"
+    # Serialize against a concurrent cancel/pause on the same session: the
+    # status read-modify-write and the lease upsert must not interleave with
+    # a cancel's ENDED write + delete_lease, or the row can land RUNNING with
+    # no lease — a stuck session no worker can claim (T0432). See
+    # primer.session.mutation_lock.
+    async with session_lifecycle_lock().acquire(session_id):
+        s = await sessions.get(session_id)
+        if s is None or s.workspace_id != workspace_id:
+            raise NotFoundError(
+                f"Session {session_id!r} does not exist on workspace "
+                f"{workspace_id!r}"
+            )
+        if s.status == SessionStatus.ENDED:
+            raise ConflictError(f"Session {session_id!r} has ended")
+        if s.status == SessionStatus.RUNNING:
+            return s  # idempotent no-op
+        if s.status in _RESUMABLE:
+            s.status = SessionStatus.RUNNING
+            if s.started_at is None:
+                s.started_at = datetime.now(timezone.utc)
+            s.pause_requested = False
+            await sessions.update(s)
+            await scheduler.enqueue(session_id)
+            # Notify the ClaimEngine (forward-compat; no-op when not wired).
+            if engine is not None:
+                from primer.int.claim import ClaimKind
+                await engine.upsert(ClaimKind.SESSION, session_id)
+            return s
+        raise ConflictError(
+            f"Session {session_id!r} cannot resume from status {s.status.value}"
         )
-    if s.status == SessionStatus.ENDED:
-        raise ConflictError(f"Session {session_id!r} has ended")
-    if s.status == SessionStatus.RUNNING:
-        return s  # idempotent no-op
-    if s.status in _RESUMABLE:
-        s.status = SessionStatus.RUNNING
-        if s.started_at is None:
-            s.started_at = datetime.now(timezone.utc)
-        s.pause_requested = False
-        await sessions.update(s)
-        await scheduler.enqueue(session_id)
-        # Notify the ClaimEngine (forward-compat; no-op when not wired).
-        if engine is not None:
-            from primer.int.claim import ClaimKind
-            await engine.upsert(ClaimKind.SESSION, session_id)
-        return s
-    raise ConflictError(
-        f"Session {session_id!r} cannot resume from status {s.status.value}"
-    )
 
 
 @nested_session_router.post(
@@ -225,20 +232,24 @@ async def pause_session(
       transition the row itself.
     * 409 when the session is already ENDED.
     """
-    s = await sessions.get(session_id)
-    if s is None or s.workspace_id != workspace_id:
-        raise NotFoundError(
-            f"Session {session_id!r} does not exist on workspace "
-            f"{workspace_id!r}"
-        )
-    if s.status == SessionStatus.ENDED:
-        raise ConflictError(f"Session {session_id!r} has ended")
-    if s.status in {SessionStatus.WAITING, SessionStatus.CREATED}:
-        s.status = SessionStatus.PAUSED
+    # Serialize against a concurrent resume/cancel on the same session so the
+    # PAUSED write is not clobbered (and does not clobber) a racing
+    # transition. See primer.session.mutation_lock / T0432.
+    async with session_lifecycle_lock().acquire(session_id):
+        s = await sessions.get(session_id)
+        if s is None or s.workspace_id != workspace_id:
+            raise NotFoundError(
+                f"Session {session_id!r} does not exist on workspace "
+                f"{workspace_id!r}"
+            )
+        if s.status == SessionStatus.ENDED:
+            raise ConflictError(f"Session {session_id!r} has ended")
+        if s.status in {SessionStatus.WAITING, SessionStatus.CREATED}:
+            s.status = SessionStatus.PAUSED
+            await sessions.update(s)
+            return
+        s.pause_requested = True
         await sessions.update(s)
-        return
-    s.pause_requested = True
-    await sessions.update(s)
 
 
 @nested_session_router.post(

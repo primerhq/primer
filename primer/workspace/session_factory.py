@@ -45,6 +45,7 @@ from primer.model.except_ import (
 )
 from primer.model.graph import Graph
 from primer.model.workspace import Workspace as WorkspaceRow
+from primer.session.mutation_lock import session_lifecycle_lock
 from primer.model.workspace_session import (
     AgentBinding as OnDiskAgentBinding,
 )
@@ -423,54 +424,62 @@ async def cancel_session(
     """
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
 
-    s = await sessions.get(session_id)
-    if s is None or s.workspace_id != workspace_id:
-        raise NotFoundError(
-            f"Session {session_id!r} does not exist on workspace "
-            f"{workspace_id!r}"
-        )
-    if s.status == SessionStatus.ENDED:
-        raise ConflictError(f"Session {session_id!r} has ended")
-    if s.status in {
-        SessionStatus.CREATED,
-        SessionStatus.WAITING,
-        SessionStatus.PAUSED,
-    }:
-        s.status = SessionStatus.ENDED
-        s.ended_reason = "cancelled"
-        s.ended_at = datetime.now(timezone.utc)
-        await sessions.update(s)
-        # Mirror onto the on-disk slot so workspace-side reads agree (no
-        # worker runs for an inline-cancelled session, so nothing else
-        # would update session.json).
-        await _mirror_inline_cancel_to_slot(
-            workspace_id=workspace_id, session_id=session_id, deps=deps,
-        )
-        # Drop the lease -- session is gone, no point claiming it.
-        if deps.claim_engine is not None:
-            await deps.claim_engine.delete_lease(ClaimKind.SESSION, session_id)
-        return s
-    now = datetime.now(timezone.utc)
-    s.cancel_requested = True
-    s.cancel_requested_at = now
-    await sessions.update(s)
-    # Publish on the bus so the engine-path worker's _cancel_watcher
-    # preempts the running turn. The WS interrupt handler publishes the
-    # same key.
-    if deps.event_bus is not None:
-        try:
-            await deps.event_bus.publish(f"session:{session_id}:cancel", {})
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "cancel_session: event_bus.publish failed "
-                "(legacy path still signalled)",
-                extra={
-                    "session_id": session_id,
-                    "exception": type(exc).__name__,
-                },
+    # Serialize the whole read-modify-write (+ lease mutation) against a
+    # concurrent resume/pause on the same session. Without this, a resume
+    # racing this cancel can clobber the ENDED write back to RUNNING while
+    # this branch drops the lease, leaving a RUNNING row no worker can
+    # claim (T0432). See primer.session.mutation_lock.
+    async with session_lifecycle_lock().acquire(session_id):
+        s = await sessions.get(session_id)
+        if s is None or s.workspace_id != workspace_id:
+            raise NotFoundError(
+                f"Session {session_id!r} does not exist on workspace "
+                f"{workspace_id!r}"
             )
-    await deps.scheduler.signal_cancel(session_id)
-    return s
+        if s.status == SessionStatus.ENDED:
+            raise ConflictError(f"Session {session_id!r} has ended")
+        if s.status in {
+            SessionStatus.CREATED,
+            SessionStatus.WAITING,
+            SessionStatus.PAUSED,
+        }:
+            s.status = SessionStatus.ENDED
+            s.ended_reason = "cancelled"
+            s.ended_at = datetime.now(timezone.utc)
+            await sessions.update(s)
+            # Mirror onto the on-disk slot so workspace-side reads agree (no
+            # worker runs for an inline-cancelled session, so nothing else
+            # would update session.json).
+            await _mirror_inline_cancel_to_slot(
+                workspace_id=workspace_id, session_id=session_id, deps=deps,
+            )
+            # Drop the lease -- session is gone, no point claiming it.
+            if deps.claim_engine is not None:
+                await deps.claim_engine.delete_lease(
+                    ClaimKind.SESSION, session_id
+                )
+            return s
+        now = datetime.now(timezone.utc)
+        s.cancel_requested = True
+        s.cancel_requested_at = now
+        await sessions.update(s)
+        # Publish on the bus so the engine-path worker's _cancel_watcher
+        # preempts the running turn. The WS interrupt handler publishes the
+        # same key.
+        if deps.event_bus is not None:
+            try:
+                await deps.event_bus.publish(f"session:{session_id}:cancel", {})
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "cancel_session: event_bus.publish failed "
+                    "(legacy path still signalled)",
+                    extra={
+                        "session_id": session_id,
+                        "exception": type(exc).__name__,
+                    },
+                )
+        await deps.scheduler.signal_cancel(session_id)
+        return s
 
 
 __all__ = [
