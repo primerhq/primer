@@ -219,3 +219,32 @@ async def wait_terminal(
                 return last
         await asyncio.sleep(interval_s)
     return last
+
+
+async def wait_turn_advanced(
+    client: httpx.AsyncClient,
+    session_id: str,
+    *,
+    min_turn_no: int = 0,
+    timeout_s: float = 10.0,
+    interval_s: float = 0.25,
+) -> dict:
+    """Poll until the session's ``turn_no`` exceeds ``min_turn_no``.
+
+    ``turn_no`` is bumped by the claim engine's ``on_release`` hook, which
+    commits in a transaction landing just AFTER the terminal-status write — so
+    a freshly-completed session can momentarily read ``status=ended`` with
+    ``turn_no`` not yet incremented. Use this (after :func:`wait_terminal`)
+    when asserting a turn actually ran, to avoid a read-after-write race.
+    Returns the latest row seen (caller asserts on it).
+    """
+    iters = max(1, int(timeout_s / interval_s))
+    last: dict = {}
+    for _ in range(iters):
+        resp = await client.get(f"/v1/sessions/{session_id}")
+        if resp.status_code == 200:
+            last = resp.json()
+            if last.get("turn_no", 0) > min_turn_no:
+                return last
+        await asyncio.sleep(interval_s)
+    return last
