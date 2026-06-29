@@ -221,10 +221,20 @@ def page(
         })
 
     def _on_requestfailed(req) -> None:
+        failure = req.failure or "unknown"
+        # net::ERR_ABORTED is a fetch cancelled by navigation / useResource
+        # cleanup — a route change aborts the prior route's in-flight mount
+        # fetches (sessions/workspaces/workers/find). It is never a
+        # server/route failure, so it is universally benign for these console
+        # smoke tests. Filter it at the capture point so no individual
+        # route-nav test has to special-case it (several didn't, and flaked
+        # the e2e job intermittently).
+        if "ERR_ABORTED" in failure:
+            return
         failed_requests.append({
             "url": req.url,
             "method": req.method,
-            "failure": (req.failure or "unknown"),
+            "failure": failure,
             "status": None,
         })
 
