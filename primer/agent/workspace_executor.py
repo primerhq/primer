@@ -76,6 +76,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             description=agent.description,
             model=agent.model,
             temperature=agent.temperature,
+            max_output_tokens=agent.max_output_tokens,
             tools=list(agent.tools),
             system_prompt=composite_system_prompt,
             compaction_prompt=list(agent.compaction_prompt),

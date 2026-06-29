@@ -120,6 +120,17 @@ class Agent(Describeable):
             "the turn is force-stopped. None means unbounded."
         ),
     )
+    max_output_tokens: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Hard cap on the tokens the model may generate in a single "
+            "turn. ``None`` (default) defers to the adapter / model-server "
+            "default, which is often unbounded. Set this to bound runaway "
+            "or looping generations -- e.g. an agent that rambles on a "
+            "list-shaped input and never stops emitting tokens, which on a "
+            "single-slot backend reads as a multi-minute hang."
+        ),
+    )
     tools: list[str] = Field(
         default_factory=list,
         description=(

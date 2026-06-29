@@ -109,6 +109,7 @@ async def run_agent_turn(
             model=llm_model.name,
             messages=prompt,
             temperature=agent.temperature,
+            max_output_tokens=agent.max_output_tokens,
             response_format=response_format,
             tools=tools,
             tool_choice="auto",
