@@ -18,6 +18,11 @@ name: E2E
 on:
   pull_request:
     branches: [main]
+  # Also run on merge to main: a post-merge run catches regressions that only
+  # surface once independently-green PRs land together (the per-PR run tests a
+  # PR against main in isolation, not against its sibling merges).
+  push:
+    branches: [main]
   workflow_dispatch:
 
 concurrency:
