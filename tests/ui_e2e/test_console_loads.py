@@ -78,6 +78,11 @@ def test_route_renders_with_zero_console_errors(
     real_failures = [
         r for r in failed_requests
         if not any(re.search(p, r["url"]) for p in by_design_404_patterns)
+        # net::ERR_ABORTED is a fetch cancelled by navigation / useResource
+        # cleanup (a route change aborts the prior route's in-flight mount
+        # fetches). It is harmless (the conftest documents it as such), not a
+        # server/route failure — exclude it so route timing doesn't flake this.
+        and "ERR_ABORTED" not in (r.get("failure") or "")
     ]
     assert not real_failures, (
         "Unexpected fetch failures on route nav:\n"
