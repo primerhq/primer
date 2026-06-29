@@ -37,6 +37,30 @@ if TYPE_CHECKING:
     from primer.model.agent import Agent
 
 
+def _strip_json_fences(text: str) -> str:
+    """Strip a single wrapping markdown code fence from ``text``.
+
+    Local models habitually wrap structured output in `````json ... ``````
+    fences even when a ``response_format`` JSON schema is requested -- backends
+    like LM Studio / llama.cpp treat the schema as a soft hint, not constrained
+    decoding, so the fence survives. A plain ``json.loads`` then fails and the
+    node's ``parsed`` is silently lost, which breaks any ``json_path`` router
+    gating on a parsed field (the gate sees nothing and falls through to its
+    default branch -- e.g. a loop that never converges). Tolerate the common
+    fence shapes so the gate still sees the structured verdict. A string with
+    no leading fence is returned unchanged (only surrounding whitespace
+    trimmed), so raw-JSON output is unaffected.
+    """
+    s = text.strip()
+    if s.startswith("```"):
+        newline = s.find("\n")
+        if newline != -1:
+            s = s[newline + 1:]  # drop the opening ``` / ```json line
+        if s.rstrip().endswith("```"):
+            s = s.rstrip()[:-3]  # drop the closing fence
+    return s.strip()
+
+
 class _AgentNodeMixin:
     """Agent-node turn + resume methods for `_BaseGraphExecutor`."""
 
@@ -82,7 +106,7 @@ class _AgentNodeMixin:
         parsed: dict[str, Any] | None = None
         if response_format is not None and text:
             try:
-                loaded = json.loads(text)
+                loaded = json.loads(_strip_json_fences(text))
                 parsed = loaded if isinstance(loaded, dict) else {"value": loaded}
             except json.JSONDecodeError:
                 parsed = None
