@@ -1099,6 +1099,30 @@ class TestStream:
         # Stalled stream must still be aborted so the backend slot is freed.
         assert fake.closed is True
 
+    async def test_create_timeout_after_slot_is_unavailability(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Once a concurrency slot is held, an upstream that never starts
+        # responding (create/open hangs) is unavailability, not queue time:
+        # it must time out as ProviderTimeoutError rather than hang forever.
+        from primer.model.except_ import ProviderTimeoutError
+
+        provider = _make_provider()
+        llm = OpenResponsesLLM(provider)
+        llm._request_timeout_seconds = 0.05  # tiny: fail fast post-slot
+        client = _patched_client(monkeypatch)
+
+        async def _stalling_create(**kwargs: Any) -> Any:
+            await asyncio.sleep(3600)
+
+        client.responses.create = _stalling_create
+        with pytest.raises(ProviderTimeoutError):
+            async for _ in llm.stream(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            ):
+                pass
+
     async def test_full_stream_emits_start_text_done(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
