@@ -956,7 +956,34 @@ class OpenResponsesLLM(LLM):
                 ):
                     client = self._get_client()
                     try:
-                        sdk_stream = await client.responses.create(**request)
+                        # Post-slot timeout ONLY. The queue wait above
+                        # (rate_limiter.acquire) is intentionally untimed: blocking
+                        # on a busy concurrency slot is normal backpressure, not
+                        # unavailability, so it waits as long as it takes for a slot
+                        # to free. But once we HOLD a slot, the upstream must begin
+                        # responding within the budget -- a connect/open that never
+                        # returns (the per-event stream timeout below can't catch
+                        # this, because we never reach the stream) is unavailability.
+                        async with asyncio.timeout(self._request_timeout_seconds):
+                            sdk_stream = await client.responses.create(**request)
+                    except TimeoutError as exc:
+                        from primer.model.except_ import ProviderTimeoutError
+                        timeout_val = self._request_timeout_seconds
+                        logger.error(
+                            "OpenResponses upstream did not begin responding within "
+                            "%.1f s after acquiring a concurrency slot",
+                            timeout_val,
+                            extra={
+                                "provider_id": self._provider.id,
+                                "model": model,
+                            },
+                        )
+                        raise ProviderTimeoutError(
+                            "OpenResponses upstream did not begin responding within "
+                            f"{timeout_val} s after acquiring a concurrency slot "
+                            f"(provider_id={self._provider.id!r}, model={model!r})",
+                            code="connect_timeout",
+                        ) from exc
                     except Exception as exc:
                         err = classify_openai_exception(exc)
                         logger.error(
