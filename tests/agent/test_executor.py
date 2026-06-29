@@ -194,11 +194,13 @@ def _agent(
     *,
     system_prompt: list[str] | None = None,
     compaction_prompt: list[str] | None = None,
+    max_output_tokens: int | None = None,
 ) -> Agent:
     return Agent(
         id="researcher",
         description="Research agent",
         model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
+        max_output_tokens=max_output_tokens,
         system_prompt=list(system_prompt or []),
         compaction_prompt=list(compaction_prompt or []),
     )
@@ -224,6 +226,7 @@ async def _build_executor(
     compaction: CompactionStrategy | None = None,
     system_prompt: list[str] | None = None,
     tools: list[Tool] | None = None,
+    max_output_tokens: int | None = None,
 ) -> tuple[
     AgentExecutor,
     _InMemoryStorage[Thread],
@@ -239,7 +242,9 @@ async def _build_executor(
     if tools is None:
         tools = [_tool()]
 
-    agent = _agent(system_prompt=system_prompt)
+    agent = _agent(
+        system_prompt=system_prompt, max_output_tokens=max_output_tokens
+    )
     thread_storage: _InMemoryStorage[Thread] = _InMemoryStorage(Thread)
     message_storage: _InMemoryStorage[ThreadMessage] = _InMemoryStorage(ThreadMessage)
     thread = await AgentExecutor.open_thread(
@@ -264,6 +269,34 @@ async def _build_executor(
 
 async def _drain(it: AsyncIterator[StreamEvent]) -> list[StreamEvent]:
     return [ev async for ev in it]
+
+
+class TestMaxOutputTokens:
+    @pytest.mark.asyncio
+    async def test_agent_max_output_tokens_passed_to_stream(self) -> None:
+        llm = _FakeLLM(
+            scripts=[
+                [TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")]
+            ]
+        )
+        executor, _, _, _ = await _build_executor(llm=llm, max_output_tokens=321)
+        await _drain(
+            executor.invoke([Message(role="user", parts=[TextPart(text="hi")])])
+        )
+        assert llm.calls and llm.calls[0]["max_output_tokens"] == 321
+
+    @pytest.mark.asyncio
+    async def test_agent_max_output_tokens_defaults_to_none(self) -> None:
+        llm = _FakeLLM(
+            scripts=[
+                [TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")]
+            ]
+        )
+        executor, _, _, _ = await _build_executor(llm=llm)
+        await _drain(
+            executor.invoke([Message(role="user", parts=[TextPart(text="hi")])])
+        )
+        assert llm.calls and llm.calls[0]["max_output_tokens"] is None
 
 
 # ===========================================================================
