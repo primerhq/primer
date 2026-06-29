@@ -232,12 +232,14 @@ async def test_no_match_no_default_emits_routing_failed() -> None:
     assert loaded.ended_detail == "routing_failed"
 
 
-# Fenced JSON: the agent-node parse (`json.loads`) fails on a ```json
-# code fence, so NodeOutput.parsed is None. A json_path edge must treat
-# this as "no branch matched" -- route to default_to when set, else a
-# CODED routing_failed -- never an uncoded ConfigError the executor
-# swallows into a detail-less failure.
-_FENCED_JSON = '```json\n{"go": "end"}\n```'
+# Genuinely-unparseable agent output: the assistant text is not valid JSON
+# (and is NOT a wrapping markdown code fence -- those now parse after the
+# strip-fence fix, see tests/graph/test_strip_json_fences.py), so the
+# agent-node parse (`json.loads`) fails and NodeOutput.parsed is None. A
+# json_path edge must treat this as "no branch matched" -- route to
+# default_to when set, else a CODED routing_failed -- never an uncoded
+# ConfigError the executor swallows into a detail-less failure.
+_UNPARSEABLE_OUTPUT = "Sorry, I cannot answer in JSON."
 
 
 @pytest.mark.asyncio
@@ -274,7 +276,7 @@ async def test_null_parsed_with_default_to_routes_to_default() -> None:
     llm = _FakeLLM(
         scripts=[
             [
-                TextDelta(text=_FENCED_JSON, index=0),
+                TextDelta(text=_UNPARSEABLE_OUTPUT, index=0),
                 Done(stop_reason="stop", raw_reason="stop"),
             ]
         ]
@@ -325,7 +327,7 @@ async def test_null_parsed_without_default_to_emits_routing_failed() -> None:
     llm = _FakeLLM(
         scripts=[
             [
-                TextDelta(text=_FENCED_JSON, index=0),
+                TextDelta(text=_UNPARSEABLE_OUTPUT, index=0),
                 Done(stop_reason="stop", raw_reason="stop"),
             ]
         ]
