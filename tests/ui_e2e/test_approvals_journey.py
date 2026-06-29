@@ -292,17 +292,17 @@ def test_u0109_approvals_operator_journey(
       * "Send rejection" stays disabled while reason is empty/whitespace
         (approvals.jsx `disabled={!reason.trim() || respond.loading}`).
       * "Decision sent" toast appears on a successful Reject + Approve.
-      * Cross-page: session-detail's ApprovalBanner renders on the
-        same row because the parked_state survives the respond POST
-        in THIS test's setup — the asyncpg-injected session has no
-        session_leases row, so mark_resumable's lease UPDATE is a
-        no-op and the worker pool never claims the row to drive the
-        resume cycle. (Roadmap §7 resume wiring landed 2026-05-25
-        in commits 068184a/496c886/731a05b/f83fee7; T0861 covers
-        the full park→respond→resume cycle when the lease row IS
-        present. A future U-test could repeat that on the UI side
-        with explicit lease injection — for now U0109 stays focused
-        on the click-flow surface.)
+      * Cross-page: session-detail's ApprovalBanner renders for a
+        pending approval. The banner check runs against a SECOND,
+        freshly parked session — never responded-to — rather than the
+        rejected one. Rejecting flips parked_status to 'resumable',
+        which the claim-eligibility filter admits, so the worker pool
+        claims + resumes that row and clears parked_state out from
+        under the banner (an intermittent race that used to flake this
+        test). A never-responded session stays parked_status='parked'
+        (excluded by the eligibility filter), so its park is stable and
+        the banner renders deterministically. (T0861 covers the full
+        park→respond→resume cycle when a lease row IS present.)
     """
     ids = _seed_session_ladder(base_url, unique_suffix)
     sid = ids["session"]
@@ -310,6 +310,7 @@ def test_u0109_approvals_operator_journey(
     policy_id = f"pol-u0109-{unique_suffix}"
     inner_tool = "fs.delete"
     gate_reason = "destructive path under /etc"
+    sid_banner: str | None = None  # 2nd session for the cross-page banner
 
     try:
         # --- 0. Inject the approval park BEFORE the page is opened so
@@ -376,25 +377,43 @@ def test_u0109_approvals_operator_journey(
         toast = page.locator(".toast", has_text="Decision sent")
         expect(toast).to_be_visible(timeout=10_000)
 
-        # --- 6. Cross-page: navigate to session detail ----------------
-        # parked_state survives the respond POST in this setup because
-        # the asyncpg-injected session has no session_leases row →
-        # mark_resumable's lease UPDATE is a no-op → the worker pool
-        # never claims the row to run the resume cycle. Both the
-        # approvals list and the session-detail banner are driven by
-        # GET /v1/sessions/{sid}/tool_approval/pending, which still
-        # returns 200 because parked_state is intact.
+        # --- 5b. Seed a SECOND, freshly parked session for the banner.
+        # The step-1 session was just rejected → parked_status='resumable'
+        # → the worker pool claims + resumes it and clears parked_state, so
+        # its banner is racy. A never-responded session stays
+        # parked_status='parked' (excluded by the claim-eligibility filter),
+        # so its park is stable and the banner renders deterministically. --
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            r = c.post(
+                f"/v1/workspaces/{ids['workspace']}/sessions",
+                json={
+                    "binding": {"kind": "agent", "agent_id": ids["agent"]},
+                    "auto_start": False,
+                },
+            )
+            assert r.status_code == 201, f"seed banner session: {r.text}"
+            sid_banner = r.json()["id"]
+        _inject_approval_park(
+            session_id=sid_banner,
+            tool_call_id=f"tc-u0109-banner-{unique_suffix}",
+            inner_tool_name=inner_tool,
+            policy_id=policy_id,
+            gate_reason=gate_reason,
+        )
+
+        # --- 6. Cross-page: navigate to the fresh session's detail -----
         page.goto(
-            f"{console_url}#/sessions/{sid}",
+            f"{console_url}#/sessions/{sid_banner}",
             wait_until="domcontentloaded",
         )
 
         # Session-detail's ApprovalBannerPanel polls /tool_approval/pending
         # and renders <ApprovalBanner> on 200 → data-testid='approval-banner'.
-        # The parked_state is intact (no lease → no resume cycle clears it), so
-        # the banner is deterministic; the only variable is mount + fetch
-        # latency under CI load, hence the generous timeout (this is the wait
-        # that occasionally tipped over 15s and flaked the run).
+        # sid_banner is freshly parked and never responded-to, so its park is
+        # stable (parked_status='parked' is excluded by the claim-eligibility
+        # filter → the worker never resumes it and clears parked_state). The
+        # banner is therefore deterministic; the 30s timeout only absorbs
+        # mount + fetch latency under CI load.
         banner = page.locator("[data-testid='approval-banner']")
         expect(banner).to_be_visible(timeout=30_000)
         # Banner header includes the tool name from the same payload.
@@ -414,4 +433,15 @@ def test_u0109_approvals_operator_journey(
         approve_toast = page.locator(".toast", has_text="Decision sent")
         expect(approve_toast.last).to_be_visible(timeout=10_000)
     finally:
+        # Cancel the extra banner session before tearing the ladder down so
+        # it doesn't linger parked in the shared DB.
+        if sid_banner is not None and ids.get("workspace"):
+            try:
+                with httpx.Client(base_url=base_url, timeout=30.0) as c:
+                    c.post(
+                        f"/v1/workspaces/{ids['workspace']}/sessions/"
+                        f"{sid_banner}/cancel"
+                    )
+            except Exception:  # noqa: BLE001
+                pass
         _cleanup(base_url, ids)
