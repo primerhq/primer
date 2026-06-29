@@ -56,6 +56,7 @@ from tests._support.runs import (
     make_scripted_agent,
     start_agent_session,
     wait_terminal,
+    wait_turn_advanced,
 )
 
 
@@ -147,9 +148,13 @@ async def test_session_invoke_graph_runs_child_graph_to_completion(
             f"tool plumb-back errored: {final!r}"
         )
         # The agent ran at least one full turn (the invoke_graph call + the
-        # continuation that emitted the final reply).
-        assert final.get("turn_no", 0) > 0, (
-            f"invoke_graph session ran zero turns: {final!r}"
+        # continuation that emitted the final reply). turn_no is bumped by the
+        # claim engine's on_release in a transaction that commits just after
+        # the ENDED write, so the terminal snapshot can still read turn_no=0 —
+        # re-poll until the counter settles to avoid a read-after-write race.
+        settled = await wait_turn_advanced(client, session_id, min_turn_no=0)
+        assert settled.get("turn_no", 0) > 0, (
+            f"invoke_graph session ran zero turns: {settled!r}"
         )
         # Strong, non-vacuous signal: invoke_graph nests the invoked graph's
         # state under the session as a ``<gsid>__invoke_<tcid>`` subtree on the
