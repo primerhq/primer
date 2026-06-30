@@ -20,6 +20,7 @@ _TS = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
 def _make_event(**overrides) -> TapEvent:
     defaults = dict(
         cursor="c1",
+        seq=1,
         workspace_id="ws-1",
         session_id="sess-abc",
         agent_id="agent-1",

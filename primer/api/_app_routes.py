@@ -122,6 +122,9 @@ def _mount_routers(
     # Sessions.
     app.include_router(sessions_router.nested_session_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(sessions_router.top_session_router, prefix=prefix, dependencies=auth_dep)
+    # Workspace tap — read-only SSE event stream (Spec §3).
+    from primer.api.routers.tap import tap_router
+    app.include_router(tap_router, prefix=prefix, dependencies=auth_dep)
     # Yields.
     app.include_router(yields_router.yields_router, prefix=prefix, dependencies=auth_dep)
     # Chat REST. NOTE: the WS endpoint inside this router cannot use

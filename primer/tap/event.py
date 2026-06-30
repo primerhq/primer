@@ -55,6 +55,7 @@ class TapEvent(BaseModel):
     )
 
     cursor: str
+    seq: int
     workspace_id: str
     session_id: str
     agent_id: str | None
@@ -81,13 +82,19 @@ def record_to_tap_event(
     :class:`TapEvent`.
 
     The ``kind`` field on the record maps 1:1 to ``class_`` via the shared
-    string values; ``payload`` and ``created_at`` are carried through
+    string values; ``payload``, ``seq``, and ``created_at`` are carried through
     unchanged.  The remaining fields (``workspace_id``, ``session_id``,
     ``agent_id``, ``graph_id``, ``cursor``) are injected by the caller since
     they live outside the record itself.
+
+    ``seq`` is copied from ``record.seq`` so the event is self-describing: the
+    SSE layer reads it directly to advance the multi-session :class:`TapCursor`
+    (and overwrite the per-event ``cursor`` placeholder) without parsing the
+    opaque cursor string.
     """
     return TapEvent(
         cursor=cursor,
+        seq=record.seq,
         workspace_id=workspace_id,
         session_id=session_id,
         agent_id=agent_id,
