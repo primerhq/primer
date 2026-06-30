@@ -1404,10 +1404,12 @@ class TestWorkspacesToolsetRegistration:
             "get_workspace_log",
         ):
             assert name in names, f"missing {name}"
-        # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26.
-        assert len(names) == 26
+        # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
+        # plus workspace_tap (the workspace tap MCP drain tool) = 27.
+        assert len(names) == 27
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names
+        assert "workspace_tap" in names
         # watch_files + invoke_graph moved to the workspace_ext toolset.
         assert "watch_files" not in names
         assert "invoke_graph" not in names
