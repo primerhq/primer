@@ -23,11 +23,20 @@ class TestTapEventClass:
         tec_values = {c.value for c in TapEventClass}
         assert smk_values.issubset(tec_values)
 
-    def test_graph_transition_extra_value(self) -> None:
+    def test_graph_transition_is_shared_kind(self) -> None:
+        """``graph_transition`` is now a first-class SessionMessageKind that
+        also mirrors into TapEventClass (the graph runtime emits these node
+        enter/exit records into the session log; spec §2.6 / plan Task 3.1)."""
         assert TapEventClass.GRAPH_TRANSITION == "graph_transition"
-        assert TapEventClass.GRAPH_TRANSITION not in {
+        assert SessionMessageKind.GRAPH_TRANSITION == "graph_transition"
+        # It IS a SessionMessageKind value now, and the mirror still holds.
+        assert TapEventClass.GRAPH_TRANSITION.value in {
             k.value for k in SessionMessageKind
         }
+        assert (
+            TapEventClass(SessionMessageKind.GRAPH_TRANSITION.value)
+            is TapEventClass.GRAPH_TRANSITION
+        )
 
     def test_all_session_message_kind_map_to_tap_event_class(self) -> None:
         for kind in SessionMessageKind:

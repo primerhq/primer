@@ -116,6 +116,7 @@ from primer.graph._node_refs import (  # noqa: E402
     _GraphEndOutputEvent,
     _GraphErrorEvent,
     _GraphToolCallYield,
+    _GraphTransitionEvent,
     _NodeDone,
     _PendingAgentYield,
     _PendingToolCall,
@@ -876,12 +877,24 @@ class _BaseGraphExecutor(
                 ended_detail = "max_iterations_exceeded"
                 break
 
-            # Mark all ready nodes RUNNING and snapshot state.
-            for nid in ready:
+            # Mark all ready nodes RUNNING and snapshot state. Emit one
+            # graph_transition ENTER per node so the session log records the
+            # node boundary (spec §2.6 / plan Task 3.1). The event flows
+            # through translate_stream_event -> WorkspaceMessageWriter.append
+            # on the same append+tick path every other record uses; no extra
+            # tick publisher. node_kind comes from the resolved node def's
+            # ``kind`` discriminator. Sorted for deterministic stream order.
+            for nid in sorted(ready):
                 node_states[nid] = NodeRuntimeState(
                     status=NodeRuntimeStatus.RUNNING,
                     last_run_iteration=context.iteration,
                     last_run_at=datetime.now(timezone.utc),
+                )
+                yield _GraphTransitionEvent(  # type: ignore[misc]
+                    node_id=nid,
+                    node_kind=self._node_kind_for(nid),
+                    phase="enter",
+                    status=None,
                 )
             await self._save_state(
                 iteration=context.iteration,
@@ -968,6 +981,18 @@ class _BaseGraphExecutor(
                         # resume-from-checkpoint path.
                         if item.suspended:
                             continue
+                        # graph_transition EXIT for this node (spec §2.6 /
+                        # plan Task 3.1). status mirrors the _NodeDone
+                        # outcome: 'failed' when an error is attached,
+                        # 'completed' otherwise. Suspended nodes are skipped
+                        # above so their exit lands on resume, not here.
+                        yield _GraphTransitionEvent(  # type: ignore[misc]
+                            node_id=item.node_id,
+                            node_kind=self._node_kind_for(item.node_id),
+                            phase="exit",
+                            status="failed" if item.error is not None
+                            else "completed",
+                        )
                         w = self._node_turn_logs.get(item.node_id)
                         started_at = node_started_at.get(
                             item.node_id, datetime.now(timezone.utc),

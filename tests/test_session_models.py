@@ -354,6 +354,9 @@ class TestSessionMessageKind:
             "done",
             "cancelled",
             "error",
+            # Graph-runtime node enter/exit transition (spec §2.6 /
+            # plan Task 3.1). Shared 1:1 with TapEventClass.GRAPH_TRANSITION.
+            "graph_transition",
         }
         actual = {k.value for k in SessionMessageKind}
         assert actual == expected

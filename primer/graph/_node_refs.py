@@ -52,6 +52,7 @@ __all__ = [
     "_resolve_fanout_spec",
     "_GraphErrorEvent",
     "_GraphEndOutputEvent",
+    "_GraphTransitionEvent",
     "_NodeDone",
     "_PendingToolCall",
     "_PendingAgentYield",
@@ -642,6 +643,30 @@ class _GraphEndOutputEvent:
     text: str
     parsed: dict[str, Any] | None
     end_node_id: str
+
+
+@dataclass(frozen=True)
+class _GraphTransitionEvent:
+    """Node-lifecycle transition event yielded at node ENTER and EXIT.
+
+    Spec §2.6 / plan Task 3.1. The superstep loop yields one of these the
+    moment a node is marked RUNNING (``phase='enter'``, ``status=None``) and
+    one the moment its ``_NodeDone`` lands (``phase='exit'``, ``status`` is
+    ``'completed'`` on success or ``'failed'`` on error). The session-layer
+    translator (:func:`primer.session.persistence.translate_stream_event`)
+    converts each into a ``SessionMessageRecord(kind=graph_transition,
+    payload={node_id, node_kind, phase, status})`` which flows through the
+    existing tap unchanged (``record_to_tap_event`` maps it 1:1 onto
+    :attr:`primer.tap.event.TapEventClass.GRAPH_TRANSITION`).
+
+    Suspended nodes (an approval-yield park) do NOT emit an exit transition —
+    they are parked, not done; the matching exit lands on the resume path.
+    """
+
+    node_id: str
+    node_kind: str
+    phase: str  # "enter" | "exit"
+    status: str | None = None  # populated on exit: "completed" | "failed"
 
 
 class _NodeDone:

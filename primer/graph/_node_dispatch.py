@@ -36,6 +36,7 @@ from primer.graph._node_refs import (
     _FanoutSourceInvalid,
     _GraphEndOutputEvent,
     _GraphErrorEvent,
+    _GraphTransitionEvent,
     _NodeDone,
     _PendingAgentYield,
     _PendingToolCall,
@@ -89,6 +90,21 @@ class _NodeDispatchMixin:
         if instance is not None:
             return self._nodes_by_id[instance.target_node_id]
         return self._nodes_by_id[node_id]
+
+    def _node_kind_for(self, node_id: str) -> str:
+        """Return the ``kind`` discriminator of the node ``node_id`` resolves to.
+
+        Drives the ``node_kind`` field of the ``graph_transition`` events the
+        superstep loop emits (spec §2.6 / plan Task 3.1). Synthesized fan-out
+        instance ids resolve to their target node's kind via
+        :meth:`_resolve_node_def`. Falls back to ``"unknown"`` if a node def
+        somehow lacks a ``kind`` (defensive — every node model defines one).
+        """
+        try:
+            node_def = self._resolve_node_def(node_id)
+        except KeyError:
+            return "unknown"
+        return getattr(node_def, "kind", "unknown")
 
     async def _stream_node(
         self,
@@ -491,6 +507,15 @@ class _NodeDispatchMixin:
                 continue
             if isinstance(sub_event, _GraphErrorEvent):
                 sub_error = sub_event
+                await queue.put(sub_event)  # type: ignore[arg-type]
+                continue
+            if isinstance(sub_event, _GraphTransitionEvent):
+                # Node-lifecycle transitions are raw dataclasses, not real
+                # StreamEvents, so they would break ``_wrap_event``'s ``.type``
+                # / ``model_dump`` access (same reason the terminal events
+                # above bypass it). Forward as-is so the child's node
+                # enter/exit transitions still reach the session log / tap
+                # under the child's node ids.
                 await queue.put(sub_event)  # type: ignore[arg-type]
                 continue
             await queue.put(
