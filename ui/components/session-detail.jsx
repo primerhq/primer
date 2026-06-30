@@ -1159,24 +1159,31 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
     },
   );
 
-  // Superstep WS events trigger an immediate refetch so node transitions
-  // feel live without a tight poll. We subscribe read-only to the same
-  // session WS the live stream uses and refetch on superstep frames.
+  // Tap events trigger an immediate refetch so node transitions feel live
+  // without a tight poll. We subscribe read-only to the workspace tap
+  // (session-scoped selector, live-from-now — no history/cursor needed
+  // because a missed event only delays a refetch and the 2 s poll backstops
+  // it) and refetch on graph_transition / done / error frames.
   React.useEffect(() => {
     if (!wid || !rid || isTerminal) return undefined;
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/v1/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(rid)}/ws?cursor=0`;
-    let ws;
-    try { ws = new WebSocket(url); } catch { return undefined; }
-    ws.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      const kind = msg && (msg.kind || (msg.payload && msg.payload.kind));
-      if (kind === "superstep_started" || kind === "superstep_ended" || kind === "done" || kind === "error") {
+    const selector = window.WTP_buildSelector
+      ? window.WTP_buildSelector(null, rid)
+      : { sessions: { kind: "predicate", left: { kind: "field", name: "id" }, op: "=", right: { kind: "value", value: rid } } };
+    const url = `/v1/workspaces/${encodeURIComponent(wid)}/tap?selector=${encodeURIComponent(JSON.stringify(selector))}`;
+    let es;
+    try {
+      es = new EventSource(url, { withCredentials: true });
+    } catch { return undefined; }
+    es.onmessage = (ev) => {
+      let tev;
+      try { tev = JSON.parse(ev.data); } catch { return; }
+      if (!tev || typeof tev !== "object") return;
+      const cls = tev.class;
+      if (cls === "graph_transition" || cls === "done" || cls === "error") {
         states.refetch();
       }
     };
-    return () => { try { ws.close(); } catch { /* no-op */ } };
+    return () => { try { es.close(); } catch { /* no-op */ } };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [wid, rid, isTerminal]);
 
@@ -1285,33 +1292,95 @@ function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast }) {
   const { navigate } = useRouter();
   const nodeId = node && node.node_id;
 
-  // Node-attributed output read-on-completion: the assistant stream is
-  // read from the session WS frames carrying this node_id (graph failures
-  // + End records already do); the per-node turn-log below is the audit
-  // trail. Hooks run unconditionally (before the no-selection early
-  // return) so the hook order is stable across node selection. v1 shows
-  // the turn-log + node-attributed session frames; token-live per-node
-  // output is the documented fast-follow (spec §8).
+  // Node-attributed output via the workspace tap (node-scoped, gap-free):
+  // mirrors SessionLiveStream's history+cursor+lifecycle seam exactly.
+  //  • HISTORY: GET .../sessions/{rid}/messages seeds the full recorded
+  //    transcript; we filter for this node's frames but compute the
+  //    high-water seq across ALL fetched records (not just node's) so the
+  //    resume cursor is correct and covers the full session's seq space.
+  //  • LIVE: EventSource on GET /v1/workspaces/{wid}/tap with a selector
+  //    combining sessions:id==rid AND events:node_id==nodeId, resuming
+  //    from cursor {seqs:{rid:maxSeq}} — no gap, no re-replay at the seam.
+  // Hooks run unconditionally (before the no-selection early return) so
+  // the hook order is stable across node selection. v1 shows the turn-log
+  // + node-attributed session frames; token-live per-node output is the
+  // documented fast-follow (spec §8).
   const [frames, setFrames] = React.useState([]);
+  const _niHistoryLoaded = React.useRef(false);
+  const _niCursorRef = React.useRef(0);
   React.useEffect(() => {
     setFrames([]);
+    _niHistoryLoaded.current = false;
+    _niCursorRef.current = 0;
     if (!wid || !rid || !nodeId) return undefined;
-    const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${proto}//${window.location.host}/v1/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(rid)}/ws?cursor=0`;
-    let ws;
-    try { ws = new WebSocket(url); } catch { return undefined; }
-    ws.onmessage = (ev) => {
-      let msg;
-      try { msg = JSON.parse(ev.data); } catch { return; }
-      if (typeof msg.seq !== "number") return;
-      const payload = msg.payload && typeof msg.payload === "object" ? msg.payload : {};
-      const frame = { ...payload, ...msg };
-      const fnode = frame.node_id || frame.end_node_id;
-      if (fnode !== nodeId) return;
-      setFrames((prev) => prev.some((p) => p.seq === frame.seq) ? prev : [...prev, frame]);
+    let alive = true;
+    let es;
+    const openTap = () => {
+      if (!alive) return;
+      // Build a selector: sessions:id==rid AND events:node_id==nodeId.
+      const selector = {
+        sessions: { kind: "predicate", left: { kind: "field", name: "id" }, op: "=", right: { kind: "value", value: rid } },
+        events: { kind: "predicate", left: { kind: "field", name: "node_id" }, op: "=", right: { kind: "value", value: nodeId } },
+      };
+      const highWater = _niCursorRef.current || 0;
+      const cursorToken = highWater > 0 ? _slsEncodeCursor(rid, highWater) : null;
+      let url = `/v1/workspaces/${encodeURIComponent(wid)}/tap?selector=${encodeURIComponent(JSON.stringify(selector))}`;
+      if (cursorToken) url += `&cursor=${encodeURIComponent(cursorToken)}`;
+      try {
+        es = new EventSource(url, { withCredentials: true });
+      } catch { return; }
+      es.onmessage = (ev) => {
+        let tev;
+        try { tev = JSON.parse(ev.data); } catch { return; }
+        if (!tev || typeof tev !== "object" || typeof tev.seq !== "number") return;
+        const payload = tev.payload && typeof tev.payload === "object" ? tev.payload : {};
+        const frame = { ...payload, kind: tev.class, seq: tev.seq, payload, ts: tev.ts };
+        // Defensive node filter: the server-side selector already gates this
+        // but we double-check so a selector mismatch can't pollute frames.
+        const fnode = frame.node_id || frame.end_node_id;
+        if (fnode !== nodeId) return;
+        setFrames((prev) => prev.some((p) => p.seq === frame.seq) ? prev : [...prev, frame].sort((a, b) => (a.seq || 0) - (b.seq || 0)));
+      };
     };
-    return () => { try { ws.close(); } catch { /* no-op */ } };
-  }, [wid, rid, nodeId]);
+    // Seed history then open the tap (mirrors SessionLiveStream seam).
+    (async () => {
+      try {
+        const res = await window.primerApi.apiFetch("GET", `/sessions/${encodeURIComponent(rid)}/messages?limit=1000`);
+        if (!alive) return;
+        const items = (res && res.items) || [];
+        if (items.length) {
+          // High-water across ALL fetched records (not just this node's) so
+          // the tap cursor covers the full session seq space — same logic as
+          // SessionLiveStream lines 823-825.
+          let maxSeq = 0;
+          for (const it of items) { if (typeof it.seq === "number" && it.seq > maxSeq) maxSeq = it.seq; }
+          _niCursorRef.current = maxSeq;
+          // Keep only frames attributed to this node for display.
+          const nodeItems = items.filter((it) => {
+            const p = it.payload && typeof it.payload === "object" ? it.payload : {};
+            return (it.node_id || p.node_id || it.end_node_id || p.end_node_id) === nodeId;
+          });
+          if (nodeItems.length) {
+            setFrames((prev) => {
+              const seen = new Set(prev.map((p) => p.seq));
+              const merged = [...prev];
+              for (const it of nodeItems) {
+                if (seen.has(it.seq)) continue;
+                const payload = it.payload && typeof it.payload === "object" ? it.payload : {};
+                merged.push({ ...payload, ...it });
+              }
+              return merged.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+            });
+          }
+        }
+      } catch { /* history is best-effort; tap still tails for live runs */ }
+      if (alive) openTap();
+    })();
+    return () => {
+      alive = false;
+      try { if (es) es.close(); } catch { /* no-op */ }
+    };
+  }, [wid, rid, nodeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const coalesced = window._SLS_coalesceMessages(frames);
 
