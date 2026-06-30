@@ -33,6 +33,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
+    get_event_bus,
+    get_scheduler,
     get_storage_provider,
     get_workspace_provider_storage,
     get_workspace_registry,
@@ -986,6 +988,8 @@ async def write_file(
         description="Optimistic-concurrency etag from a prior read response",
     ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    event_bus=Depends(get_event_bus),
 ) -> Response:
     ws = await registry.get_workspace(workspace_id)
     if body.encoding == "text":
@@ -1040,6 +1044,26 @@ async def write_file(
                     media_type=PROBLEM_JSON_MEDIA_TYPE,
                 )
     await ws.write_file(path, raw)
+    # Deterministically wake any watch_files-parked session in this
+    # workspace whose watched paths match the just-written file. This
+    # reuses the event-bus -> YieldEventListener resume path; inotify
+    # stays as the backstop. Best-effort: a wake failure must never fail
+    # the write itself.
+    try:
+        from primer.bus.watch_notify import wake_watch_files_on_write
+
+        await wake_watch_files_on_write(
+            workspace_id=workspace_id,
+            path=path,
+            scheduler=scheduler,
+            event_bus=event_bus,
+        )
+    except Exception:  # noqa: BLE001 — wake is best-effort
+        logger.exception(
+            "wake_watch_files_on_write failed for workspace=%r path=%r",
+            workspace_id,
+            path,
+        )
     return Response(status_code=204)
 
 
