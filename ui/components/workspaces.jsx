@@ -423,7 +423,7 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
 // Detail
 // ============================================================================
 
-const WS_TABS = ["files", "sessions", "log", "channels", "config", "destroy"];
+const WS_TABS = ["files", "sessions", "events", "log", "channels", "config", "destroy"];
 
 function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) {
   const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
@@ -456,6 +456,7 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   const tabs = [
     { id: "files", label: "Files", icon: "doc" },
     { id: "sessions", label: "Sessions", icon: "zap", count: sessionCount },
+    { id: "events", label: "Events", icon: "zap" },
     { id: "log", label: "Log", icon: "git-commit" },
     { id: "channels", label: "Channels", icon: "bell" },
     { id: "config", label: "Config", icon: "settings" },
@@ -477,6 +478,7 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   // duplicating the wid/onOpen wiring across both views.
   const filesPanel = <WS_FilesTab wid={wid} pushToast={pushToast} />;
   const sessionsPanel = <WS_SessionsTab wid={wid} onOpen={onOpenSession} />;
+  const eventsPanel = <window.WorkspaceTap wid={wid} />;
   const logPanel = <WS_LogTab wid={wid} />;
   const channelsPanel = <WS_ChannelsTab wid={wid} ws={ws} pushToast={pushToast} />;
   const configPanel = <WS_ConfigTab wid={wid} ws={ws} />;
@@ -565,6 +567,7 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
         <div className="panel-body" style={{ padding: 0 }}>
           {tab === "files" && filesPanel}
           {tab === "sessions" && sessionsPanel}
+          {tab === "events" && eventsPanel}
           {tab === "log" && logPanel}
           {tab === "channels" && channelsPanel}
           {tab === "config" && configPanel}
