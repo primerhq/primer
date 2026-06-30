@@ -274,13 +274,25 @@ async def read_batch(
     """Drain up to ``limit`` events across all in-scope sessions since *cursor*.
 
     Resolves in-scope sessions via :func:`session_predicate_for_storage`, then
-    for each session (stable order by id) reads ``messages.jsonl`` from the
-    start, keeping records with ``seq > cursor.resume_seq(session.id)``, maps
-    via :func:`record_to_tap_event`, filters via :func:`event_matches`, and
-    accumulates up to ``limit`` total events.  ``cursor.advance(session.id,
-    seq)`` is called for every record CONSUMED from the log (whether or not it
-    survives the event filter) so the cursor never re-offers a record that was
-    read but filtered out.
+    for each session (stable order by id) reads ``messages.jsonl`` **from the
+    cursor's byte-offset hint** (``cursor.resume_offset(session.id)``) rather
+    than byte 0, so repeated drains skip already-consumed bytes.
+
+    Correctness guarantee: the byte offset is a *performance hint only* — it is
+    valid because ``messages.jsonl`` is append-only (no rewrite or compaction).
+    The ``seq > cursor.resume_seq(session.id)`` filter remains the authoritative
+    backstop: a stale or wrong offset causes at most a harmless re-read of some
+    records from an earlier position, never a skip or duplicate.
+
+    For each complete record with ``seq > cursor.resume_seq(session.id)``:
+    * the record is mapped via :func:`record_to_tap_event` and filtered via
+      :func:`event_matches`;
+    * ``cursor.advance(session.id, seq)`` is called so filtered-out records are
+      never re-offered on the next drain;
+    * ``cursor.advance_offset(session.id, offset)`` is updated to point just
+      past the LAST CONSUMED complete line.  When ``limit`` cuts a session
+      mid-file the offset reflects only the lines actually consumed, so the next
+      drain resumes from exactly the right position (no skip, no dup).
 
     Order is stable: sessions sorted by id, records by ascending ``seq``.
 
@@ -288,11 +300,6 @@ async def read_batch(
     :func:`read_session_since` applies (``"<session_id>:<seq>"``); the MCP
     surface returns the encoded :class:`TapCursor` token alongside the batch as
     ``next_cursor``.
-
-    .. note:: (TAP-2) This function re-reads each session's full log from the
-        start on every call (O(history) per session per drain).  The MCP drain
-        (Phase 5) should push ``seq > resume`` into an ``after_seq``-indexed
-        read before shipping it as the hot path.
 
     Returns:
         ``(events, cursor)`` — the (mutated, same-instance) cursor reflects
@@ -306,20 +313,40 @@ async def read_batch(
     for session in sessions:
         if len(events) >= limit:
             break
-        resume = cursor.resume_seq(session.id)
+        resume_seq = cursor.resume_seq(session.id)
+        from_offset = cursor.resume_offset(session.id)
+
         path = _messages_path(workspace_io, session.id)
         raw = await _read_raw(workspace_io, path, session.id)
         if raw is None:
             continue
 
-        lines, _consumed = _complete_lines(raw)
+        # Seek to the hint offset — skip bytes we know are already consumed.
+        # If the offset is somehow past EOF (e.g. a concurrent truncation, which
+        # should never happen on an append-only log) treat it as empty.
+        if from_offset >= len(raw):
+            continue
+        window = raw[from_offset:]
+
+        lines, _ = _complete_lines(window)
+
         agent_id, graph_id = _agent_graph_ids(session)
 
+        # Walk lines, tracking the running absolute byte offset after each line
+        # so we can record the offset of the last CONSUMED line precisely.
+        line_offset = from_offset  # absolute offset at the START of current line
+        last_consumed_offset = from_offset  # updated after each consumed record
+
         for line in lines:
+            line_end = line_offset + len(line) + 1  # +1 for the '\n'
             if len(events) >= limit:
                 break
             record = _parse_record(line)
-            if record is None or record.seq <= resume:
+            line_offset = line_end  # advance regardless — line is processed
+            if record is None or record.seq <= resume_seq:
+                # Seq-filter backstop: update offset even for skipped records so
+                # the hint stays as far forward as possible.
+                last_consumed_offset = line_end
                 continue
             ev = record_to_tap_event(
                 record,
@@ -329,11 +356,16 @@ async def read_batch(
                 graph_id=graph_id,
                 cursor=f"{session.id}:{record.seq}",
             )
-            # Advance the cursor for every consumed record so a filtered-out
+            # Advance the seq cursor for every consumed record so a filtered-out
             # record is never re-offered on the next drain.
             cursor.advance(session.id, record.seq)
+            last_consumed_offset = line_end
             if event_matches(selector, ev):
                 events.append(ev)
+
+        # Record the offset of the last consumed line (not the end of the whole
+        # window) so a limit-cut session resumes exactly where we stopped.
+        cursor.advance_offset(session.id, last_consumed_offset)
 
     return events, cursor
 

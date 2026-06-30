@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import re
 from datetime import datetime, timezone
-
-import pytest
 
 from primer.tap.cursor import TapCursor
 
@@ -145,3 +145,124 @@ class TestDecodeTolerance:
         for bad in [None, "", "!!!not-base64!!!", "YQ", "       "]:
             result = TapCursor.decode(bad)
             assert isinstance(result, TapCursor)
+
+
+# ---------------------------------------------------------------------------
+# resume_offset / advance_offset
+# ---------------------------------------------------------------------------
+
+
+class TestResumeOffset:
+    def test_unknown_session_returns_zero(self) -> None:
+        cursor = TapCursor(seqs={}, known_as_of=FIXED_TS)
+        assert cursor.resume_offset("never-seen") == 0
+
+    def test_known_session_returns_stored_value(self) -> None:
+        cursor = TapCursor(seqs={}, known_as_of=FIXED_TS, offsets={"s1": 128})
+        assert cursor.resume_offset("s1") == 128
+
+
+class TestAdvanceOffset:
+    def test_advance_sets_offset_for_new_session(self) -> None:
+        cursor = TapCursor(seqs={}, known_as_of=FIXED_TS)
+        cursor.advance_offset("s1", 64)
+        assert cursor.resume_offset("s1") == 64
+
+    def test_advance_bumps_existing_offset(self) -> None:
+        cursor = TapCursor(seqs={}, known_as_of=FIXED_TS, offsets={"s1": 64})
+        cursor.advance_offset("s1", 128)
+        assert cursor.resume_offset("s1") == 128
+
+    def test_advance_with_lower_offset_does_not_regress(self) -> None:
+        cursor = TapCursor(seqs={}, known_as_of=FIXED_TS, offsets={"s1": 256})
+        cursor.advance_offset("s1", 10)
+        assert cursor.resume_offset("s1") == 256
+
+    def test_advance_same_offset_is_idempotent(self) -> None:
+        cursor = TapCursor(seqs={}, known_as_of=FIXED_TS, offsets={"s1": 64})
+        cursor.advance_offset("s1", 64)
+        assert cursor.resume_offset("s1") == 64
+
+
+# ---------------------------------------------------------------------------
+# offsets encode / decode round-trip + backward compat
+# ---------------------------------------------------------------------------
+
+
+class TestOffsetsEncodeDecodeRoundtrip:
+    def test_roundtrip_preserves_offsets(self) -> None:
+        original = TapCursor(
+            seqs={"s1": 3},
+            known_as_of=FIXED_TS,
+            offsets={"s1": 256, "s2": 512},
+        )
+        token = original.encode()
+        restored = TapCursor.decode(token)
+        assert restored.offsets == original.offsets
+
+    def test_roundtrip_empty_offsets(self) -> None:
+        original = TapCursor(seqs={"s1": 1}, known_as_of=FIXED_TS, offsets={})
+        token = original.encode()
+        restored = TapCursor.decode(token)
+        assert restored.offsets == {}
+
+    def test_token_without_offsets_decodes_to_empty_offsets(self) -> None:
+        """Backward compat: old tokens (no 'offsets' key) decode to offsets={}."""
+        payload = {
+            "seqs": {"s1": 5},
+            "known_as_of": FIXED_TS.isoformat(),
+            # no "offsets" key — simulates a token from the old encoder
+        }
+        raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        token = base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
+        cursor = TapCursor.decode(token)
+        assert cursor.seqs == {"s1": 5}
+        assert cursor.offsets == {}
+
+    def test_offsets_and_seqs_both_round_trip(self) -> None:
+        original = TapCursor(
+            seqs={"s1": 10, "s2": 20},
+            known_as_of=FIXED_TS,
+            offsets={"s1": 100, "s2": 200},
+        )
+        token = original.encode()
+        restored = TapCursor.decode(token)
+        assert restored.seqs == original.seqs
+        assert restored.offsets == original.offsets
+        assert restored.known_as_of == original.known_as_of
+
+
+# ---------------------------------------------------------------------------
+# prune_ended drops both seqs and offsets
+# ---------------------------------------------------------------------------
+
+
+class TestPruneEndedWithOffsets:
+    def test_prune_drops_offset_for_ended_sessions(self) -> None:
+        cursor = TapCursor(
+            seqs={"s-a": 1, "s-b": 2},
+            known_as_of=FIXED_TS,
+            offsets={"s-a": 100, "s-b": 200},
+        )
+        cursor.prune_ended({"s-a"})
+        assert cursor.resume_offset("s-a") == 0  # dropped
+        assert cursor.resume_offset("s-b") == 200  # kept
+
+    def test_prune_drops_seq_and_offset_together(self) -> None:
+        cursor = TapCursor(
+            seqs={"s-a": 5},
+            known_as_of=FIXED_TS,
+            offsets={"s-a": 128},
+        )
+        cursor.prune_ended({"s-a"})
+        assert cursor.resume_seq("s-a") == 0
+        assert cursor.resume_offset("s-a") == 0
+
+    def test_prune_unknown_offset_is_safe(self) -> None:
+        cursor = TapCursor(
+            seqs={"s-a": 1},
+            known_as_of=FIXED_TS,
+            offsets={},  # no offset entry for s-a
+        )
+        cursor.prune_ended({"s-a"})  # must not raise
+        assert cursor.resume_seq("s-a") == 0
