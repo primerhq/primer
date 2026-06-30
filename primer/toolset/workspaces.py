@@ -40,6 +40,7 @@ defined here and are imported by that module.)
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -64,8 +65,11 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.model.workspace_session import SessionBinding
+from primer.model.workspace_session import SessionBinding, WorkspaceSession
 from primer.model.yield_ import ToolContext, Yielded
+from primer.tap.cursor import TapCursor
+from primer.tap.reader import read_batch
+from primer.tap.selector import TapSelector
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
@@ -74,6 +78,7 @@ from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 if TYPE_CHECKING:
     from primer.api.registries import WorkspaceRegistry
     from primer.int.storage_provider import StorageProvider
+    from primer.tap.router import WorkspaceTapRouter
 
 
 logger = logging.getLogger(__name__)
@@ -194,6 +199,52 @@ class _LogArgs(BaseModel):
 class _InvokeGraphArgs(BaseModel):
     graph_id: str = Field(..., min_length=1, description="Graph to run.")
     input: str = Field(..., min_length=1, description="Input for the graph.")
+
+
+class _WorkspaceTapArgs(BaseModel):
+    """Arguments for the ``workspace_tap`` drain tool.
+
+    ``selector`` is a raw :class:`~primer.tap.selector.TapSelector` JSON
+    object (``{sessions?, events?}``); ``cursor`` is the opaque
+    batch-level resume token returned as ``next_cursor`` by a prior call
+    (NOT the per-event ``cursor`` placeholder).
+    """
+
+    workspace_id: str = Field(..., min_length=1)
+    selector: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional TapSelector as a JSON object with optional "
+            "``sessions`` / ``events`` predicates. Scopes which sessions "
+            "and events the drain returns. Malformed → a tool error."
+        ),
+    )
+    cursor: str | None = Field(
+        default=None,
+        description=(
+            "Opaque resume token from a prior call's ``next_cursor``. "
+            "Absent / empty / garbage decodes to a fresh drain from the "
+            "start. This is the batch-level cursor — NOT the per-event "
+            "``cursor`` field, which is only a reader placeholder."
+        ),
+    )
+    limit: int = Field(
+        default=200,
+        ge=1,
+        le=1000,
+        description="Maximum events to return in one drain (1..1000).",
+    )
+    wait_seconds: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=30.0,
+        description=(
+            "Bounded long-poll. When the immediate drain is empty and "
+            "``wait_seconds > 0``, wait up to this many seconds for a new "
+            "tick, then drain ONCE more (may still be empty). ``0`` (the "
+            "default) is non-blocking."
+        ),
+    )
 
 
 # ===========================================================================
@@ -591,9 +642,18 @@ def build_workspaces_toolset(
     scheduler: "Any | None" = None,
     claim_engine: "Any | None" = None,
     event_bus: "Any | None" = None,
+    tap_router: "WorkspaceTapRouter | None" = None,
     toolset_id: str = WORKSPACES_TOOLSET_ID,
 ) -> InternalToolsetProvider:
-    """Construct the immutable ``_workspaces`` toolset."""
+    """Construct the immutable ``_workspaces`` toolset.
+
+    ``tap_router`` is the process-local
+    :class:`~primer.tap.router.WorkspaceTapRouter` (lives on
+    ``app.state.workspace_tap_router``); it is consulted ONLY by
+    ``workspace_tap`` to implement the bounded long-poll. When ``None``
+    the drain still works — it just degrades ``wait_seconds`` to a
+    non-blocking single drain.
+    """
     registry: dict[str, tuple[Tool, ToolHandler]] = {}
 
     def _provider_storage():
@@ -1609,6 +1669,136 @@ def build_workspaces_toolset(
                 returns="{commits: [CommitInfo, ...]}",
             ),
             ToolExample(args={"workspace_id": "ws-1", "limit": 10}),
+        ],
+    )
+    registry[name] = entry
+
+    # ------------------- Tap drain (read-only) -----------------------
+    async def _workspace_tap(arguments: dict[str, Any]) -> ToolCallResult:
+        """Drain tap events for a workspace; advance the batch cursor.
+
+        Request/response cursor-drain over the shared
+        :func:`primer.tap.reader.read_batch` engine — the MCP analogue
+        of the SSE tap (MCP cannot stream). Resolves the session store +
+        live workspace IO exactly as the SSE endpoint does, decodes the
+        selector / cursor, drains once, and (when the drain is empty and
+        ``wait_seconds > 0``) does a single bounded long-poll on the tap
+        router before draining once more.
+        """
+        try:
+            args = _WorkspaceTapArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+
+        # Decode the selector (empty when absent; malformed → tool error).
+        try:
+            selector = (
+                TapSelector.model_validate(args.selector)
+                if args.selector is not None
+                else TapSelector()
+            )
+        except ValidationError as exc:
+            return _err(
+                "invalid selector: " + json.dumps(exc.errors(), default=str),
+                error_type="bad-request",
+            )
+
+        # Tolerant decode: absent / empty / garbage → fresh drain.
+        cursor = TapCursor.decode(args.cursor)
+
+        # Resolve the live workspace IO the same way the SSE endpoint does.
+        try:
+            workspace_io = await workspace_registry.get_workspace(
+                args.workspace_id
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+
+        sessions_storage = storage_provider.get_storage(WorkspaceSession)
+
+        async def _drain() -> list:
+            events, _cursor = await read_batch(
+                sessions_storage,
+                workspace_io,
+                workspace_id=args.workspace_id,
+                selector=selector,
+                cursor=cursor,
+                limit=args.limit,
+            )
+            return events
+
+        events = await _drain()
+
+        # Bounded long-poll: only when the immediate drain is empty AND
+        # the caller asked to wait AND a router is wired. This never parks
+        # the agent turn — it is a single timed wait then one more drain.
+        if not events and args.wait_seconds > 0 and tap_router is not None:
+            sub = tap_router.subscribe(args.workspace_id)
+            try:
+                try:
+                    await asyncio.wait_for(
+                        sub.__anext__(), timeout=args.wait_seconds
+                    )
+                except (TimeoutError, StopAsyncIteration):
+                    # Timed out (or the subscription ended) — fall through
+                    # to one more drain, which may still be empty.
+                    pass
+            finally:
+                await sub.aclose()
+            events = await _drain()
+
+        return _ok(
+            {
+                "events": [e.model_dump(mode="json", by_alias=True) for e in events],
+                "next_cursor": cursor.encode(),
+            }
+        )
+
+    name, entry = _tool(
+        "workspace_tap",
+        (
+            "Drain tap events (user input, assistant tokens, tool calls / "
+            "results, lifecycle) for every in-scope session in a "
+            "workspace since the last cursor, then advance it. Returns "
+            "``{events: [TapEvent...], next_cursor}``. Resume the next "
+            "drain by passing ``next_cursor`` back as ``cursor`` — the "
+            "per-event ``cursor`` field is a placeholder, NOT the resume "
+            "token. ``wait_seconds`` enables a bounded long-poll when the "
+            "drain would otherwise be empty."
+        ),
+        (
+            "Use when polling a workspace's activity from outside an agent "
+            "loop (the request/response analogue of the SSE tap stream). "
+            "Page with ``next_cursor``; an empty ``events`` with the same "
+            "``next_cursor`` means nothing new. Not for one session's "
+            "lifecycle state (use ``get_workspace_session``)."
+        ),
+        _WorkspaceTapArgs,
+        _workspace_tap,
+        examples=[
+            ToolExample(
+                args={"workspace_id": "ws-1"},
+                returns="{events: [...], next_cursor: \"<token>\"}",
+            ),
+            ToolExample(
+                args={"workspace_id": "ws-1", "cursor": "<prev next_cursor>"},
+                note="resume from a prior drain — only newer events return",
+            ),
+            ToolExample(
+                args={
+                    "workspace_id": "ws-1",
+                    "selector": {
+                        "events": {
+                            "left": {"kind": "field", "name": "class"},
+                            "op": "=",
+                            "right": {"kind": "value", "value": "tool_call"},
+                        }
+                    },
+                    "limit": 50,
+                    "wait_seconds": 5,
+                },
+                note="filter to tool_call events; long-poll up to 5s",
+            ),
         ],
     )
     registry[name] = entry
