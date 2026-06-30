@@ -368,26 +368,17 @@ function useStudioState(wid) {
 }
 
 // ---------------------------------------------------------------------------
-// Brand logo — faceted diamond from the prototype (renderVals.logo).
+// StudioHeader — SLIM in-shell content sub-header.
+//
+// The Studio renders as an ordinary page inside the app shell (the app Topbar
+// owns brand / global search / theme / user — see chrome.jsx Topbar), so this
+// row is intentionally minimal: workspace selector ▾ · ⌘K palette ·
+// terminal toggle. On phones it also carries the two panel-drawer toggles
+// (left = Sessions+Files, right = Action Required+Activity) since the columns
+// collapse to a single document there.
 // ---------------------------------------------------------------------------
 
-function ST_Logo() {
-  return (
-    <svg width={22} height={22} viewBox="0 0 24 24">
-      <polygon points="12,3 21,12 12,21 3,12" fill="var(--text)" fillOpacity={0.16} />
-      <polygon points="12,3 16.5,7.5 12,12 7.5,7.5" fill="var(--text)" />
-      <polygon points="16.5,7.5 21,12 16.5,16.5 12,12" fill="var(--text)" fillOpacity={0.4} />
-      <polygon points="12,12 16.5,16.5 12,21 7.5,16.5" fill="var(--accent)" />
-      <polygon points="7.5,7.5 12,12 7.5,16.5 3,12" fill="var(--text)" fillOpacity={0.4} />
-    </svg>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// StudioHeader — brand · workspace selector ▾ · ⌘K / ⌘P / density / theme
-// ---------------------------------------------------------------------------
-
-function StudioHeader({ wid, theme, density, onToggleTheme, onToggleDensity, onTogglePalette, onOpenQuick, onSelectWorkspace }) {
+function StudioHeader({ wid, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, onToggleLeftPanel, onToggleRightPanel }) {
   var { useResource, apiFetch } = window.primerApi;
   var [menuOpen, setMenuOpen] = React.useState(false);
 
@@ -422,10 +413,16 @@ function StudioHeader({ wid, theme, density, onToggleTheme, onToggleDensity, onT
 
   return (
     <div className="st-topbar" data-testid="studio-header">
-      <div className="st-brand">
-        <span style={{ width: 22, height: 22, display: "grid", placeItems: "center" }}><ST_Logo /></span>
-        Primer <span style={{ color: "var(--text-3)", fontWeight: 500, fontSize: 12 }}>Studio</span>
-      </div>
+      {/* Mobile-only panel-drawer toggle (left: Sessions + Files). */}
+      <button
+        className="st-hbtn mobile-only touch-target"
+        data-testid="studio-left-toggle"
+        title="Sessions & Files"
+        aria-label="Toggle sessions and files panel"
+        onClick={onToggleLeftPanel}
+      >
+        <Icon name="panel-left" size={15} />
+      </button>
 
       <div
         className="st-ws-btn"
@@ -457,18 +454,46 @@ function StudioHeader({ wid, theme, density, onToggleTheme, onToggleDensity, onT
 
       <div style={{ flex: 1 }} />
 
-      {/* ⌘K palette trigger — inert stub until B5 wires the palette. */}
+      {/* ⌘K command palette (run · jump · search within the workspace). The
+          wide trigger is hidden on phones (see .st-palette-trigger in the
+          mobile block); a compact search button replaces it there. */}
       <div className="st-palette-trigger" data-testid="palette-trigger" onClick={onTogglePalette}>
         <span style={{ opacity: 0.8 }}>Search · run · jump</span>
         <kbd>⌘K</kbd>
       </div>
-      {/* ⌘P quick-open — inert stub until B5. */}
-      <div className="st-hbtn" data-testid="quickopen-trigger" title="Quick open (⌘P)" onClick={onOpenQuick}>⌕</div>
-      <div className="st-hbtn" data-testid="density-toggle" title="Density" onClick={onToggleDensity}>☰</div>
-      <div className="st-hbtn" data-testid="theme-toggle" title="Theme" onClick={onToggleTheme}>
-        {theme === "dark" ? "◐" : "○"}
-      </div>
-      <div className="st-avatar" title="User">DK</div>
+      {/* Compact ⌘K affordance for phones (the wide trigger is desktop-only). */}
+      <button
+        className="st-hbtn mobile-only touch-target"
+        data-testid="palette-trigger-mobile"
+        title="Command palette (⌘K)"
+        aria-label="Open command palette"
+        onClick={onTogglePalette}
+      >
+        <Icon name="search" size={15} />
+      </button>
+
+      {/* Terminal toggle (Ctrl-`). */}
+      <button
+        className={"st-hbtn touch-target" + (terminalOpen ? " is-active" : "")}
+        data-testid="terminal-toggle"
+        title="Toggle terminal (Ctrl-`)"
+        aria-label="Toggle terminal"
+        aria-pressed={terminalOpen ? "true" : "false"}
+        onClick={onToggleTerminal}
+      >
+        <Icon name="code" size={15} />
+      </button>
+
+      {/* Mobile-only panel-drawer toggle (right: Action Required + Activity). */}
+      <button
+        className="st-hbtn mobile-only touch-target"
+        data-testid="studio-right-toggle"
+        title="Action required & activity"
+        aria-label="Toggle action-required and activity panel"
+        onClick={onToggleRightPanel}
+      >
+        <Icon name="bell" size={15} />
+      </button>
     </div>
   );
 }
@@ -501,6 +526,37 @@ function Studio({ wid, pushToast }) {
   // Falls back to the module-level primerApi.toastPush so non-nil calls always
   // work even when app.jsx hasn't passed the prop yet.
   studio.pushToast = pushToast || (window.primerApi && window.primerApi.toastPush) || null;
+
+  // Remember the last workspace whose Studio was opened so the global "Studio"
+  // nav item (chrome.jsx) can re-open it without a workspace picker. Written on
+  // every mount / wid change; read in app.jsx's openStudio().
+  React.useEffect(function () {
+    if (!wid) return;
+    try { window.localStorage.setItem("studio:lastWid", wid); } catch (_e) { /* storage disabled */ }
+  }, [wid]);
+
+  // Mobile-only panel drawers. On phones st-body collapses to the single
+  // center document (CSS); the left (Sessions+Files) and right (Action
+  // Required+Activity) columns become slide-over sheets toggled from the slim
+  // sub-header. Desktop ignores this state entirely (the columns are static).
+  var [leftPanelOpen, setLeftPanelOpen] = React.useState(false);
+  var [rightPanelOpen, setRightPanelOpen] = React.useState(false);
+  var closePanels = React.useCallback(function () { setLeftPanelOpen(false); setRightPanelOpen(false); }, []);
+
+  // Close the drawers when the workspace changes (route switch) and lock body
+  // scroll + wire Escape while either is open — mirrors chrome.jsx MobileNav.
+  React.useEffect(function () { closePanels(); }, [wid, closePanels]);
+  React.useEffect(function () {
+    if (!leftPanelOpen && !rightPanelOpen) return undefined;
+    function onKey(e) { if (e.key === "Escape") closePanels(); }
+    window.addEventListener("keydown", onKey);
+    var prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return function () {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [leftPanelOpen, rightPanelOpen, closePanels]);
 
   // Column resize: drag the handle, write width into state (persisted).
   // We clamp to sane bounds so a column can't be dragged off-screen.
@@ -569,32 +625,45 @@ function Studio({ wid, pushToast }) {
     >
       <StudioHeader
         wid={wid}
-        theme={s.theme}
-        density={s.density}
-        onToggleTheme={studio.toggleTheme}
-        onToggleDensity={studio.toggleDensity}
         onTogglePalette={studio.togglePalette}
-        onOpenQuick={function () { studio.openPalette("quickopen"); }}
         onSelectWorkspace={selectWorkspace}
+        terminalOpen={s.terminalOpen}
+        onToggleTerminal={studio.toggleTerminal}
+        onToggleLeftPanel={function () { setRightPanelOpen(false); setLeftPanelOpen(function (o) { return !o; }); }}
+        onToggleRightPanel={function () { setLeftPanelOpen(false); setRightPanelOpen(function (o) { return !o; }); }}
       />
 
       <div className="st-body">
-        {/* ---- LEFT: B2 StudioSidebar (sessions + files tree) ---- */}
-        <div className="st-col st-col-left" data-testid="studio-sidebar">
+        {/* Mobile backdrop: dims the center doc while a panel drawer is open.
+            Desktop never shows this (st-panel-overlay is mobile-only in CSS). */}
+        {(leftPanelOpen || rightPanelOpen) && (
+          <div className="st-panel-overlay mobile-only" data-testid="studio-panel-overlay" onClick={closePanels} />
+        )}
+
+        {/* ---- LEFT: B2 StudioSidebar (sessions + files tree) ---- On phones
+            this column is an off-canvas sheet toggled from the sub-header. ---- */}
+        <div
+          className={"st-col st-col-left" + (leftPanelOpen ? " is-drawer-open" : "")}
+          data-testid="studio-sidebar"
+        >
           <StudioSidebar wid={wid} studio={studio} />
         </div>
 
-        <div className="st-resize" onMouseDown={function (e) { startResize("left", e); }} data-testid="studio-resize-left" />
+        <div className="st-resize desktop-only" onMouseDown={function (e) { startResize("left", e); }} data-testid="studio-resize-left" />
 
         {/* ---- CENTER: B3 StudioCenter (tabs + active panel) ---- */}
         <div className="st-col st-col-center" data-testid="studio-center">
           <StudioCenter wid={wid} studio={studio} />
         </div>
 
-        <div className="st-resize" onMouseDown={function (e) { startResize("right", e); }} data-testid="studio-resize-right" />
+        <div className="st-resize desktop-only" onMouseDown={function (e) { startResize("right", e); }} data-testid="studio-resize-right" />
 
-        {/* ---- RIGHT: B4 StudioActivity (action required + workspace tap) ---- */}
-        <div className="st-col st-col-right" data-testid="studio-activity">
+        {/* ---- RIGHT: B4 StudioActivity (action required + workspace tap) ----
+            Off-canvas sheet on phones (right edge); static column on desktop. */}
+        <div
+          className={"st-col st-col-right" + (rightPanelOpen ? " is-drawer-open" : "")}
+          data-testid="studio-activity"
+        >
           <StudioActivity wid={wid} studio={studio} />
         </div>
       </div>
