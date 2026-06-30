@@ -236,6 +236,13 @@ class HuggingFaceEmbedder(Embedder):
         self._rate_limiter = rate_limiter
         self._rate_limit_key = f"embedder:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
+        # connect_timeout_seconds is intentionally NOT honoured here: this
+        # adapter is a LOCAL, in-process sentence-transformers encode with no
+        # network request to bound. Wrapping the asyncio.to_thread encode in
+        # asyncio.timeout would not actually cancel the running thread (the
+        # CPU work continues in the background pool), so it would only mislead.
+        # The connect timeout applies to network-backed providers; see the
+        # Limits.connect_timeout_seconds docstring.
 
         logger.info(
             "HuggingFace embedder initialized",

@@ -25,7 +25,7 @@ import ollama
 from pydantic import BaseModel as PydanticBaseModel
 
 from primer.int.llm import LLM
-from primer.llm._timeout import _iter_with_timeout
+from primer.llm._timeout import _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer.hf import count_tokens_hf
 from primer.model.chat import (
     AudioPart,
@@ -428,6 +428,7 @@ class OllamaLLM(LLM):
         self._rate_limit_key = f"llm:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
         self._request_timeout_seconds = provider.limits.request_timeout_seconds
+        self._connect_timeout_seconds = provider.limits.connect_timeout_seconds
         self._trace_llm_io = trace_llm_io
 
         logger.info(
@@ -550,8 +551,16 @@ class OllamaLLM(LLM):
                     self._rate_limit_key, max_concurrency=self._max_concurrency,
                 ):
                     client = self._get_client()
+                    from primer.model.except_ import ProviderTimeoutError
                     try:
-                        sdk_stream = await client.chat(**request)
+                        sdk_stream = await _open_with_connect_timeout(
+                            lambda: client.chat(**request),
+                            self._connect_timeout_seconds,
+                            provider_id=self._provider.id,
+                            model=model,
+                        )
+                    except ProviderTimeoutError:
+                        raise
                     except Exception as exc:
                         err = _classify_ollama_exception(exc)
                         logger.error(

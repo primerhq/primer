@@ -186,6 +186,7 @@ class GeminiEmbedder(Embedder):
         self._rate_limiter = rate_limiter
         self._rate_limit_key = f"embedder:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
+        self._connect_timeout_seconds = provider.limits.connect_timeout_seconds
 
         logger.info(
             "Gemini embedder initialized",
@@ -242,12 +243,21 @@ class GeminiEmbedder(Embedder):
             self._rate_limit_key, max_concurrency=self._max_concurrency,
         ):
             client = self._get_client()
+            from primer.llm._timeout import _open_with_connect_timeout
+            from primer.model.except_ import ProviderTimeoutError
             try:
-                resp = await client.aio.models.embed_content(
+                resp = await _open_with_connect_timeout(
+                    lambda: client.aio.models.embed_content(
+                        model=model,
+                        contents=texts,
+                        config=embed_config,
+                    ),
+                    self._connect_timeout_seconds,
+                    provider_id=self._provider.id,
                     model=model,
-                    contents=texts,
-                    config=embed_config,
                 )
+            except ProviderTimeoutError:
+                raise
             except Exception as exc:
                 err = classify_google_exception(exc)
                 logger.error(

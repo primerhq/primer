@@ -828,6 +828,7 @@ class OpenResponsesLLM(LLM):
         self._rate_limit_key = f"llm:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
         self._request_timeout_seconds = provider.limits.request_timeout_seconds
+        self._connect_timeout_seconds = provider.limits.connect_timeout_seconds
         self._trace_llm_io = trace_llm_io
 
         logger.info(
@@ -956,19 +957,22 @@ class OpenResponsesLLM(LLM):
                 ):
                     client = self._get_client()
                     try:
-                        # Post-slot timeout ONLY. The queue wait above
+                        # Post-slot CONNECT timeout. The queue wait above
                         # (rate_limiter.acquire) is intentionally untimed: blocking
                         # on a busy concurrency slot is normal backpressure, not
                         # unavailability, so it waits as long as it takes for a slot
-                        # to free. But once we HOLD a slot, the upstream must begin
-                        # responding within the budget -- a connect/open that never
-                        # returns (the per-event stream timeout below can't catch
-                        # this, because we never reach the stream) is unavailability.
-                        async with asyncio.timeout(self._request_timeout_seconds):
+                        # to free. But once we HOLD a slot, opening the stream --
+                        # which on a JIT backend includes a COLD MODEL LOAD -- is
+                        # bounded by the configurable connect timeout. None (default)
+                        # means unbounded: a slow cold load is never aborted.
+                        if self._connect_timeout_seconds is not None:
+                            async with asyncio.timeout(self._connect_timeout_seconds):
+                                sdk_stream = await client.responses.create(**request)
+                        else:
                             sdk_stream = await client.responses.create(**request)
                     except TimeoutError as exc:
                         from primer.model.except_ import ProviderTimeoutError
-                        timeout_val = self._request_timeout_seconds
+                        timeout_val = self._connect_timeout_seconds
                         logger.error(
                             "OpenResponses upstream did not begin responding within "
                             "%.1f s after acquiring a concurrency slot",

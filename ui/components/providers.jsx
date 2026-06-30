@@ -627,6 +627,12 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
       ? String(existing.limits.request_timeout_seconds ?? "")
       : "300"
   );
+  const [connectTimeoutSeconds, setConnectTimeoutSeconds] = React.useState(
+    existing?.limits?.connect_timeout_seconds !== undefined &&
+      existing?.limits?.connect_timeout_seconds !== null
+      ? String(existing.limits.connect_timeout_seconds)
+      : ""
+  );
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   // Whenever the provider type changes, re-seed config defaults + wipe the
@@ -783,6 +789,9 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
         max_concurrency: Number(maxConcurrency) || 1,
         ...(requestTimeoutSeconds !== "" && requestTimeoutSeconds !== null
           ? { request_timeout_seconds: requestTimeoutSeconds === "null" ? null : Number(requestTimeoutSeconds) }
+          : {}),
+        ...(connectTimeoutSeconds !== "" && connectTimeoutSeconds !== null
+          ? { connect_timeout_seconds: Number(connectTimeoutSeconds) }
           : {}),
       },
     };
@@ -969,6 +978,34 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
         {fieldErrors["body.limits.request_timeout_seconds"] && (
           <div className="field-help" style={{ color: "var(--red)" }}>
             {fieldErrors["body.limits.request_timeout_seconds"]}
+          </div>
+        )}
+      </div>
+      <div className="field">
+        <label className="field-label">
+          Connect timeout <span className="hint">seconds; blank = unbounded</span>
+        </label>
+        <input
+          className="input"
+          type="number"
+          min="0"
+          step="1"
+          value={connectTimeoutSeconds}
+          onChange={(e) => setConnectTimeoutSeconds(e.target.value)}
+          style={{ width: 120 }}
+          placeholder="unbounded"
+        />
+        <div className="field-help">
+          Maximum seconds to wait for the provider to BEGIN responding after a
+          concurrency slot is acquired -- opening the stream, which on a
+          just-in-time backend (e.g. LM Studio) includes a cold model load.
+          Blank (the default) means unbounded: a slow cold load is never
+          aborted. Set a value to fail fast when a held slot's upstream never
+          responds. Distinct from the stream inactivity timeout above.
+        </div>
+        {fieldErrors["body.limits.connect_timeout_seconds"] && (
+          <div className="field-help" style={{ color: "var(--red)" }}>
+            {fieldErrors["body.limits.connect_timeout_seconds"]}
           </div>
         )}
       </div>
