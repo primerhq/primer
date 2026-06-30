@@ -149,3 +149,44 @@ def test_tap_event_json_roundtrip() -> None:
     data = json.loads(raw)
     assert data["class"] == "tool_call"
     assert "class_" not in data
+
+
+# ---------------------------------------------------------------------------
+# DONE record with usage envelope
+# ---------------------------------------------------------------------------
+
+
+def test_done_record_with_usage_passes_through_to_tap_event() -> None:
+    """A DONE SessionMessageRecord whose payload contains a ``usage`` dict
+    (populated by translate_stream_event when a Usage event preceded Done)
+    is carried through unchanged by record_to_tap_event so the tap layer
+    delivers the full usage envelope to consumers."""
+    usage_payload = {
+        "stop_reason": "stop",
+        "raw_reason": "stop",
+        "usage": {"input_tokens": 150, "output_tokens": 60},
+    }
+    record = SessionMessageRecord(
+        seq=5,
+        kind=SessionMessageKind.DONE,
+        payload=usage_payload,
+        created_at=FIXED_TS,
+    )
+    event = record_to_tap_event(
+        record,
+        workspace_id="ws-u",
+        session_id="sess-u",
+        agent_id=None,
+        graph_id=None,
+        cursor="cur-u",
+    )
+
+    assert event.class_ == TapEventClass.DONE
+    assert event.payload["usage"]["input_tokens"] == 150
+    assert event.payload["usage"]["output_tokens"] == 60
+    assert event.payload["stop_reason"] == "stop"
+
+    # Verify the wire representation carries usage through JSON serialisation.
+    wire = json.loads(event.model_dump_json(by_alias=True))
+    assert wire["payload"]["usage"]["input_tokens"] == 150
+    assert wire["payload"]["usage"]["output_tokens"] == 60

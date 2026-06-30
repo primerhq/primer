@@ -33,6 +33,7 @@ from primer.model.chat import (
     StreamEvent,
     TextDelta,
     ToolCallEnd,
+    Usage,
     _ExecutorToolResult,
 )
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
@@ -160,9 +161,16 @@ def _now_utc() -> datetime:
 @dataclass
 class _CoalesceState:
     """Holds the in-progress TextDelta buffer so consecutive deltas
-    coalesce into a single assistant_token record on Done/ToolCallEnd."""
+    coalesce into a single assistant_token record on Done/ToolCallEnd.
+
+    Also accumulates the most-recent Usage event so that the DONE record
+    can carry a ``usage`` envelope — the LLM adapters emit Usage mid-stream
+    (Anthropic/Google: cumulative on every chunk; OpenAI/Ollama: terminal
+    only) and Done itself carries no token counts.
+    """
 
     text_buffer: str = field(default="")
+    last_usage: Usage | None = field(default=None)
 
 
 def translate_stream_event(
@@ -174,9 +182,11 @@ def translate_stream_event(
     | Event                | Output                                          |
     |----------------------|-------------------------------------------------|
     | TextDelta            | None (coalesces into state.text_buffer)         |
+    | Usage                | None (accumulated in state.last_usage)          |
     | ToolCallEnd          | flush text_buffer (if any), then TOOL_CALL      |
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
     | Done                 | flush text_buffer (if any), then DONE           |
+    |                      |   payload includes usage envelope when present  |
     | Error                | ERROR                                           |
     | _GraphErrorEvent     | ERROR (graph runtime terminal failure)          |
     | _GraphTransitionEvent | GRAPH_TRANSITION (node enter/exit boundary)    |
@@ -239,6 +249,13 @@ def translate_stream_event(
             created_at=now,
         )
 
+    if isinstance(event, Usage):
+        # Accumulate so the DONE record can carry a usage envelope.  Providers
+        # that emit cumulative counts (Anthropic, Google) overwrite on every
+        # chunk; terminal-only providers (OpenAI, Ollama) set it once.
+        state.last_usage = event
+        return None
+
     if isinstance(event, TextDelta):
         state.text_buffer += event.text
         return None
@@ -293,10 +310,22 @@ def translate_stream_event(
                 )
             )
             state.text_buffer = ""
+        done_payload: dict = {"stop_reason": event.stop_reason, "raw_reason": event.raw_reason}
+        if state.last_usage is not None:
+            u = state.last_usage
+            usage_dict: dict = {
+                "input_tokens": u.input_tokens,
+                "output_tokens": u.output_tokens,
+            }
+            if u.cached_input_tokens is not None:
+                usage_dict["cached_input_tokens"] = u.cached_input_tokens
+            if u.reasoning_tokens is not None:
+                usage_dict["reasoning_tokens"] = u.reasoning_tokens
+            done_payload["usage"] = usage_dict
         done_record = SessionMessageRecord(
             seq=1,
             kind=SessionMessageKind.DONE,
-            payload={"stop_reason": event.stop_reason, "raw_reason": event.raw_reason},
+            payload=done_payload,
             created_at=now,
         )
         if records:
@@ -313,7 +342,7 @@ def translate_stream_event(
         )
 
     # All other events (StreamStart, ReasoningDelta, ToolCallStart, ToolCallDelta,
-    # MediaDelta, Usage, ExtendedEvent without _ExecutorToolResult) — silently dropped.
+    # MediaDelta, ExtendedEvent without _ExecutorToolResult) — silently dropped.
     return None
 
 
