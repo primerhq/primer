@@ -523,6 +523,17 @@ class SessionMessageRecord(BaseModel):
     kind: SessionMessageKind
     payload: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime
+    node_id: str | None = Field(
+        default=None,
+        description=(
+            "Within-graph node id that produced this record, when the record "
+            "originates from a graph run (set by the session translator from "
+            "the forwarded ``_GraphNodeEvent`` / graph lifecycle events). "
+            "``None`` for plain agent sessions. Lets the tap attribute every "
+            "record — including per-node agent tokens/tool calls — to its "
+            "originating node so the UI node inspector can stream live."
+        ),
+    )
 
 
 # ===========================================================================

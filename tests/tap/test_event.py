@@ -190,3 +190,50 @@ def test_done_record_with_usage_passes_through_to_tap_event() -> None:
     wire = json.loads(event.model_dump_json(by_alias=True))
     assert wire["payload"]["usage"]["input_tokens"] == 150
     assert wire["payload"]["usage"]["output_tokens"] == 60
+
+
+# ---------------------------------------------------------------------------
+# node_id passthrough (F1a: per-graph-node attribution)
+# ---------------------------------------------------------------------------
+
+
+def test_record_node_id_passes_through_to_tap_event() -> None:
+    """A record carrying node_id maps it onto the TapEvent."""
+    record = SessionMessageRecord(
+        seq=7,
+        kind=SessionMessageKind.ASSISTANT_TOKEN,
+        payload={"text": "hi"},
+        created_at=FIXED_TS,
+        node_id="node-7",
+    )
+    event = record_to_tap_event(
+        record,
+        workspace_id="ws",
+        session_id="s",
+        agent_id="a",
+        graph_id="g",
+        cursor="c",
+    )
+    assert event.node_id == "node-7"
+    wire = json.loads(event.model_dump_json(by_alias=True))
+    assert wire["node_id"] == "node-7"
+
+
+def test_record_node_id_defaults_none() -> None:
+    """A record without node_id yields a TapEvent with node_id None (agent path)."""
+    record = SessionMessageRecord(
+        seq=8,
+        kind=SessionMessageKind.DONE,
+        payload={},
+        created_at=FIXED_TS,
+    )
+    assert record.node_id is None
+    event = record_to_tap_event(
+        record,
+        workspace_id="ws",
+        session_id="s",
+        agent_id=None,
+        graph_id=None,
+        cursor="c",
+    )
+    assert event.node_id is None

@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Protocol
 
+from pydantic import TypeAdapter
+
 from primer.model.chat import (
     Done,
     Error,
@@ -35,8 +37,16 @@ from primer.model.chat import (
     ToolCallEnd,
     Usage,
     _ExecutorToolResult,
+    _GraphNodeEvent,
 )
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
+
+# Reusable validator for the discriminated ``StreamEvent`` union.  Used to
+# reconstruct the inner StreamEvent carried by a forwarded ``_GraphNodeEvent``
+# from its json dump (``inner_payload`` already includes the ``type``
+# discriminator — see primer.model.chat._GraphNodeEvent).  Built once at import
+# time so per-event reconstruction is cheap.
+_STREAM_EVENT_ADAPTER: TypeAdapter[StreamEvent] = TypeAdapter(StreamEvent)
 
 # 16 KB flush threshold
 _FLUSH_BYTES = 16 * 1024
@@ -167,30 +177,56 @@ class _CoalesceState:
     can carry a ``usage`` envelope — the LLM adapters emit Usage mid-stream
     (Anthropic/Google: cumulative on every chunk; OpenAI/Ollama: terminal
     only) and Done itself carries no token counts.
+
+    **Per-node keying.** Both the text buffer and the accumulated Usage are
+    keyed by ``node_id`` (``None`` = the plain agent-only path). Concurrent
+    graph fan-out nodes interleave their events in a single merged stream, so
+    a single shared buffer would mix sibling nodes' text and let one node's
+    Done carry a sibling's usage. Keying by node_id isolates each node's
+    coalescing. ``None`` keeps the agent-only path byte-identical to before
+    (one bucket, the same flush points).
+
+    Cosmetic note (F4): a node's ``graph_transition`` record is emitted
+    immediately (it never buffers), so it can interleave seq-wise with a
+    *concurrent* sibling node's still-buffered text. This is accepted as
+    cosmetic — seqs stay monotonic and nothing is lost; flush ordering is
+    unchanged.
     """
 
-    text_buffer: str = field(default="")
-    last_usage: Usage | None = field(default=None)
+    text_buffers: dict[str | None, str] = field(default_factory=dict)
+    last_usage_by: dict[str | None, Usage] = field(default_factory=dict)
 
 
 def translate_stream_event(
     event: StreamEvent,
     state: _CoalesceState,
+    node_id: str | None = None,
 ) -> "SessionMessageRecord | list[SessionMessageRecord] | None":
     """Per-event translation following the chat-selective persistence cadence.
 
     | Event                | Output                                          |
     |----------------------|-------------------------------------------------|
-    | TextDelta            | None (coalesces into state.text_buffer)         |
-    | Usage                | None (accumulated in state.last_usage)          |
-    | ToolCallEnd          | flush text_buffer (if any), then TOOL_CALL      |
+    | TextDelta            | None (coalesces into state.text_buffers[node])  |
+    | Usage                | None (accumulated in state.last_usage_by[node]) |
+    | ToolCallEnd          | flush text buffer (if any), then TOOL_CALL      |
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
-    | Done                 | flush text_buffer (if any), then DONE           |
+    | ExtendedEvent(_GraphNodeEvent) | reconstruct inner StreamEvent and    |
+    |                      |   recurse with node_id=event.extended.node_id   |
+    | Done                 | flush text buffer (if any), then DONE           |
     |                      |   payload includes usage envelope when present  |
     | Error                | ERROR                                           |
     | _GraphErrorEvent     | ERROR (graph runtime terminal failure)          |
     | _GraphTransitionEvent | GRAPH_TRANSITION (node enter/exit boundary)    |
+    | _GraphEndOutputEvent | ASSISTANT_TOKEN (graph End-node output)         |
     | (others)             | None — silently dropped                         |
+
+    ``node_id`` attributes every produced record to its originating graph
+    node. The default ``None`` is the plain agent-only path and is preserved
+    byte-for-byte (records carry ``node_id=None``, coalescing uses the
+    ``None`` bucket). Forwarded per-node agent events arrive wrapped in an
+    ``ExtendedEvent(_GraphNodeEvent)``; that branch reconstructs the inner
+    StreamEvent and recurses, supplying the wrapper's ``node_id`` — so the
+    caller (session dispatch) never passes ``node_id`` itself.
 
     Worker code is responsible for synthetic kinds (USER_INPUT, CANCELLED,
     YIELDED, RESUMED) — not produced by this translator from LLM events.
@@ -208,10 +244,35 @@ def translate_stream_event(
         _GraphTransitionEvent,
     )
 
+    # Per-node agent event forwarded by the graph executor (it wraps every
+    # child agent event in ``ExtendedEvent(_GraphNodeEvent(...))``, carrying
+    # node_id). Un-drop it: reconstruct the inner StreamEvent from its json
+    # dump and recurse with the wrapper's node_id so the inner event is
+    # persisted exactly as it would be on the agent-only path, but attributed
+    # to the node. ``inner_payload`` is a ``model_dump(mode="json")`` that
+    # already includes the ``type`` discriminator, so the union adapter can
+    # re-validate it directly. NOTE the nesting case: a node's tool result
+    # arrives as _GraphNodeEvent wrapping an ExtendedEvent(_ExecutorToolResult)
+    # — reconstruction yields that ExtendedEvent and the recursion lands on the
+    # TOOL_RESULT branch below.
+    if isinstance(event, ExtendedEvent) and isinstance(event.extended, _GraphNodeEvent):
+        try:
+            inner = _STREAM_EVENT_ADAPTER.validate_python(event.extended.inner_payload)
+        except Exception:
+            # Inner event isn't a reconstructable StreamEvent — drop, exactly
+            # as an unhandled event would be dropped on the agent path.
+            return None
+        return translate_stream_event(inner, state, node_id=event.extended.node_id)
+
     if isinstance(event, _GraphTransitionEvent):
         # Graph-runtime node-lifecycle transition (spec §2.6). Maps 1:1 to a
         # graph_transition record whose payload stays small; record_to_tap_event
         # turns it into a TapEventClass.GRAPH_TRANSITION event for the tap.
+        #
+        # F4 (cosmetic interleave): this record is emitted immediately and never
+        # buffers, so its seq may land between a *concurrent* sibling node's
+        # buffered TextDeltas and that sibling's flush. Accepted as cosmetic —
+        # seqs stay monotonic and nothing is lost; flush ordering is unchanged.
         return SessionMessageRecord(
             seq=1,  # WorkspaceMessageWriter overwrites
             kind=SessionMessageKind.GRAPH_TRANSITION,
@@ -221,6 +282,7 @@ def translate_stream_event(
                 "phase": event.phase,
                 "status": event.status,
             },
+            node_id=event.node_id,
             created_at=now,
         )
 
@@ -234,6 +296,7 @@ def translate_stream_event(
                 "node_id": event.node_id,
                 "path": event.path,
             },
+            node_id=event.node_id,
             created_at=now,
         )
 
@@ -246,37 +309,44 @@ def translate_stream_event(
                 "parsed": event.parsed,
                 "end_node_id": event.end_node_id,
             },
+            node_id=event.end_node_id,
             created_at=now,
         )
 
     if isinstance(event, Usage):
         # Accumulate so the DONE record can carry a usage envelope.  Providers
         # that emit cumulative counts (Anthropic, Google) overwrite on every
-        # chunk; terminal-only providers (OpenAI, Ollama) set it once.
-        state.last_usage = event
+        # chunk; terminal-only providers (OpenAI, Ollama) set it once.  Keyed
+        # by node_id so concurrent fan-out siblings don't clobber each other's
+        # token counts (None = agent-only path).
+        state.last_usage_by[node_id] = event
         return None
 
     if isinstance(event, TextDelta):
-        state.text_buffer += event.text
+        # Keyed by node_id so interleaved sibling-node text never mixes.
+        state.text_buffers[node_id] = state.text_buffers.get(node_id, "") + event.text
         return None
 
     if isinstance(event, ToolCallEnd):
         records: list[SessionMessageRecord] = []
-        if state.text_buffer:
+        buffered = state.text_buffers.get(node_id, "")
+        if buffered:
             records.append(
                 SessionMessageRecord(
                     seq=1,
                     kind=SessionMessageKind.ASSISTANT_TOKEN,
-                    payload={"text": state.text_buffer},
+                    payload={"text": buffered},
+                    node_id=node_id,
                     created_at=now,
                 )
             )
-            state.text_buffer = ""
+            state.text_buffers[node_id] = ""
         records.append(
             SessionMessageRecord(
                 seq=1,
                 kind=SessionMessageKind.TOOL_CALL,
                 payload={"id": event.id, "arguments": event.arguments},
+                node_id=node_id,
                 created_at=now,
             )
         )
@@ -295,24 +365,28 @@ def translate_stream_event(
                 "output": event.extended.output,
                 "error": event.extended.error,
             },
+            node_id=node_id,
             created_at=now,
         )
 
     if isinstance(event, Done):
         records = []
-        if state.text_buffer:
+        buffered = state.text_buffers.get(node_id, "")
+        if buffered:
             records.append(
                 SessionMessageRecord(
                     seq=1,
                     kind=SessionMessageKind.ASSISTANT_TOKEN,
-                    payload={"text": state.text_buffer},
+                    payload={"text": buffered},
+                    node_id=node_id,
                     created_at=now,
                 )
             )
-            state.text_buffer = ""
+            state.text_buffers[node_id] = ""
         done_payload: dict = {"stop_reason": event.stop_reason, "raw_reason": event.raw_reason}
-        if state.last_usage is not None:
-            u = state.last_usage
+        last_usage = state.last_usage_by.get(node_id)
+        if last_usage is not None:
+            u = last_usage
             usage_dict: dict = {
                 "input_tokens": u.input_tokens,
                 "output_tokens": u.output_tokens,
@@ -326,6 +400,7 @@ def translate_stream_event(
             seq=1,
             kind=SessionMessageKind.DONE,
             payload=done_payload,
+            node_id=node_id,
             created_at=now,
         )
         if records:
@@ -338,11 +413,13 @@ def translate_stream_event(
             seq=1,
             kind=SessionMessageKind.ERROR,
             payload={"message": event.message, "code": event.code, "fatal": event.fatal},
+            node_id=node_id,
             created_at=now,
         )
 
     # All other events (StreamStart, ReasoningDelta, ToolCallStart, ToolCallDelta,
-    # MediaDelta, ExtendedEvent without _ExecutorToolResult) — silently dropped.
+    # MediaDelta, ExtendedEvent without _ExecutorToolResult / _GraphNodeEvent) —
+    # silently dropped.
     return None
 
 
