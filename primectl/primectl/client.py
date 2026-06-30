@@ -79,5 +79,31 @@ class ApiClient:
             raise ApiError(resp.status_code, problem, resp.text)
         return resp
 
+    def stream(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        json: Any | None = None,
+    ) -> Any:
+        """Open a streaming request (e.g. an SSE tap).
+
+        Returns the httpx streaming context manager — callers use
+        ``with client.stream(...) as response:`` and iterate ``response``.
+        Reuses the same base URL + ``Authorization: Bearer`` header as
+        :meth:`request`, so streaming commands need no separate credential
+        handling. Unlike :meth:`request` it does NOT raise on >=400; the
+        caller inspects ``response.status_code`` while the stream is open.
+        """
+        if self._verbose:
+            import sys
+
+            print(
+                f"> {method.upper()} {path} params={params} (stream)",
+                file=sys.stderr,
+            )
+        return self._http.stream(method.upper(), path, params=params, json=json)
+
     def close(self) -> None:
         self._http.close()
