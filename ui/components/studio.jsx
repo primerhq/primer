@@ -139,6 +139,10 @@ function ST_defaultState() {
     activeChips: { tool: true, gt: true, asst: true, yield: true, done: true, err: true },
     // Last sidebar selection (ephemeral-ish; persisted for restore)
     lastSelection: null,
+    // Command palette / quick-open (B5) — ephemeral, not persisted.
+    paletteOpen: false,
+    paletteMode: "command",
+    paletteQuery: "",
   };
 }
 
@@ -262,6 +266,20 @@ function useStudioState(wid) {
     setState(function (s) { return Object.assign({}, s, { terminalOpen: !s.terminalOpen }); });
   }, []);
 
+  // ---- command palette / quick-open (B5) ----
+  var openPalette = React.useCallback(function (mode) {
+    setState(function (s) { return Object.assign({}, s, { paletteOpen: true, paletteMode: mode || "command", paletteQuery: "" }); });
+  }, []);
+  var closePalette = React.useCallback(function () {
+    setState(function (s) { return Object.assign({}, s, { paletteOpen: false }); });
+  }, []);
+  var togglePalette = React.useCallback(function () {
+    setState(function (s) {
+      if (s.paletteOpen) return Object.assign({}, s, { paletteOpen: false });
+      return Object.assign({}, s, { paletteOpen: true, paletteMode: "command", paletteQuery: "" });
+    });
+  }, []);
+
   // ---- activity chips (B4) ----
   var toggleChip = React.useCallback(function (cl) {
     setState(function (s) {
@@ -301,6 +319,10 @@ function useStudioState(wid) {
     setLeftWidth: setLeftWidth,
     setRightWidth: setRightWidth,
     patch: patch,
+    // B5: palette / quick-open
+    openPalette: openPalette,
+    closePalette: closePalette,
+    togglePalette: togglePalette,
   };
 }
 
@@ -429,9 +451,15 @@ function ST_RegionPlaceholder({ kind, label, testid }) {
 // Studio — route shell. Header + 3-column resizable body with placeholders.
 // ---------------------------------------------------------------------------
 
-function Studio({ wid }) {
+function Studio({ wid, pushToast }) {
   var studio = useStudioState(wid);
   var s = studio.state;
+
+  // Thread pushToast into the studio object so StudioCenter / StudioActivity
+  // can reach it via studio.pushToast without re-plumbing every sub-component.
+  // Falls back to the module-level primerApi.toastPush so non-nil calls always
+  // work even when app.jsx hasn't passed the prop yet.
+  studio.pushToast = pushToast || (window.primerApi && window.primerApi.toastPush) || null;
 
   // Column resize: drag the handle, write width into state (persisted).
   // We clamp to sane bounds so a column can't be dragged off-screen.
@@ -466,6 +494,30 @@ function Studio({ wid }) {
     window.location.hash = "#/workspaces/" + encodeURIComponent(newWid);
   }
 
+  // B5: Global keydown — ⌘K/Ctrl-K → toggle palette; ⌘P/Ctrl-P → quick-open;
+  // Ctrl-` → toggleTerminal; Escape → close whichever overlay is open.
+  // Registered on the window (not just the Studio div) so it fires regardless
+  // of focus position within the IDE shell.
+  React.useEffect(function () {
+    function onKeyDown(e) {
+      var mod = e.metaKey || e.ctrlKey;
+      if (mod && (e.key === "k" || e.key === "K")) {
+        e.preventDefault();
+        studio.togglePalette();
+      } else if (mod && (e.key === "p" || e.key === "P")) {
+        e.preventDefault();
+        studio.openPalette("quickopen");
+      } else if (e.ctrlKey && e.key === "`") {
+        e.preventDefault();
+        studio.toggleTerminal();
+      } else if (e.key === "Escape") {
+        if (s.paletteOpen) studio.closePalette();
+      }
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return function () { window.removeEventListener("keydown", onKeyDown); };
+  }, [s.paletteOpen, studio.togglePalette, studio.openPalette, studio.closePalette, studio.toggleTerminal]);
+
   return (
     <div
       className="st-root"
@@ -480,8 +532,8 @@ function Studio({ wid }) {
         density={s.density}
         onToggleTheme={studio.toggleTheme}
         onToggleDensity={studio.toggleDensity}
-        onTogglePalette={function () { /* B5: open command palette */ }}
-        onOpenQuick={function () { /* B5: open quick-open */ }}
+        onTogglePalette={studio.togglePalette}
+        onOpenQuick={function () { studio.openPalette("quickopen"); }}
         onSelectWorkspace={selectWorkspace}
       />
 
@@ -506,7 +558,25 @@ function Studio({ wid }) {
         </div>
       </div>
 
-      {/* B5: {paletteOpen && <CommandPalette … />} mounts here. */}
+      {/* B5: Command palette overlay (⌘K). Rendered at Studio root so it sits
+          above all three columns. paletteMode "command" vs "quickopen" selects
+          which component renders; both share the same open/close state. */}
+      {s.paletteOpen && s.paletteMode === "command" && (
+        <CommandPalette
+          wid={wid}
+          studio={studio}
+          open={s.paletteOpen}
+          onClose={studio.closePalette}
+        />
+      )}
+      {s.paletteOpen && s.paletteMode === "quickopen" && (
+        <QuickOpen
+          wid={wid}
+          studio={studio}
+          open={s.paletteOpen}
+          onClose={studio.closePalette}
+        />
+      )}
     </div>
   );
 }

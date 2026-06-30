@@ -810,7 +810,7 @@ function App() {
     // header + 3-column shell, so we return it directly below — bypassing
     // the standard page chrome (sidebar/topbar/page-header) the other
     // pages share. See the early-return guard after the page switch.
-    return <Studio wid={currentWorkspaceId} />;
+    return <Studio wid={currentWorkspaceId} pushToast={pushToast} />;
   } else if (page === "workspace-providers") {
     pageHeader = (
       <>
