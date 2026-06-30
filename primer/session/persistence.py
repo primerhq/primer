@@ -121,7 +121,9 @@ class WorkspaceMessageWriter:
         line: bytes = record.model_dump_json().encode() + b"\n"
 
         # --- tick event fires per-record (before buffering) ---
-        # Future: publish to SessionTickRouter here.
+        # The ``session:{sid}:tick`` bus event is published by the dispatch
+        # layer (``primer/session/dispatch.py``) after each append; the
+        # WorkspaceTapRouter consumes those ticks to drive the tap.
 
         # Check if we should flush before buffering (age policy)
         if self._oldest_at is not None:
@@ -403,6 +405,12 @@ def translate_stream_event(
             node_id=node_id,
             created_at=now,
         )
+        # Done is terminal for this (node) stream within the coalesce state:
+        # drop its per-node buffers so a stray second Done can't replay a
+        # stale usage envelope (mirrors the text-buffer clear discipline) and
+        # the dicts don't accumulate dead keys across many nodes.
+        state.text_buffers.pop(node_id, None)
+        state.last_usage_by.pop(node_id, None)
         if records:
             records.append(done_record)
             return records
