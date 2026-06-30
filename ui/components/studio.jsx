@@ -502,7 +502,7 @@ function Studio({ wid }) {
 
         {/* ---- RIGHT: B4 StudioActivity (action required + workspace tap) ---- */}
         <div className="st-col st-col-right" data-testid="studio-activity">
-          <ST_RegionPlaceholder kind="B4 · right sidebar" label="Action Required + Workspace Activity" testid="region-activity" />
+          <StudioActivity wid={wid} studio={studio} />
         </div>
       </div>
 
