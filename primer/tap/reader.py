@@ -289,6 +289,11 @@ async def read_batch(
     surface returns the encoded :class:`TapCursor` token alongside the batch as
     ``next_cursor``.
 
+    .. note:: (TAP-2) This function re-reads each session's full log from the
+        start on every call (O(history) per session per drain).  The MCP drain
+        (Phase 5) should push ``seq > resume`` into an ``after_seq``-indexed
+        read before shipping it as the hot path.
+
     Returns:
         ``(events, cursor)`` — the (mutated, same-instance) cursor reflects
         every consumed record.  A missing log file contributes no events.

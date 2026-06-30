@@ -37,7 +37,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -77,35 +76,44 @@ def _decode_selector(raw: str | None) -> TapSelector:
     optional) so the value is safe to drop straight into a URL. A missing or
     empty value yields an empty (pass-through) selector. A present-but-invalid
     value is a client error → HTTP 400.
+
+    Precedence: raw JSON is tried first so that a plain-JSON value that
+    happens to also be valid base64url-of-valid-JSON is never mis-routed;
+    base64url is only attempted when the raw text does not parse as JSON.
     """
     if raw is None or not raw.strip():
         return TapSelector()
 
     text = raw.strip()
-    # Try base64url first (URL-safe transport), then fall back to raw JSON.
+    # Try raw JSON first; only fall back to base64url if that fails.
+    try:
+        return TapSelector.model_validate_json(text)
+    except ValueError:
+        pass
+
+    # Not raw JSON — try base64url-encoded JSON.
     payload: str | None = None
     try:
         padding = (4 - len(text) % 4) % 4
         decoded = base64.urlsafe_b64decode(text + "=" * padding)
-        candidate = decoded.decode("utf-8")
-        # Only accept the base64 decode if it actually parses as JSON;
-        # otherwise the value was plain JSON that happened to be b64-decodable.
-        json.loads(candidate)
-        payload = candidate
+        payload = decoded.decode("utf-8")
     except (binascii.Error, ValueError, UnicodeDecodeError):
-        payload = text
+        payload = None
 
-    try:
-        return TapSelector.model_validate_json(payload)
-    except ValueError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "type": "/errors/invalid-selector",
-                "title": "Malformed tap selector",
-                "detail": str(exc),
-            },
-        ) from exc
+    if payload is not None:
+        try:
+            return TapSelector.model_validate_json(payload)
+        except ValueError:
+            pass
+
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "type": "/errors/invalid-selector",
+            "title": "Malformed tap selector",
+            "detail": "selector is neither valid JSON nor valid base64url-encoded JSON",
+        },
+    )
 
 
 def _read_cursor(request: Request, cursor_q: str | None) -> TapCursor:
@@ -186,14 +194,18 @@ async def _stream_tap(
 ):
     """Async generator yielding SSE frames for a workspace tap.
 
-    Maintains ``in_scope`` as ``sid -> (session_row, byte_offset) | None`` —
-    a ``None`` value caches a negative resolution so an out-of-scope session is
-    not re-queried on every tick. On each in-scope tick it incrementally reads
-    the session log, advances the cursor by ``event.seq``, stamps each frame's
-    cursor token, and yields the frame.
+    Maintains ``in_scope`` as ``sid -> (session_row, byte_offset)`` — only
+    positive (confirmed-in-scope) entries.  On each tick for a ``sid`` NOT in
+    ``in_scope``, :func:`_resolve_single_in_scope` is called to check whether
+    it has entered scope; if it has, it is added and processed; if not, the tick
+    is skipped WITHOUT caching the negative so a future tick re-evaluates (this
+    correctly handles a session whose ``status`` transitions into scope after the
+    initial snapshot). On each in-scope tick it incrementally reads the session
+    log, advances the cursor by ``event.seq``, stamps each frame's cursor token,
+    and yields the frame.
     """
-    # sid -> (row, byte_offset); a None value is a cached negative resolution.
-    in_scope: dict[str, tuple[WorkspaceSession, int] | None] = {}
+    # sid -> (row, byte_offset); only positive entries — no negative cache.
+    in_scope: dict[str, tuple[WorkspaceSession, int]] = {}
 
     initial = await _resolve_in_scope(
         sessions_storage, workspace_id=workspace_id, selector=selector
@@ -220,12 +232,12 @@ async def _stream_tap(
                 return
 
             sid = wtick.session_id
-            entry = in_scope.get(sid, "__missing__")
+            entry = in_scope.get(sid)
             if entry is None:
-                # Cached out-of-scope session; ignore without re-querying.
-                continue
-            if entry == "__missing__":
-                # First time we have seen this session — re-resolve it.
+                # Session not yet confirmed in scope — re-resolve it now.
+                # We do NOT cache a negative result: scope membership is
+                # mutable (e.g. status transitions) so each tick re-evaluates
+                # until the session enters scope or the connection closes.
                 row = await _resolve_single_in_scope(
                     sessions_storage,
                     workspace_id=workspace_id,
@@ -233,13 +245,12 @@ async def _stream_tap(
                     selector=selector,
                 )
                 if row is None:
-                    in_scope[sid] = None  # negative cache
                     continue
                 # A newly-in-scope session starts from seq 0 (full), per spec.
                 in_scope[sid] = (row, 0)
                 entry = in_scope[sid]
 
-            row, byte_offset = entry  # type: ignore[misc]
+            row, byte_offset = entry
             events, next_offset = await read_session_since(
                 workspace_io,
                 workspace_id=workspace_id,
