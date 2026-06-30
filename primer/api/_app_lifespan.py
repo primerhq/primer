@@ -587,6 +587,26 @@ def _make_lifespan(config: AppConfig):
         else:
             app.state.chat_channel_warm_task = None
 
+        # Process-local fan-out of session ticks to per-workspace tap
+        # subscribers (the workspace dimension of the tick router). Owns
+        # its own bus subscription — a second broadcast subscription
+        # alongside the session-tick forwarder keeps the tap decoupled.
+        # Built BEFORE the workspaces toolset so the ``workspace_tap``
+        # drain tool can capture it for its bounded long-poll.
+        workspace_tap_router = None
+        if event_bus is not None:
+            from primer.model.workspace_session import (
+                WorkspaceSession as _WorkspaceSession,
+            )
+            from primer.tap.router import WorkspaceTapRouter
+
+            workspace_tap_router = WorkspaceTapRouter(
+                event_bus,
+                storage_provider.get_storage(_WorkspaceSession),
+            )
+            await workspace_tap_router.start()
+        app.state.workspace_tap_router = workspace_tap_router
+
         # Build the always-on _workspaces toolset now that the scheduler,
         # claim engine, and event bus exist (any may be None when no
         # scheduler is configured; the session tools degrade to an
@@ -597,6 +617,7 @@ def _make_lifespan(config: AppConfig):
             scheduler=scheduler,
             claim_engine=claim_engine,
             event_bus=event_bus,
+            tap_router=workspace_tap_router,
         )
         provider_registry._workspaces_toolset_provider = ws_toolset  # noqa: SLF001
         app.state.workspaces_toolset = ws_toolset
@@ -940,23 +961,9 @@ def _make_lifespan(config: AppConfig):
             session_tick_task = None
             app.state.session_tick_forwarder_task = None
 
-        # Process-local fan-out of session ticks to per-workspace tap
-        # subscribers (the workspace dimension of the tick router). Owns
-        # its own bus subscription — a second broadcast subscription
-        # alongside the session-tick forwarder keeps the tap decoupled.
-        workspace_tap_router = None
-        if event_bus is not None:
-            from primer.model.workspace_session import (
-                WorkspaceSession as _WorkspaceSession,
-            )
-            from primer.tap.router import WorkspaceTapRouter
-
-            workspace_tap_router = WorkspaceTapRouter(
-                event_bus,
-                storage_provider.get_storage(_WorkspaceSession),
-            )
-            await workspace_tap_router.start()
-        app.state.workspace_tap_router = workspace_tap_router
+        # (The workspace tap router is constructed earlier, before the
+        # workspaces toolset, so the ``workspace_tap`` drain tool can
+        # capture it. See above.)
 
         worker_pool = None
         if config.runtime_mode in (
