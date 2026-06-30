@@ -106,7 +106,8 @@ def test_studio_registered_in_index_after_workspace_tap() -> None:
 def test_app_renders_studio_for_workspace_detail() -> None:
     src = APP.read_text(encoding="utf-8")
     # /workspaces/:wid now renders the Studio shell directly.
-    assert "<Studio wid={currentWorkspaceId} />" in src
+    # B5 added pushToast prop; check the Studio render is present with wid.
+    assert "<Studio wid={currentWorkspaceId}" in src
     # /sessions and /sessions/:id redirect into the Studio.
     assert '"#/workspaces"' in src
     assert "open=session:" in src
