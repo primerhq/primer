@@ -924,43 +924,6 @@ def _make_lifespan(config: AppConfig):
             chat_relay_task = None
             app.state.chat_relay_forwarder_task = None
 
-        # Process-local router for session tick events. One bus subscription
-        # per process feeds it; WS handlers subscribe per-session.
-        from primer.session.tick_router import SessionTickRouter
-        from primer.session.tick_router import Tick as SessionTick
-
-        session_tick_router = SessionTickRouter()
-        app.state.session_tick_router = session_tick_router
-
-        async def _forward_session_ticks_from_bus() -> None:
-            sub = event_bus.subscribe()
-            try:
-                async for event in sub:
-                    key = event.event_key
-                    if not key.startswith("session:") or not key.endswith(":tick"):
-                        continue
-                    sid = key[len("session:"):-len(":tick")]
-                    if not sid:
-                        continue
-                    seq = event.payload.get("seq") if event.payload else None
-                    if not isinstance(seq, int):
-                        continue
-                    session_tick_router._publish(sid, SessionTick(seq=seq))
-            except asyncio.CancelledError:
-                pass
-            finally:
-                await sub.aclose()
-
-        if event_bus is not None:
-            session_tick_task = asyncio.create_task(
-                _forward_session_ticks_from_bus(),
-                name="session-tick-forwarder",
-            )
-            app.state.session_tick_forwarder_task = session_tick_task
-        else:
-            session_tick_task = None
-            app.state.session_tick_forwarder_task = None
-
         # (The workspace tap router is constructed earlier, before the
         # workspaces toolset, so the ``workspace_tap`` drain tool can
         # capture it. See above.)
@@ -1173,15 +1136,6 @@ def _make_lifespan(config: AppConfig):
                         pass
                 except Exception:
                     logger.exception("chat_tick_task teardown failed")
-            if session_tick_task is not None:
-                try:
-                    session_tick_task.cancel()
-                    try:
-                        await session_tick_task
-                    except asyncio.CancelledError:
-                        pass
-                except Exception:
-                    logger.exception("session_tick_task teardown failed")
             if workspace_tap_router is not None:
                 try:
                     await workspace_tap_router.aclose()

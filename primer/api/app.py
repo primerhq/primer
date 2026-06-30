@@ -341,38 +341,6 @@ def create_test_app(
 
     app.state.start_chat_tick_forwarder = _start_chat_tick_forwarder
 
-    from primer.session.tick_router import SessionTickRouter as _STR
-    from primer.session.tick_router import Tick as _SessionTick
-
-    _session_tick_router = _STR()
-    app.state.session_tick_router = _session_tick_router
-
-    async def _start_session_tick_forwarder() -> asyncio.Task:
-        """Async helper for the test fixture — spin the session tick
-        forwarder task within an active event loop."""
-        sub = app.state.event_bus.subscribe()
-
-        async def _session_loop() -> None:
-            try:
-                async for event in sub:
-                    key = event.event_key
-                    if not key.startswith("session:") or not key.endswith(":tick"):
-                        continue
-                    sid = key[len("session:"):-len(":tick")]
-                    if not sid:
-                        continue
-                    seq = event.payload.get("seq") if event.payload else None
-                    if isinstance(seq, int):
-                        _session_tick_router._publish(sid, _SessionTick(seq=seq))
-            except asyncio.CancelledError:
-                pass
-            finally:
-                await sub.aclose()
-
-        return asyncio.create_task(_session_loop(), name="session-tick-forwarder")
-
-    app.state.start_session_tick_forwarder = _start_session_tick_forwarder
-
     # Optional worker pool for integration tests that need the chat
     # claim loop (start_chat_worker=True).
     if start_chat_worker:
@@ -477,7 +445,6 @@ def create_test_app(
         @asynccontextmanager
         async def _test_lifespan(_a: FastAPI) -> AsyncIterator[None]:
             fwd_task = await _a.state.start_chat_tick_forwarder()
-            sess_fwd_task = await _a.state.start_session_tick_forwarder()
             await _a.state.start_worker_pool()
             try:
                 yield
@@ -489,11 +456,6 @@ def create_test_app(
                 fwd_task.cancel()
                 try:
                     await fwd_task
-                except asyncio.CancelledError:
-                    pass
-                sess_fwd_task.cancel()
-                try:
-                    await sess_fwd_task
                 except asyncio.CancelledError:
                     pass
 
