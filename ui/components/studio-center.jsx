@@ -644,11 +644,10 @@ function FilePanel({ wid, tab, studio, pushToast }) {
       setTabDirty(false);
       setSaving(false);
       pushToast && pushToast({ kind: "success", title: "File saved", detail: path });
-      var fresh = await fileRes.refetch();
-      // refetch() resolves to the new data in this codebase's useResource; if
-      // it returns the body, adopt its etag immediately (the effect above also
-      // seeds it once the resource state commits).
-      if (fresh && fresh.etag !== undefined) heldEtagRef.current = fresh.etag;
+      // Trigger a re-read to refresh the held etag. refetch() returns undefined
+      // here (useResource), so adoption happens in the [data] effect above,
+      // which re-seeds heldEtagRef + draft once the new read commits.
+      await fileRes.refetch();
     } catch (err) {
       setSaving(false);
       if (err && err.status === 412) {
@@ -666,9 +665,10 @@ function FilePanel({ wid, tab, studio, pushToast }) {
   async function reloadConflict() {
     setConflict(false);
     setTabDirty(false);
-    var fresh = await fileRes.refetch();
-    if (fresh && typeof fresh.content === "string") setDraft(fresh.content);
-    if (fresh && fresh.etag !== undefined) heldEtagRef.current = fresh.etag;
+    // Trigger a re-read. refetch() returns undefined (useResource), so the
+    // [data] effect above performs the adoption: it replaces `draft` with the
+    // fresh content and re-seeds heldEtagRef once the new read commits.
+    await fileRes.refetch();
   }
 
   // Overwrite: re-PUT WITHOUT the etag (force), keeping local edits.
@@ -823,7 +823,7 @@ function StudioCenter({ wid, studio }) {
   // without it today, so every toast call below is guarded and simply no-ops
   // until a later task passes it. The 412-conflict UX uses an inline banner
   // (not a toast), so the critical flow does not depend on this.
-  var pushToast = studio.pushToast || (window.primerApi && window.primerApi.pushToast) || null;
+  var pushToast = studio.pushToast || (window.primerApi && window.primerApi.toastPush) || null;
 
   var activeTab = null;
   for (var i = 0; i < openTabs.length; i++) {

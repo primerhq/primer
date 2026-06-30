@@ -83,6 +83,10 @@ function ActionRequired({ wid, studio }) {
         }, 300);
       }
     };
+    // No-op on stream error: the 15s pollMs on the pending resource is the
+    // safety net, so a dropped/erroring tap still reconciles on the next poll
+    // (mirrors how WorkspaceTap tolerates stream errors).
+    es.onerror = function() { /* poll backstops a dropped tap */ };
     return function() {
       clearTimeout(debounceRef.current);
       try { es.close(); } catch (_) { /* no-op */ }
@@ -119,8 +123,12 @@ function ActionRequired({ wid, studio }) {
     setTimeout(function() { pending.refetch(); }, 800);
   }
 
-  // Action handlers
+  // Action handlers. Each guards on a falsy tool_call_id — the /yields/pending
+  // item shape allows tool_call_id: null (malformed/legacy parks), and every
+  // endpoint below embeds it in the URL/body. Bailing keeps us from POSTing
+  // e.g. /yields/null/cancel.
   function handleApprove(item) {
+    if (!item.tool_call_id) return;
     apiFetch(
       "POST",
       "/sessions/" + encodeURIComponent(item.session_id) + "/tool_approval/respond",
@@ -134,6 +142,7 @@ function ActionRequired({ wid, studio }) {
   }
 
   function handleReject(item) {
+    if (!item.tool_call_id) return;
     apiFetch(
       "POST",
       "/sessions/" + encodeURIComponent(item.session_id) + "/tool_approval/respond",
@@ -146,6 +155,7 @@ function ActionRequired({ wid, studio }) {
   }
 
   function handleRespondSubmit(item) {
+    if (!item.tool_call_id) return;
     var rs = getRespond(item.tool_call_id);
     if (!rs.draft.trim()) return;
     patchRespond(item.tool_call_id, { submitting: true, error: null });
@@ -168,6 +178,7 @@ function ActionRequired({ wid, studio }) {
   }
 
   function handleCancel(item) {
+    if (!item.tool_call_id) return;
     apiFetch(
       "POST",
       "/sessions/" + encodeURIComponent(item.session_id) + "/yields/" + encodeURIComponent(item.tool_call_id) + "/cancel",
@@ -270,16 +281,20 @@ function ActionRequired({ wid, studio }) {
           </div>
         )}
 
-        {visibleItems.map(function(item) {
+        {visibleItems.map(function(item, idx) {
           var rs = getRespond(item.tool_call_id);
           var isApproval = item.kind === "approval";
           var isAsk = item.kind === "ask_user";
           var isCancelable = item.kind === "watch_files" || item.kind === "sleep";
           var sidShort = SA_short(item.session_id);
+          // A park with no tool_call_id (the /yields/pending shape allows null)
+          // is still rendered, but its action controls are disabled so a
+          // malformed/legacy item can't POST e.g. /yields/null/cancel.
+          var actionable = !!item.tool_call_id;
 
           return (
             <div
-              key={item.tool_call_id}
+              key={(item.session_id || "") + ":" + (item.tool_call_id || idx)}
               data-testid="action-item"
               style={{
                 padding: "10px 12px",
@@ -354,6 +369,7 @@ function ActionRequired({ wid, studio }) {
                   <button
                     type="button"
                     data-testid="approve"
+                    disabled={!actionable}
                     onClick={function() { handleApprove(item); }}
                     style={{
                       flex: 1,
@@ -362,7 +378,8 @@ function ActionRequired({ wid, studio }) {
                       border: "1px solid oklch(0.82 0.18 145 / 0.4)",
                       background: "var(--green-dim)",
                       color: "var(--green)",
-                      cursor: "pointer",
+                      cursor: actionable ? "pointer" : "not-allowed",
+                      opacity: actionable ? 1 : 0.5,
                       fontSize: 12,
                       fontWeight: 600,
                     }}
@@ -372,6 +389,7 @@ function ActionRequired({ wid, studio }) {
                   <button
                     type="button"
                     data-testid="reject"
+                    disabled={!actionable}
                     onClick={function() { handleReject(item); }}
                     style={{
                       flex: 1,
@@ -380,7 +398,8 @@ function ActionRequired({ wid, studio }) {
                       border: "1px solid oklch(0.75 0.18 25 / 0.4)",
                       background: "var(--red-dim)",
                       color: "var(--red)",
-                      cursor: "pointer",
+                      cursor: actionable ? "pointer" : "not-allowed",
+                      opacity: actionable ? 1 : 0.5,
                       fontSize: 12,
                       fontWeight: 600,
                     }}
@@ -401,7 +420,7 @@ function ActionRequired({ wid, studio }) {
                     data-testid="respond"
                     placeholder="Type a response… Enter to send"
                     value={rs.draft}
-                    disabled={rs.submitting}
+                    disabled={rs.submitting || !actionable}
                     onChange={function(e) { patchRespond(item.tool_call_id, { draft: e.target.value }); }}
                     onKeyDown={function(e) { handleRespondKeyDown(item, e); }}
                     style={{
@@ -425,6 +444,7 @@ function ActionRequired({ wid, studio }) {
                   <button
                     type="button"
                     data-testid="cancel-yield"
+                    disabled={!actionable}
                     onClick={function() { handleCancel(item); }}
                     style={{
                       padding: "4px 10px",
@@ -432,7 +452,8 @@ function ActionRequired({ wid, studio }) {
                       border: "1px solid var(--border)",
                       background: "transparent",
                       color: "var(--text-3)",
-                      cursor: "pointer",
+                      cursor: actionable ? "pointer" : "not-allowed",
+                      opacity: actionable ? 1 : 0.5,
                       fontSize: 12,
                     }}
                   >

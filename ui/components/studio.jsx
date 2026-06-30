@@ -91,6 +91,47 @@ function ST_tabFromUrl() {
   }
 }
 
+// Synthesize a minimal tab from a parsed url tab id (the ?open= value).
+// Returns { id, kind, ref, title, glyph } or null. Used by the initializer
+// and the wid-change effect so a fresh deep-link (empty localStorage) still
+// creates + activates the tab — the center/right panels self-fetch their
+// detail from `ref`, so a minimal synthesized tab renders correctly.
+function ST_tabFromUrlId(urlTab) {
+  if (!urlTab || typeof urlTab !== "string") return null;
+  if (urlTab.indexOf("session:") === 0) {
+    var sid = urlTab.slice("session:".length);
+    return { id: urlTab, kind: "session", ref: sid, title: sid, glyph: "◆" };
+  }
+  if (urlTab.indexOf("file:") === 0) {
+    var fpath = urlTab.slice("file:".length);
+    var parts = String(fpath).split("/");
+    var base = parts[parts.length - 1] || fpath;
+    return { id: urlTab, kind: "file", ref: fpath, title: base };
+  }
+  return null;
+}
+
+// Reconcile a freshly-built base state with the current ?open= deep-link.
+// If the url tab is already an open tab, just activate it; otherwise
+// synthesize a minimal tab, append it, and activate it. With activeTabId set
+// on mount, the first persist effect's ST_syncUrl re-writes the same ?open=
+// value instead of deleting it (so deep-links survive the mount).
+function ST_applyUrlTab(base) {
+  var urlTab = ST_tabFromUrl();
+  if (!urlTab) return base;
+  var openTabs = base.openTabs || [];
+  var present = openTabs.some(function (t) { return t.id === urlTab; });
+  if (present) {
+    base.activeTabId = urlTab;
+    return base;
+  }
+  var tab = ST_tabFromUrlId(urlTab);
+  if (!tab) return base;
+  base.openTabs = openTabs.concat([tab]);
+  base.activeTabId = urlTab;
+  return base;
+}
+
 // Mirror the active tab to the URL query via replaceState — no history
 // entry per tab switch. activeTabId is already in `session:<id>` /
 // `file:<path>` form so it maps straight onto ?open=.
@@ -158,12 +199,7 @@ function useStudioState(wid) {
   // Initial state: defaults <- persisted(wid) <- url(?open=). Computed once
   // per wid via the lazy initialiser; re-keyed below when wid changes.
   var [state, setState] = React.useState(function () {
-    var base = Object.assign(ST_defaultState(), ST_loadPersisted(wid));
-    var urlTab = ST_tabFromUrl();
-    if (urlTab && (base.openTabs || []).some(function (t) { return t.id === urlTab; })) {
-      base.activeTabId = urlTab;
-    }
-    return base;
+    return ST_applyUrlTab(Object.assign(ST_defaultState(), ST_loadPersisted(wid)));
   });
 
   // Re-hydrate when switching workspace (wid changes): swap to that
@@ -173,12 +209,7 @@ function useStudioState(wid) {
   React.useEffect(function () {
     if (widRef.current === wid) return;
     widRef.current = wid;
-    var base = Object.assign(ST_defaultState(), ST_loadPersisted(wid));
-    var urlTab = ST_tabFromUrl();
-    if (urlTab && (base.openTabs || []).some(function (t) { return t.id === urlTab; })) {
-      base.activeTabId = urlTab;
-    }
-    setState(base);
+    setState(ST_applyUrlTab(Object.assign(ST_defaultState(), ST_loadPersisted(wid))));
   }, [wid]);
 
   // Persist + URL-mirror after every committed state change.
@@ -223,11 +254,21 @@ function useStudioState(wid) {
 
   var closeTab = React.useCallback(function (id) {
     setState(function (s) {
-      var idx = (s.openTabs || []).findIndex(function (t) { return t.id === id; });
-      var openTabs = s.openTabs.filter(function (t) { return t.id !== id; });
+      var prev = s.openTabs || [];
+      var idx = prev.findIndex(function (t) { return t.id === id; });
+      var openTabs = prev.filter(function (t) { return t.id !== id; });
       var activeTabId = s.activeTabId;
       if (activeTabId === id) {
-        activeTabId = openTabs.length ? openTabs[Math.max(0, idx - 1)].id : null;
+        // Activate the left neighbour in the POST-filter array. The closed
+        // tab sat at `idx`, so its left neighbour is now at `idx - 1` (clamped
+        // into the filtered array's bounds); compute against one consistent
+        // array to avoid an off-by-one.
+        if (!openTabs.length) {
+          activeTabId = null;
+        } else {
+          var nextIdx = Math.min(Math.max(0, idx - 1), openTabs.length - 1);
+          activeTabId = openTabs[nextIdx].id;
+        }
       }
       return Object.assign({}, s, { openTabs: openTabs, activeTabId: activeTabId });
     });
