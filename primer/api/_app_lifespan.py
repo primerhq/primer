@@ -940,6 +940,24 @@ def _make_lifespan(config: AppConfig):
             session_tick_task = None
             app.state.session_tick_forwarder_task = None
 
+        # Process-local fan-out of session ticks to per-workspace tap
+        # subscribers (the workspace dimension of the tick router). Owns
+        # its own bus subscription — a second broadcast subscription
+        # alongside the session-tick forwarder keeps the tap decoupled.
+        workspace_tap_router = None
+        if event_bus is not None:
+            from primer.model.workspace_session import (
+                WorkspaceSession as _WorkspaceSession,
+            )
+            from primer.tap.router import WorkspaceTapRouter
+
+            workspace_tap_router = WorkspaceTapRouter(
+                event_bus,
+                storage_provider.get_storage(_WorkspaceSession),
+            )
+            await workspace_tap_router.start()
+        app.state.workspace_tap_router = workspace_tap_router
+
         worker_pool = None
         if config.runtime_mode in (
             RuntimeMode.WORKER, RuntimeMode.API_PLUS_WORKER,
@@ -1157,6 +1175,11 @@ def _make_lifespan(config: AppConfig):
                         pass
                 except Exception:
                     logger.exception("session_tick_task teardown failed")
+            if workspace_tap_router is not None:
+                try:
+                    await workspace_tap_router.aclose()
+                except Exception:
+                    logger.exception("workspace_tap_router teardown failed")
             if chat_relay_task is not None:
                 try:
                     chat_relay_task.cancel()
