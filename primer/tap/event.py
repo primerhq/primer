@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
+from primer.model.workspace_session import SessionMessageRecord
 
 
 class TapEventClass(StrEnum):

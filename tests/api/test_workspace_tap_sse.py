@@ -541,3 +541,94 @@ async def test_tap_requires_auth(app, workspace_registry):
     finally:
         await router.aclose()
         await bus.aclose()
+
+
+@pytest.mark.asyncio
+async def test_tap_session_transitioning_into_scope_is_streamed(app, workspace_registry):
+    """Regression for TAP-1: a session that is out-of-scope on its first tick
+    but later transitions into scope must NOT be permanently dropped.
+
+    Scenario: selector ``sessions: status == "running"``.
+    - Tick 1: session is CREATED (out of scope) → no frame expected.
+    - Session status updated to RUNNING (in scope).
+    - Tick 2: session is now RUNNING → frame for the post-transition record
+      MUST arrive.
+
+    Before FIX 1 the negative was cached (``in_scope[sid] = None``) on tick 1,
+    so tick 2 was silently discarded even though the session had entered scope.
+    """
+    from primer.model.storage import FieldRef, Op, Predicate, Value
+    from primer.tap.selector import TapSelector
+    from urllib.parse import quote
+
+    wid, sid = "w-trans", "s-trans"
+    ws = await _ensure_workspace(app, workspace_registry, wid)
+
+    # Seed session as CREATED (not running — out of scope for the selector).
+    session = await _seed_session(
+        app,
+        workspace_id=wid,
+        session_id=sid,
+        last_seq=0,
+        status=SessionStatus.CREATED,
+    )
+
+    cookie = await _login_cookie(app)
+    bus, router = await _wire_tap_router(app)
+
+    # Build selector: sessions: status == "running"
+    selector_obj = TapSelector(
+        sessions=Predicate(
+            left=FieldRef(name="status"),
+            op=Op.EQ,
+            right=Value(value=SessionStatus.RUNNING.value),
+        )
+    )
+    selector_json = selector_obj.model_dump_json()
+
+    try:
+        async with _SSEConnection(
+            app,
+            f"/v1/workspaces/{wid}/tap?selector={quote(selector_json)}",
+            cookie=cookie,
+        ) as conn:
+            assert conn.status_code == 200
+            await asyncio.sleep(0.05)  # let the generator subscribe
+
+            # --- Tick 1: session is CREATED → out of scope, no frame ---
+            ws.append_record(sid, seq=1, kind="user_input")
+            await bus.publish(f"session:{sid}:tick", {"seq": 1})
+            await asyncio.sleep(0.05)
+
+            # Assert no frame arrives (short timeout; expect TimeoutError).
+            no_frame = True
+            try:
+                await asyncio.wait_for(conn.read_frames(count=1), timeout=0.3)
+                no_frame = False
+            except TimeoutError:
+                pass
+            assert no_frame, "tick 1 (CREATED session) should produce no frame"
+
+            # --- Transition session to RUNNING in the store ---
+            sp = app.state.storage_provider
+            store = sp.get_storage(WorkspaceSession)
+            # The in-memory store returns the same object; mutate status directly.
+            session.status = SessionStatus.RUNNING
+            await store.update(session)
+
+            # --- Tick 2: session is now RUNNING → must arrive ---
+            ws.append_record(sid, seq=2, kind="done")
+            await bus.publish(f"session:{sid}:tick", {"seq": 2})
+
+            # Per spec, a newly-in-scope session reads from seq 0 (full),
+            # so BOTH seq=1 (user_input, written before scope entry) and
+            # seq=2 (done, written after) are delivered on tick 2.
+            frames = await conn.read_frames(count=2)
+            assert len(frames) == 2
+            assert frames[0].data["class"] == "user_input"
+            assert frames[0].data["seq"] == 1
+            assert frames[1].data["class"] == "done"
+            assert frames[1].data["seq"] == 2
+    finally:
+        await router.aclose()
+        await bus.aclose()
