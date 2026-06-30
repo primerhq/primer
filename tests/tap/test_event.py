@@ -71,6 +71,9 @@ def test_record_to_tap_event_maps_each_kind(kind: SessionMessageKind) -> None:
     # payload is carried through
     assert event.payload == record.payload
 
+    # seq is copied from the record so the event is self-describing
+    assert event.seq == record.seq
+
     # timestamp matches
     assert event.ts == record.created_at
 
@@ -105,6 +108,7 @@ def test_tap_event_serialises_class_field_as_class_key() -> None:
     """model_dump(by_alias=True) must yield JSON key 'class', not 'class_'."""
     event = TapEvent(
         cursor="cur-1",
+        seq=1,
         workspace_id="ws-1",
         session_id="sess-1",
         agent_id=None,
@@ -123,6 +127,7 @@ def test_tap_event_json_roundtrip() -> None:
     """model_dump_json round-trips through JSON preserving 'class' key."""
     event = TapEvent(
         cursor="cur-2",
+        seq=2,
         workspace_id="ws-2",
         session_id="sess-2",
         agent_id="a",
