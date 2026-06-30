@@ -94,15 +94,33 @@ done
 echo "[bringup] postgres ready" >&2
 
 # ---- 2. Reset DB ------------------------------------------------------------
+#
+# pg_isready (above) can report ready against the Postgres image's TEMPORARY
+# init server, which is shut down before the REAL server starts. A psql run in
+# that window dies with "FATAL: the database system is shutting down" — observed
+# as a flaky CI bring-up failure (the reset, not any test, fails with exit 2).
+# Retry the reset until the real server accepts it so the init-restart race
+# cannot fail the whole bring-up. DROP ... IF EXISTS keeps each attempt
+# idempotent (a CREATE that half-succeeded is dropped and redone next attempt).
 
 echo "[bringup] resetting database $DB_NAME..." >&2
-$RUNTIME compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
-    psql -U "$DB_USER" -d postgres -v ON_ERROR_STOP=1 \
-    -c "DROP DATABASE IF EXISTS $DB_NAME;" \
-    -c "CREATE DATABASE $DB_NAME;" >&2
-$RUNTIME compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
-    psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
-    -c "CREATE EXTENSION IF NOT EXISTS vector;" >&2
+reset_deadline=$(( $(date +%s) + 60 ))
+until $RUNTIME compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
+        psql -U "$DB_USER" -d postgres -v ON_ERROR_STOP=1 \
+        -c "DROP DATABASE IF EXISTS $DB_NAME;" \
+        -c "CREATE DATABASE $DB_NAME;" >&2 \
+    && $RUNTIME compose exec -T -e PGPASSWORD="$DB_PASSWORD" postgres \
+        psql -U "$DB_USER" -d "$DB_NAME" -v ON_ERROR_STOP=1 \
+        -c "CREATE EXTENSION IF NOT EXISTS vector;" >&2
+do
+    if [[ $(date +%s) -ge $reset_deadline ]]; then
+        echo "[bringup] FATAL: database reset did not succeed within 60s" >&2
+        $RUNTIME compose logs --tail=50 postgres >&2 || true
+        exit 1
+    fi
+    echo "[bringup] reset failed (postgres likely still initialising) — retry in 2s" >&2
+    sleep 2
+done
 echo "[bringup] database reset" >&2
 
 # ---- 3. Render config -------------------------------------------------------
