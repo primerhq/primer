@@ -2,19 +2,15 @@
 
 Spec: ``docs/superpowers/specs/2026-06-30-workspace-tap-design.md`` §2.5.
 
-The workspace dimension of the existing tick router. Where
-:class:`primer.session.tick_router.SessionTickRouter` fans
-``session:{sid}:tick`` events out to subscribers keyed by *session*,
-:class:`WorkspaceTapRouter` fans them out to subscribers keyed by
+:class:`WorkspaceTapRouter` consumes ``session:{sid}:tick`` events from
+the broadcast event bus and fans them out to subscribers keyed by
 *workspace* — resolving each session's ``workspace_id`` through a
-cached ``sid -> wid`` lookup against the session store.
+cached ``sid -> wid`` lookup against the session store. It owns the
+sole ``session:*:tick`` bus subscription now (the per-session WS
+fan-out was retired); the durable per-session log is the source of
+truth, so a tick is only a "there is new data up to seq N" pointer.
 
-Why a second bus subscription (alongside the SessionTickRouter
-forwarder) instead of chaining off it: the bus is broadcast, so a
-second ``subscribe()`` is cheap, and owning its own consume loop keeps
-the workspace tap fully decoupled from the per-session WS plumbing.
-
-Lifecycle (mirrors SessionTickRouter + the app lifespan):
+Lifecycle (mirrors the app lifespan):
 * Constructed in the app lifespan with the bus + the
   ``Storage[WorkspaceSession]`` handle; stashed on
   ``app.state.workspace_tap_router``.
