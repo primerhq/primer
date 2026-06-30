@@ -457,6 +457,62 @@ async def test_tap_event_selector_filters_class(app, workspace_registry):
 
 
 @pytest.mark.asyncio
+async def test_tap_event_selector_filters_graph_transition(app, workspace_registry):
+    """An ``events: class == graph_transition`` selector receives only the
+    graph-runtime node transition records (spec §2.6 / plan Task 3.1)."""
+    wid, sid = "w-gt", "s-gt"
+    ws = await _ensure_workspace(app, workspace_registry, wid)
+    await _seed_session(app, workspace_id=wid, session_id=sid, last_seq=0)
+    cookie = await _login_cookie(app)
+    bus, router = await _wire_tap_router(app)
+    try:
+        ws.append_record(sid, seq=1, kind="user_input")
+        ws.append_record(
+            sid, seq=2, kind="graph_transition",
+            node_id="n1", node_kind="agent", phase="enter", status=None,
+        )
+        ws.append_record(sid, seq=3, kind="assistant_token")
+        ws.append_record(
+            sid, seq=4, kind="graph_transition",
+            node_id="n1", node_kind="agent", phase="exit", status="completed",
+        )
+
+        selector = json.dumps(
+            {
+                "events": {
+                    "kind": "predicate",
+                    "left": {"kind": "field", "name": "class"},
+                    "op": "=",
+                    "right": {"kind": "value", "value": "graph_transition"},
+                }
+            }
+        )
+        from urllib.parse import quote
+
+        async with _SSEConnection(
+            app,
+            f"/v1/workspaces/{wid}/tap?selector={quote(selector)}",
+            cookie=cookie,
+        ) as conn:
+            assert conn.status_code == 200
+            await asyncio.sleep(0.05)
+            await bus.publish(f"session:{sid}:tick", {"seq": 4})
+
+            frames = await conn.read_frames(count=2)
+            assert [f.data["class"] for f in frames] == [
+                "graph_transition",
+                "graph_transition",
+            ]
+            assert [f.data["seq"] for f in frames] == [2, 4]
+            assert frames[0].data["payload"]["phase"] == "enter"
+            assert frames[1].data["payload"]["phase"] == "exit"
+            assert frames[1].data["payload"]["status"] == "completed"
+    finally:
+        await router.aclose()
+        await bus.aclose()
+
+
+@pytest.mark.asyncio
 async def test_tap_reconnect_with_last_event_id_is_gap_free(app, workspace_registry):
     wid, sid = "w-recon", "s-recon"
     ws = await _ensure_workspace(app, workspace_registry, wid)

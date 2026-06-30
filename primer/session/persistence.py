@@ -179,6 +179,7 @@ def translate_stream_event(
     | Done                 | flush text_buffer (if any), then DONE           |
     | Error                | ERROR                                           |
     | _GraphErrorEvent     | ERROR (graph runtime terminal failure)          |
+    | _GraphTransitionEvent | GRAPH_TRANSITION (node enter/exit boundary)    |
     | (others)             | None — silently dropped                         |
 
     Worker code is responsible for synthetic kinds (USER_INPUT, CANCELLED,
@@ -191,7 +192,27 @@ def translate_stream_event(
     # hard import-time dependency from primer.session on primer.graph
     # (the latter brings in jinja2 + jsonschema, which the agent-only
     # session path doesn't need).
-    from primer.graph.base import _GraphEndOutputEvent, _GraphErrorEvent
+    from primer.graph.base import (
+        _GraphEndOutputEvent,
+        _GraphErrorEvent,
+        _GraphTransitionEvent,
+    )
+
+    if isinstance(event, _GraphTransitionEvent):
+        # Graph-runtime node-lifecycle transition (spec §2.6). Maps 1:1 to a
+        # graph_transition record whose payload stays small; record_to_tap_event
+        # turns it into a TapEventClass.GRAPH_TRANSITION event for the tap.
+        return SessionMessageRecord(
+            seq=1,  # WorkspaceMessageWriter overwrites
+            kind=SessionMessageKind.GRAPH_TRANSITION,
+            payload={
+                "node_id": event.node_id,
+                "node_kind": event.node_kind,
+                "phase": event.phase,
+                "status": event.status,
+            },
+            created_at=now,
+        )
 
     if isinstance(event, _GraphErrorEvent):
         return SessionMessageRecord(

@@ -500,6 +500,14 @@ class SessionMessageKind(StrEnum):
     DONE = "done"
     CANCELLED = "cancelled"
     ERROR = "error"
+    # Graph-runtime node lifecycle: one record at node ENTER and one at
+    # node EXIT during a graph run. Shared 1:1 with
+    # :class:`primer.tap.event.TapEventClass.GRAPH_TRANSITION` so these flow
+    # through the existing tap unchanged. Payload shape:
+    # ``{"node_id": str, "node_kind": str, "phase": "enter"|"exit",
+    #    "status": str | None}`` (status populated on exit with the node
+    # outcome, None on enter).
+    GRAPH_TRANSITION = "graph_transition"
 
 
 class SessionMessageRecord(BaseModel):
