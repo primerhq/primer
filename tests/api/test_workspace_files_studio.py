@@ -598,3 +598,137 @@ class TestWritePrecondition:
             json={"content": "v2", "encoding": "text"},
         )
         assert resp.status_code == 204
+
+
+# ===========================================================================
+# Feature: deterministic watch_files wake-on-write
+# ===========================================================================
+
+
+def _park_watch_session(app, *, wid: str, paths: list[str], event_key: str):
+    """Inject a watch_files-parked session into the app's in-memory
+    scheduler so a file write can wake it."""
+    from datetime import timedelta
+
+    from primer.model.workspace_session import (
+        AgentSessionBinding,
+        SessionStatus,
+        WorkspaceSession,
+    )
+    from primer.scheduler.in_memory import _LeaseState
+
+    now = datetime.now(timezone.utc)
+    sid = event_key.split(":")[1]
+    tcid = event_key.split(":")[2]
+    sess = WorkspaceSession(
+        id=sid,
+        workspace_id=wid,
+        binding=AgentSessionBinding(kind="agent", agent_id="ag-x"),
+        status=SessionStatus.RUNNING,
+        created_at=now,
+    )
+    sess.parked_status = "parked"
+    sess.parked_event_key = event_key
+    sess.parked_until = now + timedelta(seconds=600)
+    sess.parked_at = now
+    sess.parked_state = {
+        "schema_version": 1,
+        "tool_call_id": tcid,
+        "yielded": {
+            "tool_name": "watch_files",
+            "event_key": event_key,
+            "timeout": 600.0,
+            "resume_metadata": {
+                "paths": paths,
+                "batch_window_ms": 30,
+                "workspace_id": wid,
+                "tool_call_id": tcid,
+                "registered_at_iso": now.isoformat(),
+            },
+        },
+        "llm_messages": [],
+        "turn_no": 1,
+        "started_at": now.isoformat(),
+        "resume_event_payload": None,
+    }
+    sched = app.state.scheduler
+    sched._sessions[sid] = sess
+    sched._leases[sid] = _LeaseState(
+        worker_id=None,
+        expires_at=None,
+        runnable=False,
+        next_attempt_at=now,
+    )
+
+
+class TestWatchWakeOnWrite:
+    @pytest.mark.asyncio
+    async def test_matching_write_wakes_park(self, client, wsr, app) -> None:
+        wid, _ = await _setup(client, wsr)
+        _park_watch_session(
+            app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1"
+        )
+        published: list = []
+        orig = app.state.event_bus.publish
+
+        async def _spy(event_key, payload=None):
+            published.append((event_key, payload))
+            return await orig(event_key, payload)
+
+        app.state.event_bus.publish = _spy
+
+        resp = await client.put(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "src/app.py"},
+            json={"content": "print(1)", "encoding": "text"},
+        )
+        assert resp.status_code == 204
+        watch_pubs = [p for p in published if p[0] == "watch:s1:tc1"]
+        assert len(watch_pubs) == 1
+        assert "changes" in watch_pubs[0][1]
+        assert watch_pubs[0][1]["changes"][0]["path"] == "src/app.py"
+
+    @pytest.mark.asyncio
+    async def test_non_matching_write_no_wake(self, client, wsr, app) -> None:
+        wid, _ = await _setup(client, wsr)
+        _park_watch_session(
+            app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1"
+        )
+        published: list = []
+        orig = app.state.event_bus.publish
+
+        async def _spy(event_key, payload=None):
+            published.append((event_key, payload))
+            return await orig(event_key, payload)
+
+        app.state.event_bus.publish = _spy
+
+        resp = await client.put(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "docs/readme.md"},
+            json={"content": "hi", "encoding": "text"},
+        )
+        assert resp.status_code == 204
+        assert [p for p in published if p[0] == "watch:s1:tc1"] == []
+
+    @pytest.mark.asyncio
+    async def test_write_succeeds_when_wake_raises(
+        self, client, wsr, app
+    ) -> None:
+        """The wake is best-effort: a publish error must not fail the write."""
+        wid, _ = await _setup(client, wsr)
+        _park_watch_session(
+            app, wid=wid, paths=["src/*.py"], event_key="watch:s1:tc1"
+        )
+
+        async def _boom(event_key, payload=None):
+            raise RuntimeError("bus exploded")
+
+        app.state.event_bus.publish = _boom
+
+        resp = await client.put(
+            f"/v1/workspaces/{wid}/files",
+            params={"path": "src/app.py"},
+            json={"content": "print(1)", "encoding": "text"},
+        )
+        assert resp.status_code == 204
