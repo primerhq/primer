@@ -1,0 +1,129 @@
+"""Structural-presence checks for the Studio shell (PR-B / B1 foundation).
+
+The Studio is the workspace-scoped IDE view that replaces the thin
+workspace-detail page at /workspaces/:wid. B1 lays down the route shell,
+the useStudioState model, and the persistence + URL-mirroring seams; the
+left/center/right regions are styled placeholders that B2-B4 fill.
+
+These tests assert the seams exist and the bundle still transpiles. They
+do NOT render React (the ui/ suite is static-source + bundle-build only,
+matching test_session_frame_extracted.py).
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+UI = ROOT / "ui"
+STUDIO = UI / "components" / "studio.jsx"
+INDEX = UI / "index.html"
+STYLES = UI / "styles.css"
+APP = UI / "app.jsx"
+
+
+def _studio_src() -> str:
+    return STUDIO.read_text(encoding="utf-8")
+
+
+def _index_order() -> list[str]:
+    out: list[str] = []
+    for line in INDEX.read_text(encoding="utf-8").splitlines():
+        if 'type="text/babel"' in line and "src=" in line:
+            start = line.index('src="') + len('src="')
+            end = line.index('"', start)
+            out.append(line[start:end])
+    return out
+
+
+def test_studio_file_exists_and_exports() -> None:
+    src = _studio_src()
+    assert "function Studio(" in src
+    assert "function StudioHeader(" in src
+    assert "function useStudioState(" in src
+    # No-build window exports so app.jsx + B2-B4 can reach them.
+    assert "window.Studio = Studio;" in src
+    assert "window.StudioHeader = StudioHeader;" in src
+    assert "window.useStudioState = useStudioState;" in src
+
+
+def test_studio_shell_root_and_header_testids() -> None:
+    src = _studio_src()
+    assert 'data-testid="studio-root"' in src
+    assert 'data-testid="studio-header"' in src
+    assert 'data-testid="workspace-selector"' in src
+
+
+def test_studio_region_placeholders_present() -> None:
+    src = _studio_src()
+    # Each of the three body regions B2-B4 will fill is stubbed with a
+    # clearly-marked placeholder carrying a stable data-testid.
+    for testid in ("studio-sidebar", "studio-center", "studio-activity"):
+        assert f'data-testid="{testid}"' in src, testid
+    # The placeholder boxes carry their testid via a prop (testid="region-*"),
+    # forwarded onto data-testid inside ST_RegionPlaceholder.
+    assert 'data-testid={testid}' in src
+    for testid in ("region-sidebar", "region-center", "region-activity"):
+        assert f'testid="{testid}"' in src, testid
+    # The seams call out their downstream sub-task for the next author.
+    assert "B2" in src and "B3" in src and "B4" in src
+
+
+def test_use_studio_state_persistence_contract() -> None:
+    src = _studio_src()
+    # localStorage key + the exact persistence + URL seams from
+    # STUDIO-INTEGRATION.md §3.
+    assert '"studio:" + wid' in src
+    assert "ST_loadPersisted" in src
+    assert "ST_savePersisted" in src
+    assert "ST_tabFromUrl" in src
+    assert "ST_syncUrl" in src
+    assert "history.replaceState" in src
+    # Active-tab URL mirror uses the ?open=session:/?open=file: contract.
+    assert "open" in src
+    # The tab model + sidebar toggles B2-B4 consume.
+    for action in ("openTab", "focusTab", "closeTab", "toggleSessions", "toggleFiles", "toggleHidden"):
+        assert action in src, action
+
+
+def test_workspace_selector_uses_workspaces_resource() -> None:
+    src = _studio_src()
+    # Selector lists GET /v1/workspaces and navigates on pick.
+    assert "/workspaces?limit=200" in src
+    assert "useResource" in src
+
+
+def test_studio_registered_in_index_after_workspace_tap() -> None:
+    order = _index_order()
+    assert "components/studio.jsx" in order
+    # studio.jsx reuses Icon (shared.jsx) + WorkspaceTap is its B4 neighbour.
+    assert order.index("components/shared.jsx") < order.index("components/studio.jsx")
+    assert order.index("components/studio.jsx") < order.index("app.jsx")
+
+
+def test_app_renders_studio_for_workspace_detail() -> None:
+    src = APP.read_text(encoding="utf-8")
+    # /workspaces/:wid now renders the Studio shell directly.
+    assert "<Studio wid={currentWorkspaceId} />" in src
+    # /sessions and /sessions/:id redirect into the Studio.
+    assert '"#/workspaces"' in src
+    assert "open=session:" in src
+    assert "workspace_id" in src
+
+
+def test_styles_has_studio_tokens_and_classes() -> None:
+    css = STYLES.read_text(encoding="utf-8")
+    assert "--teal:" in css
+    assert "--teal-dim:" in css
+    assert "--frow-h:" in css
+    for cls in (".st-root", ".st-body", ".st-topbar", ".st-section", ".st-tabbar"):
+        assert cls in css, cls
+
+
+def test_bundle_transpiles_with_studio() -> None:
+    from primer.api._jsx_bundle import build_jsx_bundle
+
+    etag, body = build_jsx_bundle(UI)
+    assert etag and body
+    text = body.decode("utf-8")
+    assert "/* === components/studio.jsx === */" in text
