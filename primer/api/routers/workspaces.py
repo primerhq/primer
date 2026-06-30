@@ -22,12 +22,14 @@ Sub-resources on ``/v1/workspaces/{id}``:
 from __future__ import annotations
 
 import base64
+import email.utils
+import hashlib
 import logging
 from datetime import datetime, timezone
 from typing import Any, Literal
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
@@ -37,7 +39,8 @@ from primer.api.deps import (
     get_workspace_storage,
     get_workspace_template_storage,
 )
-from primer.api.errors import common_responses
+from primer.api.errors import PROBLEM_JSON_MEDIA_TYPE, common_responses
+from primer.model.problem_details import ProblemDetails
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.api.registries import WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_IDS
@@ -138,6 +141,9 @@ class FileReadResponse(BaseModel):
     encoding: Literal["text", "base64"]
     content: str
     size_bytes: int
+    mtime: float | None = None
+    mtime_iso: str | None = None
+    etag: str | None = None
 
 
 class DiagnosticExecBody(BaseModel):
@@ -779,6 +785,39 @@ files_router = APIRouter(tags=["workspace-files"])
 
 
 @files_router.get(
+    "/workspaces/{workspace_id}/files/tree",
+    summary="Return a one-level directory tree",
+    responses=common_responses(400, 404, 500),
+)
+async def file_tree(
+    workspace_id: str = Path(...),
+    path: str = Query(default=".", description="Workspace-relative path"),
+    depth: int = Query(default=1, ge=1, description="Tree depth (only depth=1 is supported; deeper values are accepted but treated as 1)"),
+    hidden: bool = Query(default=False, description="Include hidden entries (e.g. .state)"),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+) -> dict:
+    ws = await registry.get_workspace(workspace_id)
+    entries = await ws.list_files(path, recursive=False)
+    items = []
+    for entry in entries:
+        name = entry.path.rsplit("/", 1)[-1] if "/" in entry.path else entry.path
+        if not hidden and (entry.path == ".state" or entry.path.endswith("/.state")):
+            continue
+        items.append(
+            {
+                "name": name,
+                "path": entry.path,
+                "is_dir": entry.kind == "dir",
+                "size_bytes": entry.size_bytes,
+                "mtime": entry.modified_at.timestamp(),
+                "mtime_iso": entry.modified_at.isoformat(),
+            }
+        )
+    items.sort(key=lambda x: (0 if x["is_dir"] else 1, x["name"]))
+    return {"path": path, "items": items}
+
+
+@files_router.get(
     "/workspaces/{workspace_id}/files",
     summary="List files at a workspace path",
     responses=common_responses(400, 404, 500),
@@ -848,8 +887,18 @@ async def read_file(
             ) from exc
     else:
         content = base64.b64encode(raw).decode("ascii")
+    entry = await ws.file_info(path)
+    mtime_iso = entry.modified_at.isoformat()
+    mtime = entry.modified_at.timestamp()
+    etag = hashlib.md5(f"{mtime_iso}:{len(raw)}".encode()).hexdigest()
     return FileReadResponse(
-        path=path, encoding=encoding, content=content, size_bytes=len(raw)
+        path=path,
+        encoding=encoding,
+        content=content,
+        size_bytes=len(raw),
+        mtime=mtime,
+        mtime_iso=mtime_iso,
+        etag=etag,
     )
 
 
@@ -918,14 +967,26 @@ async def delete_file(
     "/workspaces/{workspace_id}/files",
     status_code=204,
     summary="Replace (or create) a file's contents",
-    responses=common_responses(400, 404, 422, 500),
+    responses={
+        **common_responses(400, 422, 500),
+        412: {
+            "model": ProblemDetails,
+            "description": "Precondition Failed",
+            "content": {PROBLEM_JSON_MEDIA_TYPE: {}},
+        },
+    },
 )
 async def write_file(
+    request: Request,
     workspace_id: str = Path(...),
     path: str = Query(..., description="Workspace-relative path"),
     body: FileWriteBody = Body(...),
+    etag: str | None = Query(
+        default=None,
+        description="Optimistic-concurrency etag from a prior read response",
+    ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
-) -> None:
+) -> Response:
     ws = await registry.get_workspace(workspace_id)
     if body.encoding == "text":
         try:
@@ -942,7 +1003,44 @@ async def write_file(
             raw = base64.b64decode(body.content, validate=True)
         except Exception as exc:  # noqa: BLE001 — base64.binascii.Error
             raise BadRequestError(f"invalid base64 content: {exc}") from exc
+    if_unmodified_since_hdr = request.headers.get("if-unmodified-since")
+    if etag is not None or if_unmodified_since_hdr is not None:
+        try:
+            entry = await ws.file_info(path)
+        except NotFoundError:
+            entry = None
+        if entry is not None:
+            conflict = False
+            if etag is not None:
+                current_etag = hashlib.md5(
+                    f"{entry.modified_at.isoformat()}:{entry.size_bytes}".encode()
+                ).hexdigest()
+                if etag != current_etag:
+                    conflict = True
+            elif if_unmodified_since_hdr is not None:
+                try:
+                    parsed_date = email.utils.parsedate_to_datetime(
+                        if_unmodified_since_hdr
+                    )
+                    if entry.modified_at > parsed_date:
+                        conflict = True
+                except Exception:  # noqa: BLE001 — ignore malformed header
+                    pass
+            if conflict:
+                problem = ProblemDetails(
+                    type="/errors/precondition-failed",
+                    title="Precondition Failed",
+                    status=412,
+                    detail="The file has been modified since the precondition was recorded.",
+                    instance=request.url.path,
+                )
+                return JSONResponse(
+                    status_code=412,
+                    content=problem.model_dump(exclude_none=True),
+                    media_type=PROBLEM_JSON_MEDIA_TYPE,
+                )
     await ws.write_file(path, raw)
+    return Response(status_code=204)
 
 
 # ===========================================================================
