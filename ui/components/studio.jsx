@@ -488,7 +488,7 @@ function Studio({ wid }) {
       <div className="st-body">
         {/* ---- LEFT: B2 StudioSidebar (sessions + files tree) ---- */}
         <div className="st-col st-col-left" data-testid="studio-sidebar">
-          <ST_RegionPlaceholder kind="B2 · left sidebar" label="Sessions + Files tree" testid="region-sidebar" />
+          <StudioSidebar wid={wid} studio={studio} />
         </div>
 
         <div className="st-resize" onMouseDown={function (e) { startResize("left", e); }} data-testid="studio-resize-left" />

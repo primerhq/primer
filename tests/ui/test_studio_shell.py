@@ -56,17 +56,19 @@ def test_studio_shell_root_and_header_testids() -> None:
 
 def test_studio_region_placeholders_present() -> None:
     src = _studio_src()
-    # Each of the three body regions B2-B4 will fill is stubbed with a
-    # clearly-marked placeholder carrying a stable data-testid.
+    # All three body-region wrapper divs must still carry their stable testids
+    # (the wrappers are kept even after a region is filled).
     for testid in ("studio-sidebar", "studio-center", "studio-activity"):
         assert f'data-testid="{testid}"' in src, testid
-    # The placeholder boxes carry their testid via a prop (testid="region-*"),
-    # forwarded onto data-testid inside ST_RegionPlaceholder.
-    assert 'data-testid={testid}' in src
-    for testid in ("region-sidebar", "region-center", "region-activity"):
+    # B2 (left sidebar) is now filled — StudioSidebar replaced the placeholder.
+    assert "<StudioSidebar wid={wid}" in src, "B2 StudioSidebar not wired in"
+    assert 'testid="region-sidebar"' not in src, "B2 placeholder should be gone"
+    # B3 and B4 placeholders still present (not yet built).
+    assert 'data-testid={testid}' in src  # ST_RegionPlaceholder still used by B3/B4
+    for testid in ("region-center", "region-activity"):
         assert f'testid="{testid}"' in src, testid
     # The seams call out their downstream sub-task for the next author.
-    assert "B2" in src and "B3" in src and "B4" in src
+    assert "B3" in src and "B4" in src
 
 
 def test_use_studio_state_persistence_contract() -> None:
