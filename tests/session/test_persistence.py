@@ -274,18 +274,85 @@ def test_translate_error() -> None:
 
 
 def test_translate_dropped_events_return_none() -> None:
-    """StreamStart, Usage, ReasoningDelta etc. are silently dropped (return None)."""
-    from primer.model.chat import ReasoningDelta, StreamStart, Usage
+    """StreamStart, ReasoningDelta etc. are silently dropped (return None)."""
+    from primer.model.chat import ReasoningDelta, StreamStart
     from primer.session.persistence import _CoalesceState, translate_stream_event
 
     state = _CoalesceState()
     assert translate_stream_event(StreamStart(model="x", request_id=None), state) is None
     assert (
-        translate_stream_event(
-            Usage(input_tokens=10, output_tokens=5, cumulative=True), state
-        )
-        is None
-    )
-    assert (
         translate_stream_event(ReasoningDelta(text="think", index=0), state) is None
     )
+
+
+def test_translate_usage_accumulates_in_state() -> None:
+    """Usage events are accumulated in _CoalesceState.last_usage (not dropped to a record)."""
+    from primer.model.chat import Usage
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    result = translate_stream_event(
+        Usage(input_tokens=100, output_tokens=50, cumulative=True), state
+    )
+    assert result is None
+    assert state.last_usage is not None
+    assert state.last_usage.input_tokens == 100
+    assert state.last_usage.output_tokens == 50
+
+
+def test_translate_done_includes_usage_envelope() -> None:
+    """DONE record payload carries a usage dict when a Usage event preceded it."""
+    from primer.model.chat import Done, Usage
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(
+        Usage(input_tokens=200, output_tokens=75, cumulative=True), state
+    )
+    result = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state)
+
+    assert isinstance(result, SessionMessageRecord)
+    assert result.kind == SessionMessageKind.DONE
+    assert result.payload["stop_reason"] == "stop"
+    assert "usage" in result.payload
+    assert result.payload["usage"]["input_tokens"] == 200
+    assert result.payload["usage"]["output_tokens"] == 75
+
+
+def test_translate_done_no_usage_has_no_usage_key() -> None:
+    """DONE record payload has no 'usage' key when no Usage event preceded it."""
+    from primer.model.chat import Done
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    result = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state)
+
+    assert isinstance(result, SessionMessageRecord)
+    assert result.kind == SessionMessageKind.DONE
+    assert "usage" not in result.payload
+
+
+def test_translate_done_usage_with_optional_fields() -> None:
+    """DONE payload usage includes cached_input_tokens and reasoning_tokens when present."""
+    from primer.model.chat import Done, Usage
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    translate_stream_event(
+        Usage(
+            input_tokens=300,
+            output_tokens=100,
+            cached_input_tokens=50,
+            reasoning_tokens=20,
+            cumulative=True,
+        ),
+        state,
+    )
+    result = translate_stream_event(Done(stop_reason="stop", raw_reason="stop"), state)
+
+    assert isinstance(result, SessionMessageRecord)
+    usage = result.payload["usage"]
+    assert usage["input_tokens"] == 300
+    assert usage["output_tokens"] == 100
+    assert usage["cached_input_tokens"] == 50
+    assert usage["reasoning_tokens"] == 20

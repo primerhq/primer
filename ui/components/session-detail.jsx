@@ -801,11 +801,13 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   const [messages, setMessages] = React.useState([]);
   // Connection state of the tap EventSource: "connecting" | "open" | "closed".
   const [wsState, setWsState] = React.useState("connecting");
-  // Token-usage snapshot for the read-only header TokenMeter. The tap
-  // stream does not carry a per-connection usage envelope, so this stays
-  // at zero and we fall back below to the most recent turn's tokens_in so
-  // the meter still surfaces something meaningful.
-  const [usage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
+  // Token-usage snapshot for the read-only header TokenMeter. Updated live
+  // from tap `done` frames whose payload now carries a `usage` envelope
+  // (input_tokens, output_tokens) written by translate_stream_event when a
+  // Usage event precedes the Done. Falls back to the most recent turn's
+  // tokens_in when the done frame has no envelope (e.g. graph sessions or
+  // non-LLM turns that never emitted a Usage event).
+  const [usage, setUsage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
   const [historyLoaded, setHistoryLoaded] = React.useState(false);
   const { useMutation, apiFetch } = window.primerApi;
   const scrollRef = React.useRef(null);
@@ -906,6 +908,15 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
         if (prev.some((p) => p.seq === frame.seq)) return prev;
         return [...prev, frame].sort((a, b) => (a.seq || 0) - (b.seq || 0));
       });
+      // Update the TokenMeter from the done frame's usage envelope (written by
+      // translate_stream_event when a Usage event preceded the Done event).
+      if (tev.class === "done" && payload.usage && typeof payload.usage === "object") {
+        setUsage((prev) => ({
+          ...prev,
+          input_tokens: Number(payload.usage.input_tokens) || 0,
+          output_tokens: Number(payload.usage.output_tokens) || 0,
+        }));
+      }
     };
 
     es.onerror = () => {
@@ -967,8 +978,10 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   const isTerminalSession = session && SESSION_TERMINAL.has(session.status);
   const isGraph = (session?.binding?.kind || session?.binding_kind) === "graph";
 
-  // Read-only TokenMeter source: the tap stream carries no usage envelope,
-  // so we surface the most recent turn's recorded tokens_in.
+  // Fallback for the read-only TokenMeter when no done+usage frame has
+  // landed yet (e.g. graph sessions, non-LLM turns, or initial page load
+  // before the first turn completes). Uses the most recent turn's tokens_in
+  // so the meter surfaces something meaningful on first paint.
   const fallbackUsage = React.useMemo(() => {
     const turns = Array.isArray(session?.turns) ? session.turns : [];
     const last = turns.length > 0 ? turns[turns.length - 1] : null;
