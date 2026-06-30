@@ -395,6 +395,15 @@ class _BaseGraphExecutor(
                         code="tool_execution_failed", message=str(exc),
                         node_id=entry.node_id,
                     )
+                    # Balanced exit for this resumed node (parked → resumed →
+                    # failed). The superstep loop deferred this node's exit on
+                    # park; emit it here with status="failed".
+                    yield _GraphTransitionEvent(  # type: ignore[misc]
+                        node_id=entry.node_id,
+                        node_kind=self._node_kind_for(entry.node_id),
+                        phase="exit",
+                        status="failed",
+                    )
                     await self._save_state(
                         iteration=context.iteration, node_states=node_states,
                         status=SessionStatus.ENDED, ended_reason="failed",
@@ -422,6 +431,15 @@ class _BaseGraphExecutor(
                         code=mapped.error_code,
                         message=mapped.error_message or mapped.error_code,
                         node_id=entry.node_id,
+                    )
+                    # Balanced exit for this resumed node (parked → resumed →
+                    # failed). The superstep loop deferred this node's exit on
+                    # park; emit it here with status="failed".
+                    yield _GraphTransitionEvent(  # type: ignore[misc]
+                        node_id=entry.node_id,
+                        node_kind=self._node_kind_for(entry.node_id),
+                        phase="exit",
+                        status="failed",
                     )
                     await self._save_state(
                         iteration=context.iteration, node_states=node_states,
@@ -492,6 +510,15 @@ class _BaseGraphExecutor(
                     message=str(rej),
                     node_id=entry.node_id,
                 )
+                # Balanced exit for this resumed node (parked-for-approval →
+                # resumed → rejected). The superstep loop deferred this node's
+                # exit on park; emit it here with status="failed".
+                yield _GraphTransitionEvent(  # type: ignore[misc]
+                    node_id=entry.node_id,
+                    node_kind=self._node_kind_for(entry.node_id),
+                    phase="exit",
+                    status="failed",
+                )
                 await self._save_state(
                     iteration=context.iteration,
                     node_states=node_states,
@@ -520,6 +547,15 @@ class _BaseGraphExecutor(
                     code="tool_execution_failed",
                     message=str(exc),
                     node_id=entry.node_id,
+                )
+                # Balanced exit for this resumed node (parked → resumed →
+                # failed). The superstep loop deferred this node's exit on
+                # park; emit it here with status="failed".
+                yield _GraphTransitionEvent(  # type: ignore[misc]
+                    node_id=entry.node_id,
+                    node_kind=self._node_kind_for(entry.node_id),
+                    phase="exit",
+                    status="failed",
                 )
                 await self._save_state(
                     iteration=context.iteration,
@@ -555,6 +591,15 @@ class _BaseGraphExecutor(
                     code=mapped.error_code,
                     message=mapped.error_message or mapped.error_code,
                     node_id=entry.node_id,
+                )
+                # Balanced exit for this resumed node (parked → resumed →
+                # failed schema-validation). The superstep loop deferred this
+                # node's exit on park; emit it here with status="failed".
+                yield _GraphTransitionEvent(  # type: ignore[misc]
+                    node_id=entry.node_id,
+                    node_kind=self._node_kind_for(entry.node_id),
+                    phase="exit",
+                    status="failed",
                 )
                 await self._save_state(
                     iteration=context.iteration,
@@ -604,6 +649,15 @@ class _BaseGraphExecutor(
                     code="tool_execution_failed", message=str(exc),
                     node_id=ay.node_id,
                 )
+                # Balanced exit for this resumed agent-yield node (parked →
+                # resumed → failed). The superstep loop deferred this node's
+                # exit on park; emit it here with status="failed".
+                yield _GraphTransitionEvent(  # type: ignore[misc]
+                    node_id=ay.node_id,
+                    node_kind=self._node_kind_for(ay.node_id),
+                    phase="exit",
+                    status="failed",
+                )
                 await self._save_state(
                     iteration=context.iteration, node_states=node_states,
                     status=SessionStatus.ENDED, ended_reason="failed",
@@ -617,6 +671,32 @@ class _BaseGraphExecutor(
                 last_run_at=datetime.now(timezone.utc),
             )
             completed_ids.append(ay.node_id)
+
+        # graph_transition EXIT for each resumed node that finished this
+        # cycle. The superstep loop SKIPS the exit emit when a node parks
+        # (``if item.suspended: continue``, ~base.py:982) with the comment
+        # "their exit lands on the resume path" — this loop is that resume
+        # path. Status is derived from the node's stamped runtime state
+        # (the same source the loop's _NodeDone outcome reflects): ENDED →
+        # "completed", anything else (FAILED, e.g. the topology-drift branch
+        # that also appends to ``completed_ids``) → "failed". The early-return
+        # failure paths above emit their own status="failed" exit and never
+        # reach here. Emitted before the re-park check so a node that
+        # genuinely finished this cycle still gets its balanced exit even if a
+        # sibling re-parks.
+        for nid in completed_ids:
+            _rt = node_states.get(nid)
+            _status = (
+                "completed"
+                if _rt is not None and _rt.status == NodeRuntimeStatus.ENDED
+                else "failed"
+            )
+            yield _GraphTransitionEvent(  # type: ignore[misc]
+                node_id=nid,
+                node_kind=self._node_kind_for(nid),
+                phase="exit",
+                status=_status,
+            )
 
         # Full concurrency: if other human-interaction nodes are still
         # pending (the human has only replied to some), re-park on the

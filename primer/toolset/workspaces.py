@@ -1717,7 +1717,13 @@ def build_workspaces_toolset(
         sessions_storage = storage_provider.get_storage(WorkspaceSession)
 
         async def _drain() -> list:
-            events, _cursor = await read_batch(
+            # Rebind the enclosing ``cursor`` to the one ``read_batch``
+            # RETURNS (not the input we passed in). ``read_batch`` happens to
+            # advance the cursor in place today, but binding the return value
+            # keeps ``next_cursor`` correct if a future ``read_batch`` ever
+            # hands back a fresh cursor instead of mutating the argument.
+            nonlocal cursor
+            events, cursor = await read_batch(
                 sessions_storage,
                 workspace_io,
                 workspace_id=args.workspace_id,

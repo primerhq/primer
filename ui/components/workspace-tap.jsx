@@ -95,7 +95,18 @@ function WTP_payloadSummary(payload) {
 
 function WTP_buildSelector(selectedClasses, sessionId) {
   var eventsFilter = null;
-  if (selectedClasses && selectedClasses.length > 0 && selectedClasses.length < WTP_ALL_CLASSES.length) {
+  if (selectedClasses && selectedClasses.length === 0) {
+    // All classes explicitly deselected: stream NOTHING (an unsatisfiable
+    // ``class IN []``) so the server matches the empty-state hint
+    // "All event classes filtered out — select at least one." A null filter
+    // here would instead stream everything, contradicting the UI.
+    eventsFilter = {
+      kind: "predicate",
+      left: { kind: "field", name: "class" },
+      op: "in",
+      right: { kind: "value", value: [] },
+    };
+  } else if (selectedClasses && selectedClasses.length > 0 && selectedClasses.length < WTP_ALL_CLASSES.length) {
     eventsFilter = {
       kind: "predicate",
       left: { kind: "field", name: "class" },
@@ -363,3 +374,6 @@ function WorkspaceTap({ wid, sessionId }) {
 }
 
 window.WorkspaceTap = WorkspaceTap;
+// Explicit cross-file export (session-detail.jsx references this) instead of
+// relying on global function hoisting.
+window.WTP_buildSelector = WTP_buildSelector;
