@@ -126,6 +126,38 @@ class TestEventMatchesEq:
 
 
 # ---------------------------------------------------------------------------
+# event_matches — node_id (F1a: per-graph-node attribution)
+# ---------------------------------------------------------------------------
+
+
+class TestEventMatchesNodeId:
+    def _node_eq(self, nid: str) -> Predicate:
+        return Predicate(
+            left=FieldRef(name="node_id"),
+            op=Op.EQ,
+            right=Value(value=nid),
+        )
+
+    def test_node_id_eq_matches(self) -> None:
+        sel = TapSelector(events=self._node_eq("node-a"))
+        assert event_matches(sel, _make_event(node_id="node-a")) is True
+
+    def test_node_id_eq_rejects_other_node(self) -> None:
+        sel = TapSelector(events=self._node_eq("node-a"))
+        assert event_matches(sel, _make_event(node_id="node-b")) is False
+
+    def test_node_id_is_null_for_agent_only_event(self) -> None:
+        pred = Predicate(
+            left=FieldRef(name="node_id"),
+            op=Op.IS_NULL,
+            right=Value(value=None),
+        )
+        sel = TapSelector(events=pred)
+        assert event_matches(sel, _make_event(node_id=None)) is True
+        assert event_matches(sel, _make_event(node_id="node-a")) is False
+
+
+# ---------------------------------------------------------------------------
 # event_matches — AND / OR combinations
 # ---------------------------------------------------------------------------
 

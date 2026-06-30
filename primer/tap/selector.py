@@ -88,6 +88,7 @@ _TAP_FIELDS = frozenset(
         "session_id",
         "agent_id",
         "graph_id",
+        "node_id",
         "ts",
         "payload",
     }

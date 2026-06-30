@@ -60,6 +60,7 @@ class TapEvent(BaseModel):
     session_id: str
     agent_id: str | None
     graph_id: str | None
+    node_id: str | None = None
     class_: TapEventClass = Field(
         ...,
         alias="class",
@@ -82,10 +83,12 @@ def record_to_tap_event(
     :class:`TapEvent`.
 
     The ``kind`` field on the record maps 1:1 to ``class_`` via the shared
-    string values; ``payload``, ``seq``, and ``created_at`` are carried through
-    unchanged.  The remaining fields (``workspace_id``, ``session_id``,
-    ``agent_id``, ``graph_id``, ``cursor``) are injected by the caller since
-    they live outside the record itself.
+    string values; ``payload``, ``seq``, ``node_id``, and ``created_at`` are
+    carried through unchanged (``node_id`` is ``None`` for plain agent
+    sessions and set to the originating graph node for graph-run records).
+    The remaining fields (``workspace_id``, ``session_id``, ``agent_id``,
+    ``graph_id``, ``cursor``) are injected by the caller since they live
+    outside the record itself.
 
     ``seq`` is copied from ``record.seq`` so the event is self-describing: the
     SSE layer reads it directly to advance the multi-session :class:`TapCursor`
@@ -99,6 +102,7 @@ def record_to_tap_event(
         session_id=session_id,
         agent_id=agent_id,
         graph_id=graph_id,
+        node_id=record.node_id,
         class_=TapEventClass(record.kind.value),
         ts=record.created_at,
         payload=record.payload,
