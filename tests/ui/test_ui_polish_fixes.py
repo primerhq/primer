@@ -74,20 +74,16 @@ def test_app_agents_subtitle_not_from_mock() -> None:
     )
 
 
-def test_app_sessions_page_header_uses_real_count() -> None:
+def test_app_sessions_page_does_not_read_mock_counts() -> None:
     src = _app()
-    # The sessions-page subtitle must use counts.sessions (live API total),
-    # not sessions.length (was mock array) or sessions.filter (was mock live count).
-    assert "counts.sessions" in src, (
-        "sessions-page header must derive total from counts.sessions (live API), "
-        "not the stale mock sessions array"
-    )
-    # The mock-derived expressions must be gone.
+    # B6 (PR-B): the /sessions route is retired into a Studio redirect — the
+    # old Sessions-list page header (which once derived its subtitle count) no
+    # longer renders. Whatever remains must never read the stale mock array.
     assert "sessions.length" not in src, (
-        "sessions.length in app.jsx header must be removed -- was reading mock data"
+        "sessions.length in app.jsx must be removed -- was reading mock data"
     )
     assert "sessions.filter" not in src, (
-        "sessions.filter in app.jsx header must be removed -- was reading mock data"
+        "sessions.filter in app.jsx must be removed -- was reading mock data"
     )
 
 
