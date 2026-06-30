@@ -63,12 +63,14 @@ def test_studio_region_placeholders_present() -> None:
     # B2 (left sidebar) is now filled — StudioSidebar replaced the placeholder.
     assert "<StudioSidebar wid={wid}" in src, "B2 StudioSidebar not wired in"
     assert 'testid="region-sidebar"' not in src, "B2 placeholder should be gone"
-    # B3 and B4 placeholders still present (not yet built).
-    assert 'data-testid={testid}' in src  # ST_RegionPlaceholder still used by B3/B4
-    for testid in ("region-center", "region-activity"):
-        assert f'testid="{testid}"' in src, testid
-    # The seams call out their downstream sub-task for the next author.
-    assert "B3" in src and "B4" in src
+    # B3 (center) is now filled — StudioCenter replaced the placeholder.
+    assert "<StudioCenter wid={wid}" in src, "B3 StudioCenter not wired in"
+    assert 'testid="region-center"' not in src, "B3 placeholder should be gone"
+    # B4 placeholder still present (not yet built).
+    assert 'data-testid={testid}' in src  # ST_RegionPlaceholder still used by B4
+    assert 'testid="region-activity"' in src
+    # The remaining seam calls out its downstream sub-task for the next author.
+    assert "B4" in src
 
 
 def test_use_studio_state_persistence_contract() -> None:
