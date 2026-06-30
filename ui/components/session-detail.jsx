@@ -19,6 +19,24 @@ function _sdToastErr(pushToast, fallbackTitle) {
   };
 }
 
+// Encode a single-session tap resume cursor that the server's TapCursor.decode
+// accepts: base64url (no padding) of {"known_as_of": iso, "seqs": {sid: seq}}
+// with sorted keys + compact separators (matches primer/tap/cursor.py:encode).
+// known_as_of only gates *new-session* discovery; for a single-session resume
+// the epoch is correct (we already know the one session we are tailing).
+function _slsEncodeCursor(sid, seq) {
+  const payload = { known_as_of: "1970-01-01T00:00:00+00:00", seqs: { [sid]: seq } };
+  const json = JSON.stringify(payload);
+  // btoa over UTF-8 bytes, then make it URL-safe and strip padding.
+  let b64;
+  try {
+    b64 = btoa(unescape(encodeURIComponent(json)));
+  } catch (_e) {
+    return null;
+  }
+  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
 function SessionDetail({ sid: sidProp, pushToast, onBack }) {
   const { useResource, useMutation, useRouter, useViewport, apiFetch } = window.primerApi;
   const { params, navigate, query, path } = useRouter();
@@ -746,35 +764,51 @@ function TurnRow({ turn, index }) {
 window.SessionDetail = SessionDetail;
 
 // =================================================================
-// SessionLiveStream — WS live-watch panel (Task 14)
+// SessionLiveStream — single-session tap live-watch panel
 // =================================================================
 //
-// Subscribes to WS /v1/workspaces/{wid}/sessions/{sid}/ws?cursor=0.
-// Dispatches frames into a local messages list and renders them like
-// the ChatDetail conversation view from chats.jsx. Mirrored approach:
+// History + live, re-expressed over the workspace tap (Task 6.2):
+//  • HISTORY: GET /v1/sessions/{sid}/messages seeds the full recorded
+//    transcript (works for ENDED sessions too), recording a high-water seq.
+//  • LIVE: an EventSource opens GET /v1/workspaces/{wid}/tap with a
+//    single-session selector (sessions: id == sid) and a resume cursor
+//    seeded from the history high-water mark, so the tap tails events with
+//    seq > high-water — no gap, no re-replay at the seam. EventSource
+//    handles reconnect natively (Last-Event-ID = the cursor), so there is
+//    no bespoke backoff loop and no keepalive ping needed.
+//  • Tap frames carry `class` (not `kind`) and a nested `payload`; we
+//    normalise each into the renderer's flattened {kind, seq, ...payload}
+//    shape so _SLS_coalesceMessages / _SLS_Frame render identically.
+// Rendering (unchanged):
 //  • assistant_token rows are coalesced into one bubble
 //  • tool_call / tool_result render as expandable cards
 //  • done / cancelled / yielded / resumed render as event markers
 //  • error renders as an inline error banner
 //  • user_input renders as a user bubble
 //  • "Thinking…" appears when turn_status === "running" | "claimable"
-//  • "Interrupt" button sends {"kind":"interrupt"} down the socket
-//
-// The panel only mounts if wid is known (session row has workspace_id).
+// Controls are REST (the stream is read-only):
+//  • "Interrupt" → POST /v1/workspaces/{wid}/sessions/{sid}/cancel
+//    (the cancel endpoint sets cancel_requested_at + publishes the same
+//    session:{sid}:cancel the old WS interrupt frame did).
+//  • tool-approval decisions flow through ApprovalBannerPanel's REST
+//    respond path; ask_user / yield cancel have their own REST panels.
+// Terminal sessions render the full transcript from history and do NOT
+// open the tap (nothing left to tail). The panel only mounts if wid is
+// known (session row has workspace_id).
 
 
 function SessionLiveStream({ sid, wid, session, pushToast }) {
   const [messages, setMessages] = React.useState([]);
+  // Connection state of the tap EventSource: "connecting" | "open" | "closed".
   const [wsState, setWsState] = React.useState("connecting");
-  // Token-usage snapshot for the read-only header TokenMeter. Hydrated
-  // from any `"usage"` WS envelope the worker emits; if the session
-  // WS never carries one, we fall back below to the most recent turn's
-  // tokens_in so the meter still surfaces something meaningful.
-  const [usage, setUsage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
+  // Token-usage snapshot for the read-only header TokenMeter. The tap
+  // stream does not carry a per-connection usage envelope, so this stays
+  // at zero and we fall back below to the most recent turn's tokens_in so
+  // the meter still surfaces something meaningful.
+  const [usage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
   const [historyLoaded, setHistoryLoaded] = React.useState(false);
-  const wsRef = React.useRef(null);
+  const { useMutation, apiFetch } = window.primerApi;
   const scrollRef = React.useRef(null);
-  const { apiFetch } = window.primerApi;
   const historyCursorRef = React.useRef(0);
   React.useEffect(() => {
     let alive = true;
@@ -801,18 +835,16 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
         }
         setHistoryLoaded(true);
       } catch (_e) {
-        /* history is best-effort; WS still tails for live runs */
+        /* history is best-effort; the tap still tails for live runs */
         if (alive) setHistoryLoaded(true);
       }
     })();
     return () => { alive = false; };
   }, [sid]);  // eslint-disable-line react-hooks/exhaustive-deps
   // Whether the session is terminal. A terminal run has no live frames to
-  // tail: the server accepts the socket, replays (often nothing), then
-  // closes — and since onopen resets the backoff, an unguarded reconnect
-  // loops forever at ~1s. Gate reconnects on this. Kept in a ref (seeded
-  // from the initial prop, refreshed as the prop changes) so a run that
-  // ends mid-stream also stops reconnecting without re-opening the socket.
+  // tail — history already covers the full transcript — so we never open
+  // the tap for it. Kept in a ref (seeded from the initial prop, refreshed
+  // as the prop changes) so a run that ends mid-stream also stops tailing.
   const terminalRef = React.useRef(!!(session && SESSION_TERMINAL.has(session.status)));
   React.useEffect(() => {
     terminalRef.current = !!(session && SESSION_TERMINAL.has(session.status));
@@ -820,116 +852,86 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
 
   const isRunning = session?.turn_status === "running" || session?.turn_status === "claimable";
 
-  // WS lifecycle — reconnects on wid/sid change.
-  // Initial connection uses cursor=0 so the server replays the full
-  // session history then tails live. De-duplication handles overlap.
+  // Live tail via the workspace tap (single-session selector), opened only
+  // after history has loaded so the resume cursor can carry the history's
+  // high-water seq — the tap then delivers events with seq > that mark, so
+  // there is NO gap and NO re-replay at the history↔live seam. A terminal
+  // session has nothing left to tail (history is the full transcript) so we
+  // skip the connection entirely.
   //
-  // Reconnect: an unexpected close triggers exponential-backoff
-  // reconnect (1s -> 2s -> 4s ... 30s cap). Reconnections resume from
-  // the last received seq (latestSeq) so no frames are missed or
-  // replayed in full. Terminal close code 4404 does not reconnect.
+  // EventSource owns reconnect natively (cookie auth + Last-Event-ID = the
+  // cursor), so there is no bespoke backoff loop and no keepalive ping. We
+  // only mirror its open/error state into the badge. The merge-by-seq dedup
+  // below is the seam safety net even though the cursor already excludes the
+  // replayed range.
   React.useEffect(() => {
-    if (!wid || !sid || !historyLoaded) return;
-    let intentional = false;
-    let backoffMs = 1000;
-    const MAX_BACKOFF_MS = 30000;
-    let reconnectTimer = null;
-    // Track the highest seq seen. Seeded from REST history so the live
-    // tail resumes with no gap and no full re-replay. Updated on each
-    // WS frame so reconnects also resume cleanly.
-    let latestSeq = historyCursorRef.current || 0;
+    if (!wid || !sid || !historyLoaded) return undefined;
+    if (terminalRef.current) { setWsState("closed"); return undefined; }
 
-    function connect() {
-      if (intentional) return;
-      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const url = `${proto}//${window.location.host}/v1/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/ws?cursor=${latestSeq}`;
-      let ws;
-      try {
-        ws = new WebSocket(url);
-      } catch {
-        setWsState("closed");
-        return;
-      }
-      wsRef.current = ws;
-      setWsState("connecting");
+    const selector = window.WTP_buildSelector
+      ? window.WTP_buildSelector(null, sid)
+      : { sessions: { kind: "predicate", left: { kind: "field", name: "id" }, op: "=", right: { kind: "value", value: sid } } };
+    // Resume cursor: a single-session seq vector { [sid]: highWater }. The
+    // tap decodes this and tails from seq > highWater for this session. When
+    // there is no history yet (highWater 0) we omit the cursor so the tap
+    // does its own live-from-now init.
+    const highWater = historyCursorRef.current || 0;
+    const cursorToken = highWater > 0 ? _slsEncodeCursor(sid, highWater) : null;
 
-      ws.onopen = () => {
-        setWsState("open");
-        backoffMs = 1000; // reset on successful connect
-      };
+    let url = `/v1/workspaces/${encodeURIComponent(wid)}/tap?selector=${encodeURIComponent(JSON.stringify(selector))}`;
+    if (cursorToken) url += `&cursor=${encodeURIComponent(cursorToken)}`;
 
-      ws.onmessage = (ev) => {
-        let msg;
-        try { msg = JSON.parse(ev.data); } catch { return; }
-        if (!msg || typeof msg !== "object") return;
-
-        // Protocol-level error (no seq) - toast and bail.
-        if (msg.kind === "error" && typeof msg.seq !== "number") {
-          if (typeof pushToast === "function") {
-            pushToast({ kind: "error", title: msg.code || "Session WS error", detail: msg.message || "" });
-          }
-          return;
-        }
-        if (msg.kind === "pong") return;
-
-        // Token-usage envelope (no seq). Drives the read-only header
-        // TokenMeter - the session WS surface mirrors the chats WS for
-        // this shape (`input_tokens` / `context_length`).
-        if (msg.kind === "usage" && typeof msg.seq !== "number") {
-          setUsage({
-            input_tokens: Number(msg.input_tokens) || 0,
-            output_tokens: Number(msg.output_tokens) || 0,
-            context_length: Number(msg.context_length) || 0,
-          });
-          return;
-        }
-
-        // Persisted frame - deduplicate and append.
-        if (typeof msg.seq === "number") {
-          if (msg.seq > latestSeq) latestSeq = msg.seq;
-          // Flatten payload into top-level (mirrors chats.jsx approach).
-          const payload = msg.payload && typeof msg.payload === "object" ? msg.payload : {};
-          const frame = { ...payload, ...msg };
-          setMessages((prev) => {
-            if (prev.some((p) => p.seq === frame.seq)) return prev;
-            return [...prev, frame];
-          });
-        }
-      };
-
-      ws.onclose = (ev) => {
-        wsRef.current = null;
-        setWsState("closed");
-        if (ev.code === 4404) {
-          if (typeof pushToast === "function") {
-            pushToast({ kind: "error", title: "Session not found via WS", detail: ev.reason || sid });
-          }
-          return;
-        }
-        // Unexpected close - reconnect with exponential backoff. But a
-        // terminal session has nothing left to stream, so don't reconnect:
-        // the server closes after the (often empty) replay and we'd
-        // otherwise loop forever (onopen keeps resetting the backoff).
-        if (!intentional && !terminalRef.current) {
-          reconnectTimer = setTimeout(() => {
-            backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
-            connect();
-          }, backoffMs);
-        }
-      };
-
-      ws.onerror = () => { /* onclose handles user-facing messaging and reconnect */ };
+    let es;
+    try {
+      es = new EventSource(url, { withCredentials: true });
+    } catch {
+      setWsState("closed");
+      return undefined;
     }
+    setWsState("connecting");
 
-    connect();
+    es.onopen = () => { setWsState("open"); };
 
-    return () => {
-      intentional = true;
-      if (reconnectTimer != null) clearTimeout(reconnectTimer);
-      try { wsRef.current && wsRef.current.close(); } catch { /* no-op */ }
-      wsRef.current = null;
+    es.onmessage = (ev) => {
+      let tev;
+      try { tev = JSON.parse(ev.data); } catch { return; }
+      if (!tev || typeof tev !== "object") return;
+      if (typeof tev.seq !== "number") return;
+      // Normalise a TapEvent into the renderer's flattened frame shape:
+      // class -> kind, and the nested payload spread onto the top level so
+      // _SLS_coalesceMessages / _SLS_Frame read m.text / m.tool_name / etc.
+      const payload = tev.payload && typeof tev.payload === "object" ? tev.payload : {};
+      const frame = { ...payload, kind: tev.class, seq: tev.seq, payload, ts: tev.ts };
+      setMessages((prev) => {
+        if (prev.some((p) => p.seq === frame.seq)) return prev;
+        return [...prev, frame].sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      });
     };
+
+    es.onerror = () => {
+      // EventSource auto-reconnects via Last-Event-ID; reflect the drop in
+      // the badge. onerror also fires on transient blips, so we do not toast.
+      setWsState("closed");
+    };
+
+    return () => { try { es.close(); } catch { /* no-op */ } };
   }, [wid, sid, historyLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // REST cancel — the tap stream is read-only, so the "Interrupt" control
+  // routes to the cancel endpoint (which sets cancel_requested_at + publishes
+  // the same session:{sid}:cancel the old WS interrupt frame did).
+  const cancelMut = useMutation(
+    () => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/cancel`),
+    {
+      invalidates: [`session-detail:${sid}`, "sessions:list"],
+      onSuccess: () => pushToast && pushToast({
+        kind: "warning",
+        title: "Interrupt sent",
+        detail: "Session will cancel after the current step.",
+      }),
+      onError: _sdToastErr(pushToast, "Interrupt failed"),
+    }
+  );
 
   // Stick-to-bottom auto-scroll.
   const stickRef = React.useRef(true);
@@ -946,33 +948,27 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   }, [messages, isRunning]);
 
   const sendInterrupt = () => {
-    const ws = wsRef.current;
-    if (!ws || ws.readyState !== 1) {
+    if (!wid) {
       if (typeof pushToast === "function") {
-        pushToast({ kind: "error", title: "Not connected", detail: "WebSocket is not open" });
+        pushToast({ kind: "error", title: "Cannot interrupt", detail: "Session has no workspace_id" });
       }
       return;
     }
-    ws.send(JSON.stringify({ kind: "interrupt" }));
-    if (typeof pushToast === "function") {
-      pushToast({ kind: "warning", title: "Interrupt sent", detail: "Session will cancel after current step." });
-    }
+    cancelMut.mutate();
   };
 
   const wsBadge = wsState === "open"
-    ? <span className="pill pill-running" title="WebSocket open"><span className="dot"></span>live</span>
+    ? <span className="pill pill-running" title="Tap stream open"><span className="dot"></span>live</span>
     : wsState === "connecting"
-      ? <span className="pill pill-paused" title="WebSocket connecting"><span className="dot"></span>connecting</span>
-      : <span className="pill pill-ended" title="WebSocket closed"><span className="dot"></span>offline</span>;
+      ? <span className="pill pill-paused" title="Tap stream connecting"><span className="dot"></span>connecting</span>
+      : <span className="pill pill-ended" title="Tap stream closed"><span className="dot"></span>offline</span>;
 
   const coalesced = _SLS_coalesceMessages(messages);
   const isTerminalSession = session && SESSION_TERMINAL.has(session.status);
   const isGraph = (session?.binding?.kind || session?.binding_kind) === "graph";
 
-  // Fallback for the read-only TokenMeter when no `"usage"` envelope
-  // has landed yet. Use the most recent turn's recorded tokens_in so
-  // we surface something on first paint; the WS envelope (if/when it
-  // arrives) takes precedence.
+  // Read-only TokenMeter source: the tap stream carries no usage envelope,
+  // so we surface the most recent turn's recorded tokens_in.
   const fallbackUsage = React.useMemo(() => {
     const turns = Array.isArray(session?.turns) ? session.turns : [];
     const last = turns.length > 0 ? turns[turns.length - 1] : null;
@@ -985,7 +981,7 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
   const meterContext = usage.context_length || fallbackUsage.context_length;
 
   return (
-    <div className="panel" style={{ display: "flex", flexDirection: "column" }}>
+    <div className="panel" data-testid="session-live-stream" style={{ display: "flex", flexDirection: "column" }}>
       <div className="panel-h">
         <Icon name="zap" size={13} style={{ color: "var(--blue)" }} />
         <span>Live stream</span>
@@ -1005,9 +1001,9 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
               size="sm"
               kind="danger"
               icon="stop"
-              disabled={wsState !== "open"}
+              disabled={!wid || cancelMut.loading}
               onClick={sendInterrupt}
-              title="Send interrupt frame to cancel the running turn"
+              title="Cancel the running turn (POST .../cancel)"
             >Interrupt</Btn>
           )}
         </div>
