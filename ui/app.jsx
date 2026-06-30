@@ -421,28 +421,18 @@ function App() {
   let pageBody = null;
 
   if (page === "session-detail" && currentSessionId) {
-    pageHeader = (
-      <>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="crumb">
-            <a onClick={() => navigate("sessions")} style={{ cursor: "pointer" }}>Sessions</a>
-            <span className="sep">/</span>
-            <span className="mono" style={{ color: "var(--text)" }}>{currentSessionId}</span>
-          </div>
-          <h1 className="page-title mono">{currentSessionId}</h1>
-          <SessionStatusCaption sid={currentSessionId} />
-        </div>
-        <div className="page-actions">
-          <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("sessions")}>Back to list</Btn>
-        </div>
-      </>
-    );
+    // PR-B (B6): the Studio subsumes the session detail view. The redirect
+    // useEffect above resolves this session's workspace and navigates to
+    // #/workspaces/:wid?open=session:<sid>. Render a minimal placeholder
+    // while that resolve is in flight — SessionDetail is no longer mounted.
+    pageHeader = null;
     pageBody = (
-      <SessionDetail
-        sid={currentSessionId}
-        onBack={() => navigate("sessions")}
-        pushToast={pushToast}
-      />
+      <div className="panel">
+        <div className="empty">
+          <div className="head">Opening session…</div>
+          <div className="sub">Redirecting to the workspace Studio.</div>
+        </div>
+      </div>
     );
   } else if (page === "internal-collections") {
     pageHeader = (
@@ -1010,30 +1000,18 @@ function App() {
     const Comp = window.MC_McpPage;
     pageBody = Comp ? <Comp /> : null;
   } else if (page === "sessions") {
-    pageHeader = (
-      <>
-        <div>
-          <div className="crumb">
-            <a>Operations</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Sessions</span>
-          </div>
-          <h1 className="page-title">Sessions</h1>
-          <div className="page-sub tabular">
-            {counts.sessions != null ? counts.sessions : "..."} sessions ·
-            <span className="mono" style={{ marginLeft: 4, color: "var(--text-3)" }}>autorefresh every 3s</span>
-          </div>
-        </div>
-        <div className="page-actions">
-          <Btn icon="refresh" kind="ghost">Refresh</Btn>
-          <Btn icon="plus" kind="primary" onClick={() => setNewSessionOpen(true)}>New session</Btn>
-        </div>
-      </>
-    );
+    // PR-B (B6): the global Sessions list is subsumed by the Studio. The
+    // redirect useEffect above navigates #/sessions → #/workspaces.
+    // Render a minimal placeholder while that replace is in flight —
+    // SessionsList is no longer mounted.
+    pageHeader = null;
     pageBody = (
-      <SessionsList
-        onOpenSession={openSession}
-        onNewSession={() => setNewSessionOpen(true)}
-        demoState={tweaks.demoState === "empty" ? "empty" : tweaks.demoState === "loading" ? "loading" : tweaks.demoState === "error-list" ? "error" : null}
-      />
+      <div className="panel">
+        <div className="empty">
+          <div className="head">Redirecting…</div>
+          <div className="sub">Sessions now live in the workspace Studio.</div>
+        </div>
+      </div>
     );
   } else {
     // Stub pages for sidebar entries
