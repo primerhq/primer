@@ -68,6 +68,46 @@ class TestLimitsField:
         assert provider.limits.request_timeout_seconds == 120.0
 
 
+class TestConnectTimeoutField:
+    def test_default_is_none(self) -> None:
+        # Default is None: no connect bound, cold loads are never aborted.
+        lim = Limits(max_concurrency=2)
+        assert lim.connect_timeout_seconds is None
+
+    def test_explicit_value(self) -> None:
+        lim = Limits(max_concurrency=1, connect_timeout_seconds=45.0)
+        assert lim.connect_timeout_seconds == 45.0
+
+    def test_round_trips_through_model_dump(self) -> None:
+        lim = Limits(max_concurrency=1, connect_timeout_seconds=45.0)
+        restored = Limits.model_validate(lim.model_dump())
+        assert restored.connect_timeout_seconds == 45.0
+        assert restored.request_timeout_seconds == lim.request_timeout_seconds
+
+    def test_none_round_trips(self) -> None:
+        lim = Limits(max_concurrency=1)
+        restored = Limits.model_validate(lim.model_dump())
+        assert restored.connect_timeout_seconds is None
+
+    def test_zero_is_allowed(self) -> None:
+        lim = Limits(max_concurrency=1, connect_timeout_seconds=0.0)
+        assert lim.connect_timeout_seconds == 0.0
+
+    def test_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Limits(max_concurrency=1, connect_timeout_seconds=-1.0)
+
+    def test_independent_of_request_timeout(self) -> None:
+        # The two timeouts are separate knobs and do not influence each other.
+        lim = Limits(
+            max_concurrency=1,
+            request_timeout_seconds=60.0,
+            connect_timeout_seconds=10.0,
+        )
+        assert lim.request_timeout_seconds == 60.0
+        assert lim.connect_timeout_seconds == 10.0
+
+
 # ---------------------------------------------------------------------------
 # _iter_with_timeout helper
 # ---------------------------------------------------------------------------

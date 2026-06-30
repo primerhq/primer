@@ -243,6 +243,7 @@ class OpenAIEmbedder(Embedder):
         self._rate_limiter = rate_limiter
         self._rate_limit_key = f"embedder:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
+        self._connect_timeout_seconds = provider.limits.connect_timeout_seconds
 
         logger.info(
             "OpenAI embedder initialized",
@@ -331,8 +332,17 @@ class OpenAIEmbedder(Embedder):
             self._rate_limit_key, max_concurrency=self._max_concurrency,
         ):
             client = self._get_client()
+            from primer.llm._timeout import _open_with_connect_timeout
+            from primer.model.except_ import ProviderTimeoutError
             try:
-                resp = await client.embeddings.create(**request)
+                resp = await _open_with_connect_timeout(
+                    lambda: client.embeddings.create(**request),
+                    self._connect_timeout_seconds,
+                    provider_id=self._provider.id,
+                    model=model,
+                )
+            except ProviderTimeoutError:
+                raise
             except Exception as exc:
                 err = classify_openai_exception(exc)
                 logger.error(

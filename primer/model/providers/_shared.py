@@ -61,6 +61,24 @@ class Limits(BaseModel):
             "LM Studio note: LM Studio can stall mid-generation on large models "
             "or low-memory hardware; the default 300 s covers most real runs. "
             "Lower it (e.g. 60) if you want faster failure detection at the "
-            "cost of killing slower generations."
+            "cost of killing slower generations. This is the per-event STALL "
+            "timeout during streaming; it is distinct from "
+            "``connect_timeout_seconds`` below, which bounds opening the stream."
+        ),
+    )
+    connect_timeout_seconds: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "Timeout in seconds for ESTABLISHING the provider response after a "
+            "concurrency slot has been acquired -- i.e. opening the stream / "
+            "receiving the first bytes, which on a just-in-time backend includes "
+            "a COLD MODEL LOAD. ``None`` (the default) means no connect bound: a "
+            "slow cold load is never aborted, it waits as long as the upstream "
+            "needs. Set a value to fail fast when a held slot's upstream never "
+            "begins responding (e.g. a dead endpoint). Distinct from "
+            "``request_timeout_seconds`` (the per-event stall timeout during "
+            "streaming). Honoured by LLM and embedding adapters that open a "
+            "network request; not applicable to local (in-process) backends."
         ),
     )

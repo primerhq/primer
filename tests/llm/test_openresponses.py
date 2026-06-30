@@ -1104,12 +1104,13 @@ class TestStream:
     ) -> None:
         # Once a concurrency slot is held, an upstream that never starts
         # responding (create/open hangs) is unavailability, not queue time:
-        # it must time out as ProviderTimeoutError rather than hang forever.
+        # when a CONNECT timeout is configured it must surface as
+        # ProviderTimeoutError rather than hang forever.
         from primer.model.except_ import ProviderTimeoutError
 
         provider = _make_provider()
         llm = OpenResponsesLLM(provider)
-        llm._request_timeout_seconds = 0.05  # tiny: fail fast post-slot
+        llm._connect_timeout_seconds = 0.05  # tiny: fail fast on connect
         client = _patched_client(monkeypatch)
 
         async def _stalling_create(**kwargs: Any) -> Any:
@@ -1122,6 +1123,43 @@ class TestStream:
                 messages=[Message(role="user", parts=[TextPart(text="hi")])],
             ):
                 pass
+
+    async def test_create_unbounded_when_connect_timeout_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # connect_timeout None (the default) => the create/open is NOT wrapped,
+        # so a slow cold load is never aborted by a connect timeout. We prove it
+        # by letting create run (slowly) to completion and raise its OWN error:
+        # the failure must NOT be a connect-timeout.
+        from primer.model.except_ import PrimerError, ProviderTimeoutError
+
+        provider = _make_provider()
+        llm = OpenResponsesLLM(provider)
+        assert llm._connect_timeout_seconds is None  # default = unbounded
+        client = _patched_client(monkeypatch)
+
+        class _Sentinel(Exception):
+            pass
+
+        async def _slow_then_raise(**kwargs: Any) -> Any:
+            await asyncio.sleep(0.15)
+            raise _Sentinel("create reached")
+
+        client.responses.create = _slow_then_raise
+        with pytest.raises(PrimerError) as ei:
+            async for _ in llm.stream(
+                model="gpt-4o-mini",
+                messages=[Message(role="user", parts=[TextPart(text="hi")])],
+            ):
+                pass
+        # Not aborted by a connect timeout: create ran to completion + raised.
+        assert not isinstance(ei.value, ProviderTimeoutError)
+
+    def test_limits_connect_timeout_default_none(self) -> None:
+        from primer.model.providers._shared import Limits
+
+        assert Limits(max_concurrency=1).connect_timeout_seconds is None
+        assert Limits(max_concurrency=1, connect_timeout_seconds=30.0).connect_timeout_seconds == 30.0
 
     async def test_full_stream_emits_start_text_done(
         self, monkeypatch: pytest.MonkeyPatch
