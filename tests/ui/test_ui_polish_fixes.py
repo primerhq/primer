@@ -133,36 +133,51 @@ def test_chats_ws_resume_from_latest_seq() -> None:
     )
 
 
-def test_sdet_ws_backoff_constants() -> None:
-    src = _sdet()
-    assert "MAX_BACKOFF_MS" in src, "session-detail.jsx WS effect must define MAX_BACKOFF_MS cap"
-    assert "backoffMs" in src, "session-detail.jsx WS effect must use a backoffMs variable"
+# NOTE: the session-detail LIVE view was re-expressed as a single-session
+# workspace TAP (SSE/EventSource), replacing the bespoke session WebSocket
+# and its hand-rolled exponential-backoff reconnect (Task 6.2). The reconnect
+# machinery these tests used to assert (MAX_BACKOFF_MS / reconnectTimer /
+# intentional / latestSeq cursor) no longer exists: EventSource owns reconnect
+# natively via Last-Event-ID. The assertions below preserve the original
+# intent — live tail with gap-free resume and unmount cleanup — over the tap.
 
 
-def test_sdet_ws_reconnect_on_unexpected_close() -> None:
+def test_sdet_live_via_tap_eventsource() -> None:
     src = _sdet()
-    assert "reconnectTimer" in src, (
-        "session-detail.jsx must schedule reconnect via a timer on unexpected close"
+    assert "EventSource" in src, (
+        "session-detail.jsx live view must tail via an EventSource tap, not a WebSocket"
+    )
+    assert "/tap" in src, (
+        "session-detail.jsx must open the workspace /tap SSE endpoint"
     )
 
 
-def test_sdet_ws_no_reconnect_on_intentional_close() -> None:
+def test_sdet_tap_single_session_selector() -> None:
     src = _sdet()
-    assert "intentional" in src, (
-        "session-detail.jsx must use an intentional flag to skip reconnect on unmount"
-    )
-    assert "clearTimeout(reconnectTimer)" in src, (
-        "session-detail.jsx cleanup must cancel any pending reconnect timer"
+    # The tap is filtered to this one session (sessions: id == sid).
+    assert "WTP_buildSelector" in src, (
+        "session-detail.jsx must build a single-session selector for the tap"
     )
 
 
-def test_sdet_ws_resume_from_latest_seq() -> None:
+def test_sdet_tap_cleanup_closes_eventsource() -> None:
     src = _sdet()
-    assert "latestSeq" in src, (
-        "session-detail.jsx must track latestSeq and resume from it on reconnect"
+    # Unmount must close the EventSource (the tap analogue of the old
+    # intentional-flag + clearTimeout cleanup).
+    assert "es.close()" in src, (
+        "session-detail.jsx tap effect cleanup must close the EventSource"
     )
-    assert "cursor=${latestSeq}" in src, (
-        "session-detail.jsx WS URL must use cursor=${latestSeq} for reconnects"
+
+
+def test_sdet_tap_resume_from_history_high_water() -> None:
+    src = _sdet()
+    # No gap / no re-replay at the history->live seam: the tap resumes from
+    # the history high-water seq via an encoded resume cursor.
+    assert "_slsEncodeCursor" in src, (
+        "session-detail.jsx must seed the tap resume cursor from the history high-water seq"
+    )
+    assert "cursor=" in src, (
+        "session-detail.jsx tap URL must carry the resume cursor"
     )
 
 
