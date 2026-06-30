@@ -387,6 +387,175 @@ class TestReadBatch:
 
 
 # ---------------------------------------------------------------------------
+# read_batch — incremental drain (byte-offset hint)
+# ---------------------------------------------------------------------------
+
+
+class TestReadBatchIncremental:
+    """Verify the drain skips already-consumed bytes on repeated calls."""
+
+    @pytest.mark.asyncio
+    async def test_second_drain_does_not_re_emit_consumed_records(self) -> None:
+        """Records returned by the first drain must NOT appear in the second,
+        and the cursor offset must advance with each drain.
+        """
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        await _seed_session(provider.store, "s1", agent_id="ag1")
+
+        first_batch = _line(1, "user_input") + _line(2, "tool_call")
+        io.write(_msg_path("s1"), first_batch)
+
+        cursor = TapCursor(seqs={}, known_as_of=_NOW)
+        events1, cursor = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=100,
+        )
+        assert len(events1) == 2
+        assert cursor.resume_seq("s1") == 2
+        assert cursor.resume_offset("s1") > 0  # offset was advanced
+
+        # Append a new record.
+        new_record = _line(3, "done")
+        io.append(_msg_path("s1"), new_record)
+
+        offset_after_first = cursor.resume_offset("s1")
+
+        events2, cursor = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=100,
+        )
+
+        # Only the new record is returned — old records not re-emitted.
+        assert len(events2) == 1
+        assert events2[0].class_ == TapEventClass.DONE
+
+        # The offset advanced further after the second drain.
+        assert cursor.resume_offset("s1") > offset_after_first
+
+    @pytest.mark.asyncio
+    async def test_offset_advances_after_each_drain(self) -> None:
+        """The cursor offset must strictly increase after each consuming drain."""
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        await _seed_session(provider.store, "s1", agent_id="ag1")
+
+        io.write(_msg_path("s1"), _line(1, "user_input"))
+        cursor = TapCursor(seqs={}, known_as_of=_NOW)
+
+        _, cursor = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=100,
+        )
+        offset_after_first = cursor.resume_offset("s1")
+        assert offset_after_first > 0
+
+        io.append(_msg_path("s1"), _line(2, "done"))
+        _, cursor = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=100,
+        )
+        assert cursor.resume_offset("s1") > offset_after_first
+
+    @pytest.mark.asyncio
+    async def test_no_new_bytes_yields_empty(self) -> None:
+        """A session with no new bytes since the offset returns no events."""
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        await _seed_session(provider.store, "s1", agent_id="ag1")
+
+        io.write(_msg_path("s1"), _line(1, "user_input"))
+        cursor = TapCursor(seqs={}, known_as_of=_NOW)
+
+        _, cursor = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=100,
+        )
+
+        # No new data written — second drain must be empty.
+        events2, _ = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=100,
+        )
+        assert events2 == []
+
+    @pytest.mark.asyncio
+    async def test_limit_cut_mid_session_offset_points_to_last_consumed(self) -> None:
+        """When limit cuts a session mid-file the cursor offset reflects only
+        the records actually consumed; the next drain returns the remainder
+        with no skip and no duplicate.
+        """
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        await _seed_session(provider.store, "s1", agent_id="ag1")
+
+        all_lines = (
+            _line(1, "user_input")
+            + _line(2, "tool_call")
+            + _line(3, "tool_result")
+            + _line(4, "done")
+        )
+        io.write(_msg_path("s1"), all_lines)
+
+        cursor = TapCursor(seqs={}, known_as_of=_NOW)
+        events1, cursor = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=2,
+        )
+        assert len(events1) == 2
+        assert [e.class_ for e in events1] == [
+            TapEventClass.USER_INPUT,
+            TapEventClass.TOOL_CALL,
+        ]
+        assert cursor.resume_seq("s1") == 2
+
+        # The offset must sit at/before the start of seq 3, not end-of-file.
+        offset_after_first = cursor.resume_offset("s1")
+        assert 0 < offset_after_first < len(all_lines)
+
+        # Second drain returns EXACTLY the remaining two records — no skip, no dup.
+        events2, cursor = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=100,
+        )
+        assert len(events2) == 2
+        assert [e.class_ for e in events2] == [
+            TapEventClass.TOOL_RESULT,
+            TapEventClass.DONE,
+        ]
+        assert cursor.resume_seq("s1") == 4
+
+    @pytest.mark.asyncio
+    async def test_stale_offset_zero_seq_filter_backstops(self) -> None:
+        """If the offset is artificially set to 0 but seqs are advanced,
+        the seq filter must prevent re-emission of already-consumed records.
+        """
+        provider = _Provider()
+        io = _FakeWorkspaceIO()
+        await _seed_session(provider.store, "s1", agent_id="ag1")
+
+        io.write(
+            _msg_path("s1"),
+            _line(1, "user_input") + _line(2, "tool_call") + _line(3, "done"),
+        )
+
+        # Manually craft a cursor with seq advanced to 2 but offset=0 (stale).
+        cursor = TapCursor(
+            seqs={"s1": 2},
+            known_as_of=_NOW,
+            offsets={"s1": 0},  # stale — forces re-read from byte 0
+        )
+
+        events, _ = await read_batch(
+            provider, io, workspace_id="ws-1", selector=TapSelector(),
+            cursor=cursor, limit=100,
+        )
+        # Only seq 3 (> 2) must be returned despite the offset being 0.
+        assert len(events) == 1
+        assert events[0].class_ == TapEventClass.DONE
+
+
+# ---------------------------------------------------------------------------
 # helpers that need no store
 # ---------------------------------------------------------------------------
 
