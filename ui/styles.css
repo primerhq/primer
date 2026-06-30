@@ -83,6 +83,263 @@
 :root[data-density="compact"] { --row-h: 30px; }
 :root[data-density="comfortable"] { --row-h: 40px; }
 
+/* ---------------------------------------------------------------------------
+   Studio additions (PR-B). Three tokens the port-map identifies as missing,
+   plus the Studio-scoped layout classes (st-*). The colour/spacing token set
+   is otherwise pixel-identical to the prototype, so we reuse the existing
+   tokens above rather than duplicating them.
+
+   --teal / --teal-dim     : graph_transition activity chip colour.
+   --frow-h                : file-tree row height (tighter than --row-h).
+   Because the Studio mounts data-density on its OWN root <div> (not :root),
+   --frow-h is declared on both :root and the [data-density] attribute so it
+   resolves whether the attribute lands on <html> or on .st-root.
+--------------------------------------------------------------------------- */
+:root { --teal: oklch(0.78 0.12 195); --teal-dim: oklch(0.78 0.12 195 / 0.14); --frow-h: 30px; }
+:root[data-density="compact"],
+[data-density="compact"] { --frow-h: 24px; }
+:root[data-density="comfortable"],
+[data-density="comfortable"] { --frow-h: 30px; }
+
+/* Studio root shell: header row + body. Owns its own data-theme/-density. */
+.st-root {
+  display: grid;
+  grid-template-rows: var(--topbar-h, 48px) 1fr;
+  height: 100dvh;
+  width: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* Header (top row). */
+.st-topbar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 0 12px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  position: relative;
+  z-index: 30;
+}
+.st-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  padding-right: 14px;
+  border-right: 1px solid var(--border);
+  height: var(--topbar-h, 48px);
+}
+.st-ws-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg-2);
+  cursor: pointer;
+  font-weight: 600;
+}
+.st-ws-btn:hover { border-color: var(--accent-border); }
+.st-ws-menu {
+  position: absolute;
+  top: 38px;
+  left: 0;
+  width: 230px;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  box-shadow: var(--shadow);
+  padding: 5px;
+  z-index: 40;
+}
+.st-ws-menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.st-ws-menu-row:hover { background: var(--bg-hover); }
+.st-palette-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 9px 5px 11px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text-3);
+  background: var(--bg-2);
+  font-size: 12px;
+  cursor: pointer;
+  min-width: 190px;
+}
+.st-palette-trigger:hover { border-color: var(--border-strong); color: var(--text-2); }
+.st-palette-trigger kbd {
+  margin-left: auto;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: var(--text-2);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.st-hbtn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  background: var(--bg-2);
+  border-radius: 6px;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.st-hbtn:hover { border-color: var(--border-strong); color: var(--text); }
+.st-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  display: grid;
+  place-items: center;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  color: var(--text-2);
+}
+
+/* Body: 3 columns. Widths are CSS custom props so the resize handles can
+   write --st-left-w / --st-right-w inline on the grid element. */
+.st-body {
+  display: grid;
+  grid-template-columns: var(--st-left-w, 248px) minmax(0, 1fr) var(--st-right-w, 332px);
+  min-height: 0;
+}
+.st-col {
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.st-col-left { background: var(--bg-1); border-right: 1px solid var(--border); }
+.st-col-center { background: var(--bg); }
+.st-col-right { background: var(--bg-1); border-left: 1px solid var(--border); }
+
+/* Column resize handles (left/right). 5px hit area straddling the border. */
+.st-resize {
+  position: relative;
+  z-index: 5;
+  width: 5px;
+  margin: 0 -3px;
+  cursor: col-resize;
+  background: transparent;
+}
+.st-resize:hover, .st-resize.is-active { background: var(--accent-border); }
+
+/* Collapsible sidebar sections (VS Code style). */
+.st-section { display: flex; flex-direction: column; min-height: 0; }
+.st-section + .st-section { border-top: 1px solid var(--border); }
+.st-section-h {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 8px 0 10px;
+  text-transform: uppercase;
+  font-size: 10.5px;
+  letter-spacing: 0.07em;
+  font-weight: 700;
+  color: var(--text-3);
+  cursor: pointer;
+  user-select: none;
+  flex: 0 0 auto;
+}
+.st-section-h:hover { color: var(--text); }
+.st-section-count {
+  margin-left: auto;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  color: var(--text-4);
+}
+.st-section-body { overflow: auto; flex: 1; min-height: 0; }
+
+/* Center tab bar. */
+.st-tabbar {
+  display: flex;
+  align-items: stretch;
+  height: 36px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  flex: 0 0 auto;
+}
+.st-tab {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 220px;
+  padding: 0 8px 0 12px;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-3);
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.st-tab:hover { background: var(--bg-2); }
+.st-tab.is-active { background: var(--bg); color: var(--text); }
+.st-tab.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  height: 2px;
+  background: var(--accent);
+}
+.st-tab-close {
+  width: 16px;
+  height: 16px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--text-4);
+}
+.st-tab-close:hover { background: var(--bg-active); color: var(--text); }
+
+/* Region placeholder (B2/B3/B4 fill these). */
+.st-placeholder {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  padding: 24px;
+  color: var(--text-4);
+  font-size: 12px;
+}
+.st-placeholder .st-ph-kind {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  text-transform: uppercase;
+}
+
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; }

@@ -362,6 +362,46 @@ function App() {
 
   const openSession = (id) => navigate("session-detail", id);
 
+  // PR-B redirects: the Studio (/workspaces/:wid) subsumes the session
+  // interface. /sessions → /workspaces; /sessions/:id resolves the
+  // session's workspace then deep-links into the Studio with that session
+  // open (?open=session:<sid>). Old links keep working.
+  const sessionRedirectRef = React.useRef(null);
+  React.useEffect(() => {
+    if (page === "sessions") {
+      window.location.replace("#/workspaces");
+      return;
+    }
+    if (page === "session-detail" && currentSessionId) {
+      // Guard against re-firing the resolve for the same sid across the
+      // re-renders that happen while the fetch is in flight.
+      if (sessionRedirectRef.current === currentSessionId) return;
+      sessionRedirectRef.current = currentSessionId;
+      let cancelled = false;
+      window.primerApi
+        .apiFetch("GET", `/sessions/${encodeURIComponent(currentSessionId)}`)
+        .then((sess) => {
+          if (cancelled) return;
+          const wsid = sess && sess.workspace_id;
+          if (wsid) {
+            window.location.replace(
+              `#/workspaces/${encodeURIComponent(wsid)}?open=session:${encodeURIComponent(currentSessionId)}`
+            );
+          } else {
+            // No workspace to land in — fall back to the workspaces list.
+            window.location.replace("#/workspaces");
+          }
+        })
+        .catch(() => {
+          if (cancelled) return;
+          window.location.replace("#/workspaces");
+        });
+      return () => {
+        cancelled = true;
+      };
+    }
+  }, [page, currentSessionId]);
+
   // Demo state shows error toast on mount
   React.useEffect(() => {
     if (tweaks.demoState === "rfc7807") {
@@ -766,32 +806,11 @@ function App() {
       />
     );
   } else if (page === "workspace-detail" && currentWorkspaceId) {
-    pageHeader = (
-      <>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="crumb">
-            <a onClick={() => navigate("workspaces")}>Workspaces</a>
-            <span className="sep">/</span>
-            <span className="mono" style={{ color: "var(--text)" }}>{currentWorkspaceId}</span>
-          </div>
-          <h1 className="page-title mono">{currentWorkspaceId}</h1>
-          <div className="page-sub">
-            <span className="muted">Materialised workspace</span>
-          </div>
-        </div>
-        <div className="page-actions">
-          <Btn icon="chevron-left" kind="ghost" onClick={() => navigate("workspaces")}>Back to list</Btn>
-        </div>
-      </>
-    );
-    pageBody = (
-      <WorkspaceDetail
-        workspaceId={currentWorkspaceId}
-        onOpenSession={(sid) => navigate("session-detail", sid)}
-        onNavigate={navigate}
-        pushToast={pushToast}
-      />
-    );
+    // /workspaces/:wid is the Studio (PR-B). Studio renders its own full
+    // header + 3-column shell, so we return it directly below — bypassing
+    // the standard page chrome (sidebar/topbar/page-header) the other
+    // pages share. See the early-return guard after the page switch.
+    return <Studio wid={currentWorkspaceId} />;
   } else if (page === "workspace-providers") {
     pageHeader = (
       <>
