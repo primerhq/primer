@@ -493,9 +493,9 @@ function Studio({ wid }) {
 
         <div className="st-resize" onMouseDown={function (e) { startResize("left", e); }} data-testid="studio-resize-left" />
 
-        {/* ---- CENTER: B3 StudioCenter (tabs + active panel + terminal) ---- */}
+        {/* ---- CENTER: B3 StudioCenter (tabs + active panel) ---- */}
         <div className="st-col st-col-center" data-testid="studio-center">
-          <ST_RegionPlaceholder kind="B3 · center" label="Tab bar + active document panel" testid="region-center" />
+          <StudioCenter wid={wid} studio={studio} />
         </div>
 
         <div className="st-resize" onMouseDown={function (e) { startResize("right", e); }} data-testid="studio-resize-right" />
