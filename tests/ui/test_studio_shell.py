@@ -20,6 +20,7 @@ STUDIO = UI / "components" / "studio.jsx"
 INDEX = UI / "index.html"
 STYLES = UI / "styles.css"
 APP = UI / "app.jsx"
+CHROME = UI / "components" / "chrome.jsx"
 
 
 def _studio_src() -> str:
@@ -131,6 +132,68 @@ def test_app_renders_studio_for_workspace_detail() -> None:
     assert '"#/workspaces"' in src
     assert "open=session:" in src
     assert "workspace_id" in src
+
+
+def test_studio_renders_in_shell_not_as_takeover() -> None:
+    """The Studio is now ordinary page CONTENT inside the shared shell — it no
+    longer early-returns to bypass the app Topbar / Sidebar. It is assigned to
+    pageBody (which the shell wraps), not `return`ed."""
+    src = APP.read_text(encoding="utf-8")
+    # Wired as page content for the workspace-detail branch.
+    assert "pageBody = <Studio wid={currentWorkspaceId} pushToast={pushToast} />" in src
+    # The old full-screen takeover early-return must be gone.
+    assert "return <Studio wid={currentWorkspaceId} pushToast={pushToast} />;" not in src
+    # The shell flags the Studio page so CSS can reset the page chrome padding.
+    assert "studio-page" in src
+
+
+def test_nav_has_studio_and_no_sessions_item() -> None:
+    """FIX 1: the NAV exposes a top-level "Studio" entry next to Dashboard and
+    the old "Sessions" nav item is removed (Sessions live inside the Studio)."""
+    src = CHROME.read_text(encoding="utf-8")
+    # New Studio nav item present.
+    assert '{ id: "studio", label: "Studio"' in src
+    # The old Sessions nav item is gone (the dict literal — not substrings that
+    # appear in comments or the palette session-hit code).
+    assert '{ id: "sessions", label: "Sessions"' not in src
+
+
+def test_app_navigate_studio_uses_last_wid() -> None:
+    """navigate("studio") opens the last-opened workspace's Studio, persisted by
+    the Studio under localStorage["studio:lastWid"]."""
+    app = APP.read_text(encoding="utf-8")
+    assert 'target === "studio"' in app
+    assert 'studio:lastWid' in app
+    # The Studio writes the key on mount.
+    studio = _studio_src()
+    assert 'window.localStorage.setItem("studio:lastWid", wid)' in studio
+
+
+def test_studio_header_is_slim_no_brand() -> None:
+    """FIX 2: the slim sub-header dropped the 'Primer · Studio' brand/logo and
+    keeps just the workspace selector + ⌘K palette + terminal toggle."""
+    src = _studio_src()
+    # Brand / logo removed.
+    assert "st-brand" not in src
+    assert "function ST_Logo(" not in src
+    # Slim triggers retained.
+    assert 'data-testid="workspace-selector"' in src
+    assert 'data-testid="palette-trigger"' in src
+    assert 'data-testid="terminal-toggle"' in src
+
+
+def test_studio_mobile_panel_toggles_and_drawers() -> None:
+    """FIX 3: phone layout exposes left/right panel-drawer toggles in the
+    sub-header and the columns slide in as overlay sheets."""
+    src = _studio_src()
+    assert 'data-testid="studio-left-toggle"' in src
+    assert 'data-testid="studio-right-toggle"' in src
+    assert "is-drawer-open" in src
+    assert "st-panel-overlay" in src
+    css = STYLES.read_text(encoding="utf-8")
+    # Single column at the mobile breakpoint + off-canvas drawer transforms.
+    assert ".st-body { grid-template-columns: 1fr; }" in css
+    assert ".st-panel-overlay" in css
 
 
 def test_styles_has_studio_tokens_and_classes() -> None:

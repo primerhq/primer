@@ -101,11 +101,15 @@
 :root[data-density="comfortable"],
 [data-density="comfortable"] { --frow-h: 30px; }
 
-/* Studio root shell: header row + body. Owns its own data-theme/-density. */
+/* Studio root shell: slim sub-header row + body. Renders as IN-SHELL page
+   content (inside the app .main / .page-body), so it fills its container
+   rather than the whole viewport. The .studio-page chrome reset below strips
+   the empty page-header + page-body padding so this can size to 100%. Owns its
+   own data-theme/-density. */
 .st-root {
   display: grid;
-  grid-template-rows: var(--topbar-h, 48px) 1fr;
-  height: 100dvh;
+  grid-template-rows: var(--st-subhead-h, 44px) 1fr;
+  height: 100%;
   width: 100%;
   background: var(--bg);
   color: var(--text);
@@ -116,26 +120,23 @@
   overflow: hidden;
 }
 
-/* Header (top row). */
+/* In-shell chrome reset: when the Studio is the active page, collapse the
+   shared empty page-header and drop the page-body padding so the Studio fills
+   the scroll area edge-to-edge under the app Topbar. */
+.app.studio-page .main { overflow: hidden; }
+.app.studio-page .page-header { display: none; }
+.app.studio-page .page-body { padding: 0; height: 100%; min-height: 0; }
+
+/* Slim content sub-header (top row). */
 .st-topbar {
   display: flex;
   align-items: center;
-  gap: 14px;
+  gap: 10px;
   padding: 0 12px;
   background: var(--bg-1);
   border-bottom: 1px solid var(--border);
   position: relative;
   z-index: 30;
-}
-.st-brand {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  padding-right: 14px;
-  border-right: 1px solid var(--border);
-  height: var(--topbar-h, 48px);
 }
 .st-ws-btn {
   position: relative;
@@ -1720,6 +1721,43 @@ input, textarea, select { font: inherit; color: inherit; }
   /* Hide existing sidebar in favor of slide-over drawer. */
   .app { grid-template-columns: 1fr; }
   .sidebar { display: none; }
+
+  /* ---- Studio: collapse the 3-column body to the single center document.
+     The left (Sessions+Files) and right (Action Required+Activity) columns
+     become slide-over sheets toggled from the slim sub-header. ---- */
+  /* The wide ⌘K trigger gives way to the compact mobile search button. */
+  .st-palette-trigger { display: none; }
+  /* Re-assert grid centering on the mobile-only sub-header buttons — the
+     generic `.mobile-only { display: revert }` above would otherwise drop
+     `.st-hbtn`'s `display: grid` back to the UA inline-block default. */
+  .st-topbar .st-hbtn.mobile-only { display: grid; }
+  .st-body { grid-template-columns: 1fr; }
+  .st-col-left,
+  .st-col-right {
+    position: fixed;
+    top: 0; bottom: 0;
+    width: 85vw; max-width: 340px;
+    z-index: 51;
+    box-shadow: var(--shadow);
+    transition: transform 0.18s ease;
+  }
+  .st-col-left {
+    left: 0;
+    border-right: 1px solid var(--border);
+    transform: translateX(-100%);
+  }
+  .st-col-right {
+    right: 0;
+    border-left: 1px solid var(--border);
+    transform: translateX(100%);
+  }
+  .st-col-left.is-drawer-open,
+  .st-col-right.is-drawer-open { transform: translateX(0); }
+  .st-panel-overlay {
+    position: fixed; inset: 0;
+    background: oklch(0 0 0 / 0.5);
+    z-index: 50;
+  }
 
   /* Topbar: hamburger left, brand + theme toggle right. */
   .topbar-brand { padding-left: 8px; }

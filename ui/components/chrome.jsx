@@ -5,12 +5,12 @@ const NAV = [
     group: null,
     items: [
       { id: "dashboard", label: "Dashboard", icon: "home" },
+      { id: "studio", label: "Studio", icon: "panel-left" },
     ],
   },
   {
     group: "Compute",
     items: [
-      { id: "sessions", label: "Sessions", icon: "zap", countKey: "sessions" },
       { id: "agents", label: "Agents", icon: "agent" },
       { id: "graphs", label: "Graphs", icon: "graph" },
       { id: "chats", label: "Chats", icon: "send", countKey: "chats" },

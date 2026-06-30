@@ -308,7 +308,38 @@ function App() {
   };
   const removeToast = (id) => setToasts((arr) => arr.filter((x) => x.id !== id));
 
+  // Open the Studio for the last-opened workspace. The Studio persists
+  // localStorage["studio:lastWid"] whenever it mounts (see the effect in the
+  // workspace-detail render path); read it back here. Falls back to the first
+  // workspace from the already-polled topbar:workspaces resource, and finally
+  // to a one-shot GET /v1/workspaces if that cache is still cold. When nothing
+  // resolves we land on the workspaces list so the nav item never dead-ends.
+  const openStudio = () => {
+    let wid = null;
+    try { wid = window.localStorage.getItem("studio:lastWid") || null; } catch { wid = null; }
+    if (!wid) {
+      const items = realWorkspaces.data && realWorkspaces.data.items;
+      if (Array.isArray(items) && items.length) wid = items[0].id;
+    }
+    if (wid) {
+      window.location.hash = "#/workspaces/" + encodeURIComponent(wid);
+      return;
+    }
+    window.primerApi
+      .apiFetch("GET", "/workspaces?limit=1")
+      .then((r) => {
+        const first = r && Array.isArray(r.items) && r.items[0];
+        if (first && first.id) {
+          window.location.hash = "#/workspaces/" + encodeURIComponent(first.id);
+        } else {
+          window.location.hash = "#/workspaces";
+        }
+      })
+      .catch(() => { window.location.hash = "#/workspaces"; });
+  };
+
   const navigate = (target, extra) => {
+    if (target === "studio") { openStudio(); return; }
     // Designer's API: navigate(page, extra?). Map to URL paths.
     const ROUTES = {
       dashboard: "/",
@@ -796,11 +827,13 @@ function App() {
       />
     );
   } else if (page === "workspace-detail" && currentWorkspaceId) {
-    // /workspaces/:wid is the Studio (PR-B). Studio renders its own full
-    // header + 3-column shell, so we return it directly below — bypassing
-    // the standard page chrome (sidebar/topbar/page-header) the other
-    // pages share. See the early-return guard after the page switch.
-    return <Studio wid={currentWorkspaceId} pushToast={pushToast} />;
+    // /workspaces/:wid is the Studio (PR-B). It now renders as ordinary PAGE
+    // CONTENT inside the shared shell (app Topbar + Sidebar stay mounted) —
+    // no header takeover. The Studio supplies its own slim sub-header (the
+    // workspace selector + ⌘K palette + terminal toggle). pageHeader is left
+    // null so the standard .page-header bar collapses out of the way.
+    pageHeader = null;
+    pageBody = <Studio wid={currentWorkspaceId} pushToast={pushToast} />;
   } else if (page === "workspace-providers") {
     pageHeader = (
       <>
@@ -1042,12 +1075,12 @@ function App() {
   }
 
   return (
-    <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+    <div className={`app ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${page === "workspace-detail" ? "studio-page" : ""}`}>
       <Topbar workerStats={workerStats} onNavigate={navigate} onOpenPalette={() => setPaletteOpen(true)} onOpenDrawer={() => setDrawerOpen(true)} />
       {(() => {
         const sidebarPage = (
-          page === "session-detail" ? "sessions"
-          : page === "workspace-detail" ? "workspaces"
+          page === "session-detail" ? "studio"
+          : page === "workspace-detail" ? "studio"
           : page === "workspace-provider-detail" ? "workspace-providers"
           : page === "workspace-template-detail" ? "workspace-templates"
           : page === "agent-detail" ? "agents"
