@@ -88,6 +88,25 @@ def test_use_studio_state_persistence_contract() -> None:
         assert action in src, action
 
 
+def test_deep_link_synthesizes_url_tab() -> None:
+    src = _studio_src()
+    # A fresh deep-link (#/workspaces/:wid?open=session:<sid>) with empty
+    # localStorage must still create + activate the tab, not mount empty.
+    # The synthesis helper turns the parsed ?open= id into a minimal tab.
+    assert "function ST_tabFromUrlId(" in src
+    # session:<id> → a session tab; file:<path> → a file tab.
+    assert 'kind: "session"' in src
+    assert 'kind: "file"' in src
+    # The helper is wired through ST_applyUrlTab, which both the lazy
+    # initializer and the wid-change effect call, so a missing url tab is
+    # appended (concat) and activated rather than ignored.
+    assert "ST_applyUrlTab" in src
+    assert "ST_tabFromUrlId(urlTab)" in src
+    # When the url tab isn't already open we append + activate it.
+    assert "base.openTabs = openTabs.concat([tab]);" in src
+    assert "base.activeTabId = urlTab;" in src
+
+
 def test_workspace_selector_uses_workspaces_resource() -> None:
     src = _studio_src()
     # Selector lists GET /v1/workspaces and navigates on pick.

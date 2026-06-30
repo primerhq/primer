@@ -184,7 +184,11 @@ function NewSessionForm({ wid, onClose, onCreated }) {
   var [submitting, setSubmitting] = React.useState(false);
   var [error, setError] = React.useState(null);
 
-  // Default to first available option when items load.
+  // Single owner of the default selection: these effects default the first
+  // available option whenever items load OR the kind toggles to an as-yet
+  // unselected binding. The AGENT/GRAPH toggle buttons below only change
+  // `kind` — they do NOT set the id — so there is exactly one writer per id
+  // and no race between the effect and an imperative button handler.
   React.useEffect(function() {
     if (kind === "agent" && agentItems.length > 0 && !agentId) {
       setAgentId(agentItems[0].id);
@@ -258,7 +262,7 @@ function NewSessionForm({ wid, onClose, onCreated }) {
             color: kind === "agent" ? "var(--accent)" : "var(--text-3)",
             cursor: "pointer",
           }}
-          onClick={function() { setKind("agent"); setAgentId(agentItems.length > 0 ? agentItems[0].id : ""); }}
+          onClick={function() { setKind("agent"); }}
         >AGENT</button>
         <button
           style={{
@@ -272,7 +276,7 @@ function NewSessionForm({ wid, onClose, onCreated }) {
             color: kind === "graph" ? "var(--accent)" : "var(--text-3)",
             cursor: "pointer",
           }}
-          onClick={function() { setKind("graph"); setGraphId(graphItems.length > 0 ? graphItems[0].id : ""); }}
+          onClick={function() { setKind("graph"); }}
         >GRAPH</button>
       </div>
 
