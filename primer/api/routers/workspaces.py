@@ -17,6 +17,7 @@ Sub-resources on ``/v1/workspaces/{id}``:
 * Sessions — list, get, pause, resume, steer.
 * Files — list (paginated ls), info, read, download, delete, write.
 * Log — git log over the ``.state`` repo.
+* Yields — aggregated pending yields across all sessions (Studio A3).
 """
 
 from __future__ import annotations
@@ -35,6 +36,7 @@ from pydantic import BaseModel, Field
 from primer.api.deps import (
     get_event_bus,
     get_scheduler,
+    get_session_storage,
     get_storage_provider,
     get_workspace_provider_storage,
     get_workspace_registry,
@@ -1125,6 +1127,151 @@ async def workspace_show_commit(
 
 
 # ===========================================================================
+# Yields pending sub-resource (Studio A3)
+# ===========================================================================
+
+yields_pending_router = APIRouter(tags=["workspace-yields"])
+
+
+def _extract_yield_kind(tool_name: str) -> str:
+    """Map the internal ``tool_name`` stored in the parked_state blob to the
+    human-facing ``kind`` field exposed in the API response.
+
+    * ``_approval`` → ``"approval"`` (tool-approval gate)
+    * everything else is returned verbatim (``ask_user``, ``watch_files``,
+      ``sleep``, ``invoke_graph``, …).
+    """
+    if tool_name == "_approval":
+        return "approval"
+    return tool_name
+
+
+def _extract_yield_prompt(tool_name: str, metadata: dict) -> str:
+    """Return the best human-facing description for a parked yield.
+
+    ``metadata`` is ``blob["yielded"]["resume_metadata"]`` (or ``{}``).
+
+    Per-kind extraction:
+    * ``ask_user``   → the ``prompt`` string the agent emitted.
+    * ``_approval``  → ``original_call.name`` (the tool awaiting approval).
+    * ``watch_files``→ the watched paths joined as a comma-separated string.
+    * ``sleep``      → ``"<N>s"`` from ``requested_seconds``.
+    * others         → empty string (callers may flag as unknown).
+    """
+    if tool_name == "ask_user":
+        return str(metadata.get("prompt") or "")
+    if tool_name == "_approval":
+        original = metadata.get("original_call") or {}
+        return str(original.get("name") or "")
+    if tool_name == "watch_files":
+        paths = metadata.get("paths") or []
+        return ", ".join(str(p) for p in paths)
+    if tool_name == "sleep":
+        secs = metadata.get("requested_seconds")
+        if secs is not None:
+            return f"{secs}s"
+        return ""
+    return ""
+
+
+def _tool_call_id_from_blob(blob: dict) -> str | None:
+    """Resolve the tool_call_id from a raw parked_state blob.
+
+    Mirrors the logic in ``yields.py::_tool_call_id_for``: top-level key
+    first, then fallback into ``yielded.resume_metadata``.
+    """
+    tcid = blob.get("tool_call_id")
+    if tcid:
+        return str(tcid)
+    yielded = blob.get("yielded") or {}
+    meta = yielded.get("resume_metadata") or {}
+    tcid = meta.get("tool_call_id")
+    return str(tcid) if tcid else None
+
+
+@yields_pending_router.get(
+    "/workspaces/{workspace_id}/yields/pending",
+    summary="Aggregated pending yields across all sessions (Studio Action Required)",
+    responses=common_responses(404, 500),
+)
+async def list_pending_yields(
+    workspace_id: str = Path(..., description="Workspace id"),
+    session_storage=Depends(get_session_storage),
+) -> dict:
+    """Return every pending yield across **all** parked sessions in the
+    workspace.
+
+    Drives the Studio right-sidebar "Action Required" panel on load;
+    live deltas arrive via ``yielded``/``done`` tap events.
+
+    Response shape::
+
+        {
+            "items": [
+                {
+                    "session_id": str,
+                    "kind": "ask_user" | "approval" | "watch_files" | "sleep" | …,
+                    "prompt": str,           # human-facing description
+                    "tool_call_id": str | null,
+                    "parked_at": str | null  # ISO-8601
+                },
+                …
+            ]
+        }
+
+    Only sessions with ``parked_status == "parked"`` are included; running
+    and ended sessions are excluded. Sessions from other workspaces are never
+    returned.
+    """
+    from primer.model.storage import OffsetPage
+    from primer.storage.q import Q
+    from primer.model.workspace_session import WorkspaceSession
+
+    predicate = (
+        Q(WorkspaceSession)
+        .where("workspace_id", workspace_id)
+        .where("parked_status", "parked")
+        .build()
+    )
+
+    items = []
+    offset = 0
+    page_size = 200
+    while True:
+        resp = await session_storage.find(
+            predicate,
+            OffsetPage(offset=offset, length=page_size),
+        )
+        for sess in resp.items:
+            blob: dict = sess.parked_state or {}
+            yielded_blob: dict = blob.get("yielded") or {}
+            tool_name: str = yielded_blob.get("tool_name") or ""
+            metadata: dict = yielded_blob.get("resume_metadata") or {}
+
+            kind = _extract_yield_kind(tool_name)
+            prompt = _extract_yield_prompt(tool_name, metadata)
+            tcid = _tool_call_id_from_blob(blob)
+            parked_at = (
+                sess.parked_at.isoformat() if sess.parked_at is not None else None
+            )
+
+            items.append(
+                {
+                    "session_id": sess.id,
+                    "kind": kind,
+                    "prompt": prompt,
+                    "tool_call_id": tcid,
+                    "parked_at": parked_at,
+                }
+            )
+        if len(resp.items) < page_size:
+            break
+        offset += page_size
+
+    return {"items": items}
+
+
+# ===========================================================================
 # Helpers
 # ===========================================================================
 
@@ -1168,4 +1315,5 @@ __all__ = [
     "sessions_router",
     "template_router",
     "workspace_router",
+    "yields_pending_router",
 ]

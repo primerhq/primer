@@ -119,6 +119,7 @@ def _mount_routers(
     app.include_router(workspaces_router.sessions_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(workspaces_router.files_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(workspaces_router.log_router, prefix=prefix, dependencies=auth_dep)
+    app.include_router(workspaces_router.yields_pending_router, prefix=prefix, dependencies=auth_dep)
     # Sessions.
     app.include_router(sessions_router.nested_session_router, prefix=prefix, dependencies=auth_dep)
     app.include_router(sessions_router.top_session_router, prefix=prefix, dependencies=auth_dep)
