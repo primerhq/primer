@@ -28,6 +28,8 @@ import time
 import httpx
 import pytest
 
+from tests.ui_e2e._studio_helpers import open_studio
+
 
 def test_u0002_sessions_sidebar_count_polls_after_api_create(
     page,
@@ -36,21 +38,21 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0002 — POST a session via the API to a fresh workspace and
-    assert the sidebar Sessions counter increments to reflect the new
-    row within one polling interval (≤12s budget, real cadence ≤5s).
+    """U0002 — Re-pointed to the Studio sidebar's per-workspace Sessions
+    count. POST a session via the API to a fresh workspace and assert the
+    Studio left-sidebar Sessions-section count increments to reflect the
+    new row within one polling interval (≤15s budget, real cadence ~3s).
 
-    Priority 4 — polling cadence. The Sessions sidebar count is the
-    sum of three sub-counts (CREATED + RUNNING + PAUSED) — each its
-    own poll (chrome.jsx:94-102). The combined number renders only
-    once all three have a value, so a fresh page needs one full
-    interval to display a number at all.
+    Priority 4 — polling cadence. The old GLOBAL sidebar "Sessions" nav
+    count was removed with the sessions list (the ``studio`` nav item
+    carries no count). The Studio's SessionsSection instead polls
+    ``/workspaces/{wid}/sessions`` every 3s and renders the row count in
+    its ``sessions-header`` (studio-sidebar.jsx ``st-section-count``); a
+    new API-created row surfaces there without a manual refresh.
 
-    Setup ladder mirrors U0013 (anomaly): LLM provider → agent →
-    workspace provider → template → workspace. Then we open the
-    console, capture the baseline Sessions count, POST a session via
-    API with auto_start=false (no real LLM call), and poll the
-    sidebar until the count is baseline+1.
+    Setup ladder: LLM provider → agent → workspace provider → template →
+    workspace. Open the Studio, capture the baseline session-row count,
+    POST a session (auto_start=false), poll until a new row appears.
     """
     provider_id = f"llm-u0002-{unique_suffix}"
     agent_id = f"ag-u0002-{unique_suffix}"
@@ -96,40 +98,21 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
         workspace_id = r.json()["id"]
 
     try:
-        # Open the dashboard (sidebar renders on any page).
-        page.goto(f"{console_url}#/", wait_until="domcontentloaded")
-        # The Sessions nav item carries a .count span when the three
-        # status polls have all loaded. Find it via the label.
-        sessions_nav = page.locator(
-            ".nav-item:has(.label:text('Sessions'))"
-        ).first
-        sessions_nav.wait_for(state="visible", timeout=10_000)
+        # Open the Studio for the fresh workspace; the sidebar Sessions
+        # section polls this workspace's sessions every 3s.
+        open_studio(page, console_url, workspace_id)
 
-        def _read_count() -> int | None:
-            """Return the integer rendered in the Sessions .count, or
-            None if the count hasn't loaded yet (no .count element
-            present means the polls are still in flight)."""
-            count_el = sessions_nav.locator(".count").first
-            if count_el.count() == 0:
-                return None
-            txt = (count_el.text_content() or "").strip()
-            try:
-                return int(txt)
-            except ValueError:
-                return None
+        def _row_count() -> int:
+            """Number of session-row entries currently rendered."""
+            return page.locator('[data-testid="session-row"]').count()
 
-        # Wait until the baseline is rendered (first poll cycle).
-        baseline: int | None = None
-        deadline = time.monotonic() + 12.0
-        while time.monotonic() < deadline:
-            baseline = _read_count()
-            if baseline is not None:
-                break
-            page.wait_for_timeout(250)
-        assert baseline is not None, (
-            "Sessions sidebar count never rendered within 12s — "
-            "polls aren't loading at all on the freshly opened page"
+        # Baseline: a brand-new workspace has zero session rows. Wait for
+        # the Sessions section to have finished its first poll (the empty
+        # "No sessions yet." copy is present).
+        page.locator('[data-testid="sessions-section"]').wait_for(
+            state="visible", timeout=15_000,
         )
+        baseline = _row_count()
 
         # POST the session via API to drive the increment.
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -143,22 +126,23 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
             assert r.status_code == 201, f"seed session failed: {r.text}"
             session_id = r.json()["id"]
 
-        # Wait for the sidebar to catch up. Real poll cadence is 5s
-        # — budget 15s to absorb the worst-case overlap between
-        # request firing and React batching.
+        # Wait for the sidebar to catch up (3s poll) — budget 15s.
         target = baseline + 1
         deadline = time.monotonic() + 15.0
+        final = baseline
         while time.monotonic() < deadline:
-            now = _read_count()
-            if now is not None and now >= target:
+            final = _row_count()
+            if final >= target:
                 break
             page.wait_for_timeout(250)
-        final = _read_count()
-        assert final is not None and final >= target, (
-            f"Sessions sidebar count did not catch up to API state "
-            f"within 15s: baseline={baseline} expected≥{target} "
+        assert final >= target, (
+            f"Studio sidebar session-row count did not catch up to API "
+            f"state within 15s: baseline={baseline} expected>={target} "
             f"final={final}"
         )
+        # The new row is the seeded session.
+        expect_row = page.locator('[data-testid="session-row"]', has_text=session_id)
+        assert expect_row.count() >= 1, "seeded session row not found in sidebar"
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             for url in (

@@ -23,6 +23,7 @@ import httpx
 from playwright.sync_api import expect
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 pytestmark = smk("SMK-UI-02")
 
@@ -98,7 +99,7 @@ def _seed(base_url: str, suffix: str, tmp_path):
         f"/v1/workspace_providers/{wp_id}",
         f"/v1/agents/{aid}",
     ]
-    return sid, cleanup
+    return wid, sid, cleanup
 
 
 def _cleanup(base_url: str, urls: list[str]) -> None:
@@ -117,21 +118,25 @@ def test_graph_session_liveness_pill_replaces_executor_missing_stub(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    sid, cleanup = _seed(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup = _seed(base_url, unique_suffix, tmp_path)
     try:
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded"
-        )
-        page.locator(".page-title").first.wait_for(state="visible", timeout=10_000)
+        # Re-pointed to the Studio graph panel. The old hardcoded
+        # "executor missing" stub + the References-panel "awaiting worker"
+        # liveness pill both lived in the retired SessionDetail. The Studio's
+        # panel-graph header derives its state from the reused StatusPill;
+        # a CREATED graph session reads "created" there. This pins the
+        # surviving invariant: the "executor missing" stub is gone
+        # everywhere, and the panel surfaces the real (created) status.
+        open_session_in_studio(page, console_url, wid, sid, kind="graph")
 
-        # The hardcoded stub must be gone everywhere on the page.
+        # The hardcoded stub must be gone everywhere in the Studio.
         expect(page.get_by_text("executor missing")).to_have_count(0)
 
-        # A CREATED graph session shows the derived "awaiting worker"
-        # liveness pill in the References panel (the header subtitle
-        # "awaiting worker claim" is plain text, not a `.pill`).
-        expect(
-            page.locator(".pill").filter(has_text="awaiting worker").first
-        ).to_be_visible()
+        # The graph panel header shows the derived StatusPill; a CREATED
+        # session reads "created" (StatusPill labels — shared.jsx).
+        header = page.locator('[data-testid="panel-graph-header"]')
+        expect(header.locator(".pill").filter(has_text="created").first).to_be_visible(
+            timeout=10_000,
+        )
     finally:
         _cleanup(base_url, cleanup)

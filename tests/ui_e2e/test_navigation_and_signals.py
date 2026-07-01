@@ -13,6 +13,8 @@ import time
 
 import httpx
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -175,107 +177,13 @@ def test_u0036_toolset_config_tab_deep_link_survives_reload(
 # ---------------------------------------------------------------------------
 
 
-def test_u0046_sessions_list_filter_narrows_rows_by_id_substring(
-    page,
-    base_url: str,
-    console_url: str,
-    unique_suffix: str,
-    tmp_path,
-) -> None:
-    """U0046 — Seed three sessions via API on one workspace, open
-    /sessions, type a substring of ONE session's id into the filter
-    input, assert only the matching row renders and the other two
-    are absent from the DOM.
-
-    Priority 6 — list-page filter UX. Sister of U0037 (agents
-    list). The filter applies to id + agent + workspace per
-    sessions-list.jsx:37 — and session ids are backend-allocated
-    (the API silently ignores any user-supplied id, same contract
-    as workspaces). So the discriminator has to live in a field
-    the test controls — agent_id is the natural choice. The test
-    seeds three agents with distinct discriminator tokens
-    (alpha / beta / gamma), then binds one session per agent.
-    """
-    provider_id = f"llm-u0046-{unique_suffix}"
-    wp_id = f"wp-u0046-{unique_suffix}"
-    tpl_id = f"wt-u0046-{unique_suffix}"
-    agent_alpha = f"ag-u0046-alpha-{unique_suffix}"
-    agent_beta = f"ag-u0046-beta-{unique_suffix}"
-    agent_gamma = f"ag-u0046-gamma-{unique_suffix}"
-    workspace_id: str | None = None
-    session_ids: list[str] = []
-    _seed_llm_provider(base_url, provider_id)
-    for aid in (agent_alpha, agent_beta, agent_gamma):
-        _seed_agent(base_url, aid, provider_id)
-    workspace_id = _seed_workspace(base_url, wp_id, tpl_id, tmp_path)
-
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        for aid in (agent_alpha, agent_beta, agent_gamma):
-            r = c.post(
-                f"/v1/workspaces/{workspace_id}/sessions",
-                json={
-                    "binding": {"kind": "agent", "agent_id": aid},
-                    "auto_start": False,
-                },
-            )
-            assert r.status_code == 201, (
-                f"seed session for {aid!r} failed: {r.text}"
-            )
-            session_ids.append(r.json()["id"])
-
-    try:
-        page.goto(f"{console_url}#/sessions", wait_until="domcontentloaded")
-        page.locator("h1.page-title").get_by_text(
-            "Sessions", exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
-
-        # Wait for at least one row per seeded agent to render.
-        for aid in (agent_alpha, agent_beta, agent_gamma):
-            page.locator(f"tr:has-text('{aid}')").first.wait_for(
-                state="visible", timeout=15_000,
-            )
-
-        # Filter input — placeholder copy is "Filter id, agent,
-        # workspace…" per sessions-list.jsx:177.
-        filter_input = page.get_by_placeholder(
-            "Filter id, agent, workspace", exact=False,
-        ).first
-        filter_input.wait_for(state="visible", timeout=5_000)
-        # Discriminator unique to the beta agent's id (carrying the
-        # per-test suffix prevents accidentally matching unrelated
-        # rows from earlier test runs).
-        filter_input.fill(f"u0046-beta-{unique_suffix}")
-
-        # The beta session row stays; alpha + gamma must be gone.
-        page.locator(f"tr:has-text('{agent_beta}')").first.wait_for(
-            state="visible", timeout=5_000,
-        )
-        assert page.locator(f"tr:has-text('{agent_alpha}')").count() == 0, (
-            "alpha session row still rendered after beta-only filter"
-        )
-        assert page.locator(f"tr:has-text('{agent_gamma}')").count() == 0, (
-            "gamma session row still rendered after beta-only filter"
-        )
-
-        # Defence: clearing the filter restores all three rows.
-        filter_input.fill("")
-        for aid in (agent_alpha, agent_beta, agent_gamma):
-            page.locator(f"tr:has-text('{aid}')").first.wait_for(
-                state="visible", timeout=5_000,
-            )
-    finally:
-        cleanup = [f"/v1/sessions/{sid}" for sid in session_ids]
-        if workspace_id:
-            cleanup.append(f"/v1/workspaces/{workspace_id}")
-        cleanup.extend([
-            f"/v1/workspace_templates/{tpl_id}",
-            f"/v1/workspace_providers/{wp_id}",
-            f"/v1/agents/{agent_alpha}",
-            f"/v1/agents/{agent_beta}",
-            f"/v1/agents/{agent_gamma}",
-            f"/v1/llm_providers/{provider_id}",
-        ])
-        _cleanup(base_url, cleanup)
+# U0046 REMOVED (no Studio equivalent) — this pinned the GLOBAL, cross-
+# workspace ``#/sessions`` list's text-filter input narrowing rows by an
+# id/agent/workspace substring (sessions-list.jsx). The Studio retired that
+# global list; sessions now live in each workspace's Studio left-sidebar
+# ``session-row`` list, which has NO text-filter input. There is no Studio
+# surface for a cross-workspace substring filter, so the test is removed with
+# this note (per the re-point guidance for sessions-LIST filter features).
 
 
 # ---------------------------------------------------------------------------
@@ -290,21 +198,20 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0030 — Seed agent + workspace + CREATED session via API
-    (auto_start=False so no real LLM call attempted). Open session
-    detail page, click Cancel, confirm in the dialog, assert:
+    """U0030 — Re-pointed to the Studio's ``ctrl-cancel``. Seed a CREATED
+    agent session, open it in the Studio (agent panel), click the
+    ``ctrl-cancel`` control and assert:
 
-    * the confirm dialog closes,
     * a "Cancel signal sent" toast appears,
-    * the status text on the page transitions to a terminal value
+    * the panel-header status transitions to a terminal value
       (ended / cancelled / failed) within a polling interval,
-    * the Cancel button becomes disabled (per session-detail.jsx:336
-      ``disabled={isTerminal || cancelMut.loading}``).
+    * the ``ctrl-cancel`` control becomes disabled once terminal (per
+      studio-center.jsx ``disabled={!wid || isTerminal || …}``).
 
-    Priority 1 — mutation feedback (destructive signal). The
-    page polls /sessions/{id} every 2s while non-terminal
-    (session-detail.jsx:22), so the status caption catches up to
-    the API state without a manual refresh.
+    Note: the Studio's ctrl-cancel fires the cancel POST DIRECTLY (no
+    confirmation modal — that surface was retired), so the old confirm
+    step is dropped. ``ST_SessionPanel`` polls /sessions/{id} every 2s
+    while non-terminal, so the status catches up without a manual refresh.
     """
     provider_id = f"llm-u0030-{unique_suffix}"
     agent_id = f"ag-u0030-{unique_suffix}"
@@ -328,37 +235,22 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
         session_id = r.json()["id"]
 
     try:
-        page.goto(
-            f"{console_url}#/sessions/{session_id}",
-            wait_until="domcontentloaded",
-        )
-        page.locator("h1.page-title").get_by_text(session_id).first.wait_for(
-            state="visible", timeout=10_000,
+        open_session_in_studio(
+            page, console_url, workspace_id, session_id, kind="agent",
         )
 
-        # Click the page-level "Cancel" button (red, kind=danger) —
-        # scope to the signals area to avoid matching the modal's
-        # "Cancel" button which doesn't appear until after the first
-        # click.
-        cancel_btn = page.get_by_role("button", name="Cancel", exact=True).first
-        cancel_btn.wait_for(state="visible", timeout=5_000)
+        # The ctrl-cancel control fires the cancel POST directly.
+        cancel_btn = page.locator("[data-testid='ctrl-cancel']").first
+        cancel_btn.wait_for(state="visible", timeout=10_000)
         cancel_btn.click()
-
-        # Confirm modal appears with "Cancel session" button.
-        confirm_btn = page.get_by_role(
-            "button", name="Cancel session", exact=True,
-        ).first
-        confirm_btn.wait_for(state="visible", timeout=5_000)
-        confirm_btn.click()
 
         # Toast appears.
         page.get_by_text("Cancel signal sent", exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )
 
-        # Status caption transitions to a terminal value within one
-        # polling interval (2s) — budget 15s to absorb React batching
-        # and the worker-pool reaction time.
+        # Status transitions to a terminal value within one polling
+        # interval (2s) — budget 15s to absorb React batching + worker.
         terminal_words = ("ended", "cancelled", "failed", "completed")
         deadline = time.monotonic() + 15.0
         terminal_seen = False
@@ -373,12 +265,8 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
             "within 15s after cancel"
         )
 
-        # Defence: the Cancel button is now disabled (the page
-        # re-renders with isTerminal=true).
-        cancel_btn_after = page.get_by_role(
-            "button", name="Cancel", exact=True,
-        ).first
-        # Wait briefly for re-render after the poll caught up.
+        # Defence: the ctrl-cancel control is now disabled (isTerminal=true).
+        cancel_btn_after = page.locator("[data-testid='ctrl-cancel']").first
         deadline = time.monotonic() + 5.0
         disabled = False
         while time.monotonic() < deadline:
@@ -387,7 +275,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
                 break
             page.wait_for_timeout(250)
         assert disabled, (
-            "Cancel button did not become disabled after session "
+            "ctrl-cancel did not become disabled after session "
             "transitioned to terminal"
         )
     finally:

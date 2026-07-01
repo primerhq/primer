@@ -312,106 +312,15 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
 # ===========================================================================
 
 
-def test_u0083_session_detail_last_error_panel_renders(
-    page, base_url, console_url, unique_suffix, tmp_path,
-) -> None:
-    """U0083 - Mock GET /v1/sessions/{sid} to return a row whose
-    ``last_error`` payload is populated (RFC 7807 envelope shape).
-    Navigate to ``#/sessions/<id>`` → the "Last error" panel
-    (session-detail.jsx:262) renders with the literal "Last error"
-    header + type subscript + the title/detail copy when expanded.
-
-    Pins the documented session-detail last_error render - the
-    only operator-facing surface for the session's failure
-    payload. Using page.route here (instead of relying on the
-    worker to actually populate last_error on a fast-fail path)
-    keeps the test deterministic across container/native dispatch
-    differences; the field's POPULATION is exercised end-to-end
-    in T0739 / T0737 from the API loop.
-    """
-    pid = f"llm-83-{unique_suffix}"
-    aid = f"ag-83-{unique_suffix}"
-    wp_id = f"wp-83-{unique_suffix}"
-    tpl_id = f"tpl-83-{unique_suffix}"
-    _seed_llm_provider(base_url, pid)
-    _seed_agent(base_url, aid, pid)
-    wid = _seed_workspace(base_url, wp_id, tpl_id, tmp_path)
-    cleanup_urls = [
-        f"/v1/workspaces/{wid}",
-        f"/v1/workspace_templates/{tpl_id}",
-        f"/v1/workspace_providers/{wp_id}",
-        f"/v1/agents/{aid}",
-        f"/v1/llm_providers/{pid}",
-    ]
-    sid: str | None = None
-    try:
-        # Real session row (so the rest of the page renders honestly);
-        # we'll only mock the last_error payload in flight.
-        with httpx.Client(base_url=base_url, timeout=30.0) as c:
-            r = c.post(
-                f"/v1/workspaces/{wid}/sessions",
-                json={
-                    "binding": {"kind": "agent", "agent_id": aid},
-                    "auto_start": False,
-                },
-            )
-            assert r.status_code == 201, r.text
-            sid = r.json()["id"]
-            cleanup_urls.insert(
-                0, f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
-            )
-            # Fetch the real row so we can return it back with
-            # last_error injected.
-            gr = c.get(f"/v1/sessions/{sid}")
-            assert gr.status_code == 200, gr.text
-            real_row = gr.json()
-            real_row["last_error"] = {
-                "type": "/errors/internal",
-                "title": "Synthetic last_error for U0083",
-                "status": 500,
-                "detail": "page.route-injected payload",
-                "extensions": {"request_id": f"req-{unique_suffix}"},
-            }
-
-        # Mock the GET /v1/sessions/{sid} response so the UI sees
-        # last_error populated.
-        body_json = json.dumps(real_row)
-
-        def _on_session_get(route):
-            if route.request.method == "GET":
-                route.fulfill(
-                    status=200,
-                    content_type="application/json",
-                    body=body_json,
-                )
-            else:
-                route.continue_()
-
-        page.route(f"**/v1/sessions/{sid}", _on_session_get)
-
-        try:
-            page.goto(
-                f"{console_url}#/sessions/{sid}",
-                wait_until="domcontentloaded",
-            )
-            page.locator(".nav-item").first.wait_for(
-                state="visible", timeout=20_000,
-            )
-
-            # Last error panel header carries the literal "Last error"
-            # span (session-detail.jsx:267). Renders unconditionally
-            # when last_error is truthy; body is collapsed by default.
-            expect(
-                page.get_by_text("Last error", exact=True).first
-            ).to_be_visible(timeout=10_000)
-            # And the type subscript renders next to the header.
-            expect(
-                page.get_by_text("/errors/internal", exact=False).first
-            ).to_be_visible(timeout=3_000)
-        finally:
-            page.unroute(f"**/v1/sessions/{sid}")
-    finally:
-        _cleanup(base_url, cleanup_urls)
+# U0083 REMOVED (no Studio equivalent) — this pinned the session-detail
+# "Last error" panel (session-detail.jsx ``lastError`` block, header + RFC
+# 7807 type subscript). That panel lived in the retired ``SessionDetail``
+# body; the Studio's center session panel reuses ``SessionLiveStream``, which
+# renders the live frame stream + a terminal "Session ended" notice but does
+# NOT surface a session-level ``last_error`` panel (there is no equivalent
+# data-testid or copy in studio-center.jsx). With no Studio surface to pin,
+# the test is removed with this documented note (last_error POPULATION stays
+# covered end-to-end by the API loop's T0739 / T0737).
 
 
 # ===========================================================================
@@ -419,81 +328,14 @@ def test_u0083_session_detail_last_error_panel_renders(
 # ===========================================================================
 
 
-def test_u0084_session_detail_turns_panel_header_toggles(
-    page, base_url, console_url, unique_suffix, tmp_path,
-) -> None:
-    """U0084 - Session detail turn-log surface renders + responds to
-    selection.
-
-    The turn-log view moved from an inline collapsible "Turns timeline"
-    panel to a dedicated "Turn log" tab on the session detail page
-    (session-detail.jsx ``tabs`` + ``TurnLogTab``). The tab surface is
-    rendered through ``MobileTabs`` at the mobile breakpoint, so this
-    test drives it at a mobile viewport: select the "Turn log" tab → the
-    empty-state copy ("No turn-log entries yet") for a CREATED session
-    becomes visible; switch away to "Overview" → it hides; switch back →
-    it reappears. This is the current testable contract on every session
-    regardless of dispatch outcome (the placeholder-LLM session never
-    populates a turn row).
-    """
-    pid = f"llm-84-{unique_suffix}"
-    aid = f"ag-84-{unique_suffix}"
-    wp_id = f"wp-84-{unique_suffix}"
-    tpl_id = f"tpl-84-{unique_suffix}"
-    _seed_llm_provider(base_url, pid)
-    _seed_agent(base_url, aid, pid)
-    wid = _seed_workspace(base_url, wp_id, tpl_id, tmp_path)
-    cleanup_urls = [
-        f"/v1/workspaces/{wid}",
-        f"/v1/workspace_templates/{tpl_id}",
-        f"/v1/workspace_providers/{wp_id}",
-        f"/v1/agents/{aid}",
-        f"/v1/llm_providers/{pid}",
-    ]
-    sid: str | None = None
-    try:
-        with httpx.Client(base_url=base_url, timeout=30.0) as c:
-            r = c.post(
-                f"/v1/workspaces/{wid}/sessions",
-                json={
-                    "binding": {"kind": "agent", "agent_id": aid},
-                    "auto_start": False,
-                },
-            )
-            assert r.status_code == 201, r.text
-            sid = r.json()["id"]
-            cleanup_urls.insert(
-                0, f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
-            )
-
-        # Drive the tabbed session-detail at the mobile breakpoint so the
-        # MobileTabs surface (which hosts the Turn log tab) renders.
-        page.set_viewport_size({"width": 375, "height": 812})
-        page.goto(
-            f"{console_url}#/sessions/{sid}",
-            wait_until="domcontentloaded",
-        )
-        # At the mobile breakpoint the sidebar nav is collapsed behind a
-        # drawer; wait directly on the tab strip the detail page renders.
-        turn_log_tab = page.get_by_role("tab", name="Turn log").first
-        turn_log_tab.wait_for(state="visible", timeout=20_000)
-
-        empty_copy = page.get_by_text("No turn-log entries yet", exact=False).first
-
-        # Select the Turn log tab → empty-state copy for a CREATED
-        # session becomes visible.
-        turn_log_tab.click()
-        expect(empty_copy).to_be_visible(timeout=10_000)
-
-        # Switch to the Overview tab → the turn-log content is no longer
-        # mounted (tab panels swap their content).
-        page.get_by_role("tab", name="Overview").first.click()
-        expect(empty_copy).to_have_count(0, timeout=5_000)
-
-        # Switch back to Turn log → the empty-state copy reappears.
-        page.get_by_role("tab", name="Turn log").first.click()
-        expect(
-            page.get_by_text("No turn-log entries yet", exact=False).first
-        ).to_be_visible(timeout=10_000)
-    finally:
-        _cleanup(base_url, cleanup_urls)
+# U0084 REMOVED (no Studio equivalent) — this pinned the session-detail
+# "Turn log" tab (session-detail.jsx ``tabs`` + ``TurnLogTab``) and its
+# empty-state "No turn-log entries yet" copy, driven through the mobile
+# ``MobileTabs`` surface. Both the tabbed session-detail page and its Turn
+# log tab were retired with the Studio. The Studio's center session panel
+# reuses ``SessionLiveStream`` (a live frame stream), not a per-turn "Turn
+# log" tab — there is no equivalent tab/empty-state surface in
+# studio-center.jsx — so the test is removed with this documented note.
+# (Graph sessions DO keep a "Turn log" section inside the reused
+# SD_GraphRunView node inspector, exercised by test_graph_run_view_journey,
+# but that is the graph node inspector, not this agent-session turn tab.)

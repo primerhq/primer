@@ -16,6 +16,8 @@ import time
 
 import httpx
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio
+
 
 from tests._support.smk import smk  # noqa: E402
 pytestmark = smk("SMK-UI-04", status="partial")
@@ -256,17 +258,16 @@ def test_u0004_graph_bound_session_ended_status_polls_without_refresh(
         session_id = r.json()["id"]
 
     try:
-        page.goto(
-            f"{console_url}#/sessions/{session_id}",
-            wait_until="domcontentloaded",
+        # Re-pointed: open the graph session in the Studio (graph panel).
+        # ST_SessionPanel polls /sessions/{id} every 2s while non-terminal,
+        # and the panel-graph header StatusPill + run-view pill reflect the
+        # terminal status without a manual refresh.
+        open_session_in_studio(
+            page, console_url, workspace_id, session_id, kind="graph",
         )
-        page.locator("h1.page-title").get_by_text(
-            session_id, exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
 
-        # Wait for the polled status to reflect a terminal state.
-        # Real poll cadence is 2s (session-detail.jsx:22). Budget
-        # 15s to absorb startup + a few poll cycles.
+        # Wait for the polled status to reflect a terminal state. Budget
+        # 15s to absorb startup + a few 2s poll cycles.
         terminal_words = ("ended", "cancelled", "failed", "completed")
         deadline = time.monotonic() + 15.0
         terminal_seen = False
@@ -277,9 +278,8 @@ def test_u0004_graph_bound_session_ended_status_polls_without_refresh(
                 break
             page.wait_for_timeout(500)
         assert terminal_seen, (
-            "graph-bound session detail never reflected a terminal "
-            "status within 15s - polling stalled or status caption "
-            "regression"
+            "graph-bound session Studio panel never reflected a terminal "
+            "status within 15s - polling stalled or status pill regression"
         )
     finally:
         cleanup = []
