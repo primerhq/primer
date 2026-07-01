@@ -6,6 +6,8 @@ from __future__ import annotations
 import httpx
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio, open_studio
+
 
 # ---------------------------------------------------------------------------
 # Seed helpers — mirrored from test_graph_run_view_journey.py, adapted for
@@ -78,16 +80,30 @@ def test_cancelled_session_shows_outcome_banner(
     base_url, console_url, page, tmp_path,
 ) -> None:
     """Seed an agent session, cancel it via API (→ ENDED/cancelled), open
-    the detail page, and assert the outcome banner is visible."""
+    it in the Studio, and assert the terminal outcome is surfaced.
+
+    Re-pointed: the retired session-detail rendered a ``session-outcome``
+    panel. The Studio's reused ``SessionLiveStream`` (inside ``panel-agent``)
+    surfaces a terminal session as a "Session ended" notice, and the
+    ``panel-agent-header`` StatusPill reads the terminal status — that is
+    the closest real Studio surface for the "session's terminal outcome is
+    legible" intent.
+    """
     _seed_llm_provider(base_url, "sl-prov")
     _seed_agent(base_url, "sl-agent", "sl-prov")
     wid = _seed_workspace(base_url, "sl-wp", "sl-tpl", tmp_path)
     sid = _seed_agent_session(base_url, wid, "sl-agent")
     _cancel_session(base_url, wid, sid)
 
-    page.goto(f"{console_url}#/sessions/{sid}")
-    expect(page.locator('[data-testid="session-outcome"]')).to_be_visible(
+    open_session_in_studio(page, console_url, wid, sid, kind="agent")
+    # The reused live-stream shows the terminal "Session ended" notice.
+    expect(page.get_by_text("Session ended", exact=False).first).to_be_visible(
         timeout=20_000,
+    )
+    # And the panel header StatusPill reads a terminal status (ended).
+    header = page.locator('[data-testid="panel-agent-header"]')
+    expect(header.locator(".pill").filter(has_text="ended").first).to_be_visible(
+        timeout=10_000,
     )
 
 
@@ -99,12 +115,17 @@ def test_cancelled_session_shows_outcome_banner(
 def test_cancelled_session_shows_cancelled_chip_in_list(
     base_url, console_url, page, tmp_path,
 ) -> None:
-    """Seed + cancel an agent session, then open /sessions and assert that
-    the session row shows the "Cancelled" decoded-outcome chip.
+    """Seed + cancel an agent session, then open the workspace's Studio
+    and assert the cancelled session is listed in the sidebar with a
+    terminal status dot.
 
-    Note: describeSessionState classifies a cancelled session as
-    group="cancelled", NOT group="failed", so it does NOT appear under the
-    "Failed" filter.  We assert the chip label directly instead.
+    Re-pointed: the global ``#/sessions`` list (and its decoded "Cancelled"
+    outcome chip) is retired. Sessions now live in the per-workspace Studio
+    left-sidebar ``session-row`` list. That row surfaces terminal state via
+    a status DOT (``session-status-dot``, gray tone for ended/cancelled)
+    rather than a "Cancelled" text chip — there is no per-row outcome-label
+    text in the Studio sidebar — so this pins the closest real surface: the
+    cancelled row is present and carries its (terminal) status dot.
     """
     _seed_llm_provider(base_url, "sl-prov2")
     _seed_agent(base_url, "sl-agent2", "sl-prov2")
@@ -112,10 +133,11 @@ def test_cancelled_session_shows_cancelled_chip_in_list(
     sid = _seed_agent_session(base_url, wid, "sl-agent2")
     _cancel_session(base_url, wid, sid)
 
-    page.goto(f"{console_url}#/sessions")
-    expect(page.get_by_text(sid[:8], exact=False).first).to_be_visible(
-        timeout=20_000,
-    )
-    expect(page.get_by_text("Cancelled", exact=False).first).to_be_visible(
-        timeout=20_000,
+    open_studio(page, console_url, wid)
+    # The cancelled session is listed as a sidebar row (matched by its id).
+    row = page.locator('[data-testid="session-row"]', has_text=sid).first
+    expect(row).to_be_visible(timeout=20_000)
+    # The row carries its status dot (terminal / gray tone for cancelled).
+    expect(row.locator('[data-testid="session-status-dot"]')).to_be_visible(
+        timeout=10_000,
     )

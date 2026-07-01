@@ -39,6 +39,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_studio
+
 
 from tests._support.smk import smk  # noqa: E402
 pytestmark = smk("SMK-UI-06", status="partial")
@@ -109,8 +111,8 @@ def test_u0106_workspace_file_inspect_and_download_journey(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0106 — Multi-page operator journey to inspect + download a
-    workspace file via the UI.
+    """U0106 — Re-pointed to the Studio's file panel: inspect a workspace
+    file's content via the UI.
 
     Steps:
 
@@ -119,18 +121,23 @@ def test_u0106_workspace_file_inspect_and_download_journey(
          Skip-soft on 5xx (U0072-class: container can't reach
          host bind-mount path).
       3. Navigate /workspaces list — assert seeded row visible.
-      4. Click row → /workspaces/{wid} (Files tab is default).
-      5. Wait for the file tree to render the seeded file.
-      6. Click the file → editor pane shows the content.
-      7. Click the Download button — Playwright captures the
-         browser download — assert the payload matches the
-         seeded content byte-for-byte.
-      8. Click the "Workspaces" breadcrumb → back to /workspaces
-         list, row still visible.
+      4. Click row → /workspaces/{wid} (the Studio).
+      5. Wait for the Studio sidebar ``file-row`` for the seeded file.
+      6. Click it → the center ``panel-file`` opens with the file's
+         breadcrumb + the text preview showing the seeded content.
+      7. Also verify the download endpoint delivers the exact bytes
+         (an API probe on the same /files/download URL the panel uses).
 
-    Pins workspaces.jsx:663-669 anchor-style Download button +
-    workspaces.jsx:701-705 file content rendering through the
-    <pre>+CodeHighlight path for text files.
+    NOTE (re-point): the Studio only renders a ``file-download`` control for
+    NON-editable files (binary / >1MB); a small ``.txt`` is editable, so its
+    panel exposes preview + Save rather than a Download anchor. The old
+    browser-download-button click therefore has no Studio equivalent for a
+    text file — the download PAYLOAD is instead verified via the same
+    ``/files/download`` endpoint the panel's download href targets, keeping
+    the "content is downloadable + matches" half of the contract.
+
+    Pins the Studio file panel (studio-center.jsx ``FilePanel`` /
+    ``ST_FilePreview``) render path for text files.
     """
     file_name = f"u0106-{unique_suffix}.txt"
     ids, content = _seed_workspace_with_file(base_url, unique_suffix)
@@ -159,65 +166,43 @@ def test_u0106_workspace_file_inspect_and_download_journey(
         ws_row = page.locator("tbody tr", has_text=wid)
         expect(ws_row).to_be_visible(timeout=20_000)
 
-        # ----- 2. Click row → /workspaces/{wid} ---------------------
+        # ----- 2. Click row → the Studio for that workspace ---------
         ws_row.first.click()
         page.wait_for_url(f"**/console/#/workspaces/{wid}**", timeout=15_000)
-        expect(page.locator("h1.page-title", has_text=wid)).to_be_visible(
-            timeout=15_000,
-        )
+        open_studio(page, console_url, wid)
 
-        # Files tab is the default; the file tree must surface the
-        # seeded file within the SessionsTab's poll cadence (~5 s).
-        file_row = page.get_by_text(file_name, exact=False).first
+        # The Files section defaults open; the seeded file surfaces as a
+        # sidebar file-row within its lazy tree fetch.
+        file_row = page.locator(
+            '[data-testid="file-row"]', has_text=file_name,
+        ).first
         expect(file_row).to_be_visible(timeout=20_000)
 
-        # ----- 3. Click file → content pane renders -----------------
+        # ----- 3. Click file-row → panel-file preview shows content -
         file_row.click()
-        # The CodeHighlight wraps the content in nested <span>s line
-        # by line; check that a stable substring of our content
-        # appears somewhere in the page after the click.
-        # Pick a distinctive marker rather than the full content.
+        panel = page.locator('[data-testid="panel-file"]')
+        expect(panel).to_be_visible(timeout=15_000)
+        expect(
+            page.locator('[data-testid="file-breadcrumb"]')
+        ).to_contain_text(file_name, timeout=10_000)
+        # The text preview shows a distinctive marker from the content.
         marker = f"suffix={unique_suffix}"
-        expect(page.get_by_text(marker, exact=False).first).to_be_visible(
+        expect(panel.get_by_text(marker, exact=False).first).to_be_visible(
             timeout=15_000,
         )
 
-        # ----- 4. Click Download — capture the browser download ----
-        download_link = page.locator("a[download]").filter(
-            has=page.get_by_role("button", name="Download")
-        ).first
-        expect(download_link).to_be_visible(timeout=10_000)
-
-        with page.expect_download(timeout=15_000) as download_info:
-            download_link.click()
-        download = download_info.value
-        # The downloaded file's content must match exactly what was seeded.
-        downloaded_bytes = download.path().read_bytes()
-        assert downloaded_bytes.decode("utf-8") == content, (
-            f"download payload mismatch:\n"
-            f"expected={content!r}\n"
-            f"got={downloaded_bytes!r}"
-        )
-
-        # ----- 5. Click "Workspaces" breadcrumb → back to list -----
-        # WorkspaceHeader renders a breadcrumb anchor that navigates
-        # back. The breadcrumb selector matches the .crumb pattern
-        # used in session-detail.jsx; workspaces.jsx renders a similar
-        # link with text "Workspaces".
-        # Fall back to direct nav if no breadcrumb is present —
-        # the assertion target is the list state, not the
-        # navigation mechanism.
-        crumb = page.locator(".crumb a", has_text="Workspaces").first
-        if crumb.count() > 0:
-            crumb.click()
-        else:
-            page.goto(
-                f"{console_url}#/workspaces", wait_until="domcontentloaded",
+        # ----- 4. Download endpoint delivers the exact bytes --------
+        # (The panel's download href targets this same URL for
+        # non-editable files; a text file uses Save + preview instead,
+        # so we verify the payload via the endpoint directly.)
+        with httpx.Client(base_url=base_url, timeout=30.0) as c:
+            dl = c.get(
+                f"/v1/workspaces/{wid}/files/download?path={file_name}"
             )
-        page.wait_for_url("**/console/#/workspaces", timeout=10_000)
-        expect(page.locator("tbody tr", has_text=wid)).to_be_visible(
-            timeout=15_000,
-        )
+            assert dl.status_code == 200, dl.text
+            assert dl.text == content, (
+                f"download payload mismatch:\nexpected={content!r}\ngot={dl.text!r}"
+            )
     finally:
         for url in cleanup_urls:
             try:

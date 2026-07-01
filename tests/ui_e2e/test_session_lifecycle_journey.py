@@ -31,6 +31,8 @@ import time
 import httpx
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_studio
+
 
 # ---------------------------------------------------------------------------
 # Container-internal workspace provider path — host tmp_path is not visible
@@ -165,57 +167,44 @@ def test_u0103_sessions_full_lifecycle_journey(
     breadcrumb navigation.
     """
     ids = _seed_session_ladder(base_url, unique_suffix)
+    wid = ids["workspace"]
     sid = ids["session"]
     try:
-        # --- 1. Navigate to /sessions list ----------------------------------
-        page.goto(f"{console_url}#/sessions", wait_until="domcontentloaded")
-        expect(page.locator("h1.page-title")).to_have_text("Sessions", timeout=20_000)
-        # The seeded session id appears in the rows (mono-style cell).
-        row_locator = page.locator("tbody tr", has_text=sid)
-        expect(row_locator).to_be_visible(timeout=20_000)
+        # --- 1. Enter the Studio; the seeded session is a sidebar row -------
+        open_studio(page, console_url, wid)
+        row_locator = page.locator('[data-testid="session-row"]', has_text=sid)
+        expect(row_locator.first).to_be_visible(timeout=20_000)
 
-        # --- 2. Click row → /sessions/{id} ----------------------------------
+        # --- 2. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        page.wait_for_url(f"**/console/#/sessions/{sid}", timeout=15_000)
-        # Wait for the detail page to actually render — page-title carries
-        # the session id (mono style, full string).
-        expect(page.locator("h1.page-title", has_text=sid)).to_be_visible(
-            timeout=20_000,
+        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+            timeout=15_000,
+        )
+        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+            timeout=15_000,
         )
 
-        # Sanity: status caption shows "awaiting worker claim" for CREATED.
-        # Don't assert too strictly — the worker pool may have moved it on.
-        # Just confirm Cancel button is enabled (not in terminal status).
-        cancel_btn = page.get_by_role("button", name="Cancel", exact=True)
+        # Sanity: the ctrl-cancel control is enabled (session non-terminal).
+        cancel_btn = page.locator('[data-testid="ctrl-cancel"]').first
         expect(cancel_btn).to_be_enabled(timeout=10_000)
 
-        # --- 3. Click Cancel → confirmation modal ---------------------------
+        # --- 3. Click ctrl-cancel (fires directly, no confirm modal) --------
         cancel_btn.click()
-        # Modal title from session-detail.jsx:432 is "Cancel session?".
-        modal = page.locator(".modal", has_text="Cancel session?")
-        expect(modal).to_be_visible(timeout=5_000)
-
-        # --- 4. Click "Cancel session" confirm button -----------------------
-        # Confirm button is inside the modal; scope to avoid matching the
-        # primary "Cancel" button outside the modal (which is now disabled).
-        modal.get_by_role("button", name="Cancel session", exact=True).click()
-
-        # --- 5. Assert toast appears ----------------------------------------
-        # Toast from session-detail.jsx:82 has title "Cancel signal sent".
+        # Toast from ST_SessionControls has title "Cancel signal sent".
         expect(page.get_by_text("Cancel signal sent")).to_be_visible(
             timeout=10_000,
         )
 
-        # --- 6. Watch status caption poll to a non-CREATED value ------------
-        # Cancellation flips parked_status / cancel_requested; the row will
-        # transition to cancelled or (depending on the worker pool race) to
-        # ended. Don't pin one specific status — pin "left CREATED" within
-        # the polling cadence (2 s poll, 30 s budget).
-        status_caption = page.locator(".page-sub .pill")
+        # --- 4. Panel-header status polls off CREATED -----------------------
+        # ST_SessionPanel polls /sessions/{id} every 2s while non-terminal;
+        # the header StatusPill catches up to cancelled/ended. Pin "left
+        # CREATED" (30s budget).
+        header = page.locator('[data-testid="panel-agent-header"]')
+        status_pill = header.locator(".pill").first
         deadline = time.time() + 30.0
         last_seen = None
         while time.time() < deadline:
-            txt = status_caption.text_content(timeout=2_000) or ""
+            txt = status_pill.text_content(timeout=2_000) or ""
             last_seen = txt.strip().lower()
             if last_seen and "created" not in last_seen:
                 break
@@ -225,17 +214,9 @@ def test_u0103_sessions_full_lifecycle_journey(
                 f"status pill never left CREATED within 30s; last seen: {last_seen!r}"
             )
 
-        # --- 7. Click "Sessions" breadcrumb → /sessions ---------------------
-        # session-detail.jsx:459 renders the breadcrumb anchor "Sessions".
-        page.locator(".crumb a", has_text="Sessions").click()
-        page.wait_for_url("**/console/#/sessions", timeout=10_000)
-        expect(page.locator("h1.page-title")).to_have_text(
-            "Sessions", timeout=10_000,
-        )
-
-        # --- 8. Row still listed in /sessions with non-CREATED status -------
-        row_after = page.locator("tbody tr", has_text=sid)
-        expect(row_after).to_be_visible(timeout=15_000)
+        # --- 5. The session is still listed in the Studio sidebar -----------
+        row_after = page.locator('[data-testid="session-row"]', has_text=sid)
+        expect(row_after.first).to_be_visible(timeout=15_000)
     finally:
         _cleanup(base_url, ids)
 
@@ -313,21 +294,22 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
 
         wid = ids["workspace"]
 
-        # --- 1. Navigate to /workspaces/{wid}?tab=sessions ------------------
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=sessions",
-            wait_until="domcontentloaded",
-        )
-        # Workspace detail header renders the workspace id in the page-title.
-        expect(page.locator("h1.page-title", has_text=wid)).to_be_visible(
-            timeout=20_000,
-        )
+        # --- 1. Enter the Studio for the workspace --------------------------
+        # Re-pointed: the workspace-detail Sessions tab is retired; sessions
+        # live in the Studio left-sidebar Sessions section, which polls
+        # /workspaces/{wid}/sessions every 3s (studio-sidebar.jsx).
+        open_studio(page, console_url, wid)
 
-        # --- 2. Sessions tab is selected; empty state visible ---------------
-        # SessionsTab renders div.empty with head "No sessions" before any
-        # session is seeded.
-        empty_state = page.locator(".empty", has_text="No sessions")
-        expect(empty_state).to_be_visible(timeout=15_000)
+        # --- 2. Sessions section shows the empty state ----------------------
+        # SessionsSection renders "No sessions yet." before any is seeded.
+        expect(page.locator('[data-testid="sessions-section"]')).to_be_visible(
+            timeout=15_000,
+        )
+        expect(
+            page.locator('[data-testid="sessions-section"]').get_by_text(
+                "No sessions yet", exact=False,
+            )
+        ).to_be_visible(timeout=15_000)
 
         # --- 3. Seed the session in the background --------------------------
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -342,14 +324,16 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
             ids["session"] = r.json()["id"]
         sid = ids["session"]
 
-        # --- 4. Wait for the row to surface within the 5s poll --------------
-        row_locator = page.locator("tbody tr", has_text=sid)
-        expect(row_locator).to_be_visible(timeout=20_000)
+        # --- 4. Wait for the sidebar row to surface within the 3s poll ------
+        row_locator = page.locator('[data-testid="session-row"]', has_text=sid)
+        expect(row_locator.first).to_be_visible(timeout=20_000)
 
-        # --- 5. Click the row → /sessions/{id} ------------------------------
+        # --- 5. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        page.wait_for_url(f"**/console/#/sessions/{sid}", timeout=15_000)
-        expect(page.locator("h1.page-title", has_text=sid)).to_be_visible(
+        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+            timeout=15_000,
+        )
+        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
             timeout=15_000,
         )
     finally:

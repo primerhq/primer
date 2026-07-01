@@ -16,6 +16,7 @@ from __future__ import annotations
 import httpx
 
 from tests._support.smk import smk
+from tests.ui_e2e._studio_helpers import open_workspace_settings
 
 pytestmark = smk("SMK-UI-RB-01")
 
@@ -71,24 +72,26 @@ def test_workspace_channels_tab_shows_reply_binding_label(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """Navigate to a seeded workspace's Channels tab and assert the
-    panel exposes a "Reply binding" label (not "Channel association")."""
+    """Open the Studio Settings modal's Channels section and assert the
+    reused panel exposes a "Reply binding" label (not "Channel
+    association").
+
+    Re-pointed to the Studio: the old ``?tab=channels`` workspace-detail
+    tab moved into the Settings modal (studio-settings.jsx →
+    ``workspace-settings-nav:channels``), which renders the SAME
+    WS_ChannelsTab, so the label/absence assertions are unchanged.
+    """
     ids = _seed_workspace(base_url, unique_suffix)
     wid = ids["workspace"]
     try:
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=channels",
-            wait_until="domcontentloaded",
-        )
-        page.wait_for_url(f"**/console/#/workspaces/{wid}**", timeout=15_000)
+        modal = open_workspace_settings(page, console_url, wid, "channels")
 
-        # The panel copy now frames the outbound surface as a "reply
-        # binding"; the old "Channel association" wording must be gone.
-        panel = page.locator("body")
-        panel.get_by_text("Reply binding", exact=False).first.wait_for(
+        # The reused Channels panel copy frames the outbound surface as a
+        # "reply binding"; the old "Channel association" wording must be gone.
+        modal.get_by_text("Reply binding", exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )
-        body_text = panel.inner_text()
+        body_text = modal.inner_text()
         assert "Reply binding" in body_text, body_text
         assert "Channel association" not in body_text, body_text
     finally:
