@@ -378,9 +378,12 @@ function useStudioState(wid) {
 // collapse to a single document there.
 // ---------------------------------------------------------------------------
 
-function StudioHeader({ wid, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, onToggleLeftPanel, onToggleRightPanel }) {
+function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, onToggleLeftPanel, onToggleRightPanel }) {
   var { useResource, apiFetch } = window.primerApi;
   var [menuOpen, setMenuOpen] = React.useState(false);
+  // Workspace Settings overlay — restores the orphaned WorkspaceDetail tabs
+  // (channels / config / git-log / destroy) via the reused panel components.
+  var [settingsOpen, setSettingsOpen] = React.useState(false);
 
   // Workspace list for the selector dropdown. Reuse the same cache key the
   // app already polls so we ride on its data instead of a second roundtrip.
@@ -452,7 +455,28 @@ function StudioHeader({ wid, onTogglePalette, onSelectWorkspace, terminalOpen, o
         )}
       </div>
 
+      {/* Workspace settings (gear) — opens the channels / config / git-log /
+          destroy panels reused from WorkspaceDetail. Sits next to the
+          workspace selector so it reads as "settings for THIS workspace". */}
+      <button
+        className="st-hbtn touch-target"
+        data-testid="studio-settings-btn"
+        title="Workspace settings"
+        aria-label="Open workspace settings"
+        onClick={function () { setSettingsOpen(true); }}
+      >
+        <Icon name="settings" size={15} />
+      </button>
+
       <div style={{ flex: 1 }} />
+
+      {settingsOpen && window.WorkspaceSettings && (
+        <window.WorkspaceSettings
+          wid={wid}
+          pushToast={pushToast}
+          onClose={function () { setSettingsOpen(false); }}
+        />
+      )}
 
       {/* ⌘K command palette (run · jump · search within the workspace). The
           wide trigger is hidden on phones (see .st-palette-trigger in the
@@ -625,6 +649,7 @@ function Studio({ wid, pushToast }) {
     >
       <StudioHeader
         wid={wid}
+        pushToast={studio.pushToast}
         onTogglePalette={studio.togglePalette}
         onSelectWorkspace={selectWorkspace}
         terminalOpen={s.terminalOpen}

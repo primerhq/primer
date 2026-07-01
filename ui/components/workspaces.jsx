@@ -1919,3 +1919,12 @@ function WS_DiagnosticModal({ workspaceId, onClose }) {
 
 window.WorkspacesPage = WorkspacesPage;
 window.WorkspaceDetail = WorkspaceDetail;
+// Reusable detail panels — surfaced to window.* so the Studio's Workspace
+// Settings overlay (studio-settings.jsx) can render the SAME components for
+// the orphaned channels/reply-binding · config · git-log · destroy features
+// without reimplementing them. WorkspaceDetail continues to reference these
+// via their in-file bindings; the exports are additive.
+window.WS_ChannelsTab = WS_ChannelsTab;
+window.WS_ConfigTab = WS_ConfigTab;
+window.WS_LogTab = WS_LogTab;
+window.WS_DestroyTab = WS_DestroyTab;
