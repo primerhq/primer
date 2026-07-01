@@ -6,7 +6,11 @@ from __future__ import annotations
 import httpx
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_session_in_studio, open_studio
+from tests.ui_e2e._studio_helpers import (
+    open_session_in_studio,
+    open_studio,
+    session_row,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,8 +138,9 @@ def test_cancelled_session_shows_cancelled_chip_in_list(
     _cancel_session(base_url, wid, sid)
 
     open_studio(page, console_url, wid)
-    # The cancelled session is listed as a sidebar row (matched by its id).
-    row = page.locator('[data-testid="session-row"]', has_text=sid).first
+    # The cancelled session is listed as a sidebar row (located by its
+    # data-session-id stamp — the row shows the title, not the raw sid).
+    row = session_row(page, sid).first
     expect(row).to_be_visible(timeout=20_000)
     # The row carries its status dot (terminal / gray tone for cancelled).
     expect(row.locator('[data-testid="session-status-dot"]')).to_be_visible(
