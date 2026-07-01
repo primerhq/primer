@@ -15,6 +15,8 @@ import time
 import httpx
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio
+
 
 # ---------------------------------------------------------------------------
 # Seed helpers (mirror tests/ui_e2e/test_navigation_and_signals.py)
@@ -99,21 +101,15 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 def test_u0052_ask_user_panel_hidden_on_terminal_session(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0052 — Cancel a session via the API → status flips to ENDED.
-    On the session detail page, the AskUserPanel's polling stops
-    (``pollMs: isTerminal ? 0 : 2000`` per
-    [`ui/components/session-detail.jsx`](../../ui/components/session-detail.jsx))
-    so even if a pending prompt existed in the backend's parked_state,
-    the panel must NEVER render on a terminal row.
+    """U0052 — Re-pointed to the Studio. A terminal (ENDED) session can
+    never be parked on ask_user, so the Studio's RIGHT sidebar Action
+    Required list surfaces NO action-item for it — the yielding-tools
+    quiet-state invariant carried over from the retired AskUserPanel.
 
-    We don't even need a real parked prompt — the panel's
-    ``if (!pending.data) return null;`` early-return guarantees
-    nothing renders when polling never fires. This test pins that
-    guarantee against a regression that would re-enable polling on
-    terminal rows (which would spam /ask_user/pending forever).
-
-    Priority area 1 — yielding-tools UI; defends a quiet-state
-    invariant that's easy to break.
+    Cancel the seeded session via the API (CREATED → ENDED), open it in
+    the Studio, wait past a poll cycle, and assert the action-required
+    list stays empty (no ``action-item``, no ask-controls). The old
+    ``ask-user-panel`` / "Input requested" copy is gone everywhere.
     """
     pid = f"llm-u52-{unique_suffix}"
     aid = f"ag-u52-{unique_suffix}"
@@ -137,26 +133,19 @@ def test_u0052_ask_user_panel_hidden_on_terminal_session(
             assert r.status_code == 200, r.text
             assert r.json()["status"] == "ended"
 
-        page.goto(
-            f"{console_url}#/sessions/{sid}",
-            wait_until="domcontentloaded",
-        )
-        # Wait for the page to render the session id in the title.
-        page.locator("h1.page-title").get_by_text(sid).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-        # Wait an extra polling-cycle-worth of time to be sure the
-        # panel never appears in case polling was incorrectly active.
+        # Open the terminal session in the Studio (agent panel).
+        open_session_in_studio(page, console_url, wid, sid, kind="agent")
+        # Wait past a pending-poll cycle to be sure nothing shows up late.
         page.wait_for_timeout(2_500)
-        panel = page.locator("[data-testid='ask-user-panel']")
-        # Panel must NOT be present.
-        assert panel.count() == 0, (
-            "AskUserPanel rendered on a terminal session — polling "
-            "should be disabled per session-detail.jsx isTerminal gate"
+
+        # No action-item / ask-controls for a terminal session.
+        assert page.locator("[data-testid='action-item']").count() == 0, (
+            "Action Required surfaced an item for a terminal session"
         )
-        # The "Input requested" header text also must not appear
-        # anywhere on the page.
+        assert page.locator("[data-testid='action-ask-controls']").count() == 0
+        # The retired panel copy must not appear anywhere.
         assert page.get_by_text("Input requested").count() == 0
+        assert page.locator("[data-testid='ask-user-panel']").count() == 0
     finally:
         _cleanup(base_url, cleanup_urls)
 
@@ -176,8 +165,9 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
     terminal). Then click Pause. Assert each click produces visible
     status text changes within polling cadence.
 
-    Priority area 2 — mutation feedback. Pins the
-    pause/resume signal flow at session-detail.jsx:51-77.
+    Priority area 2 — mutation feedback. Re-pointed to the Studio's
+    ``session-controls`` (``ctrl-resume``) in the center agent panel
+    (studio-center.jsx ``ST_SessionControls``).
 
     We tolerate the session reaching terminal (ended/failed) at any
     point — the LLM provider points at a closed port so the worker's
@@ -202,20 +192,12 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
         f"/v1/llm_providers/{pid}",
     ]
     try:
-        page.goto(
-            f"{console_url}#/sessions/{sid}",
-            wait_until="domcontentloaded",
-        )
-        page.locator("h1.page-title").get_by_text(sid).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-        # Page finished loading the session row when the Resume button
-        # appears (it's only rendered after `session.data` lands). Use
-        # that as the readiness signal rather than racing the loader.
-        resume_btn = page.get_by_role("button", name="Resume", exact=True).first
+        # Open the session in the Studio — the agent panel + controls mount.
+        open_session_in_studio(page, console_url, wid, sid, kind="agent")
+        resume_btn = page.locator("[data-testid='ctrl-resume']").first
         resume_btn.wait_for(state="visible", timeout=10_000)
 
-        # Now the body has the session details — assert initial CREATED.
+        # The panel header StatusPill reads "created" initially.
         body_initial = (page.locator("body").text_content() or "").lower()
         assert "created" in body_initial, "expected initial 'created' status"
 

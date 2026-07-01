@@ -15,6 +15,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_workspace_settings
+
 
 # ---------------------------------------------------------------------------
 # Seed helpers
@@ -102,12 +104,16 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 def test_u0079_workspace_destroy_confirm_navigates_back_to_list(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0079 — Click Destroy workspace → modal opens → click
+    """U0079 — Re-pointed to the Studio Settings modal. Open Studio →
+    Settings → Destroy section → click "Destroy workspace" → confirm
     "Destroy permanently" → API DELETE fires → "Workspace destroyed"
-    toast (kind=warning per workspaces.jsx:867) → page navigates
-    back to /workspaces → row absent from list.
+    toast → the workspace row is gone (API GET 404s).
 
-    Positive-path mirror of U0078 (which exercised ESC dismiss).
+    Positive-path mirror of U0078 (ESC dismiss). The reused
+    WS_DestroyTab keeps its label/role assertions; after success it
+    leaves the (now-destroyed) workspace's Studio, so we assert the
+    server-side deletion (the authoritative signal) rather than pin a
+    specific post-destroy route.
     """
     wp_id = f"wp-79-{unique_suffix}"
     tpl_id = f"tpl-79-{unique_suffix}"
@@ -119,15 +125,9 @@ def test_u0079_workspace_destroy_confirm_navigates_back_to_list(
         f"/v1/workspace_providers/{wp_id}",
     ]
     try:
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=destroy",
-            wait_until="domcontentloaded",
-        )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
+        open_workspace_settings(page, console_url, wid, "destroy")
 
-        # Click Destroy workspace → modal.
+        # Click Destroy workspace → confirm modal.
         destroy_btn = page.get_by_role(
             "button", name="Destroy workspace", exact=True,
         ).first
@@ -146,22 +146,19 @@ def test_u0079_workspace_destroy_confirm_navigates_back_to_list(
             page.get_by_text("Workspace destroyed", exact=False).first
         ).to_be_visible(timeout=10_000)
 
-        # Page navigated back to /workspaces.
-        page.wait_for_url("**/console/**", timeout=5_000)
-        # URL hash now contains /workspaces (not /workspaces/<id>).
-        # Wait briefly for navigation.
-        deadline = time.monotonic() + 5.0
+        # Workspace row deleted server-side (the authoritative signal).
+        deadline = time.monotonic() + 8.0
+        gone = False
         while time.monotonic() < deadline:
-            if page.url.endswith("#/workspaces") or "/workspaces" in page.url:
+            with httpx.Client(base_url=base_url, timeout=30.0) as c:
+                r = c.get(f"/v1/workspaces/{wid}")
+            if r.status_code == 404:
+                gone = True
                 break
-            page.wait_for_timeout(200)
-        # Workspace row absent from the list (API DELETE removed it).
-        with httpx.Client(base_url=base_url, timeout=30.0) as c:
-            r = c.get(f"/v1/workspaces/{wid}")
-            # DELETE is idempotent — second GET should 404.
-            assert r.status_code == 404, (
-                f"workspace row still exists after destroy: {r.status_code}"
-            )
+            page.wait_for_timeout(300)
+        assert gone, (
+            f"workspace row still exists after destroy: last status {r.status_code}"
+        )
     finally:
         _cleanup(base_url, cleanup_urls)
 
@@ -171,83 +168,13 @@ def test_u0079_workspace_destroy_confirm_navigates_back_to_list(
 # ===========================================================================
 
 
-def test_u0081_sessions_list_status_chip_filter_narrows_table(
-    page, base_url, console_url, unique_suffix, tmp_path,
-) -> None:
-    """U0081 — Seed 3 sessions: two CREATED + one ENDED (via API
-    cancel). Click the "ended" status chip; only the ENDED session
-    row remains in the table.
-
-    Pins the status-chip filter in sessions-list.jsx:toggleStatus.
-    """
-    pid = f"llm-81-{unique_suffix}"
-    aid = f"ag-81-{unique_suffix}"
-    wp_id = f"wp-81-{unique_suffix}"
-    tpl_id = f"tpl-81-{unique_suffix}"
-    _seed_llm_provider(base_url, pid)
-    _seed_agent(base_url, aid, pid)
-    wid = _seed_workspace(base_url, wp_id, tpl_id, tmp_path)
-    sid_created_1 = _seed_session(base_url, wid, aid)
-    sid_created_2 = _seed_session(base_url, wid, aid)
-    sid_ended = _seed_session(base_url, wid, aid)
-    _cancel_session(base_url, wid, sid_ended)
-    cleanup_urls = [
-        f"/v1/workspaces/{wid}/sessions/{sid_created_1}/cancel",
-        f"/v1/workspaces/{wid}/sessions/{sid_created_2}/cancel",
-        f"/v1/workspaces/{wid}",
-        f"/v1/workspace_templates/{tpl_id}",
-        f"/v1/workspace_providers/{wp_id}",
-        f"/v1/agents/{aid}",
-        f"/v1/llm_providers/{pid}",
-    ]
-    try:
-        page.goto(
-            f"{console_url}#/sessions",
-            wait_until="domcontentloaded",
-        )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-
-        # Wait for our 3 session rows to land in the list (sessions
-        # list fetches once on mount, possibly polls).
-        # Filter the body by the session ids to find them; wait until
-        # at least one of ours is visible.
-        for sid in (sid_created_1, sid_created_2, sid_ended):
-            page.get_by_text(sid, exact=False).first.wait_for(
-                state="visible", timeout=10_000,
-            )
-
-        # Click the "ended" status chip. The chip is a span with
-        # title="ended" inside .chip-group.
-        ended_chip = page.locator(
-            ".chip-group [title='ended']",
-        ).first
-        ended_chip.wait_for(state="visible", timeout=5_000)
-        ended_chip.click()
-
-        # After filter: ENDED row remains, the two CREATED rows
-        # disappear. Wait for the CREATED rows to be gone.
-        deadline = time.monotonic() + 8.0
-        filtered_ok = False
-        while time.monotonic() < deadline:
-            page.wait_for_timeout(400)
-            ended_visible = page.get_by_text(
-                sid_ended, exact=False,
-            ).count() >= 1
-            created_visible = (
-                page.get_by_text(sid_created_1, exact=False).count() >= 1
-                or page.get_by_text(sid_created_2, exact=False).count() >= 1
-            )
-            if ended_visible and not created_visible:
-                filtered_ok = True
-                break
-        assert filtered_ok, (
-            "status chip filter didn't narrow table: "
-            f"ended_visible={ended_visible}, created_visible={created_visible}"
-        )
-    finally:
-        _cleanup(base_url, cleanup_urls)
+# U0081 REMOVED (no Studio equivalent) — this pinned the GLOBAL
+# ``#/sessions`` list's status-chip filter (sessions-list.jsx toggleStatus)
+# narrowing the cross-workspace table to just the "ended" rows. The Studio
+# retired that global list AND the status-chip filter UI; the per-workspace
+# Studio sidebar ``session-row`` list has no status-chip filter (it only
+# sorts + tags rows). Per the re-point guidance, a global status-chip filter
+# with no Studio equivalent is removed with this documented note.
 
 
 # ===========================================================================

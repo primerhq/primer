@@ -17,6 +17,8 @@ import time
 
 import httpx
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio
+
 
 from tests._support.smk import smk  # noqa: E402
 pytestmark = smk("SMK-UI-02", "SMK-UI-05", status="partial")
@@ -196,7 +198,7 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0013 - Opening a session detail page renders cleanly and does
+    """U0013 - Opening a session in the Studio renders cleanly and does
     NOT surface the obsolete dev-only "Reads are authoritative" stale-
     cache banner (T0399 / T0555 / T0611).
 
@@ -204,9 +206,12 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
     ("drop stale spec annotations") because it referenced internal
     ticket ids end users have no context for; the removal is also
     pinned by tests/ui/test_stale_spec_annotations_removed.py. This
-    e2e asserts the live rendered page matches that decision: the
-    detail page loads (title carries the session id, the References
-    panel renders) and none of the removed banner copy appears.
+    e2e asserts the live rendered surface matches that decision: the
+    session opens in the Studio (center agent panel mounts) and none of
+    the removed banner copy appears.
+
+    Re-pointed: the session-detail page is retired; the session opens as
+    a Studio center tab (``panel-agent``) via the deep-link helper.
 
     Setup ladder mirrors test_t0042 (test_sessions_top_level.py:42-):
     LLM provider → agent → workspace provider → workspace template →
@@ -274,20 +279,10 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
         session_id = r.json()["id"]
 
     try:
-        page.goto(
-            f"{console_url}#/sessions/{session_id}",
-            wait_until="domcontentloaded",
-        )
-        # The detail page renders the session id in its title.
-        page.locator("h1.page-title").get_by_text(session_id).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-
-        # The References panel is part of the detail page proper - wait
-        # for it so we know the page body (not just the title) rendered
-        # before asserting the banner's absence.
-        page.get_by_text("References", exact=False).first.wait_for(
-            state="visible", timeout=10_000,
+        # Open the session in the Studio — the center agent panel mounts,
+        # confirming the session body rendered before asserting absences.
+        open_session_in_studio(
+            page, console_url, workspace_id, session_id, kind="agent",
         )
 
         # The removed dev-only banner must NOT appear. Its title copy and
@@ -297,8 +292,8 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
         )
         for ticket in ("T0399", "T0555", "T0611"):
             assert page.get_by_text(ticket, exact=False).count() == 0, (
-                f"removed dev-only ticket reference {ticket} is back on the "
-                "session detail page"
+                f"removed dev-only ticket reference {ticket} is back in the "
+                "Studio session panel"
             )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:

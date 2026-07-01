@@ -72,9 +72,13 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
 ) -> None:
     """U0023 — Open the Workspaces list, click "New workspace", pick
     the seeded template from the dropdown, submit. The modal must
-    close, a success toast must appear, the URL must navigate to
-    ``#/workspaces/<new-id>``, and the detail-page title must render
-    the new id.
+    close, a success toast must appear, and the URL must navigate to
+    ``#/workspaces/<new-id>``.
+
+    Re-pointed: ``#/workspaces/<id>`` now renders the Studio (not the old
+    workspace-detail page), so the post-create assertion pins the Studio
+    shell mounting for the new workspace (studio-root + the workspace
+    selector showing the new id) instead of an ``h1.page-title``.
 
     Priority 1 — mutation feedback. Sister to U0006 (agents) for the
     workspace-create flow. The backend allocates the id (workspace
@@ -136,8 +140,12 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
             f"unexpected workspace id format in URL: {url}"
         )
 
-        # Detail title carries the new id.
-        page.locator("h1.page-title").get_by_text(
+        # The new workspace's Studio shell mounts (studio-root), and its
+        # sub-header workspace selector shows the new id.
+        page.locator('[data-testid="studio-root"]').wait_for(
+            state="visible", timeout=15_000,
+        )
+        page.locator('[data-testid="workspace-selector"]').get_by_text(
             created_ws_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
 

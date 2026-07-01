@@ -59,5 +59,9 @@ def test_mobile_drawer_closes_on_route_change(page: Page, console_url: str) -> N
     page.wait_for_load_state("domcontentloaded")
     page.locator(".hamburger").click()
     expect(page.locator(".drawer.open")).to_be_visible()
-    page.locator(".drawer .nav-item", has_text="Sessions").first.click()
+    # The "Sessions" nav item was retired — the Studio (id "studio") replaced
+    # it and the "Workspaces" list is the stable route-change target. Any
+    # drawer nav-item click triggers a route change that closes the drawer;
+    # use "Workspaces" (always present in the sidebar) as the trigger.
+    page.locator(".drawer .nav-item", has_text="Workspaces").first.click()
     expect(page.locator(".drawer.open")).to_have_count(0)

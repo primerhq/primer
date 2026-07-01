@@ -1,23 +1,28 @@
-"""UI tests for the AskUserPanel (M3 of the yielding-tools feature).
+"""UI tests for ask_user parks — re-pointed to the Studio's Action Required.
 
-Strategy: rather than drive a real agent through an LLM until it yields
-on ``ask_user`` (which would require LM Studio + a real-LLM bringup
-mode), we use Playwright's ``page.route`` to intercept the
-``GET /v1/sessions/{sid}/ask_user/pending`` request and serve a
-controlled response. The session row itself is seeded via the REST API
-so the rest of the session-detail page (status pill, worker info,
-turns list, etc.) renders against real data.
+The Studio (PR-B) retired the session-detail ``AskUserPanel``. ask_user
+parks now surface in the Studio's RIGHT sidebar ``action-required`` list
+(``studio-activity.jsx`` → ``ActionRequired``): one ``action-item`` per
+pending yield, driven by ``GET /v1/workspaces/{wid}/yields/pending``. An
+``ask_user`` item renders a ``respond`` text input inside
+``action-ask-controls`` (Enter-to-send → POST
+``/sessions/{sid}/ask_user/respond``).
 
-This lets us pin the PANEL'S behaviour - render shape, submit flow,
-skip flow, inline-422 validation - without the heavy infrastructure
-needed for a real-LLM-driven park. A future iteration will add a real
-end-to-end test once LM Studio is wired into the UI bringup.
+Strategy (unchanged in spirit): rather than drive a real agent through an
+LLM until it yields, we ``page.route`` the workspace-scoped
+``/yields/pending`` snapshot and the per-session ``/ask_user/respond``
+mutation, then drive the Studio's Action Required controls. The session +
+workspace rows are seeded via the REST API so the shell renders honestly.
 
-Covered backlog items:
-* U0048 - AskUserPanel renders on session detail when pending returns 200.
-* U0049 - Submit posts response → panel collapses → toast.
-* U0050 - Skip posts cancel-yielded-tool → panel collapses → toast.
-* U0051 - JSON-schema violation renders inline error (not generic toast).
+Covered backlog items (re-pointed to the Studio):
+* U0048 - ask_user park renders an action-item + respond control.
+* U0049 - Submitting a response POSTs /respond and the item clears.
+* U0051 - A server error on /respond renders inline (rs.error), not a toast.
+
+U0050 (the old "Skip this prompt" → cancel-yielded-tool flow) has NO Studio
+equivalent: the Action Required list only exposes a Cancel control for
+watch/sleep yields (``cancel-yield``), never for ask_user, so there is no
+skip affordance to pin. It is REMOVED — see the note where U0050 stood.
 """
 
 from __future__ import annotations
@@ -26,6 +31,8 @@ import json
 
 import httpx
 from playwright.sync_api import expect
+
+from tests.ui_e2e._studio_helpers import open_studio
 
 
 # ---------------------------------------------------------------------------
@@ -104,7 +111,7 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 
 
 def _seed_ladder(base_url: str, unique_suffix: str, tmp_path):
-    """Seed the four prerequisite rows + return ids + a cleanup URL list."""
+    """Seed the four prerequisite rows + return (wid, sid, cleanup_urls)."""
     pid = f"llm-u-{unique_suffix}"
     aid = f"ag-u-{unique_suffix}"
     wp_id = f"wp-u-{unique_suffix}"
@@ -121,279 +128,160 @@ def _seed_ladder(base_url: str, unique_suffix: str, tmp_path):
         f"/v1/agents/{aid}",
         f"/v1/llm_providers/{pid}",
     ]
-    return sid, cleanup_urls
+    return wid, sid, cleanup_urls
 
 
 # ---------------------------------------------------------------------------
-# Route-mock helpers
+# Route-mock helpers — the Studio's Action Required snapshot + respond
 # ---------------------------------------------------------------------------
 
 
-def _route_pending_yes(
-    page,
-    sid: str,
-    *,
-    tool_call_id: str = "tc-ui-1",
-    prompt: str = "What is your name?",
-    response_schema: dict | None = None,
-):
-    """Route GET .../ask_user/pending to return a 200 with the given prompt."""
-    body = {
-        "tool_call_id": tool_call_id,
-        "prompt": prompt,
-        "response_schema": response_schema,
-        "parked_at": "2026-05-23T12:00:00+00:00",
-    }
+def _route_pending_items(page, wid: str, items: list[dict]):
+    """Route GET /v1/workspaces/{wid}/yields/pending -> the given items.
+
+    The ActionRequired resource reads ``data.items``; each item shape is
+    ``{ kind, session_id, tool_call_id, prompt }`` (studio-activity.jsx).
+    """
     page.route(
-        f"**/v1/sessions/{sid}/ask_user/pending",
+        f"**/v1/workspaces/{wid}/yields/pending",
         lambda route: route.fulfill(
             status=200,
             content_type="application/json",
-            body=json.dumps(body),
+            body=json.dumps({"items": items}),
         ),
     )
 
 
-def _route_pending_no(page, sid: str):
-    """Route GET .../ask_user/pending to return 404 (panel hidden)."""
-    page.route(
-        f"**/v1/sessions/{sid}/ask_user/pending",
-        lambda route: route.fulfill(
-            status=404,
-            content_type="application/json",
-            body=json.dumps(
-                {
-                    "type": "/errors/not-found",
-                    "title": "Not Found",
-                    "status": 404,
-                    "detail": "no pending ask_user prompt",
-                }
-            ),
-        ),
-    )
+def _ask_item(sid: str, *, tool_call_id: str = "tc-ui-1", prompt: str = "What is your name?") -> dict:
+    return {
+        "kind": "ask_user",
+        "session_id": sid,
+        "tool_call_id": tool_call_id,
+        "prompt": prompt,
+    }
 
 
 # ---------------------------------------------------------------------------
-# U0048 - Panel renders on parked-on-ask_user session
+# U0048 - ask_user park renders an action-item + respond control
 # ---------------------------------------------------------------------------
 
 
 def test_u0048_ask_user_panel_renders_when_pending_returns_200(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0048 - With ``GET /v1/sessions/{sid}/ask_user/pending`` returning
-    a 200 prompt body, the AskUserPanel mounts under the header card on
-    the session detail page. Pins the panel render contract from
-    [`ui/components/session-detail.jsx`](../../ui/components/session-detail.jsx)
-    (the AskUserPanel sub-component + the early-return ``if
-    (pending.error?.status === 404)`` rule).
-
-    Priority 1 - yielding-tools UI. Validates the panel is wired into
-    the page tree and its top-level shape (header + prompt + submit +
-    skip buttons) renders.
+    """U0048 - With the workspace ``/yields/pending`` snapshot carrying an
+    ``ask_user`` item, the Studio's RIGHT sidebar Action Required list
+    renders an ``action-item`` for it: the prompt text, the ``ask_user``
+    kind, and a ``respond`` input inside ``action-ask-controls``. Pins the
+    render contract from ``studio-activity.jsx`` ``ActionRequired``.
     """
-    sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        _route_pending_yes(
-            page, sid, prompt="What is your name?",
-        )
-        page.goto(
-            f"{console_url}#/sessions/{sid}",
-            wait_until="domcontentloaded",
-        )
-        panel = page.locator("[data-testid='ask-user-panel']")
-        expect(panel).to_be_visible(timeout=10_000)
-        expect(panel).to_contain_text("Input requested")
-        expect(panel).to_contain_text("What is your name?")
-        expect(
-            page.get_by_role("button", name="Send response")
-        ).to_be_visible()
-        expect(
-            page.get_by_role("button", name="Skip this prompt")
-        ).to_be_visible()
-        # The single-line prompt is short → input variant per heuristic.
-        expect(
-            page.locator("[data-testid='ask-user-input']")
-        ).to_be_visible()
+        _route_pending_items(page, wid, [_ask_item(sid, prompt="What is your name?")])
+        open_studio(page, console_url, wid)
+
+        item = page.locator("[data-testid='action-item']").first
+        expect(item).to_be_visible(timeout=10_000)
+        expect(item).to_contain_text("What is your name?")
+        expect(item).to_contain_text("ask_user")
+        # The ask_user variant renders a respond text input (Enter to send).
+        expect(item.locator("[data-testid='action-ask-controls']")).to_be_visible()
+        expect(item.locator("[data-testid='respond']")).to_be_visible()
+        # The count chip reflects the single pending action.
+        expect(page.locator("[data-testid='action-required-count']")).to_contain_text("1")
     finally:
         _cleanup(base_url, cleanup_urls)
 
 
 # ---------------------------------------------------------------------------
-# U0049 - Submit posts response, panel collapses, toast appears
+# U0049 - Submitting a response POSTs /respond and the item clears
 # ---------------------------------------------------------------------------
 
 
 def test_u0049_ask_user_panel_submit_collapses_and_toasts(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0049 - Fill the response input, click Send response → the panel
-    POSTs to /respond, the toast 'Response sent' appears, and the panel
-    collapses on the next /pending poll (which we re-route to 404 to
-    simulate the row flipping to resumable).
+    """U0049 - Type a response into the action-item's ``respond`` input,
+    press Enter -> it POSTs ``/sessions/{sid}/ask_user/respond`` with the
+    right body, and the item is optimistically removed from the list
+    (ActionRequired ``hide()``); flipping the pending snapshot to empty
+    keeps it gone on the reconcile refetch.
 
-    Priority 1 - yielding-tools UI mutation feedback.
+    (The Studio's respond handler removes the item optimistically rather
+    than raising a toast, so the old "Response sent" toast assertion is
+    dropped in favour of the item-clears contract.)
     """
-    sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        # Stage 1: pending returns 200 with the prompt.
-        _route_pending_yes(page, sid)
-        # Stage 2 prep: respond returns 202.
+        _route_pending_items(page, wid, [_ask_item(sid)])
         respond_calls: list[dict] = []
 
         def _on_respond(route):
             req = route.request
-            respond_calls.append(
-                {"body": req.post_data, "method": req.method}
-            )
+            respond_calls.append({"body": req.post_data, "method": req.method})
             route.fulfill(
                 status=202,
                 content_type="application/json",
                 body=json.dumps({"status": "accepted"}),
             )
 
-        page.route(
-            f"**/v1/sessions/{sid}/ask_user/respond", _on_respond,
-        )
+        page.route(f"**/v1/sessions/{sid}/ask_user/respond", _on_respond)
 
-        page.goto(
-            f"{console_url}#/sessions/{sid}",
-            wait_until="domcontentloaded",
-        )
-        # Panel should render via the pending mock.
-        expect(
-            page.locator("[data-testid='ask-user-panel']")
-        ).to_be_visible(timeout=10_000)
+        open_studio(page, console_url, wid)
+        item = page.locator("[data-testid='action-item']").first
+        expect(item).to_be_visible(timeout=10_000)
 
-        # Fill the input + click Send.
-        page.locator("[data-testid='ask-user-input']").fill("Alice")
-        # Now flip the pending route to 404 so the panel collapses on next poll.
-        page.unroute(f"**/v1/sessions/{sid}/ask_user/pending")
-        _route_pending_no(page, sid)
+        # Fill the respond input + press Enter (the submit affordance).
+        respond = item.locator("[data-testid='respond']")
+        respond.fill("Alice")
+        # Flip the snapshot to empty so the post-hide reconcile keeps it gone.
+        page.unroute(f"**/v1/workspaces/{wid}/yields/pending")
+        _route_pending_items(page, wid, [])
+        respond.press("Enter")
 
-        page.get_by_role("button", name="Send response").click()
-
-        # Toast assertion.
-        toast = page.get_by_text("Response sent", exact=False)
-        expect(toast).to_be_visible(timeout=5_000)
-
-        # The respond endpoint should have been hit with the right body.
-        # Wait briefly for the route handler to record the call.
-        page.wait_for_function(
-            "() => true",  # immediate
-        )
+        # The item is optimistically removed + the respond endpoint was hit.
+        expect(page.locator("[data-testid='action-item']")).to_have_count(0, timeout=8_000)
         assert len(respond_calls) >= 1, "respond endpoint was not called"
         body = json.loads(respond_calls[-1]["body"] or "{}")
         assert body.get("tool_call_id") == "tc-ui-1", body
         assert body.get("response") == "Alice", body
-
-        # Panel collapses within the polling cadence (2 s) + buffer.
-        expect(
-            page.locator("[data-testid='ask-user-panel']")
-        ).to_be_hidden(timeout=8_000)
     finally:
         _cleanup(base_url, cleanup_urls)
 
 
 # ---------------------------------------------------------------------------
-# U0050 - Skip posts cancel-yielded-tool, panel collapses, toast appears
+# U0050 - REMOVED (no Studio equivalent)
 # ---------------------------------------------------------------------------
-
-
-def test_u0050_ask_user_panel_skip_posts_cancel_and_toasts(
-    page, base_url, console_url, unique_suffix, tmp_path,
-) -> None:
-    """U0050 - Click Skip → the panel POSTs to the tool-agnostic
-    cancel-yielded-tool endpoint, surfaces the operator-cancel toast
-    ('Skipped'), and collapses on the next /pending poll.
-
-    Pins the wiring from the spec §8.2 "Skip this prompt" copy →
-    cancel-yielded-tool §8.6 endpoint. The toast copy is deliberately
-    different from a session-cancel toast so the operator understands
-    the agent is NOT terminated.
-    """
-    sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
-    try:
-        _route_pending_yes(page, sid)
-        cancel_calls: list[dict] = []
-
-        def _on_cancel(route):
-            cancel_calls.append(
-                {"body": route.request.post_data, "url": route.request.url}
-            )
-            route.fulfill(
-                status=202,
-                content_type="application/json",
-                body=json.dumps({"status": "accepted"}),
-            )
-
-        page.route(
-            f"**/v1/sessions/{sid}/yields/tc-ui-1/cancel", _on_cancel,
-        )
-
-        page.goto(
-            f"{console_url}#/sessions/{sid}",
-            wait_until="domcontentloaded",
-        )
-        expect(
-            page.locator("[data-testid='ask-user-panel']")
-        ).to_be_visible(timeout=10_000)
-
-        # Flip /pending to 404 BEFORE clicking Skip so the next poll
-        # after the cancel collapses the panel.
-        page.unroute(f"**/v1/sessions/{sid}/ask_user/pending")
-        _route_pending_no(page, sid)
-
-        page.get_by_role("button", name="Skip this prompt").click()
-
-        toast = page.get_by_text("Skipped", exact=False)
-        expect(toast).to_be_visible(timeout=5_000)
-
-        assert len(cancel_calls) >= 1, "cancel endpoint was not called"
-        body = json.loads(cancel_calls[-1]["body"] or "{}")
-        # Per session-detail.jsx the skip button supplies a default reason.
-        assert body.get("reason") == "operator skipped", body
-
-        expect(
-            page.locator("[data-testid='ask-user-panel']")
-        ).to_be_hidden(timeout=8_000)
-    finally:
-        _cleanup(base_url, cleanup_urls)
+# The old "Skip this prompt" affordance (which POSTed the tool-agnostic
+# cancel-yielded-tool endpoint and toasted "Skipped") lived on the retired
+# session-detail AskUserPanel. The Studio's Action Required list only exposes
+# a Cancel control (``cancel-yield``) for watch_files / sleep yields - NEVER
+# for ask_user - so there is no skip surface to pin. Removed with this note
+# rather than force-fitting a control the Studio does not render.
 
 
 # ---------------------------------------------------------------------------
-# U0051 - JSON-schema violation renders inline error (not toast)
+# U0051 - A server error on /respond renders inline (not a toast)
 # ---------------------------------------------------------------------------
 
 
 def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0051 - When the prompt carries a response_schema and the
-    operator submits an invalid response, the backend's 422 is rendered
-    INLINE under the textarea (not as a generic toast), and the panel
-    stays open (the row stays parked).
+    """U0051 - When ``/ask_user/respond`` returns a 422, the Studio's
+    ActionRequired surfaces the failure INLINE on the action-item (the
+    per-item ``rs.error`` red line), NOT as a generic toast, and the item
+    stays put so the operator can retry.
 
-    The schema being ``{type:"object"}`` flips the heuristic to render
-    a textarea (per session-detail.jsx) - and the panel parses the
-    textarea text as JSON on Submit, surfacing parse errors inline
-    before the API call. This test exercises BOTH the client-side JSON
-    parse error path AND the server-side 422 path by sending invalid
-    JSON first (parse error) then valid-but-schema-violating JSON
-    (server 422).
+    (The Studio has no client-side response_schema textarea/JSON-parse
+    branch - a single ``respond`` input backs every ask_user park - so this
+    now pins purely the server-error-renders-inline half of the old
+    contract, which is the operator-facing invariant that survived.)
     """
-    sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        schema = {
-            "type": "object",
-            "properties": {"name": {"type": "string"}},
-            "required": ["name"],
-        }
-        _route_pending_yes(
-            page, sid, prompt="Provide config", response_schema=schema,
-        )
-
-        # Server returns 422 for the schema-violating submit.
+        _route_pending_items(page, wid, [_ask_item(sid, prompt="Provide config")])
+        # Server returns 422 for the submit.
         page.route(
             f"**/v1/sessions/{sid}/ask_user/respond",
             lambda route: route.fulfill(
@@ -410,35 +298,22 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
             ),
         )
 
-        page.goto(
-            f"{console_url}#/sessions/{sid}",
-            wait_until="domcontentloaded",
+        open_studio(page, console_url, wid)
+        item = page.locator("[data-testid='action-item']").first
+        expect(item).to_be_visible(timeout=10_000)
+
+        respond = item.locator("[data-testid='respond']")
+        respond.fill("something")
+        respond.press("Enter")
+
+        # Inline error text renders on the item; the friendly 422 summary the
+        # API client builds surfaces (ui/foundation/api.js
+        # ``_friendlyValidationDetail``). It is inline, not a toast.
+        expect(item).to_contain_text("required fields are missing or invalid", timeout=5_000)
+        assert page.locator(".toast").filter(has_text="required fields").count() == 0, (
+            "422 should render inline on the action-item, not as a toast"
         )
-        expect(
-            page.locator("[data-testid='ask-user-panel']")
-        ).to_be_visible(timeout=10_000)
-
-        # Schema-object prompt → textarea variant (not input).
-        textarea = page.locator("[data-testid='ask-user-textarea']")
-        expect(textarea).to_be_visible()
-
-        # Fill with valid JSON but missing 'name' → server returns 422.
-        textarea.fill('{"wrong": "field"}')
-        page.get_by_role("button", name="Send response").click()
-
-        # Inline error visible, not a toast.
-        inline = page.locator("[data-testid='ask-user-error']")
-        expect(inline).to_be_visible(timeout=5_000)
-        # The error text should surface the friendly 422 validation
-        # summary the API client builds for any schema-violation response
-        # (ApiError normalizes a 422's detail to this copy when the
-        # envelope carries no per-field ``extensions.errors`` - see
-        # ui/foundation/api.js ``_friendlyValidationDetail``).
-        expect(inline).to_contain_text("required fields are missing or invalid")
-
-        # Panel stays open (the row is still parked from the UI's view).
-        expect(
-            page.locator("[data-testid='ask-user-panel']")
-        ).to_be_visible()
+        # The item stays put so the operator can retry.
+        expect(item).to_be_visible()
     finally:
         _cleanup(base_url, cleanup_urls)

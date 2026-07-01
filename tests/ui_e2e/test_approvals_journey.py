@@ -55,6 +55,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio
+
 
 # ---------------------------------------------------------------------------
 # Container-internal workspace provider path — mirror the U0103 pattern
@@ -403,37 +405,38 @@ def test_u0109_approvals_operator_journey(
             gate_reason=gate_reason,
         )
 
-        # --- 6. Cross-page: navigate to the fresh session's detail -----
-        page.goto(
-            f"{console_url}#/sessions/{sid_banner}",
-            wait_until="domcontentloaded",
-        )
+        # --- 6. Cross-surface: open the fresh session in the Studio ----
+        # Re-pointed: the session-detail ApprovalBanner is retired. In the
+        # Studio, a pending approval surfaces in the RIGHT sidebar Action
+        # Required list (studio-activity.jsx ``ActionRequired``) as an
+        # ``action-item`` of kind "approval" with ``approve`` / ``reject``
+        # controls. sid_banner is freshly parked and never responded-to, so
+        # its park is stable (parked_status='parked' is excluded by the
+        # claim-eligibility filter → the worker never resumes it and clears
+        # parked_state), making the item deterministic.
+        open_session_in_studio(page, console_url, ids["workspace"], sid_banner, kind="agent")
 
-        # Session-detail's ApprovalBannerPanel polls /tool_approval/pending
-        # and renders <ApprovalBanner> on 200 → data-testid='approval-banner'.
-        # sid_banner is freshly parked and never responded-to, so its park is
-        # stable (parked_status='parked' is excluded by the claim-eligibility
-        # filter → the worker never resumes it and clears parked_state). The
-        # banner is therefore deterministic; the 30s timeout only absorbs
-        # mount + fetch latency under CI load.
-        banner = page.locator("[data-testid='approval-banner']")
-        expect(banner).to_be_visible(timeout=30_000)
-        # Banner header includes the tool name from the same payload.
-        expect(banner).to_contain_text(inner_tool)
+        # The Action Required list surfaces the pending approval item.
+        approval_item = page.locator("[data-testid='action-item']").filter(
+            has=page.locator("[data-testid='action-approval-controls']")
+        ).first
+        expect(approval_item).to_be_visible(timeout=30_000)
 
-        # --- 7. Approve from the banner → second toast ----------------
-        approve_btn = page.locator(
-            "[data-testid='approval-banner-approve']",
-        )
+        # --- 7. Approve from the Action Required item -----------------
+        # The Studio approve handler POSTs /tool_approval/respond and
+        # optimistically REMOVES the item on success (studio-activity.jsx
+        # ``hide()`` — no toast). Pin the item clearing as the success signal.
+        approve_btn = approval_item.locator("[data-testid='approve']")
         expect(approve_btn).to_be_enabled(timeout=5_000)
         approve_btn.click()
-
-        # Second "Decision sent" toast (kind=success) confirms the
-        # banner-side mutation also reached the bus.
-        # Use locator.last because the page may briefly have both the
-        # rejection toast (lingering) AND the new approval toast.
-        approve_toast = page.locator(".toast", has_text="Decision sent")
-        expect(approve_toast.last).to_be_visible(timeout=10_000)
+        # The approved item is optimistically removed — no approval-controls
+        # item remains (the step-1 session was rejected earlier, so this is
+        # the only pending approval in the workspace).
+        expect(
+            page.locator("[data-testid='action-item']").filter(
+                has=page.locator("[data-testid='action-approval-controls']")
+            )
+        ).to_have_count(0, timeout=10_000)
     finally:
         # Cancel the extra banner session before tearing the ladder down so
         # it doesn't linger parked in the shared DB.

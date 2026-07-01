@@ -21,6 +21,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_studio, open_workspace_settings
+
 
 # ---------------------------------------------------------------------------
 # Seed helpers
@@ -105,11 +107,18 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 def test_u0077_workspace_detail_tabs_all_reachable(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0077 — Each of the 5 workspace detail tabs (Files / Sessions
-    / Log / Config / Destroy) is clickable and renders a labelled
-    panel without console errors.
+    """U0077 — Re-pointed to the Studio. The old WorkspaceDetail's five
+    tabs split across the Studio: Files + Sessions became left-sidebar
+    sections, and Log / Config / Destroy moved into the Settings modal's
+    left-rail nav (studio-settings.jsx). This asserts every one of those
+    surfaces is reachable:
 
-    Pins the tab routing in workspaces.jsx:WorkspaceDetail TABS array.
+    * left sidebar ``sessions-section`` + ``files-section`` render,
+    * the Settings modal's ``workspace-settings-nav:{channels,config,log,
+      destroy}`` items are each clickable and render their panel.
+
+    (Channels was not a WorkspaceDetail *tab* here but is one of the four
+    settings-nav items, so we walk all four for completeness.)
     """
     wp_id = f"wp-77-{unique_suffix}"
     tpl_id = f"tpl-77-{unique_suffix}"
@@ -120,20 +129,22 @@ def test_u0077_workspace_detail_tabs_all_reachable(
         f"/v1/workspace_providers/{wp_id}",
     ]
     try:
-        page.goto(
-            f"{console_url}#/workspaces/{wid}",
-            wait_until="domcontentloaded",
-        )
-        # Resilience gate.
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-        # Each tab is a button with the label visible in topbar.
-        for label in ("Files", "Sessions", "Log", "Config", "Destroy"):
-            btn = page.get_by_role("button", name=label, exact=True).first
-            btn.wait_for(state="visible", timeout=5_000)
-            btn.click()
-            # Brief settle so the tab panel renders.
+        open_studio(page, console_url, wid)
+        # Files + Sessions are left-sidebar sections in the Studio.
+        expect(page.locator("[data-testid='sessions-section']")).to_be_visible(timeout=15_000)
+        expect(page.locator("[data-testid='files-section']")).to_be_visible(timeout=15_000)
+
+        # Log / Config / Destroy (+ Channels) live in the Settings modal.
+        gear = page.locator("[data-testid='studio-settings-btn']")
+        gear.wait_for(state="visible", timeout=10_000)
+        gear.click()
+        modal = page.locator("[data-testid='workspace-settings']")
+        expect(modal).to_be_visible(timeout=10_000)
+        for section in ("channels", "config", "log", "destroy"):
+            nav = page.locator(f"[data-testid='workspace-settings-nav:{section}']")
+            nav.wait_for(state="visible", timeout=5_000)
+            nav.click()
+            # Brief settle so the reused panel renders.
             page.wait_for_timeout(300)
     finally:
         _cleanup(base_url, cleanup_urls)
@@ -181,22 +192,18 @@ def test_u0078_workspace_destroy_modal_cancel_does_not_delete(
             ),
         )
 
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=destroy",
-            wait_until="domcontentloaded",
-        )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
+        # Open the Studio → Settings modal → Destroy section. The reused
+        # WS_DestroyTab renders the same "Destroy workspace" button + confirm.
+        open_workspace_settings(page, console_url, wid, "destroy")
 
-        # Click Destroy workspace → modal opens.
+        # Click Destroy workspace → confirm modal opens.
         destroy_btn = page.get_by_role(
             "button", name="Destroy workspace", exact=True,
         ).first
         destroy_btn.wait_for(state="visible", timeout=10_000)
         destroy_btn.click()
 
-        # Modal title contains the workspace id.
+        # Confirm modal title contains the workspace id.
         page.get_by_text(f"Destroy {wid}?", exact=False).first.wait_for(
             state="visible", timeout=5_000,
         )
@@ -204,10 +211,10 @@ def test_u0078_workspace_destroy_modal_cancel_does_not_delete(
         # ESC dismiss.
         page.keyboard.press("Escape")
         page.wait_for_timeout(500)
-        # Modal title gone.
+        # Confirm modal title gone.
         assert page.get_by_text(
             f"Destroy {wid}?", exact=False,
-        ).count() == 0, "Destroy modal didn't dismiss on ESC"
+        ).count() == 0, "Destroy confirm modal didn't dismiss on ESC"
 
         # No DELETE was fired.
         assert delete_calls["count"] == 0, (
