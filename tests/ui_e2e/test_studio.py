@@ -40,6 +40,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import session_row
+
 
 from tests._support.smk import smk  # noqa: E402
 
@@ -210,11 +212,14 @@ def test_studio_shell_sidebar_center_and_palette(
             )
 
         # --- 2. Left sidebar lists the seeded session ------------------
-        session_row = page.locator('[data-testid="session-row"]').first
-        expect(session_row).to_be_visible(timeout=20_000)
+        # Locate the SEEDED row by its data-session-id (the visible row text
+        # is the session title, not the raw sid), so the click targets the
+        # right row deterministically.
+        seeded_row = session_row(page, ids["session"]).first
+        expect(seeded_row).to_be_visible(timeout=20_000)
 
         # --- 3. Click session row → center tab + agent panel ----------
-        session_row.click()
+        seeded_row.click()
         expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
             timeout=15_000,
         )

@@ -22,7 +22,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_studio
+from tests.ui_e2e._studio_helpers import open_studio, session_row
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +160,9 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
         ).to_be_visible(timeout=15_000)
 
         # ----- 3. Sidebar Sessions section lists the seeded row ------
-        row = page.locator('[data-testid="session-row"]', has_text=sid)
+        # The row renders the session TITLE, not the raw sid — locate it by
+        # its data-session-id stamp (studio-sidebar.jsx).
+        row = session_row(page, sid)
         expect(row.first).to_be_visible(timeout=20_000)
 
         # ----- 4. Click the row → center tab + agent panel ----------

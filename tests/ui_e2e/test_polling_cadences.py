@@ -28,7 +28,7 @@ import time
 import httpx
 import pytest
 
-from tests.ui_e2e._studio_helpers import open_studio
+from tests.ui_e2e._studio_helpers import open_studio, session_row
 
 
 def test_u0002_sessions_sidebar_count_polls_after_api_create(
@@ -140,9 +140,11 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
             f"state within 15s: baseline={baseline} expected>={target} "
             f"final={final}"
         )
-        # The new row is the seeded session.
-        expect_row = page.locator('[data-testid="session-row"]', has_text=session_id)
-        assert expect_row.count() >= 1, "seeded session row not found in sidebar"
+        # The new row is the seeded session (located by data-session-id;
+        # the row shows the title, not the raw sid).
+        assert session_row(page, session_id).count() >= 1, (
+            "seeded session row not found in sidebar"
+        )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
             for url in (

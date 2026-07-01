@@ -34,12 +34,37 @@ from playwright.sync_api import Page, expect
 # so this pre-existing app-shell 404 is now visible to any Studio test's
 # console-error assertion. It is NOT a Studio bug — allowlist it wherever a
 # Studio test asserts a clean console.
+#
+# NB: ``assert_no_console_errors`` matches each pattern against the console
+# message TEXT (``m["text"]``), not its ``location.url``. Chromium's 404
+# console line is the URL-less
+#   "Failed to load resource: the server responded with a status of 404 ..."
+# so the ``internal_collections/config`` URL patterns below would never match
+# on their own — the "status of 404" text pattern is the one that actually
+# suppresses this app-shell 404. (The URL patterns are kept for callers that
+# inspect ``failed_requests[*].url`` instead.)
 STUDIO_CONSOLE_IGNORES = [
     r"net::ERR_ABORTED",
     r"favicon",
     r"/v1/internal_collections/config",
     r"internal_collections/config",
+    r"Failed to load resource:.*status of 404",
 ]
+
+
+def session_row(page: Page, sid: str):
+    """Locate the Studio sidebar ``session-row`` for a specific session id.
+
+    The row renders the session TITLE (agent/binding name or a truncated
+    id), NOT the raw ``sess-<id>``, so filtering by ``has_text`` is
+    unreliable. studio-sidebar.jsx stamps ``data-session-id`` on each row so
+    e2e can locate a session deterministically while the visible title stays
+    unchanged. The sidebar is per-workspace, so navigate to the session's
+    OWN workspace Studio (``#/workspaces/<wid>``) before using this.
+    """
+    return page.locator(
+        f'[data-testid="session-row"][data-session-id="{sid}"]'
+    )
 
 
 def studio_url(console_url: str, wid: str) -> str:
