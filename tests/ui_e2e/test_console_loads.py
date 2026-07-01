@@ -28,7 +28,10 @@ import pytest
 # page is renamed.
 _ROUTES: list[tuple[str, str]] = [
     ("#/",                                  "Dashboard"),
-    ("#/sessions",                          "Sessions"),
+    # PR-B: the global Sessions list is retired; #/sessions now REDIRECTS
+    # into the Studio (app.jsx: page=="sessions" → replace("#/workspaces")),
+    # so this route lands on the Workspaces list title.
+    ("#/sessions",                          "Workspaces"),
     ("#/workspaces",                        "Workspaces"),
     ("#/agents",                            "Agents"),
     ("#/graphs",                            "Graphs"),

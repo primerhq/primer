@@ -31,7 +31,7 @@ import time
 import httpx
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_studio
+from tests.ui_e2e._studio_helpers import open_studio, session_row
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +171,10 @@ def test_u0103_sessions_full_lifecycle_journey(
     sid = ids["session"]
     try:
         # --- 1. Enter the Studio; the seeded session is a sidebar row -------
+        # The row shows the session TITLE, not the raw sid — locate by the
+        # data-session-id stamp (studio-sidebar.jsx).
         open_studio(page, console_url, wid)
-        row_locator = page.locator('[data-testid="session-row"]', has_text=sid)
+        row_locator = session_row(page, sid)
         expect(row_locator.first).to_be_visible(timeout=20_000)
 
         # --- 2. Click the row → center tab + agent panel --------------------
@@ -215,7 +217,7 @@ def test_u0103_sessions_full_lifecycle_journey(
             )
 
         # --- 5. The session is still listed in the Studio sidebar -----------
-        row_after = page.locator('[data-testid="session-row"]', has_text=sid)
+        row_after = session_row(page, sid)
         expect(row_after.first).to_be_visible(timeout=15_000)
     finally:
         _cleanup(base_url, ids)
@@ -325,7 +327,8 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
         sid = ids["session"]
 
         # --- 4. Wait for the sidebar row to surface within the 3s poll ------
-        row_locator = page.locator('[data-testid="session-row"]', has_text=sid)
+        # Locate by data-session-id (the row shows the title, not the sid).
+        row_locator = session_row(page, sid)
         expect(row_locator.first).to_be_visible(timeout=20_000)
 
         # --- 5. Click the row → center tab + agent panel --------------------

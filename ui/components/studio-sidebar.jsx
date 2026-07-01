@@ -471,6 +471,7 @@ function SessionsSection({ wid, studio }) {
                 key={session.id}
                 className="st-session-row"
                 data-testid="session-row"
+                data-session-id={session.id}
                 onClick={function() { openSession(session); }}
                 style={{
                   display: "flex",
