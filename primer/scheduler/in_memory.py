@@ -93,6 +93,15 @@ class InMemoryScheduler(Scheduler):
     def session_snapshot_for_test(self, sid: str) -> _SessionState:
         return self._sessions[sid]
 
+    def mark_worker_dead_for_test(self, worker_id: str) -> None:
+        """Flip a registered worker to ``dead``.
+
+        Production marks workers dead via the reaper sweep once they stop
+        heart-beating; this single-process impl has no timer, so tests use
+        this seam to exercise dead-worker cleanup paths."""
+        w = self._workers[worker_id]
+        w.info = w.info.model_copy(update={"status": "dead"})
+
     def watch_cancel(self, worker_id: str) -> AsyncIterator[str]:
         """Test-only parallel of watch_ready, scoped to cancel events."""
 

@@ -1,9 +1,13 @@
 /* global React, Icon, Btn, Modal, relativeTime, fmtDate */
 
-function WorkersPage({ sessions, pushToast }) {
+function WorkersPage({ pushToast }) {
   const { useResource, useMutation, useViewport, apiFetch } = window.primerApi;
   const { isMobile } = useViewport();
   const [drainTarget, setDrainTarget] = React.useState(null);
+  const [clearDeadOpen, setClearDeadOpen] = React.useState(false);
+  const [filterText, setFilterText] = React.useState("");
+  // Status chip: "all" | "active" | "draining" | "dead".
+  const [statusFilter, setStatusFilter] = React.useState("all");
   const [, tick] = React.useState(0);
   // Tick heartbeats live
   React.useEffect(() => {
@@ -54,22 +58,90 @@ function WorkersPage({ sessions, pushToast }) {
     }
   );
 
+  // Remove a single DEAD worker row (409 from the API for a non-dead
+  // worker — the button only renders on dead rows, so that's a guard-rail).
+  const deleteTargetRef = React.useRef(null);
+  const deleteMut = useMutation(
+    (id) => {
+      deleteTargetRef.current = id;
+      return apiFetch("DELETE", `/workers/${encodeURIComponent(id)}`);
+    },
+    {
+      invalidates: ["workers:list"],
+      onSuccess: () =>
+        pushToast({
+          kind: "success",
+          title: `Removed ${deleteTargetRef.current || "worker"}`.trim(),
+          detail: "The dead worker was cleared from the registry.",
+        }),
+      onError: (err) =>
+        pushToast({
+          kind: "error",
+          title: err.title || "Remove failed",
+          detail: err.detail,
+          requestId: err.requestId,
+        }),
+    }
+  );
+
+  // Bulk-clear every DEAD worker in one call.
+  const purgeMut = useMutation(
+    () => apiFetch("POST", "/workers/purge_dead"),
+    {
+      invalidates: ["workers:list"],
+      onSuccess: (data) =>
+        pushToast({
+          kind: "success",
+          title: `Cleared ${data?.removed ?? 0} dead worker${data?.removed === 1 ? "" : "s"}`,
+          detail: "Dead workers were removed from the registry.",
+        }),
+      onError: (err) =>
+        pushToast({
+          kind: "error",
+          title: err.title || "Clear dead failed",
+          detail: err.detail,
+          requestId: err.requestId,
+        }),
+    }
+  );
+
   const totals = workers.reduce(
     (acc, w) => {
       acc.cap += w.capacity || 0;
       acc.flight += w.in_flight || 0;
       if (w.status === "active") acc.active += 1;
       if (w.status === "draining") acc.draining += 1;
+      if (w.status === "dead") acc.dead += 1;
       return acc;
     },
-    { cap: 0, flight: 0, active: 0, draining: 0 }
+    { cap: 0, flight: 0, active: 0, draining: 0, dead: 0 }
   );
+
+  // Client-side filter: status chip + free-text over id / host.
+  const q = filterText.trim().toLowerCase();
+  const filtered = workers.filter((w) => {
+    if (statusFilter !== "all" && w.status !== statusFilter) return false;
+    if (!q) return true;
+    return (
+      (w.id || "").toLowerCase().includes(q) ||
+      (w.host || "").toLowerCase().includes(q)
+    );
+  });
+
+  const chips = ["all", "active", "draining", "dead"];
+  const chipCount = (c) =>
+    c === "all" ? workers.length : workers.filter((w) => w.status === c).length;
 
   const onDrain = (w) => setDrainTarget(w);
   const confirmDrain = () => {
     const w = drainTarget;
     setDrainTarget(null);
     if (w) drainMut.mutate(w.id);
+  };
+  const onDelete = (w) => deleteMut.mutate(w.id);
+  const confirmClearDead = () => {
+    setClearDeadOpen(false);
+    purgeMut.mutate();
   };
 
   return (
@@ -80,7 +152,7 @@ function WorkersPage({ sessions, pushToast }) {
           label="Total"
           value={workers.length}
           sub="registered workers"
-          title="Every worker process the pool knows about, including ones currently draining."
+          title="Every worker process the pool knows about, including ones currently draining or dead."
         />
         <SummaryStat
           label="Active"
@@ -105,26 +177,61 @@ function WorkersPage({ sessions, pushToast }) {
           }
         />
         <SummaryStat
-          label="Scheduler"
-          value="alive"
-          sub="last claim 2s ago"
-          accent="green"
-          title="The claim engine is polling and ready to hand work to workers."
+          label="Dead"
+          value={totals.dead}
+          sub={totals.dead > 0 ? "clear to tidy the registry" : "none — registry clean"}
+          accent={totals.dead > 0 ? "red" : "green"}
+          title="Workers reaped after they stopped heart-beating. Their rows linger until removed — use the per-row remove button or Clear dead."
         />
       </div>
 
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />
-          <input className="input" placeholder="Filter workers…" />
+          <input
+            className="input"
+            placeholder="Filter workers…"
+            aria-label="Filter workers by id or host"
+            data-testid="workers-filter"
+            value={filterText}
+            onChange={(e) => setFilterText(e.target.value)}
+          />
         </div>
         <div className="sep-v" />
-        <div className="chip-group">
-          <span className="chip active">all</span>
-          <span className="chip">active</span>
-          <span className="chip">draining</span>
-          <span className="chip">dead</span>
+        <div className="chip-group" role="tablist" aria-label="Filter by status">
+          {chips.map((c) => (
+            <span
+              key={c}
+              className={`chip${statusFilter === c ? " active" : ""}`}
+              role="tab"
+              tabIndex={0}
+              aria-selected={statusFilter === c}
+              data-testid={`workers-chip-${c}`}
+              onClick={() => setStatusFilter(c)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  setStatusFilter(c);
+                }
+              }}
+            >
+              {c}
+              <span className="mono muted" style={{ fontSize: 10 }}>{chipCount(c)}</span>
+            </span>
+          ))}
         </div>
+        {totals.dead > 0 && (
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="trash"
+            data-testid="workers-clear-dead"
+            disabled={purgeMut.loading}
+            onClick={() => setClearDeadOpen(true)}
+          >
+            {purgeMut.loading ? "Clearing…" : `Clear dead (${totals.dead})`}
+          </Btn>
+        )}
         <span className="muted text-sm tabular" style={{ marginLeft: "auto" }}>
           <span className="mono" style={{ color: "var(--green)" }}>● live</span> · /v1/workers every 2s
         </span>
@@ -140,23 +247,36 @@ function WorkersPage({ sessions, pushToast }) {
               <th style={{ width: 180 }}>Capacity</th>
               <th style={{ width: 130 }}>Last heartbeat</th>
               <th>Started</th>
-              <th style={{ width: 70, textAlign: "right" }}></th>
+              <th style={{ width: 90, textAlign: "right" }}></th>
             </tr>
           </thead>
           <tbody>
-            {workers.map((w) => (
+            {filtered.map((w) => (
               <WorkerRow
                 key={w.id}
                 w={w}
-                sessions={sessions || []}
                 onDrain={onDrain}
+                onDelete={onDelete}
                 draining={drainMut.loading}
+                deleting={deleteMut.loading}
               />
             ))}
           </tbody>
         </table>
+        {filtered.length === 0 && (
+          <div className="empty" style={{ padding: "18px 14px" }} data-testid="workers-empty">
+            {workers.length === 0
+              ? "No workers registered."
+              : "No workers match the current filter."}
+          </div>
+        )}
         <div className="tbl-foot">
-          <span className="tabular">{workers.length} workers · polling every 2s</span>
+          <span className="tabular">
+            {filtered.length === workers.length
+              ? `${workers.length} worker${workers.length === 1 ? "" : "s"}`
+              : `${filtered.length} of ${workers.length} workers`}
+            {" · polling every 2s"}
+          </span>
         </div>
       </div>
 
@@ -181,14 +301,33 @@ function WorkersPage({ sessions, pushToast }) {
           </ul>
         </Modal>
       )}
+
+      {clearDeadOpen && (
+        <Modal
+          title={`Clear ${totals.dead} dead worker${totals.dead === 1 ? "" : "s"}?`}
+          danger
+          onClose={() => setClearDeadOpen(false)}
+          footer={
+            <>
+              <Btn kind="ghost" onClick={() => setClearDeadOpen(false)}>Cancel</Btn>
+              <Btn kind="danger" icon="trash" data-testid="workers-clear-dead-confirm" onClick={confirmClearDead}>Clear dead</Btn>
+            </>
+          }
+        >
+          Removing every worker currently in the <strong>dead</strong> state from
+          the registry.
+          <ul>
+            <li>Dead workers stopped heart-beating and were reaped — they never come back on their own.</li>
+            <li>Active and draining workers are left untouched.</li>
+            <li>This only tidies the registry; it does not stop any running process.</li>
+          </ul>
+        </Modal>
+      )}
     </div>
   );
 }
 
-function WorkerRow({ w, sessions, onDrain, draining }) {
-  const onWorker = sessions.filter(
-    (s) => s.worker_id === w.id && (s.status === "running" || s.status === "paused")
-  );
+function WorkerRow({ w, onDrain, onDelete, draining, deleting }) {
   const heartbeatAge = w.heartbeat ?? 0;
   const heartbeatBad = heartbeatAge > 30;
   const capacity = w.capacity || 0;
@@ -215,7 +354,6 @@ function WorkerRow({ w, sessions, onDrain, draining }) {
         <CapacityBar inFlight={inFlight} capacity={capacity} />
         <div className="mono muted text-sm" style={{ marginTop: 2 }}>
           {inFlight} / {capacity}
-          {onWorker.length > 0 && <> · <span style={{ color: "var(--blue)" }}>{onWorker.length} session{onWorker.length === 1 ? "" : "s"}</span></>}
         </div>
       </td>
       <td className={heartbeatBad ? "mono" : "mono muted"} style={{ color: heartbeatBad ? "var(--red)" : undefined }}>
@@ -230,15 +368,28 @@ function WorkerRow({ w, sessions, onDrain, draining }) {
       </td>
       <td className="mono muted">{startedAtSecondsAgo != null ? relativeTime(startedAtSecondsAgo) : "—"}</td>
       <td style={{ textAlign: "right", paddingRight: 12 }}>
-        <Btn
-          size="sm"
-          kind="ghost"
-          icon="alert"
-          disabled={w.status !== "active" || draining}
-          onClick={() => onDrain(w)}
-        >
-          {draining ? "Draining…" : "Drain"}
-        </Btn>
+        {w.status === "dead" ? (
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="trash"
+            data-testid="worker-delete"
+            disabled={deleting}
+            onClick={() => onDelete(w)}
+          >
+            {deleting ? "Removing…" : "Remove"}
+          </Btn>
+        ) : (
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="alert"
+            disabled={w.status !== "active" || draining}
+            onClick={() => onDrain(w)}
+          >
+            {draining ? "Draining…" : "Drain"}
+          </Btn>
+        )}
       </td>
     </tr>
   );
