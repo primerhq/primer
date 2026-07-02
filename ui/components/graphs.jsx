@@ -566,12 +566,11 @@ function GR_GraphStatusPanel({ id, status, onRefresh, onDelete }) {
                   ? `${issues.length} issue${issues.length === 1 ? "" : "s"} found`
                   : "Status unknown"}
           </div>
-          <div className="muted text-sm">
-            <span className="mono">GET /v1/graphs/{id}/status</span>
-            {status.error
-              ? <> · <span style={{ color: "var(--red)" }}>{status.error.title || status.error.message}</span></>
-              : null}
-          </div>
+          {status.error && (
+            <div className="muted text-sm">
+              <span style={{ color: "var(--red)" }}>{status.error.title || status.error.message}</span>
+            </div>
+          )}
           {ok === false && issues.map((iss, i) => (
             <div key={i} className="muted text-sm mt-2 mono" style={{ color: "var(--red)" }}>{iss}</div>
           ))}
@@ -655,6 +654,10 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   const [addEdgeMode, setAddEdgeMode] = React.useState(null);  // null | {fromId?}
   const [edgeMode, setEdgeMode] = React.useState("static");  // "static" | "conditional"
   const [showAddMenu, setShowAddMenu] = React.useState(false);
+  // Bumped by Auto-layout to force GR_Canvas to re-seed from the freshly
+  // computed node positions. topoKey ignores x/y (so drags don't rebuild the
+  // canvas), which means an x/y-only relayout is otherwise invisible.
+  const [layoutNonce, setLayoutNonce] = React.useState(0);
   // Raw-spec import escape hatch (GAP-6): paste a full graph spec (the
   // same JSON shape `PUT /graphs/{id}` / `primectl create graph -f`
   // takes) and load it into the editor as an alternate to clicking the
@@ -732,7 +735,14 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
 
   const onAutoLayout = () => {
     if (!window.primerVendor || !window.primerVendor.autoLayout) return;
+    // Recompute BFS-layered positions and write them back into the draft, then
+    // bump the nonce so the canvas actually re-renders in the new arrangement
+    // (topoKey excludes x/y, so a position-only change wouldn't re-seed G6).
+    // Positions are UI-only (stripped from the PUT body — the server doesn't
+    // persist node coordinates), so this intentionally does NOT mark the draft
+    // dirty; Save stays gated on real topology/attribute edits.
     setDraft((d) => window.primerVendor.autoLayout(d));
+    setLayoutNonce((n) => n + 1);
   };
 
   // GAP-6 raw-spec import. Validates the parsed object has the minimal
@@ -972,10 +982,18 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
             ? (addEdgeMode.fromId ? `Pick target for ${addEdgeMode.fromId}…` : "Pick source…")
             : "Add edge"}
         </Btn>
+        <span
+          className="muted text-sm"
+          style={{ marginLeft: 2, whiteSpace: "nowrap" }}
+          title="Kind applied to the next edge you create"
+        >
+          new edge:
+        </span>
         <div
           className="seg"
           role="group"
-          aria-label="Edge mode"
+          aria-label="Kind for new edges"
+          title="Kind applied to the next edge you create"
           style={{
             display: "inline-flex",
             border: "1px solid var(--border)",
@@ -987,6 +1005,8 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
             type="button"
             onClick={() => setEdgeMode("static")}
             className={edgeMode === "static" ? "active" : ""}
+            aria-pressed={edgeMode === "static"}
+            title="New edges are solid static transitions"
             style={{
               padding: "4px 10px",
               fontSize: 12,
@@ -1002,6 +1022,8 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
             type="button"
             onClick={() => setEdgeMode("conditional")}
             className={edgeMode === "conditional" ? "active" : ""}
+            aria-pressed={edgeMode === "conditional"}
+            title="New edges are dashed conditional (json_path router) transitions"
             style={{
               padding: "4px 10px",
               fontSize: 12,
@@ -1046,6 +1068,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
         <window.GR_Canvas
           draft={draft}
           layout="preset"
+          layoutNonce={layoutNonce}
           selectedNodeId={selectedNodeId}
           selectedEdgeId={selectedEdgeId}
           addEdgeMode={addEdgeMode}
