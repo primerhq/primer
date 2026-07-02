@@ -218,6 +218,43 @@ function useStudioState(wid) {
     ST_syncUrl(state.activeTabId);
   }, [wid, state]);
 
+  // React to ?open= changes that happen AFTER mount (deep-links followed
+  // while the Studio is already mounted — a same-page hash/query change).
+  // ST_applyUrlTab only runs on mount / wid-change, so without this a fresh
+  // ?open= would do nothing. We listen for hashchange + popstate (our own
+  // ST_syncUrl writes use replaceState, which fires neither, so this never
+  // loops on our own URL mirroring). Dedup: no-op when the parsed tab is
+  // already active — that both avoids redundant renders and, combined with
+  // the fact that a manual close clears ?open via replaceState (no event),
+  // stops a user-closed tab from reappearing unless the URL truly changes
+  // back to it. Mount-time deep-link handling is left untouched.
+  React.useEffect(function () {
+    function onUrlChange() {
+      var urlTab = ST_tabFromUrl();
+      if (!urlTab) return; // navigation dropped ?open= — don't clobber tabs
+      setState(function (s) {
+        if (s.activeTabId === urlTab) return s; // already active — no-op
+        var openTabs = s.openTabs || [];
+        var present = openTabs.some(function (t) { return t.id === urlTab; });
+        if (present) {
+          return Object.assign({}, s, { activeTabId: urlTab });
+        }
+        var tab = ST_tabFromUrlId(urlTab);
+        if (!tab) return s;
+        return Object.assign({}, s, {
+          openTabs: openTabs.concat([tab]),
+          activeTabId: urlTab,
+        });
+      });
+    }
+    window.addEventListener("hashchange", onUrlChange);
+    window.addEventListener("popstate", onUrlChange);
+    return function () {
+      window.removeEventListener("hashchange", onUrlChange);
+      window.removeEventListener("popstate", onUrlChange);
+    };
+  }, []);
+
   // Apply theme/density attrs to <html> so the design tokens resolve. The
   // Studio root <div> also carries them (see render) for scoped reads.
   React.useEffect(function () {
@@ -271,6 +308,17 @@ function useStudioState(wid) {
         }
       }
       return Object.assign({}, s, { openTabs: openTabs, activeTabId: activeTabId });
+    });
+  }, []);
+
+  // Close every open tab at once (the tab bar's "Close all" affordance).
+  // Clears openTabs + activeTabId; the persist effect then wipes them from
+  // localStorage too. No-op (returns the same state object) when already
+  // empty so it doesn't churn a render or the persisted blob.
+  var closeAllTabs = React.useCallback(function () {
+    setState(function (s) {
+      if (!(s.openTabs && s.openTabs.length) && s.activeTabId == null) return s;
+      return Object.assign({}, s, { openTabs: [], activeTabId: null });
     });
   }, []);
 
@@ -349,6 +397,7 @@ function useStudioState(wid) {
     openTab: openTab,
     focusTab: focusTab,
     closeTab: closeTab,
+    closeAllTabs: closeAllTabs,
     toggleSessions: toggleSessions,
     toggleFiles: toggleFiles,
     toggleHidden: toggleHidden,

@@ -87,8 +87,20 @@ var ST_EDIT_MAX_BYTES = 1024 * 1024;
 //   shown when there are no open tabs.
 // ---------------------------------------------------------------------------
 
-function CenterTabs({ openTabs, activeTabId, onFocus, onClose }) {
+function CenterTabs({ openTabs, activeTabId, onFocus, onClose, onCloseAll }) {
   var tabs = openTabs || [];
+
+  function handleCloseAll(e) {
+    e.stopPropagation();
+    if (!tabs.length) return; // no-op when there are no open tabs
+    // If any file tab has unsaved edits, confirm once before dropping them all.
+    var anyDirty = tabs.some(function (t) { return t.kind === "file" && t.dirty; });
+    if (anyDirty) {
+      var ok = window.confirm("Some files have unsaved changes. Close all tabs without saving?");
+      if (!ok) return;
+    }
+    onCloseAll && onCloseAll();
+  }
 
   if (tabs.length === 0) {
     return (
@@ -159,6 +171,18 @@ function CenterTabs({ openTabs, activeTabId, onFocus, onClose }) {
           </div>
         );
       })}
+      {/* Close-all control — pinned to the right edge so it stays reachable
+          even when the tab strip overflows and scrolls. */}
+      <button
+        className="st-tabs-close-all"
+        data-testid="tabs-close-all"
+        title="Close all tabs"
+        aria-label="Close all tabs"
+        onClick={handleCloseAll}
+      >
+        <Icon name="x" size={13} />
+        <span style={{ fontSize: 11 }}>Close all</span>
+      </button>
     </div>
   );
 }
@@ -867,6 +891,7 @@ function StudioCenter({ wid, studio }) {
         activeTabId={activeTabId}
         onFocus={studio.focusTab}
         onClose={studio.closeTab}
+        onCloseAll={studio.closeAllTabs}
       />
       <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {panel}
