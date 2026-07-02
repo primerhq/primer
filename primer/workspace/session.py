@@ -203,6 +203,7 @@ class AgentSession:
         workspace_tools: "list[WorkspaceTool] | tuple[WorkspaceTool, ...]" = (),
         instructions: str | None = None,
         parent_session_id: str | None = None,
+        name: str | None = None,
     ) -> "AgentSession":
         """Allocate a fresh slot and return a live session handle.
 
@@ -219,6 +220,7 @@ class AgentSession:
             session_id=session_id,
             agent_id=agent_binding.agent_id,
             workspace_id=workspace_id,
+            name=name,
             status=SessionStatus.RUNNING,
             started_at=now,
             last_activity_at=now,
@@ -418,6 +420,31 @@ class AgentSession:
             )
             self._info = updated_info
             return instruction
+
+    async def set_name(self, name: str | None) -> SessionInfo:
+        """Set (or clear) the session's friendly display name.
+
+        Rewrites ``session.json`` with the new ``name`` in a single
+        ``rename`` commit. An empty / whitespace-only value clears the
+        name (the console then falls back to the id). Allowed in any
+        status -- the name is pure display metadata and does not affect
+        the lifecycle. Returns the updated :class:`SessionInfo`.
+        """
+        normalised = (name or "").strip() or None
+        async with self._lock:
+            now = datetime.now(timezone.utc)
+            updated_info = self._info.model_copy(
+                update={"name": normalised, "last_activity_at": now},
+            )
+            sid_short = self.session_id[-12:]
+            await self._state.commit(
+                self.session_id,
+                summary=f"rename[{sid_short}]: {normalised or '(cleared)'}",
+                op="rename",
+                files={"session.json": updated_info.model_dump_json(indent=2)},
+            )
+            self._info = updated_info
+            return updated_info
 
     async def request_pause(self, *, reason: str | None = None) -> None:
         """Set the pause flag the runtime checks before each turn.

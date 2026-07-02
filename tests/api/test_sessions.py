@@ -40,6 +40,40 @@ def _runtime_meta():
 # ===========================================================================
 
 
+class _FakeAgentSessionForSessions:
+    """Minimal AgentSession stand-in exposing the on-disk-name surface.
+
+    Backs ``get_session`` so the rename PATCH route (which calls
+    ``ws.get_session(sid).set_name(...)``) works against the fake backend,
+    round-tripping the friendly name through a real :class:`SessionInfo`.
+    """
+
+    def __init__(self, workspace_id: str, session_id: str, name=None) -> None:
+        now = datetime.now(timezone.utc)
+        from primer.model.workspace_session import SessionInfo, SessionStatus
+
+        self._info = SessionInfo(
+            session_id=session_id,
+            agent_id="ag1",
+            workspace_id=workspace_id,
+            name=name,
+            status=SessionStatus.RUNNING,
+            started_at=now,
+            last_activity_at=now,
+        )
+
+    async def set_name(self, name):
+        normalised = (name or "").strip() or None
+        self._info = self._info.model_copy(update={"name": normalised})
+        return self._info
+
+    async def info(self):
+        return self._info
+
+    async def status(self):
+        return self._info.status
+
+
 class _FakeWorkspaceForSessions:
     """Just enough of the :class:`Workspace` surface for session tests.
 
@@ -51,6 +85,7 @@ class _FakeWorkspaceForSessions:
         self.workspace_id = workspace_id
         self.id = workspace_id
         self.started_sessions: dict[str, dict] = {}
+        self._handles: dict[str, _FakeAgentSessionForSessions] = {}
 
     async def start_session(
         self,
@@ -59,6 +94,7 @@ class _FakeWorkspaceForSessions:
         id=None,
         instructions=None,
         parent_session_id=None,
+        name=None,
     ):
         if id is None:
             raise AssertionError(
@@ -72,16 +108,24 @@ class _FakeWorkspaceForSessions:
             "agent_binding": agent_binding,
             "instructions": instructions,
             "parent_session_id": parent_session_id,
+            "name": name,
         }
-        return object()  # AgentSession stand-in; the router ignores the return.
+        self._handles[id] = _FakeAgentSessionForSessions(
+            self.workspace_id, id, name=name
+        )
+        return self._handles[id]
+
+    async def get_session(self, session_id):
+        return self._handles.get(session_id)
 
     async def list_sessions(self, *, agent_id=None, status=None):
         out = []
-        for sid in self.started_sessions:
-            out.append(type("S", (), {"session_id": sid, "agent_id": "ag1", "status": "running"})())
+        for handle in self._handles.values():
+            out.append(await handle.info())
         return out
 
     async def remove_session(self, session_id):
+        self._handles.pop(session_id, None)
         return self.started_sessions.pop(session_id, None) is not None
 
     async def aclose(self):
@@ -1413,3 +1457,129 @@ async def test_find_sessions_cursor_pagination_covers_all_once(
     assert len(seen_ids) == len(set(seen_ids)), (
         f"duplicates in cursor walk: {seen_ids!r}"
     )
+
+
+# ===========================================================================
+# Session naming — create-with-name + PATCH rename (bug #22)
+# ===========================================================================
+
+
+async def test_create_session_with_name_persists_and_round_trips(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "name": "My friendly run",
+            "auto_start": False,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    created = resp.json()
+    sid = created["id"]
+    # Name lands on the created scheduler row (the create response).
+    assert created["name"] == "My friendly run"
+
+    # ... and round-trips through the top-level GET /sessions/{id} row.
+    got = await sessions_client.get(f"/v1/sessions/{sid}")
+    assert got.status_code == 200, got.text
+    assert got.json()["name"] == "My friendly run"
+
+    # ... and shows on the on-disk SessionInfo via the workspace list.
+    listed = await sessions_client.get(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions"
+    )
+    assert listed.status_code == 200, listed.text
+    items = listed.json()["items"]
+    match = [i for i in items if i["session_id"] == sid]
+    assert match and match[0]["name"] == "My friendly run"
+
+
+async def test_create_session_without_name_defaults_none(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "auto_start": False,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["name"] is None
+
+
+async def test_create_session_blank_name_defaults_none(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "name": "   ",
+            "auto_start": False,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["name"] is None
+
+
+async def test_rename_session_updates_name(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "auto_start": False,
+        },
+    )
+    assert create.status_code == 201, create.text
+    sid = create.json()["id"]
+    assert create.json()["name"] is None
+
+    patched = await sessions_client.patch(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}",
+        json={"name": "Renamed run"},
+    )
+    assert patched.status_code == 200, patched.text
+    # The PATCH returns the updated on-disk SessionInfo.
+    body = patched.json()
+    assert body["name"] == "Renamed run"
+    assert body["session_id"] == sid
+
+    # ... and the new name is mirrored onto the scheduler row too.
+    got = await sessions_client.get(f"/v1/sessions/{sid}")
+    assert got.status_code == 200, got.text
+    assert got.json()["name"] == "Renamed run"
+
+
+async def test_rename_session_clear_name(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    create = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "name": "Temp name",
+            "auto_start": False,
+        },
+    )
+    assert create.status_code == 201, create.text
+    sid = create.json()["id"]
+
+    patched = await sessions_client.patch(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/{sid}",
+        json={"name": None},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["name"] is None
+
+
+async def test_rename_session_not_found(sessions_client, seeded_workspace):
+    resp = await sessions_client.patch(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions/sess-nope",
+        json={"name": "x"},
+    )
+    assert resp.status_code == 404, resp.text

@@ -560,3 +560,58 @@ class TestAclose:
         await session.aclose()
         await session.aclose()  # no-op the second time
         assert await session.status() == SessionStatus.ENDED
+
+
+# ===========================================================================
+# set_name — friendly display name (bug #22)
+# ===========================================================================
+
+
+class TestSetName:
+    async def test_start_persists_name(
+        self, state_repo: StateRepo, truncation_store: TruncationStore
+    ) -> None:
+        session = await AgentSession.start(
+            session_id="sess-named",
+            workspace_id="ws-1",
+            agent_binding=_make_binding(),
+            state_repo=state_repo,
+            truncation_store=truncation_store,
+            name="First run",
+        )
+        assert (await session.info()).name == "First run"
+        # ... and it round-trips through session.json on disk.
+        disk = await state_repo.load_session_info("sess-named")
+        assert disk is not None and disk.name == "First run"
+
+    async def test_start_defaults_name_none(
+        self, state_repo: StateRepo, truncation_store: TruncationStore
+    ) -> None:
+        session = await _start_session(state_repo, truncation_store)
+        assert (await session.info()).name is None
+
+    async def test_set_name_rewrites_session_json(
+        self, state_repo: StateRepo, truncation_store: TruncationStore
+    ) -> None:
+        session = await _start_session(state_repo, truncation_store)
+        returned = await session.set_name("Renamed")
+        assert returned.name == "Renamed"
+        assert (await session.info()).name == "Renamed"
+        disk = await state_repo.load_session_info(session.session_id)
+        assert disk is not None and disk.name == "Renamed"
+
+    async def test_set_name_blank_clears(
+        self, state_repo: StateRepo, truncation_store: TruncationStore
+    ) -> None:
+        session = await AgentSession.start(
+            session_id="sess-clear",
+            workspace_id="ws-1",
+            agent_binding=_make_binding(),
+            state_repo=state_repo,
+            truncation_store=truncation_store,
+            name="To be cleared",
+        )
+        await session.set_name("   ")
+        assert (await session.info()).name is None
+        disk = await state_repo.load_session_info("sess-clear")
+        assert disk is not None and disk.name is None

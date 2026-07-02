@@ -96,6 +96,7 @@ async def start_workspace_session(
     metadata: dict | None,
     parent_session_id: str | None,
     deps: SessionFactoryDeps,
+    name: str | None = None,
 ) -> WorkspaceSession:
     """Full create flow shared by the REST route and the workspaces tool:
     validate workspace + binding (+ graph_input vs Begin.input_schema),
@@ -203,6 +204,7 @@ async def start_workspace_session(
             id=sid,
             instructions=initial_instructions,
             parent_session_id=parent_session_id,
+            name=name,
         )
     elif isinstance(binding, GraphSessionBinding):
         # Synthetic AgentBinding for the graph-holder slot. The
@@ -224,6 +226,7 @@ async def start_workspace_session(
             id=sid,
             instructions=initial_instructions,
             parent_session_id=parent_session_id,
+            name=name,
         )
 
     # Persist the row + (optionally) auto-start + always register a
@@ -238,6 +241,7 @@ async def start_workspace_session(
         metadata=metadata,
         parent_session_id=parent_session_id,
         session_id=sid,
+        name=name,
         deps=SessionFactoryDeps(
             storage_provider=deps.storage_provider,
             claim_engine=deps.claim_engine,
@@ -258,6 +262,7 @@ async def create_session(
     deps: SessionFactoryDeps,
     parent_session_id: str | None = None,
     session_id: str | None = None,
+    name: str | None = None,
 ) -> WorkspaceSession:
     """Persist a :class:`WorkspaceSession` row + optionally auto-start.
 
@@ -314,6 +319,7 @@ async def create_session(
         workspace_id=workspace_id,
         binding=binding,
         status=SessionStatus.CREATED,
+        name=(name.strip() or None) if isinstance(name, str) else name,
         parent_session_id=parent_session_id,
         initial_instructions=initial_instructions,
         metadata=md,

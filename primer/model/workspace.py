@@ -206,6 +206,7 @@ Op = Literal[
     "memory_write",
     "todo_update",
     "status_change",
+    "rename",
 ]
 """Allowed values of the ``op`` trailer on state-repo commits."""
 

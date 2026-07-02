@@ -460,7 +460,7 @@ class _FakeLiveWorkspace:
         self.started: list[dict] = []
 
     async def start_session(
-        self, binding, *, id, instructions, parent_session_id
+        self, binding, *, id, instructions, parent_session_id, name=None
     ) -> None:
         self.started.append(
             {
@@ -468,6 +468,7 @@ class _FakeLiveWorkspace:
                 "id": id,
                 "instructions": instructions,
                 "parent_session_id": parent_session_id,
+                "name": name,
             }
         )
 

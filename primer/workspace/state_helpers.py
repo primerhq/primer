@@ -43,6 +43,7 @@ VALID_OPS: frozenset[str] = frozenset(
         "memory_write",
         "todo_update",
         "status_change",
+        "rename",
     ]
 )
 
