@@ -986,6 +986,25 @@ input, textarea, select { font: inherit; color: inherit; }
   align-items: center;
   margin-bottom: 14px;
 }
+
+/* Shared pagination control (components/shared/pager.jsx). Sits below a
+   table/list; keeps the range readout left and the Prev/Next buttons right.
+   Named `.list-pager` (not `.pager`) so it never collides with the older
+   hand-rolled `.tbl-foot .pager` markup still present on a few pages. */
+.list-pager {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+.list-pager .pager-range { flex: 0 0 auto; }
+.list-pager .pager-controls {
+  margin-left: auto;
+  display: flex;
+  gap: 6px;
+  flex: 0 0 auto;
+}
 .filter-bar .input-icon { flex: 0 0 auto; }
 .filter-bar .input-icon .input { width: 160px; min-width: 0; }
 .filter-bar .select { padding: 4px 22px 4px 8px; font-size: 12px; max-width: 120px; }
