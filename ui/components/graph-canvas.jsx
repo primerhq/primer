@@ -13,10 +13,36 @@
 // `draft` is { nodes:[{id,kind,x?,y?,...}], edges:[...] } (the editor draft
 // or the run-view graph — same shape). `layout`: "preset" | "dagre".
 
-const _G6_COLORS = {
-  neutral: "#3a3f47", green: "#34d399", amber: "#fbbf24", red: "#f87171",
-  violet: "#a78bfa", text: "#e6e8eb", sub: "#9aa4af", bg: "#0d0f12", edge: "#4b525c",
-};
+// Palette read LIVE from the Studio design tokens (styles.css :root[data-theme])
+// via getComputedStyle — the same pattern as studio-terminal.jsx's ST_xtermTheme
+// (~L52). Reading the CSS custom properties instead of hardcoding hex is what
+// lets a dark/light toggle restyle the G6 canvas (bug #6): both the init effect
+// and the theme MutationObserver call this to get the current-theme colours.
+// The `*Dim` entries pull the pre-baked translucent token variants
+// (oklch(... / a)) so we never string-append a hex alpha to an oklch() value.
+function _g6Palette() {
+  const css = window.getComputedStyle(document.documentElement);
+  const v = (name, fallback) => {
+    const val = css.getPropertyValue(name);
+    return val && val.trim() ? val.trim() : fallback;
+  };
+  return {
+    neutral: v("--border-strong", "#3a3f47"),
+    neutralDim: v("--bg-2", "#232428"),
+    green: v("--green", "#34d399"),
+    greenDim: v("--green-dim", "rgba(52,211,153,0.14)"),
+    amber: v("--amber", "#fbbf24"),
+    amberDim: v("--amber-dim", "rgba(251,191,36,0.14)"),
+    red: v("--red", "#f87171"),
+    redDim: v("--red-dim", "rgba(248,113,113,0.14)"),
+    violet: v("--violet", "#a78bfa"),
+    text: v("--text", "#e6e8eb"),
+    sub: v("--text-2", "#9aa4af"),
+    bg: v("--bg", "#0d0f12"),
+    edge: v("--border-strong", "#4b525c"),
+    edgeDim: v("--border", "#3b424b"),
+  };
+}
 
 // Node sizes by kind (also exported; consumers may read GR_NODE_SIZE).
 const GR_NODE_SIZE = {
@@ -40,25 +66,28 @@ function _g6IconUri(kind, stroke) {
   const inner = _G6_KIND_SVG[kind];
   if (!inner) return undefined;
   const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="'
-    + (stroke || _G6_COLORS.text) + '" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">'
+    + (stroke || "#e6e8eb") + '" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">'
     + inner + '</svg>';
   return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
 // Per-status node state styles (the live "glow"); G6 tweens state changes.
-function _g6NodeStates() {
-  const mk = (c, halo) => ({
-    stroke: c, lineWidth: 2, fill: c + "22",
+// Palette-driven (P from _g6Palette) so the theme observer can rebuild these
+// on a dark/light flip. The fill uses the pre-baked `*Dim` token variants
+// rather than appending a hex alpha (tokens are oklch(), not hex).
+function _g6NodeStates(P) {
+  const mk = (c, fillDim, halo) => ({
+    stroke: c, lineWidth: 2, fill: fillDim,
     halo, haloStroke: c, haloStrokeOpacity: 0.32, haloLineWidth: halo ? 10 : 0,
   });
   return {
-    pending: mk(_G6_COLORS.neutral, false),
-    running: mk(_G6_COLORS.green, true),
-    waiting: mk(_G6_COLORS.amber, true),
-    ended: mk(_G6_COLORS.green, false),
-    failed: mk(_G6_COLORS.red, true),
-    pulse: { halo: true, haloStroke: _G6_COLORS.green, haloLineWidth: 20, haloStrokeOpacity: 0.15 },
-    selected: { stroke: _G6_COLORS.violet, lineWidth: 3, halo: true, haloStroke: _G6_COLORS.violet, haloStrokeOpacity: 0.4 },
+    pending: mk(P.neutral, P.neutralDim, false),
+    running: mk(P.green, P.greenDim, true),
+    waiting: mk(P.amber, P.amberDim, true),
+    ended: mk(P.green, P.greenDim, false),
+    failed: mk(P.red, P.redDim, true),
+    pulse: { halo: true, haloStroke: P.green, haloLineWidth: 20, haloStrokeOpacity: 0.15 },
+    selected: { stroke: P.violet, lineWidth: 3, halo: true, haloStroke: P.violet, haloStrokeOpacity: 0.4 },
   };
 }
 
@@ -108,10 +137,50 @@ function _g6Edges(draft) {
   return out;
 }
 
-function _g6EdgeStateStyle() {
+function _g6EdgeStateStyle(P) {
   return {
-    selected: { stroke: _G6_COLORS.violet, lineWidth: 2.5 },
-    active: { stroke: _G6_COLORS.green, lineWidth: 2, lineDash: [6, 6], endArrow: true },
+    selected: { stroke: P.violet, lineWidth: 2.5 },
+    active: { stroke: P.green, lineWidth: 2, lineDash: [6, 6], endArrow: true },
+  };
+}
+
+// Base node / edge style builders — palette-driven so the initial G6 init and
+// the theme MutationObserver (restyle-on-toggle) share one source of truth.
+// iconSrc bakes the label colour into the SVG data-URI, so a re-theme must
+// rebuild these (not just swap a token) to recolour the node icons too.
+function _g6NodeStyle(P) {
+  return {
+    size: (d) => { const s = _g6Size(d.data.kind); return [s.w, s.h]; },
+    radius: (d) => (_g6Tiny(d.data.kind) ? 12 : 8),
+    fill: P.neutralDim,
+    stroke: P.neutral,
+    lineWidth: 2,
+    labelText: (d) => d.data.label,
+    labelPlacement: "center",
+    labelDx: 9,
+    labelFill: P.text,
+    labelFontSize: 12,
+    labelFontFamily: "IBM Plex Mono, monospace",
+    labelLineHeight: 15,
+    iconSrc: (d) => _g6IconUri(d.data.kind, P.text),
+    iconWidth: 15,
+    iconHeight: 15,
+    iconX: -57,
+  };
+}
+function _g6EdgeStyle(P) {
+  return {
+    stroke: (d) => (d.data.etype === "implicit" ? P.edgeDim : P.edge),
+    lineWidth: 1.5,
+    lineDash: (d) => (d.data.etype === "static" ? undefined : [5, 5]),
+    endArrow: true,
+    endArrowSize: 8,
+    radius: 8,
+    labelText: (d) => d.data.label || "",
+    labelFill: P.sub,
+    labelFontSize: 10,
+    labelBackground: true,
+    labelBackgroundFill: P.bg,
   };
 }
 
@@ -138,6 +207,10 @@ function GR_Canvas(props) {
     if (!containerRef.current || !window.G6 || !draft) return undefined;
     const G6 = window.G6;
     const preset = layout === "preset";
+    // Live theme palette — read fresh on every (re)init so the canvas is born
+    // in the current dark/light theme; the observer below keeps it in sync.
+    const P = _g6Palette();
+    let themeObs = null;
     // Mutating behaviors (drag/connect) only when the editor wires them;
     // the run-view passes no onMoveNode/onConnect and stays read-only.
     const interactive = !!(cb.current.onMoveNode || cb.current.onConnect);
@@ -163,7 +236,7 @@ function GR_Canvas(props) {
         // drag cleanly (no phantom edge, no onFinish) — a deliberate drag that
         // ends back on the source node never creates an edge.
         onCreate: (edge) => (edge && edge.source !== edge.target ? edge : false),
-        style: { stroke: _G6_COLORS.violet, lineWidth: 1.5, lineDash: [4, 4], endArrow: true },
+        style: { stroke: P.violet, lineWidth: 1.5, lineDash: [4, 4], endArrow: true },
       });
     }
     const nodes = (draft.nodes || []).map((n) => {
@@ -178,47 +251,10 @@ function GR_Canvas(props) {
       g = new G6.Graph({
         container: containerRef.current,
         autoResize: true,
-        background: _G6_COLORS.bg,
+        background: P.bg,
         data: { nodes, edges: _g6Edges(draft) },
-        node: {
-          type: "rect",
-          style: {
-            size: (d) => { const s = _g6Size(d.data.kind); return [s.w, s.h]; },
-            radius: (d) => (_g6Tiny(d.data.kind) ? 12 : 8),
-            fill: _G6_COLORS.neutral + "22",
-            stroke: _G6_COLORS.neutral,
-            lineWidth: 2,
-            labelText: (d) => d.data.label,
-            labelPlacement: "center",
-            labelDx: 9,
-            labelFill: _G6_COLORS.text,
-            labelFontSize: 12,
-            labelFontFamily: "IBM Plex Mono, monospace",
-            labelLineHeight: 15,
-            iconSrc: (d) => _g6IconUri(d.data.kind),
-            iconWidth: 15,
-            iconHeight: 15,
-            iconX: -57,
-          },
-          state: _g6NodeStates(),
-        },
-        edge: {
-          type: "polyline",
-          style: {
-            stroke: (d) => (d.data.etype === "implicit" ? "#3b424b" : _G6_COLORS.edge),
-            lineWidth: 1.5,
-            lineDash: (d) => (d.data.etype === "static" ? undefined : [5, 5]),
-            endArrow: true,
-            endArrowSize: 8,
-            radius: 8,
-            labelText: (d) => d.data.label || "",
-            labelFill: _G6_COLORS.sub,
-            labelFontSize: 10,
-            labelBackground: true,
-            labelBackgroundFill: _G6_COLORS.bg,
-          },
-          state: _g6EdgeStateStyle(),
-        },
+        node: { type: "rect", style: _g6NodeStyle(P), state: _g6NodeStates(P) },
+        edge: { type: "polyline", style: _g6EdgeStyle(P), state: _g6EdgeStateStyle(P) },
         layout: preset ? { type: "preset" } : { type: "dagre", rankdir: "LR", nodesep: 18, ranksep: 66 },
         behaviors,
         autoFit: preset ? undefined : "view",
@@ -281,12 +317,36 @@ function GR_Canvas(props) {
           }, 60);
         }
       }).catch(() => {});
+
+      // Bug #6 — restyle on dark/light toggle. G6's styles were hardcoded hex,
+      // so flipping data-theme left the canvas stuck on its old colours. Watch
+      // <html data-theme> (set by studio.jsx + the console theme effect on
+      // document.documentElement), re-read the tokens, and push fresh
+      // node/edge/background styles. Full re-render is fine here — a theme
+      // toggle is rare and re-baking the icon data-URIs needs the mappers to
+      // re-run. Disconnected on unmount below.
+      const applyTheme = () => {
+        const gg = graphRef.current;
+        if (!gg) return;
+        const P2 = _g6Palette();
+        try {
+          gg.setOptions({
+            background: P2.bg,
+            node: { type: "rect", style: _g6NodeStyle(P2), state: _g6NodeStates(P2) },
+            edge: { type: "polyline", style: _g6EdgeStyle(P2), state: _g6EdgeStateStyle(P2) },
+          });
+          Promise.resolve(gg.render()).catch(() => {});
+        } catch (_e) { /* canvas */ }
+      };
+      themeObs = new MutationObserver(applyTheme);
+      themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     } catch (err) {
       console.error("[GR_Canvas] init failed:", err);  // eslint-disable-line no-console
     }
 
     return () => {
       readyRef.current = false;
+      try { themeObs && themeObs.disconnect(); } catch (_e) { /* no-op */ }
       try { graphRef.current && graphRef.current.destroy(); } catch (_e) { /* no-op */ }
       graphRef.current = null;
     };
@@ -367,7 +427,7 @@ function GR_Canvas(props) {
       <div
         ref={containerRef}
         data-testid="graph-canvas"
-        style={{ width: "100%", height: 500, minHeight: 500, background: _G6_COLORS.bg }}
+        style={{ width: "100%", height: 500, minHeight: 500, background: "var(--bg)" }}
       />
     </div>
   );
