@@ -43,7 +43,7 @@ function _sspAgeSec(iso) {
 // ----------------------------------------------------------------------
 
 function SSPListPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
+  const { useRouter, useViewport, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
 
@@ -52,13 +52,18 @@ function SSPListPage({ onOpen, pushToast }) {
   const [backendFilter, setBackendFilter] = React.useState("");
   const filterFocused = React.useRef(false);
 
-  const list = useResource(
-    SSP_CACHE_LIST,
-    (signal) => apiFetch("GET", "/ssp?limit=200", null, { signal }),
-    { pollMs: 5000, pauseWhile: () => filterFocused.current }
-  );
+  // Server-side offset pagination (bug #19); text + backend filters narrow
+  // the current page and reset to page 0 via resetKey.
+  const list = usePagedList({
+    key: SSP_CACHE_LIST,
+    path: "/ssp",
+    pageSize: 50,
+    pollMs: 5000,
+    pauseWhile: () => filterFocused.current,
+    resetKey: textQuery + "|" + backendFilter,
+  });
 
-  const items = Array.isArray(list.data?.items) ? list.data.items : [];
+  const items = list.items;
 
   const filtered = React.useMemo(() => {
     let arr = items;
@@ -215,6 +220,7 @@ function SSPListPage({ onOpen, pushToast }) {
             </table>
           </div>
         )}
+        <Pager pager={list} label="providers" />
       </div>
       {modal}
     </>
