@@ -118,6 +118,20 @@ def test_save_payload_includes_description_and_max_iterations() -> None:
     assert "max_iterations: draft.max_iterations" in GRAPHS
 
 
+def test_graph_fields_are_always_reachable_not_gated_on_selection() -> None:
+    # #16 real root cause: the description/max_iterations fields used to live
+    # ONLY in the no-selection branch of GR_SidePanel, so selecting any node
+    # hid them. GR_GraphFields must render OUTSIDE the `selected ? ... :` and
+    # BEFORE it, so graph metadata stays editable while a node/edge is
+    # selected. The nothing-selected branch now shows read-only GR_GraphStats.
+    panel_head = GRAPHS.split("{selected ? (")[0]
+    assert "<GR_GraphFields draft={draft} onSetGraph={onSetGraph} />" in panel_head
+    assert "function GR_GraphFields(" in GRAPHS
+    assert "<GR_GraphStats draft={draft} />" in GRAPHS
+    # The old always-hidden block name is gone.
+    assert "GR_GraphStatsBlock" not in GRAPHS
+
+
 def test_bundle_transpiles() -> None:
     from primer.api._jsx_bundle import build_jsx_bundle
 
