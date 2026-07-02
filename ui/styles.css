@@ -221,11 +221,17 @@
   color: var(--text-2);
 }
 
-/* Body: 3 columns. Widths are CSS custom props so the resize handles can
-   write --st-left-w / --st-right-w inline on the grid element. */
+/* Body: 3 content columns + 2 resize-handle tracks. The .st-resize handles
+   are grid CHILDREN ([left][handle][center][handle][right]), so the template
+   must declare FIVE tracks — with only three, auto-placement pushed
+   st-col-center into the right column, wrapped st-col-right onto an implicit
+   second row, and collapsed SD_GraphRunView's canvas column to 0 width.
+   Widths are CSS custom props so the handles can write --st-left-w /
+   --st-right-w inline on the grid element. At ≤639px the handles are
+   display:none (desktop-only) and the mobile override re-declares 1fr. */
 .st-body {
   display: grid;
-  grid-template-columns: var(--st-left-w, 248px) minmax(0, 1fr) var(--st-right-w, 332px);
+  grid-template-columns: var(--st-left-w, 248px) 5px minmax(0, 1fr) 5px var(--st-right-w, 332px);
   min-height: 0;
 }
 .st-col {
