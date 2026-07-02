@@ -336,12 +336,14 @@ def test_u0090_graph_status_red_after_agent_deleted(
             state="visible", timeout=20_000,
         )
 
-        # Wait for the initial status panel to render - accept any
-        # of the in-flight phrasings ("Checking references…",
-        # "All references resolve", or even "0 issues found").
+        # Wait for the initial status panel to render. The banner no
+        # longer prints the raw "GET /v1/graphs/<id>/status" endpoint
+        # line (that detail belongs in devtools), so anchor on the
+        # human-readable copy instead: "Checking references…" and
+        # "All references resolve" both contain "references".
         # Bound by 30s in case the first poll is slow.
         status_initial = page.locator(".panel").filter(
-            has_text="GET /v1/graphs/" + gid + "/status",
+            has_text="references",
         ).first
         status_initial.wait_for(state="visible", timeout=30_000)
 

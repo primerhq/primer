@@ -124,11 +124,15 @@ function GR_Canvas(props) {
   const cb = React.useRef(props);
   cb.current = props;
 
+  // topoKey drives a full G6 (re)init. It excludes node x/y so a drag never
+  // rebuilds the graph (pan/zoom preserved), but includes `layoutNonce` so an
+  // explicit Auto-layout re-seeds the canvas with the freshly computed preset
+  // positions (an x/y-only change is otherwise invisible to the canvas).
   const topoKey = React.useMemo(() => {
     const ns = (draft?.nodes || []).map((n) => `${n.id}:${n.kind}`).join(",");
     const es = _g6Edges(draft).map((e) => e.id).join(",");
-    return (layout || "dagre") + "|" + ns + "|" + es;
-  }, [draft, layout]);
+    return (layout || "dagre") + "|" + ns + "|" + es + "|L" + (props.layoutNonce || 0);
+  }, [draft, layout, props.layoutNonce]);
 
   React.useEffect(() => {
     if (!containerRef.current || !window.G6 || !draft) return undefined;
@@ -139,9 +143,28 @@ function GR_Canvas(props) {
     const interactive = !!(cb.current.onMoveNode || cb.current.onConnect);
     const behaviors = ["zoom-canvas", "drag-canvas"];
     if (interactive) {
-      behaviors.push({ type: "drag-element", key: "drag-node" });
+      // Two explicit, mutually-exclusive edit modes keyed off `addEdgeMode`
+      // (toolbar "Add edge" toggle). Default = MOVE nodes (drag-element on,
+      // create-edge off). Add-edge mode = CONNECT (drag-element off, create-
+      // edge on). The `enable` callbacks re-read the live mode from cb.current
+      // on every gesture, so toggling the toolbar switches modes with no
+      // re-init. This makes it impossible to spawn an edge by dragging a node
+      // to move it — the old always-on create-edge turned a node-move drag
+      // (start+end on the same node) into a phantom self-loop.
+      behaviors.push({ type: "drag-element", key: "drag-node", enable: () => !cb.current.addEdgeMode });
       behaviors.push({ type: "click-select", key: "sel", multiple: false });
-      behaviors.push({ type: "create-edge", key: "make-edge", trigger: "drag", style: { stroke: _G6_COLORS.violet, lineWidth: 1.5, lineDash: [4, 4], endArrow: true } });
+      behaviors.push({
+        type: "create-edge",
+        key: "make-edge",
+        trigger: "drag",
+        enable: () => !!cb.current.addEdgeMode,
+        // Belt: reject self-loops. G6 only commits the edge when onCreate
+        // returns truthy, so returning false on source===target cancels the
+        // drag cleanly (no phantom edge, no onFinish) — a deliberate drag that
+        // ends back on the source node never creates an edge.
+        onCreate: (edge) => (edge && edge.source !== edge.target ? edge : false),
+        style: { stroke: _G6_COLORS.violet, lineWidth: 1.5, lineDash: [4, 4], endArrow: true },
+      });
     }
     const nodes = (draft.nodes || []).map((n) => {
       const sz = _g6Size(n.kind);
