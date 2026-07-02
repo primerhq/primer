@@ -11,7 +11,7 @@ Environment variables:
 
 from __future__ import annotations
 
-import asyncio
+import base64
 import hmac
 import logging
 import os
@@ -23,7 +23,8 @@ from aiohttp import WSMsgType
 
 from primer_runtime.exec import run_exec
 from primer_runtime.ops import HANDLERS, OpError
-from primer_runtime.protocol import ErrorCode, Event, OpName, Response, serialize
+from primer_runtime.protocol import ErrorCode, OpName, Response, serialize
+from primer_runtime.pty_op import PtyRegistry, start_pty
 from primer_runtime.watch import WatchRegistry, cancel_watch, start_watch
 
 log = logging.getLogger(__name__)
@@ -142,6 +143,8 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
 
     # Per-connection watch registry — tracks active subscription tasks.
     watch_registry = WatchRegistry()
+    # Per-connection PTY registry — tracks live interactive terminal sessions.
+    pty_registry = PtyRegistry()
 
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
@@ -169,6 +172,50 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                 target_req_id: int = (args or {}).get("target_req_id", -1)
                 cancel_watch(target_req_id, watch_registry)
                 # watch_closed is emitted by the subscription task itself
+                continue
+
+            # --- Interactive PTY ops --------------------------------------
+            # PTY_OPEN is a long-lived streaming op (emits pty_open/data/exit
+            # keyed by its req_id); the others are single-shot control
+            # requests carrying target_req_id (mirrors WATCH_START/CANCEL).
+            if op_name == OpName.PTY_OPEN:
+                start_pty(
+                    req_id=frame_req_id,
+                    args=args,
+                    workspace_root=workspace_root,
+                    send=ws.send_str,
+                    registry=pty_registry,
+                )
+                continue
+
+            if op_name in (OpName.PTY_STDIN, OpName.PTY_RESIZE, OpName.PTY_CLOSE):
+                pty_target: int = args.get("target_req_id", -1)
+                found = True
+                if op_name == OpName.PTY_STDIN:
+                    try:
+                        data = base64.b64decode(args.get("data_b64", "") or "")
+                    except Exception:  # noqa: BLE001
+                        await ws.send_str(serialize(Response(
+                            req_id=frame_req_id, ok=False,
+                            error={"code": ErrorCode.EPROTOCOL, "message": "pty_stdin: invalid base64"},
+                        )))
+                        continue
+                    found = pty_registry.write_stdin(pty_target, data)
+                elif op_name == OpName.PTY_RESIZE:
+                    found = pty_registry.resize(
+                        pty_target,
+                        int(args.get("cols") or 80),
+                        int(args.get("rows") or 24),
+                    )
+                else:  # PTY_CLOSE
+                    found = pty_registry.close(pty_target)
+                if found:
+                    await ws.send_str(serialize(Response(req_id=frame_req_id, ok=True, result={"ok": True})))
+                else:
+                    await ws.send_str(serialize(Response(
+                        req_id=frame_req_id, ok=False,
+                        error={"code": ErrorCode.ENOENT, "message": f"no PTY for target_req_id={pty_target}"},
+                    )))
                 continue
 
             # --- Streaming exec op ----------------------------------------
@@ -226,8 +273,9 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
         elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
             break
 
-    # Cancel any lingering watch subscriptions when the client disconnects.
+    # Cancel any lingering watch subscriptions / PTY sessions on disconnect.
     watch_registry.cancel_all()
+    pty_registry.cancel_all()
 
     return ws
 
