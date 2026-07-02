@@ -347,6 +347,115 @@
   text-transform: uppercase;
 }
 
+/* Integrated terminal — collapsible bottom panel spanning the center column
+   (below StudioCenter's active panel), P7. Mounted only while
+   studio.state.terminalOpen is true (see studio.jsx / studio-terminal.jsx),
+   so no separate "collapsed" height is needed here — the panel is either
+   absent or this fixed height. Hidden entirely on phones (≤639px, see the
+   mobile media query below): xterm.js + a PTY needs real keyboard/paste
+   affordances the touch shell doesn't have room for in v1. */
+.st-term-panel {
+  flex: 0 0 240px;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--border);
+  background: var(--bg);
+}
+.st-term-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 32px;
+  padding: 0 8px;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+  overflow-x: auto;
+}
+.st-term-label {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--text-3);
+  text-transform: uppercase;
+  margin-right: 4px;
+  flex-shrink: 0;
+}
+.st-term-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 6px 0 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  color: var(--text-3);
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.st-term-tab:hover { background: var(--bg-2); color: var(--text-2); }
+.st-term-tab.is-active { background: var(--bg-2); color: var(--text); }
+.st-term-tab-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.st-term-tab-close {
+  width: 14px;
+  height: 14px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  color: var(--text-4);
+}
+.st-term-tab-close:hover { background: var(--bg-active); color: var(--text); }
+.st-term-add {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.st-term-add:hover { background: var(--bg-2); color: var(--text); }
+.st-term-sp { flex: 1; }
+.st-term-conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--text-3);
+  padding: 0 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.st-term-conn-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.st-term-collapse {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border-radius: 6px;
+  color: var(--text-3);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.st-term-collapse:hover { background: var(--bg-2); color: var(--text); }
+.st-term-body {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+.st-term-instance { height: 100%; width: 100%; padding: 6px 10px; }
+.st-term-empty {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--text-4);
+  font-size: 12px;
+}
+
 * { box-sizing: border-box; }
 
 html, body, #root { height: 100%; }
@@ -1733,6 +1842,12 @@ input, textarea, select { font: inherit; color: inherit; }
      become slide-over sheets toggled from the slim sub-header. ---- */
   /* The wide ⌘K trigger gives way to the compact mobile search button. */
   .st-palette-trigger { display: none; }
+  /* Integrated terminal (P7): hidden on phones for v1 — xterm.js + a raw PTY
+     needs keyboard/paste affordances the touch shell doesn't have room for.
+     studio.jsx still renders TerminalPanel when terminalOpen is true; this
+     purely visually hides it (no JS gate) so re-enabling later is a CSS-only
+     change. */
+  .st-term-panel { display: none; }
   /* Re-assert grid centering on the mobile-only sub-header buttons — the
      generic `.mobile-only { display: revert }` above would otherwise drop
      `.st-hbtn`'s `display: grid` back to the UA inline-block default. */

@@ -20,6 +20,9 @@
 <link rel="preload" href="vendor/fonts/IBMPlexSans-VF-latin.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="preload" href="vendor/fonts/IBMPlexMono-Regular-latin.woff2" as="font" type="font/woff2" crossorigin />
 <link rel="stylesheet" href="styles.css" />
+<!-- xterm.js base stylesheet (Studio integrated terminal, Phase 7). See
+     ui/vendor/MANIFEST.md for version/hash. -->
+<link rel="stylesheet" href="vendor/xterm.min.css" />
 </head>
 <body>
 <div id="root"></div>
@@ -38,6 +41,14 @@
 <!-- SPIKE: AntV G6 v5 (UMD global window.G6). Plain script so it loads before
      _app.js — powers the optional G6 run-view canvas, toggled in the run view. -->
 <script src="vendor/g6.min.js"></script>
+<!-- xterm.js (Studio integrated terminal, Phase 7). UMD global window.Terminal
+     (exports spread directly onto globalThis). Plain script so it loads
+     before _app.js. See ui/vendor/MANIFEST.md. -->
+<script src="vendor/xterm.min.js"></script>
+<!-- xterm fit addon: UMD global window.FitAddon is a NAMESPACE object, not
+     the class — construct via `new window.FitAddon.FitAddon()`. See
+     ui/vendor/MANIFEST.md for the verification note. -->
+<script src="vendor/xterm-addon-fit.min.js"></script>
 <script src="_app.js"></script>
 
 <!-- The text/babel script tags below are the single source of truth
@@ -93,6 +104,7 @@
 <script type="text/babel" src="components/studio-center.jsx"></script>
 <script type="text/babel" src="components/studio-activity.jsx"></script>
 <script type="text/babel" src="components/studio-palette.jsx"></script>
+<script type="text/babel" src="components/studio-terminal.jsx"></script>
 <script type="text/babel" src="components/studio.jsx"></script>
 <script type="text/babel" src="components/workspaces.jsx"></script>
 <script type="text/babel" src="components/studio-settings.jsx"></script>
