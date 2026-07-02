@@ -110,6 +110,30 @@ class WSSandbox(Sandbox):
             abort=abort,
         )
 
+    async def open_pty(
+        self,
+        *,
+        cmd: list[str] | None = None,
+        cols: int = 80,
+        rows: int = 24,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+    ):
+        """Open an interactive PTY inside the container (Studio terminal).
+
+        Delegates to :meth:`RuntimeClient.open_pty`; the returned
+        :class:`~primer.workspace.runtime.runtime_client.RuntimePtyHandle`
+        is proxied by the API terminal WS endpoint. ``workdir`` defaults to
+        the sandbox workspace root when not given.
+        """
+        return await self._client.open_pty(
+            cmd=cmd,
+            cols=cols,
+            rows=rows,
+            workdir=workdir if workdir is not None else self._workspace_root,
+            env=env,
+        )
+
     # ------------------------------------------------------------------
     # File operations
     # ------------------------------------------------------------------

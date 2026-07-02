@@ -133,6 +133,11 @@ def _mount_routers(
     # WebSocket routes the same way). The WS handler reads
     # request.state.user manually after upgrade — see chats.py.
     app.include_router(chats_router.chats_router, prefix=prefix, dependencies=auth_dep)
+    # Workspace integrated terminal — bidirectional PTY WebSocket (Studio
+    # spec §6.5). Like the chat WS, the handler enforces auth manually via
+    # require_auth_ws (the include-time dep does not gate WebSocket routes).
+    from primer.api.routers.terminal import terminal_router
+    app.include_router(terminal_router, prefix=prefix, dependencies=auth_dep)
     # Tool approval policies.
     from primer.api.routers.tool_approval import make_tool_approval_router
     app.include_router(make_tool_approval_router(), prefix=prefix, dependencies=auth_dep)

@@ -46,6 +46,19 @@ class ChangeEvent:
     size: int | None = None
 
 
+@dataclass(frozen=True)
+class PtyOutput:
+    """One frame from a proxied PTY stream.
+
+    ``kind`` is ``"data"`` (``data`` carries raw pty output bytes) or
+    ``"exit"`` (``code`` carries the child return code, ``data`` is empty).
+    """
+
+    kind: str  # "data" | "exit"
+    data: bytes = b""
+    code: int | None = None
+
+
 class RuntimeError(Exception):
     """An error response from the runtime server."""
 
@@ -454,6 +467,38 @@ class RuntimeClient:
         finally:
             self._streams.pop(req_id, None)
 
+    async def open_pty(
+        self,
+        *,
+        cmd: list[str] | None = None,
+        cols: int = 80,
+        rows: int = 24,
+        workdir: str | None = None,
+        env: dict[str, str] | None = None,
+    ) -> "RuntimePtyHandle":
+        """Open an interactive PTY on the runtime and return a live handle.
+
+        Sends ``pty_open`` (a long-lived streaming op consumed via the
+        existing ``_streams`` queue) and returns a :class:`RuntimePtyHandle`
+        whose :meth:`~RuntimePtyHandle.events` iterator yields output/exit
+        frames; ``stdin`` / ``resize`` / ``close`` are sent as ordinary
+        single-shot requests referencing the open op's ``req_id``.
+        """
+        req_id = self._alloc_req_id()
+        q: asyncio.Queue[Any] = asyncio.Queue()
+        self._streams[req_id] = q
+
+        args: dict[str, Any] = {"cols": cols, "rows": rows}
+        if cmd is not None:
+            args["cmd"] = cmd
+        if workdir is not None:
+            args["workdir"] = workdir
+        if env is not None:
+            args["env"] = env
+
+        await self._send_raw(Request(req_id=req_id, op=OpName.PTY_OPEN, args=args))
+        return RuntimePtyHandle(self, req_id, q)
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
@@ -521,8 +566,6 @@ class RuntimeClient:
 
     def _dispatch_text(self, text: str) -> None:
         import json
-
-        from primer.workspace.runtime.protocol import deserialize
 
         try:
             raw = json.loads(text)
@@ -815,4 +858,95 @@ class RuntimeClient:
             yield item
 
 
-__all__ = ["RuntimeClient", "ChangeEvent", "RuntimeError"]
+class RuntimePtyHandle:
+    """A live proxied PTY on the runtime (spec §6.5 container terminals).
+
+    Returned by :meth:`RuntimeClient.open_pty`.  The API terminal endpoint
+    forwards browser frames through this handle: browser stdin →
+    :meth:`stdin`, resize control → :meth:`resize`, and the runtime's pty
+    output/exit stream → :meth:`events` → the browser.  Follows the client's
+    existing idioms — the open op is consumed via the shared ``_streams``
+    queue, and the control ops are single-shot requests referencing the open
+    op's ``req_id``.
+    """
+
+    def __init__(
+        self,
+        client: "RuntimeClient",
+        req_id: int,
+        queue: "asyncio.Queue[Any]",
+    ) -> None:
+        self._client = client
+        self._req_id = req_id
+        self._queue = queue
+
+    async def events(self) -> AsyncIterator[PtyOutput]:
+        """Yield :class:`PtyOutput` frames until the child exits.
+
+        Emits ``kind="data"`` for each output chunk and a final
+        ``kind="exit"`` frame, then returns.  Raises :class:`RuntimeError`
+        if the runtime rejected the ``pty_open`` (surfaced as an ``ok=false``
+        frame routed into the stream queue).
+        """
+        try:
+            async for item in self._client._iter_stream(self._req_id, self._queue):
+                if not isinstance(item, dict):
+                    continue
+                if "ok" in item and not item["ok"]:
+                    err = item.get("error") or {}
+                    raise RuntimeError(
+                        err.get("code", ErrorCode.EPROTOCOL),
+                        err.get("message", "pty_open failed"),
+                    )
+                event = item.get("event")
+                # Streaming events wrap their payload under the Event
+                # envelope's nested ``data`` key (same shape as exec/watch);
+                # fall back to the top level for a flatter future shape.
+                payload = item.get("data") if isinstance(item.get("data"), dict) else item
+                if event == "pty_open":
+                    continue
+                if event == "data":
+                    yield PtyOutput(
+                        kind="data",
+                        data=base64.b64decode(payload.get("data_b64", "") or ""),
+                    )
+                elif event == "exit":
+                    yield PtyOutput(kind="exit", code=int(payload.get("code", -1)))
+                    return
+        finally:
+            self._client._streams.pop(self._req_id, None)
+
+    async def stdin(self, data: bytes) -> None:
+        """Send *data* to the pty (browser stdin → runtime pty master)."""
+        await self._client._send_request(
+            OpName.PTY_STDIN,
+            {"target_req_id": self._req_id, "data_b64": base64.b64encode(data).decode()},
+        )
+
+    async def resize(self, cols: int, rows: int) -> None:
+        """Change the runtime pty's window size."""
+        await self._client._send_request(
+            OpName.PTY_RESIZE,
+            {"target_req_id": self._req_id, "cols": cols, "rows": rows},
+        )
+
+    async def close(self) -> None:
+        """Terminate the runtime pty and drop the stream (best-effort)."""
+        try:
+            await self._client._send_request(
+                OpName.PTY_CLOSE, {"target_req_id": self._req_id},
+            )
+        except RuntimeError:
+            # Connection already gone / pty already reaped — nothing to do.
+            pass
+        finally:
+            self._client._streams.pop(self._req_id, None)
+
+
+__all__ = [
+    "RuntimeClient",
+    "ChangeEvent",
+    "PtyOutput",
+    "RuntimePtyHandle",
+    "RuntimeError",
+]
