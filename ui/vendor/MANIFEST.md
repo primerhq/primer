@@ -25,6 +25,9 @@ transitive resolution, no surprise additions.
 | fonts/IBMPlexSans-VF-latin.woff2 | Google Fonts subset of @ibm/plex@v23 (latin, variable weight 100-700) | v23 | `e2291e842cf5af167122a22881a740c7f2dda7716f1e8cd76680264f4a859470` | SIL OFL 1.1 | 2026-05-29 |
 | fonts/IBMPlexMono-Regular-latin.woff2 | Google Fonts subset of @ibm/plex@v20 (latin, weight 400) | v20 | `08949f728dc52d528e69b1667d15c89a5686a4ee9a296ff90983985f99c380f7` | SIL OFL 1.1 | 2026-05-29 |
 | fonts/IBMPlexMono-Medium-latin.woff2  | Google Fonts subset of @ibm/plex@v20 (latin, weight 500) | v20 | `01d285447409c8a588692162439a038b8cbd7871309ee20267b0d2d91c6e8e22` | SIL OFL 1.1 | 2026-05-29 |
+| xterm.min.js        | https://unpkg.com/@xterm/xterm@5.5.0/lib/xterm.js | 5.5.0 | `1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495` | MIT | 2026-07-02 |
+| xterm.min.css       | https://unpkg.com/@xterm/xterm@5.5.0/css/xterm.css | 5.5.0 | `ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6` | MIT | 2026-07-02 |
+| xterm-addon-fit.min.js | https://unpkg.com/@xterm/addon-fit@0.11.0/lib/addon-fit.js | 0.11.0 | `ba3ea256ce0620a0992a197d6c9baea64823fc93d8da07a9e366ca9943c18527` | MIT | 2026-07-02 |
 
 To recompute hand-written hashes (from repo root):
 
@@ -41,6 +44,28 @@ for f in ui/vendor/react.min.js ui/vendor/react-dom.min.js ui/vendor/babel.min.j
   printf '%s  ' "$f"; sha256sum "$f" | awk '{print $1}'
 done
 ```
+
+To recompute / re-verify vendored xterm.js:
+
+```bash
+for f in ui/vendor/xterm.min.js ui/vendor/xterm.min.css ui/vendor/xterm-addon-fit.min.js; do
+  printf '%s  ' "$f"; sha256sum "$f" | awk '{print $1}'
+done
+```
+
+## xterm.js (Studio integrated terminal, Phase 7)
+
+`xterm.min.js` is the `@xterm/xterm` UMD build; loaded as a plain
+`<script>` it spreads its exports directly onto `globalThis`, so the
+terminal class is `window.Terminal` (not namespaced). `xterm-addon-fit.min.js`
+(`@xterm/addon-fit`) instead assigns a single namespace object —
+`window.FitAddon` — whose `FitAddon` property is the actual class, so
+construction is `new window.FitAddon.FitAddon()` (verified by loading both
+bundles in a bare `vm` context: `typeof window.Terminal === "function"` but
+`typeof window.FitAddon === "object"` with `window.FitAddon.FitAddon` the
+constructor). `xterm.min.css` is the addon-free base stylesheet for the
+terminal's DOM structure (cursor, selection, viewport); it does not need the
+CSP/self-host treatment scripts get since it's a same-origin `<link>`.
 
 ## Why self-hosted (was: CDN-pinned)
 

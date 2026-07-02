@@ -676,9 +676,14 @@ function Studio({ wid, pushToast }) {
 
         <div className="st-resize desktop-only" onMouseDown={function (e) { startResize("left", e); }} data-testid="studio-resize-left" />
 
-        {/* ---- CENTER: B3 StudioCenter (tabs + active panel) ---- */}
+        {/* ---- CENTER: B3 StudioCenter (tabs + active panel) + P7 terminal ---- */}
         <div className="st-col st-col-center" data-testid="studio-center">
           <StudioCenter wid={wid} studio={studio} />
+          {/* Collapsible bottom terminal panel (Ctrl-` / the header toggle
+              flip terminalOpen). Only mounted while open — unmounting tears
+              down every tab's xterm instance + WS (see studio-terminal.jsx),
+              which matches the terminal's ephemeral, no-reconnect v1 design. */}
+          {s.terminalOpen && <TerminalPanel wid={wid} studio={studio} />}
         </div>
 
         <div className="st-resize desktop-only" onMouseDown={function (e) { startResize("right", e); }} data-testid="studio-resize-right" />
