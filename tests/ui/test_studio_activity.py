@@ -141,15 +141,21 @@ def test_cancel_yield_endpoint_present() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Live-reconcile strategy: EventSource on tap + debounce refetch
+# Live-reconcile strategy: SHARED workspace tap (one EventSource per Studio
+# view) + debounce refetch. ActionRequired no longer opens its own EventSource
+# — it reads the consolidated hub via useWorkspaceTapListener (#4 / fe-review
+# N4). The single EventSource lives in foundation/use-workspace-tap.js.
 # ---------------------------------------------------------------------------
 
-def test_live_reconcile_uses_tap_eventsource() -> None:
+def test_live_reconcile_uses_shared_tap_listener() -> None:
     src = _activity_src()
-    # ActionRequired opens an EventSource for live reconciliation
-    assert "new EventSource" in src
-    assert "/tap" in src
-    # Reconcile triggers on yielded/done events
+    # ActionRequired subscribes to the shared tap hub, NOT its own EventSource.
+    assert "useWorkspaceTapListener" in src
+    assert "new EventSource" not in src, (
+        "ActionRequired must read the shared workspace-tap hub, not open its "
+        "own EventSource (#4)"
+    )
+    # Reconcile still triggers on yielded/done events
     assert '"yielded"' in src
     assert '"done"' in src
     # Debounce prevents burst re-fetches

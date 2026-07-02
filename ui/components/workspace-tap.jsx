@@ -133,27 +133,54 @@ function WTP_buildSelector(selectedClasses, sessionId) {
 }
 
 // ---------------------------------------------------------------------------
-// WorkspaceTap — main component
+// Full-event detail (expand-to-inspect). Pretty-prints the whole TapEvent —
+// class, session/node ids, ts, seq, cursor, and the full payload (tool args,
+// tool result, token text, transition detail) — for the expandable rows.
 // ---------------------------------------------------------------------------
 
-var WTP_MAX_EVENTS = 500;
+function WTP_detailJson(ev) {
+  try {
+    return JSON.stringify(ev, null, 2);
+  } catch (_e) {
+    try { return String(ev); } catch (_e2) { return ""; }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WorkspaceTap — main component
+//
+// Reads the SHARED workspace tap (foundation/use-workspace-tap.js): ONE
+// EventSource per workspace feeds every consumer in a Studio view. Class /
+// session filtering is CLIENT-side over the shared buffer, so toggling a chip
+// is instant and never reconnects (previously each filter change re-opened a
+// server-selectored EventSource).
+// ---------------------------------------------------------------------------
 
 function WorkspaceTap({ wid, sessionId }) {
-  // selectedClasses: null means all; empty array (de-selected all) = all too.
-  // We initialise to null (all), and null means no filter is added.
-  var [events, setEvents] = React.useState([]);
-  var [connState, setConnState] = React.useState("connecting");
-  var [selectedClasses, setSelectedClasses] = React.useState(null);
+  var tap = window.useWorkspaceTap(wid);
+  var allEvents = tap.events;
+  var connState = tap.connState;
 
-  // Derived selector
-  var selector = React.useMemo(
-    function() { return WTP_buildSelector(selectedClasses, sessionId || null); },
-    [selectedClasses, sessionId]
-  );
+  // selectedClasses: null means all; a subset array filters client-side.
+  var [selectedClasses, setSelectedClasses] = React.useState(null);
+  // expanded: row key -> bool. Collapsed by default; only the open row renders
+  // its (potentially large) detail block, so long lists stay cheap.
+  var [expanded, setExpanded] = React.useState({});
 
   var scrollRef = React.useRef(null);
   var stickRef = React.useRef(true);
-  var esRef = React.useRef(null);
+
+  // Client-side filter over the shared buffer.
+  var events = React.useMemo(function () {
+    var out = allEvents;
+    if (sessionId) {
+      out = out.filter(function (ev) { return ev.session_id === sessionId; });
+    }
+    if (selectedClasses !== null) {
+      out = out.filter(function (ev) { return selectedClasses.indexOf(ev.class) >= 0; });
+    }
+    return out;
+  }, [allEvents, selectedClasses, sessionId]);
 
   // Auto-scroll stick-to-bottom
   var onScroll = React.useCallback(function() {
@@ -168,47 +195,6 @@ function WorkspaceTap({ wid, sessionId }) {
     var raf = requestAnimationFrame(function() { el.scrollTop = el.scrollHeight; });
     return function() { cancelAnimationFrame(raf); };
   }, [events]);
-
-  // EventSource lifecycle — re-opens when wid, selector, or sessionId changes
-  React.useEffect(function() {
-    if (!wid) return;
-
-    var url = "/v1/workspaces/" + encodeURIComponent(wid) + "/tap";
-    if (selector) {
-      url += "?selector=" + encodeURIComponent(JSON.stringify(selector));
-    }
-
-    var es = new EventSource(url, { withCredentials: true });
-    esRef.current = es;
-    setConnState("connecting");
-    setEvents([]);
-
-    es.onopen = function() {
-      setConnState("live");
-    };
-
-    es.onmessage = function(e) {
-      var ev;
-      try { ev = JSON.parse(e.data); } catch (_) { return; }
-      if (!ev || typeof ev !== "object") return;
-      setEvents(function(prev) {
-        var next = prev.concat(ev);
-        if (next.length > WTP_MAX_EVENTS) next = next.slice(next.length - WTP_MAX_EVENTS);
-        return next;
-      });
-    };
-
-    es.onerror = function() {
-      // EventSource handles reconnect natively via Last-Event-ID.
-      // We just update the indicator; onerror fires on temporary drops too.
-      setConnState("error");
-    };
-
-    return function() {
-      es.close();
-      esRef.current = null;
-    };
-  }, [wid, selector]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Connection state badge
   var connBadge = connState === "live"
@@ -239,6 +225,15 @@ function WorkspaceTap({ wid, sessionId }) {
   }
 
   function selectAll() { setSelectedClasses(null); }
+
+  function toggleExpand(key) {
+    setExpanded(function (prev) {
+      var next = {};
+      for (var k in prev) next[k] = prev[k];
+      next[key] = !prev[key];
+      return next;
+    });
+  }
 
   var activeClasses = selectedClasses === null ? WTP_ALL_CLASSES : selectedClasses;
 
@@ -298,7 +293,7 @@ function WorkspaceTap({ wid, sessionId }) {
             size="sm"
             kind="ghost"
             icon="trash"
-            onClick={function() { setEvents([]); }}
+            onClick={function() { tap.clear(); }}
             title="Clear event list"
           >Clear</Btn>
         </div>
@@ -323,47 +318,84 @@ function WorkspaceTap({ wid, sessionId }) {
           </div>
         )}
         {events.map(function(ev, i) {
+          var key = ev.cursor != null ? String(ev.cursor) : ("i" + i);
+          var isOpen = !!expanded[key];
           var ts = ev.ts ? new Date(ev.ts) : null;
           var tsLabel = ts ? ts.toISOString().slice(11, 23) : "—";
           var sid = ev.session_id || "";
           var sidShort = sid.length > 16 ? sid.slice(0, 8) + "…" + sid.slice(-4) : sid;
           var summary = WTP_payloadSummary(ev.payload);
           return (
-            <div
-              key={ev.cursor != null ? ev.cursor : i}
-              data-testid="tap-event-row"
-              style={{
-                display: "flex",
-                alignItems: "baseline",
-                gap: 8,
-                padding: "4px 18px",
-                borderBottom: "1px solid var(--border)",
-                fontSize: 12,
-                lineHeight: 1.5,
-              }}
-            >
-              <span
-                className="mono muted"
-                style={{ fontSize: 10, flexShrink: 0, minWidth: 80 }}
-                title={ts ? ts.toISOString() : ""}
-              >{tsLabel}</span>
-              <WTP_ClassChip cls={ev.class} />
-              {sid && (
+            <div key={key} data-testid="activity-event" style={{ borderBottom: "1px solid var(--border)" }}>
+              {/* One-line summary — click / Enter / Space toggles the detail. */}
+              <div
+                data-testid="tap-event-row"
+                role="button"
+                tabIndex={0}
+                aria-expanded={isOpen}
+                onClick={function () { toggleExpand(key); }}
+                onKeyDown={function (e) {
+                  if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleExpand(key); }
+                }}
+                style={{
+                  display: "flex",
+                  alignItems: "baseline",
+                  gap: 8,
+                  padding: "4px 18px",
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  cursor: "pointer",
+                  background: isOpen ? "var(--bg-2)" : "transparent",
+                }}
+              >
+                <span
+                  aria-hidden="true"
+                  className="mono muted"
+                  style={{ fontSize: 9, flexShrink: 0, width: 8, color: "var(--text-4)" }}
+                >{isOpen ? "▾" : "▸"}</span>
                 <span
                   className="mono muted"
-                  style={{ fontSize: 10, flexShrink: 0 }}
-                  title={sid}
-                >{sidShort}</span>
-              )}
-              {summary && (
-                <span
-                  className="mono"
-                  style={{ fontSize: 11, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}
-                  title={summary}
-                >{summary}</span>
-              )}
-              {ev.seq != null && (
-                <span className="mono muted" style={{ fontSize: 10, flexShrink: 0 }}>#{ev.seq}</span>
+                  style={{ fontSize: 10, flexShrink: 0, minWidth: 80 }}
+                  title={ts ? ts.toISOString() : ""}
+                >{tsLabel}</span>
+                <WTP_ClassChip cls={ev.class} />
+                {sid && (
+                  <span
+                    className="mono muted"
+                    style={{ fontSize: 10, flexShrink: 0 }}
+                    title={sid}
+                  >{sidShort}</span>
+                )}
+                {summary && (
+                  <span
+                    className="mono"
+                    style={{ fontSize: 11, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}
+                    title={summary}
+                  >{summary}</span>
+                )}
+                {ev.seq != null && (
+                  <span className="mono muted" style={{ fontSize: 10, flexShrink: 0 }}>#{ev.seq}</span>
+                )}
+              </div>
+              {isOpen && (
+                <div
+                  data-testid="activity-event-detail"
+                  style={{ padding: "2px 18px 10px 34px", background: "var(--bg-2)" }}
+                >
+                  <pre
+                    className="mono"
+                    style={{
+                      margin: 0,
+                      fontSize: 11,
+                      lineHeight: 1.5,
+                      color: "var(--text-2)",
+                      whiteSpace: "pre-wrap",
+                      wordBreak: "break-word",
+                      maxHeight: 320,
+                      overflow: "auto",
+                    }}
+                  >{WTP_detailJson(ev)}</pre>
+                </div>
               )}
             </div>
           );
