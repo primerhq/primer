@@ -918,7 +918,7 @@ function App() {
       </>
     );
     pageBody = (
-      <WorkersPage sessions={sessions} pushToast={pushToast} />
+      <WorkersPage pushToast={pushToast} />
     );
   } else if (page === "dashboard") {
     pageHeader = (
