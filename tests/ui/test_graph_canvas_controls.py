@@ -1,11 +1,17 @@
 """Graph-canvas field-test fixes (fix/studio-ux-batch).
 
-Bug #6 — the dark/light toggle did not restyle the shared G6 canvas
-(graph-canvas.jsx, behind BOTH the graphs editor and the Studio run-view)
-because its styling used hardcoded hex literals. The palette is now read from
-the CSS design tokens via getComputedStyle (same pattern as
-studio-terminal.jsx's xterm theme) and re-applied on a data-theme change via a
-MutationObserver.
+Two bugs, both in the shared G6 renderer (graph-canvas.jsx) that backs BOTH
+the graphs editor and the Studio run-view:
+
+  #1 The run-view had no zoom / traverse controls. An overlaid button cluster
+     (zoom-in / zoom-out / fit / reset-100%) is now wired to the live G6 v5
+     instance via zoomBy / fitView / zoomTo. Shared component => works on both
+     surfaces.
+
+  #6 The dark/light toggle did not restyle the canvas because G6 styling used
+     hardcoded hex literals. The palette is now read from the CSS design tokens
+     via getComputedStyle (same pattern as studio-terminal.jsx's xterm theme)
+     and re-applied on a data-theme change via a MutationObserver.
 
 Static source-grep + a bundle-transpile gate, matching the other UI canvas
 tests (no browser needed to assert the wiring is present).
@@ -17,6 +23,44 @@ from pathlib import Path
 
 UI = Path(__file__).resolve().parents[2] / "ui"
 CANVAS = (UI / "components" / "graph-canvas.jsx").read_text(encoding="utf-8")
+STYLES = (UI / "styles.css").read_text(encoding="utf-8")
+
+
+# --------------------------------------------------------------------------
+# #1 — zoom / traverse controls
+# --------------------------------------------------------------------------
+
+def test_control_testids_present() -> None:
+    for tid in ("graph-zoom-in", "graph-zoom-out", "graph-fit", "graph-zoom-reset"):
+        assert f'data-testid="{tid}"' in CANVAS, tid
+    # the cluster wrapper
+    assert 'data-testid="graph-controls"' in CANVAS
+
+
+def test_controls_are_keyboard_accessible_buttons() -> None:
+    # Real <button>s with aria-labels (not clickable divs) => keyboard reachable.
+    assert 'aria-label="Zoom in"' in CANVAS
+    assert 'aria-label="Zoom out"' in CANVAS
+    assert 'aria-label="Fit graph to view"' in CANVAS
+    assert 'aria-label="Reset zoom to 100%"' in CANVAS
+    assert CANVAS.count('type="button"') >= 4
+
+
+def test_controls_wired_to_g6_zoom_fit_apis() -> None:
+    # G6 v5 camera APIs (verified against the vendored g6.min.js).
+    assert "zoomBy(" in CANVAS      # zoom-in / zoom-out (relative ratio)
+    assert "fitView(" in CANVAS     # fit-to-view
+    assert "zoomTo(" in CANVAS      # reset to 100%
+    # wired through the live instance ref, not a fresh graph
+    assert "graphRef.current" in CANVAS
+
+
+def test_controls_have_themeable_styles() -> None:
+    assert ".gr-canvas-controls" in STYLES
+    assert ".gr-ctrl-btn" in STYLES
+    # themed off tokens so they follow dark/light
+    assert "var(--border)" in STYLES
+    assert "position: absolute" in STYLES
 
 
 # --------------------------------------------------------------------------
