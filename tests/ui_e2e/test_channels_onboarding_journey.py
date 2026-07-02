@@ -50,6 +50,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_workspace_settings
+
 
 # 60-char placeholder; satisfies DiscordChannelProviderConfig.bot_token
 # length floor (>=30) without looking like a real token.
@@ -280,34 +282,38 @@ def test_u0108_channels_operator_onboarding_journey(
             assert chats.get("enabled") is True, r.json()
             assert chats.get("default_agent") == agent_id, r.json()
 
-        # ----- 3. Workspace detail → Channels tab → Link channel --------
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=channels",
-            wait_until="domcontentloaded",
-        )
-        # The link/change CTA. With no channel linked yet, label is
-        # "Link channel".
-        link_btn = page.get_by_role(
+        # ----- 3. Studio → Settings modal → Channels → Link channel -----
+        # Re-pointed: the old ``?tab=channels`` workspace-detail tab moved
+        # into the Studio Settings modal (studio-settings.jsx), which renders
+        # the SAME WS_ChannelsTab. Open it and drive the reused Link-channel
+        # flow. The settings overlay is itself a ``workspace-settings`` modal,
+        # so scope the Link-channel button to that panel.
+        settings = open_workspace_settings(page, console_url, wid, "channels")
+        link_btn = settings.get_by_role(
             "button", name="Link channel", exact=True,
         ).first
         expect(link_btn).to_be_visible(timeout=20_000)
         link_btn.click()
 
-        modal = page.locator(".modal").first
-        expect(modal).to_be_visible(timeout=5_000)
+        # The Link-channel dialog renders on top of the settings overlay.
+        # Scope to the modal that carries the channel <select> so we don't
+        # clash with the outer settings modal (both share the .modal class).
+        link_modal = page.locator(
+            ".modal", has=page.locator("select.select")
+        ).last
+        expect(link_modal).to_be_visible(timeout=5_000)
 
-        # The channel dropdown lists live channels; pick ours.
-        channel_select = modal.locator("select.select").first
+        channel_select = link_modal.locator("select.select").first
         expect(
             channel_select.locator(f"option[value='{ch_id}']")
         ).to_be_attached(timeout=10_000)
         channel_select.select_option(ch_id)
 
-        # Submit. The modal's primary Btn label is "Link channel".
-        modal.get_by_role("button", name="Link channel", exact=True).click()
+        # Submit. The dialog's primary Btn label is "Link channel".
+        link_modal.get_by_role("button", name="Link channel", exact=True).click()
 
-        # Modal closes; the workspace now shows the channel as linked.
-        expect(page.locator(".modal")).not_to_be_visible(timeout=10_000)
+        # The link-channel dialog closes; the workspace now shows the
+        # channel as linked in the reused panel.
         expect(page.get_by_text(ch_id, exact=False).first).to_be_visible(
             timeout=15_000,
         )

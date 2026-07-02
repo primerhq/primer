@@ -120,8 +120,10 @@ function ST_sessionSort(sessions) {
     var aParked = a.parked_status === "parked" || a.parked_status === "resumable" ? -1 : 0;
     var bParked = b.parked_status === "parked" || b.parked_status === "resumable" ? -1 : 0;
     if (aParked !== bParked) return aParked - bParked;
-    var aId = a.id || "";
-    var bId = b.id || "";
+    // The list endpoint returns SessionInfo, which carries `session_id`
+    // (not `id`). Fall back to `id` for the create-response / detail shapes.
+    var aId = a.session_id || a.id || "";
+    var bId = b.session_id || b.id || "";
     return aId < bId ? -1 : aId > bId ? 1 : 0;
   });
 }
@@ -375,14 +377,17 @@ function SessionsSection({ wid, studio }) {
   var [showNewForm, setShowNewForm] = React.useState(false);
 
   function openSession(session) {
+    // The list endpoint returns SessionInfo (`session_id`); the create
+    // response / detail fetch use the fuller shape (`id`). Resolve either.
+    var sid = session.session_id || session.id;
     var isGraph = (session.binding && session.binding.kind === "graph") ||
                   session.binding_kind === "graph";
-    var title = session.name || session.id;
+    var title = session.name || sid;
     var glyph = isGraph ? "◈" : "◆";
     studio.openTab({
-      id: "session:" + session.id,
+      id: "session:" + sid,
       kind: "session",
-      ref: session.id,
+      ref: sid,
       title: title,
       glyph: glyph,
     });
@@ -460,17 +465,22 @@ function SessionsSection({ wid, studio }) {
           )}
           {sessions.map(function(session) {
             var st = ST_sessionStatus(session);
+            // SessionInfo (list endpoint) carries `session_id`, not `id`;
+            // the create/detail shapes carry `id`. Resolve either so the
+            // row key, tab id, title, and data-session-id are the real id.
+            var sid = session.session_id || session.id;
             var isGraph = (session.binding && session.binding.kind === "graph") ||
                           session.binding_kind === "graph";
-            var tabId = "session:" + session.id;
+            var tabId = "session:" + sid;
             var isActive = s.activeTabId === tabId;
-            var title = session.name || session.id;
+            var title = session.name || sid;
 
             return (
               <div
-                key={session.id}
+                key={sid}
                 className="st-session-row"
                 data-testid="session-row"
+                data-session-id={sid}
                 onClick={function() { openSession(session); }}
                 style={{
                   display: "flex",

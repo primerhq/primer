@@ -40,6 +40,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import session_row
+
 
 from tests._support.smk import smk  # noqa: E402
 
@@ -210,11 +212,14 @@ def test_studio_shell_sidebar_center_and_palette(
             )
 
         # --- 2. Left sidebar lists the seeded session ------------------
-        session_row = page.locator('[data-testid="session-row"]').first
-        expect(session_row).to_be_visible(timeout=20_000)
+        # Locate the SEEDED row by its data-session-id (the visible row text
+        # is the session title, not the raw sid), so the click targets the
+        # right row deterministically.
+        seeded_row = session_row(page, ids["session"]).first
+        expect(seeded_row).to_be_visible(timeout=20_000)
 
         # --- 3. Click session row → center tab + agent panel ----------
-        session_row.click()
+        seeded_row.click()
         expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
             timeout=15_000,
         )
@@ -252,10 +257,15 @@ def test_studio_shell_sidebar_center_and_palette(
         page.keyboard.press("Escape")
 
         # --- 6. No console errors across the whole flow ----------------
+        # The Studio renders IN-SHELL, so the app Topbar's pre-existing
+        # GET /v1/internal_collections/config probe (404 when the feature
+        # is inactive — the e2e default) is now visible here. It is an
+        # app-shell fetch, not a Studio bug, so it rides the allowlist.
         from tests.ui_e2e.conftest import assert_no_console_errors
+        from tests.ui_e2e._studio_helpers import STUDIO_CONSOLE_IGNORES
         assert_no_console_errors(
             console_messages,
-            ignore_patterns=[r"net::ERR_ABORTED", r"favicon"],
+            ignore_patterns=STUDIO_CONSOLE_IGNORES,
         )
 
     finally:
@@ -300,10 +310,15 @@ def test_studio_session_redirect_lands_with_tab_open(
             timeout=15_000,
         )
 
+        # The B6 redirect lands in-shell, so the app Topbar's pre-existing
+        # GET /v1/internal_collections/config 404 (feature inactive) is now
+        # visible here. Allowlist it — it is an app-shell fetch, not a
+        # Studio/redirect bug.
         from tests.ui_e2e.conftest import assert_no_console_errors
+        from tests.ui_e2e._studio_helpers import STUDIO_CONSOLE_IGNORES
         assert_no_console_errors(
             console_messages,
-            ignore_patterns=[r"net::ERR_ABORTED", r"favicon"],
+            ignore_patterns=STUDIO_CONSOLE_IGNORES,
         )
 
     finally:

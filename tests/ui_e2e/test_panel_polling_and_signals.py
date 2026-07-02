@@ -18,6 +18,8 @@ import json
 import httpx
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio, open_studio
+
 
 # ---------------------------------------------------------------------------
 # Seed helpers
@@ -111,101 +113,89 @@ def _seed_ladder(base_url: str, unique_suffix: str, tmp_path):
     return wid, sid, cleanup_urls
 
 
-def _pending_body(*, tool_call_id, prompt, response_schema=None) -> str:
-    return json.dumps({
-        "tool_call_id": tool_call_id,
-        "prompt": prompt,
-        "response_schema": response_schema,
-        "parked_at": "2026-05-23T12:00:00+00:00",
-    })
+def _ask_item(sid, *, tool_call_id, prompt):
+    return {"kind": "ask_user", "session_id": sid, "tool_call_id": tool_call_id, "prompt": prompt}
+
+
+def _route_pending_items(page, wid, items):
+    """Route GET /v1/workspaces/{wid}/yields/pending → {items}."""
+    page.route(
+        f"**/v1/workspaces/{wid}/yields/pending",
+        lambda route: route.fulfill(
+            status=200, content_type="application/json",
+            body=json.dumps({"items": items}),
+        ),
+    )
 
 
 # ===========================================================================
-# U0058 — Panel clears draft when a new tool_call_id arrives across polls
+# U0058 — Per-item respond draft is isolated across pending items
 # ===========================================================================
 
 
 def test_u0058_draft_clears_when_new_tool_call_id_arrives(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0058 — The panel's useEffect on tcid resets draft + inline
-    error to empty when the polled tool_call_id changes. Pins that
-    cross-prompt isolation against stale draft contamination.
+    """U0058 — Re-pointed to the Studio's Action Required. The old
+    single-panel "draft resets when the polled tool_call_id changes"
+    invariant maps to the Studio's per-item respond state: each pending
+    yield is its own ``action-item`` keyed by tool_call_id
+    (studio-activity.jsx ``respondState``), so a draft typed into item A
+    never bleeds into item B when the pending snapshot swaps.
     """
-    _, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        # Mutable state so we can swap the response mid-test.
-        state = {"tcid": "tc-A", "prompt": "What is your name?"}
+        state = {"items": [_ask_item(sid, tool_call_id="tc-A", prompt="What is your name?")]}
 
         def _on_pending(route):
             route.fulfill(
                 status=200, content_type="application/json",
-                body=_pending_body(
-                    tool_call_id=state["tcid"], prompt=state["prompt"],
-                ),
+                body=json.dumps({"items": state["items"]}),
             )
 
-        page.route(
-            f"**/v1/sessions/{sid}/ask_user/pending", _on_pending,
-        )
+        page.route(f"**/v1/workspaces/{wid}/yields/pending", _on_pending)
 
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
-        panel = page.locator("[data-testid='ask-user-panel']")
-        expect(panel).to_be_visible(timeout=10_000)
+        open_studio(page, console_url, wid)
+        item = page.locator("[data-testid='action-item']").first
+        expect(item).to_be_visible(timeout=10_000)
+        expect(item).to_contain_text("What is your name?")
 
-        # Type a draft.
-        inp = page.locator("[data-testid='ask-user-input']")
+        # Type a draft into item A's respond input.
+        inp = item.locator("[data-testid='respond']")
         inp.fill("partial draft text")
-        # Assert the draft is what we typed.
         assert (inp.input_value() or "") == "partial draft text"
 
-        # Swap tcid + prompt — next poll will show a different tcid
-        # which triggers the useEffect that clears the draft.
-        state["tcid"] = "tc-B"
-        state["prompt"] = "Pick a color?"
-        # Wait for the new prompt text to land (polling ~2s).
-        expect(panel).to_contain_text("Pick a color?", timeout=6_000)
-        # And the input is now empty.
-        # Refetch the locator since the panel may have re-rendered.
-        inp_new = page.locator("[data-testid='ask-user-input']")
-        # If the prompt is still short, the variant remains input.
-        # Assert input is present + empty.
-        assert inp_new.count() == 1
-        assert (inp_new.input_value() or "") == "", (
-            f"draft was not cleared when tcid changed: "
-            f"{inp_new.input_value()!r}"
+        # Swap the pending snapshot to a DIFFERENT yield (new tcid + prompt);
+        # the next reconcile poll (15s) or a manual wait surfaces item B.
+        state["items"] = [_ask_item(sid, tool_call_id="tc-B", prompt="Pick a color?")]
+        item_b = page.locator("[data-testid='action-item']").filter(has_text="Pick a color?").first
+        expect(item_b).to_be_visible(timeout=20_000)
+        # Item B's respond input is empty — the draft was scoped to item A.
+        inp_b = item_b.locator("[data-testid='respond']")
+        assert (inp_b.input_value() or "") == "", (
+            f"draft bled into the new pending item: {inp_b.input_value()!r}"
         )
     finally:
         _cleanup(base_url, cleanup_urls)
 
 
 # ===========================================================================
-# U0060 — /respond 500 → inline error (not generic toast)
+# U0060 — /respond error → inline on the action-item (not a toast)
 # ===========================================================================
 
 
 def test_u0060_respond_500_renders_inline_error_not_toast(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0060 — A server 500 from /ask_user/respond is rendered INLINE
-    under the textarea/input (ask-user-error data-testid), NOT as
-    a generic error toast. Defends the panel's localised error
-    surface so the operator sees the failure exactly where the
-    submission happened.
+    """U0060 — Re-pointed to the Studio's Action Required. A server 500
+    from ``/ask_user/respond`` renders INLINE on the action-item (the
+    per-item ``rs.error`` red line), NOT as a generic toast — the
+    operator sees the failure exactly where the submission happened and
+    the item stays put to retry.
     """
-    _, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        page.route(
-            f"**/v1/sessions/{sid}/ask_user/pending",
-            lambda route: route.fulfill(
-                status=200, content_type="application/json",
-                body=_pending_body(
-                    tool_call_id="tc-500", prompt="Short?",
-                ),
-            ),
-        )
+        _route_pending_items(page, wid, [_ask_item(sid, tool_call_id="tc-500", prompt="Short?")])
         page.route(
             f"**/v1/sessions/{sid}/ask_user/respond",
             lambda route: route.fulfill(
@@ -219,33 +209,28 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
             ),
         )
 
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
-        expect(
-            page.locator("[data-testid='ask-user-panel']")
-        ).to_be_visible(timeout=10_000)
+        open_studio(page, console_url, wid)
+        item = page.locator("[data-testid='action-item']").first
+        expect(item).to_be_visible(timeout=10_000)
 
-        page.locator("[data-testid='ask-user-input']").fill("Alice")
-        page.get_by_role("button", name="Send response").click()
+        respond = item.locator("[data-testid='respond']")
+        respond.fill("Alice")
+        respond.press("Enter")
 
-        # Inline error visible.
-        inline = page.locator("[data-testid='ask-user-error']")
-        expect(inline).to_be_visible(timeout=5_000)
-        # Error text references the 500 detail or generic submit-failure.
-        text = (inline.text_content() or "").lower()
-        assert "500" in text or "synthetic" in text or "submit" in text, (
-            f"inline error text doesn't reference the failure: {text!r}"
+        # An inline error line renders on the item (studio-activity.jsx sets
+        # rs.error to the failure's detail/title/message, else "Respond
+        # failed"). Wait for the red line to appear, then confirm it carries
+        # a failure marker — and that it is inline, NOT a toast.
+        page.wait_for_timeout(1_000)
+        item_text = (item.text_content() or "").lower()
+        assert any(m in item_text for m in ("synthetic 500", "internal error", "respond failed", "500")), (
+            f"no inline error marker on the action-item: {item_text!r}"
         )
-
-        # No "Response sent" success toast.
-        assert page.get_by_text("Response sent", exact=False).count() == 0, (
-            "success toast appeared despite the 500 — error path leaked"
+        assert page.locator(".toast").filter(has_text="Respond failed").count() == 0, (
+            "respond error should render inline on the item, not as a toast"
         )
-        # Panel stays open for the operator to retry.
-        expect(
-            page.locator("[data-testid='ask-user-panel']")
-        ).to_be_visible()
+        # The item stays put for a retry.
+        expect(item).to_be_visible()
     finally:
         _cleanup(base_url, cleanup_urls)
 
@@ -258,35 +243,22 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
 def test_u0070_pause_button_disabled_when_status_not_running(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0070 — Per session-detail.jsx the Pause button is
-    ``disabled={s.status !== "running" || pauseMut.loading}`` with
-    a title attribute "Enabled only when status = running" when
-    disabled. Pins both the disabled attr AND the title affordance.
+    """U0070 — Re-pointed to the Studio's ``ctrl-pause``. Per
+    studio-center.jsx ``ST_SessionControls`` the Pause button is
+    ``disabled={!wid || status !== "running" || pauseMut.loading}`` with
+    a title "Enabled only when running" for a non-running (CREATED)
+    session. Pins both the disabled attr AND the title affordance.
     """
-    _, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
-        # Resilience: unpkg / Google-Fonts can ERR_CONNECTION_RESET on
-        # individual tests, leaving the page blank because React never
-        # loaded. Gate on the sidebar (.nav-item) being rendered — it
-        # only appears once chrome.jsx has mounted. Generous timeout to
-        # absorb a CDN slow-cache.
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-        # Now wait for the session detail's right-rail signals area
-        # via the Resume button (only mounted after session.data lands).
-        page.get_by_role(
-            "button", name="Resume", exact=True,
-        ).first.wait_for(state="visible", timeout=10_000)
+        open_session_in_studio(page, console_url, wid, sid, kind="agent")
 
-        pause = page.get_by_role("button", name="Pause", exact=True).first
+        pause = page.locator("[data-testid='ctrl-pause']").first
+        expect(pause).to_be_visible(timeout=10_000)
         expect(pause).to_be_disabled()
         # Title affordance explains why.
         title = pause.get_attribute("title") or ""
-        assert "Enabled only when status = running" in title, (
+        assert "Enabled only when running" in title, (
             f"expected disabled-reason title, got {title!r}"
         )
     finally:
@@ -308,17 +280,10 @@ def test_u0067_resume_re_toasts_on_repeat_click(
     even if the row was already running by the time the second
     click landed.
     """
-    _, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
-        page.locator("h1.page-title").get_by_text(sid).first.wait_for(
-            state="visible", timeout=10_000,
-        )
-        resume = page.get_by_role(
-            "button", name="Resume", exact=True,
-        ).first
+        open_session_in_studio(page, console_url, wid, sid, kind="agent")
+        resume = page.locator("[data-testid='ctrl-resume']").first
         resume.wait_for(state="visible", timeout=10_000)
 
         # First click → toast.

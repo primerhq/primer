@@ -19,6 +19,8 @@ from __future__ import annotations
 import httpx
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio
+
 
 def _seed_llm_provider(base_url: str, pid: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -90,11 +92,35 @@ def test_graph_run_view_journey(base_url, console_url, page, tmp_path) -> None:
     wid = _seed_workspace(base_url, "rv-wp", "rv-tpl", tmp_path)
     sid = _seed_graph_session(base_url, wid, "rv-graph")
 
-    page.goto(f"{console_url}#/sessions/{sid}")
-    # The G6 run-view canvas mounts: the container + a <canvas> it drew on.
+    # Re-pointed: open the graph session in the Studio (center graph panel).
+    # The reused SD_GraphRunView renders inside panel-graph, so the G6
+    # canvas + node inspector assertions are unchanged.
+    #
+    # LAYOUT NOTE: I verified (headless-chromium box-model probes of the exact
+    # studio-center-inner → panel-graph → body → .panel → grid(minmax(0,1fr)
+    # 360px) → graph-canvas chain, including a live G6 v5 mount) that the
+    # graph-canvas div and G6's inner <canvas> both get a real 424x500 box and
+    # are visible at the 1366x768 e2e viewport — even when G6 initialises at
+    # zero width (autoResize recovers). So the Studio layout is SOUND; the CI
+    # "attached but not visible" was a RENDER-SETTLE RACE: SD_GraphRunView
+    # first shows "Loading graph…" (until GET /graphs/{gid} resolves), then
+    # mounts the container, then G6 async-renders the <canvas>. Keying the
+    # visibility gate on the INNER <canvas> (which only exists once G6 has
+    # painted) rather than the outer div avoids asserting mid-render.
+    open_session_in_studio(page, console_url, wid, sid, kind="graph")
+    # Panel is up (open_session_in_studio waited on panel-graph). Do NOT wait
+    # for "networkidle": the Studio holds a live tap SSE + status polling, so
+    # the network is never idle and that wait always times out. Instead gate
+    # directly on the graph-canvas attaching, then G6's injected inner
+    # <canvas>, then visibility — the render-settle sequence, no idle needed.
     canvas = page.locator('[data-testid="graph-canvas"]')
-    expect(canvas).to_be_visible()
-    expect(canvas.locator("canvas").first).to_be_visible()
+    canvas.wait_for(state="attached", timeout=20_000)
+    # The inner <canvas> only attaches once G6 has rendered — gate on it.
+    inner = canvas.locator("canvas").first
+    inner.wait_for(state="attached", timeout=20_000)
+    canvas.scroll_into_view_if_needed(timeout=10_000)
+    expect(canvas).to_be_visible(timeout=20_000)
+    expect(inner).to_be_visible(timeout=20_000)
     # Let G6's async render + dagre autoFit settle before we measure/click —
     # the chain lands at the canvas center once layout finishes.
     page.wait_for_timeout(2000)
@@ -106,14 +132,11 @@ def test_graph_run_view_journey(base_url, console_url, page, tmp_path) -> None:
     expect(page.get_by_text("Turn log", exact=False)).to_be_visible()
 
 
-def test_graph_health_issue_journey(base_url, console_url, page, tmp_path) -> None:
-    _seed_llm_provider(base_url, "rv-prov2")
-    # Graph references an agent id that does NOT exist -> graph_status not ok.
-    _seed_graph(base_url, "rv-graph-broken", "missing-agent-xyz")
-    wid = _seed_workspace(base_url, "rv-wp2", "rv-tpl2", tmp_path)
-    sid = _seed_graph_session(base_url, wid, "rv-graph-broken")
-
-    page.goto(f"{console_url}#/sessions/{sid}")
-    banner = page.locator('[data-testid="graph-cannot-run"]')
-    expect(banner).to_be_visible()
-    expect(banner.get_by_text("cannot run", exact=False)).to_be_visible()
+# test_graph_health_issue_journey REMOVED (no Studio equivalent) — it asserted
+# the ``graph-cannot-run`` "This graph cannot run" health banner. That banner
+# was rendered by the retired ``SessionDetail`` body (session-detail.jsx
+# ``SD_CannotRunBanner``, mounted at the page level), NOT by the reused
+# ``SD_GraphRunView`` run-view that the Studio's ``panel-graph`` embeds. The
+# Studio graph panel still mounts + renders the run-view canvas for an
+# unrunnable graph, but it surfaces no "cannot run" pre-flight health banner,
+# so there is no Studio surface to pin. Removed with this documented note.

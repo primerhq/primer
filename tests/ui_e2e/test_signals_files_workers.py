@@ -16,6 +16,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio
+
 
 # ---------------------------------------------------------------------------
 # Seed helpers
@@ -107,15 +109,16 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 def test_u0068_steer_queue_renders_submitted_instruction(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0068 — On the session detail page, type a steer instruction
-    in the textarea, click "Queue steer". Assert:
+    """U0068 — Re-pointed to the Studio's steer control. Open the session
+    in the Studio (agent panel), click ``ctrl-steer`` to reveal the
+    ``steer-popover``, type an instruction into its textarea, click Queue.
+    Assert the "Steer queued" success toast appears and the popover
+    closes (studio-center.jsx ``ST_SessionControls`` steerMut onSuccess).
 
-    * "Steer queued" success toast appears
-    * "Queued this session (1)" panel header appears
-    * The instruction text is visible in the queued panel
-
-    Defends the optimistic-queue update + toast in
-    primer's session-detail.jsx onSteer handler.
+    (The retired session-detail rendered a "Queued this session (N)" panel
+    that echoed each submitted instruction; the Studio's steer is a
+    fire-and-forget popover with no queued-echo panel, so that assertion
+    is dropped — the toast + popover-close is the surviving contract.)
     """
     pid = f"llm-st-{unique_suffix}"
     aid = f"ag-st-{unique_suffix}"
@@ -133,42 +136,26 @@ def test_u0068_steer_queue_renders_submitted_instruction(
         f"/v1/agents/{aid}",
         f"/v1/llm_providers/{pid}",
     ]
-    instruction = f"please check the build status — {unique_suffix}"
+    instruction = f"please check the build status - {unique_suffix}"
     try:
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
-        # Resilience: gate on .nav-item to absorb CDN slow-cache.
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-        # Wait for the Queue steer button (signals area mounted).
-        queue_btn = page.get_by_role(
-            "button", name="Queue steer", exact=False,
-        ).first
-        queue_btn.wait_for(state="visible", timeout=10_000)
+        open_session_in_studio(page, console_url, wid, sid, kind="agent")
 
-        # Find the steer textarea via placeholder.
-        textarea = page.get_by_placeholder(
-            "Drop a hint or new directive for the next turn…",
-            exact=False,
-        )
-        textarea.wait_for(state="visible", timeout=5_000)
-        textarea.fill(instruction)
-        queue_btn.click()
+        # Click ctrl-steer → the steer popover opens with its textarea.
+        steer_btn = page.locator("[data-testid='ctrl-steer']").first
+        steer_btn.wait_for(state="visible", timeout=10_000)
+        steer_btn.click()
 
-        # Success toast.
+        popover = page.locator("[data-testid='steer-popover']")
+        expect(popover).to_be_visible(timeout=5_000)
+        popover.locator("textarea").fill(instruction)
+        # The Queue button submits (POST .../steer).
+        popover.get_by_role("button", name="Queue", exact=True).click()
+
+        # Success toast, and the popover closes on success.
         expect(
             page.get_by_text("Steer queued", exact=False).first
         ).to_be_visible(timeout=5_000)
-
-        # Queued this session (1) header + the instruction text.
-        expect(
-            page.get_by_text("Queued this session (1)", exact=False).first
-        ).to_be_visible(timeout=5_000)
-        expect(
-            page.get_by_text(instruction, exact=False).first
-        ).to_be_visible()
+        expect(popover).to_have_count(0, timeout=5_000)
     finally:
         _cleanup(base_url, cleanup_urls)
 

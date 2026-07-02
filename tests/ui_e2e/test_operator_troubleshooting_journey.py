@@ -22,6 +22,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_studio, session_row
+
 
 # ---------------------------------------------------------------------------
 # Container-internal workspace provider path — host tmp_path is not
@@ -119,105 +121,79 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
     console_url: str,
     unique_suffix: str,
 ) -> None:
-    """U0105 — Multi-page operator troubleshooting flow.
+    """U0105 — Re-pointed: a Studio-native multi-surface troubleshooting
+    flow bound to one seeded session + workspace.
 
-    Steps:
+    The retired surfaces this used to traverse (the ``/sessions`` list, the
+    session-detail References panel with Agent/Workspace anchors, and the
+    workspace-detail Sessions tab) are all gone. The Studio consolidates the
+    operator's investigation into one in-shell view, so this walks the
+    equivalent Studio surfaces:
 
       1. Seed agent + workspace + session via API.
-      2. Navigate /sessions list — assert seeded session row visible.
-      3. Click the row → /sessions/{sid} detail.
-      4. Locate the References panel — assert Agent + Workspace
-         ref-rows render.
-      5. Click the Agent anchor → /agents/{aid}.
-      6. Verify the agent detail page renders the seeded id.
-      7. Browser back → /sessions/{sid} (the same session, not a
-         fresh load — back-stack preserves state).
-      8. Click the Workspace anchor → /workspaces/{wid}.
-      9. Verify workspace detail header renders the wid.
-     10. Click the Sessions tab → see the seeded session row in the
-         workspace's Sessions tab (exercises the SessionInfo field
-         fix from commit 505e76e — without it the row's Session
-         column would be blank).
-     11. Click the workspace Sessions tab row → /sessions/{sid}.
+      2. Enter the workspace's Studio (``#/workspaces/{wid}``).
+      3. The workspace-selector sub-header shows the workspace id.
+      4. The left-sidebar Sessions section lists the seeded session-row.
+      5. Click the row → center tab + agent panel open (panel-agent).
+      6. Open the Settings modal → Config section: the reused config
+         panel surfaces the workspace id (the "dig into the workspace"
+         hop the old Workspace anchor served).
+      7. Close settings; the session tab is still open (state coherence
+         across the settings hop).
 
-    Pages visited (in order):
-      /console/ → /sessions → /sessions/{sid} → /agents/{aid}
-      → /sessions/{sid} (back) → /workspaces/{wid}?tab=files
-      → /workspaces/{wid}?tab=sessions → /sessions/{sid}
-
-    Cross-page links exercised: References panel's Agent anchor,
-    References panel's Workspace anchor, workspace Sessions-tab row.
+    Cross-surface coherence exercised: sidebar session-row → center panel,
+    plus the settings-modal config panel — all bound to the same
+    workspace/session without leaving the Studio.
     """
     ids = _seed_ladder(base_url, unique_suffix)
     sid = ids["session"]
-    aid = ids["agent"]
     wid = ids["workspace"]
     try:
-        # ----- 1. /sessions list ------------------------------------
-        page.goto(f"{console_url}#/sessions", wait_until="domcontentloaded")
-        expect(page.locator("h1.page-title")).to_have_text(
-            "Sessions", timeout=20_000,
-        )
-        row = page.locator("tbody tr", has_text=sid)
-        expect(row).to_be_visible(timeout=20_000)
+        # ----- 1. Enter the Studio ----------------------------------
+        open_studio(page, console_url, wid)
 
-        # ----- 2. /sessions/{sid} detail ----------------------------
+        # ----- 2. The sub-header workspace-selector shows the wid ----
+        expect(
+            page.locator('[data-testid="workspace-selector"]').get_by_text(
+                wid, exact=False,
+            ).first
+        ).to_be_visible(timeout=15_000)
+
+        # ----- 3. Sidebar Sessions section lists the seeded row ------
+        # The row renders the session TITLE, not the raw sid — locate it by
+        # its data-session-id stamp (studio-sidebar.jsx).
+        row = session_row(page, sid)
+        expect(row.first).to_be_visible(timeout=20_000)
+
+        # ----- 4. Click the row → center tab + agent panel ----------
         row.first.click()
-        page.wait_for_url(f"**/console/#/sessions/{sid}", timeout=15_000)
-        expect(page.locator("h1.page-title", has_text=sid)).to_be_visible(
-            timeout=20_000,
+        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+            timeout=15_000,
         )
-
-        # References panel renders. Both Agent + Workspace ref-rows
-        # should be present (auto_start=False so worker may or may
-        # not have claimed yet; we don't depend on the Worker ref-row).
-        ref_panel = page.locator(".panel", has_text="References")
-        expect(ref_panel).to_be_visible(timeout=10_000)
-        agent_ref = ref_panel.locator(".ref-row", has_text="Agent")
-        ws_ref = ref_panel.locator(".ref-row", has_text="Workspace")
-        expect(agent_ref).to_be_visible(timeout=5_000)
-        expect(ws_ref).to_be_visible(timeout=5_000)
-
-        # ----- 3. Click Agent anchor → /agents/{aid} -----------------
-        # The clickable element is the <a> inside the ref-row's .val
-        # span; aid appears as the link text.
-        agent_ref.locator("a").click()
-        page.wait_for_url(f"**/console/#/agents/{aid}**", timeout=15_000)
-        expect(page.locator("h1.page-title", has_text=aid)).to_be_visible(
+        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
             timeout=15_000,
         )
 
-        # ----- 4. Browser back → back to session detail -------------
-        page.go_back()
-        page.wait_for_url(f"**/console/#/sessions/{sid}", timeout=15_000)
-        expect(page.locator("h1.page-title", has_text=sid)).to_be_visible(
-            timeout=15_000,
+        # ----- 5. Settings modal → Config surfaces the workspace ----
+        # Open the gear in-place (no re-navigation) so the open session tab
+        # is preserved for the coherence check below.
+        gear = page.locator('[data-testid="studio-settings-btn"]')
+        gear.click()
+        modal = page.locator('[data-testid="workspace-settings"]')
+        expect(modal).to_be_visible(timeout=10_000)
+        page.locator('[data-testid="workspace-settings-nav:config"]').click()
+        # The modal header carries the workspace id; the reused config
+        # panel renders inside it.
+        expect(modal.get_by_text(wid, exact=False).first).to_be_visible(
+            timeout=10_000,
         )
+        # Close the settings modal via its close button.
+        modal.locator(".close").first.click()
+        expect(modal).to_have_count(0, timeout=5_000)
 
-        # ----- 5. Click Workspace anchor → /workspaces/{wid} ---------
-        # Re-resolve the locator since the page was re-rendered after
-        # back-nav (React re-mounts on hash change).
-        ref_panel = page.locator(".panel", has_text="References")
-        ws_ref = ref_panel.locator(".ref-row", has_text="Workspace")
-        ws_ref.locator("a").click()
-        page.wait_for_url(f"**/console/#/workspaces/{wid}**", timeout=15_000)
-        expect(page.locator("h1.page-title", has_text=wid)).to_be_visible(
-            timeout=15_000,
-        )
-
-        # ----- 6. Click Sessions tab → seeded session row visible ---
-        # SessionsTab polls /v1/workspaces/{wid}/sessions every 5s;
-        # row should be visible within ~10s.
-        page.get_by_role("button", name="Sessions").click()
-        # Wait for tab transition + row poll.
-        ws_row = page.locator("tbody tr", has_text=sid)
-        expect(ws_row).to_be_visible(timeout=20_000)
-
-        # ----- 7. Click workspace Sessions row → /sessions/{sid} ----
-        ws_row.first.click()
-        page.wait_for_url(f"**/console/#/sessions/{sid}", timeout=15_000)
-        expect(page.locator("h1.page-title", has_text=sid)).to_be_visible(
-            timeout=15_000,
+        # ----- 6. The session tab survived the settings hop ---------
+        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+            timeout=10_000,
         )
     finally:
         _cleanup(base_url, ids)

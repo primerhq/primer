@@ -18,6 +18,8 @@ import time
 import httpx
 from playwright.sync_api import expect
 
+from tests.ui_e2e._studio_helpers import open_session_in_studio
+
 
 # ---------------------------------------------------------------------------
 # Seed helpers
@@ -109,55 +111,13 @@ def _seed_ladder(base_url: str, unique_suffix: str, tmp_path):
 # ===========================================================================
 
 
-def test_u0057_waiting_since_renders_parked_at_timestamp(
-    page, base_url, console_url, unique_suffix, tmp_path,
-) -> None:
-    """U0057 — When the panel renders, the parked_at timestamp from
-    the pending response appears next to the header as "waiting
-    since {fmtDate(...)}". Pins the affordance against a regression
-    that drops the parked_at display.
-    """
-    _, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
-    try:
-        parked_at = "2026-05-23T14:30:00+00:00"
-        page.route(
-            f"**/v1/sessions/{sid}/ask_user/pending",
-            lambda route: route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({
-                    "tool_call_id": "tc-w",
-                    "prompt": "Short?",
-                    "response_schema": None,
-                    "parked_at": parked_at,
-                }),
-            ),
-        )
-
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
-        panel = page.locator("[data-testid='ask-user-panel']")
-        expect(panel).to_be_visible(timeout=10_000)
-        # "waiting since" text plus a recognisable date/time fragment.
-        # fmtDate(new Date(parked_at)) renders a locale-formatted
-        # string — we don't pin the exact format, just that
-        # "waiting since" is present and at least one date/time
-        # fragment (year 2026 or hour digits) follows.
-        panel_text = panel.text_content() or ""
-        assert "waiting since" in panel_text, (
-            f"expected 'waiting since' in panel, got {panel_text!r}"
-        )
-        # Look for the year 2026 from the timestamp, or any 14:30
-        # (UTC hour-minute) variant. fmtDate may render local TZ, so
-        # accept either year fragment OR a hh:mm pattern.
-        import re
-        has_year = "2026" in panel_text
-        has_time = bool(re.search(r"\b\d{1,2}:\d{2}\b", panel_text))
-        assert has_year or has_time, (
-            f"no date/time fragment after 'waiting since': {panel_text!r}"
-        )
-    finally:
-        _cleanup(base_url, cleanup_urls)
+# U0057 REMOVED (no Studio equivalent) — the retired session-detail
+# AskUserPanel rendered a "waiting since {parked_at}" affordance in its
+# header. The Studio's Action Required item (studio-activity.jsx
+# ``action-item``) surfaces the yield's kind + prompt + inline controls but
+# deliberately does NOT render a parked_at "waiting since" timestamp, so
+# there is no affordance to pin. Removed with this note rather than
+# asserting a surface the Studio does not render.
 
 
 # ===========================================================================
@@ -168,48 +128,36 @@ def test_u0057_waiting_since_renders_parked_at_timestamp(
 def test_u0064_panel_polls_pending_endpoint_while_non_terminal(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0064 — The panel's useResource polls every 2s while the
-    session is non-terminal. Mock /ask_user/pending → 404 with a
-    counter; over ~7s we should see at least 3 hits.
+    """U0064 — Re-pointed to the Studio session panel's polling. The old
+    2s /ask_user/pending poll maps to the Studio's ``ST_SessionPanel``
+    resource, which polls ``GET /v1/sessions/{sid}`` every 2s while the
+    session is non-terminal (``pollMs: 2000`` + ``pauseWhile`` terminal,
+    studio-center.jsx). Count the GETs while a CREATED session's agent
+    panel is open — over ~7s we should see several polls.
+
+    We observe (not fulfill) so the real 200 flows through and the panel
+    keeps polling; a 404/blocked response would flip the panel to an
+    error state and stop the cadence.
     """
-    _, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
         hits = {"count": 0}
 
-        def _on_pending(route):
-            hits["count"] += 1
-            route.fulfill(
-                status=404, content_type="application/json",
-                body=json.dumps({
-                    "type": "/errors/not-found",
-                    "title": "Not Found",
-                    "status": 404,
-                    "detail": "no pending",
-                }),
-            )
+        def _on_session_get(route):
+            if route.request.method == "GET":
+                hits["count"] += 1
+            route.continue_()
 
-        page.route(
-            f"**/v1/sessions/{sid}/ask_user/pending", _on_pending,
-        )
+        # Match the exact session-detail resource URL (not the nested
+        # workspace endpoints). ST_SessionPanel fetches /v1/sessions/{sid}.
+        page.route(f"**/v1/sessions/{sid}", _on_session_get)
 
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
-        # Wait for chrome to mount + session to load via the Resume
-        # button (resilient gate vs CDN flakes).
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-        page.get_by_role(
-            "button", name="Resume", exact=True,
-        ).first.wait_for(state="visible", timeout=10_000)
+        open_session_in_studio(page, console_url, wid, sid, kind="agent")
 
-        # Now observe ~7s of polling. The panel polls every 2s while
-        # non-terminal (CREATED here, since auto_start=False).
+        # Observe ~7s of polling (2s cadence while CREATED).
         page.wait_for_timeout(7_500)
-        # Expect at least 3 calls (initial + ~3 polls).
         assert hits["count"] >= 3, (
-            f"expected ≥3 /ask_user/pending hits in ~7s, got {hits['count']}"
+            f"expected >=3 /v1/sessions/{sid} polls in ~7s, got {hits['count']}"
         )
     finally:
         _cleanup(base_url, cleanup_urls)
@@ -295,73 +243,10 @@ def test_u0065_panel_stops_polling_after_terminal_status(
 # ===========================================================================
 
 
-def test_u0069_cancel_modal_esc_dismiss_does_not_signal(
-    page, base_url, console_url, unique_suffix, tmp_path,
-) -> None:
-    """U0069 — Clicking the page-level Cancel button opens a
-    confirmation modal. Pressing ESC must close it without firing
-    the cancel signal — the session row stays CREATED, and no
-    "Cancel signal sent" toast appears.
-
-    Pins the safety contract: the destructive action is gated
-    behind explicit confirmation; backing out is harmless.
-    """
-    _, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
-    try:
-        # Track whether /cancel was actually called.
-        cancel_calls = {"count": 0}
-
-        def _on_cancel_signal(route):
-            cancel_calls["count"] += 1
-            route.fulfill(
-                status=200, content_type="application/json",
-                body=json.dumps({"id": sid, "status": "ended"}),
-            )
-
-        # Match the workspace-nested cancel endpoint.
-        page.route(
-            "**/v1/workspaces/*/sessions/*/cancel", _on_cancel_signal,
-        )
-
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
-        # Resilience gate.
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
-        # Wait for the page-level Cancel button (one of the signal buttons).
-        cancel_btn = page.get_by_role(
-            "button", name="Cancel", exact=True,
-        ).first
-        cancel_btn.wait_for(state="visible", timeout=10_000)
-        cancel_btn.click()
-
-        # Confirmation modal: "Cancel session?" title + "Keep running"
-        # + "Cancel session" buttons.
-        page.get_by_text("Cancel session?", exact=False).first.wait_for(
-            state="visible", timeout=5_000,
-        )
-
-        # ESC dismiss.
-        page.keyboard.press("Escape")
-        # Modal closes — wait for "Cancel session?" text to leave the
-        # DOM (or just become hidden).
-        page.wait_for_timeout(500)
-        # The modal title shouldn't be visible anymore.
-        assert page.get_by_text("Cancel session?", exact=False).count() == 0, (
-            "Cancel confirmation modal didn't dismiss on ESC"
-        )
-
-        # /cancel was NOT called.
-        assert cancel_calls["count"] == 0, (
-            f"cancel signal fired despite ESC dismiss: "
-            f"{cancel_calls['count']} call(s)"
-        )
-
-        # No "Cancel signal sent" toast.
-        assert page.get_by_text(
-            "Cancel signal sent", exact=False,
-        ).count() == 0, "Cancel toast fired despite ESC dismiss"
-    finally:
-        _cleanup(base_url, cleanup_urls)
+# U0069 REMOVED (no Studio equivalent) — the retired session-detail Cancel
+# button opened a "Cancel session?" confirmation modal, and this test pinned
+# the ESC-dismiss-without-signal safety contract. The Studio's session
+# controls (studio-center.jsx ``ST_SessionControls`` → ``ctrl-cancel``) fire
+# the cancel POST DIRECTLY with no confirmation modal, so there is no
+# modal-dismiss surface to pin. Removed with this note (the direct-cancel
+# happy path is exercised by the re-pointed U0030 / U0103 journeys).
