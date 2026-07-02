@@ -154,6 +154,55 @@ async def test_pty_bad_workdir_emits_error(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pty_bad_workdir_reports_real_code_on_split_module_identity(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A split-identity OpError must still report EACCES, not EINTERNAL.
+
+    On CI primer_runtime is importable via BOTH the installed dist and the
+    ``runtime`` pythonpath entry, so the OpError raised in
+    ``primer_runtime.ops`` can be a DIFFERENT class object than the OpError
+    imported in ``pty_op`` — ``except OpError`` misses it and the catch-all
+    runs. Simulate that with a foreign class whose ``__name__`` is "OpError"
+    but which is NOT ``pty_op.OpError``; the emitted frame must carry the
+    real code (duck-typed), not the masked EINTERNAL.
+    """
+    import primer_runtime.pty_op as pty_op_mod
+
+    class _ForeignOpError(Exception):
+        def __init__(self, code: str, message: str) -> None:
+            super().__init__(message)
+            self.code = code
+            self.message = message
+
+    _ForeignOpError.__name__ = "OpError"  # mimic the split-identity class name
+    _ForeignOpError.__qualname__ = "OpError"
+    assert _ForeignOpError is not pty_op_mod.OpError  # genuinely foreign
+
+    def _raise_foreign(raw_path: str, workspace_root: str):
+        raise _ForeignOpError("EACCES", f"Path escapes workspace root: {raw_path!r}")
+
+    monkeypatch.setattr(pty_op_mod, "_resolve_safe", _raise_foreign)
+
+    registry = PtyRegistry()
+    frames: list[str] = []
+
+    async def send(frame: str) -> None:
+        frames.append(frame)
+
+    task = start_pty(
+        req_id=17,
+        args={"cmd": ["/bin/sh"], "workdir": "../../etc"},
+        workspace_root=str(tmp_path),
+        send=send,
+        registry=registry,
+    )
+    await task
+    err = next(e for e in _events(frames) if "ok" in e and e["ok"] is False)
+    assert err["error"]["code"] == "EACCES"  # NOT "EINTERNAL"
+
+
+@pytest.mark.asyncio
 async def test_pty_cancel_all_terminates(tmp_path: Path) -> None:
     registry = PtyRegistry()
     frames: list[str] = []
