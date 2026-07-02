@@ -230,3 +230,21 @@ def test_bundle_transpiles_with_studio_center() -> None:
     assert "/* === components/studio-center.jsx === */" in text
     assert "/* === components/studio.jsx === */" in text
     assert "/* === components/studio-sidebar.jsx === */" in text
+
+
+# ---------------------------------------------------------------------------
+# Close-all-tabs control (bug #21)
+# ---------------------------------------------------------------------------
+
+
+def test_center_close_all_testid_present() -> None:
+    src = _center_src()
+    assert 'data-testid="tabs-close-all"' in src
+
+
+def test_center_close_all_wired_to_state() -> None:
+    src = _center_src()
+    # CenterTabs takes an onCloseAll prop and StudioCenter feeds it the hook's
+    # closeAllTabs action.
+    assert "onCloseAll" in src
+    assert "onCloseAll={studio.closeAllTabs}" in src

@@ -212,3 +212,36 @@ def test_bundle_transpiles_with_studio() -> None:
     assert etag and body
     text = body.decode("utf-8")
     assert "/* === components/studio.jsx === */" in text
+
+
+# ---------------------------------------------------------------------------
+# closeAllTabs action + live ?open= URL reactivity (bugs #21, #11)
+# ---------------------------------------------------------------------------
+
+
+def test_state_hook_exposes_close_all_tabs() -> None:
+    src = _studio_src()
+    assert "var closeAllTabs = React.useCallback(" in src
+    assert "closeAllTabs: closeAllTabs" in src
+
+
+def test_close_all_tabs_clears_open_tabs_and_active() -> None:
+    src = _studio_src()
+    # Must clear both openTabs and activeTabId (localStorage then follows via
+    # the persist effect).
+    assert "openTabs: [], activeTabId: null" in src
+
+
+def test_url_reactivity_listens_for_hashchange_and_popstate() -> None:
+    src = _studio_src()
+    assert 'addEventListener("hashchange"' in src
+    assert 'addEventListener("popstate"' in src
+    # It re-parses the current ?open= via the existing helper.
+    assert "ST_tabFromUrl()" in src
+
+
+def test_url_reactivity_dedupes_against_active_tab() -> None:
+    src = _studio_src()
+    # No-op when the parsed tab is already active (prevents reopening a
+    # user-closed tab unless the URL truly changes).
+    assert "s.activeTabId === urlTab" in src
