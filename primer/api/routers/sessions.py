@@ -647,12 +647,21 @@ async def _read_workspace_turn_log(
     limit: int,
     offset: int,
     since_seq: int | None,
+    tail: bool = False,
 ) -> dict:
     """JSONL-parse the file at ``relative_path`` inside ``workspace``.
 
     Missing file is treated as an empty log (a fresh session that's
     written nothing yet). Bogus lines are skipped silently — the turn
     log is observability data, not a contract.
+
+    ``tail`` flips the window to the *end* of the log: the console loads a
+    session transcript newest-page-first (most-recent ``limit`` rows) and pages
+    older rows on demand, instead of pulling the whole file at once (#3/#7).
+    With ``tail`` the ``offset`` counts rows from the tail — ``offset=0`` is the
+    most-recent ``limit`` rows, ``offset=limit`` the next-older page — so
+    paging is anchored to the end of the log, not a shifting start. Rows are
+    always returned in ascending ``seq`` order.
     """
     try:
         raw = await workspace.read_file(relative_path)
@@ -671,7 +680,12 @@ async def _read_workspace_turn_log(
             continue
         items.append(obj)
     total = len(items)
-    window = items[offset:offset + limit]
+    if tail:
+        end = max(0, total - offset)
+        start = max(0, end - limit)
+        window = items[start:end]
+    else:
+        window = items[offset:offset + limit]
     return {
         "items": window,
         "total": total,
@@ -690,6 +704,15 @@ async def get_session_messages(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     after_seq: int | None = Query(default=None, ge=0),
+    tail: bool = Query(
+        default=False,
+        description=(
+            "Return the most-recent `limit` rows (newest page) instead of the "
+            "oldest. With `tail`, `offset` counts rows from the end, so the "
+            "console can load a long transcript's tail immediately and page "
+            "older rows lazily rather than fetching the whole log at once."
+        ),
+    ),
     sessions=Depends(get_session_storage),
     workspace_registry=Depends(get_workspace_registry),
 ) -> dict:
@@ -714,6 +737,7 @@ async def get_session_messages(
         limit=limit,
         offset=offset,
         since_seq=after_seq,
+        tail=tail,
     )
 
 
