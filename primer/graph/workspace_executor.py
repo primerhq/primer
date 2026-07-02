@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.tool_manager import ToolExecutionManager
-from primer.graph.base import _BaseGraphExecutor
+from primer.graph.base import DEFAULT_MAX_PARALLEL_NODES, _BaseGraphExecutor
 from primer.graph.router import RouterRegistry
 from primer.model.chat import Message, StreamEvent, ToolResultPart
 from primer.model.graph import Graph, NodeRuntimeState, _GraphNodeRef, _ToolCallNode
@@ -102,6 +102,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         owns_session_lifecycle: bool = False,
         toolset_resolver: Callable[[str], Awaitable[Any]] | None = None,
         approval_resolver: Any | None = None,
+        max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
     ) -> None:
         wrapped_agent_resolver = self._wrap_agent_resolver(
             agent_resolver, workspace_session
@@ -117,6 +118,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             graph_resolver=graph_resolver,
             router_registry=router_registry,
             principal=principal,
+            max_parallel_nodes=max_parallel_nodes,
         )
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
@@ -586,6 +588,8 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             principal=self._principal,
             toolset_resolver=self._toolset_resolver,
             approval_resolver=self._approval_resolver,
+            # Inherit the parent's per-superstep fan-out cap (BE5).
+            max_parallel_nodes=self._max_parallel_nodes,
         )
 
     # ---- Public helpers --------------------------------------------------

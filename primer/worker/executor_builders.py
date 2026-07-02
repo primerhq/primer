@@ -133,6 +133,7 @@ def build_graph_invocation_services(
             owns_session_lifecycle=False,
             toolset_resolver=toolset_resolver,
             approval_resolver=pool._approval_resolver,
+            max_parallel_nodes=pool.config.max_parallel_nodes,
         )
 
     return GraphInvocationServices(
@@ -410,6 +411,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         owns_session_lifecycle=True,
         toolset_resolver=toolset_resolver,
         approval_resolver=pool._approval_resolver,
+        max_parallel_nodes=pool.config.max_parallel_nodes,
     )
     return _GraphTurnDriver(executor)
 

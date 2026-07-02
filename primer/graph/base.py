@@ -144,6 +144,14 @@ from primer.graph._node_dispatch import (  # noqa: E402
     _SubgraphFailed,
 )
 
+# Default per-superstep admission bound on concurrently-running nodes. A wide
+# fan-out (map/broadcast) still runs every ready node, just at most this many
+# at once — each node is an LLM loop + workspace persistence, so an unbounded
+# fan-out would otherwise spawn unbounded concurrent agent tasks. Deployments
+# override this via ``WorkerConfig.max_parallel_nodes`` (threaded through the
+# worker executor builders); direct/test callers can pass the constructor kwarg.
+DEFAULT_MAX_PARALLEL_NODES: int = 16
+
 
 class _BaseGraphExecutor(
     _CheckpointMixin,
@@ -166,9 +174,13 @@ class _BaseGraphExecutor(
         graph_resolver: Callable[[str], Awaitable[Graph]] | None = None,
         router_registry: RouterRegistry | None = None,
         principal: str | None = None,
+        max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
     ) -> None:
         self._graph = graph
         self._agent_resolver = agent_resolver
+        # Per-superstep concurrency cap for node-task execution (BE5). Clamp
+        # to >=1 so a misconfigured 0/negative can never deadlock the loop.
+        self._max_parallel_nodes = max(1, int(max_parallel_nodes))
         self._llm_resolver = llm_resolver
         self._tool_manager_resolver = tool_manager_resolver
         self._graph_resolver = graph_resolver
@@ -1039,10 +1051,23 @@ class _BaseGraphExecutor(
                     ),
                 )
 
+            # Per-superstep admission bound (BE5). All ready nodes still run —
+            # the semaphore only caps how many execute *at once* so a wide
+            # fan-out (map/broadcast) can't spawn unbounded concurrent agent
+            # tasks (each an LLM loop + workspace persistence). Nodes in a
+            # superstep are independent, so bounding to >=1 never deadlocks.
+            # A fresh semaphore per superstep keeps the bound local to it.
+            node_semaphore = asyncio.Semaphore(self._max_parallel_nodes)
+
+            async def _run_node_bounded(
+                nid: str,
+                sem: asyncio.Semaphore = node_semaphore,
+            ) -> None:
+                async with sem:
+                    await self._stream_node(nid, context, queue)
+
             tasks: list[asyncio.Task] = [
-                asyncio.create_task(
-                    self._stream_node(nid, context, queue)
-                )
+                asyncio.create_task(_run_node_bounded(nid))
                 for nid in ready_ordered
             ]
             results: dict[str, _NodeDone] = {}

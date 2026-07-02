@@ -34,6 +34,19 @@ class WorkerConfig(BaseModel):
 
     concurrency: int = Field(default=8, ge=1, le=128)
     claim_batch_size: int = Field(default=4, ge=1, le=64)
+    max_parallel_nodes: int = Field(
+        default=16,
+        ge=1,
+        le=256,
+        description=(
+            "Per-superstep admission bound on concurrently-running graph "
+            "nodes. A wide fan-out (map/broadcast) still runs every ready "
+            "node, but at most this many at once — each node is an LLM loop "
+            "plus workspace persistence, so an unbounded fan-out would spawn "
+            "unbounded concurrent agent tasks. Bounds task/memory fan-out; "
+            "the per-provider RateLimiter separately bounds LLM concurrency."
+        ),
+    )
     heartbeat_interval_seconds: int = Field(default=10, ge=1, le=60)
     lease_ttl_seconds: int = Field(default=30, ge=5, le=300)
     poll_interval_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
