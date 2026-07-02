@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from primer.agent.tool_manager import ToolExecutionManager
-from primer.graph.base import _BaseGraphExecutor
+from primer.graph.base import DEFAULT_MAX_PARALLEL_NODES, _BaseGraphExecutor
 from primer.graph.router import RouterRegistry
 from primer.model.chat import Message, ToolResultPart
 from primer.model.except_ import NotFoundError
@@ -82,6 +82,7 @@ class GraphExecutor(_BaseGraphExecutor):
             ["_ToolCallNode", dict], Awaitable[ToolResultPart]
         ] | None = None,
         turn_log_storage: "Storage[TurnLogRecord] | None" = None,
+        max_parallel_nodes: int = DEFAULT_MAX_PARALLEL_NODES,
     ) -> None:
         super().__init__(
             graph=graph,
@@ -91,6 +92,7 @@ class GraphExecutor(_BaseGraphExecutor):
             graph_resolver=graph_resolver,
             router_registry=router_registry,
             principal=principal,
+            max_parallel_nodes=max_parallel_nodes,
         )
         self._thread_id = graph_thread_id
         self._threads = thread_storage
@@ -385,6 +387,8 @@ class GraphExecutor(_BaseGraphExecutor):
             # run_id. Without this, subgraphs run with the base-class
             # Noop default and the operator gets a partial timeline.
             turn_log_storage=self._turn_log_storage,
+            # Inherit the parent's per-superstep fan-out cap (BE5).
+            max_parallel_nodes=self._max_parallel_nodes,
         )
 
     async def _load_node_messages_full(
