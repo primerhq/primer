@@ -633,6 +633,12 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
       ? String(existing.limits.connect_timeout_seconds)
       : ""
   );
+  const [totalTimeoutSeconds, setTotalTimeoutSeconds] = React.useState(
+    existing?.limits?.total_timeout_seconds !== undefined &&
+      existing?.limits?.total_timeout_seconds !== null
+      ? String(existing.limits.total_timeout_seconds)
+      : ""
+  );
   const [fieldErrors, setFieldErrors] = React.useState({});
 
   // Whenever the provider type changes, re-seed config defaults + wipe the
@@ -792,6 +798,9 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
           : {}),
         ...(connectTimeoutSeconds !== "" && connectTimeoutSeconds !== null
           ? { connect_timeout_seconds: Number(connectTimeoutSeconds) }
+          : {}),
+        ...(totalTimeoutSeconds !== "" && totalTimeoutSeconds !== null
+          ? { total_timeout_seconds: Number(totalTimeoutSeconds) }
           : {}),
       },
     };
@@ -1006,6 +1015,33 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
         {fieldErrors["body.limits.connect_timeout_seconds"] && (
           <div className="field-help" style={{ color: "var(--red)" }}>
             {fieldErrors["body.limits.connect_timeout_seconds"]}
+          </div>
+        )}
+      </div>
+      <div className="field">
+        <label className="field-label">
+          Total generation timeout <span className="hint">seconds; blank = unbounded</span>
+        </label>
+        <input
+          className="input"
+          type="number"
+          min="0"
+          step="1"
+          value={totalTimeoutSeconds}
+          onChange={(e) => setTotalTimeoutSeconds(e.target.value)}
+          style={{ width: 120 }}
+          placeholder="unbounded"
+        />
+        <div className="field-help">
+          Wall-clock ceiling for one full streamed generation. Catches RUNAWAY
+          generations: a model that keeps emitting tokens forever never trips
+          the inactivity timeout above, because events keep arriving. Blank
+          (the default) means unbounded. Set it comfortably above your slowest
+          legitimate generation (e.g. 900 for slow local models).
+        </div>
+        {fieldErrors["body.limits.total_timeout_seconds"] && (
+          <div className="field-help" style={{ color: "var(--red)" }}>
+            {fieldErrors["body.limits.total_timeout_seconds"]}
           </div>
         )}
       </div>

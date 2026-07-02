@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from pydantic import HttpUrl, SecretStr, ValidationError
 
-from primer.llm._timeout import _iter_with_timeout
+from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.model.except_ import ProviderTimeoutError
 from primer.model.provider import (
     AnthropicConfig,
@@ -173,6 +173,121 @@ class TestIterWithTimeout:
             await it.__anext__()  # should raise TimeoutError after ~50 ms
 
         with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(_run(), timeout=3.0)
+
+
+# ---------------------------------------------------------------------------
+# total_timeout_seconds: Limits field + runaway-generation budget
+# ---------------------------------------------------------------------------
+
+
+async def _runaway_agen():
+    """Yield tokens forever with no stall -- the runaway-generation case."""
+    n = 0
+    while True:
+        yield n
+        n += 1
+        await asyncio.sleep(0)
+
+
+class TestTotalTimeoutField:
+    def test_default_is_none(self) -> None:
+        lim = Limits(max_concurrency=1)
+        assert lim.total_timeout_seconds is None
+
+    def test_explicit_value(self) -> None:
+        lim = Limits(max_concurrency=1, total_timeout_seconds=900.0)
+        assert lim.total_timeout_seconds == 900.0
+
+    def test_negative_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            Limits(max_concurrency=1, total_timeout_seconds=-1.0)
+
+    def test_round_trip(self) -> None:
+        lim = Limits(max_concurrency=1, total_timeout_seconds=42.0)
+        restored = Limits.model_validate(lim.model_dump())
+        assert restored.total_timeout_seconds == 42.0
+
+    def test_independent_of_other_timeouts(self) -> None:
+        lim = Limits(
+            max_concurrency=1,
+            request_timeout_seconds=60.0,
+            connect_timeout_seconds=10.0,
+            total_timeout_seconds=900.0,
+        )
+        assert lim.request_timeout_seconds == 60.0
+        assert lim.connect_timeout_seconds == 10.0
+        assert lim.total_timeout_seconds == 900.0
+
+
+class TestTotalGenerationBudget:
+    @pytest.mark.asyncio
+    async def test_runaway_aborted_by_budget(self) -> None:
+        """A stream that keeps emitting never trips the stall window but IS
+        aborted by the total budget, raising GenerationBudgetExceeded."""
+        async def _run():
+            count = 0
+            async for _ in _iter_with_timeout(
+                _runaway_agen(), 10.0, total_timeout_seconds=0.1
+            ):
+                count += 1
+            return count
+
+        with pytest.raises(GenerationBudgetExceeded):
+            await asyncio.wait_for(_run(), timeout=3.0)
+
+    @pytest.mark.asyncio
+    async def test_budget_exceeded_is_a_timeout_error(self) -> None:
+        """Adapters' existing ``except TimeoutError`` handlers must catch it."""
+        assert issubclass(GenerationBudgetExceeded, TimeoutError)
+
+    @pytest.mark.asyncio
+    async def test_no_budget_means_unbounded(self) -> None:
+        """total=None keeps prior behaviour: fast finite streams complete."""
+        result = []
+        async for item in _iter_with_timeout(
+            _fast_agen(1, 2, 3), 10.0, total_timeout_seconds=None
+        ):
+            result.append(item)
+        assert result == [1, 2, 3]
+
+    @pytest.mark.asyncio
+    async def test_completes_within_budget(self) -> None:
+        """A finite stream that ends inside the budget is untouched."""
+        result = []
+        async for item in _iter_with_timeout(
+            _fast_agen("a", "b"), None, total_timeout_seconds=10.0
+        ):
+            result.append(item)
+        assert result == ["a", "b"]
+
+    @pytest.mark.asyncio
+    async def test_stall_still_fires_with_budget_set(self) -> None:
+        """The stall window keeps working when a (larger) budget is set, and
+        a stall raises plain TimeoutError, not GenerationBudgetExceeded."""
+        async def _run():
+            it = _iter_with_timeout(
+                _stalling_agen(), 0.05, total_timeout_seconds=30.0
+            )
+            await it.__anext__()  # "first" -- instant
+            await it.__anext__()  # stalls; stall window should fire
+
+        with pytest.raises(asyncio.TimeoutError) as excinfo:
+            await asyncio.wait_for(_run(), timeout=3.0)
+        assert not isinstance(excinfo.value, GenerationBudgetExceeded)
+
+    @pytest.mark.asyncio
+    async def test_budget_wins_when_smaller_than_stall_window(self) -> None:
+        """With budget < stall window, a stalling stream fails with the
+        budget error (the remaining budget caps the wait)."""
+        async def _run():
+            it = _iter_with_timeout(
+                _stalling_agen(), 30.0, total_timeout_seconds=0.1
+            )
+            await it.__anext__()  # "first" -- instant
+            await it.__anext__()  # stalls; budget expires first
+
+        with pytest.raises(GenerationBudgetExceeded):
             await asyncio.wait_for(_run(), timeout=3.0)
 
 
