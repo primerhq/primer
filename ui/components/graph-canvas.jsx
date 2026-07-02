@@ -1,4 +1,4 @@
-/* global React, G6 */
+/* global React, G6, Icon */
 // Unified AntV G6 (v5) graph canvas — the single renderer behind the graph
 // editor (interactive) and the session run-view (read-only + status). One
 // component, one place for the G6 logic; a `layout` prop forks between the
@@ -422,13 +422,54 @@ function GR_Canvas(props) {
     return () => clearInterval(id);
   }, [statusTint, selectedNodeId, draft]);
 
+  // Overlaid zoom / traverse controls (bug #1) — wired to the live G6 v5
+  // instance. zoomBy(ratio) is relative (>1 in, <1 out); fitView() frames the
+  // whole graph; zoomTo(1) resets to 100%. SHARED by both surfaces (editor +
+  // run-view) since the canvas is one component; the cluster sits over a corner
+  // and only its buttons capture pointer events, so node drags elsewhere are
+  // untouched. Each wraps a not-yet-ready graph as a no-op.
+  const _zoomBy = (ratio) => {
+    const g = graphRef.current;
+    if (!g) return;
+    try { Promise.resolve(g.zoomBy(ratio, true)).catch(() => {}); } catch (_e) { /* canvas */ }
+  };
+  const _fitView = () => {
+    const g = graphRef.current;
+    if (!g) return;
+    try { Promise.resolve(g.fitView({ when: "always", padding: 24 }, true)).catch(() => {}); }
+    catch (_e) { try { g.fitView(); } catch (_e2) { /* canvas */ } }
+  };
+  const _resetZoom = () => {
+    const g = graphRef.current;
+    if (!g) return;
+    try { Promise.resolve(g.zoomTo(1, true)).catch(() => {}); } catch (_e) { /* canvas */ }
+  };
+
   return (
-    <div style={{ minWidth: 0, overflow: "hidden" }}>
+    <div style={{ minWidth: 0, overflow: "hidden", position: "relative" }}>
       <div
         ref={containerRef}
         data-testid="graph-canvas"
         style={{ width: "100%", height: 500, minHeight: 500, background: "var(--bg)" }}
       />
+      <div className="gr-canvas-controls" data-testid="graph-controls">
+        <button type="button" className="gr-ctrl-btn" data-testid="graph-zoom-in"
+          aria-label="Zoom in" title="Zoom in" onClick={() => _zoomBy(1.2)}>
+          <Icon name="plus" size={15} />
+        </button>
+        <button type="button" className="gr-ctrl-btn" data-testid="graph-zoom-out"
+          aria-label="Zoom out" title="Zoom out" onClick={() => _zoomBy(1 / 1.2)}>
+          <Icon name="minus" size={15} />
+        </button>
+        <button type="button" className="gr-ctrl-btn" data-testid="graph-fit"
+          aria-label="Fit graph to view" title="Fit to view" onClick={_fitView}>
+          <Icon name="compress" size={15} />
+        </button>
+        <button type="button" className="gr-ctrl-btn gr-ctrl-btn-text" data-testid="graph-zoom-reset"
+          aria-label="Reset zoom to 100%" title="Reset zoom" onClick={_resetZoom}>
+          1:1
+        </button>
+      </div>
     </div>
   );
 }

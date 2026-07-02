@@ -443,6 +443,46 @@
   min-height: 280px !important;
 }
 
+/* Graph-canvas overlaid zoom / traverse controls (bug #1). Absolutely placed
+   in a corner of the shared GR_Canvas (editor + run-view); themed purely off
+   the design tokens so a dark/light toggle restyles them for free. */
+.gr-canvas-controls {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.gr-ctrl-btn {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  cursor: pointer;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev);
+  color: var(--text-2);
+  box-shadow: var(--shadow-sm);
+}
+.gr-ctrl-btn-text {
+  font: 600 10px/1 "IBM Plex Mono", monospace;
+  letter-spacing: 0.02em;
+}
+.gr-ctrl-btn:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  color: var(--text);
+}
+.gr-ctrl-btn:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
+
 /* Integrated terminal — collapsible bottom panel spanning the center column
    (below StudioCenter's active panel), P7. Mounted only while
    studio.state.terminalOpen is true (see studio.jsx / studio-terminal.jsx),
