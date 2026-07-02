@@ -46,7 +46,7 @@ function _agToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function AgentsPage({ onOpen, pushToast }) {
-  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
 
@@ -54,18 +54,21 @@ function AgentsPage({ onOpen, pushToast }) {
   const [textFilter, setTextFilter] = React.useState("");
   const filterFocused = React.useRef(false);
 
-  const list = useResource(
-    "agents:list",
-    (signal) => apiFetch("GET", "/agents?limit=200", null, { signal }),
-    { pollMs: null }
-  );
+  // Server-side offset pagination (bug #19). The text filter is applied
+  // client-side over the current page, so typing snaps back to page 0.
+  const list = usePagedList({
+    key: "agents:list",
+    path: "/agents",
+    pageSize: 50,
+    resetKey: textFilter,
+  });
   const providers = useResource(
     "agents:llm-providers",
     (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
     { pollMs: null }
   );
 
-  const items = list.data?.items ?? [];
+  const items = list.items;
   const filtered = React.useMemo(() => {
     if (!textFilter) return items;
     const q = textFilter.toLowerCase();
@@ -265,6 +268,8 @@ function AgentsPage({ onOpen, pushToast }) {
         </table>
       </div>
       )}
+
+      <Pager pager={list} label="agents" />
 
       {isMobile && (
         <Fab icon="plus" label="New agent" onClick={() => setCreateOpen(true)} />

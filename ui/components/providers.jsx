@@ -259,18 +259,20 @@ function ProvidersPage({ kind: kindProp, pushToast }) {
 // ============================================================================
 
 function ProvidersList({ kindProp, pushToast }) {
-  const { apiFetch, useResource, useViewport } = window.primerApi;
+  const { useViewport, usePagedList, Pager } = window.primerApi;
   const k = KINDS[kindProp];
   const { isMobile } = useViewport();
-  const list = useResource(
-    `providers:${k.plural}`,
-    (s) => apiFetch("GET", "/" + k.plural + "?limit=200", null, { signal: s }),
-    {},
-  );
   const [createOpen, setCreateOpen] = React.useState(false);
   const [textFilter, setTextFilter] = React.useState("");
+  // Server-side offset pagination (bug #19); filter narrows the current page.
+  const list = usePagedList({
+    key: `providers:${k.plural}`,
+    path: "/" + k.plural,
+    pageSize: 50,
+    resetKey: textFilter,
+  });
 
-  const items = list.data?.items ?? [];
+  const items = list.items;
   const filtered = items.filter((p) => !textFilter || (p.id || "").toLowerCase().includes(textFilter.toLowerCase()));
 
   const navigateDetail = (id) => { window.location.hash = "#/providers/" + k.segment + "/" + encodeURIComponent(id); };
@@ -372,6 +374,8 @@ function ProvidersList({ kindProp, pushToast }) {
         </table>
       </div>
       )}
+
+      <Pager pager={list} label="providers" />
 
       {isMobile && (
         <Fab icon="plus" label="New provider" onClick={() => setCreateOpen(true)} />
