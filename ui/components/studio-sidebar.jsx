@@ -1,4 +1,4 @@
-/* global React, Icon */
+/* global React, Icon, Modal, Btn, Banner */
 // StudioSidebar — left sidebar for the Studio IDE shell (PR-B / B2).
 //
 // Contains two collapsible sections:
@@ -70,6 +70,34 @@ function ST_sessionStatus(session) {
   }
   // Fallback.
   return { tone: "dim", label: status, badge: null };
+}
+
+// ---------------------------------------------------------------------------
+// ST_sessionKind — classify a session row as "graph" or "agent".
+//
+// The workspace sessions list endpoint returns SessionInfo, which has NO
+// `binding` field — graph-bound sessions instead carry a SYNTHETIC
+// `agent_id = "graph:<graph_id>"` (see primer/workspace/session_factory.py:
+// the graph holder slot). So the prefix is the signal for the list shape.
+// We also honour the fuller WorkspaceSession / create-response shape
+// (`binding.kind` / `binding_kind` / bare `graph_id`) so the same helper
+// works wherever a session object comes from.
+//
+// Published as window.ST_sessionKind / window.ST_sessionGlyph for B3 reuse.
+// ---------------------------------------------------------------------------
+
+function ST_sessionKind(session) {
+  if (!session) return "agent";
+  var aid = session.agent_id || "";
+  if (typeof aid === "string" && aid.indexOf("graph:") === 0) return "graph";
+  if (session.binding && session.binding.kind === "graph") return "graph";
+  if (session.binding_kind === "graph") return "graph";
+  if (session.graph_id && !session.agent_id) return "graph";
+  return "agent";
+}
+
+function ST_sessionGlyph(session) {
+  return ST_sessionKind(session) === "graph" ? "◈" : "◆";
 }
 
 // ---------------------------------------------------------------------------
@@ -182,6 +210,7 @@ function NewSessionForm({ wid, onClose, onCreated }) {
   var [kind, setKind] = React.useState("agent");
   var [agentId, setAgentId] = React.useState("");
   var [graphId, setGraphId] = React.useState("");
+  var [name, setName] = React.useState("");
   var [instructions, setInstructions] = React.useState("");
   var [submitting, setSubmitting] = React.useState(false);
   var [error, setError] = React.useState(null);
@@ -214,6 +243,7 @@ function NewSessionForm({ wid, onClose, onCreated }) {
       ? { kind: "agent", agent_id: agentId }
       : { kind: "graph", graph_id: graphId };
     var body = { binding: binding, auto_start: true };
+    if (name.trim()) body.name = name.trim();
     if (instructions.trim()) body.initial_instructions = instructions.trim();
     try {
       var session = await apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions", body);
@@ -249,6 +279,20 @@ function NewSessionForm({ wid, onClose, onCreated }) {
           title="Cancel"
         >×</button>
       </div>
+
+      {/* Optional friendly name — persisted onto the session so the sidebar
+          shows it instead of the opaque sess-<hex> id. */}
+      <input
+        data-testid="new-session-name"
+        placeholder="Name (optional)"
+        value={name}
+        onChange={function(e) { setName(e.target.value); }}
+        style={{
+          width: "100%", padding: "5px 7px", fontSize: 12, background: "var(--bg-2)",
+          border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)",
+          marginBottom: 8, outline: "none", fontFamily: "inherit",
+        }}
+      />
 
       {/* Binding kind toggle */}
       <div style={{ display: "flex", gap: 4, marginBottom: 8 }}>
@@ -355,6 +399,163 @@ function NewSessionForm({ wid, onClose, onCreated }) {
 }
 
 // ---------------------------------------------------------------------------
+// ST_SessionDeleteDialog — confirm + DELETE a session.
+//   DELETE /v1/workspaces/{wid}/sessions/{sid}. Uses the shared Modal (NOT
+//   native confirm()). On success the caller closes the matching center tab
+//   and refetches the sidebar list; failures surface inline + as a toast.
+// ---------------------------------------------------------------------------
+
+function ST_SessionDeleteDialog({ wid, session, onClose, onDeleted, pushToast }) {
+  var { apiFetch } = window.primerApi;
+  var sid = session.session_id || session.id;
+  var label = session.name || sid;
+  var [busy, setBusy] = React.useState(false);
+  var [error, setError] = React.useState(null);
+
+  var mountedRef = React.useRef(true);
+  React.useEffect(function () {
+    mountedRef.current = true;
+    return function () { mountedRef.current = false; };
+  }, []);
+
+  async function submit() {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch("DELETE", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid));
+      if (!mountedRef.current) return;
+      pushToast && pushToast({ kind: "success", title: "Session deleted", detail: label });
+      onDeleted && onDeleted(sid);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      var detail = (err && (err.detail || err.message)) || "Delete failed";
+      setError(detail);
+      setBusy(false);
+      pushToast && pushToast({
+        kind: "error",
+        title: "Delete failed",
+        detail: detail,
+        requestId: err && err.requestId,
+      });
+    }
+  }
+
+  return (
+    <Modal
+      title={"Delete session · " + label}
+      danger
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn
+            kind="danger"
+            icon="trash"
+            onClick={submit}
+            disabled={busy}
+            data-testid="session-delete-confirm"
+          >
+            {busy ? "Deleting…" : "Delete session"}
+          </Btn>
+        </>
+      }
+    >
+      <div data-testid="session-delete-confirm-body">
+        <p>Permanently remove this session and its on-disk state. A running
+        session is cancelled first. This cannot be undone.</p>
+        {error && (
+          <Banner kind="error" title="Delete failed" detail={String(error)} />
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ST_SessionRenameDialog — give a session a friendly name (or clear it).
+//   PATCH /v1/workspaces/{wid}/sessions/{sid} { name }. An empty value
+//   clears the name (server falls back to the id). Returns the updated
+//   SessionInfo; the caller refetches so the row reflects the new label.
+// ---------------------------------------------------------------------------
+
+function ST_SessionRenameDialog({ wid, session, onClose, onRenamed, pushToast }) {
+  var { apiFetch } = window.primerApi;
+  var sid = session.session_id || session.id;
+  var [name, setName] = React.useState(session.name || "");
+  var [busy, setBusy] = React.useState(false);
+  var [error, setError] = React.useState(null);
+
+  var mountedRef = React.useRef(true);
+  React.useEffect(function () {
+    mountedRef.current = true;
+    return function () { mountedRef.current = false; };
+  }, []);
+
+  async function submit(e) {
+    if (e && e.preventDefault) e.preventDefault();
+    setBusy(true);
+    setError(null);
+    var trimmed = name.trim();
+    try {
+      await apiFetch(
+        "PATCH",
+        "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid),
+        { name: trimmed ? trimmed : null }
+      );
+      if (!mountedRef.current) return;
+      pushToast && pushToast({ kind: "success", title: "Session renamed" });
+      onRenamed && onRenamed(sid);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      var detail = (err && (err.detail || err.message)) || "Rename failed";
+      setError(detail);
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal
+      title={"Rename session · " + sid}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose} disabled={busy}>Cancel</Btn>
+          <Btn
+            kind="primary"
+            icon="edit"
+            onClick={submit}
+            disabled={busy}
+            data-testid="session-rename-confirm"
+          >
+            {busy ? "Saving…" : "Save name"}
+          </Btn>
+        </>
+      }
+    >
+      <form onSubmit={submit} data-testid="session-rename-body">
+        <input
+          data-testid="session-rename-input"
+          autoFocus
+          value={name}
+          onChange={function (e) { setName(e.target.value); }}
+          placeholder="Friendly name (leave blank to clear)"
+          style={{
+            width: "100%", padding: "7px 9px", fontSize: 13, background: "var(--bg-2)",
+            border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)",
+            outline: "none", fontFamily: "inherit",
+          }}
+        />
+        {error && (
+          <div style={{ marginTop: 8 }}>
+            <Banner kind="error" title="Rename failed" detail={String(error)} />
+          </div>
+        )}
+      </form>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // SessionsSection
 // ---------------------------------------------------------------------------
 
@@ -375,15 +576,33 @@ function SessionsSection({ wid, studio }) {
   var sessions = ST_sessionSort(rawSessions);
 
   var [showNewForm, setShowNewForm] = React.useState(false);
+  // Session pending a delete confirm (the row whose trash button was hit),
+  // and the session being renamed inline. Both null when idle.
+  var [pendingDelete, setPendingDelete] = React.useState(null);
+  var [renaming, setRenaming] = React.useState(null);
+  var pushToast = studio.pushToast || (window.primerApi && window.primerApi.toastPush) || null;
+
+  // A session was deleted: close its center tab (if open) and refetch the
+  // sidebar list so the row disappears.
+  function onSessionDeleted(sid) {
+    setPendingDelete(null);
+    studio.closeTab && studio.closeTab("session:" + sid);
+    sessionsRes.refetch && sessionsRes.refetch();
+  }
+
+  // A session was renamed: clear the inline editor and refetch so the new
+  // name (persisted onto session.json) shows in the row.
+  function onSessionRenamed() {
+    setRenaming(null);
+    sessionsRes.refetch && sessionsRes.refetch();
+  }
 
   function openSession(session) {
     // The list endpoint returns SessionInfo (`session_id`); the create
     // response / detail fetch use the fuller shape (`id`). Resolve either.
     var sid = session.session_id || session.id;
-    var isGraph = (session.binding && session.binding.kind === "graph") ||
-                  session.binding_kind === "graph";
     var title = session.name || sid;
-    var glyph = isGraph ? "◈" : "◆";
+    var glyph = ST_sessionGlyph(session);
     studio.openTab({
       id: "session:" + sid,
       kind: "session",
@@ -454,6 +673,28 @@ function SessionsSection({ wid, studio }) {
         />
       )}
 
+      {/* Delete-session confirm (shared Modal, not native confirm()). */}
+      {pendingDelete && (
+        <ST_SessionDeleteDialog
+          wid={wid}
+          session={pendingDelete}
+          pushToast={pushToast}
+          onClose={function() { setPendingDelete(null); }}
+          onDeleted={onSessionDeleted}
+        />
+      )}
+
+      {/* Rename-session prompt. */}
+      {renaming && (
+        <ST_SessionRenameDialog
+          wid={wid}
+          session={renaming}
+          pushToast={pushToast}
+          onClose={function() { setRenaming(null); }}
+          onRenamed={onSessionRenamed}
+        />
+      )}
+
       {/* Session list */}
       {s.sessionsOpen && (
         <div className="st-section-body">
@@ -469,8 +710,7 @@ function SessionsSection({ wid, studio }) {
             // the create/detail shapes carry `id`. Resolve either so the
             // row key, tab id, title, and data-session-id are the real id.
             var sid = session.session_id || session.id;
-            var isGraph = (session.binding && session.binding.kind === "graph") ||
-                          session.binding_kind === "graph";
+            var isGraph = ST_sessionKind(session) === "graph";
             var tabId = "session:" + sid;
             var isActive = s.activeTabId === tabId;
             var title = session.name || sid;
@@ -521,6 +761,29 @@ function SessionsSection({ wid, studio }) {
                     {st.badge}
                   </span>
                 )}
+                {/* Hover/focus-revealed row actions (rename · delete). The
+                    stopPropagation keeps the row's open-on-click from firing
+                    when an action button is pressed. */}
+                <span className="st-row-actions">
+                  <button
+                    className="st-row-action"
+                    data-testid="session-rename"
+                    title="Rename session"
+                    aria-label="Rename session"
+                    onClick={function(e) { e.stopPropagation(); setRenaming(session); }}
+                  >
+                    <Icon name="edit" size={12} />
+                  </button>
+                  <button
+                    className="st-row-action is-danger"
+                    data-testid="session-delete"
+                    title="Delete session"
+                    aria-label="Delete session"
+                    onClick={function(e) { e.stopPropagation(); setPendingDelete(session); }}
+                  >
+                    <Icon name="trash" size={12} />
+                  </button>
+                </span>
                 <span style={{
                   fontSize: 9,
                   fontWeight: 700,
@@ -840,4 +1103,8 @@ function StudioSidebar({ wid, studio }) {
 window.StudioSidebar = StudioSidebar;
 window.SessionsSection = SessionsSection;
 window.FilesTree = FilesTree;
+window.ST_SessionDeleteDialog = ST_SessionDeleteDialog;
+window.ST_SessionRenameDialog = ST_SessionRenameDialog;
 window.ST_sessionStatus = ST_sessionStatus;
+window.ST_sessionKind = ST_sessionKind;
+window.ST_sessionGlyph = ST_sessionGlyph;

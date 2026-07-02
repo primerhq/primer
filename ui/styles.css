@@ -293,6 +293,25 @@
   overflow-x: auto;
   flex: 0 0 auto;
 }
+/* "Close all" — pinned to the right edge (sticky) so it stays reachable when
+   the tab strip overflows horizontally. */
+.st-tabs-close-all {
+  position: sticky;
+  right: 0;
+  margin-left: auto;
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 10px;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: var(--bg-1);
+  color: var(--text-4);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.st-tabs-close-all:hover { background: var(--bg-2); color: var(--text-2); }
 .st-tab {
   position: relative;
   display: flex;
@@ -327,6 +346,34 @@
   color: var(--text-4);
 }
 .st-tab-close:hover { background: var(--bg-active); color: var(--text); }
+
+/* Sidebar session-row inline actions (rename / delete). Hidden until the
+   row is hovered or something inside it is focused, so the row stays clean
+   but the affordances are keyboard-reachable. */
+.st-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.st-session-row:hover .st-row-actions,
+.st-session-row:focus-within .st-row-actions { opacity: 1; }
+.st-row-action {
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: none;
+  border-radius: 4px;
+  color: var(--text-4);
+  cursor: pointer;
+  padding: 0;
+}
+.st-row-action:hover { background: var(--bg-active); color: var(--text); }
+.st-row-action.is-danger:hover { color: var(--red); }
 
 /* Region placeholder (B2/B3/B4 fill these). */
 .st-placeholder {
