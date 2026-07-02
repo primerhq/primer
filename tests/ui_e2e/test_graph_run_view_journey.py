@@ -108,10 +108,11 @@ def test_graph_run_view_journey(base_url, console_url, page, tmp_path) -> None:
     # visibility gate on the INNER <canvas> (which only exists once G6 has
     # painted) rather than the outer div avoids asserting mid-render.
     open_session_in_studio(page, console_url, wid, sid, kind="graph")
-    # Panel is up (open_session_in_studio waited on panel-graph). Wait for the
-    # graph def fetch + container mount to settle, then for G6 to inject the
-    # <canvas>, before asserting visibility.
-    page.wait_for_load_state("networkidle", timeout=15_000)
+    # Panel is up (open_session_in_studio waited on panel-graph). Do NOT wait
+    # for "networkidle": the Studio holds a live tap SSE + status polling, so
+    # the network is never idle and that wait always times out. Instead gate
+    # directly on the graph-canvas attaching, then G6's injected inner
+    # <canvas>, then visibility — the render-settle sequence, no idle needed.
     canvas = page.locator('[data-testid="graph-canvas"]')
     canvas.wait_for(state="attached", timeout=20_000)
     # The inner <canvas> only attaches once G6 has rendered — gate on it.
