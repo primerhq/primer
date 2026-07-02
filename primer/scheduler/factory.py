@@ -47,6 +47,23 @@ class SchedulerFactory:
                     "Postgres scheduler requires a StorageProvider to "
                     "share its connection pool"
                 )
+            # The Postgres scheduler reaches into ``storage_provider.pool``
+            # (an asyncpg pool) throughout ``initialize()`` and every claim
+            # query. Only ``PostgresStorageProvider`` exposes that pool; a
+            # SQLite (or any non-Postgres) provider would AttributeError deep
+            # inside ``initialize()``. Reject the misconfiguration here at the
+            # single wiring choke point with a clear message instead.
+            from primer.storage.postgres import PostgresStorageProvider
+
+            if not isinstance(storage_provider, PostgresStorageProvider):
+                raise ConfigError(
+                    "Postgres scheduler requires a Postgres storage provider "
+                    "(it shares the asyncpg connection pool), but the "
+                    f"configured storage provider is "
+                    f"{type(storage_provider).__name__}. Either switch the "
+                    "storage backend to Postgres or use the in-memory "
+                    "scheduler."
+                )
             from primer.scheduler.postgres import PostgresScheduler
 
             return PostgresScheduler(

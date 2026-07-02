@@ -31,6 +31,22 @@ class SchedulerHealth(BaseModel):
         ...,
         description="True when the API process has a live Scheduler instance.",
     )
+    degraded: bool = Field(
+        default=False,
+        description=(
+            "True when the wired scheduler/runtime-mode combination is "
+            "unsafe for the deployment topology (e.g. an in-memory "
+            "scheduler in a multi-process or external-worker mode, where "
+            "leases and resumable parks are not shared across processes)."
+        ),
+    )
+    degraded_reason: str | None = Field(
+        default=None,
+        description=(
+            "Human-readable explanation of the degraded condition, or null "
+            "when the scheduler configuration is healthy."
+        ),
+    )
     metrics: dict[str, Any] = Field(
         default_factory=dict,
         description=(
@@ -91,6 +107,9 @@ class HealthStatus(BaseModel):
 async def health(request: Request) -> HealthStatus:
     scheduler = getattr(request.app.state, "scheduler", None)
     worker_pool = getattr(request.app.state, "worker_pool", None)
+    degraded_reason = getattr(
+        request.app.state, "scheduler_degraded_reason", None
+    )
 
     sched_metrics: dict[str, Any] = {}
     if scheduler is not None:
@@ -116,6 +135,8 @@ async def health(request: Request) -> HealthStatus:
         version=APP_VERSION,
         scheduler=SchedulerHealth(
             alive=scheduler is not None,
+            degraded=degraded_reason is not None,
+            degraded_reason=degraded_reason,
             metrics=sched_metrics,
         ),
         worker_pool=WorkerPoolHealth(
