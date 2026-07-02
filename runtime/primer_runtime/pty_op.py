@@ -65,6 +65,41 @@ log = logging.getLogger(__name__)
 
 _READ_CHUNK = 65536
 
+# High-water mark for the master-fd -> WebSocket output queue. Each chunk is
+# up to ``_READ_CHUNK`` (64 KiB), so this caps buffered terminal output at
+# ~16 MiB. A runaway child (``yes``, a chatty build) paired with a slow or
+# blocked WebSocket consumer would otherwise grow the queue without bound.
+# When the cap is hit we drop the OLDEST buffered chunk (see
+# ``_enqueue_output``) — losing the stalest terminal output is the acceptable
+# degradation.
+_OUTPUT_QUEUE_MAX_CHUNKS = 256
+
+
+def _enqueue_output(queue: "asyncio.Queue[bytes]", data: bytes) -> bool:
+    """Put *data* on the bounded output *queue*, dropping the OLDEST buffered
+    chunk when the queue is already at its high-water mark.
+
+    Returns ``True`` iff a chunk was dropped. Drop-oldest keeps memory bounded
+    when a slow/blocked WebSocket consumer can't keep up with a runaway child.
+    The empty EOF sentinel is never starved out: a slot is always freed before
+    the re-put, so the terminating ``b""`` always lands.
+    """
+    try:
+        queue.put_nowait(data)
+        return False
+    except asyncio.QueueFull:
+        dropped = False
+        try:
+            queue.get_nowait()
+            dropped = True
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            queue.put_nowait(data)
+        except asyncio.QueueFull:
+            pass
+        return dropped
+
 
 def _default_shell() -> list[str]:
     """Return the argv for a login shell: ``$SHELL`` → bash → sh, ``-l``."""
@@ -324,15 +359,26 @@ async def _run_pty(
     registry.add(session)
 
     loop = asyncio.get_running_loop()
-    queue: asyncio.Queue[bytes] = asyncio.Queue()
+    queue: asyncio.Queue[bytes] = asyncio.Queue(
+        maxsize=_OUTPUT_QUEUE_MAX_CHUNKS
+    )
+    dropped_chunks = 0
 
     def _on_readable() -> None:
+        nonlocal dropped_chunks
         try:
             data = os.read(master_fd, _READ_CHUNK)
         except OSError:
             data = b""  # EIO on Linux after the child exits == EOF
-        queue.put_nowait(data)
+        if _enqueue_output(queue, data):
+            dropped_chunks += 1
         if not data:
+            if dropped_chunks:
+                log.warning(
+                    "pty req_id=%d dropped %d output chunk(s): consumer "
+                    "could not keep up (queue capped at %d chunks)",
+                    req_id, dropped_chunks, _OUTPUT_QUEUE_MAX_CHUNKS,
+                )
             loop.remove_reader(master_fd)
 
     # Announce readiness, then start draining the master fd.
