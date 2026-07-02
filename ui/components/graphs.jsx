@@ -227,16 +227,19 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
 // ============================================================================
 
 function GraphsPage({ onOpen, pushToast }) {
-  const { apiFetch, useResource, useViewport } = window.primerApi;
+  const { useViewport, usePagedList, Pager } = window.primerApi;
+  const apiFetch = window.primerApi.apiFetch;
   const { isMobile } = useViewport();
-  const list = useResource(
-    "graphs:list",
-    (s) => apiFetch("GET", "/graphs?limit=200", null, { signal: s }),
-    {},
-  );
-
   const [textFilter, setTextFilter] = React.useState("");
-  const items = list.data?.items ?? [];
+  // Server-side offset pagination (bug #19); filter narrows the current page.
+  const list = usePagedList({
+    key: "graphs:list",
+    path: "/graphs",
+    pageSize: 50,
+    resetKey: textFilter,
+  });
+
+  const items = list.items;
   const filtered = items.filter((g) =>
     !textFilter
       || g.id.toLowerCase().includes(textFilter.toLowerCase())
@@ -401,6 +404,8 @@ function GraphsPage({ onOpen, pushToast }) {
         </table>
       </div>
       )}
+
+      <Pager pager={list} label="graphs" />
 
       {isMobile && (
         <Fab icon="plus" label="New graph" onClick={() => setCreateOpen(true)} />

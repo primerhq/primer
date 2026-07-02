@@ -9,8 +9,6 @@
 // Top-level consts are CT_-prefixed so babel-standalone's flat eval
 // scope doesn't collide with sibling components (precedent: Task 3).
 
-const CT_PAGE_SIZE = 12;
-
 // Map a chat_messages row kind → simple bubble role for layout.
 function CT_roleForKind(kind) {
   if (kind === "user_message") return "user";
@@ -35,20 +33,25 @@ function CT_textOf(m) {
 // ============================================================================
 
 function ChatsPage({ onOpen, pushToast }) {
-  const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
+  const { useMutation, useRouter, apiFetch, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const [showNew, setShowNew] = React.useState(false);
   const [textQuery, setTextQuery] = React.useState("");
   const [agentFilter, setAgentFilter] = React.useState("");
-  const [page, setPage] = React.useState(1);
   const [pendingDelete, setPendingDelete] = React.useState(null);
   const filterFocused = React.useRef(false);
 
-  const list = useResource(
-    "chats:list",
-    (signal) => apiFetch("GET", "/chats?limit=200", null, { signal }),
-    { pollMs: 5000, pauseWhile: () => filterFocused.current }
-  );
+  // Server-side offset pagination (bug #19) — replaces the old hard
+  // limit=200 fetch + client-side page slicing. The text + agent filters
+  // narrow the current page client-side, so changing either resets to page 0.
+  const list = usePagedList({
+    key: "chats:list",
+    path: "/chats",
+    pageSize: 50,
+    pollMs: 5000,
+    pauseWhile: () => filterFocused.current,
+    resetKey: textQuery + "|" + agentFilter,
+  });
 
   const remove = useMutation(
     (cid) => apiFetch("DELETE", `/chats/${encodeURIComponent(cid)}?force=true`),
@@ -75,7 +78,7 @@ function ChatsPage({ onOpen, pushToast }) {
     },
   );
 
-  const items = list.data?.items ?? [];
+  const items = list.items;
 
   const agents = React.useMemo(() => {
     const set = new Set();
@@ -96,10 +99,6 @@ function ChatsPage({ onOpen, pushToast }) {
     if (agentFilter) arr = arr.filter((c) => c.agent_id === agentFilter);
     return arr;
   }, [items, textQuery, agentFilter]);
-
-  const total = filtered.length;
-  const totalPages = Math.max(1, Math.ceil(total / CT_PAGE_SIZE));
-  const pageItems = filtered.slice((page - 1) * CT_PAGE_SIZE, page * CT_PAGE_SIZE);
 
   const openRow = (cid) => {
     if (typeof onOpen === "function") onOpen(cid);
@@ -133,7 +132,7 @@ function ChatsPage({ onOpen, pushToast }) {
             className="input"
             placeholder="Filter chats…"
             value={textQuery}
-            onChange={(e) => { setTextQuery(e.target.value); setPage(1); }}
+            onChange={(e) => setTextQuery(e.target.value)}
             onFocus={() => { filterFocused.current = true; }}
             onBlur={() => { filterFocused.current = false; }}
           />
@@ -142,7 +141,7 @@ function ChatsPage({ onOpen, pushToast }) {
         <select
           className="select"
           value={agentFilter}
-          onChange={(e) => { setAgentFilter(e.target.value); setPage(1); }}
+          onChange={(e) => setAgentFilter(e.target.value)}
         >
           <option value="">all agents</option>
           {agents.map((a) => <option key={a} value={a}>{a}</option>)}
@@ -194,7 +193,7 @@ function ChatsPage({ onOpen, pushToast }) {
               </tr>
             </thead>
             <tbody>
-              {pageItems.length === 0 ? (
+              {filtered.length === 0 ? (
                 <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
                   No chats match the current filter{textQuery ? ` "${textQuery}"` : ""}.
                   {" · "}<a
@@ -202,7 +201,7 @@ function ChatsPage({ onOpen, pushToast }) {
                     style={{ cursor: "pointer", color: "var(--accent)" }}
                   >Clear filters</a>
                 </td></tr>
-              ) : pageItems.map((c) => {
+              ) : filtered.map((c) => {
                 const createdSec = ageSec(c.created_at);
                 const status = c.status || "active";
                 return (
@@ -257,20 +256,10 @@ function ChatsPage({ onOpen, pushToast }) {
               })}
             </tbody>
           </table>
-          <div className="tbl-foot">
-            <span className="tabular">
-              Showing <strong style={{ color: "var(--text)" }}>{total === 0 ? 0 : (page - 1) * CT_PAGE_SIZE + 1}</strong>–
-              <strong style={{ color: "var(--text)" }}>{Math.min(page * CT_PAGE_SIZE, total)}</strong> of{" "}
-              <strong style={{ color: "var(--text)" }}>{total}</strong>
-            </span>
-            <div className="pager">
-              <button disabled={page === 1} onClick={() => setPage(page - 1)}><Icon name="chevron-left" size={12} /></button>
-              <span className="muted text-sm tabular" style={{ padding: "0 8px" }}>Page {page} of {totalPages}</span>
-              <button disabled={page === totalPages} onClick={() => setPage(page + 1)}><Icon name="chevron-right" size={12} /></button>
-            </div>
-          </div>
         </div>
       )}
+
+      <Pager pager={list} label="chats" />
 
       {showNew && (
         <CT_NewChatModal onClose={() => setShowNew(false)} pushToast={pushToast} />
