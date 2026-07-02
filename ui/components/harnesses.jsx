@@ -96,7 +96,7 @@ function HR_OutdatedChips({ harness }) {
 // ============================================================================
 
 function HarnessList() {
-  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
+  const { useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
   const [registerOpen, setRegisterOpen] = React.useState(false);
@@ -104,31 +104,20 @@ function HarnessList() {
   // Direction filter: "all" | "inbound" | "outbound". Server supports
   // ?direction=<x> from Phase 6; we pass it through when non-"all".
   const [directionFilter, setDirectionFilter] = React.useState("all");
-  // Client-side pagination over the fetched list (same approach as the
-  // agent toolset pager). The list endpoint is capped at 200 rows.
-  const [page, setPage] = React.useState(1);
   const HR_PAGE_SIZE = 20;
 
-  const listUrl = directionFilter === "all"
-    ? "/harnesses?limit=200"
-    : "/harnesses?limit=200&direction=" + encodeURIComponent(directionFilter);
+  // Server-side offset pagination (bug #19), replacing the client-side slice
+  // over a hard limit=200 fetch. The direction pill filter is a server-side
+  // query param; changing it resets to the first page via resetKey.
+  const list = usePagedList({
+    key: "harnesses:list",
+    path: "/harnesses",
+    pageSize: HR_PAGE_SIZE,
+    params: { direction: directionFilter === "all" ? undefined : directionFilter },
+    resetKey: directionFilter,
+  });
 
-  const list = useResource(
-    "harnesses:list:" + directionFilter,
-    (signal) => apiFetch("GET", listUrl, null, { signal }),
-    { pollMs: null, deps: [directionFilter] }
-  );
-
-  const items = list.data?.items ?? [];
-
-  // Snap back to page 1 whenever the filter changes the result set.
-  React.useEffect(() => { setPage(1); }, [directionFilter]);
-
-  const totalPages = Math.max(1, Math.ceil(items.length / HR_PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pageStart = (safePage - 1) * HR_PAGE_SIZE;
-  const pageEnd = Math.min(pageStart + HR_PAGE_SIZE, items.length);
-  const pageItems = items.slice(pageStart, pageEnd);
+  const items = list.items;
 
   const onCreated = (harness) => {
     setRegisterOpen(false);
@@ -232,7 +221,7 @@ function HarnessList() {
               </tr>
             </thead>
             <tbody>
-              {pageItems.map((h) => {
+              {items.map((h) => {
                 const isOutbound = h.direction === "outbound";
                 const trackedCount = isOutbound ? (h.tracked_entities?.length || 0) : 0;
                 const driftDirty = isOutbound && (h.status === "OUTDATED" || h.status === "outdated");
@@ -323,18 +312,10 @@ function HarnessList() {
               })}
             </tbody>
           </table>
-          {totalPages > 1 && (
-            <div className="tbl-foot">
-              <span className="tabular">Showing <strong style={{ color: "var(--text)" }}>{pageStart + 1}</strong>–<strong style={{ color: "var(--text)" }}>{pageEnd}</strong> of <strong style={{ color: "var(--text)" }}>{items.length}</strong></span>
-              <div className="pager">
-                <button disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}><Icon name="chevron-left" size={12} /></button>
-                <span className="muted text-sm tabular" style={{ padding: "0 8px" }}>Page {safePage} of {totalPages}</span>
-                <button disabled={safePage >= totalPages} onClick={() => setPage(safePage + 1)}><Icon name="chevron-right" size={12} /></button>
-              </div>
-            </div>
-          )}
         </div>
       )}
+
+      <Pager pager={list} label="harnesses" />
 
       {isMobile && (
         <Fab icon="plus" label="New harness" onClick={() => setRegisterOpen(true)} />

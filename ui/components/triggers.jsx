@@ -169,34 +169,21 @@ function TR_TriggersPage({ triggerId }) {
 const TR_PAGE_SIZE = 25;
 
 function TR_TriggerList() {
-  const { useResource, useRouter, apiFetch } = window.primerApi;
+  const { useRouter, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const [createOpen, setCreateOpen] = React.useState(false);
-  const [page, setPage] = React.useState(0);
 
-  const list = useResource(
-    "triggers:list",
-    (signal) => apiFetch("GET", "/triggers", null, { signal }),
-    { pollMs: 5000 },
-  );
+  // Server-side offset pagination (bug #19). Replaces the client-side slice
+  // over a default-limit /triggers fetch, which silently capped the visible
+  // list at the server's default page size.
+  const list = usePagedList({
+    key: "triggers:list",
+    path: "/triggers",
+    pageSize: TR_PAGE_SIZE,
+    pollMs: 5000,
+  });
 
-  const items = list.data?.items ?? [];
-
-  // Client-side windowing - the list endpoint returns the full set, so we
-  // slice locally and expose Prev/Next controls for visual parity with the
-  // other paginated console list pages.
-  const total = items.length;
-  const pages = Math.max(1, Math.ceil(total / TR_PAGE_SIZE));
-  const safePage = Math.min(page, pages - 1);
-  const start = safePage * TR_PAGE_SIZE;
-  const rows = items.slice(start, start + TR_PAGE_SIZE);
-  const from = total === 0 ? 0 : start + 1;
-  const to = start + rows.length;
-
-  // Clamp back into range if the set shrinks (delete) under us.
-  React.useEffect(() => {
-    if (page > pages - 1) setPage(pages - 1);
-  }, [page, pages]);
+  const items = list.items;
 
   const onCreated = (trigger) => {
     setCreateOpen(false);
@@ -258,7 +245,7 @@ function TR_TriggerList() {
               </tr>
             </thead>
             <tbody>
-              {rows.map((t) => (
+              {items.map((t) => (
                 <TR_TriggerRow
                   key={t.id}
                   trigger={t}
@@ -268,16 +255,10 @@ function TR_TriggerList() {
               ))}
             </tbody>
           </table>
-          <div className="tbl-foot">
-            <span className="tabular">Showing <strong style={{ color: "var(--text)" }}>{from}</strong>–<strong style={{ color: "var(--text)" }}>{to}</strong> of <strong style={{ color: "var(--text)" }}>{total}</strong></span>
-            <div className="pager">
-              <button disabled={safePage === 0} onClick={() => setPage(safePage - 1)}><Icon name="chevron-left" size={12} /></button>
-              <span className="muted text-sm tabular" style={{ padding: "0 8px" }}>Page {safePage + 1} of {pages}</span>
-              <button disabled={safePage + 1 >= pages} onClick={() => setPage(safePage + 1)}><Icon name="chevron-right" size={12} /></button>
-            </div>
-          </div>
         </div>
       )}
+
+      <Pager pager={list} label="triggers" />
 
       {createOpen && (
         <TR_CreateTriggerDialog
