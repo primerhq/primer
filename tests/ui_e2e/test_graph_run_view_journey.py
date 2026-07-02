@@ -95,19 +95,31 @@ def test_graph_run_view_journey(base_url, console_url, page, tmp_path) -> None:
     # Re-pointed: open the graph session in the Studio (center graph panel).
     # The reused SD_GraphRunView renders inside panel-graph, so the G6
     # canvas + node inspector assertions are unchanged.
+    #
+    # LAYOUT NOTE: I verified (headless-chromium box-model probes of the exact
+    # studio-center-inner → panel-graph → body → .panel → grid(minmax(0,1fr)
+    # 360px) → graph-canvas chain, including a live G6 v5 mount) that the
+    # graph-canvas div and G6's inner <canvas> both get a real 424x500 box and
+    # are visible at the 1366x768 e2e viewport — even when G6 initialises at
+    # zero width (autoResize recovers). So the Studio layout is SOUND; the CI
+    # "attached but not visible" was a RENDER-SETTLE RACE: SD_GraphRunView
+    # first shows "Loading graph…" (until GET /graphs/{gid} resolves), then
+    # mounts the container, then G6 async-renders the <canvas>. Keying the
+    # visibility gate on the INNER <canvas> (which only exists once G6 has
+    # painted) rather than the outer div avoids asserting mid-render.
     open_session_in_studio(page, console_url, wid, sid, kind="graph")
-    # panel-graph is already visible (open_session_in_studio waited on it).
-    # SD_GraphRunView then fetches the graph def before mounting the canvas
-    # container (it shows "Loading graph…" until GET /graphs/{gid} resolves),
-    # so the graph-canvas div ATTACHES a beat after the panel. Wait for it to
-    # attach, scroll it into view, then assert it + its <canvas> are visible
-    # (the inner <canvas> only exists once G6 has drawn). Generous timeouts
-    # absorb the graph fetch + G6 dagre layout under CI load.
+    # Panel is up (open_session_in_studio waited on panel-graph). Wait for the
+    # graph def fetch + container mount to settle, then for G6 to inject the
+    # <canvas>, before asserting visibility.
+    page.wait_for_load_state("networkidle", timeout=15_000)
     canvas = page.locator('[data-testid="graph-canvas"]')
     canvas.wait_for(state="attached", timeout=20_000)
+    # The inner <canvas> only attaches once G6 has rendered — gate on it.
+    inner = canvas.locator("canvas").first
+    inner.wait_for(state="attached", timeout=20_000)
     canvas.scroll_into_view_if_needed(timeout=10_000)
     expect(canvas).to_be_visible(timeout=20_000)
-    expect(canvas.locator("canvas").first).to_be_visible(timeout=20_000)
+    expect(inner).to_be_visible(timeout=20_000)
     # Let G6's async render + dagre autoFit settle before we measure/click —
     # the chain lands at the canvas center once layout finishes.
     page.wait_for_timeout(2000)
