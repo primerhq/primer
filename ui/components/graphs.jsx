@@ -1663,6 +1663,12 @@ function GR_SidePanel({
   const selectedEdge = selectedEdgeIdx != null ? (draft.edges || [])[selectedEdgeIdx] : null;
   return (
     <div style={{ borderLeft: "1px solid var(--border)", padding: 14, fontSize: 12.5, overflow: "auto", maxHeight: 500 }}>
+      {/* Graph-level fields (description, max_iterations) render ALWAYS, not
+          only in the no-selection branch — selecting any node/edge used to
+          hide them with no way back, so the description looked uneditable
+          (#16). They stay pinned at the top; the selection editor is below. */}
+      <GR_GraphFields draft={draft} onSetGraph={onSetGraph} />
+      <div style={{ borderTop: "1px solid var(--border)", margin: "12px 0" }} />
       {selected ? (
         <GR_SelectedNodeForm
           node={selected}
@@ -1688,35 +1694,17 @@ function GR_SidePanel({
           onDeleteEdge={() => onDeleteEdgeAt(selectedEdgeIdx)}
         />
       ) : (
-        <GR_GraphStatsBlock draft={draft} onSetGraph={onSetGraph} />
+        <GR_GraphStats draft={draft} />
       )}
     </div>
   );
 }
 
-function GR_GraphStatsBlock({ draft, onSetGraph }) {
-  const nodeIds = new Set((draft.nodes || []).map((n) => n.id));
-  const dangling = [];
-  for (const e of (draft.edges || [])) {
-    if (!nodeIds.has(e.from_node)) dangling.push(`edge.from_node = ${e.from_node}`);
-    if (e.kind === "static" && !nodeIds.has(e.to_node)) {
-      dangling.push(`edge.to_node = ${e.to_node}`);
-    }
-    if (e.kind === "conditional") {
-      const r = e.router || {};
-      if (r.kind === "json_path") {
-        for (const br of (r.branches || [])) {
-          if (!nodeIds.has(br.to_node)) {
-            dangling.push(`branch.to_node = ${br.to_node}`);
-          }
-        }
-        if (r.default_to && !nodeIds.has(r.default_to)) {
-          dangling.push(`default_to = ${r.default_to}`);
-        }
-      }
-    }
-  }
-  const entryOk = draft.entry_node_id && nodeIds.has(draft.entry_node_id);
+// GR_GraphFields — editable GRAPH-level metadata (description,
+// max_iterations). Rendered ALWAYS at the top of the side panel (see
+// GR_SidePanel) so it stays reachable while a node/edge is selected — that
+// unreachability was #16. onSetGraph absent → read-only (run-view reuse).
+function GR_GraphFields({ draft, onSetGraph }) {
   return (
     <div className="col" style={{ gap: 8 }}>
       <div className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
@@ -1744,7 +1732,38 @@ function GR_GraphStatsBlock({ draft, onSetGraph }) {
       ) : (
         <div className="muted text-sm">{draft.description}</div>
       )}
-      <div className="mt-3 muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
+    </div>
+  );
+}
+
+// GR_GraphStats — read-only STATS + dangling-reference audit for the whole
+// graph. Shown in the inspector's default (nothing-selected) state.
+function GR_GraphStats({ draft }) {
+  const nodeIds = new Set((draft.nodes || []).map((n) => n.id));
+  const dangling = [];
+  for (const e of (draft.edges || [])) {
+    if (!nodeIds.has(e.from_node)) dangling.push(`edge.from_node = ${e.from_node}`);
+    if (e.kind === "static" && !nodeIds.has(e.to_node)) {
+      dangling.push(`edge.to_node = ${e.to_node}`);
+    }
+    if (e.kind === "conditional") {
+      const r = e.router || {};
+      if (r.kind === "json_path") {
+        for (const br of (r.branches || [])) {
+          if (!nodeIds.has(br.to_node)) {
+            dangling.push(`branch.to_node = ${br.to_node}`);
+          }
+        }
+        if (r.default_to && !nodeIds.has(r.default_to)) {
+          dangling.push(`default_to = ${r.default_to}`);
+        }
+      }
+    }
+  }
+  const entryOk = draft.entry_node_id && nodeIds.has(draft.entry_node_id);
+  return (
+    <div className="col" style={{ gap: 8 }}>
+      <div className="muted text-sm mono" style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5 }}>
         stats
       </div>
       <dl className="kv" style={{ gridTemplateColumns: "110px 1fr", gap: "4px 12px" }}>
