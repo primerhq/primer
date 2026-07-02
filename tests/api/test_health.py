@@ -34,6 +34,31 @@ async def test_health_surfaces_scheduler_alive(client, app) -> None:
 
 
 @pytest.mark.asyncio
+async def test_health_scheduler_not_degraded_by_default(client) -> None:
+    """A healthy single-process wiring reports degraded=False."""
+    response = await client.get("/v1/health")
+    body = response.json()
+    assert body["scheduler"]["degraded"] is False
+    assert body["scheduler"]["degraded_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_health_surfaces_scheduler_degraded(app, client) -> None:
+    """When the wiring flags an unsafe scheduler/runtime-mode combo (e.g.
+    in-memory scheduler + external/multi-process worker), /v1/health surfaces
+    it via scheduler.degraded + scheduler.degraded_reason."""
+    reason = "in-memory scheduler with runtime_mode=worker is not safe"
+    app.state.scheduler_degraded_reason = reason
+    try:
+        response = await client.get("/v1/health")
+        body = response.json()
+        assert body["scheduler"]["degraded"] is True
+        assert body["scheduler"]["degraded_reason"] == reason
+    finally:
+        app.state.scheduler_degraded_reason = None
+
+
+@pytest.mark.asyncio
 async def test_health_surfaces_worker_pool_in_flight_capacity(client) -> None:
     """/v1/health includes worker_pool.in_flight + worker_pool.capacity.
 
