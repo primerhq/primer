@@ -77,7 +77,16 @@ def _default_shell() -> list[str]:
 
 
 def _set_winsize(fd: int, cols: int, rows: int) -> None:
-    """Apply a terminal window size to *fd* via the ``TIOCSWINSZ`` ioctl."""
+    """Apply a terminal window size to *fd* via the ``TIOCSWINSZ`` ioctl.
+
+    Clamps to [1, 1000] (matching the API endpoint's query bounds): the
+    values arrive from client control frames, and ``struct.pack("HHHH")``
+    raises ``struct.error`` — NOT OSError — for values outside uint16, which
+    previously escaped the resize guards and could kill the runtime
+    connection's message loop.
+    """
+    cols = max(1, min(int(cols), 1000))
+    rows = max(1, min(int(rows), 1000))
     winsize = struct.pack("HHHH", rows, cols, 0, 0)
     fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
 
@@ -119,7 +128,9 @@ class PtySession:
             return
         try:
             _set_winsize(self.master_fd, cols, rows)
-        except OSError:
+        except (OSError, ValueError, TypeError):
+            # OSError: pty gone. ValueError/TypeError: garbage cols/rows
+            # from a malformed control frame — drop, never propagate.
             pass
 
     def terminate(self) -> None:
@@ -336,6 +347,10 @@ async def _run_pty(
         except (TimeoutError, ProcessLookupError):
             try:
                 proc.kill()
+            except ProcessLookupError:
+                pass
+            try:
+                await proc.wait()  # reap — mirrors the normal-teardown path
             except ProcessLookupError:
                 pass
         _safe_close(master_fd)

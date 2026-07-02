@@ -96,6 +96,41 @@ async def test_pty_control_ops_unknown_target(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_pty_resize_out_of_range_is_clamped(tmp_path: Path) -> None:
+    """Out-of-uint16 cols/rows must be clamped, never raise struct.error.
+
+    Regression: struct.pack("HHHH") raises struct.error (NOT OSError) for
+    values <0 or >65535; unclamped it escaped the resize guard and could
+    kill the runtime connection's message loop.
+    """
+    registry = PtyRegistry()
+    frames: list[str] = []
+
+    async def send(frame: str) -> None:
+        frames.append(frame)
+
+    start_pty(
+        req_id=5,
+        args={"cmd": ["/bin/sh"], "cols": 80, "rows": 24},
+        workspace_root=str(tmp_path),
+        send=send,
+        registry=registry,
+    )
+    await _wait_for(lambda: any(e.get("event") == "pty_open" for e in _events(frames)))
+
+    # Absurd values are clamped in _set_winsize — no exception, session alive.
+    assert registry.resize(5, 10**6, -5) is True
+    assert registry.resize(5, 0, 70000) is True
+
+    # The session still works after the clamped resizes.
+    assert registry.write_stdin(5, b"echo still_alive\n") is True
+    await _wait_for(lambda: b"still_alive" in _collected_output(frames))
+
+    assert registry.close(5) is True
+    await _wait_for(lambda: registry.get(5) is None)
+
+
+@pytest.mark.asyncio
 async def test_pty_bad_workdir_emits_error(tmp_path: Path) -> None:
     registry = PtyRegistry()
     frames: list[str] = []

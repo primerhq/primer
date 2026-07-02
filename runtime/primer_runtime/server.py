@@ -189,26 +189,38 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                 continue
 
             if op_name in (OpName.PTY_STDIN, OpName.PTY_RESIZE, OpName.PTY_CLOSE):
-                pty_target: int = args.get("target_req_id", -1)
-                found = True
-                if op_name == OpName.PTY_STDIN:
-                    try:
-                        data = base64.b64decode(args.get("data_b64", "") or "")
-                    except Exception:  # noqa: BLE001
-                        await ws.send_str(serialize(Response(
-                            req_id=frame_req_id, ok=False,
-                            error={"code": ErrorCode.EPROTOCOL, "message": "pty_stdin: invalid base64"},
-                        )))
-                        continue
-                    found = pty_registry.write_stdin(pty_target, data)
-                elif op_name == OpName.PTY_RESIZE:
-                    found = pty_registry.resize(
-                        pty_target,
-                        int(args.get("cols") or 80),
-                        int(args.get("rows") or 24),
-                    )
-                else:  # PTY_CLOSE
-                    found = pty_registry.close(pty_target)
+                # Fully wrapped: these args come from client frames, and ANY
+                # exception escaping here (e.g. int("abc") → ValueError;
+                # struct.error pre-clamp) would break out of the message
+                # loop, skipping the post-loop cancel_all() teardown and
+                # leaking every PTY/watch on this connection.
+                try:
+                    pty_target: int = args.get("target_req_id", -1)
+                    found = True
+                    if op_name == OpName.PTY_STDIN:
+                        try:
+                            data = base64.b64decode(args.get("data_b64", "") or "")
+                        except Exception:  # noqa: BLE001
+                            await ws.send_str(serialize(Response(
+                                req_id=frame_req_id, ok=False,
+                                error={"code": ErrorCode.EPROTOCOL, "message": "pty_stdin: invalid base64"},
+                            )))
+                            continue
+                        found = pty_registry.write_stdin(pty_target, data)
+                    elif op_name == OpName.PTY_RESIZE:
+                        found = pty_registry.resize(
+                            pty_target,
+                            int(args.get("cols") or 80),
+                            int(args.get("rows") or 24),
+                        )
+                    else:  # PTY_CLOSE
+                        found = pty_registry.close(pty_target)
+                except Exception as exc:  # noqa: BLE001 — protocol boundary
+                    await ws.send_str(serialize(Response(
+                        req_id=frame_req_id, ok=False,
+                        error={"code": ErrorCode.EPROTOCOL, "message": f"{op_name}: {exc}"},
+                    )))
+                    continue
                 if found:
                     await ws.send_str(serialize(Response(req_id=frame_req_id, ok=True, result={"ok": True})))
                 else:
