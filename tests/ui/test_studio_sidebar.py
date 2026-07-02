@@ -183,3 +183,51 @@ def test_bundle_transpiles_with_studio_sidebar() -> None:
     text = body.decode("utf-8")
     assert "/* === components/studio-sidebar.jsx === */" in text
     assert "/* === components/studio.jsx === */" in text
+
+
+# ---------------------------------------------------------------------------
+# Graph-session glyph + delete + rename + create-name (bugs #9, #20, #22)
+# ---------------------------------------------------------------------------
+
+
+def test_sidebar_exports_session_kind_helpers() -> None:
+    src = _sidebar_src()
+    assert "window.ST_sessionKind = ST_sessionKind" in src
+    assert "window.ST_sessionGlyph = ST_sessionGlyph" in src
+
+
+def test_session_kind_detects_graph_prefix() -> None:
+    # Graph-bound sessions carry a synthetic agent_id "graph:<gid>" on the
+    # SessionInfo list shape (no binding field), so the prefix is the signal.
+    src = _sidebar_src()
+    assert 'indexOf("graph:") === 0' in src
+
+
+def test_sidebar_session_management_testids() -> None:
+    src = _sidebar_src()
+    for tid in (
+        'data-testid="session-delete"',
+        'data-testid="session-rename"',
+        'data-testid="new-session-name"',
+    ):
+        assert tid in src, f"Missing data-testid: {tid}"
+
+
+def test_sidebar_delete_uses_modal_not_native_confirm() -> None:
+    src = _sidebar_src()
+    # The delete confirm must go through the shared Modal, never window.confirm.
+    assert "ST_SessionDeleteDialog" in src
+    assert "window.confirm" not in src
+
+
+def test_sidebar_delete_stops_row_open_propagation() -> None:
+    src = _sidebar_src()
+    # The trash button must stopPropagation so the row's open-on-click
+    # doesn't fire when deleting.
+    assert "e.stopPropagation(); setPendingDelete(session)" in src
+
+
+def test_sidebar_rename_patches_session() -> None:
+    src = _sidebar_src()
+    assert "ST_SessionRenameDialog" in src
+    assert '"PATCH"' in src
