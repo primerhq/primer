@@ -253,6 +253,56 @@ async def test_output_queue_eof_sentinel_survives_full_queue() -> None:
     assert items[-1] == b""  # EOF landed at the tail
 
 
+def test_write_stdin_loops_over_short_writes(monkeypatch) -> None:
+    """A large stdin write is fully delivered even when os.write accepts only
+    a few bytes per call (BE7: loop over the remainder)."""
+    import os as _os
+
+    from primer_runtime.pty_op import PtySession
+
+    _SENTINEL_FD = 0x7FED_CAFE  # not a real fd; os.write is intercepted for it
+    real_write = _os.write
+    delivered = bytearray()
+    calls = 0
+
+    def fake_write(fd, buf):
+        nonlocal calls
+        if fd != _SENTINEL_FD:
+            return real_write(fd, buf)
+        calls += 1
+        chunk = bytes(buf[:4])  # accept at most 4 bytes per call
+        delivered.extend(chunk)
+        return len(chunk)
+
+    monkeypatch.setattr(_os, "write", fake_write)
+
+    session = PtySession(req_id=1, master_fd=_SENTINEL_FD, proc=None)  # type: ignore[arg-type]
+    payload = b"a-large-paste-exceeding-one-write-buffer" * 3
+    session.write_stdin(payload)
+
+    assert bytes(delivered) == payload
+    assert calls > 1  # actually looped, not a single write
+
+
+def test_write_stdin_drops_on_dead_pty(monkeypatch) -> None:
+    """OSError from os.write (dead pty) is swallowed, not raised."""
+    import os as _os
+
+    from primer_runtime.pty_op import PtySession
+
+    _SENTINEL_FD = 0x7FED_BEEF
+    real_write = _os.write
+
+    def fake_write(fd, buf):
+        if fd != _SENTINEL_FD:
+            return real_write(fd, buf)
+        raise OSError("pty gone")
+
+    monkeypatch.setattr(_os, "write", fake_write)
+    session = PtySession(req_id=2, master_fd=_SENTINEL_FD, proc=None)  # type: ignore[arg-type]
+    session.write_stdin(b"data")  # must not raise
+
+
 @pytest.mark.asyncio
 async def test_pty_cancel_all_terminates(tmp_path: Path) -> None:
     registry = PtyRegistry()
