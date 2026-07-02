@@ -16,8 +16,10 @@ from primer.chat.dispatch import (
     ChatDispatchDeps,
     _find_next_user_message,
     _find_resume_reply,
+    _read_messages_from_cursor,
 )
 from primer.model.chats import Chat, ChatMessage
+from primer.model.storage import FieldRef, Op, Predicate
 
 
 def _deps(sp) -> ChatDispatchDeps:
@@ -140,6 +142,67 @@ async def test_multi_turn_index_equivalence(fake_storage_provider):
     await sp.get_storage(Chat).update(chat)
     picked_cursor = await _find_next_user_message(_deps(sp), "c4")
     assert picked_cursor is not None and picked_cursor.seq == 5
+
+
+# --- _read_messages_from_cursor push-down -----------------------------------
+
+
+def _find_ge_seq_clause(node, cursor: int) -> bool:
+    """True if the predicate tree contains a ``seq >= cursor`` GE clause."""
+    if not isinstance(node, Predicate):
+        return False
+    if (
+        node.op == Op.GE
+        and isinstance(node.left, FieldRef)
+        and node.left.name == "seq"
+        and getattr(node.right, "value", None) == cursor
+    ):
+        return True
+    return _find_ge_seq_clause(node.left, cursor) or _find_ge_seq_clause(
+        node.right, cursor
+    )
+
+
+@pytest.mark.asyncio
+async def test_read_from_cursor_reads_only_suffix(fake_storage_provider):
+    """``_read_messages_from_cursor`` pushes ``seq >= cursor`` into the storage
+    predicate, so storage only ever returns the suffix at/after the cursor --
+    not the full O(N) history it used to page through and filter in Python.
+    """
+    sp = fake_storage_provider
+    await _seed_chat(sp, "cbig", cursor=0)
+    for seq in range(1, 601):  # 600-message history
+        await _add(sp, "cbig", seq, "assistant_token", {"delta": "x"})
+    await _set_last_seq(sp, "cbig", 600)
+
+    msgs = sp.get_storage(ChatMessage)
+
+    captured_predicates: list = []
+    returned_seqs: list[int] = []
+    real_find = msgs.find
+
+    async def spy_find(predicate, page, *, order_by=None):
+        captured_predicates.append(predicate)
+        result = await real_find(predicate, page, order_by=order_by)
+        returned_seqs.extend(r.seq for r in result.items)
+        return result
+
+    msgs.find = spy_find  # type: ignore[assignment]
+
+    cursor = 550
+    rows = await _read_messages_from_cursor(msgs, "cbig", cursor)
+
+    # Behaviour: exactly the suffix in ascending order.
+    assert [r.seq for r in rows] == list(range(cursor, 601))
+
+    # Push-down: every find() carried the seq>=cursor GE clause, and storage
+    # therefore never handed back a single row below the cursor (the O(N)
+    # prefix is never read).
+    assert captured_predicates
+    assert all(_find_ge_seq_clause(p, cursor) for p in captured_predicates)
+    assert returned_seqs, "expected suffix rows to be read"
+    assert all(s >= cursor for s in returned_seqs)
+    assert len(returned_seqs) == 601 - cursor  # 51 rows read, not 600
 
 
 # --- _find_resume_reply -----------------------------------------------------
