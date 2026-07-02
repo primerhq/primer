@@ -553,15 +553,27 @@ async def _read_messages_from_cursor(
 ) -> list[ChatMessage]:
     """Read every ChatMessage with ``seq >= cursor`` in ascending seq order.
 
-    Pages internally (window of 200) so memory stays bounded. Filtering
-    by ``seq >= cursor`` is applied in-process to keep the storage query
-    backend-agnostic; the cursor still bounds how far back the page walk
-    can start mattering, and skipped pages are cheap reads. When the
-    cursor is 0 this returns every row, identical to the old full scan.
+    The ``seq >= cursor`` bound is pushed into the storage predicate (an
+    ``Op.GE`` clause AND-ed with the ``chat_id`` match) so the scan is
+    O(suffix): only rows at or after the drain cursor are ever read from
+    storage. Previously this paged from ``offset=0`` over the entire chat
+    history and discarded ``seq < cursor`` rows in Python, costing O(N)
+    reads on every drain regardless of how much was already processed.
+
+    Pages internally (window of 200) so memory stays bounded. When the
+    cursor is 0 the ``seq >= 0`` clause matches every row (``seq`` starts
+    at 1), identical to the old full scan.
     """
     pred = Predicate(
-        left=FieldRef(name="chat_id"), op=Op.EQ,
-        right=Value(value=chat_id),
+        left=Predicate(
+            left=FieldRef(name="chat_id"), op=Op.EQ,
+            right=Value(value=chat_id),
+        ),
+        op=Op.AND,
+        right=Predicate(
+            left=FieldRef(name="seq"), op=Op.GE,
+            right=Value(value=cursor),
+        ),
     )
     out: list[ChatMessage] = []
     offset = 0
@@ -571,9 +583,7 @@ async def _read_messages_from_cursor(
             pred, OffsetPage(offset=offset, length=PAGE),
             order_by=[OrderBy(field="seq", direction="asc")],
         )
-        for row in page.items:
-            if row.seq >= cursor:
-                out.append(row)
+        out.extend(page.items)
         if len(page.items) < PAGE:
             break
         offset += PAGE
