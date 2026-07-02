@@ -31,15 +31,10 @@ function _knToastErr(pushToast, fallbackTitle) {
 // ============================================================================
 
 function CollectionsPage({ pushToast, onOpen, onNavigate }) {
-  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
+  const { useResource, useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
 
-  const list = useResource(
-    "collections:list",
-    (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
-    { pollMs: null },
-  );
   const embedProviders = useResource(
     "collections:embedding-providers",
     (signal) => apiFetch("GET", "/embedding_providers?limit=200", null, { signal }),
@@ -60,7 +55,16 @@ function CollectionsPage({ pushToast, onOpen, onNavigate }) {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [textFilter, setTextFilter] = React.useState("");
 
-  const items = list.data?.items ?? [];
+  // Server-side offset pagination (bug #19); the text filter narrows the
+  // current page and resets to page 0 via resetKey.
+  const list = usePagedList({
+    key: "collections:list",
+    path: "/collections",
+    pageSize: 50,
+    resetKey: textFilter,
+  });
+
+  const items = list.items;
   const filtered = items.filter(
     (c) => !textFilter || (c.id || "").toLowerCase().includes(textFilter.toLowerCase()),
   );
@@ -170,6 +174,8 @@ function CollectionsPage({ pushToast, onOpen, onNavigate }) {
         )}
       </div>
       )}
+
+      <Pager pager={list} label="collections" />
 
       {isMobile && (
         <Fab icon="plus" label="New collection" onClick={() => setCreateOpen(true)} />
@@ -395,35 +401,29 @@ function KN_CollectionListModal({ collection, pushToast, onClose }) {
 // System collections: paginated chunk enumeration from /indexed_documents,
 // which still returns the {items, total, offset, limit} OffsetPage shape.
 function KN_SystemCollectionListView({ collection, pushToast, onClose, titleBar }) {
-  const { useResource, apiFetch } = window.primerApi;
+  const { usePagedList } = window.primerApi;
   const PAGE_SIZE = 25;
-  const [offset, setOffset] = React.useState(0);
-  const indexed = useResource(
-    `collection-list:${collection.id}:indexed_documents:${offset}`,
-    (signal) => apiFetch(
-      "GET",
-      `/collections/${encodeURIComponent(collection.id)}/indexed_documents?limit=${PAGE_SIZE}&offset=${offset}`,
-      null,
-      { signal },
-    ),
-    { pollMs: null, deps: [collection.id, offset] },
-  );
-  const items = (indexed.data?.items || []).map((r) => ({
+  // Shared offset pager (bug #19) drives this documents modal too — same
+  // /indexed_documents?limit=&offset= endpoint, now via the reusable hook
+  // instead of a bespoke offset/hasNext computation.
+  const indexed = usePagedList({
+    key: `collection-list:${collection.id}:indexed_documents`,
+    path: `/collections/${encodeURIComponent(collection.id)}/indexed_documents`,
+    pageSize: PAGE_SIZE,
+  });
+  const offset = indexed.offset;
+  const items = (indexed.items || []).map((r) => ({
     document_id: r.document_id,
     chunk_id: r.chunk_id,
     text: r.text,
     meta: r.meta,
     score: null,
   }));
-  const total = indexed.data?.total ?? null;
-  const showingFrom = total != null && total > 0 ? offset + 1 : 0;
-  const showingTo = total != null
-    ? Math.min(offset + PAGE_SIZE, total)
-    : offset + items.length;
-  const hasPrev = offset > 0;
-  const hasNext = total != null
-    ? (offset + PAGE_SIZE) < total
-    : items.length >= PAGE_SIZE;
+  const total = indexed.total;
+  const showingFrom = indexed.rangeStart;
+  const showingTo = indexed.rangeEnd;
+  const hasPrev = indexed.hasPrev;
+  const hasNext = indexed.hasNext;
 
   return (
     <Modal
@@ -441,10 +441,10 @@ function KN_SystemCollectionListView({ collection, pushToast, onClose, titleBar 
           <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
             <Btn size="sm" kind="ghost" icon="chevron-left"
               disabled={!hasPrev || indexed.loading}
-              onClick={() => setOffset((o) => Math.max(0, o - PAGE_SIZE))}>Prev</Btn>
+              onClick={indexed.prev}>Prev</Btn>
             <Btn size="sm" kind="ghost"
               disabled={!hasNext || indexed.loading}
-              onClick={() => setOffset((o) => o + PAGE_SIZE)}>Next <Icon name="chevron-right" size={12} /></Btn>
+              onClick={indexed.next}>Next <Icon name="chevron-right" size={12} /></Btn>
             <Btn kind="ghost" onClick={onClose}>Close</Btn>
           </div>
         </div>

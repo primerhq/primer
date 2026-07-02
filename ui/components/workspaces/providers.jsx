@@ -42,17 +42,19 @@ function _wpSummary(p) {
 }
 
 function WorkspaceProvidersPage({ pushToast }) {
-  const { useResource, useRouter, useViewport, apiFetch } = window.primerApi;
+  const { useRouter, useViewport, usePagedList, Pager } = window.primerApi;
   const { navigate } = useRouter();
   const { isMobile } = useViewport();
   const [createOpen, setCreateOpen] = React.useState(false);
 
-  const list = useResource(
-    WP_LIST_KEY,
-    (signal) => apiFetch("GET", "/workspace_providers?limit=200", null, { signal }),
-    { pollMs: 5000 }
-  );
-  const items = Array.isArray(list.data?.items) ? list.data.items : [];
+  // Server-side offset pagination (bug #19).
+  const list = usePagedList({
+    key: WP_LIST_KEY,
+    path: "/workspace_providers",
+    pageSize: 50,
+    pollMs: 5000,
+  });
+  const items = list.items;
 
   const modal = createOpen ? (
     <WorkspaceProviderCreateModal
@@ -130,6 +132,7 @@ function WorkspaceProvidersPage({ pushToast }) {
             </table>
           </div>
         )}
+        <Pager pager={list} label="providers" />
         {isMobile && (
           <Fab icon="plus" label="New provider" onClick={() => setCreateOpen(true)} />
         )}
