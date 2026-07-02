@@ -27,7 +27,7 @@ from pydantic import BaseModel
 
 from primer.common.google_errors import classify_google_exception
 from primer.int.llm import LLM
-from primer.llm._timeout import _iter_with_timeout, _open_with_connect_timeout
+from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _open_with_connect_timeout
 from primer.llm._tokenizer.gemini import count_tokens_gemini
 from primer.model.except_ import (
     ConfigError,
@@ -835,6 +835,7 @@ class GeminiLLM(LLM):
         self._rate_limit_key = f"llm:{provider.id}"
         self._max_concurrency = provider.limits.max_concurrency
         self._request_timeout_seconds = provider.limits.request_timeout_seconds
+        self._total_timeout_seconds = provider.limits.total_timeout_seconds
         self._connect_timeout_seconds = provider.limits.connect_timeout_seconds
         self._trace_llm_io = trace_llm_io
 
@@ -988,7 +989,9 @@ class GeminiLLM(LLM):
                     state = _StreamState()
                     try:
                         async for chunk in _iter_with_timeout(
-                            sdk_stream, self._request_timeout_seconds
+                            sdk_stream,
+                            self._request_timeout_seconds,
+                            self._total_timeout_seconds,
                         ):
                             for ev in _translate_chunk(chunk, state, model_name=model):
                                 if isinstance(ev, Usage):
@@ -997,6 +1000,22 @@ class GeminiLLM(LLM):
                                 yield ev
                     except TimeoutError as exc:
                         from primer.model.except_ import ProviderTimeoutError
+                        if isinstance(exc, GenerationBudgetExceeded):
+                            total_val = self._total_timeout_seconds
+                            logger.error(
+                                "Gemini generation exceeded its total budget (%.1f s)",
+                                total_val,
+                                extra={
+                                    "provider_id": self._provider.id,
+                                    "model": model,
+                                },
+                            )
+                            raise ProviderTimeoutError(
+                                f"Gemini generation exceeded its total budget of "
+                                f"{total_val} s (provider_id={self._provider.id!r}, "
+                                f"model={model!r})",
+                                code="generation_timeout",
+                            ) from exc
                         timeout_val = self._request_timeout_seconds
                         logger.error(
                             "Gemini stream timed out (no event in %.1f s)",

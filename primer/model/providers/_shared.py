@@ -82,3 +82,21 @@ class Limits(BaseModel):
             "network request; not applicable to local (in-process) backends."
         ),
     )
+    total_timeout_seconds: float | None = Field(
+        default=None,
+        ge=0.0,
+        description=(
+            "Wall-clock ceiling in seconds for ONE full streamed generation, "
+            "measured from the first wait after the stream opens. ``None`` "
+            "(the default) means no ceiling. This is the RUNAWAY-GENERATION "
+            "backstop: a model that keeps emitting tokens forever (e.g. a "
+            "small local model free-running on a structured-output request) "
+            "never trips the per-event stall timeout because events keep "
+            "arriving -- this cap aborts such a generation cleanly, failing "
+            "the turn and releasing the concurrency slot. Set it comfortably "
+            "above your slowest legitimate generation. The three timeouts "
+            "compose: ``connect_timeout_seconds`` bounds opening the stream "
+            "(incl. cold model load), ``request_timeout_seconds`` bounds each "
+            "gap between events, and this bounds the whole generation."
+        ),
+    )
