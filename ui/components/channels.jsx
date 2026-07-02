@@ -65,24 +65,28 @@ function ProviderBadge({ kind }) {
 // ============== Providers list ==============
 
 function ChannelProvidersPage({ onOpen, pushToast }) {
-  const { apiFetch, useResource, useViewport } = window.primerApi;
+  const { apiFetch, useResource, useViewport, usePagedList, Pager } = window.primerApi;
   const { isMobile } = useViewport();
   const [showNew, setShowNew] = React.useState(false);
   const [filter, setFilter] = React.useState("");
   const [platform, setPlatform] = React.useState("");
 
-  const providers = useResource(
-    CH_LIST_PROVIDERS,
-    (signal) => apiFetch("GET", "/channel_providers?limit=200", null, { signal }),
-    {},
-  );
+  // Providers are the paginated table (bug #19); text + platform filters
+  // narrow the current page and reset to page 0. The channels fetch is only a
+  // per-provider count lookup, so it stays a bounded full fetch.
+  const providers = usePagedList({
+    key: CH_LIST_PROVIDERS,
+    path: "/channel_providers",
+    pageSize: 50,
+    resetKey: filter + "|" + platform,
+  });
   const channels = useResource(
     CH_LIST_CHANNELS,
     (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
     {},
   );
 
-  const items = providers.data?.items ?? [];
+  const items = providers.items;
   const channelItems = channels.data?.items ?? [];
   const filtered = items.filter((p) => {
     if (platform && p.provider !== platform) return false;
@@ -168,6 +172,8 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
         </table>
       </div>
       )}
+
+      <Pager pager={providers} label="providers" />
 
       {isMobile && (
         <Fab icon="plus" label="New channel provider" onClick={() => setShowNew(true)} />
@@ -583,26 +589,30 @@ function ChannelProviderDetail({ providerId, pushToast }) {
 // ============== Channels list ==============
 
 function ChannelsPage({ onNavigate, pushToast }) {
-  const { apiFetch, useResource, useMutation, useViewport } = window.primerApi;
+  const { apiFetch, useResource, useMutation, useViewport, usePagedList, Pager } = window.primerApi;
   const { isMobile } = useViewport();
   const [showNew, setShowNew] = React.useState(false);
   const [editing, setEditing] = React.useState(null);
   const [filter, setFilter] = React.useState("");
   const [providerFilter, setProviderFilter] = React.useState("");
 
+  // Providers back the dropdown + row badges — a small, bounded lookup, so it
+  // stays a full fetch. Only the channels table is offset-paginated (bug #19);
+  // the text + provider filters narrow the current page and reset to page 0.
   const providers = useResource(
     CH_LIST_PROVIDERS,
     (signal) => apiFetch("GET", "/channel_providers?limit=200", null, { signal }),
     {},
   );
-  const channels = useResource(
-    CH_LIST_CHANNELS,
-    (signal) => apiFetch("GET", "/channels?limit=200", null, { signal }),
-    {},
-  );
+  const channels = usePagedList({
+    key: CH_LIST_CHANNELS,
+    path: "/channels",
+    pageSize: 50,
+    resetKey: filter + "|" + providerFilter,
+  });
 
   const providerItems = providers.data?.items ?? [];
-  const channelItems = channels.data?.items ?? [];
+  const channelItems = channels.items;
   const filtered = channelItems.filter((c) => {
     if (providerFilter && c.provider_id !== providerFilter) return false;
     if (!filter) return true;
@@ -750,6 +760,8 @@ function ChannelsPage({ onNavigate, pushToast }) {
         </table>
       </div>
       )}
+
+      <Pager pager={channels} label="channels" />
 
       {isMobile && providerItems.length > 0 && (
         <Fab icon="plus" label="New channel" onClick={() => setShowNew(true)} />
