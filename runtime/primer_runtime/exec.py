@@ -23,11 +23,11 @@ import asyncio
 import base64
 import logging
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
 from typing import Any
 
 from primer_runtime.ops import OpError, _resolve_safe
-from primer_runtime.protocol import ErrorCode, Event
+from primer_runtime.protocol import ErrorCode, Event, Response, serialize
 
 log = logging.getLogger(__name__)
 
@@ -196,3 +196,98 @@ async def run_exec(
             event="exit",
             data={"code": returncode},
         )
+
+
+# ---------------------------------------------------------------------------
+# Exec-as-task: keep the runtime message loop free while an exec streams
+# ---------------------------------------------------------------------------
+
+
+class ExecRegistry:
+    """Per-connection set of in-flight exec stream tasks.
+
+    Mirrors :class:`~primer_runtime.pty_op.PtyRegistry` for the exec op: the
+    server spawns each ``exec`` as a tracked task so a long-running exec never
+    blocks the single runtime message loop (which also services
+    ``pty_stdin``/``pty_resize`` and file ops).  ``cancel_all`` is invoked on
+    WS close to tear down any exec still streaming.
+    """
+
+    def __init__(self) -> None:
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def add(self, task: asyncio.Task[None]) -> None:
+        self._tasks.add(task)
+
+    def discard(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+
+    def cancel_all(self) -> None:
+        """Cancel every in-flight exec task (called on WS close)."""
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
+
+
+async def _run_exec_stream(
+    req_id: int,
+    args: dict[str, Any],
+    workspace_root: str,
+    send: Callable[[str], Coroutine[Any, Any, None]],
+) -> None:
+    """Task body: drive :func:`run_exec` and forward its frames via *send*.
+
+    Preserves the original inline framing exactly — streaming
+    ``stdout``/``stderr``/``exit`` events in order, an ``OpError`` mapped to a
+    single-shot ``ok=false`` Response, and any other exception mapped to
+    ``EINTERNAL`` — the only change is that this now runs off the message loop
+    as its own task.  Per-req_id output ordering is unchanged (a single task
+    awaits each ``send`` in turn).
+    """
+    agen = run_exec(req_id, args, workspace_root)
+    try:
+        async for event in agen:
+            await send(serialize(event))
+    except OpError as exc:
+        await send(serialize(Response(
+            req_id=req_id, ok=False,
+            error={"code": exc.code, "message": exc.message},
+        )))
+    except asyncio.CancelledError:
+        # WS close / cancel_all: close the generator so run_exec's own
+        # CancelledError/GeneratorExit teardown reaps the subprocess and
+        # cancels its reader tasks, then propagate the cancellation.
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Unexpected error handling exec op")
+        await send(serialize(Response(
+            req_id=req_id, ok=False,
+            error={"code": ErrorCode.EINTERNAL, "message": str(exc)},
+        )))
+    finally:
+        # Idempotent: a no-op if the generator already ran to completion or
+        # unwound via an exception; on the cancel-at-send window it throws
+        # GeneratorExit into run_exec so its teardown (reader-task cancel +
+        # subprocess terminate/reap) still runs.
+        await agen.aclose()
+
+
+def start_exec(
+    req_id: int,
+    args: dict[str, Any],
+    workspace_root: str,
+    send: Callable[[str], Coroutine[Any, Any, None]],
+    registry: ExecRegistry,
+) -> asyncio.Task[None]:
+    """Spawn a tracked exec stream task; returns it (tests await it).
+
+    The task is registered in *registry* so ``cancel_all`` can reach it on WS
+    close, and a done-callback deregisters it on normal completion.
+    """
+    task = asyncio.create_task(
+        _run_exec_stream(req_id, args, workspace_root, send),
+        name=f"exec:{req_id}",
+    )
+    registry.add(task)
+    task.add_done_callback(registry.discard)
+    return task
