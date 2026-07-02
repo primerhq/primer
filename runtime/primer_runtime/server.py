@@ -21,7 +21,7 @@ import tempfile
 from aiohttp import web
 from aiohttp import WSMsgType
 
-from primer_runtime.exec import run_exec
+from primer_runtime.exec import ExecRegistry, start_exec
 from primer_runtime.ops import HANDLERS, OpError
 from primer_runtime.protocol import ErrorCode, OpName, Response, serialize
 from primer_runtime.pty_op import PtyRegistry, start_pty
@@ -145,6 +145,9 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     watch_registry = WatchRegistry()
     # Per-connection PTY registry — tracks live interactive terminal sessions.
     pty_registry = PtyRegistry()
+    # Per-connection exec registry — tracks in-flight streaming exec tasks so
+    # a long exec never blocks the message loop below.
+    exec_registry = ExecRegistry()
 
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
@@ -231,25 +234,20 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                 continue
 
             # --- Streaming exec op ----------------------------------------
+            # Spawn the exec stream as a tracked task (mirrors PTY_OPEN) so a
+            # long-running exec does NOT block this single message loop — while
+            # it streams, pty_stdin/pty_resize and file ops on this same
+            # connection stay serviceable. The task owns its own framing
+            # (stdout/stderr/exit events + error Response) and per-req_id output
+            # ordering; cancel_all() on WS close tears it down.
             if op_name == OpName.EXEC:
-                try:
-                    async for event in run_exec(frame_req_id, args, workspace_root):
-                        await ws.send_str(serialize(event))
-                except OpError as exc:
-                    err_resp = Response(
-                        req_id=frame_req_id,
-                        ok=False,
-                        error={"code": exc.code, "message": exc.message},
-                    )
-                    await ws.send_str(serialize(err_resp))
-                except Exception as exc:  # noqa: BLE001
-                    log.exception("Unexpected error handling exec op")
-                    err_resp = Response(
-                        req_id=frame_req_id,
-                        ok=False,
-                        error={"code": ErrorCode.EINTERNAL, "message": str(exc)},
-                    )
-                    await ws.send_str(serialize(err_resp))
+                start_exec(
+                    req_id=frame_req_id,
+                    args=args,
+                    workspace_root=workspace_root,
+                    send=ws.send_str,
+                    registry=exec_registry,
+                )
                 continue
 
             # --- Single-shot ops ------------------------------------------
@@ -285,9 +283,11 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
         elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
             break
 
-    # Cancel any lingering watch subscriptions / PTY sessions on disconnect.
+    # Cancel any lingering watch subscriptions / PTY sessions / exec streams
+    # on disconnect.
     watch_registry.cancel_all()
     pty_registry.cancel_all()
+    exec_registry.cancel_all()
 
     return ws
 
