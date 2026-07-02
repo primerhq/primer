@@ -302,7 +302,7 @@ function useStudioState(wid) {
     });
   }, []);
 
-  // ---- terminal (P7 placeholder) ----
+  // ---- terminal (TerminalPanel mounts in the center column when open) ----
   var toggleTerminal = React.useCallback(function () {
     setState(function (s) { return Object.assign({}, s, { terminalOpen: !s.terminalOpen }); });
   }, []);

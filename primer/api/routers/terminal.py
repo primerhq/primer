@@ -189,7 +189,7 @@ async def workspace_terminal_ws(
     recv_task = asyncio.ensure_future(_recv_loop(websocket, session))
     send_task = asyncio.ensure_future(_send_loop(websocket, session))
     try:
-        _done, pending = await asyncio.wait(
+        done, pending = await asyncio.wait(
             [recv_task, send_task], return_when=asyncio.FIRST_COMPLETED,
         )
         for task in pending:
@@ -198,6 +198,11 @@ async def workspace_terminal_ws(
                 await task
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
+        for task in done:
+            # Consume the finished task's exception (e.g. the runtime
+            # rejected pty_open) so it never logs as "never retrieved".
+            if not task.cancelled():
+                task.exception()
     finally:
         # Always tear the PTY down on disconnect (child terminated, fd freed).
         await session.close()

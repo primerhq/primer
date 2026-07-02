@@ -79,6 +79,10 @@ def test_resize_control_frame_accepted(fake_storage_provider, fake_provider_regi
             # A JSON resize control frame must be accepted (no close), and the
             # session keeps working afterwards.
             ws.send_json({"resize": {"cols": 120, "rows": 40}})
+            # Out-of-uint16 values must be clamped — struct.pack("HHHH")
+            # raises struct.error (not OSError/ValueError) unclamped, which
+            # previously killed the recv loop. The terminal must survive.
+            ws.send_json({"resize": {"cols": 999999, "rows": -3}})
             ws.send_bytes(b"echo ok\n")
             collected = b""
             for _ in range(50):
