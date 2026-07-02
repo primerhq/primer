@@ -283,6 +283,27 @@
 }
 .st-section-body { overflow: auto; flex: 1; min-height: 0; }
 
+/* Studio right-rail: Action Required section (B4). The empty-state text must
+   never be clipped — the section is content-sized when empty (no max-height
+   cap) and only capped-with-scroll once it holds pending items. Previously a
+   flat 60px cap squeezed the "No pending actions" line behind overflow:hidden. */
+.st-action-required {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  overflow: hidden;
+  border-bottom: 1px solid var(--border);
+}
+.st-action-required.is-empty { max-height: none; }
+.st-action-required.has-items { max-height: 320px; }
+.st-action-empty {
+  padding: 16px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-4);
+  text-align: center;
+}
+
 /* Center tab bar. */
 .st-tabbar {
   display: flex;

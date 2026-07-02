@@ -797,44 +797,64 @@ window.SessionDetail = SessionDetail;
 // known (session row has workspace_id).
 
 
+// #3/#7: bounded history page. The initial load fetches only the most-recent
+// SLS_HISTORY_PAGE recorded rows (a server-side `tail`) instead of the whole
+// messages.jsonl (previously limit=1000), so a long session's transcript
+// renders immediately and never blocks/times-out on one monolithic payload.
+// Older rows load on demand via the "Load earlier" control.
+const SLS_HISTORY_PAGE = 200;
+
 function SessionLiveStream({ sid, wid, session, pushToast }) {
   const [messages, setMessages] = React.useState([]);
   // Connection state of the tap EventSource: "connecting" | "open" | "closed".
   const [wsState, setWsState] = React.useState("connecting");
-  // Token-usage snapshot for the read-only header TokenMeter. Updated live
-  // from tap `done` frames whose payload now carries a `usage` envelope
-  // (input_tokens, output_tokens) written by translate_stream_event when a
-  // Usage event precedes the Done. Falls back to the most recent turn's
-  // tokens_in when the done frame has no envelope (e.g. graph sessions or
-  // non-LLM turns that never emitted a Usage event).
-  const [usage, setUsage] = React.useState({ input_tokens: 0, output_tokens: 0, context_length: 0 });
   const [historyLoaded, setHistoryLoaded] = React.useState(false);
-  const { useMutation, apiFetch } = window.primerApi;
+  // Whether older recorded rows exist beyond the loaded tail (#3/#7).
+  const [moreEarlier, setMoreEarlier] = React.useState(false);
+  const [loadingEarlier, setLoadingEarlier] = React.useState(false);
+  const { apiFetch } = window.primerApi;
   const scrollRef = React.useRef(null);
   const historyCursorRef = React.useRef(0);
+  // How many most-recent recorded rows we've fetched (the tail "offset" for
+  // paging older).
+  const historyLoadedCountRef = React.useRef(0);
+
+  // Merge a page of recorded rows into `messages`, de-duped by seq + sorted.
+  const _mergeHistory = React.useCallback((items) => {
+    setMessages((prev) => {
+      const seen = new Set(prev.map((p) => p.seq));
+      const merged = [...prev];
+      for (const it of items) {
+        if (seen.has(it.seq)) continue;
+        const payload = it.payload && typeof it.payload === "object" ? it.payload : {};
+        merged.push({ ...payload, ...it });
+      }
+      merged.sort((a, b) => (a.seq || 0) - (b.seq || 0));
+      return merged;
+    });
+  }, []);
+
   React.useEffect(() => {
     let alive = true;
     (async () => {
       try {
-        const res = await apiFetch("GET", `/sessions/${encodeURIComponent(sid)}/messages?limit=1000`);
+        const res = await apiFetch(
+          "GET",
+          `/sessions/${encodeURIComponent(sid)}/messages?limit=${SLS_HISTORY_PAGE}&tail=1`,
+        );
         if (!alive) return;
         const items = (res && res.items) || [];
         if (items.length) {
           let maxSeq = 0;
           for (const it of items) { if (typeof it.seq === "number" && it.seq > maxSeq) maxSeq = it.seq; }
+          // The tail includes the newest rows, so maxSeq is the true global
+          // high-water mark — the resume cursor stays gap-free.
           historyCursorRef.current = maxSeq;
-          setMessages((prev) => {
-            const seen = new Set(prev.map((p) => p.seq));
-            const merged = [...prev];
-            for (const it of items) {
-              if (seen.has(it.seq)) continue;
-              const payload = it.payload && typeof it.payload === "object" ? it.payload : {};
-              merged.push({ ...payload, ...it });
-            }
-            merged.sort((a, b) => (a.seq || 0) - (b.seq || 0));
-            return merged;
-          });
+          historyLoadedCountRef.current = items.length;
+          _mergeHistory(items);
         }
+        const total = (res && typeof res.total === "number") ? res.total : items.length;
+        setMoreEarlier(total > items.length);
         setHistoryLoaded(true);
       } catch (_e) {
         /* history is best-effort; the tap still tails for live runs */
@@ -843,6 +863,30 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
     })();
     return () => { alive = false; };
   }, [sid]);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Lazily fetch the next older page of recorded rows (#3/#7). Uses the tail
+  // offset so paging is anchored to the end of the log, not a shifting start.
+  const loadEarlier = React.useCallback(async () => {
+    setLoadingEarlier(true);
+    try {
+      const offset = historyLoadedCountRef.current;
+      const res = await apiFetch(
+        "GET",
+        `/sessions/${encodeURIComponent(sid)}/messages?limit=${SLS_HISTORY_PAGE}&tail=1&offset=${offset}`,
+      );
+      const items = (res && res.items) || [];
+      if (items.length) {
+        historyLoadedCountRef.current = offset + items.length;
+        _mergeHistory(items);
+      }
+      const total = (res && typeof res.total === "number") ? res.total : (offset + items.length);
+      setMoreEarlier(items.length > 0 && (offset + items.length) < total);
+    } catch (_e) {
+      /* best-effort — leave older rows unloaded on error */
+    } finally {
+      setLoadingEarlier(false);
+    }
+  }, [sid, _mergeHistory]);
   // Whether the session is terminal. A terminal run has no live frames to
   // tail — history already covers the full transcript — so we never open
   // the tap for it. Kept in a ref (seeded from the initial prop, refreshed
@@ -908,15 +952,6 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
         if (prev.some((p) => p.seq === frame.seq)) return prev;
         return [...prev, frame].sort((a, b) => (a.seq || 0) - (b.seq || 0));
       });
-      // Update the TokenMeter from the done frame's usage envelope (written by
-      // translate_stream_event when a Usage event preceded the Done event).
-      if (tev.class === "done" && payload.usage && typeof payload.usage === "object") {
-        setUsage((prev) => ({
-          ...prev,
-          input_tokens: Number(payload.usage.input_tokens) || 0,
-          output_tokens: Number(payload.usage.output_tokens) || 0,
-        }));
-      }
     };
 
     es.onerror = () => {
@@ -928,21 +963,11 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
     return () => { try { es.close(); } catch { /* no-op */ } };
   }, [wid, sid, historyLoaded]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // REST cancel — the tap stream is read-only, so the "Interrupt" control
-  // routes to the cancel endpoint (which sets cancel_requested_at + publishes
-  // the same session:{sid}:cancel the old WS interrupt frame did).
-  const cancelMut = useMutation(
-    () => apiFetch("POST", `/workspaces/${encodeURIComponent(wid)}/sessions/${encodeURIComponent(sid)}/cancel`),
-    {
-      invalidates: [`session-detail:${sid}`, "sessions:list"],
-      onSuccess: () => pushToast && pushToast({
-        kind: "warning",
-        title: "Interrupt sent",
-        detail: "Session will cancel after the current step.",
-      }),
-      onError: _sdToastErr(pushToast, "Interrupt failed"),
-    }
-  );
+  // #10: the embedded stream is PURE CONTENT — no header chrome and no
+  // Interrupt control. Session controls (Pause/Resume/Steer/Cancel) live in
+  // exactly one place, the parent panel header (ST_SessionControls in
+  // studio-center.jsx). The old in-stream "Interrupt" duplicated the header's
+  // Cancel and was removed along with the title/frame-count/token-meter/badge.
 
   // Stick-to-bottom auto-scroll.
   const stickRef = React.useRef(true);
@@ -958,74 +983,32 @@ function SessionLiveStream({ sid, wid, session, pushToast }) {
     return () => cancelAnimationFrame(raf);
   }, [messages, isRunning]);
 
-  const sendInterrupt = () => {
-    if (!wid) {
-      if (typeof pushToast === "function") {
-        pushToast({ kind: "error", title: "Cannot interrupt", detail: "Session has no workspace_id" });
-      }
-      return;
-    }
-    cancelMut.mutate();
-  };
-
-  const wsBadge = wsState === "open"
-    ? <span className="pill pill-running" title="Tap stream open"><span className="dot"></span>live</span>
-    : wsState === "connecting"
-      ? <span className="pill pill-paused" title="Tap stream connecting"><span className="dot"></span>connecting</span>
-      : <span className="pill pill-ended" title="Tap stream closed"><span className="dot"></span>offline</span>;
-
   const coalesced = _SLS_coalesceMessages(messages);
-  const isTerminalSession = session && SESSION_TERMINAL.has(session.status);
   const isGraph = (session?.binding?.kind || session?.binding_kind) === "graph";
 
-  // Fallback for the read-only TokenMeter when no done+usage frame has
-  // landed yet (e.g. graph sessions, non-LLM turns, or initial page load
-  // before the first turn completes). Uses the most recent turn's tokens_in
-  // so the meter surfaces something meaningful on first paint.
-  const fallbackUsage = React.useMemo(() => {
-    const turns = Array.isArray(session?.turns) ? session.turns : [];
-    const last = turns.length > 0 ? turns[turns.length - 1] : null;
-    return {
-      input_tokens: Number(last?.tokens_in) || 0,
-      context_length: Number(session?.context_length) || 0,
-    };
-  }, [session]);
-  const meterInput = usage.input_tokens || fallbackUsage.input_tokens;
-  const meterContext = usage.context_length || fallbackUsage.context_length;
-
   return (
-    <div className="panel" data-testid="session-live-stream" style={{ display: "flex", flexDirection: "column" }}>
-      <div className="panel-h">
-        <Icon name="zap" size={13} style={{ color: "var(--blue)" }} />
-        <span>Live stream</span>
-        <span className="sub">· {messages.length} frame{messages.length === 1 ? "" : "s"}</span>
-        <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {/* Read-only TokenMeter — workspace sessions surface context
-              pressure but don't expose an operator-triggered compact
-              action (those flow through the chat surface). */}
-          <window.TokenMeter
-            inputTokens={meterInput}
-            contextLength={meterContext}
-            onCompact={null}
-          />
-          {wsBadge}
-          {!isTerminalSession && (
-            <Btn
-              size="sm"
-              kind="danger"
-              icon="stop"
-              disabled={!wid || cancelMut.loading}
-              onClick={sendInterrupt}
-              title="Cancel the running turn (POST .../cancel)"
-            >Interrupt</Btn>
-          )}
-        </div>
-      </div>
+    <div
+      data-testid="session-live-stream"
+      style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}
+    >
       <div
         ref={scrollRef}
         onScroll={onScroll}
         style={{ flex: 1, overflow: "auto", padding: "14px 18px", minHeight: 120, maxHeight: 480 }}
       >
+        {/* #3/#7: page older recorded rows on demand rather than pulling the
+            full history at once. */}
+        {moreEarlier && (
+          <div style={{ textAlign: "center", padding: "2px 0 10px" }}>
+            <Btn
+              size="sm"
+              kind="ghost"
+              disabled={loadingEarlier}
+              onClick={loadEarlier}
+              data-testid="load-earlier"
+            >{loadingEarlier ? "Loading…" : "Load earlier"}</Btn>
+          </div>
+        )}
         {coalesced.length === 0 && (
           terminalRef.current ? (
             <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>
@@ -1160,32 +1143,20 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
   );
 
   // Tap events trigger an immediate refetch so node transitions feel live
-  // without a tight poll. We subscribe read-only to the workspace tap
-  // (session-scoped selector, live-from-now — no history/cursor needed
-  // because a missed event only delays a refetch and the 2 s poll backstops
-  // it) and refetch on graph_transition / done / error frames.
-  React.useEffect(() => {
-    if (!wid || !rid || isTerminal) return undefined;
-    const selector = window.WTP_buildSelector
-      ? window.WTP_buildSelector(null, rid)
-      : { sessions: { kind: "predicate", left: { kind: "field", name: "id" }, op: "=", right: { kind: "value", value: rid } } };
-    const url = `/v1/workspaces/${encodeURIComponent(wid)}/tap?selector=${encodeURIComponent(JSON.stringify(selector))}`;
-    let es;
-    try {
-      es = new EventSource(url, { withCredentials: true });
-    } catch { return undefined; }
-    es.onmessage = (ev) => {
-      let tev;
-      try { tev = JSON.parse(ev.data); } catch { return; }
-      if (!tev || typeof tev !== "object") return;
-      const cls = tev.class;
-      if (cls === "graph_transition" || cls === "done" || cls === "error") {
-        states.refetch();
-      }
-    };
-    return () => { try { es.close(); } catch { /* no-op */ } };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wid, rid, isTerminal]);
+  // without a tight poll. We read the SHARED workspace tap
+  // (foundation/use-workspace-tap.js) rather than opening a dedicated
+  // EventSource — the same single connection that feeds the right-rail
+  // Activity + Action Required also drives this refetch. We filter client-side
+  // for this run's session and refetch on graph_transition / done / error;
+  // a missed frame only delays a refetch and the 2 s poll backstops it. The
+  // hook is passed a null wid once terminal so it detaches.
+  window.useWorkspaceTapListener(isTerminal ? null : wid, (tev) => {
+    if (!tev || typeof tev !== "object" || tev.session_id !== rid) return;
+    const cls = tev.class;
+    if (cls === "graph_transition" || cls === "done" || cls === "error") {
+      states.refetch();
+    }
+  });
 
   const items = states.data?.items || [];
   const statusByNode = React.useMemo(() => {

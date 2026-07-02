@@ -58,40 +58,23 @@ function ActionRequired({ wid, studio }) {
 
   var items = (pending.data && Array.isArray(pending.data.items)) ? pending.data.items : [];
 
-  // Live reconcile: subscribe to the workspace tap; refetch on yielded/done.
-  // We keep this EventSource independent of WorkspaceTap so it is always
-  // open regardless of the activity feed's filter state.
+  // Live reconcile via the SHARED workspace tap (foundation/use-workspace-tap.js).
+  // ONE EventSource for the whole Studio view feeds this reconcile listener,
+  // the WorkspaceTap activity feed, and the graph run-view — instead of each
+  // opening its own connection (fe-review N4). We debounce a refetch of the
+  // pending snapshot on yielded/done; the 15s pollMs backstops a dropped tap.
   var debounceRef = React.useRef(null);
-  React.useEffect(function() {
-    if (!wid) return;
-    var url = "/v1/workspaces/" + encodeURIComponent(wid) + "/tap";
-    var es;
-    try {
-      es = new EventSource(url, { withCredentials: true });
-    } catch (_e) {
-      return;
-    }
-    es.onmessage = function(e) {
-      var ev;
-      try { ev = JSON.parse(e.data); } catch (_) { return; }
-      if (!ev || typeof ev !== "object") return;
-      var cls = ev.class;
-      if (cls === "yielded" || cls === "done") {
-        clearTimeout(debounceRef.current);
-        debounceRef.current = setTimeout(function() {
-          pending.refetch();
-        }, 300);
-      }
-    };
-    // No-op on stream error: the 15s pollMs on the pending resource is the
-    // safety net, so a dropped/erroring tap still reconciles on the next poll
-    // (mirrors how WorkspaceTap tolerates stream errors).
-    es.onerror = function() { /* poll backstops a dropped tap */ };
-    return function() {
+  window.useWorkspaceTapListener(wid, function (ev) {
+    if (!ev || typeof ev !== "object") return;
+    var cls = ev.class;
+    if (cls === "yielded" || cls === "done") {
       clearTimeout(debounceRef.current);
-      try { es.close(); } catch (_) { /* no-op */ }
-    };
-  }, [wid]); // eslint-disable-line react-hooks/exhaustive-deps
+      debounceRef.current = setTimeout(function () { pending.refetch(); }, 300);
+    }
+  });
+  React.useEffect(function () {
+    return function () { clearTimeout(debounceRef.current); };
+  }, []);
 
   // Per-item respond state: { [item_id]: { draft, submitting, error } }
   var [respondState, setRespondState] = React.useState({});
@@ -205,15 +188,7 @@ function ActionRequired({ wid, studio }) {
 
   return (
     <div
-      className="st-section"
-      style={{
-        borderBottom: "1px solid var(--border)",
-        display: "flex",
-        flexDirection: "column",
-        flexShrink: 0,
-        maxHeight: count > 0 ? 320 : 60,
-        overflow: "hidden",
-      }}
+      className={"st-section st-action-required " + (count > 0 ? "has-items" : "is-empty")}
       data-testid="action-required"
     >
       {/* Section header */}
@@ -268,15 +243,7 @@ function ActionRequired({ wid, studio }) {
         style={{ overflowY: "auto", flex: 1 }}
       >
         {count === 0 && !pending.loading && (
-          <div
-            style={{
-              padding: "14px 12px",
-              fontSize: 12,
-              color: "var(--text-4)",
-              textAlign: "center",
-              lineHeight: 1.5,
-            }}
-          >
+          <div className="st-action-empty" data-testid="action-required-empty">
             No pending actions. Everything's running clean.
           </div>
         )}
