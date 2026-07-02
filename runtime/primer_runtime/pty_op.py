@@ -147,15 +147,28 @@ class PtySession:
         self._closed = False
 
     def write_stdin(self, data: bytes) -> None:
-        """Write *data* to the master fd (child stdin)."""
+        """Write *data* to the master fd (child stdin).
+
+        ``os.write`` can accept fewer bytes than supplied when the pty input
+        buffer is full (a large paste), so loop over the remainder — the old
+        single call silently lost the tail. ``BlockingIOError`` (only on a
+        non-blocking fd) means "buffer full, retry"; ``OSError`` means the pty
+        is gone (child exited between frames) so we drop the write and let the
+        reader task emit ``exit`` and self-deregister.
+        """
         if self._closed:
             return
-        try:
-            os.write(self.master_fd, data)
-        except OSError:
-            # The pty is gone (child exited between frames) — drop the write;
-            # the reader task will emit ``exit`` and self-deregister.
-            pass
+        mv = memoryview(data)
+        while mv:
+            try:
+                written = os.write(self.master_fd, mv)
+            except BlockingIOError:
+                continue
+            except OSError:
+                return
+            if written <= 0:
+                return
+            mv = mv[written:]
 
     def resize(self, cols: int, rows: int) -> None:
         """Change the terminal window size."""
