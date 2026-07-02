@@ -347,6 +347,34 @@
   text-transform: uppercase;
 }
 
+/* Full-height center documents (Studio-scoped). The reused SD_GraphRunView
+   renders a .panel whose canvas div carries an inline height:500px (the
+   component is shared with the graphs editor, which keeps that default) —
+   inside the Studio the run view must fill the center column down to the
+   bottom instead, shrinking only when the terminal panel below it is open.
+   Scoped under [data-testid="panel-graph"] so the editor page is untouched;
+   !important is required to beat the inline style (no-build reuse seam). */
+[data-testid="panel-graph"] .panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+[data-testid="panel-graph"] .panel > :not(.panel-h) {
+  /* the canvas+inspector grid row */
+  flex: 1 1 auto;
+  min-height: 0;
+}
+[data-testid="panel-graph"] .panel > :not(.panel-h) > * {
+  /* grid cells: the canvas wrapper + the node inspector */
+  min-height: 0;
+  height: 100%;
+  overflow: auto;
+}
+[data-testid="panel-graph"] [data-testid="graph-canvas"] {
+  height: 100% !important;
+  min-height: 280px !important;
+}
+
 /* Integrated terminal — collapsible bottom panel spanning the center column
    (below StudioCenter's active panel), P7. Mounted only while
    studio.state.terminalOpen is true (see studio.jsx / studio-terminal.jsx),
