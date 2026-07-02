@@ -256,11 +256,24 @@ async def _run_pty(
         return
     except Exception as exc:  # noqa: BLE001 — protocol boundary: the client
         # is waiting on this op; an uncaught exception here would leave it
-        # hanging with no frame at all. Map anything unexpected to EINTERNAL.
-        log.exception("pty_open validation failed unexpectedly (req_id=%d)", req_id)
+        # hanging with no frame at all.
+        #
+        # An OpError raised inside primer_runtime.ops may NOT be the same class
+        # as the OpError imported at the top of this module when the package is
+        # loaded via BOTH the installed dist AND the `runtime` pythonpath entry
+        # (two module objects → split class identity; happens under
+        # pytest-xdist in CI). In that case `except OpError` above misses it and
+        # we land here. Duck-type it so a path-escape still reports its real
+        # code (EACCES) rather than being masked as EINTERNAL. ErrorCode is a
+        # StrEnum, so the foreign copy's .code still serialises to "EACCES".
+        if type(exc).__name__ == "OpError" and hasattr(exc, "code") and hasattr(exc, "message"):
+            code, message = exc.code, exc.message
+        else:
+            log.exception("pty_open validation failed unexpectedly (req_id=%d)", req_id)
+            code, message = ErrorCode.EINTERNAL, f"pty_open: {exc}"
         await send(serialize(Response(
             req_id=req_id, ok=False,
-            error={"code": ErrorCode.EINTERNAL, "message": f"pty_open: {exc}"},
+            error={"code": code, "message": message},
         )))
         return
 
