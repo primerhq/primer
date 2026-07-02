@@ -160,6 +160,7 @@ class Workspace(ABC):
         id: str | None = None,
         instructions: str | None = None,
         parent_session_id: str | None = None,
+        name: str | None = None,
     ) -> "AgentSession":
         """Begin a new session of ``agent_binding.agent_id`` on this workspace.
 
@@ -180,6 +181,10 @@ class Workspace(ABC):
         another session (the agent runtime's spawn meta-tool); used
         for history attribution. No state is automatically propagated
         from parent to child.
+
+        ``name`` is an optional user-supplied friendly label persisted
+        onto ``session.json``; ``None`` (the default) leaves the console
+        falling back to the id.
 
         Returns a fresh :class:`AgentSession` in status
         :attr:`SessionStatus.RUNNING`.

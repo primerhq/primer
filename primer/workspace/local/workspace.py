@@ -196,6 +196,7 @@ class LocalWorkspace(Workspace):
         id: str | None = None,
         instructions: str | None = None,
         parent_session_id: str | None = None,
+        name: str | None = None,
     ) -> AgentSession:
         async with self._lock:
             if id is not None and id in self._sessions:
@@ -212,6 +213,7 @@ class LocalWorkspace(Workspace):
                 workspace_tools=self._tools,
                 instructions=instructions,
                 parent_session_id=parent_session_id,
+                name=name,
             )
             self._sessions[session_id] = session
             return session

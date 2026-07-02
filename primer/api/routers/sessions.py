@@ -58,6 +58,15 @@ class SessionCreateBody(BaseModel):
     """
 
     binding: SessionBinding
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Optional user-supplied friendly name for the session. Persisted "
+            "onto both the scheduler row and the on-disk SessionInfo "
+            "(session.json) so the console shows it instead of the opaque "
+            "session id. Null / empty defaults to the id."
+        ),
+    )
     initial_instructions: str | None = None
     parent_session_id: str | None = None
     auto_start: bool = False
@@ -130,6 +139,7 @@ async def create_session(
         auto_start=body.auto_start,
         metadata=body.metadata,
         parent_session_id=body.parent_session_id,
+        name=body.name,
         deps=deps,
     )
 

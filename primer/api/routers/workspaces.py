@@ -193,6 +193,19 @@ class SteerBody(BaseModel):
     )
 
 
+class SessionRenameBody(BaseModel):
+    """Body of ``PATCH /v1/workspaces/{id}/sessions/{sid}``."""
+
+    name: str | None = Field(
+        default=None,
+        description=(
+            "New friendly name for the session. Pass null or an empty / "
+            "whitespace-only string to clear it and fall back to the id in "
+            "the console."
+        ),
+    )
+
+
 # ===========================================================================
 # Provider router (CRUD minus update)
 # ===========================================================================
@@ -757,6 +770,61 @@ async def get_session(
         "info": info.model_dump(mode="json"),
         "status": status.value if hasattr(status, "value") else str(status),
     }
+
+
+@sessions_router.patch(
+    "/workspaces/{workspace_id}/sessions/{session_id}",
+    summary="Rename a session (set its friendly display name)",
+    responses=common_responses(404, 422, 500),
+)
+async def rename_session(
+    body: SessionRenameBody = Body(...),
+    workspace_id: str = Path(..., description="Workspace id"),
+    session_id: str = Path(..., description="Session id"),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    session_storage=Depends(get_session_storage),
+) -> dict:
+    """Set (or clear) a session's friendly name.
+
+    Rewrites the ``name`` on the on-disk :class:`SessionInfo`
+    (``session.json``) via :meth:`AgentSession.set_name` — the authoritative
+    display source for the workspace sessions list — and best-effort mirrors
+    it onto the scheduler-visible :class:`WorkspaceSession` row so the
+    top-level ``GET /sessions/{id}`` read agrees. An empty / null name clears
+    the label (the console falls back to the id). Returns the updated
+    :class:`SessionInfo`.
+    """
+    ws = await registry.get_workspace(workspace_id)
+    session = await ws.get_session(session_id)
+    if session is None:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    info = await session.set_name(body.name)
+
+    # Best-effort: mirror the new name onto the scheduler row so reads that
+    # go through WorkspaceSession storage (the top-level GET /sessions/{id}
+    # and the Studio center panel) reflect the rename too. A missing row
+    # (e.g. an on-disk-only session) must not fail the rename. session_storage
+    # is the Storage[WorkspaceSession] (see get_session_storage).
+    try:
+        row = await session_storage.get(session_id)
+        if row is not None and row.workspace_id == workspace_id:
+            row.name = info.name
+            await session_storage.update(row)
+    except Exception as exc:  # noqa: BLE001 — advisory mirror, never fatal
+        logger.warning(
+            "rename_session: failed to mirror name onto scheduler row",
+            extra={
+                "session_id": session_id,
+                "workspace_id": workspace_id,
+                "exception": type(exc).__name__,
+                "error": str(exc),
+            },
+        )
+
+    return info.model_dump(mode="json")
 
 
 @sessions_router.post(

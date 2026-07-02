@@ -196,6 +196,15 @@ class SessionInfo(BaseModel):
     session_id: str = Field(..., min_length=1)
     agent_id: str = Field(..., min_length=1)
     workspace_id: str = Field(..., min_length=1)
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Optional user-supplied friendly name for the session. When set, "
+            "the console shows it instead of the opaque ``sess-<hex>`` id. "
+            "Backward-compatible: session.json files written before this "
+            "field existed simply default to ``None``."
+        ),
+    )
     status: SessionStatus = Field(
         ...,
         description="Current lifecycle state of the session.",
@@ -344,6 +353,14 @@ class WorkspaceSession(Identifiable):
     workspace_id: str = Field(..., min_length=1)
     binding: SessionBinding
     status: SessionStatus
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Optional user-supplied friendly name, mirrored onto the on-disk "
+            "SessionInfo (``session.json``). ``None`` falls back to the id in "
+            "the console. Backward-compatible default for existing rows."
+        ),
+    )
     parent_session_id: str | None = Field(default=None)
     initial_instructions: str | None = Field(default=None)
     metadata: dict[str, Any] = Field(default_factory=dict)
