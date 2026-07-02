@@ -32,6 +32,14 @@ class OpName(StrEnum):
     STATE_COMMIT = "state_commit"
     STATE_READ = "state_read"
     STATE_HISTORY = "state_history"
+    # Interactive PTY ops (Studio integrated terminal). PTY_OPEN is a
+    # long-lived streaming op (emits pty_open / data / exit events) keyed by
+    # its req_id; PTY_STDIN / PTY_RESIZE / PTY_CLOSE are single-shot control
+    # requests carrying target_req_id (mirrors WATCH_START / WATCH_CANCEL).
+    PTY_OPEN = "pty_open"
+    PTY_STDIN = "pty_stdin"
+    PTY_RESIZE = "pty_resize"
+    PTY_CLOSE = "pty_close"
 
 
 class ErrorCode(StrEnum):

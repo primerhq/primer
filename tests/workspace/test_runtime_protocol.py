@@ -8,7 +8,8 @@ def test_op_names_complete():
     expected = {"hello", "health", "read_file", "write_file", "append_line",
                 "list_dir", "stat", "delete", "archive",
                 "exec", "watch_start", "watch_cancel",
-                "state_commit", "state_read", "state_history"}
+                "state_commit", "state_read", "state_history",
+                "pty_open", "pty_stdin", "pty_resize", "pty_close"}
     actual = {op.value for op in OpName}
     assert actual == expected
 
