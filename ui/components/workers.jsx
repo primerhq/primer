@@ -5,6 +5,10 @@ function WorkersPage({ pushToast }) {
   const { isMobile } = useViewport();
   const [drainTarget, setDrainTarget] = React.useState(null);
   const [clearDeadOpen, setClearDeadOpen] = React.useState(false);
+  // Row-click detail: track the id (not the record) so the drawer
+  // reflects the 2s poll + 1s heartbeat tick live instead of a stale
+  // snapshot; it closes itself if the worker disappears.
+  const [detailId, setDetailId] = React.useState(null);
   const [filterText, setFilterText] = React.useState("");
   // Status chip: "all" | "active" | "draining" | "dead".
   const [statusFilter, setStatusFilter] = React.useState("all");
@@ -127,6 +131,8 @@ function WorkersPage({ pushToast }) {
       (w.host || "").toLowerCase().includes(q)
     );
   });
+
+  const detail = detailId ? workers.find((w) => w.id === detailId) || null : null;
 
   const chips = ["all", "active", "draining", "dead"];
   const chipCount = (c) =>
@@ -255,6 +261,8 @@ function WorkersPage({ pushToast }) {
               <WorkerRow
                 key={w.id}
                 w={w}
+                onSelect={(worker) => setDetailId(worker.id)}
+                selected={w.id === detailId}
                 onDrain={onDrain}
                 onDelete={onDelete}
                 draining={drainMut.loading}
@@ -323,11 +331,86 @@ function WorkersPage({ pushToast }) {
           </ul>
         </Modal>
       )}
+
+      {detail && (
+        <Modal
+          title={`Worker ${detail.id}`}
+          width={520}
+          onClose={() => setDetailId(null)}
+          footer={
+            <>
+              {detail.status === "active" && (
+                <Btn kind="ghost" icon="alert" onClick={() => { setDetailId(null); onDrain(detail); }}>Drain</Btn>
+              )}
+              {detail.status === "dead" && (
+                <Btn kind="danger" icon="trash" onClick={() => { setDetailId(null); onDelete(detail); }}>Remove</Btn>
+              )}
+              <Btn kind="ghost" onClick={() => setDetailId(null)}>Close</Btn>
+            </>
+          }
+        >
+          <WorkerDetail w={detail} />
+        </Modal>
+      )}
     </div>
   );
 }
 
-function WorkerRow({ w, onDrain, onDelete, draining, deleting }) {
+function WorkerDetail({ w }) {
+  const capacity = w.capacity || 0;
+  const inFlight = w.in_flight || 0;
+  const heartbeatAge = w.heartbeat ?? 0;
+  const heartbeatBad = heartbeatAge > 30;
+  const hbAbs = w.last_heartbeat ? fmtDate(new Date(w.last_heartbeat)) : "—";
+  const startedSecondsAgo = w.started_at
+    ? Math.max(0, (Date.now() - new Date(w.started_at).getTime()) / 1000)
+    : null;
+  const startedAbs = w.started_at ? fmtDate(new Date(w.started_at)) : "—";
+  return (
+    <div data-testid="worker-detail" className="col" style={{ gap: 10 }}>
+      <DetailRow label="ID"><span className="mono">{w.id}</span></DetailRow>
+      <DetailRow label="Host / PID">
+        <span className="mono">{w.host}</span>
+        <span className="mono muted"> · pid {w.pid}</span>
+      </DetailRow>
+      <DetailRow label="Status">
+        {w.status === "active" && <span className="pill pill-ended"><span className="dot"></span>active</span>}
+        {w.status === "draining" && <span className="pill pill-paused"><span className="dot"></span>draining</span>}
+        {w.status === "dead" && <span className="pill pill-failed"><span className="dot"></span>dead</span>}
+      </DetailRow>
+      <DetailRow label="Capacity">
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <div style={{ width: 140 }}><CapacityBar inFlight={inFlight} capacity={capacity} /></div>
+          <span className="mono muted text-sm">{inFlight} / {capacity} slots in use</span>
+        </div>
+      </DetailRow>
+      <DetailRow label="Last heartbeat">
+        <span className="mono" style={{ color: heartbeatBad ? "var(--red)" : undefined }}>{heartbeatAge.toFixed(1)}s ago</span>
+        <span className="mono muted text-sm"> · {hbAbs}</span>
+      </DetailRow>
+      <DetailRow label="Started">
+        <span className="mono">{startedSecondsAgo != null ? relativeTime(startedSecondsAgo) : "—"}</span>
+        <span className="mono muted text-sm"> · {startedAbs}</span>
+      </DetailRow>
+      <div className="muted text-sm" style={{ marginTop: 2 }}>
+        The scheduler records only these membership fields per worker — no
+        per-worker counters or heartbeat history are stored, so there is no
+        time-series to chart here.
+      </div>
+    </div>
+  );
+}
+
+function DetailRow({ label, children }) {
+  return (
+    <div style={{ display: "flex", gap: 12, alignItems: "baseline" }}>
+      <div className="muted text-sm mono" style={{ width: 120, flex: "0 0 120px", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10.5 }}>{label}</div>
+      <div style={{ flex: 1, minWidth: 0 }}>{children}</div>
+    </div>
+  );
+}
+
+function WorkerRow({ w, onSelect, selected, onDrain, onDelete, draining, deleting }) {
   const heartbeatAge = w.heartbeat ?? 0;
   const heartbeatBad = heartbeatAge > 30;
   const capacity = w.capacity || 0;
@@ -339,7 +422,21 @@ function WorkerRow({ w, onDrain, onDelete, draining, deleting }) {
     : null;
 
   return (
-    <tr>
+    <tr
+      className={selected ? "selected" : undefined}
+      style={{ cursor: "pointer" }}
+      data-testid="worker-row"
+      role="button"
+      tabIndex={0}
+      aria-label={`Worker ${w.id} details`}
+      onClick={() => onSelect(w)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect(w);
+        }
+      }}
+    >
       <td className="mono" style={{ fontWeight: 500 }}>{w.id}</td>
       <td>
         <div className="mono">{w.host}</div>
@@ -367,7 +464,7 @@ function WorkerRow({ w, onDrain, onDelete, draining, deleting }) {
         </span>
       </td>
       <td className="mono muted">{startedAtSecondsAgo != null ? relativeTime(startedAtSecondsAgo) : "—"}</td>
-      <td style={{ textAlign: "right", paddingRight: 12 }}>
+      <td style={{ textAlign: "right", paddingRight: 12 }} onClick={(e) => e.stopPropagation()}>
         {w.status === "dead" ? (
           <Btn
             size="sm"
