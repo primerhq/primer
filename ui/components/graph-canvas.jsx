@@ -330,12 +330,23 @@ function GR_Canvas(props) {
         if (!gg) return;
         const P2 = _g6Palette();
         try {
+          // Preserve the user's zoom across a theme flip: render() re-applies
+          // the run-view's autoFit and would otherwise snap back to the fitted
+          // view, throwing away a zoom-in. Capture before, restore after.
+          // Fully wrapped — a G6 signature mismatch degrades to the old
+          // (reset) behavior rather than crashing.
+          var _zoom = null;
+          try { _zoom = gg.getZoom(); } catch (_z) { /* */ }
           gg.setOptions({
             background: P2.bg,
             node: { type: "rect", style: _g6NodeStyle(P2), state: _g6NodeStates(P2) },
             edge: { type: "polyline", style: _g6EdgeStyle(P2), state: _g6EdgeStateStyle(P2) },
           });
-          Promise.resolve(gg.render()).catch(() => {});
+          Promise.resolve(gg.render()).then(() => {
+            if (_zoom != null) {
+              try { gg.zoomTo(_zoom, false); } catch (_z) { /* */ }
+            }
+          }).catch(() => {});
         } catch (_e) { /* canvas */ }
       };
       themeObs = new MutationObserver(applyTheme);

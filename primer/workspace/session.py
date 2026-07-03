@@ -220,7 +220,11 @@ class AgentSession:
             session_id=session_id,
             agent_id=agent_binding.agent_id,
             workspace_id=workspace_id,
-            name=name,
+            # Normalize blank/whitespace to None so the on-disk SessionInfo
+            # matches the scheduler-row normalization in create_session and
+            # set_name — otherwise "   " renders as a blank sidebar label
+            # (the UI falls back to the id only on a falsy name).
+            name=(name or "").strip() or None,
             status=SessionStatus.RUNNING,
             started_at=now,
             last_activity_at=now,
