@@ -720,6 +720,166 @@ function FilesTree({ wid, studio }) {
     rootRes.refetch && rootRes.refetch();
   }
 
+  // -- File-action wiring (New file / Upload / New folder) -----------------
+  // The backend already supports all three; these buttons are UI-only wiring.
+  //   New file   → PUT  /files?path=<rel>  { content:"", encoding:"text" }  (no etag = create)
+  //   Upload     → PUT  /files?path=<rel>  { content:<base64>, encoding:"base64" }
+  //   New folder → POST /files/dir?path=<rel>  (path is a QUERY param)
+  // Target dir: root-relative by default. FilesTree tracks `s.expanded` (a map
+  // of expanded folders) but no single "selected" folder, so we do NOT invent
+  // extra state — the prompt lets the user type `sub/dir/name` for a subpath.
+  var uploadInputRef = React.useRef(null);
+  var pushToast = studio.pushToast || (window.primerApi && window.primerApi.toastPush) || null;
+  // promptDialog is published as a bare window global by shared.jsx; keep a
+  // primerApi fallback so it resolves regardless of how it was exposed.
+  var promptDialog = (window.primerApi && window.primerApi.promptDialog) || window.promptDialog;
+
+  // Shared style for the section-header icon buttons (matches the refresh btn).
+  var ST_HDR_BTN = {
+    width: 20,
+    height: 20,
+    display: "grid",
+    placeItems: "center",
+    borderRadius: 5,
+    border: "none",
+    background: "none",
+    color: "var(--text-3)",
+    cursor: "pointer",
+    flexShrink: 0,
+    padding: 0,
+  };
+
+  function ST_errDetail(err, fallback) {
+    return (err && (err.detail || err.message)) || fallback;
+  }
+
+  // Open a freshly-created file in the center editor. Mirrors handleFileClick's
+  // tab shape, but seeds mode:"edit" so an empty new file is immediately typable.
+  function ST_openNewFileTab(rel) {
+    var parts = rel.split("/");
+    var basename = parts[parts.length - 1];
+    studio.openTab({
+      id: "file:" + rel,
+      kind: "file",
+      ref: rel,
+      title: basename,
+      mode: "edit",
+    });
+  }
+
+  async function handleNewFile() {
+    var raw = await promptDialog({
+      title: "New file",
+      label: "File name",
+      message: "File name",
+      placeholder: "notes.md or sub/dir/file.py",
+    });
+    if (raw == null) return;
+    var name = String(raw).trim();
+    if (!name) return;
+    try {
+      await apiFetch(
+        "PUT",
+        "/workspaces/" + encodeURIComponent(wid) + "/files?path=" + encodeURIComponent(name),
+        { content: "", encoding: "text" }
+      );
+      handleRefresh();
+      ST_openNewFileTab(name);
+      pushToast && pushToast({ kind: "success", title: "File created", detail: name });
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Create failed",
+        detail: ST_errDetail(err, "Create failed"),
+        requestId: err && err.requestId,
+      });
+    }
+  }
+
+  async function handleNewFolder() {
+    var raw = await promptDialog({
+      title: "New folder",
+      label: "Folder name",
+      message: "Folder name",
+      placeholder: "src or docs/notes",
+    });
+    if (raw == null) return;
+    var name = String(raw).trim();
+    if (!name) return;
+    try {
+      await apiFetch(
+        "POST",
+        "/workspaces/" + encodeURIComponent(wid) + "/files/dir?path=" + encodeURIComponent(name)
+      );
+      handleRefresh();
+      pushToast && pushToast({ kind: "success", title: "Folder created", detail: name });
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Create failed",
+        detail: ST_errDetail(err, "Create failed"),
+        requestId: err && err.requestId,
+      });
+    }
+  }
+
+  function ST_readAsBase64(file) {
+    // Resolve the raw base64 payload (the data: URL minus its "data:...;base64,"
+    // prefix) so it can be PUT with encoding:"base64".
+    return new Promise(function (resolve, reject) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var result = String(reader.result || "");
+        var comma = result.indexOf(",");
+        resolve(comma >= 0 ? result.slice(comma + 1) : result);
+      };
+      reader.onerror = function () { reject(reader.error || new Error("read failed")); };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function handleUploadClick() {
+    if (uploadInputRef.current) uploadInputRef.current.click();
+  }
+
+  async function handleUploadChange(e) {
+    var input = e.target;
+    var files = (input && input.files) ? Array.prototype.slice.call(input.files) : [];
+    if (!files.length) return;
+    var okCount = 0;
+    var errors = [];
+    for (var i = 0; i < files.length; i++) {
+      var file = files[i];
+      try {
+        var b64 = await ST_readAsBase64(file);
+        await apiFetch(
+          "PUT",
+          "/workspaces/" + encodeURIComponent(wid) + "/files?path=" + encodeURIComponent(file.name),
+          { content: b64, encoding: "base64" }
+        );
+        okCount += 1;
+      } catch (err) {
+        errors.push(file.name + ": " + ST_errDetail(err, "upload failed"));
+      }
+    }
+    handleRefresh();
+    // Reset so re-picking the SAME file fires another change event.
+    if (input) input.value = "";
+    if (okCount > 0) {
+      pushToast && pushToast({
+        kind: "success",
+        title: "Uploaded " + okCount + " file" + (okCount === 1 ? "" : "s"),
+      });
+    }
+    if (errors.length) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Upload failed",
+        detail: errors.join("; "),
+      });
+    }
+  }
+
   // Flatten the tree into a list of rows for rendering, respecting expansion.
   function ST_flattenItems(items, depth) {
     var rows = [];
@@ -764,6 +924,51 @@ function FilesTree({ wid, studio }) {
         <span style={chevStyle}>▾</span>
         Files
         <span style={{ flex: 1 }} />
+        {/* New file / Upload / New folder — UI wiring over existing backend
+            endpoints. Each stops propagation so it doesn't toggle the section. */}
+        <button
+          type="button"
+          style={ST_HDR_BTN}
+          title="New file"
+          aria-label="New file"
+          data-testid="files-new-file"
+          onClick={function(e) {
+            e.stopPropagation();
+            handleNewFile();
+          }}
+        ><Icon name="file" size={13} /></button>
+        <button
+          type="button"
+          style={ST_HDR_BTN}
+          title="Upload files"
+          aria-label="Upload files"
+          data-testid="files-upload"
+          onClick={function(e) {
+            e.stopPropagation();
+            handleUploadClick();
+          }}
+        ><Icon name="paperclip" size={13} /></button>
+        {/* Hidden multi-file input driven by the Upload button. */}
+        <input
+          ref={uploadInputRef}
+          type="file"
+          multiple
+          data-testid="files-upload-input"
+          style={{ display: "none" }}
+          onClick={function(e) { e.stopPropagation(); }}
+          onChange={handleUploadChange}
+        />
+        <button
+          type="button"
+          style={ST_HDR_BTN}
+          title="New folder"
+          aria-label="New folder"
+          data-testid="files-new-folder"
+          onClick={function(e) {
+            e.stopPropagation();
+            handleNewFolder();
+          }}
+        ><Icon name="box" size={13} /></button>
         <button
           style={{
             width: 20,
