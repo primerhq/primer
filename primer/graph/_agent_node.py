@@ -25,6 +25,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from primer.agent.loop import run_agent_turn
+from primer.agent.prompt_render import render_system_prompt
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph._node_refs import _NodeDone, _PendingAgentYield
 from primer.graph.template import render_input_template
@@ -141,7 +142,7 @@ class _AgentNodeMixin:
         history = await self._load_node_history(node.id)
         prompt: list[Message] = []
         if agent.system_prompt:
-            sys_text = "\n\n".join(agent.system_prompt)
+            sys_text = render_system_prompt(agent.system_prompt, context.ctx)
             prompt.append(
                 Message(role="system", parts=[TextPart(text=sys_text)])
             )
