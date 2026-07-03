@@ -309,6 +309,32 @@ class Workspace(ABC):
         :class:`primer.model.except_.BadRequestError`.
         """
 
+    async def move_file(self, src: str, dst: str) -> None:
+        """Move / rename the file or directory at ``src`` to ``dst``.
+
+        A single primitive for both rename (same parent dir, new basename)
+        and move (different parent dir) within the workspace filesystem.
+
+        Mirrors :meth:`delete_file`'s safety envelope: both paths must stay
+        inside the workspace root and outside the reserved ``.state`` /
+        ``.tmp`` trees; ``src`` must exist; ``src`` must not be the workspace
+        root; ``dst`` must NOT already exist (no silent overwrite); and a
+        directory may not be moved onto itself or into one of its own
+        descendants. Violations raise
+        :class:`primer.model.except_.BadRequestError` /
+        :class:`primer.model.except_.NotFoundError` /
+        :class:`primer.model.except_.ConflictError` as appropriate.
+
+        Default implementation raises :class:`NotImplementedError`; concrete
+        backends override. Intentionally NOT ``@abstractmethod`` so
+        pre-existing backends + duck-typed test fakes that predate this
+        method remain instantiable while the implementation is rolled out
+        (same convention as :meth:`diagnostic_exec`).
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement move_file"
+        )
+
     @abstractmethod
     async def log(self, *, limit: int = 50) -> "list[CommitInfo]":
         """Return up to ``limit`` recent commits from the ``.state`` repo.

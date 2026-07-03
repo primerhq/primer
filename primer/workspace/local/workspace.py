@@ -433,6 +433,50 @@ class LocalWorkspace(Workspace):
         else:
             await asyncio.to_thread(target.unlink)
 
+    async def move_file(self, src: str, dst: str) -> None:
+        """Move / rename ``src`` to ``dst`` within the workspace.
+
+        Mirrors :meth:`delete_file`'s safety envelope (root-relative,
+        no reserved-tree escapes, no clobber, no dir-into-itself) — see the
+        ABC docstring. Uses ``shutil.move`` so a rename and a cross-directory
+        move share one primitive.
+        """
+        src_target = self._resolve_path(src)
+        dst_target = self._resolve_path(dst)
+        if not await asyncio.to_thread(src_target.exists):
+            raise NotFoundError(f"{src!r} not found")
+        if src_target == self._root.resolve():
+            raise BadRequestError("refusing to move workspace root")
+        # Both endpoints must stay outside the reserved .state / .tmp trees so
+        # the API can't shuffle the backend's bookkeeping around.
+        self._refuse_reserved(src_target, src)
+        self._refuse_reserved(dst_target, dst)
+        if await asyncio.to_thread(dst_target.exists):
+            raise ConflictError(
+                f"{dst!r} already exists; refusing to overwrite it"
+            )
+        # A directory may not be moved onto itself or into one of its own
+        # descendants (that would orphan the subtree). dst_target need not
+        # exist for this pure-path check.
+        if await asyncio.to_thread(src_target.is_dir):
+            try:
+                dst_target.relative_to(src_target)
+            except ValueError:
+                pass
+            else:
+                raise BadRequestError(
+                    f"cannot move directory {src!r} into itself or a "
+                    f"descendant ({dst!r})"
+                )
+        parent = dst_target.parent
+        try:
+            await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(shutil.move, str(src_target), str(dst_target))
+        except OSError as exc:
+            raise BadRequestError(
+                f"cannot move {src!r} to {dst!r}: {exc.strerror or exc}"
+            ) from exc
+
     async def log(self, *, limit: int = 50) -> list[CommitInfo]:
         try:
             return await self._state.history(limit=limit)

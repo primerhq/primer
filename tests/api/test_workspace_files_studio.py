@@ -176,6 +176,36 @@ class _FakeWorkspace:
             return
         raise NotFoundError(f"{path!r} not found")
 
+    async def move_file(self, src, dst):
+        for p in (src, dst):
+            if ".." in p.split("/") or p.startswith("/") or "\x00" in p:
+                raise BadRequestError(f"invalid path: {p!r}")
+        is_file = src in self._files
+        is_dir = src in self._dirs
+        if not is_file and not is_dir:
+            raise NotFoundError(f"{src!r} not found")
+        if dst in self._files or dst in self._dirs:
+            raise ConflictError(f"{dst!r} already exists")
+        if is_dir and (dst == src or dst.startswith(src + "/")):
+            raise BadRequestError(
+                "cannot move a directory into itself or a descendant"
+            )
+        if is_file:
+            self._files[dst] = self._files.pop(src)
+            self._mtimes[dst] = self._mtimes.pop(
+                src, datetime.now(timezone.utc)
+            )
+            return
+        # Directory: remap the dir entry and everything nested under it.
+        for coll in (self._files, self._mtimes):
+            for key in list(coll.keys()):
+                if key == src or key.startswith(src + "/"):
+                    coll[dst + key[len(src):]] = coll.pop(key)
+        for d in list(self._dirs):
+            if d == src or d.startswith(src + "/"):
+                self._dirs.discard(d)
+                self._dirs.add(dst + d[len(src):])
+
     async def aclose(self):
         return
 
@@ -732,3 +762,101 @@ class TestWatchWakeOnWrite:
             json={"content": "print(1)", "encoding": "text"},
         )
         assert resp.status_code == 204
+
+
+# ===========================================================================
+# Feature: POST /v1/workspaces/{id}/files/move  (move / rename)
+# ===========================================================================
+
+
+class TestFileMove:
+    @pytest.mark.asyncio
+    async def test_move_renames_file(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._files["a.txt"] = b"hello"
+
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/files/move",
+            params={"src": "a.txt", "dst": "b.txt"},
+        )
+        assert resp.status_code == 204, resp.text
+
+        # New path reads back; old path is gone.
+        moved = await client.get(
+            f"/v1/workspaces/{wid}/files/read", params={"path": "b.txt"}
+        )
+        assert moved.status_code == 200
+        assert moved.json()["content"] == "hello"
+        gone = await client.get(
+            f"/v1/workspaces/{wid}/files/read", params={"path": "a.txt"}
+        )
+        assert gone.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_move_file_into_subdir(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._files["note.md"] = b"# n"
+        ws._dirs.add("docs")
+
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/files/move",
+            params={"src": "note.md", "dst": "docs/note.md"},
+        )
+        assert resp.status_code == 204, resp.text
+        assert "docs/note.md" in ws._files
+        assert "note.md" not in ws._files
+
+    @pytest.mark.asyncio
+    async def test_move_missing_src_404(self, client, wsr) -> None:
+        wid, _ = await _setup(client, wsr)
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/files/move",
+            params={"src": "nope.txt", "dst": "there.txt"},
+        )
+        assert resp.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_move_onto_existing_dst_409(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._files["a.txt"] = b"a"
+        ws._files["b.txt"] = b"b"
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/files/move",
+            params={"src": "a.txt", "dst": "b.txt"},
+        )
+        assert resp.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_move_traversal_dst_400(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._files["a.txt"] = b"a"
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/files/move",
+            params={"src": "a.txt", "dst": "../escape.txt"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_move_dir_into_own_descendant_400(self, client, wsr) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._dirs.add("src")
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/files/move",
+            params={"src": "src", "dst": "src/inner"},
+        )
+        assert resp.status_code == 400
+
+    @pytest.mark.asyncio
+    async def test_move_renames_directory_with_children(
+        self, client, wsr
+    ) -> None:
+        wid, ws = await _setup(client, wsr)
+        ws._dirs.add("old")
+        ws._files["old/a.txt"] = b"a"
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/files/move",
+            params={"src": "old", "dst": "new"},
+        )
+        assert resp.status_code == 204, resp.text
+        assert "new/a.txt" in ws._files
+        assert "old/a.txt" not in ws._files
