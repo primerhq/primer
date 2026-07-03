@@ -221,11 +221,14 @@ async def test_in_memory_scheduler_with_worker_mode_emits_warning(
         ),
     )
     app = create_app(cfg)
-    with caplog.at_level(logging.WARNING, logger="primer.api.app"):
+    # Capture at the root (the warning is emitted by the primer.api._app_lifespan
+    # logger, not primer.api.app) so the degraded-scheduler record is visible.
+    with caplog.at_level(logging.WARNING):
         async with app.router.lifespan_context(app):
             pass
     assert any(
-        "in-memory scheduler" in r.message and "multi-worker" in r.message
+        "in-memory scheduler" in r.message
+        and ("multi-process" in r.message or "external-worker" in r.message)
         for r in caplog.records
     )
 
