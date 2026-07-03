@@ -58,30 +58,84 @@ var WTP_ALL_CLASSES = [
 ];
 
 // ---------------------------------------------------------------------------
-// One-line payload summary
+// Content-aware, per-class payload preview (compact + information-dense).
+//
+// Each frame gets a preview tuned to its class so the row shows the MOST useful
+// info without expanding: assistant text lines, a tool's args/result, a graph
+// transition, the outcome of a done/error, etc. `clampLines` varies per class
+// so rows have VARIABLE height (not uniform boxes) — markers stay one line,
+// content frames span a few clamped lines.
 // ---------------------------------------------------------------------------
 
-function WTP_payloadSummary(payload) {
-  if (!payload || typeof payload !== "object") return "";
-  // tool_call / tool_result
-  if (payload.tool_name) return payload.tool_name;
-  if (payload.name) return payload.name;
-  // assistant_token: show up to 60 chars of text
-  if (typeof payload.text === "string") {
-    var t = payload.text.replace(/\n/g, " ").trim();
-    return t.length > 60 ? t.slice(0, 60) + "…" : t;
-  }
-  // graph_transition
-  if (payload.node_id) return payload.node_id + (payload.phase ? " · " + payload.phase : "");
-  // yielded
-  if (payload.tool) return "yielded · " + payload.tool;
-  // generic: stringify up to 80 chars
+function WTP_clip(s, max) {
+  if (typeof s !== "string") return "";
+  var t = s.trim();
+  return t.length > max ? t.slice(0, max) + "…" : t;
+}
+
+function WTP_argsPreview(obj, max) {
+  if (obj == null) return "";
+  if (typeof obj === "string") return WTP_clip(obj, max);
   try {
-    var s = JSON.stringify(payload);
-    return s.length > 80 ? s.slice(0, 80) + "…" : s;
-  } catch (_) {
+    return WTP_clip(JSON.stringify(obj), max);
+  } catch (_e) {
     return "";
   }
+}
+
+// Returns { label, text, clampLines, err } for one TapEvent:
+//   label      — optional bold prefix (tool name / node id)
+//   text       — the payload preview (may wrap to `clampLines` lines)
+//   clampLines — max preview lines before clamp (variable height per class)
+//   err        — render in the error colour
+function WTP_eventContent(ev) {
+  var cls = ev && ev.class;
+  var p = (ev && ev.payload && typeof ev.payload === "object") ? ev.payload : {};
+
+  if (cls === "assistant_token") {
+    var text = typeof p.text === "string" ? p.text
+             : (typeof p.delta === "string" ? p.delta : "");
+    return { label: "", text: WTP_clip(text, 400), clampLines: 3, err: false };
+  }
+  if (cls === "user_input") {
+    var ut = p.text || p.content || p.message || "";
+    return { label: "", text: WTP_clip(String(ut), 400), clampLines: 3, err: false };
+  }
+  if (cls === "tool_call") {
+    var name = p.tool_name || p.name || "";
+    var args = p.arguments != null ? p.arguments : p.args;
+    return { label: name || "", text: WTP_argsPreview(args, 220), clampLines: 2, err: false };
+  }
+  if (cls === "tool_result") {
+    var rname = p.tool_name || p.name || "";
+    if (p.error) {
+      return { label: rname || "", text: WTP_argsPreview(p.error, 220), clampLines: 2, err: true };
+    }
+    var out = p.output != null ? p.output : (p.result != null ? p.result : "");
+    return { label: rname || "", text: WTP_argsPreview(out, 220), clampLines: 2, err: false };
+  }
+  if (cls === "graph_transition") {
+    var node = p.node_id || "";
+    var phase = p.phase || "";
+    var status = p.status ? " (" + p.status + ")" : "";
+    var trans = (phase + status).trim();
+    return { label: node, text: trans, clampLines: 1, err: false };
+  }
+  if (cls === "done") {
+    var reason = p.stop_reason || p.raw_reason || "done";
+    var u = p.usage || {};
+    var toks = (u.input_tokens != null || u.output_tokens != null)
+      ? " · " + (u.input_tokens || 0) + " in / " + (u.output_tokens || 0) + " out"
+      : "";
+    return { label: "", text: reason + toks, clampLines: 1, err: false };
+  }
+  if (cls === "error") {
+    var msg = p.message || p.error || p.detail || "error";
+    var code = p.code ? " [" + p.code + "]" : "";
+    return { label: "", text: WTP_clip(String(msg) + code, 240), clampLines: 2, err: true };
+  }
+  // yielded / resumed / cancelled / unknown: a compact generic preview.
+  return { label: "", text: WTP_argsPreview(p, 160), clampLines: 1, err: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -321,13 +375,16 @@ function WorkspaceTap({ wid, sessionId }) {
           var key = ev.cursor != null ? String(ev.cursor) : ("i" + i);
           var isOpen = !!expanded[key];
           var ts = ev.ts ? new Date(ev.ts) : null;
-          var tsLabel = ts ? ts.toISOString().slice(11, 23) : "—";
+          // Minimal timestamp: HH:MM:SS (full ISO on hover).
+          var tsLabel = ts ? ts.toISOString().slice(11, 19) : "—";
           var sid = ev.session_id || "";
           var sidShort = sid.length > 16 ? sid.slice(0, 8) + "…" + sid.slice(-4) : sid;
-          var summary = WTP_payloadSummary(ev.payload);
+          var content = WTP_eventContent(ev);
           return (
             <div key={key} data-testid="activity-event" style={{ borderBottom: "1px solid var(--border)" }}>
-              {/* One-line summary — click / Enter / Space toggles the detail. */}
+              {/* Compact, content-aware row — click / Enter / Space expands it.
+                  A minimal timestamp + class chip + session on the header line,
+                  then a class-tuned payload preview with VARIABLE height. */}
               <div
                 data-testid="tap-event-row"
                 role="button"
@@ -339,42 +396,67 @@ function WorkspaceTap({ wid, sessionId }) {
                 }}
                 style={{
                   display: "flex",
-                  alignItems: "baseline",
-                  gap: 8,
-                  padding: "4px 18px",
-                  fontSize: 12,
-                  lineHeight: 1.5,
+                  flexDirection: "column",
+                  gap: 2,
+                  padding: "5px 18px",
                   cursor: "pointer",
                   background: isOpen ? "var(--bg-2)" : "transparent",
                 }}
               >
-                <span
-                  aria-hidden="true"
-                  className="mono muted"
-                  style={{ fontSize: 9, flexShrink: 0, width: 8, color: "var(--text-4)" }}
-                >{isOpen ? "▾" : "▸"}</span>
-                <span
-                  className="mono muted"
-                  style={{ fontSize: 10, flexShrink: 0, minWidth: 80 }}
-                  title={ts ? ts.toISOString() : ""}
-                >{tsLabel}</span>
-                <WTP_ClassChip cls={ev.class} />
-                {sid && (
+                {/* Header line: chevron · timestamp · class · session · seq */}
+                <div style={{ display: "flex", alignItems: "baseline", gap: 8, lineHeight: 1.4 }}>
+                  <span
+                    aria-hidden="true"
+                    className="mono muted"
+                    style={{ fontSize: 9, flexShrink: 0, width: 8, color: "var(--text-4)" }}
+                  >{isOpen ? "▾" : "▸"}</span>
                   <span
                     className="mono muted"
-                    style={{ fontSize: 10, flexShrink: 0 }}
-                    title={sid}
-                  >{sidShort}</span>
-                )}
-                {summary && (
-                  <span
-                    className="mono"
-                    style={{ fontSize: 11, color: "var(--text-2)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}
-                    title={summary}
-                  >{summary}</span>
-                )}
-                {ev.seq != null && (
-                  <span className="mono muted" style={{ fontSize: 10, flexShrink: 0 }}>#{ev.seq}</span>
+                    style={{ fontSize: 10, flexShrink: 0, minWidth: 56 }}
+                    title={ts ? ts.toISOString() : ""}
+                  >{tsLabel}</span>
+                  <WTP_ClassChip cls={ev.class} />
+                  {sid && (
+                    <span
+                      className="mono muted"
+                      style={{ fontSize: 10, flexShrink: 0 }}
+                      title={sid}
+                    >{sidShort}</span>
+                  )}
+                  {ev.seq != null && (
+                    <span className="mono muted" style={{ fontSize: 10, flexShrink: 0, marginLeft: "auto" }}>#{ev.seq}</span>
+                  )}
+                </div>
+                {/* Payload preview — variable height, class-tuned line clamp. */}
+                {(content.label || content.text) && (
+                  <div
+                    data-testid="tap-event-preview"
+                    style={{ display: "flex", gap: 6, paddingLeft: 26, minWidth: 0 }}
+                  >
+                    {content.label && (
+                      <span
+                        className="mono"
+                        style={{ fontSize: 11, fontWeight: 600, flexShrink: 0, color: content.err ? "var(--red)" : "var(--violet)" }}
+                      >{content.label}</span>
+                    )}
+                    {content.text && (
+                      <span
+                        className="mono"
+                        style={{
+                          fontSize: 11,
+                          color: content.err ? "var(--red)" : "var(--text-2)",
+                          whiteSpace: "pre-wrap",
+                          wordBreak: "break-word",
+                          overflow: "hidden",
+                          display: "-webkit-box",
+                          WebkitLineClamp: content.clampLines,
+                          WebkitBoxOrient: "vertical",
+                          minWidth: 0,
+                        }}
+                        title={content.text}
+                      >{content.text}</span>
+                    )}
+                  </div>
                 )}
               </div>
               {isOpen && (
