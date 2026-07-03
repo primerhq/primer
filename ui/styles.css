@@ -331,10 +331,13 @@
   flex-shrink: 0;
 }
 
-/* Studio right-rail: Action Required section (B4). The empty-state text must
-   never be clipped — the section is content-sized when empty (no max-height
-   cap) and only capped-with-scroll once it holds pending items. Previously a
-   flat 60px cap squeezed the "No pending actions" line behind overflow:hidden. */
+/* Studio right-rail: User Interaction section (Action Required + inform_user).
+   AUTO-RESIZE: the section is content-sized, so it stays compact when empty
+   (just the "No pending interactions." line) and GROWS to fit its items when
+   an ask_user input or an inform_user message lands — up to ~50vh, after which
+   the item list scrolls internally. `flex-shrink: 0` keeps the activity feed
+   below from squeezing it once populated. The empty-state text must never be
+   clipped (a flat px cap previously squeezed it behind overflow:hidden). */
 .st-action-required {
   display: flex;
   flex-direction: column;
@@ -343,7 +346,7 @@
   border-bottom: 1px solid var(--border);
 }
 .st-action-required.is-empty { max-height: none; }
-.st-action-required.has-items { max-height: 320px; }
+.st-action-required.has-items { max-height: 50vh; }
 .st-action-empty {
   padding: 16px 14px;
   font-size: 12px;
