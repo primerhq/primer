@@ -428,7 +428,9 @@
   transition: opacity 0.12s ease;
 }
 .st-session-row:hover .st-row-actions,
-.st-session-row:focus-within .st-row-actions { opacity: 1; }
+.st-session-row:focus-within .st-row-actions,
+.st-file-row:hover .st-row-actions,
+.st-file-row:focus-within .st-row-actions { opacity: 1; }
 
 /* FD4 — content-visibility row virtualization. Off-screen rows / expensive
    per-row cell content skip layout + paint until scrolled near, then their
