@@ -220,7 +220,7 @@ class _LiveWorkspace:
         return self._sessions.get(session_id)
 
     async def start_session(
-        self, binding, *, id, instructions=None, parent_session_id=None
+        self, binding, *, id, instructions=None, parent_session_id=None, name=None
     ):
         self._sessions[id] = _LiveSession(id)
         return self._sessions[id]

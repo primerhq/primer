@@ -73,6 +73,7 @@ class _FakeWorkspace:
         id: str,
         instructions: Any = None,
         parent_session_id: Any = None,
+        name: Any = None,
     ) -> None:
         self.started_slots.append(
             {
