@@ -14,13 +14,20 @@ import logging
 import uuid as _uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from pathlib import Path
 
 from fastapi import FastAPI
 
 from primer.api._app_bootstrap import (
     _bootstrap_web_fetch,
     _bootstrap_web_search,
+)
+from primer.api._app_lifespan_phases import (
+    assert_harness_kinds_registered,
+    recover_chats,
+    recover_ic_bootstrap,
+    recover_sessions,
+    run_first_boot_bootstrap,
+    seed_default_artifact_provider,
 )
 from primer.api._app_mcp import _start_mcp_mount
 from primer.api.config import AppConfig
@@ -106,53 +113,7 @@ def _make_lifespan(config: AppConfig):
         # Run synchronously before serving so the reserved-id providers
         # are available by the time any request arrives. Cost <2s on
         # warm disk (models download lazily, not here).
-        if config.auto_bootstrap:
-            from primer.bootstrap.runner import BootstrapRunner
-            from primer.model.provider import (
-                CrossEncoderProvider,
-                EmbeddingProvider,
-                SemanticSearchProvider as _SSP,
-            )
-            from primer.model.workspace import WorkspaceProvider, WorkspaceTemplate
-            _runner = BootstrapRunner(
-                storage=storage_provider,
-                embedder_storage=storage_provider.get_storage(EmbeddingProvider),
-                ssp_storage=storage_provider.get_storage(_SSP),
-                cross_encoder_storage=storage_provider.get_storage(
-                    CrossEncoderProvider
-                ),
-                workspace_provider_storage=storage_provider.get_storage(
-                    WorkspaceProvider
-                ),
-                workspace_template_storage=storage_provider.get_storage(
-                    WorkspaceTemplate
-                ),
-                root_dir=Path("~/.primer").expanduser(),
-            )
-            if await _runner.needs_bootstrap():
-                logger.info("first boot detected; running auto-bootstrap")
-                _result = await _runner.run()
-                logger.info(
-                    "auto-bootstrap complete",
-                    extra={
-                        "bootstrap_created": _result.created,
-                        "bootstrap_skipped": _result.skipped,
-                        "error_count": len(_result.errors),
-                    },
-                )
-                if _result.errors:
-                    logger.warning(
-                        "auto-bootstrap partial failure",
-                        extra={"bootstrap_errors": _result.errors},
-                    )
-        else:
-            # Warn on first boot only (marker still null).
-            _state = await storage_provider.get_system_state()
-            if _state.bootstrap_completed_at is None:
-                logger.warning(
-                    "first boot detected; auto_bootstrap=False — "
-                    "manual provisioning required"
-                )
+        await run_first_boot_bootstrap(config, storage_provider)
 
         semantic_search_registry = SemanticSearchRegistry(
             storage=storage_provider.get_storage(SemanticSearchProvider),
@@ -163,7 +124,6 @@ def _make_lifespan(config: AppConfig):
         # reserved default DB-backed provider so media works with zero operator
         # config. Idempotent: a concurrent boot may race the create.
         from primer.api.registries.artifact_storage_registry import (
-            DEFAULT_ARTIFACT_PROVIDER_ID,
             ArtifactStorageRegistry,
         )
         from primer.model.provider import ArtifactStorageProvider
@@ -173,16 +133,7 @@ def _make_lifespan(config: AppConfig):
             storage_provider=storage_provider,
         )
         app.state.artifact_storage_registry = artifact_storage_registry
-        try:
-            if await _asp_storage.get(DEFAULT_ARTIFACT_PROVIDER_ID) is None:
-                await _asp_storage.create(ArtifactStorageProvider(
-                    id=DEFAULT_ARTIFACT_PROVIDER_ID, provider="db",
-                ))
-                logger.info(
-                    "bootstrap: created reserved default artifact provider (db)",
-                )
-        except Exception:
-            logger.exception("seeding default artifact provider failed")
+        await seed_default_artifact_provider(_asp_storage)
 
         from primer.agent.approval import ApprovalResolver
         from primer.model.tool_approval import ToolApprovalPolicy
@@ -646,74 +597,7 @@ def _make_lifespan(config: AppConfig):
         # previous process sits at status=RUNNING forever with no owner
         # — the diagnostic-report Bug 1.
         if claim_engine is not None:
-            try:
-                from primer.int.claim import ClaimKind as _ClaimKind
-                from primer.model.storage import OffsetPage as _OffsetPage
-                from primer.model.workspace_session import (
-                    SessionStatus as _SessionStatus,
-                    WorkspaceSession as _WorkspaceSession,
-                )
-                from primer.storage.q import Q as _Q
-
-                _session_storage = storage_provider.get_storage(_WorkspaceSession)
-                # Only LIVE (non-ENDED) sessions can still need work. Pushing
-                # the filter into the query (instead of list()-ing every row
-                # and dropping ENDED in Python) keeps recovery from loading the
-                # entire session history into memory at scale -- and the new
-                # B-tree index on sessions.status keeps the scan cheap. The
-                # IN-set mirrors "every status except ENDED" so a future status
-                # is recovered (fail-safe) rather than silently dropped.
-                _live_statuses = [
-                    s.value for s in _SessionStatus if s != _SessionStatus.ENDED
-                ]
-                _live_predicate = (
-                    _Q(_WorkspaceSession).where_in("status", _live_statuses).build()
-                )
-                _recovered_running = 0
-                _recovered_other = 0
-                _offset = 0
-                while True:
-                    _page = await _session_storage.find(
-                        _live_predicate,
-                        _OffsetPage(offset=_offset, length=200),
-                    )
-                    _items = list(_page.items)
-                    for _sess in _items:
-                        if _sess.status == _SessionStatus.ENDED:
-                            continue
-                        try:
-                            await claim_engine.upsert(_ClaimKind.SESSION, _sess.id)
-                            if _sess.status == _SessionStatus.RUNNING:
-                                # Also notify the scheduler — Postgres
-                                # enqueue is pg_notify-only; in-memory is
-                                # idempotent.
-                                try:
-                                    await scheduler.enqueue(_sess.id)
-                                except Exception:  # noqa: BLE001
-                                    logger.debug(
-                                        "session recovery: scheduler.enqueue "
-                                        "failed for %s (lease will still be "
-                                        "claimable)", _sess.id, exc_info=True,
-                                    )
-                                _recovered_running += 1
-                            else:
-                                _recovered_other += 1
-                        except Exception:
-                            logger.exception(
-                                "session recovery: failed to upsert lease "
-                                "for %s", _sess.id,
-                            )
-                    if len(_items) < 200:
-                        break
-                    _offset += 200
-                if _recovered_running or _recovered_other:
-                    logger.info(
-                        "lifespan: session recovery — re-armed %d RUNNING + "
-                        "%d non-RUNNING leases from persisted state",
-                        _recovered_running, _recovered_other,
-                    )
-            except Exception:  # noqa: BLE001 -- never break startup
-                logger.exception("lifespan: session recovery failed")
+            await recover_sessions(claim_engine, scheduler, storage_provider)
 
         # --- Chat recovery on startup --------------------------------------
         # Same shape as session recovery above but for the chat surface.
@@ -725,44 +609,7 @@ def _make_lifespan(config: AppConfig):
         # running} and chat.status='active', so we only re-arm rows
         # that match.
         if claim_engine is not None:
-            try:
-                from primer.int.claim import ClaimKind as _ClaimKind
-                from primer.model.chats import Chat as _Chat
-                from primer.model.storage import OffsetPage as _OffsetPage
-
-                _chats_storage = storage_provider.get_storage(_Chat)
-                _recovered_chats = 0
-                _chat_offset = 0
-                while True:
-                    _page = await _chats_storage.list(
-                        _OffsetPage(offset=_chat_offset, length=200)
-                    )
-                    _items = list(_page.items)
-                    for _chat in _items:
-                        # Skip anything the adapter wouldn't accept.
-                        if getattr(_chat, "status", None) != "active":
-                            continue
-                        _ts = getattr(_chat, "turn_status", None)
-                        if _ts not in ("claimable", "running"):
-                            continue
-                        try:
-                            await claim_engine.upsert(_ClaimKind.CHAT, _chat.id)
-                            _recovered_chats += 1
-                        except Exception:
-                            logger.exception(
-                                "chat recovery: failed to upsert lease for %s",
-                                _chat.id,
-                            )
-                    if len(_items) < 200:
-                        break
-                    _chat_offset += 200
-                if _recovered_chats:
-                    logger.info(
-                        "lifespan: chat recovery — re-armed %d chat lease(s) "
-                        "from persisted state", _recovered_chats,
-                    )
-            except Exception:  # noqa: BLE001 -- never break startup
-                logger.exception("lifespan: chat recovery failed")
+            await recover_chats(claim_engine, storage_provider)
 
         # --- Observability: claim queue-depth sampler ----------------------
         # Runs every 10s when the claim engine is Postgres-backed and
@@ -983,31 +830,7 @@ def _make_lifespan(config: AppConfig):
         # previous API process exited, its asyncio task is gone but the
         # status row still says "running". Mark it as failed so the
         # UI surfaces the interruption and the operator can re-trigger.
-        from primer.model.internal import (
-            INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID,
-            InternalCollectionsBootstrapStatus,
-        )
-        from datetime import datetime, timezone as _tz
-        _status_storage = storage_provider.get_storage(
-            InternalCollectionsBootstrapStatus
-        )
-        _stale = await _status_storage.get(
-            INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID
-        )
-        if _stale is not None and _stale.status == "running":
-            logger.warning(
-                "ic bootstrap recovery: marking stale 'running' row as "
-                "failed (attempt_id=%s)", _stale.attempt_id,
-            )
-            await _status_storage.update(_stale.model_copy(update={
-                "status": "failed",
-                "phase": None,
-                "finished_at": datetime.now(_tz.utc),
-                "error": (
-                    "bootstrap was interrupted by an API process "
-                    "restart; re-trigger when ready."
-                ),
-            }))
+        await recover_ic_bootstrap(storage_provider)
         if ic_config is not None:
             ic_subsystem = build_subsystem(
                 config=ic_config,
@@ -1040,16 +863,7 @@ def _make_lifespan(config: AppConfig):
         # Note: EntityType (agent/graph/collection/tool) intentionally
         # omits "document" and "toolset" (no IC vector index for those),
         # so we check harness-managed storage kinds rather than EntityType.
-        from primer.harness.service import _harness_kind_models  # noqa: PLC0415
-        _required_harness_kinds = frozenset(
-            {"agent", "graph", "collection", "document", "toolset"}
-        )
-        _registered = frozenset(_harness_kind_models().keys())
-        _missing = _required_harness_kinds - _registered
-        assert not _missing, (
-            f"CDC kinds registry is missing harness-managed kinds: {_missing!r}. "
-            "Ensure the corresponding router modules register their kinds."
-        )
+        assert_harness_kinds_registered()
 
         # --- Document vector backfill ------------------------------------
         # Index any user document whose vector chunks are missing (stored
