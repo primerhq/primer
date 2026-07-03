@@ -27,7 +27,7 @@ import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import TypeAdapter
@@ -256,6 +256,17 @@ class AgentSession:
     @property
     def workspace_id(self) -> str:
         return self._info.workspace_id
+
+    @property
+    def workspace_root(self) -> Path | None:
+        """Absolute workspace root (the ``.state`` repo's parent), or None.
+
+        Local repos expose ``.path`` (the ``.state/`` dir); its parent is the
+        workspace working root where ``artifacts/`` lives. Sandbox repos have no
+        local path -> None (callers rely on create-on-write).
+        """
+        state_path = getattr(self._state, "path", None)
+        return state_path.parent if state_path is not None else None
 
     @property
     def workspace_tools(self) -> list["WorkspaceTool"]:
