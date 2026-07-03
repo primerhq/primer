@@ -97,7 +97,7 @@ class _NoopWorkspace:
 
     async def start_session(
         self, binding: Any, *, id: str,
-        instructions: Any = None, parent_session_id: Any = None,
+        instructions: Any = None, parent_session_id: Any = None, name: Any = None,
     ) -> None:
         return None
 
