@@ -134,7 +134,7 @@ function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapse
                 >
                   <Icon name={it.icon} className="icon" />
                   <span className="label">{it.label}</span>
-                  <Icon name="external-link" className="icon" size={12} />
+                  <Icon name="external" className="icon" size={12} />
                 </a>
               ) : (
                 <div
