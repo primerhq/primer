@@ -50,6 +50,7 @@ from primer.agent.events import (
     Subscription,
     _ExecutorToolResult,
 )
+from primer.agent.prompt_render import render_system_prompt
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import (
     ExtendedEvent,
@@ -66,6 +67,7 @@ from primer.model.except_ import (
     BadRequestError,
     PrimerError,
 )
+from primer.model.graph import build_execution_context
 
 
 if TYPE_CHECKING:
@@ -120,6 +122,10 @@ class _BaseAgentExecutor(ABC):
         self._tool_manager = tool_manager
         self._compaction = compaction or CompactionStrategy()
         self._principal = principal
+        # Ambient run context exposed to the system prompt as ``ctx``. Base is
+        # surface-agnostic -> memory default; subclasses override with the real
+        # surface (AgentExecutor -> "chat", WorkspaceAgentExecutor -> "workspace").
+        self._execution_context = build_execution_context()
         self._subscribers: dict[str, AgentEventSubscriber] = {}
         self._subscriber_lock = asyncio.Lock()
         self._last_input_tokens: int | None = None
@@ -329,7 +335,9 @@ class _BaseAgentExecutor(ABC):
         """Assemble the full prompt: system + history + new user input."""
         parts: list[Message] = []
         if self._agent.system_prompt:
-            sys_text = "\n\n".join(self._agent.system_prompt)
+            sys_text = render_system_prompt(
+                self._agent.system_prompt, self._execution_context
+            )
             parts.append(
                 Message(role="system", parts=[TextPart(text=sys_text)])
             )

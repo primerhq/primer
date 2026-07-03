@@ -23,6 +23,7 @@ from primer.agent.compaction import CompactionStrategy
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import Message
 from primer.model.except_ import NotFoundError
+from primer.model.graph import build_execution_context
 from primer.model.storage import (
     CursorPage,
     FieldRef,
@@ -78,6 +79,9 @@ class AgentExecutor(_BaseAgentExecutor):
         self._thread_id = thread_id
         self._threads = thread_storage
         self._messages = message_storage
+        self._execution_context = build_execution_context(
+            surface="chat", principal=principal
+        )
 
     @property
     def thread_id(self) -> str:
