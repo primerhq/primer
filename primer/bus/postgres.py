@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from primer.int.event_bus import Event, EventBus, EventSubscription
+from primer.model.except_ import ProviderError
 
 if TYPE_CHECKING:
     from primer.storage.postgres import PostgresStorageProvider
@@ -48,6 +49,17 @@ YIELD_EVENTS_CHANNEL = "primer_yield_events"
 """Postgres NOTIFY channel name. Distinct from session_ready so the
 existing scheduler wake-up traffic doesn't double-trigger yield
 resumes."""
+
+
+MAX_NOTIFY_PAYLOAD_BYTES = 7900
+"""Safe upper bound (UTF-8 bytes) for a single NOTIFY payload.
+
+Postgres caps NOTIFY payloads at 8000 bytes and raises an opaque
+``payload string too long`` above that. We guard slightly under 8000 (a
+little headroom) and raise a clear domain error instead. Yield payloads
+are meant to be small routing keys -- the real data is re-read from
+storage -- so exceeding this signals a caller sending far too much, not a
+legitimate large message."""
 
 
 DEFAULT_LISTEN_RECONNECT_SECONDS = 2.0
@@ -289,6 +301,24 @@ class PostgresEventBus(EventBus):
             "event_key": event_key,
             "payload": payload or {},
         })
+        # Postgres NOTIFY caps payloads at 8000 bytes; beyond that asyncpg
+        # raises an opaque "payload string too long". Guard here so an
+        # oversized body surfaces as a clear domain error BEFORE we acquire a
+        # connection or hit the wire (BE10b). Yield payloads are meant to be
+        # small routing keys (large data is re-read from storage), so this
+        # only fires on a caller bug -- and we raise rather than silently
+        # dropping the payload, which could strip routing fields a subscriber
+        # depends on.
+        encoded_len = len(body.encode("utf-8"))
+        if encoded_len > MAX_NOTIFY_PAYLOAD_BYTES:
+            raise ProviderError(
+                f"PostgresEventBus NOTIFY payload for event_key "
+                f"{event_key!r} is {encoded_len} bytes, over the "
+                f"{MAX_NOTIFY_PAYLOAD_BYTES}-byte safe limit (Postgres caps "
+                f"NOTIFY at 8000 bytes). Yield payloads must be small routing "
+                f"keys; re-read large data from storage instead.",
+                code="notify_payload_too_long",
+            )
         async with self._storage.pool.acquire() as conn:
             await conn.execute(
                 f"SELECT pg_notify('{YIELD_EVENTS_CHANNEL}', $1)",
