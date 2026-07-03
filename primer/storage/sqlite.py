@@ -193,6 +193,44 @@ class SqliteStorageProvider(StorageProvider):
                 finally:
                     self._txn_task = None
 
+    @asynccontextmanager
+    async def read_snapshot(self):
+        """Group a set of reads into ONE consistent snapshot.
+
+        Holds ``_write_lock`` (and issues ``BEGIN``..``COMMIT``) across the
+        enclosed reads so no foreign write can commit between them. Motivating
+        case: a paginated ``list()`` runs its page ``SELECT`` and its
+        ``COUNT(*)`` as two statements on the shared connection with an
+        ``await`` between them; without this a concurrent ``create``/``delete``
+        could slip in and make the reported ``total`` disagree with the page it
+        accompanies. Because every write goes through :meth:`_write_guard`
+        (which acquires the same lock), holding it here freezes the data set for
+        the whole read pair.
+
+        When the caller is already inside its OWN :meth:`transaction`, the reads
+        are already serialised under the held lock, so run them inline --
+        opening a nested ``BEGIN`` would fail and the outer unit owns the
+        commit. This makes the snapshot re-entrant and deadlock-free.
+        """
+        if self._in_own_transaction():
+            yield
+            return
+        async with self._write_lock:
+            conn = self.connection
+            await conn.execute("BEGIN")
+            try:
+                yield
+            except BaseException:
+                # Read-only unit, but roll back to close the snapshot txn
+                # cleanly on error (mirrors :meth:`transaction`).
+                await conn.rollback()
+                raise
+            else:
+                # Nothing to persist, but COMMIT ends the snapshot transaction
+                # so the connection returns to autocommit and never lingers
+                # with an open BEGIN.
+                await conn.commit()
+
     @property
     def in_transaction(self) -> bool:
         """True while any :meth:`transaction` block is open on this provider.
@@ -613,11 +651,18 @@ class SqliteStorage(Storage[ModelT]):
             f'SELECT count(*) FROM "{self._table}" WHERE {where_sql}'
         )
         try:
-            cur = await self._provider.connection.execute(select_sql, params)
-            rows = await cur.fetchall()
-            cur = await self._provider.connection.execute(count_sql, count_params)
-            row = await cur.fetchone()
-            total = int(row[0]) if row is not None else None
+            # Run the page SELECT and its COUNT(*) inside ONE consistent read
+            # snapshot so a concurrent write can't slip between the two
+            # statements and make ``total`` disagree with the returned page
+            # (BE10a). ``read_snapshot`` holds the shared write lock for both.
+            async with self._provider.read_snapshot():
+                cur = await self._provider.connection.execute(select_sql, params)
+                rows = await cur.fetchall()
+                cur = await self._provider.connection.execute(
+                    count_sql, count_params,
+                )
+                row = await cur.fetchone()
+                total = int(row[0]) if row is not None else None
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="list",

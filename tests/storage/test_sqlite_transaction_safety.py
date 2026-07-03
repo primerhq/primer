@@ -28,12 +28,14 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
 
 from primer.model.common import Identifiable
 from primer.model.provider import SqliteConfig
+from primer.model.storage import OffsetPage, OffsetPageResponse
 from primer.storage.sqlite import SqliteStorageProvider
 
 
@@ -180,3 +182,76 @@ async def test_concurrent_txns_no_spurious_reentrancy(
     for i in range(5):
         assert (await things.get(f"t-{i}")) is not None
         assert (await content.get(f"d-{i}")) == str(i)
+
+
+async def test_offset_count_and_page_are_one_snapshot(
+    provider: SqliteStorageProvider,
+) -> None:
+    """A paginated ``list()``'s ``total`` and its page must be ONE consistent
+    snapshot: a write that races the pagination must not land BETWEEN the page
+    ``SELECT`` and the ``COUNT(*)`` and make them disagree (BE10a).
+
+    The race is made deterministic by wrapping the shared connection so the
+    competitor is released right before the ``COUNT(*)`` runs -- i.e. exactly
+    "between" the two statements. Under the read snapshot the competitor blocks
+    on the write lock and only lands after the pair has been read together.
+    """
+    things = provider.get_storage(_Thing)
+    for i in range(5):
+        await things.create(_Thing(id=f"t{i}", value=str(i)))
+
+    real_conn = provider._conn  # noqa: SLF001
+    released = asyncio.Event()
+
+    class _ReleaseBeforeCount:
+        """Wrap the shared aiosqlite connection: when the paginated
+        ``COUNT(*)`` is about to run, release the competitor and yield so it is
+        scheduled (and blocks on the write lock) 'between' the page ``SELECT``
+        and the ``COUNT``."""
+
+        def __init__(self, real: Any) -> None:
+            self._real = real
+
+        async def execute(self, sql: str, *args: Any, **kwargs: Any):  # noqa: ANN201
+            if "count(*)" in sql.lower() and not released.is_set():
+                released.set()
+                # Yield repeatedly so the competitor task runs and parks on the
+                # write lock before we read the count.
+                for _ in range(10):
+                    await asyncio.sleep(0)
+            return await self._real.execute(sql, *args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._real, name)
+
+    provider._conn = _ReleaseBeforeCount(real_conn)  # noqa: SLF001
+
+    async def competitor() -> None:
+        await released.wait()
+        # These inserts block on the write lock held by the list's read
+        # snapshot, so they can only land AFTER the page + count are read
+        # together -- never interleaved between them.
+        await things.create(_Thing(id="t5", value="5"))
+        await things.create(_Thing(id="t6", value="6"))
+
+    comp = asyncio.ensure_future(competitor())
+    try:
+        page = await things.list(OffsetPage(offset=0, length=100))
+        await comp
+    finally:
+        provider._conn = real_conn  # noqa: SLF001
+
+    assert isinstance(page, OffsetPageResponse)
+    # The page and its total saw the SAME world: neither reflects the
+    # competitor's two inserts (serialised behind the snapshot's write lock).
+    assert page.total == 5
+    assert page.length == 5
+    assert len(page.items) == 5
+    assert page.total == page.length
+
+    # The competitor's writes DID happen (the race was real): a fresh,
+    # post-snapshot list sees all seven rows -- the guard reordered the write to
+    # AFTER the snapshot, it did not drop it.
+    after = await things.list(OffsetPage(offset=0, length=100))
+    assert after.total == 7
+    assert after.length == 7
