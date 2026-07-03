@@ -15,6 +15,7 @@ created file opens in the center editor.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -120,6 +121,17 @@ def test_new_folder_posts_to_files_dir_endpoint() -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_refresh_reloads_expanded_folders() -> None:
+    src = _src()
+    # handleRefresh wipes the folder cache then re-fetches any currently-expanded
+    # folder (force=true) so its children don't vanish until the user re-toggles
+    # it. fetchFolder gained a force flag that bypasses the once-per-path guard,
+    # which otherwise still sees the pre-clear cache via its render-time closure.
+    assert "function fetchFolder(path, force)" in src
+    assert "if (!force && folderCache[path]) return;" in src
+    assert "if (expanded[p]) fetchFolder(p, true);" in src
+
+
 def test_actions_refetch_tree() -> None:
     src = _src()
     # Each success path calls handleRefresh() (clears the folder cache + refetches root).
@@ -148,6 +160,15 @@ def test_delete_button_is_keyboard_accessible() -> None:
     assert 'type="button"' in src
     assert '"Delete file"' in src
     assert '"Delete folder"' in src
+    # The trash button owns its OWN inline onKeyDown (the rows use the
+    # ST_onRowKey wrapper, so an inline `onKeyDown={function(e) {` is unique to
+    # this button). On Enter/Space it preventDefaults, STOPS PROPAGATION (so the
+    # row-level onKeyDown — which opens the file / toggles the folder — can't
+    # hijack a keyboard user's delete), and calls handleDelete. That trio is
+    # unique: onClick lacks preventDefault; ST_onRowKey lacks stopPropagation.
+    assert "onKeyDown={function(e) {" in src
+    flat = re.sub(r"\s+", " ", src)
+    assert "e.preventDefault(); e.stopPropagation(); handleDelete(item);" in flat
 
 
 def test_delete_goes_through_confirm_dialog_danger() -> None:
@@ -176,11 +197,27 @@ def test_delete_folder_passes_recursive_true() -> None:
 
 def test_delete_refetches_tree_and_closes_editor_tab() -> None:
     src = _src()
-    # Success path refetches the tree (handleRefresh) and closes the open tab.
+    # Success path refetches the tree (handleRefresh) and closes the deleted
+    # path's editor tab.
     assert "handleDelete" in src
-    assert 'studio.closeTab("file:" + item.path)' in src
+    assert 'var selfTabId = "file:" + item.path;' in src
+    assert "studio.closeTab(tid)" in src
     # handleRefresh() is now called by New file / New folder / Upload / Delete.
     assert src.count("handleRefresh();") >= 4
+
+
+def test_delete_folder_closes_descendant_tabs() -> None:
+    src = _src()
+    # Deleting a folder must close open tabs for files *under* it — the backend
+    # rmtree removed them and a surviving tab could re-create one on save. The
+    # trailing "/" prefix guards against sibling matches ("foo" vs "foobar"),
+    # and the child-prefix branch is gated on isDir so a file delete only closes
+    # its own exact tab.
+    assert 'var childTabPrefix = selfTabId + "/";' in src
+    flat = re.sub(r"\s+", " ", src)
+    assert (
+        "tid === selfTabId || (isDir && tid.indexOf(childTabPrefix) === 0)"
+    ) in flat
 
 
 def test_delete_click_stops_propagation() -> None:
