@@ -90,7 +90,12 @@ class TestDbField:
 class TestDocsUrl:
     def test_default_points_at_the_docs_site(self) -> None:
         cfg = AppConfig()
-        assert cfg.docs_url == "https://primerhq.github.io/"
+        # The console 'Docs' link lands on the docs introduction page, not the
+        # site root (the marketing homepage).
+        assert (
+            cfg.docs_url
+            == "https://primerhq.github.io/docs/getting-started/introduction/"
+        )
 
     def test_env_override(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("PRIMER_DOCS_URL", "https://docs.example.com/")
