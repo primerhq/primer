@@ -25,9 +25,9 @@ const TokenMeter = ({
   else if (pct >= 0.6) band = "amber";
 
   const bg = {
-    green: "#1f7a3a",
-    amber: "#b8860b",
-    red: "#c0392b",
+    green: "var(--green)",
+    amber: "var(--amber)",
+    red: "var(--red)",
   }[band];
 
   const label = `${inputTokens.toLocaleString()} / ${contextLength.toLocaleString()} (${(pct * 100).toFixed(0)}%)`;
