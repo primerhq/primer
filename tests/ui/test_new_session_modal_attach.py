@@ -1,7 +1,9 @@
 """The Studio "New session" create form was enlarged from a small positioned
 overlay into a proper centered Modal (reusing the shared ``Modal`` from
-shared.jsx) with a LARGE multi-line instructions box so a detailed prompt can
-be pasted.
+shared.jsx) with a LARGE multi-line instructions box, and gained a multi-file
+"Attach files" control whose files are base64-uploaded into the workspace
+(``attachments/<name>``) BEFORE the session is created and then referenced in
+the initial instructions so the agent knows about them.
 
 These are structural (source-text) checks, matching the style of the other
 new-session-form tests in this suite.
@@ -56,6 +58,62 @@ def test_form_keeps_testid_and_name_field() -> None:
     # Testids preserved through the enlargement.
     assert 'data-testid="new-session-form"' in src
     assert 'data-testid="new-session-name"' in src
+
+
+# ---------------------------------------------------------------------------
+# 2. Multi-file "Attach files" control
+# ---------------------------------------------------------------------------
+
+
+def test_attach_input_is_multi_file() -> None:
+    src = _src()
+    # A multi-file <input type="file"> exists for picking attachments.
+    assert 'data-testid="new-session-attach-input"' in src
+    assert 'type="file"' in src
+    assert "multiple" in src
+
+
+def test_attach_list_and_remove_exist() -> None:
+    src = _src()
+    # Picked files are listed, each with a remove control.
+    assert 'data-testid="new-session-attach-list"' in src
+    assert 'data-testid="new-session-attach-item"' in src
+    assert 'data-testid="new-session-attach-remove"' in src
+    assert "removeAttachment(" in src
+
+
+# ---------------------------------------------------------------------------
+# 3. Create uploads (base64 PUT) BEFORE creating the session + references paths
+# ---------------------------------------------------------------------------
+
+
+def test_upload_is_base64_put_before_create() -> None:
+    src = _src()
+    up = src.index('"PUT"')
+    create = src.index("create.mutate(body)")
+    assert up < create, "attachments must be PUT-uploaded before the session is created"
+    # Base64 upload to the workspace files API, under attachments/.
+    assert 'encoding: "base64"' in src
+    assert '"attachments/" + att.name' in src
+    assert "SharedNewSessionFileToBase64" in src
+
+
+def test_upload_failure_blocks_session_create() -> None:
+    src = _src()
+    # A failed upload surfaces a toast and returns WITHOUT creating the session.
+    assert "Attachment upload failed" in src
+    # The early-return guard sits before the create call in source order.
+    guard = src.index("submittingRef.current = false;\n        return;")
+    create = src.index("create.mutate(body)")
+    assert guard < create
+
+
+def test_uploaded_paths_referenced_in_instructions() -> None:
+    src = _src()
+    # The uploaded paths are appended to initial_instructions.
+    assert '"Attached files: "' in src
+    assert "uploadedPaths" in src
+    assert "body.initial_instructions = instrText" in src
 
 
 def test_bundle_transpiles_with_enlarged_form() -> None:

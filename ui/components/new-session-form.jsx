@@ -132,6 +132,23 @@ function SharedNewSessionSchemaField({ propKey, schema, value, onChange }) {
   );
 }
 
+// Read a File as raw base64 — the data: URL payload minus its
+// "data:<mime>;base64," prefix — so it can be PUT with encoding:"base64",
+// mirroring the Studio Files-tree Upload. Unique top-level name so the
+// flat-bundle dup-decl lint (FD3) stays green.
+function SharedNewSessionFileToBase64(file) {
+  return new Promise(function (resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function () {
+      var result = String(reader.result || "");
+      var comma = result.indexOf(",");
+      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    };
+    reader.onerror = function () { reject(reader.error || new Error("read failed")); };
+    reader.readAsDataURL(file);
+  });
+}
+
 function SharedNewSessionForm(props) {
   var fixedWid = props.wid || null;
   var onCreated = props.onCreated || function () {};
@@ -176,6 +193,14 @@ function SharedNewSessionForm(props) {
   // Dynamic Begin.input_schema form state for the graph binding, keyed by
   // property name. Reset whenever the selected graph (or kind) changes.
   var [graphInputDraft, setGraphInputDraft] = React.useState({});
+  // Files to attach: each is uploaded into the workspace (base64 PUT) BEFORE
+  // the session is created, then its path is referenced in the initial
+  // instructions so the agent knows about it. `key` gives each row a stable
+  // identity for the list + remove control.
+  var [attachments, setAttachments] = React.useState([]);
+  var [uploading, setUploading] = React.useState(false);
+  var attachInputRef = React.useRef(null);
+  var attachSeqRef = React.useRef(0);
 
   // Look up the selected graph + its Begin node to drive the dynamic form.
   var selectedGraph = graphItems.find(function (g) { return g.id === graphId; }) || null;
@@ -229,13 +254,75 @@ function SharedNewSessionForm(props) {
   var canSubmit =
     !loading
     && !create.loading
+    && !uploading
     && effectiveWid
     && (kind === "agent" ? !!agentId : !!graphId);
+
+  // Append newly-picked files to the attachment list. The input is reset so
+  // re-picking the SAME file fires another change event.
+  function onAttachChange(e) {
+    var input = e.target;
+    var picked = (input && input.files) ? Array.prototype.slice.call(input.files) : [];
+    if (picked.length > 0) {
+      setAttachments(function (prev) {
+        var next = prev.slice();
+        picked.forEach(function (f) {
+          attachSeqRef.current += 1;
+          next.push({ key: "att-" + attachSeqRef.current, file: f, name: f.name });
+        });
+        return next;
+      });
+    }
+    if (input) input.value = "";
+  }
+
+  function removeAttachment(key) {
+    setAttachments(function (prev) {
+      return prev.filter(function (a) { return a.key !== key; });
+    });
+  }
 
   async function onSubmit(e) {
     if (e && e.preventDefault) e.preventDefault();
     if (!canSubmit || submittingRef.current) return;
     submittingRef.current = true;
+
+    // Attachments only apply to the free-text instructions flow (a graph's
+    // Begin.input_schema form submits structured `graph_input` instead, with
+    // no instructions to reference the files from). Upload each file into the
+    // workspace FIRST — if ANY upload fails, surface it and DO NOT create the
+    // session, so a run never starts against a half-uploaded set of files.
+    var uploadedPaths = [];
+    if (!usesGraphInputForm && attachments.length > 0) {
+      setUploading(true);
+      var failures = [];
+      for (var i = 0; i < attachments.length; i++) {
+        var att = attachments[i];
+        var relPath = "attachments/" + att.name;
+        try {
+          var b64 = await SharedNewSessionFileToBase64(att.file);
+          await apiFetch(
+            "PUT",
+            "/workspaces/" + encodeURIComponent(effectiveWid) + "/files?path=" + encodeURIComponent(relPath),
+            { content: b64, encoding: "base64" }
+          );
+          uploadedPaths.push(relPath);
+        } catch (err) {
+          failures.push(att.name + ": " + ((err && (err.detail || err.message)) || "upload failed"));
+        }
+      }
+      setUploading(false);
+      if (failures.length > 0) {
+        pushToast && pushToast({
+          kind: "error",
+          title: "Attachment upload failed",
+          detail: failures.join("; "),
+        });
+        submittingRef.current = false;
+        return;
+      }
+    }
+
     var binding = kind === "agent"
       ? { kind: "agent", agent_id: agentId }
       : { kind: "graph", graph_id: graphId };
@@ -245,8 +332,15 @@ function SharedNewSessionForm(props) {
       // Submit the schema-driven object as `graph_input`; the server validates
       // against Begin.input_schema at session-create time.
       body.graph_input = graphInputDraft;
-    } else if (instructions.trim()) {
-      body.initial_instructions = instructions.trim();
+    } else {
+      // Reference the uploaded attachment paths in the instructions so the
+      // agent knows the files exist in its workspace.
+      var instrText = instructions.trim();
+      if (uploadedPaths.length > 0) {
+        var refLine = "Attached files: " + uploadedPaths.join(", ");
+        instrText = instrText ? (instrText + "\n\n" + refLine) : refLine;
+      }
+      if (instrText) body.initial_instructions = instrText;
     }
     try {
       var session = await create.mutate(body);
@@ -262,8 +356,7 @@ function SharedNewSessionForm(props) {
     ? (createErr.detail || createErr.message || "Failed to create session")
     : null;
 
-  // Shared field body — identical markup for both variants (design-system
-  // classes); only the outer chrome + action buttons differ.
+  // Field body rendered inside the Modal (design-system classes).
   var fields = (
     <>
       <div className="field">
@@ -363,18 +456,78 @@ function SharedNewSessionForm(props) {
           );
         })
       ) : (
-        <div className="field">
-          <label className="field-label">Initial instructions</label>
-          <textarea
-            data-testid="new-session-instructions"
-            className="textarea"
-            value={instructions}
-            onChange={function (e) { setInstructions(e.target.value); }}
-            rows={8}
-            style={{ minHeight: 150, resize: "vertical" }}
-            placeholder="Tell the agent what to do — paste a detailed prompt here…"
-          />
-        </div>
+        <>
+          <div className="field">
+            <label className="field-label">Initial instructions</label>
+            <textarea
+              data-testid="new-session-instructions"
+              className="textarea"
+              value={instructions}
+              onChange={function (e) { setInstructions(e.target.value); }}
+              rows={8}
+              style={{ minHeight: 150, resize: "vertical" }}
+              placeholder="Tell the agent what to do — paste a detailed prompt here…"
+            />
+          </div>
+          <div className="field">
+            <label className="field-label">Attach files</label>
+            {/* Hidden multi-file input driven by the button (mirrors the Studio
+                Files-tree Upload). Hidden inputs (display:none) are skipped by
+                the Modal focus-trap, so they won't steal focus. */}
+            <input
+              ref={attachInputRef}
+              type="file"
+              multiple
+              data-testid="new-session-attach-input"
+              style={{ display: "none" }}
+              onChange={onAttachChange}
+            />
+            <Btn
+              kind="ghost"
+              size="sm"
+              icon="paperclip"
+              onClick={function () { if (attachInputRef.current) attachInputRef.current.click(); }}
+            >
+              Attach files
+            </Btn>
+            {attachments.length > 0 && (
+              <ul
+                data-testid="new-session-attach-list"
+                style={{ listStyle: "none", margin: "8px 0 0", padding: 0, display: "flex", flexDirection: "column", gap: 4 }}
+              >
+                {attachments.map(function (att) {
+                  return (
+                    <li
+                      key={att.key}
+                      data-testid="new-session-attach-item"
+                      style={{
+                        display: "flex", alignItems: "center", gap: 7, fontSize: 12,
+                        background: "var(--bg-2)", border: "1px solid var(--border)",
+                        borderRadius: 6, padding: "5px 8px",
+                      }}
+                    >
+                      <Icon name="file" size={12} />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {att.name}
+                      </span>
+                      <button
+                        type="button"
+                        data-testid="new-session-attach-remove"
+                        title="Remove attachment"
+                        aria-label={"Remove " + att.name}
+                        onClick={function () { removeAttachment(att.key); }}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: 14, lineHeight: 1, padding: "0 2px" }}
+                      >×</button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+            <div className="field-help">
+              Uploaded to <code>attachments/</code> in the workspace and referenced in the instructions.
+            </div>
+          </div>
+        </>
       )}
       <div className="field">
         <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
@@ -408,7 +561,7 @@ function SharedNewSessionForm(props) {
         <>
           <Btn kind="ghost" onClick={onCancel}>Cancel</Btn>
           <Btn kind="primary" icon="plus" onClick={onSubmit} disabled={!canSubmit}>
-            {create.loading ? "Creating…" : "Create"}
+            {uploading ? "Uploading…" : create.loading ? "Creating…" : "Create"}
           </Btn>
         </>
       }
