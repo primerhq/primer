@@ -33,6 +33,7 @@ from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.turn import _CancelScope
 from primer.worker.drivers import _GraphTurnDriver, _TurnDriver  # noqa: F401  re-export
 from primer.worker.io_shim import _WorkspaceIOShim
+from primer.worker._toolset_ids import _toolset_ids_from_scoped  # noqa: F401  re-export
 
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
 
@@ -46,22 +47,6 @@ if TYPE_CHECKING:
     from primer.chat.tick_router import ChatTickRouter
 
 logger = logging.getLogger(__name__)
-
-
-# Scoped tool ids are ``<toolset_id>__<tool_name>``; the worker only
-# needs to resolve each unique toolset prefix to get the providers it
-# has to load. Scoped ids without the separator are skipped silently —
-# they can't reference a real tool anyway, and the agent definition
-# is operator-owned so we don't want to 500 on a malformed entry.
-def _toolset_ids_from_scoped(scoped_tool_ids: list[str] | None) -> list[str]:
-    seen: dict[str, None] = {}  # dict preserves insertion order
-    for sid in scoped_tool_ids or []:
-        if "__" not in sid:
-            continue
-        prefix = sid.rsplit("__", 1)[0]
-        if prefix:
-            seen.setdefault(prefix, None)
-    return list(seen)
 
 
 class WorkerPool:
