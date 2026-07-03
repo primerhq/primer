@@ -1179,3 +1179,30 @@ __all__ = [
     "NodeRuntimeState",
     "NodeRuntimeStatus",
 ]
+
+
+# ===========================================================================
+# Forward-reference finalisation (import-order-independent)
+# ===========================================================================
+#
+# ``primer.model.workspace_session`` imports ``SessionStatus`` from *this*
+# module at its top level (it is the ``GraphThread.status`` field annotation
+# above). So when ``primer.model.graph`` is the FIRST module in an import chain
+# to load -- e.g. ``primer.agent.base`` -> ``primer.agent.prompt_render`` ->
+# ``from primer.model.graph import ExecutionContext`` -- Python runs
+# ``workspace_session`` to completion *while ``Graph`` here is still undefined*.
+# ``workspace_session._rebuild_models()`` fires at that moment, cannot
+# ``from primer.model.graph import Graph`` (this module is mid-load), swallows
+# the ImportError, and leaves ``AgentSessionBinding`` / ``GraphSessionBinding``
+# / ``WorkspaceSession`` with unresolved ``Agent`` / ``Graph`` forward refs.
+# That in turn leaves ``_CreateSessionArgs`` (in ``primer.toolset.workspaces``,
+# which embeds the ``SessionBinding`` union) permanently un-buildable.
+#
+# Now that ``Graph`` is defined, finish the rebuild that workspace_session had
+# to abandon. ``_rebuild_models()`` is idempotent, so this is a no-op when
+# workspace_session already resolved the refs on its own (it loaded standalone
+# first). Together the two call sites make forward-ref resolution independent
+# of which module loads first.
+from primer.model import workspace_session as _workspace_session  # noqa: E402
+
+_workspace_session._rebuild_models()
