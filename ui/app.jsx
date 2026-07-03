@@ -308,6 +308,29 @@ function App() {
   };
   const removeToast = (id) => setToasts((arr) => arr.filter((x) => x.id !== id));
 
+  // Unify the two toast systems. useMutation (use-mutation.js) — and any other
+  // non-React caller — enqueue error toasts via window.primerApi.toastPush (the
+  // toast.js queue), but that queue is never rendered: only this local `toasts`
+  // stack is. So a mutation with no explicit onError rolled back SILENTLY. Point
+  // the global toastPush/toastDismiss entry points at this rendered stack so
+  // those errors become visible. A ref keeps the wrapper stable while always
+  // calling the latest closure.
+  const pushToastRef = React.useRef(pushToast);
+  pushToastRef.current = pushToast;
+  const removeToastRef = React.useRef(removeToast);
+  removeToastRef.current = removeToast;
+  React.useEffect(() => {
+    const api = (window.primerApi = window.primerApi || {});
+    const prevPush = api.toastPush;
+    const prevDismiss = api.toastDismiss;
+    api.toastPush = (t) => pushToastRef.current(t);
+    api.toastDismiss = (id) => removeToastRef.current(id);
+    return () => {
+      api.toastPush = prevPush;
+      api.toastDismiss = prevDismiss;
+    };
+  }, []);
+
   // Open the Studio for the last-opened workspace. The Studio persists
   // localStorage["studio:lastWid"] whenever it mounts (see the effect in the
   // workspace-detail render path); read it back here. Falls back to the first
