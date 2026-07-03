@@ -228,6 +228,15 @@ class GraphContext(BaseModel):
             "NodeOutput."
         ),
     )
+    ctx: ExecutionContext = Field(
+        default_factory=build_execution_context,
+        description=(
+            "Ambient run context exposed to templates as ``ctx``. Defaults to a "
+            "``surface='memory'`` context so in-memory graph runs and existing "
+            "GraphContext constructions keep working; the workspace executor "
+            "overrides it with real workspace ids."
+        ),
+    )
 
 
 # ===========================================================================
