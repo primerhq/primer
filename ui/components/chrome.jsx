@@ -221,6 +221,21 @@ function Topbar({ workerStats, onNavigate, onOpenPalette, onOpenDrawer }) {
     : { data: null, error: null };
   const icBootstrapRequired = icProbe.data != null && !icProbe.data.activated_at;
 
+  // Instance suffix in the brand — driven by the operator-set tweak
+  // (tweaks.instanceLabel, e.g. "primer · localhost:8765") instead of a
+  // hardcoded literal. The brand already renders "primer" as the name, so we
+  // show the trailing host segment after the "·"; fall back to the current
+  // host when the label is unset/empty.
+  const [tweaks] = useTweaks();
+  const rawInstanceLabel = (tweaks && tweaks.instanceLabel) || "";
+  let instanceText = rawInstanceLabel;
+  if (rawInstanceLabel.indexOf("·") !== -1) {
+    instanceText = rawInstanceLabel.split("·").pop().trim();
+  }
+  if (!instanceText) {
+    try { instanceText = window.location.host; } catch (_e) { instanceText = ""; }
+  }
+
   return (
     <header className="topbar">
       <button
@@ -243,7 +258,7 @@ function Topbar({ workerStats, onNavigate, onOpenPalette, onOpenDrawer }) {
         <div>
           <div className="name">primer</div>
         </div>
-        <div className="instance">· localhost:8765</div>
+        <div className="instance" data-testid="topbar-instance">· {instanceText}</div>
       </div>
       <div className="topbar-search" onClick={onOpenPalette}>
         <Icon name="search" size={13} />
