@@ -41,24 +41,27 @@
       props: { onOpen: function () {}, pushToast: function () {} },
     },
     "sessions-list": {
-      component: "SessionsList",
+      // The global sessions list/detail pages were retired: sessions now live
+      // inside the workspace Studio (studio.jsx). This embed renders the Studio
+      // for the fixture workspace, so it shows the left sidebar's Sessions list
+      // + Files tree over fixture data. `wid` must match the workspace + session
+      // rows in sessions-list.json.
+      component: "Studio",
       fixtures: "sessions-list",
-      props: {
-        onOpenSession: function () {},
-        onNewSession: function () {},
-      },
+      props: { wid: "ws-blogassistant", pushToast: function () {} },
     },
     "session-detail": {
-      // SessionsList shows the list including the fixture session row;
-      // session-detail.json is keyed by GET /sessions/{id} which maps to
-      // that single session via the stub's query-insensitive fallback.
-      // NOTE: rendered as SessionsList (page-level) because SessionDetail
-      // requires an explicit sid prop to start fetching.
-      component: "SessionsList",
+      // Same Studio render, but `initialOpen` seeds an open session tab so the
+      // capture shows the center transcript panel (SessionLiveStream). The
+      // session in session-detail.json is terminal (ended), so the transcript
+      // renders fully from GET /sessions/{sid}/messages history with no live
+      // tap (the harness has no SSE backend).
+      component: "Studio",
       fixtures: "session-detail",
       props: {
-        onOpenSession: function () {},
-        onNewSession: function () {},
+        wid: "ws-blogassistant",
+        initialOpen: "session:sess-briefwriter",
+        pushToast: function () {},
       },
     },
     "chat-stream": {
