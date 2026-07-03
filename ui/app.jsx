@@ -126,6 +126,18 @@ function App() {
   React.useEffect(() => {
     const onKey = (e) => {
       if ((e.metaKey || e.ctrlKey) && (e.key === "k" || e.key === "K")) {
+        // The Studio (/workspaces/:wid) owns its OWN ⌘K palette (studio.jsx),
+        // registered on the same window. Bail out here on Studio routes so ⌘K
+        // opens ONE palette, not both — the Studio's handler takes it from here
+        // (it preventDefaults). The workspace providers/templates pages live
+        // under the same #/workspaces/ prefix but render the ordinary console
+        // chrome (no Studio palette), so they — like every other non-Studio
+        // page — keep the global palette.
+        const hash = window.location.hash;
+        const inStudio = hash.startsWith("#/workspaces/")
+          && !hash.startsWith("#/workspaces/providers")
+          && !hash.startsWith("#/workspaces/templates");
+        if (inStudio) return;
         e.preventDefault();
         setPaletteOpen((open) => !open);
       }
