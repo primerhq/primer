@@ -189,3 +189,29 @@ async def test_aclose_is_idempotent_and_stops_consume_loop(
     # Second aclose must be a no-op (idempotent), like the bus + sub.
     await router.aclose()
     await bus.aclose()
+
+
+async def test_wid_cache_is_bounded_lru(fake_storage_provider) -> None:
+    """BE6: the sid->wid resolution cache evicts least-recently-used entries
+    instead of growing without bound in a long-lived process."""
+    bus = InMemoryEventBus()
+    router = WorkspaceTapRouter(
+        bus, fake_storage_provider.get_storage(WorkspaceSession)
+    )
+    router._WID_CACHE_MAX = 3  # shrink the cap for the test
+
+    for i in range(5):
+        await _seed(fake_storage_provider, _session(f"s{i}", "W"))
+        assert await router._resolve_wid(f"s{i}") == "W"
+
+    # Never exceeds the cap; the 3 most-recent survive, the 2 oldest evicted.
+    assert len(router._wid_by_sid) <= 3
+    assert set(router._wid_by_sid) == {"s2", "s3", "s4"}
+
+    # A cache HIT on s3 makes it most-recent, so s2 becomes least-recently-used;
+    # the next insert (s5) then evicts s2, not s3. Cache order is now
+    # [s2, s4, s3] -> insert s5 -> evict s2 -> {s3, s4, s5}.
+    assert await router._resolve_wid("s3") == "W"
+    await _seed(fake_storage_provider, _session("s5", "W"))
+    assert await router._resolve_wid("s5") == "W"
+    assert set(router._wid_by_sid) == {"s3", "s4", "s5"}

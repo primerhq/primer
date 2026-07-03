@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import OrderedDict
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -96,6 +97,10 @@ class WorkspaceTapRouter:
     (cached) and fanned to every subscriber for that workspace.
     """
 
+    #: Max entries in the sid->wid LRU cache before least-recently-used
+    #: eviction. Bounds memory in a long-lived process; sid/wid are tiny.
+    _WID_CACHE_MAX = 8192
+
     def __init__(
         self,
         event_bus: "EventBus",
@@ -105,8 +110,10 @@ class WorkspaceTapRouter:
         self._sessions = session_storage
         # workspace_id -> set of subscriber queues
         self._subs: dict[str, set[asyncio.Queue[WorkspaceTick]]] = {}
-        # sid -> wid resolution cache (refresh-on-miss from storage)
-        self._wid_by_sid: dict[str, str] = {}
+        # sid -> wid resolution cache (refresh-on-miss from storage). Bounded
+        # LRU: one entry per session id ever ticked would otherwise leak in a
+        # long-lived process. sid/wid are tiny strings, so the cap is generous.
+        self._wid_by_sid: OrderedDict[str, str] = OrderedDict()
         self._sub = None
         self._task: asyncio.Task[None] | None = None
 
@@ -203,6 +210,7 @@ class WorkspaceTapRouter:
         """
         cached = self._wid_by_sid.get(sid)
         if cached is not None:
+            self._wid_by_sid.move_to_end(sid)  # LRU: mark recently used
             return cached
         session = await self._sessions.get(sid)
         if session is None:
@@ -213,6 +221,9 @@ class WorkspaceTapRouter:
             return None
         wid = session.workspace_id
         self._wid_by_sid[sid] = wid
+        self._wid_by_sid.move_to_end(sid)
+        while len(self._wid_by_sid) > self._WID_CACHE_MAX:
+            self._wid_by_sid.popitem(last=False)  # evict least-recently-used
         return wid
 
     def _publish(self, workspace_id: str, tick: WorkspaceTick) -> None:
