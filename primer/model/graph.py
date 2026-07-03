@@ -12,7 +12,7 @@ the surrounding design.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Annotated, Any, ClassVar, Literal, Union
 
@@ -126,6 +126,74 @@ class NodeOutput(BaseModel):
             "'tool_execution_failed'); populated when `error` is set. "
             "Mirrors WorkspaceSession.ended_detail's semantics."
         ),
+    )
+
+
+class ExecutionContext(BaseModel):
+    """Shared, always-present ambient run context, exposed to templates as ``ctx``.
+
+    One object is consumed by both templating layers — graph node templates (this
+    layer) and, in a companion effort, the agent ``system_prompt``. Node templates
+    only run inside graph execution, so ``surface`` is ``"workspace"`` (or
+    ``"memory"`` for in-memory graph runs); the load-bearing fields are the
+    identifiers, above all ``artifact_dir`` (the per-workflow directory downstream
+    nodes read/write artifacts from). Always present so ``{{ ctx.surface }}`` works
+    everywhere; frozen so a rendered context can't be mutated mid-run.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    surface: str = Field(
+        default="memory",
+        description=(
+            "'workspace' for workspace graph runs; 'memory' for in-memory runs."
+        ),
+    )
+    workspace_id: str | None = None
+    session_id: str | None = Field(
+        default=None,
+        description="The current (possibly nested) graph_session_id.",
+    )
+    graph_id: str | None = None
+    artifact_dir: str | None = Field(
+        default=None,
+        description=(
+            "Workspace-root-relative per-workflow dir: artifacts/<session_id>."
+        ),
+    )
+    principal: str | None = None
+    now: str | None = Field(
+        default=None, description="ISO-8601 UTC, captured once at construction."
+    )
+
+
+def build_execution_context(
+    *,
+    surface: str = "memory",
+    workspace_id: str | None = None,
+    session_id: str | None = None,
+    graph_id: str | None = None,
+    principal: str | None = None,
+    now: str | None = None,
+) -> "ExecutionContext":
+    """Single source of truth for an :class:`ExecutionContext`.
+
+    ``artifact_dir`` is derived as ``artifacts/<session_id>`` (workspace-root-
+    relative) when ``session_id`` is set, else ``None``. ``now`` defaults to the
+    current UTC time in ISO-8601, captured once here; callers pass an explicit
+    ``now`` for deterministic tests.
+    """
+    artifact_dir = f"artifacts/{session_id}" if session_id else None
+    if now is None:
+        now = datetime.now(timezone.utc).isoformat()
+    return ExecutionContext(
+        surface=surface,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        graph_id=graph_id,
+        artifact_dir=artifact_dir,
+        principal=principal,
+        now=now,
     )
 
 
@@ -1088,8 +1156,10 @@ class GraphNodeMessage(Identifiable):
 
 __all__ = [
     "BranchCondition",
+    "ExecutionContext",
     "Graph",
     "GraphContext",
+    "build_execution_context",
     "GraphEdge",
     "GraphNode",
     "GraphNodeMessage",
