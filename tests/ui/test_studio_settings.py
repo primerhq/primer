@@ -119,6 +119,26 @@ def test_reused_panels_preserve_labels() -> None:
     assert "function WS_LogTab(" in src
 
 
+def test_settings_has_escape_to_close() -> None:
+    """FB5 — the raw modal-overlay lacked Esc-to-close (only backdrop-click).
+    Assert a keydown handler closes it on Escape."""
+    src = _settings_src()
+    assert "addEventListener" in src and "keydown" in src
+    assert 'e.key === "Escape"' in src
+    assert "onClose && onClose();" in src
+
+
+def test_settings_manages_focus() -> None:
+    """FB5 — focus moves into the dialog on open and restores to the trigger on
+    close, matching what the shared Modal would provide."""
+    src = _settings_src()
+    assert "dialogRef" in src
+    assert "tabIndex={-1}" in src
+    # Restore focus to the previously-focused element on unmount.
+    assert "document.activeElement" in src
+    assert "prevFocus" in src
+
+
 def test_settings_registered_in_index_after_workspaces() -> None:
     order = _index_order()
     assert "components/studio-settings.jsx" in order
