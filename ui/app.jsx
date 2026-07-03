@@ -1,4 +1,4 @@
-/* global React, ReactDOM, Sidebar, MobileNav, Topbar, SessionsList, SessionDetail, Icon, Btn, StatusPill, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline, HarnessesPage */
+/* global React, ReactDOM, Sidebar, MobileNav, Topbar, SessionsList, Icon, Btn, StatusPill, CommandPalette, Banner, useTweaks, TweaksPanel, TweakSection, TweakRadio, TweakColor, Sparkline, HarnessesPage */
 
 const ACCENT_OPTIONS = {
   "Primer green": { h: 145, c: 0.18, l: 0.85 },

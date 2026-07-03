@@ -1,6 +1,8 @@
-"""Terminal sessions get a decoded outcome banner; parked panels gain live
-countdowns; panel-less parks get a generic waiting line. All from the
-shared describeSessionState / SessionCountdown."""
+"""The live panels reused by the Studio (SleepPanel etc.) surface parked
+countdowns via the shared SessionCountdown. The decoded outcome banner +
+panel-less waiting line lived in the old full-page SessionDetail component,
+which was removed (the Studio now subsumes the session view), so those
+assertions are gone with it."""
 
 from __future__ import annotations
 
@@ -11,17 +13,8 @@ UI = ROOT / "ui"
 DETAIL = (UI / "components" / "session-detail.jsx").read_text(encoding="utf-8")
 
 
-def test_outcome_banner_uses_decoder() -> None:
-    assert "describeSessionState" in DETAIL
-    assert "data-testid=\"session-outcome\"" in DETAIL
-
-
 def test_panels_show_countdown() -> None:
     assert "SessionCountdown" in DETAIL
-
-
-def test_generic_waiting_line_for_panelless_park() -> None:
-    assert "waitingOn" in DETAIL
 
 
 def test_bundle_transpiles() -> None:

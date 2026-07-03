@@ -12,7 +12,6 @@ MOBILE_AWARE_PAGES = [
     "auth.jsx",
     "dashboard.jsx",
     "sessions-list.jsx",
-    "session-detail.jsx",
     "workspaces.jsx",
     "workspaces/providers.jsx",
     "workspaces/templates.jsx",
