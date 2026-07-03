@@ -376,8 +376,22 @@ function treeToWire(node) {
   return { field: node.field, op: node.op, value: v };
 }
 
+// Escape HTML-significant chars before injecting into innerHTML. The other five
+// highlight sites (highlight-json.js / highlight-python.js / workspaces.jsx)
+// escape &/</> first; SyntaxJson did not, so operator-authored predicate values
+// could smuggle markup (self-XSS today, stored-XSS if predicates are ever
+// rendered for other viewers).
+function PB_escapeHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 function SyntaxJson({ value }) {
-  const lines = JSON.stringify(value, null, 2);
+  // Escape BEFORE the span-wrapping regex. The regex only keys off ", :, and
+  // digits — none of which escaping touches — so colorization still works.
+  const lines = PB_escapeHtml(JSON.stringify(value, null, 2));
   // Colorize keys, strings, numbers
   const html = lines
     .replace(/("([^"\\]|\\.)*"):/g, '<span class="key">$1</span>:')
