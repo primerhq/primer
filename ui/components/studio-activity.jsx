@@ -385,7 +385,7 @@ function ActionRequired({ wid, studio }) {
                   <input
                     type="text"
                     data-testid="respond"
-                    placeholder="Type a response… Enter to send"
+                    placeholder="Type a response…"
                     value={rs.draft}
                     disabled={rs.submitting || !actionable}
                     onChange={function(e) { patchRespond(item.tool_call_id, { draft: e.target.value }); }}
@@ -402,6 +402,29 @@ function ActionRequired({ wid, studio }) {
                       outline: "none",
                     }}
                   />
+                  {/* Visible Send button — the input is otherwise Enter-only
+                      and thus undiscoverable. Same submit path as Enter. */}
+                  <button
+                    type="button"
+                    data-testid="ask-user-send"
+                    title="Send response"
+                    disabled={rs.submitting || !actionable || !rs.draft.trim()}
+                    onClick={function() { handleRespondSubmit(item); }}
+                    style={{
+                      flexShrink: 0,
+                      padding: "4px 12px",
+                      borderRadius: 6,
+                      border: "1px solid var(--border-strong)",
+                      background: "var(--bg-active)",
+                      color: "var(--text)",
+                      cursor: (rs.submitting || !actionable || !rs.draft.trim()) ? "not-allowed" : "pointer",
+                      opacity: (rs.submitting || !actionable || !rs.draft.trim()) ? 0.5 : 1,
+                      fontSize: 12,
+                      fontWeight: 600,
+                    }}
+                  >
+                    Send
+                  </button>
                 </div>
               )}
 

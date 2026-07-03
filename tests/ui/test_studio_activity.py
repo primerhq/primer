@@ -101,12 +101,22 @@ def test_action_required_testids() -> None:
         "approve",
         "reject",
         "respond",
+        "ask-user-send",
         "cancel-yield",
         "action-approval-controls",
         "action-ask-controls",
         "action-cancel-controls",
     ):
         assert f'data-testid="{testid}"' in src, f"Missing data-testid: {testid}"
+
+
+def test_ask_user_send_button_wired() -> None:
+    """FB7 — the ask-user respond input was Enter-only (undiscoverable). A
+    visible Send button must call the same submit path as Enter."""
+    src = _activity_src()
+    assert 'data-testid="ask-user-send"' in src
+    # Same submit handler as the Enter key path (handleRespondSubmit).
+    assert "onClick={function() { handleRespondSubmit(item); }}" in src
 
 
 def test_workspace_activity_testid() -> None:
