@@ -13,9 +13,9 @@ applied during the earlier app.py split).
 
 from __future__ import annotations
 
-from pathlib import Path
-
+import asyncio
 import logging
+from pathlib import Path
 
 from primer.api.config import AppConfig
 
@@ -285,3 +285,140 @@ def assert_harness_kinds_registered() -> None:
         f"CDC kinds registry is missing harness-managed kinds: {_missing!r}. "
         "Ensure the corresponding router modules register their kinds."
     )
+
+
+async def warm_chat_channels(channel_registry) -> None:
+    """Warm the enabled chat-channel adapters at startup.
+
+    Session channels start on the first outbound park, but a chat is
+    user-initiated and has no other start trigger, so warm the enabled
+    chat-channel adapters. Only the inbound-owning process calls this: warming
+    opens an inbound listener, and a worker-only process must not open a second
+    competing inbound connection.
+    """
+    try:
+        warmed = await channel_registry.warm_chat_channels()
+        if warmed:
+            logger.info("warmed %d chat-channel adapter(s)", warmed)
+    except Exception:
+        logger.exception("warm_chat_channels failed during startup")
+
+
+async def sample_claim_queue_depth(claim_engine) -> None:
+    """Observability loop: sample the claim queue depth every 10s.
+
+    Only meaningful for a Postgres-backed claim engine (the in-memory engine's
+    depth would always be 0 outside tests); the caller gates on that before
+    scheduling this loop.
+    """
+    import primer.observability.metrics as _m
+    _table = claim_engine._table  # noqa: SLF001
+    _pool = claim_engine._storage.pool  # noqa: SLF001
+    while True:
+        try:
+            await asyncio.sleep(10)
+            async with _pool.acquire() as _conn:
+                _rows = await _conn.fetch(
+                    f"SELECT kind, COUNT(*) AS cnt"
+                    f" FROM {_table}"
+                    f" WHERE claimed_by IS NULL"
+                    f" GROUP BY kind"
+                )
+            for _row in _rows:
+                _m.claim_queue_depth.labels(_row["kind"]).set(
+                    _row["cnt"]
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception:
+            logger.debug(
+                "claim queue-depth sample failed", exc_info=True
+            )
+
+
+async def forward_chat_ticks(event_bus, chat_tick_router) -> None:
+    """Forward ``chat:<id>:tick`` bus events into the process-local tick router.
+
+    One bus subscription per process feeds the router; WS handlers subscribe
+    per-chat off the router.
+    """
+    from primer.chat.tick_router import Tick
+
+    sub = event_bus.subscribe()
+    try:
+        async for event in sub:
+            key = event.event_key
+            if not key.startswith("chat:") or not key.endswith(":tick"):
+                continue
+            cid = key[len("chat:"):-len(":tick")]
+            if not cid:
+                continue
+            seq = event.payload.get("seq") if event.payload else None
+            if not isinstance(seq, int):
+                continue
+            chat_tick_router.publish(cid, Tick(seq=seq))
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await sub.aclose()
+
+
+async def forward_chat_relays(
+    event_bus, storage_provider, channel_registry, artifact_storage_registry
+) -> None:
+    """Chat -> channel relay forwarder.
+
+    An out-of-proc worker cannot post to a channel (it deliberately does not
+    own the inbound gateway), so it publishes a tiny ``chat:<id>:relay`` signal;
+    the inbound-owning process re-derives the text/gate from storage and posts
+    via its warm adapter. Only runs where inbound lives (API / api+worker). In a
+    single api+worker process the worker posts directly via the shared warm
+    registry and never publishes, so this stays idle there.
+    """
+    from primer.channel.chat_dispatcher import (
+        ChatChannelDispatcher,
+        derive_chat_gate_envelope,
+        derive_final_relay_media,
+        derive_final_relay_text,
+        parse_relay_event_key,
+    )
+
+    relayer = ChatChannelDispatcher(
+        storage_provider=storage_provider,
+        registry=channel_registry,
+        event_bus=None,  # never republish: terminal, no bus loop
+        allow_build=True,  # inbound-owning: may warm the adapter
+        artifact_registry=artifact_storage_registry,
+    )
+    sub = event_bus.subscribe()
+    try:
+        async for event in sub:
+            cid = parse_relay_event_key(event.event_key)
+            if cid is None:
+                continue
+            kind = (event.payload or {}).get("kind")
+            try:
+                if kind == "text":
+                    text = await derive_final_relay_text(
+                        storage_provider, cid)
+                    if text:
+                        await relayer.relay_text(chat_id=cid, text=text)
+                elif kind == "gate":
+                    env = await derive_chat_gate_envelope(
+                        storage_provider, cid)
+                    if env is not None:
+                        await relayer.dispatch_gate(
+                            chat_id=cid, envelope=env)
+                elif kind == "media":
+                    mparts = await derive_final_relay_media(
+                        storage_provider, cid)
+                    if mparts:
+                        await relayer.relay_media(
+                            chat_id=cid, parts=mparts)
+            except Exception:
+                logger.exception(
+                    "chat relay forwarder: post for %s failed", cid)
+    except asyncio.CancelledError:
+        pass
+    finally:
+        await sub.aclose()

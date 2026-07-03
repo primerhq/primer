@@ -23,11 +23,15 @@ from primer.api._app_bootstrap import (
 )
 from primer.api._app_lifespan_phases import (
     assert_harness_kinds_registered,
+    forward_chat_relays,
+    forward_chat_ticks,
     recover_chats,
     recover_ic_bootstrap,
     recover_sessions,
     run_first_boot_bootstrap,
+    sample_claim_queue_depth,
     seed_default_artifact_provider,
+    warm_chat_channels,
 )
 from primer.api._app_mcp import _start_mcp_mount
 from primer.api.config import AppConfig
@@ -539,17 +543,9 @@ def _make_lifespan(config: AppConfig):
             RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
         )
 
-        async def _warm_chat_channels() -> None:
-            try:
-                warmed = await channel_registry.warm_chat_channels()
-                if warmed:
-                    logger.info("warmed %d chat-channel adapter(s)", warmed)
-            except Exception:
-                logger.exception("warm_chat_channels failed during startup")
-
         if owns_inbound:
             app.state.chat_channel_warm_task = asyncio.create_task(
-                _warm_chat_channels(),
+                warm_chat_channels(channel_registry),
             )
         else:
             app.state.chat_channel_warm_task = None
@@ -623,32 +619,9 @@ def _make_lifespan(config: AppConfig):
         ):
             from primer.claim.postgres import PostgresClaimEngine as _PGClaimEngine
             if isinstance(claim_engine, _PGClaimEngine):
-                async def _sample_claim_queue_depth() -> None:
-                    import primer.observability.metrics as _m
-                    _table = claim_engine._table  # noqa: SLF001
-                    _pool = claim_engine._storage.pool  # noqa: SLF001
-                    while True:
-                        try:
-                            await asyncio.sleep(10)
-                            async with _pool.acquire() as _conn:
-                                _rows = await _conn.fetch(
-                                    f"SELECT kind, COUNT(*) AS cnt"
-                                    f" FROM {_table}"
-                                    f" WHERE claimed_by IS NULL"
-                                    f" GROUP BY kind"
-                                )
-                            for _row in _rows:
-                                _m.claim_queue_depth.labels(_row["kind"]).set(
-                                    _row["cnt"]
-                                )
-                        except asyncio.CancelledError:
-                            break
-                        except Exception:
-                            logger.debug(
-                                "claim queue-depth sample failed", exc_info=True
-                            )
-
-                _claim_depth_task = asyncio.ensure_future(_sample_claim_queue_depth())
+                _claim_depth_task = asyncio.ensure_future(
+                    sample_claim_queue_depth(claim_engine)
+                )
                 logger.info("lifespan: claim queue-depth sampler started")
 
         # Build the always-on ``harness`` toolset. Needs event_bus so it
@@ -687,33 +660,14 @@ def _make_lifespan(config: AppConfig):
 
         # Process-local router for chat tick events. One bus subscription
         # per process feeds it; WS handlers subscribe per-chat.
-        from primer.chat.tick_router import ChatTickRouter, Tick
+        from primer.chat.tick_router import ChatTickRouter
 
         chat_tick_router = ChatTickRouter()
         app.state.chat_tick_router = chat_tick_router
 
-        async def _forward_chat_ticks_from_bus() -> None:
-            sub = event_bus.subscribe()
-            try:
-                async for event in sub:
-                    key = event.event_key
-                    if not key.startswith("chat:") or not key.endswith(":tick"):
-                        continue
-                    cid = key[len("chat:"):-len(":tick")]
-                    if not cid:
-                        continue
-                    seq = event.payload.get("seq") if event.payload else None
-                    if not isinstance(seq, int):
-                        continue
-                    chat_tick_router.publish(cid, Tick(seq=seq))
-            except asyncio.CancelledError:
-                pass
-            finally:
-                await sub.aclose()
-
         if event_bus is not None:
             chat_tick_task = asyncio.create_task(
-                _forward_chat_ticks_from_bus(),
+                forward_chat_ticks(event_bus, chat_tick_router),
                 name="chat-tick-forwarder",
             )
             app.state.chat_tick_forwarder_task = chat_tick_task
@@ -728,58 +682,14 @@ def _make_lifespan(config: AppConfig):
         # adapter. Only runs where inbound lives (API / api+worker). In a
         # single api+worker process the worker posts directly via the shared
         # warm registry and never publishes, so this stays idle there.
-        async def _forward_chat_relays_from_bus() -> None:
-            from primer.channel.chat_dispatcher import (
-                ChatChannelDispatcher,
-                derive_chat_gate_envelope,
-                derive_final_relay_media,
-                derive_final_relay_text,
-                parse_relay_event_key,
-            )
-
-            relayer = ChatChannelDispatcher(
-                storage_provider=storage_provider,
-                registry=channel_registry,
-                event_bus=None,  # never republish: terminal, no bus loop
-                allow_build=True,  # inbound-owning: may warm the adapter
-                artifact_registry=artifact_storage_registry,
-            )
-            sub = event_bus.subscribe()
-            try:
-                async for event in sub:
-                    cid = parse_relay_event_key(event.event_key)
-                    if cid is None:
-                        continue
-                    kind = (event.payload or {}).get("kind")
-                    try:
-                        if kind == "text":
-                            text = await derive_final_relay_text(
-                                storage_provider, cid)
-                            if text:
-                                await relayer.relay_text(chat_id=cid, text=text)
-                        elif kind == "gate":
-                            env = await derive_chat_gate_envelope(
-                                storage_provider, cid)
-                            if env is not None:
-                                await relayer.dispatch_gate(
-                                    chat_id=cid, envelope=env)
-                        elif kind == "media":
-                            mparts = await derive_final_relay_media(
-                                storage_provider, cid)
-                            if mparts:
-                                await relayer.relay_media(
-                                    chat_id=cid, parts=mparts)
-                    except Exception:
-                        logger.exception(
-                            "chat relay forwarder: post for %s failed", cid)
-            except asyncio.CancelledError:
-                pass
-            finally:
-                await sub.aclose()
-
         if event_bus is not None and owns_inbound:
             chat_relay_task = asyncio.create_task(
-                _forward_chat_relays_from_bus(),
+                forward_chat_relays(
+                    event_bus,
+                    storage_provider,
+                    channel_registry,
+                    artifact_storage_registry,
+                ),
                 name="chat-relay-forwarder",
             )
             app.state.chat_relay_forwarder_task = chat_relay_task
