@@ -1,26 +1,34 @@
-"""Regression: NewSessionModal must close on success and gate
+"""Regression: the new-session form must close on success and gate
 double-submits.
 
-Bug it locks in: pre-fix, the modal called `create.mutate(body)` without
+Bug it locks in: pre-fix, the form called `create.mutate(body)` without
 awaiting the promise and relied on `useMutation`'s `onSuccess` callback
 to invoke `onCreate`. A rapid double-click landed two POSTs before
 React re-rendered with `create.loading=true`, producing two sessions
 and leaving the dialog open (the parent's `onCreate` did call
 `setNewSessionOpen(false)`, but the still-pending second submit kept
 the modal alive in the next render).
+
+The submit logic was unified into ui/components/new-session-form.jsx
+(FD2), so these checks now target window.SharedNewSessionForm.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-APP = Path(__file__).resolve().parents[2] / "ui" / "app.jsx"
+SHARED = (
+    Path(__file__).resolve().parents[2]
+    / "ui"
+    / "components"
+    / "new-session-form.jsx"
+)
 
 
 def _modal_body() -> str:
-    src = APP.read_text(encoding="utf-8")
-    start = src.index("function NewSessionModal")
-    end = src.index("ReactDOM.createRoot", start)
+    src = SHARED.read_text(encoding="utf-8")
+    start = src.index("function SharedNewSessionForm")
+    end = src.index("window.SharedNewSessionForm =", start)
     return src[start:end]
 
 

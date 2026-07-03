@@ -13,6 +13,12 @@ from __future__ import annotations
 from pathlib import Path
 
 APP = Path(__file__).resolve().parents[2] / "ui" / "app.jsx"
+SHARED = (
+    Path(__file__).resolve().parents[2]
+    / "ui"
+    / "components"
+    / "new-session-form.jsx"
+)
 SDET = (
     Path(__file__).resolve().parents[2]
     / "ui"
@@ -25,40 +31,41 @@ def _app() -> str:
     return APP.read_text(encoding="utf-8")
 
 
+def _shared_body() -> str:
+    # The create-session data path (fetch + POST + mutation) was unified into
+    # window.SharedNewSessionForm (FD2); app.jsx's NewSessionModal is now a
+    # thin wrapper that renders it.
+    src = SHARED.read_text(encoding="utf-8")
+    start = src.index("function SharedNewSessionForm")
+    end = src.index("window.SharedNewSessionForm =", start)
+    return src[start:end]
+
+
 def _sdet() -> str:
     return SDET.read_text(encoding="utf-8")
 
 
 def test_modal_does_not_read_mock_data() -> None:
-    src = _app()
-    start = src.index("function NewSessionModal")
-    end = src.index("ReactDOM.createRoot", start)
-    body = src[start:end]
+    body = _shared_body()
     assert "window.MOCK" not in body, (
-        "NewSessionModal must not read from window.MOCK — fetch real "
+        "The new-session form must not read from window.MOCK — fetch real "
         "agents/graphs/workspaces from the API instead"
     )
 
 
 def test_modal_fetches_real_endpoints() -> None:
-    src = _app()
-    start = src.index("function NewSessionModal")
-    end = src.index("ReactDOM.createRoot", start)
-    body = src[start:end]
+    body = _shared_body()
     for url in ("/agents?limit=200", "/graphs?limit=200", "/workspaces?limit=200"):
-        assert url in body, f"NewSessionModal must fetch {url}"
+        assert url in body, f"The new-session form must fetch {url}"
 
 
 def test_modal_posts_to_workspace_sessions_endpoint() -> None:
-    src = _app()
-    start = src.index("function NewSessionModal")
-    end = src.index("ReactDOM.createRoot", start)
-    body = src[start:end]
+    body = _shared_body()
     assert "/workspaces/" in body and "/sessions" in body, (
-        "NewSessionModal must POST to /workspaces/{ws}/sessions"
+        "The new-session form must POST to /workspaces/{ws}/sessions"
     )
     assert '"POST"' in body or "'POST'" in body, (
-        "NewSessionModal must issue a POST mutation"
+        "The new-session form must issue a POST mutation"
     )
 
 
@@ -79,9 +86,6 @@ def test_no_unimplemented_graph_executor_banner_in_session_detail() -> None:
 
 
 def test_modal_uses_use_resource_and_use_mutation() -> None:
-    src = _app()
-    start = src.index("function NewSessionModal")
-    end = src.index("ReactDOM.createRoot", start)
-    body = src[start:end]
-    assert "useResource" in body, "modal should consume useResource"
-    assert "useMutation" in body, "modal should consume useMutation"
+    body = _shared_body()
+    assert "useResource" in body, "form should consume useResource"
+    assert "useMutation" in body, "form should consume useMutation"
