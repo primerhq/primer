@@ -21,8 +21,11 @@ def test_modal_destructures_width_prop() -> None:
 
 def test_modal_applies_width_to_modal_element() -> None:
     # The desktop .modal element takes the inline width override so the
-    # CSS `width: 420px` cap can be widened by callers.
-    assert 'className="modal" style={width' in SHARED
+    # CSS `width: 420px` cap can be widened by callers. (Format-robust: the
+    # .modal div gained aria-modal/tabIndex for the focus-trap, so the attrs
+    # are no longer on one line — assert the width-style expression itself.)
+    assert 'className="modal"' in SHARED
+    assert "style={width ? { width } : undefined}" in SHARED
 
 
 def test_collection_browse_modal_opts_into_wide() -> None:

@@ -184,6 +184,21 @@ function ST_fileIconColor(item) {
 }
 
 // ---------------------------------------------------------------------------
+// ST_onRowKey — keyboard activation for role="button" rows (a11y, FC5c).
+// Returns an onKeyDown handler that fires `activate` on Enter or Space, so the
+// clickable session / file rows are reachable and operable without a mouse.
+// ---------------------------------------------------------------------------
+
+function ST_onRowKey(activate) {
+  return function (e) {
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      activate();
+    }
+  };
+}
+
+// ---------------------------------------------------------------------------
 // NewSessionForm — inline modal-style form for creating a session.
 // Renders as a positioned overlay inside the sessions section.
 // POST /v1/workspaces/{wid}/sessions with the SessionCreateBody shape:
@@ -271,7 +286,7 @@ function NewSessionForm({ wid, onClose, onCreated }) {
       }}
       data-testid="new-session-form"
     >
-      <div style={{ display: "flex", alignItems: "center", marginBottom: 10 }}>
+      <div className="st-row" style={{ marginBottom: 10 }}>
         <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-3)", flex: 1 }}>New session</span>
         <button
           style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: 14, padding: "0 2px", lineHeight: 1 }}
@@ -725,7 +740,10 @@ function SessionsSection({ wid, studio }) {
                 className="st-session-row"
                 data-testid="session-row"
                 data-session-id={sid}
+                role="button"
+                tabIndex={0}
                 onClick={function() { openSession(session); }}
+                onKeyDown={ST_onRowKey(function() { openSession(session); })}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -753,14 +771,11 @@ function SessionsSection({ wid, studio }) {
                   {title}
                 </span>
                 {st.badge && (
-                  <span style={{
+                  <span className="st-pill" style={{
                     fontSize: 9,
-                    fontWeight: 700,
                     padding: "1px 5px",
-                    borderRadius: 999,
                     background: "var(--amber-dim)",
                     color: "var(--amber)",
-                    flexShrink: 0,
                   }}>
                     {st.badge}
                   </span>
@@ -1033,6 +1048,8 @@ function FilesTree({ wid, studio }) {
                 key={item.path}
                 className="st-file-row"
                 data-testid="file-row"
+                role="button"
+                tabIndex={0}
                 onClick={function() {
                   if (item.is_dir) {
                     handleFolderClick(item);
@@ -1040,6 +1057,13 @@ function FilesTree({ wid, studio }) {
                     handleFileClick(item);
                   }
                 }}
+                onKeyDown={ST_onRowKey(function() {
+                  if (item.is_dir) {
+                    handleFolderClick(item);
+                  } else {
+                    handleFileClick(item);
+                  }
+                })}
                 style={{
                   display: "flex",
                   alignItems: "center",
