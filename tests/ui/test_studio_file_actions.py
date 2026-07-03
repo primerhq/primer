@@ -127,6 +127,69 @@ def test_actions_refetch_tree() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Delete (file or folder) → DELETE /files?path=  (folders pass recursive=true)
+#
+# The backend delete_file (primer/workspace/local/workspace.py) removes a
+# regular file with unlink() and a directory recursively via shutil.rmtree
+# when recursive=true, so Delete is offered on BOTH file and folder rows.
+# ---------------------------------------------------------------------------
+
+
+def test_delete_testids_present_on_rows() -> None:
+    src = _src()
+    # Per-row trash buttons: files get file-delete, folders get folder-delete.
+    assert '"file-delete"' in src, "Missing file-delete testid"
+    assert '"folder-delete"' in src, "Missing folder-delete testid"
+
+
+def test_delete_button_is_keyboard_accessible() -> None:
+    src = _src()
+    # Native <button type="button"> handles Enter/Space; aria-labels name it.
+    assert 'type="button"' in src
+    assert '"Delete file"' in src
+    assert '"Delete folder"' in src
+
+
+def test_delete_goes_through_confirm_dialog_danger() -> None:
+    src = _src()
+    # Confirmation is routed through the shared themed confirmDialog (danger),
+    # never native confirm(); cancel = no-op (guarded by `if (!ok) return;`).
+    assert "await confirmDialog({" in src
+    # Must NOT use native window.confirm() (naive substring guard, like the
+    # session-delete test) — the bare global confirmDialog is the themed Modal.
+    assert "window.confirm" not in src
+    assert "danger: true" in src
+    assert "if (!ok) return;" in src
+
+
+def test_delete_calls_apifetch_delete_files_path() -> None:
+    src = _src()
+    assert 'apiFetch("DELETE", url)' in src
+    assert '/files?path=" + encodeURIComponent(item.path)' in src
+
+
+def test_delete_folder_passes_recursive_true() -> None:
+    src = _src()
+    # A directory is removed recursively (backend rmtree), a file is not.
+    assert 'url += "&recursive=true"' in src
+
+
+def test_delete_refetches_tree_and_closes_editor_tab() -> None:
+    src = _src()
+    # Success path refetches the tree (handleRefresh) and closes the open tab.
+    assert "handleDelete" in src
+    assert 'studio.closeTab("file:" + item.path)' in src
+    # handleRefresh() is now called by New file / New folder / Upload / Delete.
+    assert src.count("handleRefresh();") >= 4
+
+
+def test_delete_click_stops_propagation() -> None:
+    src = _src()
+    # The trash click must NOT open the file / toggle the folder.
+    assert "e.stopPropagation(); handleDelete(item);" in src
+
+
+# ---------------------------------------------------------------------------
 # The bundle (incl. the new wiring) still transpiles cleanly — the hard gate.
 # ---------------------------------------------------------------------------
 
@@ -142,3 +205,4 @@ def test_bundle_transpiles_with_file_actions() -> None:
     assert "handleNewFile" in text
     assert "handleUploadChange" in text
     assert "handleNewFolder" in text
+    assert "handleDelete" in text

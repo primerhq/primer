@@ -823,6 +823,49 @@ function FilesTree({ wid, studio }) {
     }
   }
 
+  // -- Delete (file or folder) ---------------------------------------------
+  // DELETE /files?path=<rel>  (path is a QUERY param). The backend removes a
+  // regular file with unlink() and a directory recursively via shutil.rmtree
+  // when recursive=true (primer/workspace/local/workspace.py delete_file), so
+  // Delete is offered on BOTH files and folders; folders pass recursive=true
+  // and the confirm warns that the contents go with it. On success the tree is
+  // refetched, any open editor tab for the path is closed, and a toast fires.
+  async function handleDelete(item) {
+    var isDir = !!item.is_dir;
+    var name = item.name || item.path;
+    // Bare global from shared.jsx (Object.assign(window, {confirmDialog})) — the
+    // themed shared Modal dialog, not the native browser prompt. Same call
+    // shape as triggers.jsx.
+    var ok = await confirmDialog({
+      title: isDir ? "Delete folder" : "Delete file",
+      message: isDir
+        ? "Delete \"" + name + "\" and everything inside it? This cannot be undone."
+        : "Delete \"" + name + "\"? This cannot be undone.",
+      danger: true,
+    });
+    if (!ok) return;
+    var url = "/workspaces/" + encodeURIComponent(wid) + "/files?path=" + encodeURIComponent(item.path);
+    if (isDir) url += "&recursive=true";
+    try {
+      await apiFetch("DELETE", url);
+      handleRefresh();
+      // Close the file's editor tab if any (mirrors the openTab id "file:"+path).
+      studio.closeTab && studio.closeTab("file:" + item.path);
+      pushToast && pushToast({
+        kind: "success",
+        title: isDir ? "Folder deleted" : "File deleted",
+        detail: name,
+      });
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Delete failed",
+        detail: ST_errDetail(err, "Delete failed"),
+        requestId: err && err.requestId,
+      });
+    }
+  }
+
   function ST_readAsBase64(file) {
     // Resolve the raw base64 payload (the data: URL minus its "data:...;base64,"
     // prefix) so it can be PUT with encoding:"base64".
@@ -1111,6 +1154,21 @@ function FilesTree({ wid, studio }) {
                 {isDirty && (
                   <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--blue)", marginLeft: 4, flexShrink: 0 }} />
                 )}
+                {/* Hover/focus-revealed row action (delete). stopPropagation keeps
+                    the row's open-file / toggle-folder click from firing. Folders
+                    delete recursively (backend rmtree via recursive=true). */}
+                <span className="st-row-actions">
+                  <button
+                    type="button"
+                    className="st-row-action is-danger"
+                    data-testid={item.is_dir ? "folder-delete" : "file-delete"}
+                    title={item.is_dir ? "Delete folder" : "Delete file"}
+                    aria-label={item.is_dir ? "Delete folder" : "Delete file"}
+                    onClick={function(e) { e.stopPropagation(); handleDelete(item); }}
+                  >
+                    <Icon name="trash" size={12} />
+                  </button>
+                </span>
               </div>
             );
           })}
