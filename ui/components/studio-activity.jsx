@@ -39,6 +39,57 @@ function SA_short(sid) {
   return sid.slice(0, 10) + "…" + sid.slice(-6);
 }
 
+// inform_user surfacing (investigated for PR "studio-activity-rework"):
+//   inform_user is a NON-yielding tool — it relays a one-way message via
+//   ctx.inform (SessionInformSink → channels) and returns immediately. It does
+//   NOT park the session, so it NEVER appears in /workspaces/{wid}/yields/
+//   pending. Its only observable trace is a `tool_call` frame in the workspace
+//   tap: payload = {id, arguments:{message, files?}}. The persisted tool_call
+//   record does not always carry the tool NAME (only ToolCallEnd's id+arguments
+//   are recorded; the named ToolCallStart is dropped — see
+//   primer/session/persistence.py), so we detect an inform by tool name when
+//   present, else by the exact inform_user argument signature. Because inform
+//   is fire-and-forget there is NO backend ack endpoint, so "Dismiss" is a
+//   client-side removal only.
+//
+// Returns { key, session_id, message, ts } for an inform tool_call, else null.
+function SA_informFromEvent(ev) {
+  if (!ev || typeof ev !== "object" || ev.class !== "tool_call") return null;
+  var payload = ev.payload && typeof ev.payload === "object" ? ev.payload : {};
+  var args = payload.arguments != null ? payload.arguments : payload.args;
+  if (typeof args === "string") {
+    try { args = JSON.parse(args); } catch (_e) { args = null; }
+  }
+  if (!args || typeof args !== "object") return null;
+  var message = typeof args.message === "string" ? args.message : "";
+  if (!message.trim()) return null;
+
+  var name = payload.tool_name || payload.name || args.name || "";
+  var isInform = false;
+  if (name) {
+    // A named tool_call: accept only inform_user (e.g. "misc__inform_user").
+    if (String(name).indexOf("inform_user") < 0) return null;
+    isInform = true;
+  } else {
+    // No recorded name: accept ONLY the exact inform_user arg signature
+    // ({message} plus at most a `files` companion) so a generic message-
+    // bearing tool_call is never misclassified as an inform.
+    var extra = Object.keys(args).filter(function (k) {
+      return k !== "message" && k !== "files";
+    });
+    isInform = extra.length === 0;
+  }
+  if (!isInform) return null;
+
+  var idPart = ev.seq != null ? ev.seq : (payload.id || "");
+  return {
+    key: (ev.session_id || "") + ":" + idPart,
+    session_id: ev.session_id || "",
+    message: message,
+    ts: ev.ts || null,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // ActionRequired
 // ---------------------------------------------------------------------------
@@ -63,6 +114,12 @@ function ActionRequired({ wid, studio }) {
   // the WorkspaceTap activity feed, and the graph run-view — instead of each
   // opening its own connection (fe-review N4). We debounce a refetch of the
   // pending snapshot on yielded/done; the 15s pollMs backstops a dropped tap.
+  // inform_user items captured LIVE from the tap (see SA_informFromEvent).
+  // They have no pending-yield backing, so they live in local state and are
+  // dismissed client-side. Bounded so a chatty agent can't grow it unbounded.
+  var [informItems, setInformItems] = React.useState([]);
+  var [informDismissed, setInformDismissed] = React.useState({});
+
   var debounceRef = React.useRef(null);
   window.useWorkspaceTapListener(wid, function (ev) {
     if (!ev || typeof ev !== "object") return;
@@ -71,10 +128,30 @@ function ActionRequired({ wid, studio }) {
       clearTimeout(debounceRef.current);
       debounceRef.current = setTimeout(function () { pending.refetch(); }, 300);
     }
+    var inform = SA_informFromEvent(ev);
+    if (inform) {
+      setInformItems(function (prev) {
+        for (var i = 0; i < prev.length; i++) {
+          if (prev[i].key === inform.key) return prev;
+        }
+        var next = prev.concat(inform);
+        if (next.length > 30) next = next.slice(next.length - 30);
+        return next;
+      });
+    }
   });
   React.useEffect(function () {
     return function () { clearTimeout(debounceRef.current); };
   }, []);
+
+  function dismissInform(key) {
+    setInformDismissed(function (prev) {
+      var next = {};
+      for (var k in prev) next[k] = prev[k];
+      next[key] = true;
+      return next;
+    });
+  }
 
   // Per-item respond state: { [item_id]: { draft, submitting, error } }
   var [respondState, setRespondState] = React.useState({});
@@ -184,7 +261,8 @@ function ActionRequired({ wid, studio }) {
   }
 
   var visibleItems = items.filter(function(it) { return !hidden[it.tool_call_id]; });
-  var count = visibleItems.length;
+  var visibleInform = informItems.filter(function (it) { return !informDismissed[it.key]; });
+  var count = visibleItems.length + visibleInform.length;
 
   return (
     <div
@@ -196,9 +274,9 @@ function ActionRequired({ wid, studio }) {
         className="st-panel-bar"
         style={{ borderBottom: count > 0 ? "1px solid var(--border)" : "none" }}
       >
-        <span style={{ color: "var(--amber)", fontSize: 13 }}>⚠</span>
-        <span className="st-section-label">
-          Action Required
+        <span style={{ color: "var(--amber)", fontSize: 13 }} aria-hidden="true">⚠</span>
+        <span className="st-section-label" data-testid="user-interaction-label">
+          User Interaction
         </span>
         {count > 0 && (
           <span
@@ -227,7 +305,7 @@ function ActionRequired({ wid, studio }) {
       >
         {count === 0 && !pending.loading && (
           <div className="st-action-empty" data-testid="action-required-empty">
-            No pending actions. Everything's running clean.
+            No pending interactions.
           </div>
         )}
 
@@ -434,6 +512,95 @@ function ActionRequired({ wid, studio }) {
                   </button>
                 </div>
               )}
+            </div>
+          );
+        })}
+
+        {/* inform_user items — one-way messages surfaced live from the tap.
+            No pending yield backs them, so Dismiss is a client-side removal. */}
+        {visibleInform.map(function (inf) {
+          return (
+            <div
+              key={"inform:" + inf.key}
+              data-testid="inform-item"
+              style={{
+                padding: "10px 12px",
+                borderBottom: "1px solid var(--border)",
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              {/* Session label + kind */}
+              <div className="st-row" style={{ gap: 6 }}>
+                <button
+                  type="button"
+                  data-testid="action-session-link"
+                  onClick={function() { handleFocusSession(inf.session_id); }}
+                  style={{
+                    background: "none",
+                    border: "none",
+                    padding: 0,
+                    cursor: "pointer",
+                    color: "var(--accent)",
+                    fontFamily: "IBM Plex Mono, monospace",
+                    fontSize: 11,
+                    textDecoration: "underline",
+                    textUnderlineOffset: 2,
+                  }}
+                  title={inf.session_id}
+                >
+                  {SA_short(inf.session_id)}
+                </button>
+                <span
+                  style={{
+                    color: "var(--blue)",
+                    fontSize: 10,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.05em",
+                    fontWeight: 600,
+                  }}
+                >
+                  inform_user
+                </span>
+              </div>
+
+              {/* Message body — grows to fit, scrolls past a sensible cap. */}
+              <div
+                data-testid="inform-message"
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.5,
+                  color: "var(--text-2)",
+                  wordBreak: "break-word",
+                  whiteSpace: "pre-wrap",
+                  maxHeight: 140,
+                  overflowY: "auto",
+                }}
+              >
+                {inf.message}
+              </div>
+
+              {/* Ack — inform has no backend ack endpoint (fire-and-forget),
+                  so this only clears it from the panel. */}
+              <div>
+                <button
+                  type="button"
+                  data-testid="inform-dismiss"
+                  onClick={function() { dismissInform(inf.key); }}
+                  style={{
+                    padding: "4px 10px",
+                    borderRadius: 6,
+                    border: "1px solid var(--border)",
+                    background: "transparent",
+                    color: "var(--text-3)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                  }}
+                >
+                  Dismiss
+                </button>
+              </div>
             </div>
           );
         })}

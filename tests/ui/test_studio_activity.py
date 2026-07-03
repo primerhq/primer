@@ -110,6 +110,66 @@ def test_action_required_testids() -> None:
         assert f'data-testid="{testid}"' in src, f"Missing data-testid: {testid}"
 
 
+# ---------------------------------------------------------------------------
+# "Action Required" → "User Interaction" rename (holds ask_user + inform_user)
+# ---------------------------------------------------------------------------
+
+def test_user_interaction_label() -> None:
+    src = _activity_src()
+    # Visible section header is renamed; the section holds both ask_user AND
+    # inform_user, so "User Interaction" is the accessible label. The label is
+    # rendered inside the section-label span carrying the new testid.
+    assert 'data-testid="user-interaction-label"' in src
+    label_idx = src.index('data-testid="user-interaction-label"')
+    # The visible text follows within the same span element.
+    assert "User Interaction" in src[label_idx:label_idx + 120]
+
+
+def test_user_interaction_empty_copy_updated() -> None:
+    src = _activity_src()
+    assert "No pending interactions." in src
+
+
+# ---------------------------------------------------------------------------
+# inform_user handling — surfaces as a tap tool_call, dismissed client-side
+# ---------------------------------------------------------------------------
+
+def test_inform_user_detection_helper_present() -> None:
+    src = _activity_src()
+    # Helper that classifies an inform_user tool_call frame off the tap.
+    assert "function SA_informFromEvent(" in src
+    # Detected off a tool_call frame (inform_user is non-yielding — never a
+    # pending yield), keyed on the tool name OR the inform arg signature.
+    assert 'ev.class !== "tool_call"' in src
+    assert "inform_user" in src
+
+
+def test_inform_user_item_rendered_with_dismiss() -> None:
+    src = _activity_src()
+    for testid in ("inform-item", "inform-message", "inform-dismiss"):
+        assert f'data-testid="{testid}"' in src, f"Missing inform testid: {testid}"
+    # Dismiss is a client-side removal (no backend ack endpoint for inform).
+    assert "dismissInform" in src
+
+
+def test_inform_items_counted_in_section() -> None:
+    src = _activity_src()
+    # The section count/has-items sizing includes inform items, not just yields.
+    assert "visibleInform" in src
+    assert "visibleItems.length + visibleInform.length" in src
+
+
+# ---------------------------------------------------------------------------
+# Auto-resize — the section grows to fit its items (not a fixed tiny height)
+# ---------------------------------------------------------------------------
+
+def test_action_required_auto_resizes() -> None:
+    css = (UI / "styles.css").read_text(encoding="utf-8")
+    # Content-sized when empty, grows (capped + internal scroll) when populated.
+    assert ".st-action-required.is-empty { max-height: none; }" in css
+    assert ".st-action-required.has-items { max-height: 50vh; }" in css
+
+
 def test_ask_user_send_button_wired() -> None:
     """FB7 — the ask-user respond input was Enter-only (undiscoverable). A
     visible Send button must call the same submit path as Enter."""
