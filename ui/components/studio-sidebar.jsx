@@ -666,9 +666,10 @@ function FilesTree({ wid, studio }) {
     }
   }, [s.showHidden]);
 
-  function fetchFolder(path) {
-    // Only fetch once per path (or if not yet started).
-    if (folderCache[path]) return;
+  function fetchFolder(path, force) {
+    // Only fetch once per path (or if not yet started); force bypasses the
+    // once-per-path guard so handleRefresh can reload an already-cached folder.
+    if (!force && folderCache[path]) return;
     // Mark loading.
     setFolderCache(function(c) {
       var next = Object.assign({}, c);
@@ -718,6 +719,15 @@ function FilesTree({ wid, studio }) {
     // Clear folder cache and re-request root.
     setFolderCache({});
     rootRes.refetch && rootRes.refetch();
+    // Re-fetch folders that are currently expanded so their children reappear
+    // after the cache wipe — otherwise an expanded subfolder unrelated to the
+    // change renders blank until the user collapses + re-expands it. force=true
+    // is required because fetchFolder's guard still sees the pre-clear cache
+    // through its render-time closure.
+    var expanded = s.expanded || {};
+    Object.keys(expanded).forEach(function(p) {
+      if (expanded[p]) fetchFolder(p, true);
+    });
   }
 
   // -- File-action wiring (New file / Upload / New folder) -----------------
@@ -849,8 +859,24 @@ function FilesTree({ wid, studio }) {
     try {
       await apiFetch("DELETE", url);
       handleRefresh();
-      // Close the file's editor tab if any (mirrors the openTab id "file:"+path).
-      studio.closeTab && studio.closeTab("file:" + item.path);
+      // Close the deleted path's editor tab AND, for a folder, every open tab
+      // for a file *under* it: the backend rmtree removed those files, and a
+      // surviving tab could silently re-create one on save (write_file re-mkdirs
+      // parents and bypasses the etag check for a now-missing file). closeTab is
+      // a functional state update, so closing several in sequence is safe. The
+      // trailing "/" guards against sibling-prefix matches (deleting "foo" must
+      // not touch a tab for "foobar").
+      if (studio.closeTab) {
+        var selfTabId = "file:" + item.path;
+        var childTabPrefix = selfTabId + "/";
+        var openTabs = s.openTabs || [];
+        for (var ti = 0; ti < openTabs.length; ti++) {
+          var tid = openTabs[ti].id;
+          if (tid === selfTabId || (isDir && tid.indexOf(childTabPrefix) === 0)) {
+            studio.closeTab(tid);
+          }
+        }
+      }
       pushToast && pushToast({
         kind: "success",
         title: isDir ? "Folder deleted" : "File deleted",
@@ -1165,6 +1191,17 @@ function FilesTree({ wid, studio }) {
                     title={item.is_dir ? "Delete folder" : "Delete file"}
                     aria-label={item.is_dir ? "Delete folder" : "Delete file"}
                     onClick={function(e) { e.stopPropagation(); handleDelete(item); }}
+                    onKeyDown={function(e) {
+                      // The row div (role="button") owns an onKeyDown that
+                      // preventDefaults Enter/Space to open the file / toggle the
+                      // folder; without stopping the bubble here it would hijack a
+                      // keyboard user's activation of this trash button (a11y).
+                      if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleDelete(item);
+                      }
+                    }}
                   >
                     <Icon name="trash" size={12} />
                   </button>
