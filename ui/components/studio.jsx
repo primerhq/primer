@@ -116,8 +116,8 @@ function ST_tabFromUrlId(urlTab) {
 // synthesize a minimal tab, append it, and activate it. With activeTabId set
 // on mount, the first persist effect's ST_syncUrl re-writes the same ?open=
 // value instead of deleting it (so deep-links survive the mount).
-function ST_applyUrlTab(base) {
-  var urlTab = ST_tabFromUrl();
+function ST_applyUrlTab(base, fallbackOpen) {
+  var urlTab = ST_tabFromUrl() || (fallbackOpen || null);
   if (!urlTab) return base;
   var openTabs = base.openTabs || [];
   var present = openTabs.some(function (t) { return t.id === urlTab; });
@@ -195,11 +195,14 @@ function ST_defaultState() {
 // B2–B4 consume the action callbacks (openTab/focusTab/closeTab/toggle*).
 // ---------------------------------------------------------------------------
 
-function useStudioState(wid) {
+function useStudioState(wid, initialOpen) {
   // Initial state: defaults <- persisted(wid) <- url(?open=). Computed once
   // per wid via the lazy initialiser; re-keyed below when wid changes.
+  // `initialOpen` (a "session:<id>" / "file:<path>" string) is a fallback used
+  // only when the URL has no ?open= deep-link: it lets a host that mounts the
+  // Studio directly (e.g. the docs embed harness) seed an initial open tab.
   var [state, setState] = React.useState(function () {
-    return ST_applyUrlTab(Object.assign(ST_defaultState(), ST_loadPersisted(wid)));
+    return ST_applyUrlTab(Object.assign(ST_defaultState(), ST_loadPersisted(wid)), initialOpen);
   });
 
   // New-session form visibility, lifted out of the sidebar so BOTH the sidebar
@@ -215,7 +218,7 @@ function useStudioState(wid) {
   React.useEffect(function () {
     if (widRef.current === wid) return;
     widRef.current = wid;
-    setState(ST_applyUrlTab(Object.assign(ST_defaultState(), ST_loadPersisted(wid))));
+    setState(ST_applyUrlTab(Object.assign(ST_defaultState(), ST_loadPersisted(wid)), initialOpen));
   }, [wid]);
 
   // Persist + URL-mirror after every committed state change.
@@ -604,8 +607,8 @@ function ST_RegionPlaceholder({ kind, label, testid }) {
 // Studio — route shell. Header + 3-column resizable body with placeholders.
 // ---------------------------------------------------------------------------
 
-function Studio({ wid, pushToast }) {
-  var studio = useStudioState(wid);
+function Studio({ wid, pushToast, initialOpen }) {
+  var studio = useStudioState(wid, initialOpen);
   var s = studio.state;
 
   // Thread pushToast into the studio object so StudioCenter / StudioActivity

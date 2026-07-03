@@ -119,6 +119,27 @@
       if (typeof iwin.DocsMakeStubApi !== "function") throw new Error("DocsMakeStubApi missing");
       if (typeof iwin[entry.component] !== "function") throw new Error(entry.component + " not defined in iframe after bundle load");
       iwin.primerApi = iwin.DocsMakeStubApi(fixtures);
+      // The build-only harness has no SSE backend. Studio-family embeds open a
+      // workspace/session "tap" via EventSource; unstubbed, that surfaces a
+      // "reconnecting" error in the activity panel. Install a benign
+      // EventSource that connects (fires onopen) and stays open with zero
+      // events, matching an idle workspace, so captures show a clean live state.
+      iwin.EventSource = function (url) {
+        this.url = url; this.readyState = 1; this.withCredentials = false;
+        var self = this;
+        this._t = iwin.setTimeout(function () {
+          if (typeof self.onopen === "function") self.onopen({ type: "open" });
+        }, 0);
+      };
+      iwin.EventSource.prototype.addEventListener = function () {};
+      iwin.EventSource.prototype.removeEventListener = function () {};
+      iwin.EventSource.prototype.close = function () {
+        this.readyState = 2;
+        if (this._t) { iwin.clearTimeout(this._t); this._t = null; }
+      };
+      iwin.EventSource.CONNECTING = 0;
+      iwin.EventSource.OPEN = 1;
+      iwin.EventSource.CLOSED = 2;
       var root = iwin.ReactDOM.createRoot(idoc.getElementById("embed-root"));
       root.render(iwin.React.createElement(iwin[entry.component], entry.props || {}));
       // Give React effects (useResource fetchers, per-row effects) a beat to
