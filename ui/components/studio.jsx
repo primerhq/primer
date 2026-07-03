@@ -202,6 +202,12 @@ function useStudioState(wid) {
     return ST_applyUrlTab(Object.assign(ST_defaultState(), ST_loadPersisted(wid)));
   });
 
+  // New-session form visibility, lifted out of the sidebar so BOTH the sidebar
+  // "+" button and the ⌘K palette's "New session" action can open it. Kept as
+  // ephemeral state (not part of the persisted `state` blob) so it never
+  // reopens on reload.
+  var [newSessionOpen, setNewSessionOpen] = React.useState(false);
+
   // Re-hydrate when switching workspace (wid changes): swap to that
   // workspace's persisted layout. switchWorkspace() in the header navigates
   // the route, which remounts/keys this hook via the wid dependency.
@@ -369,6 +375,10 @@ function useStudioState(wid) {
     });
   }, []);
 
+  // ---- new-session flow (shared by the sidebar "+" and the ⌘K palette) ----
+  var openNewSession = React.useCallback(function () { setNewSessionOpen(true); }, []);
+  var closeNewSession = React.useCallback(function () { setNewSessionOpen(false); }, []);
+
   // ---- activity chips (B4) ----
   var toggleChip = React.useCallback(function (cl) {
     setState(function (s) {
@@ -413,6 +423,10 @@ function useStudioState(wid) {
     openPalette: openPalette,
     closePalette: closePalette,
     togglePalette: togglePalette,
+    // FB6: new-session flow (sidebar "+" + palette "New session")
+    newSessionOpen: newSessionOpen,
+    openNewSession: openNewSession,
+    closeNewSession: closeNewSession,
   };
 }
 

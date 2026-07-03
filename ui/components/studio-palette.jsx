@@ -109,9 +109,10 @@ function StudioCommandPalette({ wid, studio, open, onClose }) {
         group: "action",
         icon: "＋",
         run: function () {
-          if (studio.pushToast) {
-            studio.pushToast({ kind: "info", title: "New session", detail: "Use the + button in the Sessions sidebar to create a session." });
-          }
+          // Open the real new-session form — the SAME one the sidebar "+"
+          // opens (studio.jsx owns the flag; see FB6). Previously this pushed
+          // an info toast telling the user to go use the sidebar instead.
+          if (studio.openNewSession) studio.openNewSession();
         },
       },
       {
