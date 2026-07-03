@@ -1,11 +1,15 @@
 """When a graph binding is selected and the graph's Begin has input_schema,
-NewSessionModal renders a dynamic form. Without input_schema, the existing
-textarea is preserved."""
+the shared new-session form renders a dynamic schema-driven form. Without
+input_schema, the free-text instructions textarea is preserved.
+
+The form + submit logic was unified into ui/components/new-session-form.jsx
+(FD2); the old NewSessionModal (app.jsx) is now a thin wrapper that renders
+window.SharedNewSessionForm, so this schema behavior is asserted there."""
 
 from __future__ import annotations
 from pathlib import Path
 
-SRC = Path(__file__).resolve().parents[2] / "ui" / "app.jsx"
+SRC = Path(__file__).resolve().parents[2] / "ui" / "components" / "new-session-form.jsx"
 
 
 def _src() -> str:

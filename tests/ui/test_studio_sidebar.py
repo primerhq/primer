@@ -130,7 +130,9 @@ def test_sidebar_testids() -> None:
         'data-testid="file-row"',
         'data-testid="new-session-btn"',
         'data-testid="hidden-toggle"',
-        'data-testid="new-session-form"',
+        # new-session-form / new-session-name moved into the shared component
+        # (ui/components/new-session-form.jsx) when the two create forms were
+        # unified (FD2); they're asserted in test_shared_new_session_form.py.
     ]
     for tid in required:
         assert tid in src, f"Missing data-testid: {tid}"
@@ -208,7 +210,6 @@ def test_sidebar_session_management_testids() -> None:
     for tid in (
         'data-testid="session-delete"',
         'data-testid="session-rename"',
-        'data-testid="new-session-name"',
     ):
         assert tid in src, f"Missing data-testid: {tid}"
 

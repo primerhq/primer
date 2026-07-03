@@ -42,9 +42,11 @@ def test_sidebar_consumes_lifted_new_session_state() -> None:
     assert "studio.newSessionOpen" in src
     assert "studio.openNewSession()" in src
     assert "studio.closeNewSession()" in src
-    # The "+" button + form testids are preserved.
+    # The "+" button testid is preserved, and the sidebar renders the unified
+    # create form (FD2). The form overlay's data-testid="new-session-form" now
+    # lives in the shared component (asserted in test_shared_new_session_form).
     assert 'data-testid="new-session-btn"' in src
-    assert 'data-testid="new-session-form"' in src
+    assert "SharedNewSessionForm" in src
 
 
 def test_bundle_transpiles_with_new_session_wiring() -> None:
