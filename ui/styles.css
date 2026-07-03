@@ -429,6 +429,18 @@
 }
 .st-session-row:hover .st-row-actions,
 .st-session-row:focus-within .st-row-actions { opacity: 1; }
+
+/* FD4 — content-visibility row virtualization. Off-screen rows / expensive
+   per-row cell content skip layout + paint until scrolled near, then their
+   real size is remembered (contain-intrinsic-size: auto). Verified
+   empirically that content-visibility is a NO-OP on <tr> (table-internal
+   elements aren't size-containable), so this is applied only to div rows and
+   to block content inside table cells — both of which DO skip. Focus/scroll
+   auto-reveals a skipped row, so keyboard nav (FC5c) is unaffected. */
+.st-session-row { content-visibility: auto; contain-intrinsic-size: auto var(--row-h, 36px); }
+.st-file-row    { content-visibility: auto; contain-intrinsic-size: auto var(--frow-h, 30px); }
+[data-testid="activity-event"] { content-visibility: auto; contain-intrinsic-size: auto 44px; }
+.cv-auto { content-visibility: auto; contain-intrinsic-size: auto 12px; }
 .st-row-action {
   width: 18px;
   height: 18px;
