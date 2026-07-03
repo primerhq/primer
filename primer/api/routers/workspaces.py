@@ -1035,6 +1035,41 @@ async def delete_file(
     await ws.delete_file(path, recursive=recursive)
 
 
+@files_router.post(
+    "/workspaces/{workspace_id}/files/move",
+    status_code=204,
+    summary="Move or rename a file or directory within the workspace",
+    responses=common_responses(400, 404, 409, 500),
+)
+async def move_file(
+    workspace_id: str = Path(...),
+    src: str = Query(..., description="Source workspace-relative path"),
+    dst: str = Query(..., description="Destination workspace-relative path"),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+) -> None:
+    """Move / rename ``src`` to ``dst`` within one workspace.
+
+    Query params ``src`` + ``dst`` mirror the other file endpoints' use of
+    ``path``. The backend enforces the safety envelope (root-relative, no
+    reserved-tree escape, no clobber of an existing ``dst``, no dir-into-its-
+    own-descendant); violations surface as 400 / 404 / 409. Backends that do
+    not implement move return 501.
+    """
+    ws = await registry.get_workspace(workspace_id)
+    try:
+        await ws.move_file(src, dst)
+    except NotImplementedError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": "not_implemented",
+                "message": str(exc) or (
+                    "move_file is not implemented for this workspace backend"
+                ),
+            },
+        ) from exc
+
+
 @files_router.put(
     "/workspaces/{workspace_id}/files",
     status_code=204,

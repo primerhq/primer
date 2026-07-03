@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from primer.model.except_ import BadRequestError, NotFoundError
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
 from primer.model.workspace_session import AgentBinding, SessionStatus
 from primer.model.workspace import (
     FileMount,
@@ -591,6 +591,78 @@ class TestWorkspaceFiles:
         await ws.delete_file("d", recursive=True)
         with pytest.raises(NotFoundError):
             await ws.file_info("d")
+
+    async def test_move_renames_file(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.write_file("a.txt", b"hello")
+        await ws.move_file("a.txt", "b.txt")
+        assert await ws.read_file("b.txt") == b"hello"
+        with pytest.raises(NotFoundError):
+            await ws.file_info("a.txt")
+
+    async def test_move_file_into_subdir(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.write_file("note.md", b"# n")
+        # Parent dir is created on demand by move.
+        await ws.move_file("note.md", "docs/note.md")
+        assert await ws.read_file("docs/note.md") == b"# n"
+
+    async def test_move_renames_dir_with_children(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.make_dir("old")
+        await ws.write_file("old/a.txt", b"a")
+        await ws.move_file("old", "new")
+        assert await ws.read_file("new/a.txt") == b"a"
+        with pytest.raises(NotFoundError):
+            await ws.file_info("old")
+
+    async def test_move_missing_src_raises(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        with pytest.raises(NotFoundError):
+            await ws.move_file("nope.txt", "there.txt")
+
+    async def test_move_onto_existing_dst_conflicts(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.write_file("a.txt", b"a")
+        await ws.write_file("b.txt", b"b")
+        with pytest.raises(ConflictError):
+            await ws.move_file("a.txt", "b.txt")
+        # The source is untouched by a rejected move.
+        assert await ws.read_file("a.txt") == b"a"
+
+    async def test_move_rejects_escape(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.write_file("a.txt", b"a")
+        with pytest.raises(BadRequestError, match="outside workspace"):
+            await ws.move_file("a.txt", "../escape.txt")
+
+    async def test_move_rejects_reserved_dst(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.write_file("a.txt", b"a")
+        with pytest.raises(BadRequestError, match="reserved"):
+            await ws.move_file("a.txt", ".state/a.txt")
+
+    async def test_move_dir_into_own_descendant_rejected(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        await ws.make_dir("src")
+        with pytest.raises(BadRequestError, match="itself or a"):
+            await ws.move_file("src", "src/inner")
 
     async def test_write_file_is_atomic_no_torn_read(
         self, provider: LocalWorkspaceBackend
