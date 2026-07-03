@@ -74,6 +74,7 @@ from primer.model.graph import (
     _JsonPathRouter,
     _StaticEdge,
     _ToolCallNode,
+    build_execution_context,
 )
 from primer.model.problem_details import ProblemDetails
 from primer.model.turn_log import (
@@ -186,6 +187,10 @@ class _BaseGraphExecutor(
         self._graph_resolver = graph_resolver
         self._router_registry = router_registry or RouterRegistry()
         self._principal = principal
+        # Ambient run context exposed to node templates as ``ctx``. The base
+        # executor is surface-agnostic, so default to an in-memory context;
+        # WorkspaceGraphExecutor overrides this with real workspace ids.
+        self._execution_context = build_execution_context()
         # Lookup helpers built once at construction.
         self._nodes_by_id = {n.id: n for n in graph.nodes}
         self._edges_by_from: dict[str, list] = {}
@@ -894,6 +899,7 @@ class _BaseGraphExecutor(
             initial_input=initial_input,
             iteration=0,
             nodes={},
+            ctx=self._execution_context,
         )
         ready: set[str] = {_resolve_initial_ready_node(self._graph)}
         self._admitted = set(ready)

@@ -45,7 +45,13 @@ from primer.agent.tool_manager import ToolExecutionManager
 from primer.graph.base import DEFAULT_MAX_PARALLEL_NODES, _BaseGraphExecutor
 from primer.graph.router import RouterRegistry
 from primer.model.chat import Message, StreamEvent, ToolResultPart
-from primer.model.graph import Graph, NodeRuntimeState, _GraphNodeRef, _ToolCallNode
+from primer.model.graph import (
+    Graph,
+    NodeRuntimeState,
+    _GraphNodeRef,
+    _ToolCallNode,
+    build_execution_context,
+)
 from primer.model.workspace_session import SessionStatus
 from primer.observability.turn_log_writer import (
     TurnLogWriter,
@@ -123,6 +129,21 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
         self._workspace_session = workspace_session
+        # Override the base's in-memory context with real workspace ids so node
+        # templates can reference {{ ctx.artifact_dir }} etc. Subgraph children
+        # get their own scope automatically: _build_sub_executor constructs the
+        # child with the nested graph_session_id, so this runs per level.
+        self._execution_context = build_execution_context(
+            surface="workspace",
+            workspace_id=(
+                workspace_session.workspace_id
+                if workspace_session is not None
+                else None
+            ),
+            session_id=graph_session_id,
+            graph_id=graph.id,
+            principal=principal,
+        )
         # Only the top-level (worker-built) executor owns the on-disk
         # session holder's lifecycle. Subgraph child executors share the
         # parent's holder (see ``_build_sub_executor``) and must NOT end
@@ -323,6 +344,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         wins — this is the documented precedence in spec §4.2:
         ``graph_input`` is preferred over ``initial_instructions``).
         """
+        await self._ensure_artifact_dir()
         if self._graph_input is not None:
             seed: Any = self._graph_input
         else:
@@ -593,6 +615,29 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         )
 
     # ---- Public helpers --------------------------------------------------
+
+    async def _ensure_artifact_dir(self) -> None:
+        """Best-effort create ``<workspace_root>/artifacts/<gsid>/``.
+
+        Local repos only: the workspace root is the ``.state`` repo's parent.
+        Sandbox/container repos expose no local path (``getattr`` returns None)
+        and rely on create-on-write (the workspace write tool mkdirs parents).
+        Never fatal -- a failure here must not abort the graph.
+        """
+        state_path: Path | None = getattr(self._state_repo, "path", None)
+        if state_path is None:
+            return
+        artifact_dir = state_path.parent / "artifacts" / self._graph_session_id
+        try:
+            await asyncio.to_thread(
+                artifact_dir.mkdir, parents=True, exist_ok=True
+            )
+        except OSError as exc:  # noqa: BLE001 -- best-effort, never fatal
+            logger.warning(
+                "graph %s: best-effort artifact dir create failed: %s",
+                self._graph_session_id,
+                exc,
+            )
 
     async def load_state(self) -> dict | None:
         """Return the persisted ``state.json`` payload, or ``None`` if absent."""
