@@ -18,13 +18,10 @@
 // Markdown preview reuses window.renderMarkdown; code highlight reuses
 // window.primerVendor.highlightPython.
 //
-// REUSE FRICTION (noted for B6): the per-session control mutations
-// (pause/resume/steer/cancel) live *inlined* inside SessionDetail in
-// session-detail.jsx — they are NOT exported as standalone helpers/hooks.
-// Rather than touch session-detail.jsx (out of scope for B3), this file
-// re-creates those mutations against the SAME workspace-scoped endpoints
-// (POST .../sessions/{sid}/{pause|resume|cancel|steer}). B6 will extract the
-// shared control surface and this panel can swap to it.
+// REUSE: the per-session control mutations (pause/resume/steer/cancel) are the
+// shared window.useSessionControls hook (ui/components/use-session-controls.jsx,
+// FD1b) — ST_SessionControls no longer re-implements them. Same workspace-scoped
+// endpoints (POST .../sessions/{sid}/{pause|resume|cancel|steer}).
 //
 // No-build rules: top-level declarations use `var`; helpers prefixed ST_;
 // every exported symbol is assigned to window.X at the bottom.
@@ -201,53 +198,30 @@ function CenterTabs({ openTabs, activeTabId, onFocus, onClose, onCloseAll }) {
 
 // ---------------------------------------------------------------------------
 // ST_SessionControls — pause/resume · steer · cancel inline control cluster.
-// Re-creates SessionDetail's signal mutations against the same workspace-scoped
-// endpoints (see REUSE FRICTION note at top). Shared by the agent + graph
-// header rows.
+// The signal mutations come from the shared window.useSessionControls hook
+// (see REUSE note at top). Shared by the agent + graph header rows.
 // ---------------------------------------------------------------------------
 
 function ST_SessionControls({ wid, sid, session, pushToast }) {
-  var { useMutation, apiFetch } = window.primerApi;
   var [steerOpen, setSteerOpen] = React.useState(false);
   var [steerText, setSteerText] = React.useState("");
 
   var status = session && session.status;
   var isTerminal = !!(session && window.SESSION_TERMINAL && window.SESSION_TERMINAL.has(status));
 
-  function toastErr(title) {
-    return function (err) {
-      if (typeof pushToast !== "function") return;
-      pushToast({
-        kind: "error",
-        title: (err && err.title) || title,
-        detail: (err && err.detail) || (err && err.message),
-        requestId: err && err.requestId,
-      });
-    };
-  }
-
-  var invalidates = ["studio-session:" + sid, "session-detail:" + sid, "sessions:list"];
-
-  var pauseMut = useMutation(
-    function () { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/pause"); },
-    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Session paused" }); }, onError: toastErr("Pause failed") }
-  );
-  var resumeMut = useMutation(
-    function () { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/resume"); },
-    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Resume signal sent" }); }, onError: toastErr("Resume failed") }
-  );
-  var cancelMut = useMutation(
-    function () { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/cancel"); },
-    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "warning", title: "Cancel signal sent" }); }, onError: toastErr("Cancel failed") }
-  );
-  var steerMut = useMutation(
-    function (instruction) { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/steer", { instruction: instruction }); },
-    {
-      invalidates: invalidates,
-      onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Steer queued" }); setSteerText(""); setSteerOpen(false); },
-      onError: toastErr("Steer failed"),
-    }
-  );
+  // Shared pause/resume/steer/cancel mutations (FD1b): extracted to
+  // window.useSessionControls so this cluster and any other caller stay in
+  // sync. The studio-session:{sid} key keeps the Studio's own session cache
+  // fresh; onSteerSuccess clears + closes the steer popover.
+  var controls = window.useSessionControls(wid, sid, {
+    pushToast: pushToast,
+    invalidates: ["studio-session:" + sid],
+    onSteerSuccess: function () { setSteerText(""); setSteerOpen(false); },
+  });
+  var pauseMut = controls.pause;
+  var resumeMut = controls.resume;
+  var cancelMut = controls.cancel;
+  var steerMut = controls.steer;
 
   function submitSteer() {
     var text = steerText.trim();
