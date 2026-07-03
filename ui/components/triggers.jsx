@@ -317,7 +317,12 @@ function TR_TriggerRow({ trigger, onOpen, onChanged }) {
 
   const remove = async (e) => {
     e.stopPropagation();
-    if (!window.confirm(`Delete trigger ${trigger.name || trigger.slug}? This cascades to its subscriptions and cannot be undone.`)) return;
+    if (!(await confirmDialog({
+      title: "Delete trigger?",
+      message: `Delete trigger ${trigger.name || trigger.slug}? This cascades to its subscriptions and cannot be undone.`,
+      confirmLabel: "Delete",
+      danger: true,
+    }))) return;
     setBusy(true);
     try {
       await apiFetch("DELETE", "/triggers/" + encodeURIComponent(trigger.id));
@@ -1012,11 +1017,15 @@ function TR_SubscriptionsPanel({ trigger, subs, onChanged, onAdd, onEdit }) {
   };
 
   const remove = async (sub) => {
-    if (!window.confirm(
-      sub.config?.kind === "parked_session"
+    var _isParked = sub.config?.kind === "parked_session";
+    if (!(await confirmDialog({
+      title: _isParked ? "Cancel subscription?" : "Delete subscription?",
+      message: _isParked
         ? "Cancel this dynamic subscription? The parked session will be unparked."
-        : "Delete this subscription? This cannot be undone."
-    )) return;
+        : "Delete this subscription? This cannot be undone.",
+      confirmLabel: _isParked ? "Cancel subscription" : "Delete",
+      danger: true,
+    }))) return;
     setBusyId(sub.id);
     setError(null);
     try {
@@ -1280,7 +1289,12 @@ function TR_TriggerDetail({ id }) {
   };
 
   const rotateToken = async () => {
-    if (!window.confirm("Rotate the webhook token? The old URL will stop working immediately.")) return;
+    if (!(await confirmDialog({
+      title: "Rotate webhook token?",
+      message: "Rotate the webhook token? The old URL will stop working immediately.",
+      confirmLabel: "Rotate",
+      danger: true,
+    }))) return;
     setRotateBusy(true);
     setRotateError(null);
     try {
@@ -1419,7 +1433,12 @@ function TR_TriggerDetail({ id }) {
                         kind="ghost"
                         icon="trash"
                         onClick={async () => {
-                          if (!window.confirm("Clear the HMAC secret? Requests will no longer be verified.")) return;
+                          if (!(await confirmDialog({
+                            title: "Clear HMAC secret?",
+                            message: "Clear the HMAC secret? Requests will no longer be verified.",
+                            confirmLabel: "Clear",
+                            danger: true,
+                          }))) return;
                           try {
                             await apiFetch(
                               "PUT",

@@ -140,12 +140,18 @@ function PredicateBuilder({ pushToast }) {
   };
 
   const saveNamed = () => {
-    const name = window.prompt("Save predicate as…");
-    if (!name) return;
-    const next = [...savedPredicates, { name, entity, tree, at: Date.now() }];
-    setSavedPredicates(next);
-    try { localStorage.setItem("primer.predicates.saved", JSON.stringify(next)); } catch {}
-    pushToast({ kind: "success", title: "Saved", detail: `"${name}" saved to local storage` });
+    promptDialog({
+      title: "Save predicate",
+      message: "Give this predicate a name to save it to local storage.",
+      placeholder: "Predicate name…",
+      confirmLabel: "Save",
+    }).then((name) => {
+      if (!name) return; // cancel / empty = no-op, as with the old prompt()
+      const next = [...savedPredicates, { name, entity, tree, at: Date.now() }];
+      setSavedPredicates(next);
+      try { localStorage.setItem("primer.predicates.saved", JSON.stringify(next)); } catch {}
+      pushToast({ kind: "success", title: "Saved", detail: `"${name}" saved to local storage` });
+    });
   };
 
   const wireJson = treeToWire(tree);
