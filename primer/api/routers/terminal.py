@@ -76,6 +76,21 @@ class _RuntimePtyAdapter:
         return None
 
     async def output(self) -> AsyncIterator[bytes]:
+        # KNOWN FRAGILITY (BE10c): a transient runtime WS drop ends the
+        # container terminal, and it is NOT resumable in v1.
+        #
+        # On any runtime WebSocket drop, RuntimeClient._on_disconnect ->
+        # _close_all_streams pushes a stream-closed sentinel into every open
+        # PTY stream (runtime_client.py). ``self._handle.events()`` then ends
+        # WITHOUT ever yielding an "exit" frame, so ``_exit_code`` stays None.
+        # The endpoint's _send_loop consequently reports ``{"exit": -1}`` and
+        # closes the browser socket. A brief runtime blip therefore drops the
+        # whole terminal even though the runtime may reconnect moments later.
+        #
+        # This is an accepted limitation for v1: the terminal is not reattached
+        # across a runtime reconnect (there is no PTY session-resume protocol).
+        # The reconnect loop keeps the RuntimeClient itself healthy; only this
+        # one terminal stream is lost, and the user reopens the terminal.
         async for frame in self._handle.events():
             if frame.kind == "data":
                 yield frame.data
