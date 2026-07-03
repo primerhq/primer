@@ -154,12 +154,59 @@
       return { isMobile: false, width: 1366, height: 768 };
     }
 
+    // usePagedList(...) — the paginated list pages (agents, graphs, chats…)
+    // now fetch through this instead of useResource. In a read-only docs
+    // preview there is one fixture page, so fetch page 0 via the stubbed
+    // apiFetch and report a single, non-navigable page. Mirrors the real
+    // hook's return surface so the page component + <Pager> render.
+    function usePagedList(opts) {
+      const path = (opts && opts.path) || "";
+      const pageSize = (opts && opts.pageSize) || 50;
+      const res = useResource(
+        "docs-stub:" + path,
+        () =>
+          apiFetch(
+            "GET",
+            path + (path.indexOf("?") >= 0 ? "&" : "?") +
+              "limit=" + pageSize + "&offset=0",
+          ),
+      );
+      const data = res.data || {};
+      const items = data.items || [];
+      return {
+        items: items,
+        total: data.total != null ? data.total : items.length,
+        data: res.data,
+        loading: res.loading,
+        error: null,
+        refetch: () => {},
+        offset: 0,
+        pageSize: pageSize,
+        page: 0,
+        hasNext: false,
+        hasPrev: false,
+        rangeStart: items.length ? 1 : 0,
+        rangeEnd: items.length,
+        next: () => {},
+        prev: () => {},
+        reset: () => {},
+        setOffset: () => {},
+      };
+    }
+
+    // Pager(...) — inert in a docs preview (one fixture page, no navigation).
+    function Pager() {
+      return null;
+    }
+
     return {
       apiFetch,
       useResource,
       useMutation,
       useRouter,
       useViewport,
+      usePagedList,
+      Pager,
       // Marker so debuggers / tests can confirm the stub (not the live api)
       // is in force inside an embed iframe.
       __isDocsStub: true,
