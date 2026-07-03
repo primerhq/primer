@@ -199,6 +199,178 @@ function ST_onRowKey(activate) {
 }
 
 // ---------------------------------------------------------------------------
+// ST_pathBase / ST_pathDir / ST_pathJoin — workspace-relative path helpers.
+// Paths are always POSIX "/"-separated (see FileEntry.path). basename returns
+// the last segment; dirname returns the parent ("" for a top-level entry);
+// join glues a dir + name, tolerating an empty dir (root) so it never emits a
+// leading "/". Shared by the context-menu rename, the "… here" create actions,
+// and the drag-to-move destination computation.
+// ---------------------------------------------------------------------------
+
+function ST_pathBase(path) {
+  var p = String(path || "");
+  var i = p.lastIndexOf("/");
+  return i >= 0 ? p.slice(i + 1) : p;
+}
+
+function ST_pathDir(path) {
+  var p = String(path || "");
+  var i = p.lastIndexOf("/");
+  return i >= 0 ? p.slice(0, i) : "";
+}
+
+function ST_pathJoin(dir, name) {
+  var d = String(dir || "");
+  var n = String(name || "");
+  return d ? d + "/" + n : n;
+}
+
+// ---------------------------------------------------------------------------
+// ST_triggerDownload — kick off a browser download of a workspace file.
+// Mirrors the center editor's <a href=…/files/download> affordance (same URL)
+// but drives it programmatically so the Files-tree context menu's "Download"
+// action can reuse the exact same flow without a persistent anchor.
+// ---------------------------------------------------------------------------
+
+function ST_triggerDownload(wid, path) {
+  var url =
+    "/v1/workspaces/" +
+    encodeURIComponent(wid) +
+    "/files/download?path=" +
+    encodeURIComponent(path);
+  var a = document.createElement("a");
+  a.href = url;
+  a.target = "_blank";
+  a.rel = "noreferrer noopener";
+  a.download = ST_pathBase(path);
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+// ---------------------------------------------------------------------------
+// ST_FileContextMenu — small absolutely-positioned right-click menu for a
+// file / folder row in the Files tree. The action set differs by kind:
+//   file   → Open · Download · Rename · Delete
+//   folder → New file here · New folder here · Upload here · Rename · Delete
+// It closes on outside-click (mousedown) or Escape, and each item fires
+// onAction(<key>, item) then onClose(). Positioned at the cursor via
+// position:fixed (clientX/clientY). testids: file-context-menu + ctx-<key>.
+// ---------------------------------------------------------------------------
+
+function ST_FileContextMenu({ menu, onAction, onClose }) {
+  React.useEffect(function () {
+    function onDocDown(e) {
+      // A click INSIDE the menu is handled by the item's own onClick; anything
+      // else dismisses. Guard on the container via a data attribute lookup.
+      var el = e.target;
+      while (el) {
+        if (el.getAttribute && el.getAttribute("data-testid") === "file-context-menu") {
+          return;
+        }
+        el = el.parentNode;
+      }
+      onClose();
+    }
+    function onKey(e) {
+      if (e.key === "Escape") { e.preventDefault(); onClose(); }
+    }
+    document.addEventListener("mousedown", onDocDown, true);
+    document.addEventListener("keydown", onKey, true);
+    return function () {
+      document.removeEventListener("mousedown", onDocDown, true);
+      document.removeEventListener("keydown", onKey, true);
+    };
+  }, [onClose]);
+
+  if (!menu) return null;
+  var item = menu.item;
+  var isDir = !!item.is_dir;
+  var actions = isDir
+    ? [
+        { key: "new-file", label: "New file here", icon: "file" },
+        { key: "new-folder", label: "New folder here", icon: "box" },
+        { key: "upload", label: "Upload here", icon: "paperclip" },
+        { key: "rename", label: "Rename", icon: "edit" },
+        { key: "delete", label: "Delete", icon: "trash", danger: true },
+      ]
+    : [
+        { key: "open", label: "Open", icon: "doc" },
+        { key: "download", label: "Download", icon: "external" },
+        { key: "rename", label: "Rename", icon: "edit" },
+        { key: "delete", label: "Delete", icon: "trash", danger: true },
+      ];
+
+  // Keep the menu inside the viewport: nudge left/up when it would overflow.
+  var MENU_W = 176;
+  var estH = actions.length * 30 + 8;
+  var vw = typeof window !== "undefined" ? window.innerWidth : 1024;
+  var vh = typeof window !== "undefined" ? window.innerHeight : 768;
+  var left = Math.min(menu.x, Math.max(8, vw - MENU_W - 8));
+  var top = Math.min(menu.y, Math.max(8, vh - estH - 8));
+
+  return (
+    <div
+      data-testid="file-context-menu"
+      role="menu"
+      onContextMenu={function (e) { e.preventDefault(); }}
+      style={{
+        position: "fixed",
+        left: left,
+        top: top,
+        zIndex: 1000,
+        minWidth: MENU_W,
+        background: "var(--bg-2)",
+        border: "1px solid var(--border)",
+        borderRadius: 8,
+        boxShadow: "0 8px 24px rgba(0,0,0,0.35)",
+        padding: 4,
+        fontSize: 12.5,
+      }}
+    >
+      {actions.map(function (a) {
+        return (
+          <button
+            key={a.key}
+            type="button"
+            role="menuitem"
+            data-testid={"ctx-" + a.key}
+            onClick={function (e) {
+              e.preventDefault();
+              e.stopPropagation();
+              onAction(a.key, item);
+              onClose();
+            }}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              width: "100%",
+              textAlign: "left",
+              padding: "6px 10px",
+              borderRadius: 6,
+              border: "none",
+              background: "none",
+              cursor: "pointer",
+              color: a.danger ? "var(--red)" : "var(--text)",
+              fontSize: 12.5,
+              fontFamily: "inherit",
+            }}
+            onMouseEnter={function (e) { e.currentTarget.style.background = "var(--bg-active)"; }}
+            onMouseLeave={function (e) { e.currentTarget.style.background = "none"; }}
+          >
+            <span style={{ width: 14, display: "grid", placeItems: "center", flexShrink: 0 }}>
+              <Icon name={a.icon} size={12} />
+            </span>
+            {a.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // NewSessionForm — inline modal-style form for creating a session.
 // Renders as a positioned overlay inside the sessions section.
 // POST /v1/workspaces/{wid}/sessions with the SessionCreateBody shape:
@@ -739,6 +911,16 @@ function FilesTree({ wid, studio }) {
   // of expanded folders) but no single "selected" folder, so we do NOT invent
   // extra state — the prompt lets the user type `sub/dir/name` for a subpath.
   var uploadInputRef = React.useRef(null);
+  // Which directory a hidden-input upload lands in. "" = workspace root (the
+  // header Upload button); the context-menu "Upload here" sets it to a folder
+  // path before clicking the SAME hidden input, and handleUploadChange reads +
+  // resets it. A ref (not state) so it's read synchronously in the change
+  // handler without a re-render race.
+  var uploadTargetRef = React.useRef("");
+  // Right-click context menu: { item, x, y } or null. Drop-target highlight:
+  // the folder path (or "." for the tree root) currently under a drag, or null.
+  var [ctxMenu, setCtxMenu] = React.useState(null);
+  var [dropTarget, setDropTarget] = React.useState(null);
   var pushToast = studio.pushToast || (window.primerApi && window.primerApi.toastPush) || null;
   // promptDialog is published as a bare window global by shared.jsx; keep a
   // primerApi fallback so it resolves regardless of how it was exposed.
@@ -907,37 +1089,41 @@ function FilesTree({ wid, studio }) {
     });
   }
 
-  function handleUploadClick() {
-    if (uploadInputRef.current) uploadInputRef.current.click();
+  // Shared single-file base64 PUT, targeted at a directory. `dir` "" = root.
+  // The one place the base64 upload payload is written — reused by the hidden
+  // <input> flow (header + "Upload here") AND the drag-drop-from-OS flow.
+  async function ST_putUpload(dir, file) {
+    var b64 = await ST_readAsBase64(file);
+    var rel = dir ? dir + "/" + file.name : file.name;
+    await apiFetch(
+      "PUT",
+      "/workspaces/" + encodeURIComponent(wid) + "/files?path=" + encodeURIComponent(rel),
+      { content: b64, encoding: "base64" }
+    );
   }
 
-  async function handleUploadChange(e) {
-    var input = e.target;
-    var files = (input && input.files) ? Array.prototype.slice.call(input.files) : [];
+  // Upload a batch of File objects into `dir`, then refresh + toast. Used by
+  // both the file-picker change handler and the drag-drop-from-OS handler.
+  async function ST_uploadInto(dir, fileList) {
+    var files = Array.prototype.slice.call(fileList || []);
     if (!files.length) return;
     var okCount = 0;
     var errors = [];
     for (var i = 0; i < files.length; i++) {
       var file = files[i];
       try {
-        var b64 = await ST_readAsBase64(file);
-        await apiFetch(
-          "PUT",
-          "/workspaces/" + encodeURIComponent(wid) + "/files?path=" + encodeURIComponent(file.name),
-          { content: b64, encoding: "base64" }
-        );
+        await ST_putUpload(dir, file);
         okCount += 1;
       } catch (err) {
         errors.push(file.name + ": " + ST_errDetail(err, "upload failed"));
       }
     }
     handleRefresh();
-    // Reset so re-picking the SAME file fires another change event.
-    if (input) input.value = "";
     if (okCount > 0) {
       pushToast && pushToast({
         kind: "success",
         title: "Uploaded " + okCount + " file" + (okCount === 1 ? "" : "s"),
+        detail: dir ? "into " + dir : undefined,
       });
     }
     if (errors.length) {
@@ -947,6 +1133,269 @@ function FilesTree({ wid, studio }) {
         detail: errors.join("; "),
       });
     }
+  }
+
+  function handleUploadClick() {
+    // Header Upload button → target the workspace root.
+    uploadTargetRef.current = "";
+    if (uploadInputRef.current) uploadInputRef.current.click();
+  }
+
+  function handleUploadIn(dir) {
+    // Context-menu "Upload here" → target this folder, reusing the same input.
+    uploadTargetRef.current = dir || "";
+    if (uploadInputRef.current) uploadInputRef.current.click();
+  }
+
+  async function handleUploadChange(e) {
+    var input = e.target;
+    var files = (input && input.files) ? Array.prototype.slice.call(input.files) : [];
+    var dir = uploadTargetRef.current || "";
+    uploadTargetRef.current = "";
+    // Reset so re-picking the SAME file fires another change event.
+    if (input) input.value = "";
+    await ST_uploadInto(dir, files);
+  }
+
+  // -- Targeted create actions (context-menu "… here") --------------------
+  // Same endpoints as the header buttons, but rooted at a folder path instead
+  // of the workspace root.
+  async function handleNewFileIn(dir) {
+    var raw = await promptDialog({
+      title: "New file",
+      label: "File name",
+      message: "New file in " + (dir || "root"),
+      placeholder: "notes.md",
+    });
+    if (raw == null) return;
+    var name = String(raw).trim();
+    if (!name) return;
+    var rel = ST_pathJoin(dir, name);
+    try {
+      await apiFetch(
+        "PUT",
+        "/workspaces/" + encodeURIComponent(wid) + "/files?path=" + encodeURIComponent(rel),
+        { content: "", encoding: "text" }
+      );
+      handleRefresh();
+      ST_openNewFileTab(rel);
+      pushToast && pushToast({ kind: "success", title: "File created", detail: rel });
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Create failed",
+        detail: ST_errDetail(err, "Create failed"),
+        requestId: err && err.requestId,
+      });
+    }
+  }
+
+  async function handleNewFolderIn(dir) {
+    var raw = await promptDialog({
+      title: "New folder",
+      label: "Folder name",
+      message: "New folder in " + (dir || "root"),
+      placeholder: "src",
+    });
+    if (raw == null) return;
+    var name = String(raw).trim();
+    if (!name) return;
+    var rel = ST_pathJoin(dir, name);
+    try {
+      await apiFetch(
+        "POST",
+        "/workspaces/" + encodeURIComponent(wid) + "/files/dir?path=" + encodeURIComponent(rel)
+      );
+      handleRefresh();
+      pushToast && pushToast({ kind: "success", title: "Folder created", detail: rel });
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Create failed",
+        detail: ST_errDetail(err, "Create failed"),
+        requestId: err && err.requestId,
+      });
+    }
+  }
+
+  // -- Rename / move tab remap --------------------------------------------
+  // After a rename/move, repoint any OPEN editor tab at the file's new path so
+  // a surviving tab doesn't go stale (a stale tab could silently re-create the
+  // old file on save). For a file we remap its exact tab; for a folder we remap
+  // every descendant file tab (prefix "file:<old>/"), keeping their basenames.
+  function ST_remapTabsForMove(oldPath, newPath, isDir) {
+    if (!studio.renameTab) return;
+    var openTabs = s.openTabs || [];
+    var selfId = "file:" + oldPath;
+    var childPrefix = "file:" + oldPath + "/";
+    for (var i = 0; i < openTabs.length; i++) {
+      var tid = openTabs[i].id;
+      if (!isDir && tid === selfId) {
+        studio.renameTab(tid, { id: "file:" + newPath, ref: newPath, title: ST_pathBase(newPath) });
+      } else if (isDir && tid.indexOf(childPrefix) === 0) {
+        var oldFilePath = tid.slice("file:".length); // oldPath + "/sub/x"
+        var suffix = oldFilePath.slice(oldPath.length); // "/sub/x"
+        var newFilePath = newPath + suffix;
+        studio.renameTab(tid, { id: "file:" + newFilePath, ref: newFilePath });
+      }
+    }
+  }
+
+  // -- Rename (context-menu action) ----------------------------------------
+  // Prompt for a new basename (default = current), POST the move within the
+  // same parent dir, remap open tabs, refresh, toast. No move endpoint existed
+  // before this feature (see POST /files/move); the backend rejects a collision
+  // / escape, surfaced here as an error toast.
+  async function handleRename(item) {
+    var isDir = !!item.is_dir;
+    var oldPath = item.path;
+    var base = ST_pathBase(oldPath);
+    var dir = ST_pathDir(oldPath);
+    var raw = await promptDialog({
+      title: isDir ? "Rename folder" : "Rename file",
+      label: "New name",
+      message: "Rename \"" + base + "\" to:",
+      defaultValue: base,
+      placeholder: base,
+    });
+    if (raw == null) return;
+    var name = String(raw).trim();
+    if (!name || name === base) return;
+    var dst = ST_pathJoin(dir, name);
+    try {
+      await apiFetch(
+        "POST",
+        "/workspaces/" + encodeURIComponent(wid) + "/files/move?src=" +
+          encodeURIComponent(oldPath) + "&dst=" + encodeURIComponent(dst)
+      );
+      ST_remapTabsForMove(oldPath, dst, isDir);
+      handleRefresh();
+      pushToast && pushToast({
+        kind: "success",
+        title: isDir ? "Folder renamed" : "File renamed",
+        detail: name,
+      });
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Rename failed",
+        detail: ST_errDetail(err, "Rename failed"),
+        requestId: err && err.requestId,
+      });
+    }
+  }
+
+  // -- Drag-to-move --------------------------------------------------------
+  // Move `srcPath` into `folderPath` via the move endpoint. Guards no-ops:
+  // dropping onto itself, into a descendant of itself, or into the folder it
+  // already lives in.
+  async function doMove(srcPath, isDir, folderPath) {
+    if (folderPath === srcPath || folderPath.indexOf(srcPath + "/") === 0) return; // self/descendant
+    if (ST_pathDir(srcPath) === folderPath) return; // already here
+    var dst = ST_pathJoin(folderPath, ST_pathBase(srcPath));
+    try {
+      await apiFetch(
+        "POST",
+        "/workspaces/" + encodeURIComponent(wid) + "/files/move?src=" +
+          encodeURIComponent(srcPath) + "&dst=" + encodeURIComponent(dst)
+      );
+      ST_remapTabsForMove(srcPath, dst, isDir);
+      handleRefresh();
+      pushToast && pushToast({
+        kind: "success",
+        title: "Moved",
+        detail: ST_pathBase(srcPath) + " → " + folderPath,
+      });
+    } catch (err) {
+      pushToast && pushToast({
+        kind: "error",
+        title: "Move failed",
+        detail: ST_errDetail(err, "Move failed"),
+        requestId: err && err.requestId,
+      });
+    }
+  }
+
+  // -- Context-menu action dispatch ----------------------------------------
+  function handleCtxAction(action, item) {
+    if (action === "open") handleFileClick(item);
+    else if (action === "download") ST_triggerDownload(wid, item.path);
+    else if (action === "rename") handleRename(item);
+    else if (action === "delete") handleDelete(item);
+    else if (action === "new-file") handleNewFileIn(item.path);
+    else if (action === "new-folder") handleNewFolderIn(item.path);
+    else if (action === "upload") handleUploadIn(item.path);
+  }
+
+  // -- Drag helpers (rows are drag SOURCES; folders + root are drop TARGETS) --
+  // dragstart stamps the source path/kind onto the DataTransfer so a drop can
+  // tell an internal row-move from an external OS-file upload.
+  function ST_dragStartRow(item, e) {
+    if (!e.dataTransfer) return;
+    e.dataTransfer.setData(
+      "application/x-primer-file",
+      JSON.stringify({ path: item.path, is_dir: !!item.is_dir })
+    );
+    e.dataTransfer.setData("text/plain", item.path);
+    e.dataTransfer.effectAllowed = "move";
+  }
+
+  // True when the drag carries OS files (upload) vs an internal row (move).
+  function ST_isFileDrag(e) {
+    var types = e.dataTransfer ? e.dataTransfer.types : null;
+    if (!types) return false;
+    if (types.indexOf) return types.indexOf("Files") !== -1;
+    if (types.contains) return types.contains("Files");
+    return false;
+  }
+
+  function ST_dragOverFolder(item, e) {
+    if (!item.is_dir) return; // only folders accept drops
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = ST_isFileDrag(e) ? "copy" : "move";
+    setDropTarget(item.path);
+  }
+
+  function ST_dragLeaveFolder(item) {
+    setDropTarget(function (cur) { return cur === item.path ? null : cur; });
+  }
+
+  async function ST_dropOnFolder(item, e) {
+    if (!item.is_dir) return;
+    e.preventDefault();
+    e.stopPropagation();
+    setDropTarget(null);
+    var dt = e.dataTransfer;
+    if (dt && dt.files && dt.files.length) {
+      // OS files → upload INTO this folder.
+      await ST_uploadInto(item.path, dt.files);
+      return;
+    }
+    // Internal row → move INTO this folder.
+    var raw = dt ? dt.getData("application/x-primer-file") : "";
+    if (!raw) return;
+    var src = null;
+    try { src = JSON.parse(raw); } catch (_e) { return; }
+    if (!src || !src.path) return;
+    await doMove(src.path, !!src.is_dir, item.path);
+  }
+
+  // Tree-root drop target ("." sentinel): OS-file drops only (upload to root).
+  function ST_dragOverRoot(e) {
+    if (!ST_isFileDrag(e)) return; // internal moves need a folder target
+    e.preventDefault();
+    setDropTarget(".");
+  }
+  function ST_dragLeaveRoot() {
+    setDropTarget(function (cur) { return cur === "." ? null : cur; });
+  }
+  async function ST_dropOnRoot(e) {
+    var dt = e.dataTransfer;
+    if (!(dt && dt.files && dt.files.length)) return;
+    e.preventDefault();
+    setDropTarget(null);
+    await ST_uploadInto("", dt.files);
   }
 
   // Flatten the tree into a list of rows for rendering, respecting expansion.
@@ -1083,7 +1532,19 @@ function FilesTree({ wid, studio }) {
 
       {/* File tree */}
       {s.filesOpen && (
-        <div className="st-section-body" style={{ paddingBottom: 6 }}>
+        <div
+          className="st-section-body"
+          data-testid="files-tree-body"
+          onDragOver={ST_dragOverRoot}
+          onDragLeave={ST_dragLeaveRoot}
+          onDrop={ST_dropOnRoot}
+          style={{
+            paddingBottom: 6,
+            outline: dropTarget === "." ? "1px solid var(--accent)" : "none",
+            outlineOffset: "-2px",
+            background: dropTarget === "." ? "var(--accent-dim)" : undefined,
+          }}
+        >
           {rootRes.loading && flatRows.length === 0 && (
             <div style={{ padding: "8px 12px", fontSize: 11, color: "var(--text-4)" }}>Loading…</div>
           )}
@@ -1123,6 +1584,8 @@ function FilesTree({ wid, studio }) {
             var isExpanded = !!s.expanded[item.path];
             var iconColor = ST_fileIconColor(item);
             var iconName = ST_fileIconName(item);
+            // Highlight a folder row while a drag hovers it (upload or move).
+            var isDropTarget = item.is_dir && dropTarget === item.path;
 
             return (
               <div
@@ -1131,6 +1594,7 @@ function FilesTree({ wid, studio }) {
                 data-testid="file-row"
                 role="button"
                 tabIndex={0}
+                draggable={true}
                 onClick={function() {
                   if (item.is_dir) {
                     handleFolderClick(item);
@@ -1145,6 +1609,18 @@ function FilesTree({ wid, studio }) {
                     handleFileClick(item);
                   }
                 })}
+                onContextMenu={function(e) {
+                  // Open the right-click menu; preventDefault suppresses the
+                  // native browser menu, stopPropagation keeps the row's
+                  // open/toggle click from firing.
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setCtxMenu({ item: item, x: e.clientX, y: e.clientY });
+                }}
+                onDragStart={function(e) { ST_dragStartRow(item, e); }}
+                onDragOver={function(e) { ST_dragOverFolder(item, e); }}
+                onDragLeave={function() { ST_dragLeaveFolder(item); }}
+                onDrop={function(e) { ST_dropOnFolder(item, e); }}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -1152,7 +1628,11 @@ function FilesTree({ wid, studio }) {
                   paddingLeft: (depth * 16 + 8) + "px",
                   paddingRight: 8,
                   cursor: "pointer",
-                  background: isActive ? "var(--bg-active)" : "transparent",
+                  background: isDropTarget
+                    ? "var(--accent-dim)"
+                    : (isActive ? "var(--bg-active)" : "transparent"),
+                  outline: isDropTarget ? "1px solid var(--accent)" : "none",
+                  outlineOffset: "-1px",
                 }}
               >
                 {/* Chevron column */}
@@ -1211,6 +1691,17 @@ function FilesTree({ wid, studio }) {
           })}
         </div>
       )}
+
+      {/* Right-click context menu (file/folder actions). Rendered last so its
+          position:fixed overlay sits above the tree; closes on outside-click
+          or Escape (handled inside ST_FileContextMenu). */}
+      {ctxMenu && (
+        <ST_FileContextMenu
+          menu={ctxMenu}
+          onAction={handleCtxAction}
+          onClose={function() { setCtxMenu(null); }}
+        />
+      )}
     </div>
   );
 }
@@ -1238,6 +1729,7 @@ function StudioSidebar({ wid, studio }) {
 window.StudioSidebar = StudioSidebar;
 window.SessionsSection = SessionsSection;
 window.FilesTree = FilesTree;
+window.ST_FileContextMenu = ST_FileContextMenu;
 window.ST_SessionDeleteDialog = ST_SessionDeleteDialog;
 window.ST_SessionRenameDialog = ST_SessionRenameDialog;
 window.ST_sessionStatus = ST_sessionStatus;

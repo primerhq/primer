@@ -331,6 +331,35 @@ function useStudioState(wid, initialOpen) {
     });
   }, []);
 
+  // Rename an open tab in place: remap its id/ref/title (and carry its
+  // fileMode across to the new id) WITHOUT changing its position in the tab
+  // bar or its preview/edit mode. Used by the Files tree when a file/folder is
+  // renamed or moved on disk so an already-open editor tab keeps pointing at
+  // the file's new path instead of going stale (a stale tab could silently
+  // re-create the old file on save). No-op when no tab matches `oldId`.
+  var renameTab = React.useCallback(function (oldId, patchTab) {
+    setState(function (s) {
+      var prev = s.openTabs || [];
+      var idx = prev.findIndex(function (t) { return t.id === oldId; });
+      if (idx < 0) return s;
+      var newId = patchTab && patchTab.id ? patchTab.id : oldId;
+      var openTabs = prev.slice();
+      openTabs[idx] = Object.assign({}, openTabs[idx], patchTab);
+      var fileModes = s.fileModes;
+      if (fileModes && fileModes[oldId] !== undefined && newId !== oldId) {
+        fileModes = Object.assign({}, fileModes);
+        fileModes[newId] = fileModes[oldId];
+        delete fileModes[oldId];
+      }
+      var activeTabId = s.activeTabId === oldId ? newId : s.activeTabId;
+      return Object.assign({}, s, {
+        openTabs: openTabs,
+        activeTabId: activeTabId,
+        fileModes: fileModes,
+      });
+    });
+  }, []);
+
   // ---- left sidebar toggles ----
   var toggleSessions = React.useCallback(function () {
     setState(function (s) { return Object.assign({}, s, { sessionsOpen: !s.sessionsOpen }); });
@@ -411,6 +440,7 @@ function useStudioState(wid, initialOpen) {
     focusTab: focusTab,
     closeTab: closeTab,
     closeAllTabs: closeAllTabs,
+    renameTab: renameTab,
     toggleSessions: toggleSessions,
     toggleFiles: toggleFiles,
     toggleHidden: toggleHidden,
