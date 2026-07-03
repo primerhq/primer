@@ -25,6 +25,7 @@ from primer.agent.compaction import CompactionStrategy
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import Message
 from primer.model.except_ import ConflictError
+from primer.model.graph import build_execution_context
 from primer.model.workspace_session import (
     SessionStatus,
     _UserInputWaiting,
@@ -90,6 +91,12 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             principal=principal,
         )
         self._session = session
+        self._execution_context = build_execution_context(
+            surface="workspace",
+            workspace_id=session.workspace_id,
+            session_id=session.session_id,
+            principal=principal,
+        )
         # Trailing :class:`Done.stop_reason` from the most recent
         # :meth:`invoke` call. ``None`` until the first invoke completes.
         # The worker pool's post-turn status mapper reads this to decide
@@ -165,10 +172,32 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             files={"messages.jsonl": new_jsonl},
         )
 
+    async def _ensure_artifact_dir(self) -> None:
+        """Best-effort create ``<workspace_root>/artifacts/<session_id>/``.
+
+        Local repos only (sandbox repos have no local path and rely on
+        create-on-write via the workspace write tool). Never fatal.
+        """
+        root = self._session.workspace_root
+        if root is None:
+            return
+        artifact_dir = root / "artifacts" / self._session.session_id
+        try:
+            await asyncio.to_thread(
+                artifact_dir.mkdir, parents=True, exist_ok=True
+            )
+        except OSError as exc:  # noqa: BLE001 -- best-effort, never fatal
+            logger.warning(
+                "session %s: best-effort artifact dir create failed: %s",
+                self._session.session_id,
+                exc,
+            )
+
     # ---- Public surface override (drives session status) -----------------
 
     async def invoke(self, messages, *, response_format=None):
         """Drive the session through one user-driven turn."""
+        await self._ensure_artifact_dir()
         # Pre-turn boundary checks against the session's lifecycle.
         status = await self._session.status()
         if status == SessionStatus.ENDED:
