@@ -57,8 +57,12 @@ def test_real_agents_page_renders_in_iframe_under_fixture_stub(
     frame = page.frame_locator("iframe#host")
 
     # --- ASSERTION 1: the fixture agent text is present. ---
+    # 30s (was 15s): this waits for the FULL app bundle to load + React to
+    # mount + the stubbed fetch to resolve inside the embed iframe, which can
+    # exceed 15s under full-suite CI load. The pager fix (stub now keyed to
+    # limit=50) makes the row render; this just gives the render headroom.
     id_cell = frame.locator("td.mono", has_text=re.compile(r"^weekly-digest$"))
-    id_cell.first.wait_for(state="visible", timeout=15_000)
+    id_cell.first.wait_for(state="visible", timeout=30_000)
     assert id_cell.count() >= 1, "expected an id cell with text 'weekly-digest'"
 
     # --- ASSERTION 2: it is the REAL component markup, not a mock. ---
