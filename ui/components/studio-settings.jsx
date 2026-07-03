@@ -47,6 +47,29 @@ function WorkspaceSettings({ wid, onClose, pushToast }) {
     { pollMs: 5000, deps: [wid] }
   );
 
+  // Esc-to-close + focus management. This overlay is a raw modal (not the shared
+  // Modal) so it can keep its flush left-rail layout, so we wire the keyboard +
+  // focus affordances the shared Modal otherwise provides: Escape closes it, and
+  // focus moves into the dialog on open and back to the trigger on close.
+  var dialogRef = React.useRef(null);
+  React.useEffect(function () {
+    var prevFocus = document.activeElement;
+    function onKey(e) {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose && onClose();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    if (dialogRef.current) dialogRef.current.focus();
+    return function () {
+      window.removeEventListener("keydown", onKey);
+      if (prevFocus && document.contains(prevFocus) && typeof prevFocus.focus === "function") {
+        prevFocus.focus();
+      }
+    };
+  }, []);
+
   // Resolve the reused panel components from window.* at render time so this
   // file is load-order-independent from workspaces.jsx (which exports them).
   var ChannelsTab = window.WS_ChannelsTab;
@@ -78,7 +101,9 @@ function WorkspaceSettings({ wid, onClose, pushToast }) {
     <div className="modal-overlay" data-testid="workspace-settings" onClick={onClose}>
       <div
         className="modal"
-        style={{ width: "min(920px, 94vw)", maxWidth: "94vw" }}
+        ref={dialogRef}
+        tabIndex={-1}
+        style={{ width: "min(920px, 94vw)", maxWidth: "94vw", outline: "none" }}
         role="dialog"
         aria-modal="true"
         aria-label="Workspace settings"
