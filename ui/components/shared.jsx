@@ -128,12 +128,63 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
   const useViewport = (window.primerApi && window.primerApi.useViewport) || null;
   const vp = useViewport ? useViewport() : { isMobile: false };
   const isMobile = !!vp.isMobile;
+  const dialogRef = React.useRef(null);
+
+  // Remember the element that opened the modal. Captured lazily on the FIRST
+  // render (before the dialog commits/steals focus) so focus can be restored
+  // to the real opener on close — not to whatever ends up focused inside.
+  const openerRef = React.useRef(null);
+  if (openerRef.current === null && typeof document !== "undefined") {
+    openerRef.current = document.activeElement;
+  }
 
   React.useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose && onClose(); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
+
+  // FC5a — focus trap + focus restore. Keep Tab / Shift+Tab cycling inside the
+  // dialog so keyboard users can't tab out into the (inert) page behind it, and
+  // return focus to the opener when the dialog unmounts.
+  React.useEffect(() => {
+    const node = dialogRef.current;
+    if (!node) return undefined;
+    const SELECTOR =
+      'a[href], button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+    const focusables = () =>
+      Array.prototype.slice
+        .call(node.querySelectorAll(SELECTOR))
+        .filter((el) => el.offsetParent !== null || el === document.activeElement);
+    // Pull focus in only if it isn't already inside — preserves autoFocus'd
+    // inputs (e.g. the rename dialog) and ConfirmHost's delayed input focus.
+    if (!node.contains(document.activeElement)) {
+      const first = focusables()[0] || node;
+      if (first && first.focus) first.focus();
+    }
+    const onKeyDown = (e) => {
+      if (e.key !== "Tab") return;
+      const items = focusables();
+      if (items.length === 0) { e.preventDefault(); if (node.focus) node.focus(); return; }
+      const first = items[0];
+      const last = items[items.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey) {
+        if (active === first || !node.contains(active)) { e.preventDefault(); last.focus(); }
+      } else if (active === last || !node.contains(active)) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+    node.addEventListener("keydown", onKeyDown);
+    return () => {
+      node.removeEventListener("keydown", onKeyDown);
+      const opener = openerRef.current;
+      if (opener && typeof opener.focus === "function" && document.contains(opener)) {
+        opener.focus();
+      }
+    };
+  }, [isMobile]);
 
   React.useEffect(() => {
     if (!isMobile) return undefined;
@@ -149,6 +200,8 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
           className="sheet"
           role="dialog"
           aria-modal="true"
+          tabIndex={-1}
+          ref={dialogRef}
           onClick={(e) => e.stopPropagation()}
         >
           <div className="sheet-handle" />
@@ -165,7 +218,15 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
 
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" style={width ? { width } : undefined} onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal"
+        role="dialog"
+        aria-modal="true"
+        tabIndex={-1}
+        ref={dialogRef}
+        style={width ? { width } : undefined}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="modal-h">
           <span className="title" style={{ color: danger ? "var(--red)" : undefined }}>{title}</span>
           <button className="close" onClick={onClose}><Icon name="x" size={14} /></button>

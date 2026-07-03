@@ -193,39 +193,22 @@ function ActionRequired({ wid, studio }) {
     >
       {/* Section header */}
       <div
-        style={{
-          height: 34,
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "0 12px",
-          borderBottom: count > 0 ? "1px solid var(--border)" : "none",
-        }}
+        className="st-panel-bar"
+        style={{ borderBottom: count > 0 ? "1px solid var(--border)" : "none" }}
       >
         <span style={{ color: "var(--amber)", fontSize: 13 }}>⚠</span>
-        <span
-          style={{
-            fontSize: 10.5,
-            textTransform: "uppercase",
-            letterSpacing: "0.06em",
-            fontWeight: 600,
-            color: "var(--text-2)",
-            flex: 1,
-          }}
-        >
+        <span className="st-section-label">
           Action Required
         </span>
         {count > 0 && (
           <span
             data-testid="action-required-count"
+            className="st-pill"
             style={{
               background: "var(--amber-dim)",
               color: "var(--amber)",
-              borderRadius: 999,
               padding: "1px 7px",
               fontSize: 10.5,
-              fontWeight: 700,
               fontFamily: "IBM Plex Mono, monospace",
             }}
           >
@@ -272,7 +255,7 @@ function ActionRequired({ wid, studio }) {
               }}
             >
               {/* Session label + kind */}
-              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div className="st-row" style={{ gap: 6 }}>
                 <button
                   type="button"
                   data-testid="action-session-link"
@@ -477,15 +460,8 @@ function WorkspaceActivity({ wid }) {
     >
       {/* Section header */}
       <div
-        style={{
-          height: 34,
-          flexShrink: 0,
-          display: "flex",
-          alignItems: "center",
-          gap: 6,
-          padding: "0 12px",
-          borderBottom: "1px solid var(--border)",
-        }}
+        className="st-panel-bar"
+        style={{ borderBottom: "1px solid var(--border)" }}
       >
         <span
           className="dot"
@@ -498,16 +474,7 @@ function WorkspaceActivity({ wid }) {
             flexShrink: 0,
           }}
         />
-        <span
-          style={{
-            fontSize: 10.5,
-            textTransform: "uppercase",
-            letterSpacing: "0.06em",
-            fontWeight: 600,
-            color: "var(--text-2)",
-            flex: 1,
-          }}
-        >
+        <span className="st-section-label">
           Workspace Activity
         </span>
         <span
