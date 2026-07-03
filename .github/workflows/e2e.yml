@@ -119,7 +119,7 @@ jobs:
           echo "::endgroup::"
       - name: Upload Playwright failure artifacts
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ui-e2e-artifacts
           path: tests/ui_e2e/.state/artifacts/
