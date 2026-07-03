@@ -140,6 +140,7 @@ def render_input_template(
         "initial_input": context.initial_input,
         "iteration": context.iteration,
         "nodes": context.nodes,
+        "ctx": context.ctx,
     }
     if extra_scope:
         scope.update(extra_scope)
@@ -177,6 +178,7 @@ def render_template_safely(
         "initial_input": context.initial_input,
         "iteration": context.iteration,
         "nodes": context.nodes,
+        "ctx": context.ctx,
     }
     if extra_scope:
         scope.update(extra_scope)

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from primer.graph.template import render_input_template
+from primer.graph.template import render_input_template, render_template_safely
 from primer.model.chat import Message, TextPart
 from primer.model.except_ import BadRequestError
-from primer.model.graph import GraphContext, NodeOutput
+from primer.model.graph import GraphContext, NodeOutput, build_execution_context
 
 
 def _ctx(
@@ -196,3 +196,43 @@ class TestErrors:
             render_input_template(
                 "{{ ''.__class__ }}", context=_ctx()
             )
+
+
+class TestCtx:
+    def test_default_ctx_surface_is_memory(self) -> None:
+        result = render_input_template("s={{ ctx.surface }}", context=_ctx())
+        assert result == "s=memory"
+
+    def test_default_ctx_artifact_dir_is_none_renders_none(self) -> None:
+        # Null field must render the string "None", NOT raise (StrictUndefined
+        # only fires on missing *names*, not on defined-but-None values).
+        result = render_input_template(
+            "dir={{ ctx.artifact_dir }}", context=_ctx()
+        )
+        assert result == "dir=None"
+
+    def test_ctx_artifact_dir_renders_when_set(self) -> None:
+        ctx = GraphContext(
+            initial_input=[Message(role="user", parts=[TextPart(text="hi")])],
+            iteration=0,
+            nodes={},
+            ctx=build_execution_context(surface="workspace", session_id="gsid-1"),
+        )
+        result = render_input_template(
+            "write {{ ctx.artifact_dir }}/plan.md", context=ctx
+        )
+        assert result == "write artifacts/gsid-1/plan.md"
+
+    def test_ctx_typo_field_still_raises(self) -> None:
+        with pytest.raises(BadRequestError):
+            render_input_template("{{ ctx.artifactdir }}", context=_ctx())
+
+    def test_ctx_available_in_render_template_safely(self) -> None:
+        ctx = GraphContext(
+            initial_input=[Message(role="user", parts=[TextPart(text="hi")])],
+            iteration=0,
+            nodes={},
+            ctx=build_execution_context(surface="workspace", session_id="gsid-2"),
+        )
+        result = render_template_safely("{{ ctx.artifact_dir }}", ctx)
+        assert result == "artifacts/gsid-2"
