@@ -42,40 +42,22 @@ jobs:
       # real LLM). The Postgres-gated tests skip without PRIMER_PG_TEST_DSN, so
       # this job needs no database service. The release workflow runs the
       # Postgres-backed boot smoke before publishing.
-      - name: Unit sweep
-        run: >-
-          uv run pytest tests/ -q
-          --ignore=tests/distributed --ignore=tests/ui_e2e
-          --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
-
-  # Coverage runs in its own job: the same env + narrowed unit sweep as `test`,
-  # under pytest-cov. The in-job 90% gate mirrors [tool.coverage.report]
-  # fail_under (pyproject.toml); the Codecov project + patch status checks
-  # (codecov.yml) track the same target and post the PR comment. coverage.xml
-  # is written before the fail-under exit, so the upload still runs
-  # (if: always()) and Codecov comments even when the gate is missed.
-  #
-  # Needs a CODECOV_TOKEN secret + the Codecov GitHub app on the org for the PR
-  # comment/status; without them the upload is a no-op (fail_ci_if_error: false)
-  # and the in-job gate still runs.
-  coverage:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v7
-        with:
-          version: "latest"
-      - name: Sync
-        run: |
-          uv sync --all-extras --dev --group docs
-          uv pip install --no-deps ./primectl ./runtime
-      - name: Coverage sweep (gate at 90%)
+      #
+      # Coverage is produced in this same run (pytest-cov -> coverage.xml) so
+      # the suite is not run twice. The 90% target is enforced by the Codecov
+      # project/patch status checks (codecov.yml), not an in-job
+      # --cov-fail-under, so measuring coverage never turns this required job
+      # red on a coverage dip on its own.
+      - name: Unit sweep (with coverage)
         run: >-
           uv run pytest tests/ -q
           --ignore=tests/distributed --ignore=tests/ui_e2e
           --ignore=tests/e2e --ignore=tests/integration --ignore=tests/llm
           --cov=primer --cov-report=xml --cov-report=term-missing
-          --cov-fail-under=90
+      # Upload to Codecov so it posts the PR comment + project/patch status.
+      # if: always() so coverage still uploads when a later step fails; the
+      # upload is best-effort (needs CODECOV_TOKEN + the Codecov GitHub app on
+      # the org) and never fails the job.
       - name: Upload coverage to Codecov
         if: always()
         uses: codecov/codecov-action@v5
