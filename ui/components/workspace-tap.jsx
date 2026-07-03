@@ -200,6 +200,18 @@ function WTP_detailJson(ev) {
   }
 }
 
+// Stable cross-source dedupe/React key. Per-session `seq` is NOT unique across
+// the workspace, so the key is (session_id, seq) — the one identity a history
+// backfill row and a live tap frame share (the live frame's `cursor` is a
+// per-frame multi-session token; the history row's is a "<sid>:<seq>"
+// placeholder — they never match, so cursor cannot be the seam key).
+function WTP_eventKey(ev) {
+  if (!ev || typeof ev !== "object") return "";
+  var sid = ev.session_id != null ? ev.session_id : "";
+  var seq = ev.seq != null ? ev.seq : (ev.cursor != null ? ev.cursor : "");
+  return sid + ":" + seq;
+}
+
 // ---------------------------------------------------------------------------
 // WorkspaceTap — main component
 //
@@ -212,7 +224,7 @@ function WTP_detailJson(ev) {
 
 function WorkspaceTap({ wid, sessionId }) {
   var tap = window.useWorkspaceTap(wid);
-  var allEvents = tap.events;
+  var liveEvents = tap.events;
   var connState = tap.connState;
 
   // selectedClasses: null means all; a subset array filters client-side.
@@ -221,10 +233,57 @@ function WorkspaceTap({ wid, sessionId }) {
   // its (potentially large) detail block, so long lists stay cheap.
   var [expanded, setExpanded] = React.useState({});
 
+  // HISTORY BACKFILL: the tap connects live-from-now, so anything that
+  // happened before the panel opened (e.g. a completed session) is invisible.
+  // On mount we fetch a bounded snapshot of recent workspace-scoped events and
+  // merge it below the live tail, deduped by (session_id, seq) — same
+  // history→live seam as SessionLiveStream, just workspace-wide.
+  var [history, setHistory] = React.useState([]);
+  React.useEffect(function () {
+    if (!wid) { setHistory([]); return undefined; }
+    var alive = true;
+    setHistory([]);
+    window.primerApi.apiFetch(
+      "GET",
+      "/workspaces/" + encodeURIComponent(wid) + "/events?limit=200"
+    ).then(function (res) {
+      if (!alive) return;
+      setHistory((res && Array.isArray(res.items)) ? res.items : []);
+    }).catch(function () {
+      /* best-effort — the live tap still tails for in-flight runs */
+    });
+    return function () { alive = false; };
+  }, [wid]);
+
   var scrollRef = React.useRef(null);
   var stickRef = React.useRef(true);
 
-  // Client-side filter over the shared buffer.
+  // Merge history + live buffer, dedupe by (session_id, seq), order by ts so
+  // pre-connect history sorts above the live tail.
+  var allEvents = React.useMemo(function () {
+    var seen = {};
+    var merged = [];
+    function add(ev) {
+      if (!ev || typeof ev !== "object") return;
+      var k = WTP_eventKey(ev);
+      if (seen[k]) return;
+      seen[k] = true;
+      merged.push(ev);
+    }
+    for (var i = 0; i < history.length; i++) add(history[i]);
+    for (var j = 0; j < liveEvents.length; j++) add(liveEvents[j]);
+    merged.sort(function (a, b) {
+      var ta = a.ts ? Date.parse(a.ts) : 0;
+      var tb = b.ts ? Date.parse(b.ts) : 0;
+      if (ta !== tb) return ta - tb;
+      var sa = a.session_id || "", sb = b.session_id || "";
+      if (sa !== sb) return sa < sb ? -1 : 1;
+      return (a.seq || 0) - (b.seq || 0);
+    });
+    return merged;
+  }, [history, liveEvents]);
+
+  // Client-side filter over the merged buffer.
   var events = React.useMemo(function () {
     var out = allEvents;
     if (sessionId) {
@@ -347,7 +406,7 @@ function WorkspaceTap({ wid, sessionId }) {
             size="sm"
             kind="ghost"
             icon="trash"
-            onClick={function() { tap.clear(); }}
+            onClick={function() { tap.clear(); setHistory([]); }}
             title="Clear event list"
           >Clear</Btn>
         </div>
@@ -372,7 +431,7 @@ function WorkspaceTap({ wid, sessionId }) {
           </div>
         )}
         {events.map(function(ev, i) {
-          var key = ev.cursor != null ? String(ev.cursor) : ("i" + i);
+          var key = WTP_eventKey(ev) || ("i" + i);
           var isOpen = !!expanded[key];
           var ts = ev.ts ? new Date(ev.ts) : null;
           // Minimal timestamp: HH:MM:SS (full ISO on hover).
