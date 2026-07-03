@@ -575,7 +575,10 @@ function SessionsSection({ wid, studio }) {
 
   var sessions = ST_sessionSort(rawSessions);
 
-  var [showNewForm, setShowNewForm] = React.useState(false);
+  // New-session form visibility is owned by studio state (studio.jsx) so the
+  // ⌘K palette's "New session" action can open the SAME form this section's
+  // "+" button does. See FB6.
+  var showNewForm = studio.newSessionOpen;
   // Session pending a delete confirm (the row whose trash button was hit),
   // and the session being renamed inline. Both null when idle.
   var [pendingDelete, setPendingDelete] = React.useState(null);
@@ -613,7 +616,7 @@ function SessionsSection({ wid, studio }) {
   }
 
   function onCreated(session) {
-    setShowNewForm(false);
+    studio.closeNewSession();
     // Invalidate the sessions resource so the new session appears.
     sessionsRes.refetch && sessionsRes.refetch();
     openSession(session);
@@ -659,7 +662,8 @@ function SessionsSection({ wid, studio }) {
           data-testid="new-session-btn"
           onClick={function(e) {
             e.stopPropagation();
-            setShowNewForm(function(v) { return !v; });
+            if (studio.newSessionOpen) studio.closeNewSession();
+            else studio.openNewSession();
           }}
         >＋</button>
       </div>
@@ -668,7 +672,7 @@ function SessionsSection({ wid, studio }) {
       {showNewForm && (
         <NewSessionForm
           wid={wid}
-          onClose={function() { setShowNewForm(false); }}
+          onClose={function() { studio.closeNewSession(); }}
           onCreated={onCreated}
         />
       )}
