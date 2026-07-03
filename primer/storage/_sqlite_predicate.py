@@ -11,8 +11,7 @@ Module-private; consumed only by :mod:`primer.storage.sqlite`.
 
 from __future__ import annotations
 
-import types
-from typing import Any, Union, get_args, get_origin
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -24,18 +23,18 @@ from primer.model.storage import (
     Predicate,
     Value,
 )
+from primer.storage._predicate_common import (
+    COMPARISON_OPS as _COMPARISON_OPS,
+    LOGICAL_OPS as _LOGICAL_OPS,
+    PRIMARY_KEY_COLUMN as _PRIMARY_KEY_COLUMN,
+    field_annotation as _field_annotation,
+    render_null_check as _render_null_check_common,
+    render_order_by as _render_order_by_common,
+    strip_optional as _strip_optional,
+)
 
 
 # ---------- Field-type resolution ----------------------------------------
-
-
-def _strip_optional(tp: Any) -> Any:
-    origin = get_origin(tp)
-    if origin is Union or origin is types.UnionType:
-        args = [a for a in get_args(tp) if a is not type(None)]
-        if len(args) == 1:
-            return args[0]
-    return tp
 
 
 def _sqlite_cast_for(field_type: Any) -> str | None:
@@ -54,22 +53,7 @@ def _sqlite_cast_for(field_type: Any) -> str | None:
     return None
 
 
-def _field_annotation(model_class: type[BaseModel], path: str) -> Any:
-    parts = path.split(".")
-    if len(parts) > 1:
-        return Any
-    field = model_class.model_fields.get(parts[0])
-    if field is None:
-        raise BadRequestError(
-            f"field {path!r} is not declared on model {model_class.__name__!r}"
-        )
-    return field.annotation
-
-
 # ---------- Field-expression renderer ------------------------------------
-
-
-_PRIMARY_KEY_COLUMN = "id"
 
 
 def _render_field_expr(model_class: type[BaseModel], path: str) -> str:
@@ -103,21 +87,6 @@ def _render_typed_field_expr(model_class: type[BaseModel], path: str) -> str:
 
 # ---------- Translator ---------------------------------------------------
 
-
-_COMPARISON_OPS: dict[Op, str] = {
-    Op.EQ: "=",
-    Op.NE: "!=",
-    Op.LIKE: "LIKE",
-    Op.GT: ">",
-    Op.LT: "<",
-    Op.GE: ">=",
-    Op.LE: "<=",
-}
-
-_LOGICAL_OPS: dict[Op, str] = {
-    Op.AND: "AND",
-    Op.OR: "OR",
-}
 
 _TYPED_COMPARISON_OPS = {Op.GT, Op.LT, Op.GE, Op.LE}
 
@@ -162,24 +131,12 @@ class _SqlitePredicateTranslator:
         raise BadRequestError(f"unsupported operator {p.op.value!r}")
 
     def _render_null_check(self, p: Predicate) -> str:
-        """Render IS NULL / IS NOT NULL against a FieldRef.
-
-        The right operand is ignored; the canonical caller still
-        supplies a Value placeholder to satisfy the Operand union.
-
-        Note: ``json_extract(data, '$.x')`` returns SQL NULL both when
-        the JSON value is `null` AND when the path is missing. That
-        matches our intent -- a Pydantic ``Optional[str]`` field that
-        was never set serialises as missing-from-blob, which we want
-        treated as NULL.
-        """
-        if not isinstance(p.left, FieldRef):
-            raise BadRequestError(
-                f"operator {p.op.value!r} requires a FieldRef on the left"
-            )
-        left_sql = _render_field_expr(self._model, p.left.name)
-        keyword = "IS NULL" if p.op == Op.IS_NULL else "IS NOT NULL"
-        return f"({left_sql} {keyword})"
+        # Shared boilerplate (see _predicate_common.render_null_check). Note:
+        # ``json_extract(data, '$.x')`` returns SQL NULL both when the JSON
+        # value is `null` AND when the path is missing — which matches intent
+        # (a never-set Optional field serialises as missing-from-blob, treated
+        # as NULL). The only dialect input is this backend's field renderer.
+        return _render_null_check_common(p, self._model, _render_field_expr)
 
     def _render_in(self, p: Predicate) -> str:
         if not isinstance(p.left, FieldRef):
@@ -264,28 +221,30 @@ def render_order_by_sqlite(
     Postgres backend (which uses ``NULLS LAST``). This keeps keyset
     pagination null-safe across a NULL boundary.
     """
-    parts: list[str] = []
-    seen_id = False
-    for ob in order_by or []:
-        if ob.field == _PRIMARY_KEY_COLUMN:
-            seen_id = True
-        annotation = _field_annotation(model_class, ob.field)
-        cast = _sqlite_cast_for(annotation)
-        if ob.field == _PRIMARY_KEY_COLUMN or cast is None:
-            expr = _render_field_expr(model_class, ob.field)
-        else:
-            expr = f"CAST({_render_field_expr(model_class, ob.field)} AS {cast})"
-        direction = "ASC" if ob.direction == "asc" else "DESC"
-        if ob.field != _PRIMARY_KEY_COLUMN:
-            # NULLs LAST: a row with NULL gets flag 1 and sorts after
-            # flag 0 in ASC. For DESC the value sorts descending but
-            # NULLs must still come last, so the flag stays ASC.
-            null_expr = _render_field_expr(model_class, ob.field)
-            parts.append(f"({null_expr} IS NULL) ASC")
-        parts.append(f"{expr} {direction}")
-    if not seen_id:
-        parts.append(f"{_PRIMARY_KEY_COLUMN} ASC")
-    return "ORDER BY " + ", ".join(parts)
+    return _render_order_by_common(model_class, order_by, _order_key_terms)
+
+
+def _order_key_terms(model_class: type[BaseModel], ob: OrderBy) -> list[str]:
+    """SQLite sort term(s) for one ORDER BY key.
+
+    Numeric fields ``CAST`` (so they sort numerically). Non-id keys emit a
+    leading ``(<field> IS NULL) ASC`` term so NULLs sort last: a row with NULL
+    gets flag 1 and sorts after flag 0 in ASC; for DESC the value sorts
+    descending but NULLs must still come last, so the flag stays ASC.
+    """
+    annotation = _field_annotation(model_class, ob.field)
+    cast = _sqlite_cast_for(annotation)
+    if ob.field == _PRIMARY_KEY_COLUMN or cast is None:
+        expr = _render_field_expr(model_class, ob.field)
+    else:
+        expr = f"CAST({_render_field_expr(model_class, ob.field)} AS {cast})"
+    direction = "ASC" if ob.direction == "asc" else "DESC"
+    terms: list[str] = []
+    if ob.field != _PRIMARY_KEY_COLUMN:
+        null_expr = _render_field_expr(model_class, ob.field)
+        terms.append(f"({null_expr} IS NULL) ASC")
+    terms.append(f"{expr} {direction}")
+    return terms
 
 
 __all__ = [

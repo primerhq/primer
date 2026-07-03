@@ -17,8 +17,7 @@ Module-private; consumed only by :mod:`primer.storage.postgres`.
 
 from __future__ import annotations
 
-import types
-from typing import Any, Union, get_args, get_origin
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -30,22 +29,18 @@ from primer.model.storage import (
     Predicate,
     Value,
 )
+from primer.storage._predicate_common import (
+    COMPARISON_OPS as _COMPARISON_OPS,
+    LOGICAL_OPS as _LOGICAL_OPS,
+    PRIMARY_KEY_COLUMN as _PRIMARY_KEY_COLUMN,
+    field_annotation as _field_annotation,
+    render_null_check as _render_null_check_common,
+    render_order_by as _render_order_by_common,
+    strip_optional as _strip_optional,
+)
 
 
 # ---------- Field-type resolution -----------------------------------------
-
-
-def _strip_optional(tp: Any) -> Any:
-    """Unwrap ``T | None`` / ``Optional[T]`` to ``T``.
-
-    Works for both ``Union[X, None]`` and ``X | None`` PEP 604 forms.
-    """
-    origin = get_origin(tp)
-    if origin is Union or origin is types.UnionType:
-        args = [a for a in get_args(tp) if a is not type(None)]
-        if len(args) == 1:
-            return args[0]
-    return tp
 
 
 def _sql_cast_for(field_type: Any) -> str | None:
@@ -67,32 +62,7 @@ def _sql_cast_for(field_type: Any) -> str | None:
     return None
 
 
-def _field_annotation(model_class: type[BaseModel], path: str) -> Any:
-    """Resolve the annotation for a (possibly dotted) field path.
-
-    For top-level fields this is ``model_class.model_fields[name].annotation``.
-    For dotted paths (e.g. ``"meta.author"``) we cannot statically know
-    the inner type because Pydantic's ``dict[str, Any]`` carries no
-    structural info -- return ``Any`` so the caller skips casting.
-    """
-    parts = path.split(".")
-    if len(parts) > 1:
-        return Any
-    field = model_class.model_fields.get(parts[0])
-    if field is None:
-        raise BadRequestError(
-            f"field {path!r} is not declared on model {model_class.__name__!r}"
-        )
-    return field.annotation
-
-
 # ---------- Field expression renderer -------------------------------------
-
-
-# The PRIMARY KEY column. ``id`` is hoisted out of the JSONB document
-# into its own column so it can be the table's primary key and have
-# the obvious B-tree index.
-_PRIMARY_KEY_COLUMN = "id"
 
 
 def _quote_jsonb_key(key: str) -> str:
@@ -174,21 +144,6 @@ def _render_typed_field_expr(
 
 # ---------- Predicate translator ------------------------------------------
 
-
-_COMPARISON_OPS: dict[Op, str] = {
-    Op.EQ: "=",
-    Op.NE: "!=",
-    Op.LIKE: "LIKE",
-    Op.GT: ">",
-    Op.LT: "<",
-    Op.GE: ">=",
-    Op.LE: "<=",
-}
-
-_LOGICAL_OPS: dict[Op, str] = {
-    Op.AND: "AND",
-    Op.OR: "OR",
-}
 
 # Comparison operators where a typed cast on the left side is required
 # when the field is non-text (bool / int / float).
@@ -274,19 +229,9 @@ class _PredicateTranslator:
         raise BadRequestError(f"unsupported operator {p.op.value!r}")
 
     def _render_null_check(self, p: Predicate) -> str:
-        """Render IS NULL / IS NOT NULL against a FieldRef.
-
-        Right operand is ignored. The canonical caller passes
-        ``Value(value=None)`` as a placeholder so the Operand union
-        stays satisfied; the value never reaches SQL.
-        """
-        if not isinstance(p.left, FieldRef):
-            raise BadRequestError(
-                f"operator {p.op.value!r} requires a FieldRef on the left"
-            )
-        left_sql = _render_field_expr(self._model, p.left.name)
-        keyword = "IS NULL" if p.op == Op.IS_NULL else "IS NOT NULL"
-        return f"({left_sql} {keyword})"
+        # Shared boilerplate (see _predicate_common.render_null_check); the
+        # only dialect input is this backend's field-expression renderer.
+        return _render_null_check_common(p, self._model, _render_field_expr)
 
     def _render_in(self, p: Predicate) -> str:
         if not isinstance(p.left, FieldRef):
@@ -362,23 +307,23 @@ def render_order_by(
     backend (which emits a ``(field IS NULL) ASC`` sort term). This
     keeps keyset pagination null-safe across a NULL boundary.
     """
-    parts: list[str] = []
-    seen_id = False
-    for ob in order_by or []:
-        if ob.field == _PRIMARY_KEY_COLUMN:
-            seen_id = True
-        # Use the typed expression so numeric fields sort numerically.
-        annotation = _field_annotation(model_class, ob.field)
-        cast = _sql_cast_for(annotation)
-        if ob.field == _PRIMARY_KEY_COLUMN or cast is None:
-            expr = _render_field_expr(model_class, ob.field)
-        else:
-            expr = f"({_render_field_expr(model_class, ob.field)})::{cast}"
-        direction = "ASC" if ob.direction == "asc" else "DESC"
-        if ob.field == _PRIMARY_KEY_COLUMN:
-            parts.append(f"{expr} {direction}")
-        else:
-            parts.append(f"{expr} {direction} NULLS LAST")
-    if not seen_id:
-        parts.append(f"{_PRIMARY_KEY_COLUMN} ASC")
-    return "ORDER BY " + ", ".join(parts)
+    return _render_order_by_common(model_class, order_by, _order_key_terms)
+
+
+def _order_key_terms(model_class: type[BaseModel], ob: OrderBy) -> list[str]:
+    """Postgres sort term(s) for one ORDER BY key.
+
+    Numeric fields cast (so they sort numerically) and non-id keys carry
+    ``NULLS LAST``; the id key is a bare directional sort.
+    """
+    # Use the typed expression so numeric fields sort numerically.
+    annotation = _field_annotation(model_class, ob.field)
+    cast = _sql_cast_for(annotation)
+    if ob.field == _PRIMARY_KEY_COLUMN or cast is None:
+        expr = _render_field_expr(model_class, ob.field)
+    else:
+        expr = f"({_render_field_expr(model_class, ob.field)})::{cast}"
+    direction = "ASC" if ob.direction == "asc" else "DESC"
+    if ob.field == _PRIMARY_KEY_COLUMN:
+        return [f"{expr} {direction}"]
+    return [f"{expr} {direction} NULLS LAST"]
