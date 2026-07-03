@@ -146,8 +146,13 @@ function App() {
   // Dashboard tiles, and the Health page all depend on /v1/workers
   // and /v1/health. We poll both at the top so all consumers stay in
   // sync without duplicating fetches.
+  // Shares the "workers:list" cacheKey with the Workers page (workers.jsx)
+  // so useResource dedupes the two /v1/workers polls into one. When the
+  // Workers page is open its faster cadence drives the shared entry; the
+  // topbar just reads the same data. Its drain/quiesce mutations already
+  // invalidate "workers:list", so the topbar pill refreshes with them too.
   const realWorkers = window.primerApi.useResource(
-    "topbar:workers",
+    "workers:list",
     (signal) => window.primerApi.apiFetch("GET", "/workers", null, { signal }),
     { pollMs: 5000 }
   );
@@ -236,8 +241,12 @@ function App() {
   //   200 + activated_at unset  -> configured but not bootstrapped (OFF, bell badge)
   //   200 + activated_at set    -> active (ON)
   // The sidebar + dashboard tile both derive from this single probe.
+  // Shares the canonical "ic:config" cacheKey with the topbar bell
+  // (chrome.jsx) and the Internal Collections page, so useResource
+  // dedupes all three into one 30s poll and IC-page mutations
+  // (invalidates: ["ic:config"]) refresh this probe too.
   const icConfig = window.primerApi.useResource(
-    "app:ic-config",
+    "ic:config",
     async (signal) => {
       try {
         return await window.primerApi.apiFetch(
