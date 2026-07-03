@@ -477,7 +477,7 @@ function CommandPalette({ onClose, onNavigate, sessions }) {
   return (
     <div className="modal-overlay" onClick={onClose}>
       <div
-        className="modal"
+        className="modal cmd-palette"
         style={{ width: 540, alignSelf: "flex-start", marginTop: "12vh" }}
         onClick={(e) => e.stopPropagation()}
       >

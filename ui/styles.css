@@ -170,6 +170,7 @@
   padding: 6px 8px;
   border-radius: 6px;
   cursor: pointer;
+  transition: background 0.15s ease;
 }
 .st-ws-menu-row:hover { background: var(--bg-hover); }
 .st-palette-trigger {
@@ -818,7 +819,7 @@ input, textarea, select { font: inherit; color: inherit; }
   cursor: pointer;
   font-size: 13px;
   position: relative;
-  transition: background 0.1s;
+  transition: background 0.15s ease, color 0.15s ease;
 }
 .nav-item:hover { background: var(--bg-hover); color: var(--text); }
 .nav-item.active {
@@ -989,6 +990,18 @@ input, textarea, select { font: inherit; color: inherit; }
 @keyframes pulse {
   0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
   50% { box-shadow: 0 0 0 3px transparent; opacity: 0.55; }
+}
+
+/* Global reduced-motion: honour the OS "reduce motion" setting everywhere.
+   Neutralises all animations/transitions (incl. the infinite status-dot
+   pulse above) and instant-scrolls, so motion-sensitive users get a still UI. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 /* ---------- Cards / panels ---------- */
@@ -1238,9 +1251,9 @@ input, textarea, select { font: inherit; color: inherit; }
   gap: 10px;
   align-items: flex-start;
   font-size: 12.5px;
-  animation: slideIn 0.2s ease-out;
+  animation: toastIn 0.18s ease-out;
 }
-@keyframes slideIn { from { transform: translateX(20px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes toastIn { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
 .toast .ico { width: 16px; height: 16px; margin-top: 1px; flex-shrink: 0; }
 .toast-success .ico { color: var(--green); }
 .toast-success { border-left: 3px solid var(--green); }
@@ -1321,6 +1334,9 @@ input, textarea, select { font: inherit; color: inherit; }
   animation: fadeIn 0.15s;
 }
 @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+/* Command palette: gentle scale + fade so it "grows" into place on open. */
+.cmd-palette { animation: paletteIn 0.16s ease-out; }
+@keyframes paletteIn { from { opacity: 0; transform: scale(0.98); } to { opacity: 1; transform: none; } }
 .modal {
   background: var(--bg-1);
   border: 1px solid var(--border-strong);
