@@ -36,3 +36,14 @@ def test_exports_to_window() -> None:
     src = _component_path().read_text(encoding="utf-8")
     assert "TokenMeter" in src
     assert "window.TokenMeter" in src
+
+
+def test_band_backgrounds_use_design_tokens_not_magic_hex() -> None:
+    # FC3: the green/amber/red band backgrounds must be driven by the
+    # semantic design tokens, not the old hardcoded #hex literals.
+    src = _component_path().read_text(encoding="utf-8")
+    for stale in ("#1f7a3a", "#b8860b", "#c0392b"):
+        assert stale not in src, f"token-meter.jsx must not hardcode {stale}; use var(--*)"
+    assert "var(--green)" in src
+    assert "var(--amber)" in src
+    assert "var(--red)" in src
