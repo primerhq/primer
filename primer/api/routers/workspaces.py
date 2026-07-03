@@ -1375,6 +1375,101 @@ async def list_pending_yields(
 
 
 # ===========================================================================
+# Workspace events history sub-resource (Studio activity backfill)
+# ===========================================================================
+
+events_router = APIRouter(tags=["workspace-events"])
+
+
+@events_router.get(
+    "/workspaces/{workspace_id}/events",
+    summary="Recent workspace-scoped tap events across all sessions (Studio activity backfill)",
+    responses=common_responses(404, 500),
+)
+async def list_workspace_events(
+    workspace_id: str = Path(..., description="Workspace id"),
+    limit: int = Query(
+        default=200,
+        ge=1,
+        le=500,
+        description=(
+            "Maximum number of most-recent events to return, aggregated across "
+            "all of the workspace's sessions."
+        ),
+    ),
+    session_storage=Depends(get_session_storage),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+) -> dict:
+    """Return the most-recent ``limit`` tap events across ALL sessions in the
+    workspace, oldest-first.
+
+    The workspace tap SSE stream connects **live-from-now**, so a panel that
+    opens after events already happened (e.g. a completed session) sees nothing.
+    This bounded backfill seeds the Studio activity stream on open; the live tap
+    then tails from now and the client dedupes the seam by ``(session_id, seq)``.
+
+    Each item is a wire-shape :class:`~primer.tap.event.TapEvent`
+    (``class`` / ``ts`` / ``seq`` / ``session_id`` / ``payload`` …) so it merges
+    1:1 with live tap frames — the same reader (:func:`read_session_since`) that
+    backs the SSE tick loop produces these, just drained from byte 0.
+
+    Response shape::
+
+        {"items": [ {"class": str, "seq": int, "session_id": str,
+                     "ts": str, "payload": {...}, ...}, … ]}
+
+    Events are ordered ascending by ``(ts, session_id, seq)`` and the newest
+    ``limit`` are returned. A missing ``messages.jsonl`` (a session that has not
+    flushed yet) contributes nothing rather than erroring.
+    """
+    from primer.model.storage import OffsetPage
+    from primer.storage.q import Q
+    from primer.model.workspace_session import WorkspaceSession
+    from primer.tap.reader import read_session_since
+    from primer.tap.selector import TapSelector
+
+    # Resolve the live workspace IO handle (read_file + state_path). A missing
+    # workspace raises NotFoundError → 404, mirroring the tap SSE surface.
+    workspace_io = await registry.get_workspace(workspace_id)
+
+    predicate = Q(WorkspaceSession).where("workspace_id", workspace_id).build()
+    selector = TapSelector()  # empty = pass-through (every session + event)
+
+    collected = []
+    offset = 0
+    page_size = 200
+    while True:
+        resp = await session_storage.find(
+            predicate, OffsetPage(offset=offset, length=page_size)
+        )
+        for sess in resp.items:
+            events, _ = await read_session_since(
+                workspace_io,
+                workspace_id=workspace_id,
+                session=sess,
+                after_seq=0,
+                selector=selector,
+                from_offset=0,
+            )
+            # Keep only each session's most-recent `limit` events: the global
+            # recent-N is a subset of the union of per-session tails, so this
+            # bounds memory without dropping any event that could land in the
+            # final window.
+            if len(events) > limit:
+                events = events[-limit:]
+            collected.extend(events)
+        if len(resp.items) < page_size:
+            break
+        offset += page_size
+
+    # Global order by (ts, session_id, seq); return the most-recent `limit`
+    # oldest-first so the client appends them like the live tail.
+    collected.sort(key=lambda e: (e.ts, e.session_id, e.seq))
+    recent = collected[-limit:]
+    return {"items": [ev.model_dump(mode="json", by_alias=True) for ev in recent]}
+
+
+# ===========================================================================
 # Helpers
 # ===========================================================================
 
@@ -1412,6 +1507,7 @@ def _content_disposition(filename: str) -> str:
 
 
 __all__ = [
+    "events_router",
     "files_router",
     "log_router",
     "provider_router",
