@@ -9,7 +9,7 @@
 //   B2 → StudioSidebar   (left)
 //   B3 → StudioCenter    (center)
 //   B4 → StudioActivity  (right)
-//   B5 → CommandPalette + ⌘K/⌘P wiring + enrichments
+//   B5 → StudioCommandPalette + ⌘K/⌘P wiring + enrichments
 //
 // No-build scope rules (see workspace-tap.jsx): top-level declarations use
 // `var`; helpers are prefixed ST_ to avoid global collisions; every
@@ -751,7 +751,7 @@ function Studio({ wid, pushToast }) {
           above all three columns. paletteMode "command" vs "quickopen" selects
           which component renders; both share the same open/close state. */}
       {s.paletteOpen && s.paletteMode === "command" && (
-        <CommandPalette
+        <StudioCommandPalette
           wid={wid}
           studio={studio}
           open={s.paletteOpen}

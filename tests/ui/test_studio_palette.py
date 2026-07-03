@@ -57,8 +57,13 @@ def test_palette_file_exists() -> None:
 
 def test_palette_exports_command_palette() -> None:
     src = _palette_src()
-    assert "function CommandPalette(" in src
-    assert "window.CommandPalette = CommandPalette;" in src
+    # Renamed to StudioCommandPalette to avoid colliding with chrome.jsx's
+    # app-global CommandPalette in the flat, no-IIFE bundle scope (FB1).
+    assert "function StudioCommandPalette(" in src
+    assert "window.StudioCommandPalette = StudioCommandPalette;" in src
+    # The Studio palette must NOT declare/export the app-global name.
+    assert "function CommandPalette(" not in src
+    assert "window.CommandPalette = CommandPalette;" not in src
 
 
 def test_palette_exports_quick_open() -> None:
@@ -168,7 +173,7 @@ def test_studio_state_has_palette_fields() -> None:
 
 def test_studio_renders_command_palette() -> None:
     src = _studio_src()
-    assert "<CommandPalette" in src
+    assert "<StudioCommandPalette" in src
 
 
 def test_studio_renders_quick_open() -> None:

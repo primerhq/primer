@@ -1,9 +1,15 @@
 /* global React, Icon */
-// studio-palette.jsx — CommandPalette (⌘K) + QuickOpen (⌘P) overlays for Studio.
+// studio-palette.jsx — StudioCommandPalette (⌘K) + QuickOpen (⌘P) overlays for Studio.
 //
 // Exports:
-//   window.CommandPalette  ({ wid, studio, open, onClose })
-//   window.QuickOpen       ({ wid, studio, open, onClose })
+//   window.StudioCommandPalette  ({ wid, studio, open, onClose })
+//   window.QuickOpen             ({ wid, studio, open, onClose })
+//
+// NOTE: this palette is deliberately named StudioCommandPalette (not
+// CommandPalette) so it does NOT collide with chrome.jsx's app-global
+// `CommandPalette` in the flat, no-IIFE bundle scope. Before the rename the
+// later-loaded Studio declaration shadowed chrome's, silently killing the
+// top-bar Search box + ⌘K on every non-Studio page.
 //
 // No-build scope rules (see workspace-tap.jsx): top-level declarations use
 // `var`; helpers are prefixed STP_ to avoid global collisions.
@@ -27,7 +33,7 @@ function STP_fuzzy(text, query) {
 }
 
 // ---------------------------------------------------------------------------
-// CommandPalette — modal overlay; search input + fuzzy-filtered command list.
+// StudioCommandPalette — modal overlay; search input + fuzzy-filtered list.
 //
 // Commands:
 //   - Each open session → studio.openTab(session)
@@ -37,7 +43,7 @@ function STP_fuzzy(text, query) {
 // Props: { wid, studio, open, onClose }
 // ---------------------------------------------------------------------------
 
-function CommandPalette({ wid, studio, open, onClose }) {
+function StudioCommandPalette({ wid, studio, open, onClose }) {
   var { apiFetch, useResource } = window.primerApi;
   var [query, setQuery] = React.useState("");
   var [cursor, setCursor] = React.useState(0);
@@ -413,5 +419,5 @@ function STP_basename(path) {
 // ---------------------------------------------------------------------------
 // No-build exports
 // ---------------------------------------------------------------------------
-window.CommandPalette = CommandPalette;
+window.StudioCommandPalette = StudioCommandPalette;
 window.QuickOpen = QuickOpen;
