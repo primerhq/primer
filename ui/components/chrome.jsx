@@ -205,9 +205,12 @@ function Topbar({ workerStats, onNavigate, onOpenPalette, onOpenDrawer }) {
   // Polls GET /v1/internal_collections/config (404 → OFF, 200 with
   // activated_at null → configured, 200 with activated_at set → active).
   const { useResource } = window.primerApi || {};
+  // Shares the canonical "ic:config" cacheKey with app.jsx (sidebar /
+  // dashboard) and the Internal Collections page so useResource dedupes
+  // the identical 30s probe into a single background request.
   const icProbe = useResource
     ? useResource(
-        "chrome:ic-config",
+        "ic:config",
         async (signal) => {
           try {
             return await window.primerApi.apiFetch("GET", "/internal_collections/config", null, { signal });
