@@ -177,6 +177,128 @@ const Modal = ({ title, onClose, children, footer, danger, width }) => {
   );
 };
 
+// ---------------------------------------------------------------------------
+// confirmDialog / promptDialog — promise-based themed dialogs routed through the
+// shared Modal, replacing native confirm()/prompt() so confirmations are themed
+// and consistent. Callers (React or not) do:
+//   confirmDialog({ title, message, danger }).then((ok) => { if (ok) ... })
+//   promptDialog({ title, defaultValue }).then((val) => { if (val != null) ... })
+// A single <ConfirmHost/> mounted once at app root renders the active dialog.
+// Cancel / Escape / backdrop-click resolve to false (confirm) or null (prompt),
+// preserving the "cancel = no-op" semantics of the native dialogs they replace.
+// ---------------------------------------------------------------------------
+const _dialogState = { req: null, listeners: new Set() };
+function _dialogNotify() {
+  _dialogState.listeners.forEach((cb) => cb(_dialogState.req));
+}
+function confirmDialog(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    _dialogState.req = {
+      type: "confirm",
+      title: o.title || "Are you sure?",
+      message: o.message || "",
+      confirmLabel: o.confirmLabel || "Confirm",
+      cancelLabel: o.cancelLabel || "Cancel",
+      danger: !!o.danger,
+      _resolve: resolve,
+    };
+    _dialogNotify();
+  });
+}
+function promptDialog(opts) {
+  const o = opts || {};
+  return new Promise((resolve) => {
+    _dialogState.req = {
+      type: "prompt",
+      title: o.title || "Enter a value",
+      message: o.message || "",
+      placeholder: o.placeholder || "",
+      defaultValue: o.defaultValue || "",
+      confirmLabel: o.confirmLabel || "Save",
+      cancelLabel: o.cancelLabel || "Cancel",
+      _resolve: resolve,
+    };
+    _dialogNotify();
+  });
+}
+function ConfirmHost() {
+  const [req, setReq] = React.useState(_dialogState.req);
+  const [value, setValue] = React.useState("");
+  const inputRef = React.useRef(null);
+  React.useEffect(() => {
+    const cb = (r) => {
+      setReq(r);
+      if (r && r.type === "prompt") setValue(r.defaultValue || "");
+    };
+    _dialogState.listeners.add(cb);
+    setReq(_dialogState.req);
+    return () => { _dialogState.listeners.delete(cb); };
+  }, []);
+  React.useEffect(() => {
+    if (req && req.type === "prompt" && inputRef.current) {
+      const t = setTimeout(() => {
+        if (inputRef.current) { inputRef.current.focus(); inputRef.current.select(); }
+      }, 30);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [req]);
+  if (!req) return null;
+  const isPrompt = req.type === "prompt";
+  const finish = (val) => {
+    const r = _dialogState.req;
+    _dialogState.req = null;
+    _dialogNotify();
+    if (r && r._resolve) r._resolve(val);
+  };
+  const onCancel = () => finish(isPrompt ? null : false);
+  const onConfirm = () => finish(isPrompt ? value : true);
+  return (
+    <Modal
+      title={req.title}
+      danger={req.danger}
+      onClose={onCancel}
+      footer={
+        <React.Fragment>
+          <Btn kind="ghost" onClick={onCancel} data-testid="dialog-cancel">{req.cancelLabel}</Btn>
+          <Btn kind={req.danger ? "danger" : "primary"} onClick={onConfirm} data-testid="dialog-confirm">{req.confirmLabel}</Btn>
+        </React.Fragment>
+      }
+    >
+      {req.message && (
+        <div
+          data-testid="dialog-message"
+          style={{ fontSize: 13, color: "var(--text-2)", lineHeight: 1.5, whiteSpace: "pre-wrap", marginBottom: isPrompt ? 12 : 0 }}
+        >
+          {req.message}
+        </div>
+      )}
+      {isPrompt && (
+        <input
+          ref={inputRef}
+          data-testid="dialog-input"
+          value={value}
+          placeholder={req.placeholder}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); onConfirm(); } }}
+          style={{
+            width: "100%",
+            background: "var(--bg-2)",
+            border: "1px solid var(--border)",
+            borderRadius: 6,
+            padding: "6px 10px",
+            fontSize: 13,
+            color: "var(--text)",
+            fontFamily: "inherit",
+            outline: "none",
+          }}
+        />
+      )}
+    </Modal>
+  );
+}
+
 const Banner = ({ kind = "info", icon, title, detail, actions }) => (
   <div className={`banner banner-${kind}`}>
     <Icon name={icon || (kind === "warning" ? "alert" : kind === "error" ? "x-circle" : "info")} size={16} className="ico" />
@@ -209,4 +331,4 @@ const Sparkline = ({ values, width = 80, height = 24 }) => {
   );
 };
 
-Object.assign(window, { Icon, StatusPill, Btn, Modal, Banner, Sparkline, relativeTime, fmtDate });
+Object.assign(window, { Icon, StatusPill, Btn, Modal, Banner, Sparkline, relativeTime, fmtDate, confirmDialog, promptDialog, ConfirmHost });

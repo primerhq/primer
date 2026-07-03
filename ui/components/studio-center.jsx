@@ -95,11 +95,18 @@ function CenterTabs({ openTabs, activeTabId, onFocus, onClose, onCloseAll }) {
     if (!tabs.length) return; // no-op when there are no open tabs
     // If any file tab has unsaved edits, confirm once before dropping them all.
     var anyDirty = tabs.some(function (t) { return t.kind === "file" && t.dirty; });
-    if (anyDirty) {
-      var ok = window.confirm("Some files have unsaved changes. Close all tabs without saving?");
-      if (!ok) return;
+    if (!anyDirty) {
+      onCloseAll && onCloseAll();
+      return;
     }
-    onCloseAll && onCloseAll();
+    confirmDialog({
+      title: "Close all tabs?",
+      message: "Some files have unsaved changes. Close all tabs without saving?",
+      confirmLabel: "Close all",
+      danger: true,
+    }).then(function (ok) {
+      if (ok) onCloseAll && onCloseAll();
+    });
   }
 
   if (tabs.length === 0) {
@@ -126,10 +133,15 @@ function CenterTabs({ openTabs, activeTabId, onFocus, onClose, onCloseAll }) {
     e.stopPropagation();
     // A dirty file tab carries unsaved edits — confirm before discarding.
     if (tab.kind === "file" && tab.dirty) {
-      var ok = window.confirm(
-        "“" + (tab.title || tab.ref) + "” has unsaved changes. Close without saving?"
-      );
-      if (!ok) return;
+      confirmDialog({
+        title: "Close tab?",
+        message: "“" + (tab.title || tab.ref) + "” has unsaved changes. Close without saving?",
+        confirmLabel: "Close",
+        danger: true,
+      }).then(function (ok) {
+        if (ok) onClose(tab.id);
+      });
+      return;
     }
     onClose(tab.id);
   }

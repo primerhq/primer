@@ -1175,6 +1175,10 @@ function App() {
         ))}
       </div>
 
+      {/* Themed confirm()/prompt() replacement — one host renders the active
+          confirmDialog()/promptDialog() from anywhere in the app tree. */}
+      <ConfirmHost />
+
       {paletteOpen && <CommandPalette onClose={() => setPaletteOpen(false)} onNavigate={navigate} sessions={sessions} />}
 
       {newSessionOpen && (
