@@ -496,7 +496,7 @@ function CapacityBar({ inFlight, capacity }) {
   const safe = Math.max(0, capacity | 0);
   const segments = Array.from({ length: safe });
   return (
-    <div style={{ display: "flex", gap: 2 }}>
+    <div className="cv-auto" style={{ display: "flex", gap: 2 }}>
       {segments.map((_, i) => {
         const filled = i < inFlight;
         return (
