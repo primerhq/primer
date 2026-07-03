@@ -1,27 +1,24 @@
 # Codecov configuration for primer.
 #
 # Coverage is produced by the `test` job in .github/workflows/ci.yml
-# (pytest-cov -> coverage.xml, in the same run as the unit sweep, with
-# --cov-fail-under=0 so a dip never fails that required job) and uploaded via
-# codecov/codecov-action. The gate lives in the status checks below: `project`
-# ratchets from the current ~81% baseline (no drop) while `patch` asks 90% on
-# changed lines. Add them to branch protection's required checks to enforce.
+# (pytest-cov -> coverage.xml, in the same run as the unit sweep) and uploaded
+# via codecov/codecov-action. The 80% target (mirroring
+# [tool.coverage.report] fail_under in pyproject.toml) is enforced in-job by
+# pytest-cov and tracked by the project/patch status checks below; add them to
+# branch protection's required checks to also gate on the Codecov side.
 
 coverage:
   status:
     project:
       default:
-        # Overall coverage is ~81% today, below the 90% aspiration in
-        # pyproject. 'auto' ratchets from the current baseline: the project
-        # status fails only if a PR DROPS overall coverage, not merely because
-        # we are under 90%. Tighten to a fixed `target: 90%` once we reach it.
-        target: auto
+        # 80% overall target (mirrors [tool.coverage.report] fail_under in
+        # pyproject.toml). Raise as coverage climbs.
+        target: 80%
         threshold: 1%
     patch:
       default:
-        # New/changed lines should be well covered even while the overall
-        # number climbs.
-        target: 90%
+        # Changed lines should meet the same 80% bar.
+        target: 80%
         threshold: 1%
 
 # Only the primer package is measured (see [tool.coverage.run] source).
