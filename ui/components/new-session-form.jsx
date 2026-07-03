@@ -15,7 +15,10 @@
 // Props:
 //   wid        (string?)   — fixed workspace. When omitted, a workspace
 //                            selector is shown (the app-modal flow).
-//   variant    ("modal" | "inline", default "modal") — outer chrome.
+//   variant    (accepted for back-compat; the form now ALWAYS renders as a
+//               comfortably-sized centered Modal — the old "inline" positioned
+//               overlay used by the Studio sidebar was enlarged into this modal
+//               so a detailed prompt can be pasted into the big instructions box.)
 //   onCreated  (fn)        — called with the created session on success.
 //   onCancel   (fn)        — cancel / close.
 //   pushToast  (fn?)       — toast enqueuer; falls back to primerApi.toastPush.
@@ -130,7 +133,6 @@ function SharedNewSessionSchemaField({ propKey, schema, value, onChange }) {
 }
 
 function SharedNewSessionForm(props) {
-  var variant = props.variant || "modal";
   var fixedWid = props.wid || null;
   var onCreated = props.onCreated || function () {};
   var onCancel = props.onCancel || function () {};
@@ -364,11 +366,13 @@ function SharedNewSessionForm(props) {
         <div className="field">
           <label className="field-label">Initial instructions</label>
           <textarea
+            data-testid="new-session-instructions"
             className="textarea"
             value={instructions}
             onChange={function (e) { setInstructions(e.target.value); }}
-            rows={variant === "inline" ? 3 : 4}
-            placeholder="Tell the agent what to do…"
+            rows={8}
+            style={{ minHeight: 150, resize: "vertical" }}
+            placeholder="Tell the agent what to do — paste a detailed prompt here…"
           />
         </div>
       )}
@@ -390,48 +394,15 @@ function SharedNewSessionForm(props) {
     </>
   );
 
-  if (variant === "inline") {
-    // Positioned overlay chrome for the Studio sidebar's Sessions section.
-    return (
-      <div
-        style={{
-          position: "absolute",
-          top: 32,
-          left: 0,
-          right: 0,
-          zIndex: 20,
-          background: "var(--bg-elev)",
-          border: "1px solid var(--border-strong)",
-          borderRadius: 9,
-          boxShadow: "var(--shadow)",
-          padding: "12px 12px 10px",
-          margin: "4px 6px",
-        }}
-        data-testid="new-session-form"
-      >
-        <div className="st-row" style={{ marginBottom: 10 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-3)", flex: 1 }}>New session</span>
-          <button
-            style={{ background: "none", border: "none", cursor: "pointer", color: "var(--text-3)", fontSize: 14, padding: "0 2px", lineHeight: 1 }}
-            onClick={onCancel}
-            title="Cancel"
-          >×</button>
-        </div>
-        {fields}
-        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end", marginTop: 6 }}>
-          <Btn kind="ghost" size="sm" onClick={onCancel}>Cancel</Btn>
-          <Btn kind="primary" size="sm" icon="plus" onClick={onSubmit} disabled={!canSubmit}>
-            {create.loading ? "Creating…" : "Create"}
-          </Btn>
-        </div>
-      </div>
-    );
-  }
-
-  // Default: modal chrome (the app's global "New session" dialog).
+  // Enlarged, centered Modal chrome for BOTH call sites — the Studio sidebar's
+  // "+" / ⌘K palette "New session" (formerly a small positioned overlay) and
+  // the app-level global "New session" dialog. Comfortably wide, with a large
+  // multi-line Initial instructions box so a detailed prompt can be pasted.
+  // Escape / backdrop-click / Cancel all close via the shared Modal.
   return (
     <Modal
       title="New session"
+      width="min(94vw, 640px)"
       onClose={onCancel}
       footer={
         <>
@@ -442,7 +413,9 @@ function SharedNewSessionForm(props) {
         </>
       }
     >
-      {fields}
+      <div data-testid="new-session-form">
+        {fields}
+      </div>
     </Modal>
   );
 }
