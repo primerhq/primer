@@ -107,15 +107,26 @@ jobs:
       version: ${{ steps.psr.outputs.version }}
       tag: ${{ steps.psr.outputs.tag }}
     steps:
+      # Mint a short-lived installation token from the release GitHub App. The
+      # default GITHUB_TOKEN cannot push the chore(release) commit + tag to the
+      # protected `main` branch (GH006); the App is on main's push-restriction
+      # and required-PR bypass lists, so its token can. Requires the org/repo
+      # to provide RELEASE_APP_ID (variable) + RELEASE_APP_PRIVATE_KEY (secret).
+      - name: Mint release app token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
       - name: Python Semantic Release
         id: psr
         uses: python-semantic-release/python-semantic-release@v10.5.3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
+          github_token: ${{ steps.app-token.outputs.token }}
           # The first release spans ~1785 commits; the auto-generated
           # notes exceed the GitHub release-body size limit (125k chars, 422).
           # Skip the VCS release object here; the tag still pushes and PyPI +
