@@ -90,7 +90,15 @@ async def get_token_owned_by(storage, user_id: str, token_id: str) -> ApiToken |
     return row
 
 
-async def revoke_token(storage, row: ApiToken) -> None:
-    """Idempotent soft-revoke: stamp ``revoked_at`` if not already set."""
+async def revoke_token(storage, row: ApiToken) -> bool:
+    """Idempotent soft-revoke: stamp ``revoked_at`` if not already set.
+
+    Returns ``True`` if this call transitioned an active token to revoked,
+    ``False`` if the token was already revoked (no-op) — callers use this
+    to decide whether to emit an audit log line, so repeat revokes of an
+    already-revoked token don't produce false audit signals.
+    """
     if row.revoked_at is None:
         await storage.update(row.model_copy(update={"revoked_at": utcnow()}))
+        return True
+    return False

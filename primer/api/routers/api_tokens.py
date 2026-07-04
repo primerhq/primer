@@ -281,9 +281,7 @@ async def revoke_api_token(
             },
         )
 
-    was_active = row.revoked_at is None
-    await revoke_token(storage, row)
-    if was_active:
+    if await revoke_token(storage, row):
         logger.info(
             "api_tokens.revoke id=%s user=%s name=%s",
             row.id, user.id, row.name,
