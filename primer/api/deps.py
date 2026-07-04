@@ -493,6 +493,38 @@ def require_auth_ws(websocket) -> User | None:
     return user if isinstance(user, User) else None
 
 
+def require_user_ws(websocket) -> User | None:
+    """WebSocket counterpart to :func:`require_user`.
+
+    Returns the authenticated user when its ``role`` is ``"user"`` or
+    ``"admin"``; returns ``None`` otherwise (unauthenticated OR a
+    ``restricted`` role). WS handlers close the socket — 4401 when the
+    request was never authenticated, or 4403 ``forbidden_role`` when a
+    seated user's role is insufficient.
+    """
+    user = getattr(websocket.state, "user", None)
+    if not isinstance(user, User):
+        return None
+    return user if user.role in ("user", "admin") else None
+
+
+def require_role_ws(websocket, min_role: str) -> User | None:
+    """Role-ranked WebSocket gate (``restricted`` < ``user`` < ``admin``).
+
+    Returns the authenticated user when its role rank is at least
+    ``min_role``'s rank; ``None`` otherwise (including unauthenticated).
+    Fail-closed on unknown values: an unknown ``user.role`` ranks below
+    ``restricted``; an unknown ``min_role`` ranks above ``admin``.
+    """
+    rank = {"restricted": 0, "user": 1, "admin": 2}
+    user = getattr(websocket.state, "user", None)
+    if not isinstance(user, User):
+        return None
+    have = rank.get(user.role, -1)
+    need = rank.get(min_role, 99)
+    return user if have >= need else None
+
+
 def require_scope(scope: str):
     """FastAPI dep factory enforcing a bearer-token scope.
 
@@ -547,7 +579,9 @@ __all__ = [
     "require_admin",
     "require_auth",
     "require_auth_ws",
+    "require_role_ws",
     "require_user",
+    "require_user_ws",
     "require_scope",
     "get_scheduler",
     "get_semantic_search_registry",
