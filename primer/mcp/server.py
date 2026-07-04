@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import time
 from contextvars import ContextVar
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from collections.abc import Callable
 
 from mcp.server.lowlevel import Server
@@ -36,6 +36,9 @@ from primer.mcp.dispatch import NotExposed, invoke_exposed, list_exposed_tools
 from primer.mcp.exposure import ExposureDeps
 from primer.mcp.safety import tool_scoped_id
 
+if TYPE_CHECKING:
+    from primer.model.principal import Principal
+
 
 # ---- Per-request context ---------------------------------------------------
 #
@@ -49,6 +52,13 @@ current_principal: ContextVar[str | None] = ContextVar(
 )
 current_api_token_id: ContextVar[str | None] = ContextVar(
     "primer_mcp_api_token_id", default=None,
+)
+# The auth gate (Phase 5) also stashes the typed ``Principal`` (carrying
+# ``.role``) here so the dispatch layer can enforce role gates without
+# re-resolving identity. ``current_principal`` stays the bare-username
+# string consumed by the provider-call + audit chain.
+current_actor: ContextVar["Principal | None"] = ContextVar(
+    "primer_mcp_actor", default=None,
 )
 
 
@@ -101,6 +111,7 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
         deps = deps_factory()
         principal = current_principal.get()
         api_token_id = current_api_token_id.get()
+        actor = current_actor.get()
         t0 = time.monotonic()
         error_code: str | None = None
         ok = False
@@ -110,6 +121,7 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                     scoped_id=name,
                     arguments=arguments or {},
                     principal=principal,
+                    actor=actor,
                     deps=deps,
                 )
             except NotExposed as exc:
@@ -159,4 +171,9 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
     return server
 
 
-__all__ = ["build_mcp_server", "current_principal", "current_api_token_id"]
+__all__ = [
+    "build_mcp_server",
+    "current_principal",
+    "current_api_token_id",
+    "current_actor",
+]

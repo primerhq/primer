@@ -55,6 +55,7 @@ def _make_mcp_auth_gate(app: FastAPI):
     the same worker do not leak identities.
     """
     from primer.mcp.server import (
+        current_actor as _current_actor,
         current_api_token_id as _current_api_token_id,
         current_principal as _current_principal,
     )
@@ -76,12 +77,14 @@ def _make_mcp_auth_gate(app: FastAPI):
             user = getattr(state, "user", None)
             principal = getattr(state, "principal", None)
             api_token = getattr(state, "api_token", None)
+            actor = getattr(state, "actor", None)
         elif isinstance(state, dict):
             user = state.get("user")
             principal = state.get("principal")
             api_token = state.get("api_token")
+            actor = state.get("actor")
         else:
-            user = principal = api_token = None
+            user = principal = api_token = actor = None
 
         if user is None:
             await _mcp_send_simple_response(
@@ -100,6 +103,17 @@ def _make_mcp_auth_gate(app: FastAPI):
             )
             return
 
+        # RBAC: restricted callers may authenticate but never reach the
+        # MCP dispatch surface. Rejected here before the session manager
+        # is consulted, symmetric with the per-tool admin gate in
+        # :func:`primer.mcp.dispatch.invoke_exposed`.
+        if actor is not None and getattr(actor, "role", None) == "restricted":
+            await _mcp_send_simple_response(
+                send, 403,
+                {"detail": {"code": "forbidden_role"}},
+            )
+            return
+
         session_manager = getattr(app.state, "mcp_session_manager", None)
         if session_manager is None:
             # Should never happen in a well-configured app — surface a
@@ -110,6 +124,7 @@ def _make_mcp_auth_gate(app: FastAPI):
             )
             return
 
+        actor_tok = _current_actor.set(actor)
         principal_tok = _current_principal.set(principal)
         api_token_id_tok = _current_api_token_id.set(
             api_token.id if api_token is not None else None
@@ -119,6 +134,7 @@ def _make_mcp_auth_gate(app: FastAPI):
         finally:
             _current_principal.reset(principal_tok)
             _current_api_token_id.reset(api_token_id_tok)
+            _current_actor.reset(actor_tok)
 
     return _mcp_auth_gate
 

@@ -29,7 +29,11 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
-from primer.api.deps import get_provider_registry, get_storage_provider
+from primer.api.deps import (
+    get_provider_registry,
+    get_storage_provider,
+    require_admin,
+)
 from primer.mcp.exposure import (
     ExposureDeps,
     ToolNotExposable,
@@ -91,7 +95,7 @@ async def get_exposure_endpoint(
     return row.model_dump(mode="json")
 
 
-@mcp_exposure_router.put("")
+@mcp_exposure_router.put("", dependencies=[Depends(require_admin)])
 async def update_exposure_endpoint(
     request: Request,
     body: UpdateExposureBody,
