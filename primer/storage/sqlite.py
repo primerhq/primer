@@ -70,6 +70,27 @@ logger = logging.getLogger(__name__)
 ModelT = TypeVar("ModelT", bound=Identifiable)
 
 
+# ---------------------------------------------------------------------------
+# Hot-field expression indexes
+# ---------------------------------------------------------------------------
+#
+# Mirrors ``primer.storage.postgres._HOT_FIELD_INDEXES``: a handful of
+# fields need a dedicated unique/lookup index on the extracted JSON scalar.
+# Keyed by table name (post ``_table_name_for`` mapping). Each entry is
+# ``(index_suffix, unique, expr)`` where the final index name is
+# ``<table>_<suffix>`` and ``expr`` is a SQLite ``json_extract`` expression
+# list suitable for ``CREATE [UNIQUE] INDEX ... ON "{table}" {expr}``.
+_SQLITE_HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
+    "useridentity": [
+        (
+            "provider_subject_uniq",
+            True,
+            "(json_extract(data,'$.provider_id'), json_extract(data,'$.subject'))",
+        ),
+    ],
+}
+
+
 def _table_name_for(model_class: type[BaseModel]) -> str:
     """Derive a table name from a model class.
 
@@ -459,6 +480,14 @@ class SqliteStorage(Storage[ModelT]):
             # DDL is ``IF NOT EXISTS`` a rollback simply re-runs it next time.
             async with self._provider._write_guard() as should_commit:  # noqa: SLF001
                 await conn.execute(ddl)
+                for suffix, unique, expr in _SQLITE_HOT_FIELD_INDEXES.get(
+                    self._table, [],
+                ):
+                    kind = "UNIQUE INDEX" if unique else "INDEX"
+                    await conn.execute(
+                        f'CREATE {kind} IF NOT EXISTS "{self._table}_{suffix}" '
+                        f'ON "{self._table}" {expr}'
+                    )
                 if should_commit:
                     await conn.commit()
         except Exception as exc:
