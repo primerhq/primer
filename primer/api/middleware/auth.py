@@ -55,6 +55,7 @@ _AUTH_DISABLED_USER = User(
     username="system",
     password_hash="!auth-disabled",
     created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    role="admin",
 )
 
 

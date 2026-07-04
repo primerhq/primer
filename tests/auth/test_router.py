@@ -8,6 +8,9 @@ from __future__ import annotations
 
 import pytest
 
+from primer.model.storage import OffsetPage
+from primer.model.user import User
+
 # Re-export so pytest can resolve the `client` fixture used below.
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 
@@ -32,6 +35,22 @@ async def test_register_creates_user_and_sets_cookie(client):
     assert resp.json()["username"] == "alice"
     # Cookie set
     assert "primer_session" in resp.cookies
+
+
+@pytest.mark.asyncio
+async def test_register_first_user_gets_admin_role(client, fake_storage_provider):
+    """Single-user v1 always registers exactly one operator account —
+    Layer 1 RBAC (Task 2) promotes that first account to admin so
+    there's always at least one admin after first boot."""
+    resp = await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    assert resp.status_code == 200, resp.text
+
+    storage = fake_storage_provider.get_storage(User)
+    page = await storage.list(OffsetPage(offset=0, length=1))
+    assert page.items[0].role == "admin"
 
 
 @pytest.mark.asyncio

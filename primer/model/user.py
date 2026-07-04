@@ -35,13 +35,39 @@ class User(Identifiable):
         min_length=1,
         max_length=64,
     )
-    password_hash: str = Field(
-        ...,
+    password_hash: str | None = Field(
+        default=None,
         description="Full argon2id PHC string (``$argon2id$...``). Includes "
-        "salt + cost parameters; verification uses the embedded parameters.",
+        "salt + cost parameters; verification uses the embedded parameters. "
+        "``None`` for accounts provisioned without a password (e.g. invited "
+        "but not yet activated); ``verify_password`` treats a ``None``/empty "
+        "hash as never-matching, so such an account can't authenticate.",
     )
     created_at: datetime = Field(..., description="When the account was created.")
     last_login_at: datetime | None = Field(
         default=None,
         description="When the user most recently completed a successful login.",
+    )
+    email: str | None = Field(
+        default=None,
+        description="Optional contact email. Not used for login (username "
+        "is the identifier) — reserved for notifications / password-reset "
+        "flows in a later layer.",
+    )
+    role: str = Field(
+        default="user",
+        description="Access-control role. 'admin' can manage other users "
+        "and RBAC-gated resources; 'user' is a standard operator account. "
+        "Defaults to 'user' so existing constructors keep working; call "
+        "sites that provision the admin account pass role='admin' explicitly.",
+    )
+    disabled: bool = Field(
+        default=False,
+        description="If True, the account is locked out: auth middleware "
+        "and login must reject it even given a valid password or session.",
+    )
+    must_change_password: bool = Field(
+        default=False,
+        description="If True, the user must set a new password before "
+        "continuing to use the app (e.g. after an admin-initiated reset).",
     )
