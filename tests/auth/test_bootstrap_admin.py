@@ -126,6 +126,38 @@ async def test_skips_disabled_and_passwordless_users(fake_storage_provider):
 
 
 @pytest.mark.asyncio
+async def test_promotes_eligible_user_when_only_admin_is_unusable(fake_storage_provider):
+    """A role='admin' user who is disabled (or password-less) cannot
+    actually log in as admin. The break-glass backfill must not treat
+    such an unusable admin as "an admin already exists" — otherwise an
+    eligible, usable user is left stranded at role='user' with no way
+    to reach admin-gated functionality (the exact lockout this function
+    exists to prevent)."""
+    storage = fake_storage_provider.get_storage(User)
+    unusable_admin = _make_user(
+        id="user-1",
+        username="locked-admin",
+        role="admin",
+        disabled=True,
+        created_at=datetime(2019, 1, 1, tzinfo=timezone.utc),
+    )
+    eligible_user = _make_user(
+        id="user-2",
+        username="eligible",
+        role="user",
+        created_at=datetime(2020, 1, 1, tzinfo=timezone.utc),
+    )
+    await storage.create(unusable_admin)
+    await storage.create(eligible_user)
+
+    await ensure_admin_exists(fake_storage_provider)
+
+    assert (await storage.get("user-2")).role == "admin"
+    # the unusable admin is left as-is; it's still disabled either way
+    assert (await storage.get("user-1")).role == "admin"
+
+
+@pytest.mark.asyncio
 async def test_noop_when_no_eligible_user(fake_storage_provider):
     """Every existing user is disabled/passwordless — nothing eligible
     to promote, and the function must not raise."""

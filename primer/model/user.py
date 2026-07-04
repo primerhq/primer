@@ -14,6 +14,7 @@ without invalidating existing hashes.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -54,7 +55,7 @@ class User(Identifiable):
         "is the identifier) — reserved for notifications / password-reset "
         "flows in a later layer.",
     )
-    role: str = Field(
+    role: Literal["admin", "user", "restricted"] = Field(
         default="user",
         description="Access-control role. 'admin' can manage other users "
         "and RBAC-gated resources; 'user' is a standard operator account. "
