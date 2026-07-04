@@ -40,6 +40,15 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from primer.api.deps import get_storage_provider
+from primer.api.routers._api_tokens_shared import (
+    ApiTokenListResponse,
+    ApiTokenSummary,
+    get_token_owned_by,
+    list_tokens_for_user,
+    require_cookie_session,
+    revoke_token,
+    to_summary,
+)
 from primer.auth.api_tokens import (
     extract_prefix,
     hash_token,
@@ -78,19 +87,6 @@ class ApiTokenRenameBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
 
 
-class ApiTokenSummary(BaseModel):
-    """Wire shape for GET / PUT / DELETE — plaintext NEVER included."""
-
-    id: str
-    name: str
-    prefix: str
-    scopes: list[str]
-    created_at: datetime
-    last_used_at: datetime | None = None
-    expires_at: datetime | None = None
-    revoked_at: datetime | None = None
-
-
 class ApiTokenCreatedResponse(BaseModel):
     """ONLY response shape that includes the plaintext.
 
@@ -107,35 +103,9 @@ class ApiTokenCreatedResponse(BaseModel):
     expires_at: datetime | None = None
 
 
-class ApiTokenListResponse(BaseModel):
-    items: list[ApiTokenSummary]
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _require_cookie_session(request: Request):
-    """Reject when the caller authenticated via a bearer token.
-
-    The cookie path leaves ``request.state.api_token`` as ``None``;
-    the bearer path sets it. Token CRUD is operator-only — bearer
-    tokens cannot mint or manage other tokens.
-    """
-    api_token = getattr(request.state, "api_token", None)
-    if api_token is not None:
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "code": "token_minting_forbidden",
-                "message": (
-                    "api tokens may only be managed by an operator with "
-                    "a cookie session; bearer credentials cannot mint or "
-                    "manage other tokens"
-                ),
-            },
-        )
 
 
 def _current_user(request: Request):
@@ -143,19 +113,6 @@ def _current_user(request: Request):
     include-router layer and 401s before we get here; this helper just
     surfaces the typed user object for the handler body."""
     return getattr(request.state, "user", None)
-
-
-def _to_summary(row: ApiToken) -> ApiTokenSummary:
-    return ApiTokenSummary(
-        id=row.id,
-        name=row.name,
-        prefix=row.prefix,
-        scopes=list(row.scopes),
-        created_at=row.created_at,
-        last_used_at=row.last_used_at,
-        expires_at=row.expires_at,
-        revoked_at=row.revoked_at,
-    )
 
 
 async def _find_by_user_and_name(storage, user_id: str, name: str) -> ApiToken | None:
@@ -169,21 +126,6 @@ async def _find_by_user_and_name(storage, user_id: str, name: str) -> ApiToken |
     page = await storage.find(predicate, OffsetPage(offset=0, length=1))
     items = list(getattr(page, "items", []))
     return items[0] if items else None
-
-
-async def _get_owned(storage, user_id: str, token_id: str) -> ApiToken | None:
-    """Look up a token by id, returning ``None`` when missing OR when
-    the row exists but belongs to a different user.
-
-    Cross-user accesses are masked as "not found" so we don't leak the
-    existence of someone else's token id.
-    """
-    row = await storage.get(token_id)
-    if row is None:
-        return None
-    if row.user_id != user_id:
-        return None
-    return row
 
 
 # ---------------------------------------------------------------------------
@@ -202,7 +144,7 @@ async def create_api_token(
     request: Request,
     sp=Depends(get_storage_provider),
 ) -> ApiTokenCreatedResponse:
-    _require_cookie_session(request)
+    require_cookie_session(request)
     user = _current_user(request)
     if user is None:
         # Defensive: require_auth at include-router level should have
@@ -298,18 +240,14 @@ async def list_api_tokens(
     request: Request,
     sp=Depends(get_storage_provider),
 ) -> ApiTokenListResponse:
-    _require_cookie_session(request)
+    require_cookie_session(request)
     user = _current_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail={"error": "auth_required"})
 
     storage = sp.get_storage(ApiToken)
-    predicate = Q(ApiToken).where("user_id", user.id).build()
-    # Pull a generous page; per spec a single operator only ever has a
-    # handful of tokens. 200 is the storage layer's max page size.
-    page = await storage.find(predicate, OffsetPage(offset=0, length=200))
-    rows = list(getattr(page, "items", []))
-    return ApiTokenListResponse(items=[_to_summary(r) for r in rows])
+    rows = await list_tokens_for_user(storage, user.id)
+    return ApiTokenListResponse(items=[to_summary(r) for r in rows])
 
 
 # ---------------------------------------------------------------------------
@@ -327,13 +265,13 @@ async def revoke_api_token(
     token_id: str = Path(...),
     sp=Depends(get_storage_provider),
 ):
-    _require_cookie_session(request)
+    require_cookie_session(request)
     user = _current_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail={"error": "auth_required"})
 
     storage = sp.get_storage(ApiToken)
-    row = await _get_owned(storage, user.id, token_id)
+    row = await get_token_owned_by(storage, user.id, token_id)
     if row is None:
         raise HTTPException(
             status_code=404,
@@ -343,13 +281,7 @@ async def revoke_api_token(
             },
         )
 
-    if row.revoked_at is None:
-        updated = row.model_copy(update={"revoked_at": _utcnow()})
-        await storage.update(updated)
-        logger.info(
-            "api_tokens.revoke id=%s user=%s name=%s",
-            row.id, user.id, row.name,
-        )
+    await revoke_token(storage, row)
     # Idempotent — already revoked rows still return 204.
     return JSONResponse(status_code=204, content=None)
 
@@ -370,7 +302,7 @@ async def rename_api_token(
     token_id: str = Path(...),
     sp=Depends(get_storage_provider),
 ):
-    _require_cookie_session(request)
+    require_cookie_session(request)
     user = _current_user(request)
     if user is None:
         raise HTTPException(status_code=401, detail={"error": "auth_required"})
@@ -386,7 +318,7 @@ async def rename_api_token(
         )
 
     storage = sp.get_storage(ApiToken)
-    row = await _get_owned(storage, user.id, token_id)
+    row = await get_token_owned_by(storage, user.id, token_id)
     if row is None:
         raise HTTPException(
             status_code=404,
@@ -409,7 +341,7 @@ async def rename_api_token(
 
     updated = row.model_copy(update={"name": new_name})
     saved = await storage.update(updated)
-    return _to_summary(saved)
+    return to_summary(saved)
 
 
 __all__ = [
