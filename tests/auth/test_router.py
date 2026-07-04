@@ -205,3 +205,80 @@ async def test_status_has_user_after_register(client):
     # (Commit 5). This test asserts the structure regardless.
     resp = await client.get("/v1/auth/status")
     assert resp.json()["has_user"] is True
+
+
+@pytest.mark.asyncio
+async def test_status_returns_role_and_must_change(client):
+    # First registered user becomes role="admin" (Task 2); registration
+    # auto-logs-in so the status probe is authenticated.
+    await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    resp = await client.get("/v1/auth/status")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["authenticated"] is True
+    assert body["role"] == "admin"
+    assert body["must_change_password"] is False
+
+
+@pytest.mark.asyncio
+async def test_login_sso_only_user_401_not_500(client, app):
+    # An account provisioned via SSO has no local password (hash is None).
+    # A password login must 401 (never 500) and leak nothing about the
+    # account's existence.
+    from datetime import datetime, timezone
+    from primer.model.user import User
+
+    storage = app.state.storage_provider.get_storage(User)
+    await storage.create(
+        User(
+            id="user-sso",
+            username="ssouser",
+            password_hash=None,
+            created_at=datetime.now(timezone.utc),
+            role="user",
+        )
+    )
+    resp = await client.post(
+        "/v1/auth/login",
+        json={"username": "ssouser", "password": "anything"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "invalid_credentials"
+
+    # Byte-for-byte indistinguishable from an unknown user.
+    unknown = await client.post(
+        "/v1/auth/login",
+        json={"username": "nobody", "password": "anything"},
+    )
+    assert unknown.status_code == 401
+    assert unknown.json()["detail"] == resp.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_login_disabled_user_401(client, app):
+    # A disabled account with a CORRECT password must still be rejected,
+    # indistinguishably from bad creds.
+    from datetime import datetime, timezone
+    from primer.auth.passwords import hash_password
+    from primer.model.user import User
+
+    storage = app.state.storage_provider.get_storage(User)
+    await storage.create(
+        User(
+            id="user-dis",
+            username="disabled",
+            password_hash=await hash_password("supersecret"),
+            created_at=datetime.now(timezone.utc),
+            role="user",
+            disabled=True,
+        )
+    )
+    resp = await client.post(
+        "/v1/auth/login",
+        json={"username": "disabled", "password": "supersecret"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "invalid_credentials"

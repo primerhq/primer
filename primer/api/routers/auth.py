@@ -78,6 +78,15 @@ class AuthStatus(BaseModel):
         default=None,
         description="Logged-in user's username (only set when authenticated).",
     )
+    role: str | None = Field(
+        default=None,
+        description="Logged-in user's role (only set when authenticated).",
+    )
+    must_change_password: bool = Field(
+        default=False,
+        description="True if the logged-in user must rotate their password "
+        "before using the app.",
+    )
 
 
 class AuthOk(BaseModel):
@@ -169,6 +178,10 @@ async def auth_status(request: Request) -> AuthStatus:
         has_user=has_user,
         authenticated=user is not None,
         username=user.username if user is not None else None,
+        role=user.role if user is not None else None,
+        must_change_password=(
+            user.must_change_password if user is not None else False
+        ),
     )
 
 
@@ -221,6 +234,27 @@ async def login(
         # happy path (defence against username-enumeration via timing).
         await hash_password(body.password)
         logger.info("auth.login fail (unknown user) username=%s", username)
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_credentials"},
+        )
+
+    if user.password_hash is None:
+        # SSO-only account (no local password). Hash a throwaway value to
+        # keep timing consistent with the happy path, then reject
+        # indistinguishably from an unknown user.
+        await hash_password(body.password)
+        logger.info("auth.login fail (no local password) username=%s", username)
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_credentials"},
+        )
+
+    if user.disabled:
+        # Disabled account. Hash a throwaway value to keep timing
+        # consistent, then reject indistinguishably from bad creds.
+        await hash_password(body.password)
+        logger.info("auth.login fail (disabled) username=%s", username)
         raise HTTPException(
             status_code=401,
             detail={"error": "invalid_credentials"},
