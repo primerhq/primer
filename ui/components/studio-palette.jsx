@@ -297,6 +297,17 @@ function QuickOpen({ wid, studio, open, onClose }) {
       // Skip directories
       if (f.is_dir || f.isDir) continue;
       var path = f.path || f.name || "";
+      // Skip internal/hidden files: any path SEGMENT that begins with "."
+      // (covers .state, .state/.git internals, .tmp, .tenacious, dotfiles)
+      // or is exactly "__pycache__". These crowd out real files and make the
+      // finder feel broken.
+      var segs = path.split("/");
+      var hidden = false;
+      for (var si = 0; si < segs.length; si++) {
+        var seg = segs[si];
+        if (seg.charAt(0) === "." || seg === "__pycache__") { hidden = true; break; }
+      }
+      if (hidden) continue;
       if (STP_fuzzy(path, query)) {
         results.push({ path: path, name: STP_basename(path) });
       }
