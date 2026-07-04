@@ -282,3 +282,81 @@ async def test_login_disabled_user_401(client, app):
     )
     assert resp.status_code == 401
     assert resp.json()["detail"]["error"] == "invalid_credentials"
+
+
+@pytest.mark.asyncio
+async def test_change_password_success(client):
+    await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    resp = await client.post(
+        "/v1/auth/change-password",
+        json={
+            "current_password": "supersecret",
+            "new_password": "newsupersecret",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["username"] == "alice"
+
+    # New password works; the old one no longer does.
+    await client.post("/v1/auth/logout")
+    client.cookies.clear()
+    old = await client.post(
+        "/v1/auth/login",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    assert old.status_code == 401
+    new = await client.post(
+        "/v1/auth/login",
+        json={"username": "alice", "password": "newsupersecret"},
+    )
+    assert new.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_change_password_wrong_current_401(client):
+    await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    resp = await client.post(
+        "/v1/auth/change-password",
+        json={"current_password": "WRONG", "new_password": "newsupersecret"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["detail"]["error"] == "invalid_credentials"
+
+
+@pytest.mark.asyncio
+async def test_change_password_clears_must_change_flag(client, app):
+    from primer.model.storage import OffsetPage
+    from primer.model.user import User
+
+    await client.post(
+        "/v1/auth/register",
+        json={"username": "alice", "password": "supersecret"},
+    )
+    # Force the rotation flag on in storage.
+    storage = app.state.storage_provider.get_storage(User)
+    page = await storage.list(OffsetPage(offset=0, length=1))
+    user = page.items[0]
+    user.must_change_password = True
+    await storage.update(user)
+
+    # Sanity: the flag now surfaces via /auth/status (Task 3).
+    pre = await client.get("/v1/auth/status")
+    assert pre.json()["must_change_password"] is True
+
+    resp = await client.post(
+        "/v1/auth/change-password",
+        json={
+            "current_password": "supersecret",
+            "new_password": "newsupersecret",
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    post = await client.get("/v1/auth/status")
+    assert post.json()["must_change_password"] is False
