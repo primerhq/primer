@@ -671,10 +671,12 @@ class Tool(Describeable):
     )
     required_role: str | None = Field(
         default=None,
+        exclude=True,
         description=(
             "RBAC role required to invoke this tool over the MCP surface "
             "(e.g. 'admin' or 'user'). None means undeclared; the MCP gate "
-            "treats undeclared reserved tools as admin-only (fail-closed)."
+            "treats undeclared reserved tools as admin-only (fail-closed). "
+            "In-memory metadata only; excluded from serialization."
         ),
     )
 
