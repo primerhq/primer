@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner */
+/* global React, Icon, Btn, Modal, Banner, confirmDialog */
 // Admin Users console page — RBAC user management (Spec §6/§12).
 //
 // Prefix ADM_ on every top-level name: the server-side JSX bundle
@@ -65,6 +65,7 @@ function ADM_AdminUsersPage() {
   const [createOpen, setCreateOpen] = React.useState(false);
   const [editUser, setEditUser] = React.useState(null);    // user | null
   const [deleteUser, setDeleteUser] = React.useState(null); // user | null
+  const [keysUser, setKeysUser] = React.useState(null);     // user | null
 
   const list = useResource(
     "admin-users:list",
@@ -137,6 +138,7 @@ function ADM_AdminUsersPage() {
                   user={u}
                   onEdit={() => setEditUser(u)}
                   onDelete={() => setDeleteUser(u)}
+                  onKeys={() => setKeysUser(u)}
                 />
               ))}
             </tbody>
@@ -164,6 +166,12 @@ function ADM_AdminUsersPage() {
           onDeleted={() => { setDeleteUser(null); list.refetch(); }}
         />
       )}
+      {keysUser && (
+        <ADM_UserKeysDialog
+          user={keysUser}
+          onClose={() => setKeysUser(null)}
+        />
+      )}
     </div>
   );
 }
@@ -172,7 +180,7 @@ function ADM_AdminUsersPage() {
 // ADM_UserRow — one row of the table.
 // ============================================================================
 
-function ADM_UserRow({ user, onEdit, onDelete }) {
+function ADM_UserRow({ user, onEdit, onDelete, onKeys }) {
   return (
     <tr
       data-testid={`admin-user-row-${user.id}`}
@@ -206,6 +214,16 @@ function ADM_UserRow({ user, onEdit, onDelete }) {
           data-testid={`edit-user-btn-${user.id}`}
         >
           Edit
+        </Btn>
+        <Btn
+          size="sm"
+          kind="ghost"
+          icon="key"
+          onClick={onKeys}
+          data-testid={`keys-user-btn-${user.id}`}
+          style={{ marginLeft: 6 }}
+        >
+          Keys
         </Btn>
         <Btn
           size="sm"
@@ -570,6 +588,176 @@ function ADM_DeleteUserDialog({ user, onClose, onDeleted }) {
 }
 
 // ============================================================================
+// ADM_UserKeysDialog — per-user API-key drill-down (Task 2 endpoints).
+//
+// View + revoke ONLY — no create/rename here (that stays self-service on
+// the AT_ApiTokensPage in api_tokens.jsx). Mirrors that page's summary-row
+// markup (AT_TokenRow) but scoped to one user's tokens via the admin
+// routes. Revoke uses confirmDialog() (shared.jsx) rather than a nested
+// <Modal>, since this dialog IS already a Modal.
+// ============================================================================
+
+function ADM_UserKeysDialog({ user, onClose }) {
+  const { useResource, apiFetch } = window.primerApi;
+
+  const list = useResource(
+    "admin-user-tokens:" + user.id,
+    (signal) => apiFetch("GET", "/admin/users/" + encodeURIComponent(user.id) + "/tokens", null, { signal }),
+  );
+
+  const items = list.data?.items ?? [];
+
+  return (
+    <Modal
+      title={`API keys · ${user.username}`}
+      onClose={onClose}
+      footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
+    >
+      <div data-testid="adm-user-keys-dialog">
+        {list.loading && items.length === 0 && (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
+        )}
+        {list.error && items.length === 0 && (
+          <Banner
+            kind="error"
+            title={list.error.title || "Couldn't load API keys"}
+            detail={list.error.detail || list.error.message}
+            actions={<Btn size="sm" icon="refresh" onClick={list.refetch}>Retry</Btn>}
+          />
+        )}
+        {!list.loading && !list.error && items.length === 0 && (
+          <div className="muted text-sm" style={{ padding: "20px 0" }}>No API keys for this user.</div>
+        )}
+        {items.length > 0 && (
+          <div
+            data-testid="adm-user-keys-table"
+            className="panel"
+            style={{ padding: 0, overflow: "hidden" }}
+          >
+            <table className="table" style={{ width: "100%", fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Name</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Prefix</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Scopes</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Created</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Last used</th>
+                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
+                  <th style={{ textAlign: "right", padding: "8px 12px" }}>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {items.map((t) => (
+                  <ADM_UserKeyRow
+                    key={t.id}
+                    user={user}
+                    token={t}
+                    onRevoked={list.refetch}
+                  />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+// ============================================================================
+// ADM_UserKeyRow — one read-only token summary row + Revoke action.
+// ============================================================================
+
+function ADM_UserKeyRow({ user, token, onRevoked }) {
+  const { apiFetch } = window.primerApi;
+  const [busy, setBusy] = React.useState(false);
+  const [error, setError] = React.useState(null);
+  const isRevoked = !!token.revoked_at;
+
+  const revoke = async () => {
+    const ok = await confirmDialog({
+      title: "Revoke API key?",
+      message: `Revoke "${token.name}" (${token.prefix}…)? Any client using it stops working immediately. This cannot be undone.`,
+      confirmLabel: "Revoke",
+      danger: true,
+    });
+    if (!ok) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiFetch(
+        "DELETE",
+        "/admin/users/" + encodeURIComponent(user.id) + "/tokens/" + encodeURIComponent(token.id),
+      );
+      onRevoked && onRevoked();
+    } catch (err) {
+      setError(ADM_extractError(err));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <React.Fragment>
+      <tr
+        data-testid={`adm-user-key-row-${token.id}`}
+        style={{ borderTop: "1px solid var(--border)" }}
+      >
+        <td style={{ padding: "8px 12px", fontWeight: 600 }}>{token.name}</td>
+        <td style={{ padding: "8px 12px" }}>
+          <span className="mono" style={{ fontSize: 11 }}>{token.prefix}…</span>
+        </td>
+        <td style={{ padding: "8px 12px" }}>
+          {Array.isArray(token.scopes) && token.scopes.length > 0 ? (
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {token.scopes.map((s) => (
+                <span key={s} className="pill pill-paused" style={{ fontSize: 10.5 }}>{s}</span>
+              ))}
+            </div>
+          ) : (
+            <span className="muted text-sm">—</span>
+          )}
+        </td>
+        <td style={{ padding: "8px 12px" }} title={token.created_at || ""}>
+          <span className="mono">{token.created_at || "—"}</span>
+        </td>
+        <td style={{ padding: "8px 12px" }} title={token.last_used_at || ""}>
+          <span className="mono">{token.last_used_at || "—"}</span>
+        </td>
+        <td style={{ padding: "8px 12px" }}>
+          {isRevoked
+            ? <span className="pill pill-failed" style={{ fontSize: 10.5 }}>revoked</span>
+            : <span className="muted text-sm">—</span>}
+        </td>
+        <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+          <Btn
+            size="sm"
+            kind="danger"
+            icon="trash"
+            disabled={isRevoked || busy}
+            onClick={revoke}
+            title={isRevoked ? "Key already revoked" : "Revoke this key"}
+            data-testid={`adm-revoke-key-btn-${token.id}`}
+          >
+            {busy ? "Revoking…" : "Revoke"}
+          </Btn>
+        </td>
+      </tr>
+      {error && (
+        <tr>
+          <td colSpan={7} style={{ padding: "0 12px 8px" }}>
+            <Banner
+              kind="error"
+              title={error.code ? `Revoke failed (${error.code})` : "Revoke failed"}
+              detail={error.message || ""}
+            />
+          </td>
+        </tr>
+      )}
+    </React.Fragment>
+  );
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
@@ -578,3 +766,5 @@ window.ADM_UserRow = ADM_UserRow;
 window.ADM_CreateUserDialog = ADM_CreateUserDialog;
 window.ADM_EditUserDialog = ADM_EditUserDialog;
 window.ADM_DeleteUserDialog = ADM_DeleteUserDialog;
+window.ADM_UserKeysDialog = ADM_UserKeysDialog;
+window.ADM_UserKeyRow = ADM_UserKeyRow;
