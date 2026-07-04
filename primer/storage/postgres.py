@@ -470,6 +470,9 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
             "((data->>'provider_id'), (data->>'external_id'))",
         ),
     ],
+    "useridentity": [
+        ("provider_subject_uniq", True, "((data->>'provider_id'), (data->>'subject'))"),
+    ],
 }
 
 

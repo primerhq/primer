@@ -31,8 +31,11 @@ from primer.storage.postgres import (
 
 
 def test_registry_declares_the_hot_tables():
-    """token_hash / session status / channel routing are all registered."""
-    assert set(_HOT_FIELD_INDEXES) == {"apitoken", "sessions", "channel"}
+    """token_hash / session status / channel routing / useridentity uniqueness
+    are all registered."""
+    assert set(_HOT_FIELD_INDEXES) == {
+        "apitoken", "sessions", "channel", "useridentity",
+    }
 
 
 def test_apitoken_token_hash_index_is_unique_on_the_scalar():
