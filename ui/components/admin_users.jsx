@@ -607,11 +607,20 @@ function ADM_UserKeysDialog({ user, onClose }) {
 
   const items = list.data?.items ?? [];
 
+  // Revoke opens a SECOND Modal (confirmDialog, shared.jsx) on top of this one.
+  // Modal's Escape handler / backdrop click / X button all just invoke whatever
+  // onClose they were given — both Modals listen for the same global keydown,
+  // so an Escape meant to cancel the revoke confirm would otherwise also close
+  // this dialog. confirmPending suppresses that while a confirm is in flight;
+  // ADM_UserKeyRow bumps it via onConfirmStart/onConfirmEnd around confirmDialog().
+  const confirmPending = React.useRef(0);
+  const requestClose = () => { if (confirmPending.current > 0) return; onClose(); };
+
   return (
     <Modal
       title={`API keys · ${user.username}`}
-      onClose={onClose}
-      footer={<Btn kind="ghost" onClick={onClose}>Close</Btn>}
+      onClose={requestClose}
+      footer={<Btn kind="ghost" onClick={requestClose}>Close</Btn>}
     >
       <div data-testid="adm-user-keys-dialog">
         {list.loading && items.length === 0 && (
@@ -653,6 +662,8 @@ function ADM_UserKeysDialog({ user, onClose }) {
                     user={user}
                     token={t}
                     onRevoked={list.refetch}
+                    onConfirmStart={() => { confirmPending.current += 1; }}
+                    onConfirmEnd={() => { confirmPending.current -= 1; }}
                   />
                 ))}
               </tbody>
@@ -668,31 +679,36 @@ function ADM_UserKeysDialog({ user, onClose }) {
 // ADM_UserKeyRow — one read-only token summary row + Revoke action.
 // ============================================================================
 
-function ADM_UserKeyRow({ user, token, onRevoked }) {
+function ADM_UserKeyRow({ user, token, onRevoked, onConfirmStart, onConfirmEnd }) {
   const { apiFetch } = window.primerApi;
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState(null);
   const isRevoked = !!token.revoked_at;
 
   const revoke = async () => {
-    const ok = await confirmDialog({
-      title: "Revoke API key?",
-      message: `Revoke "${token.name}" (${token.prefix}…)? Any client using it stops working immediately. This cannot be undone.`,
-      confirmLabel: "Revoke",
-      danger: true,
-    });
-    if (!ok) return;
-    setBusy(true);
-    setError(null);
+    onConfirmStart && onConfirmStart();
     try {
-      await apiFetch(
-        "DELETE",
-        "/admin/users/" + encodeURIComponent(user.id) + "/tokens/" + encodeURIComponent(token.id),
-      );
-      onRevoked && onRevoked();
-    } catch (err) {
-      setError(ADM_extractError(err));
-      setBusy(false);
+      const ok = await confirmDialog({
+        title: "Revoke API key?",
+        message: `Revoke "${token.name}" (${token.prefix}…)? Any client using it stops working immediately. This cannot be undone.`,
+        confirmLabel: "Revoke",
+        danger: true,
+      });
+      if (!ok) return;
+      setBusy(true);
+      setError(null);
+      try {
+        await apiFetch(
+          "DELETE",
+          "/admin/users/" + encodeURIComponent(user.id) + "/tokens/" + encodeURIComponent(token.id),
+        );
+        onRevoked && onRevoked();
+      } catch (err) {
+        setError(ADM_extractError(err));
+        setBusy(false);
+      }
+    } finally {
+      onConfirmEnd && onConfirmEnd();
     }
   };
 
