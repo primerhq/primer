@@ -850,10 +850,19 @@ async def chat_ws(
     sp = websocket.app.state.storage_provider
     # Auth check: middleware populates websocket.state.user from the
     # session cookie. Close with WS-spec code 4401 if missing.
-    from primer.api.deps import require_auth_ws
+    from primer.api.deps import require_auth_ws, require_user_ws
     if require_auth_ws(websocket) is None:
         await websocket.accept()
         await websocket.close(code=4401, reason="auth_required")
+        return
+    # RBAC role gate (auth plan Task 8): a chat is an interactive agent
+    # surface, so it requires at least the ``user`` role. A ``restricted``
+    # account authenticates but may NOT open chat sockets — close 4403
+    # (mirrors the 4401 auth close above). Auth already passed here, so a
+    # None from require_user_ws can only mean the role is insufficient.
+    if require_user_ws(websocket) is None:
+        await websocket.accept()
+        await websocket.close(code=4403, reason="forbidden_role")
         return
 
     chats_storage = sp.get_storage(Chat)

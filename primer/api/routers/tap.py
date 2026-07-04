@@ -301,6 +301,13 @@ async def workspace_tap(
     user = getattr(request.state, "user", None)
     if not isinstance(user, User):
         raise HTTPException(status_code=401, detail={"error": "auth_required"})
+    # RBAC role gate (auth plan Task 8): the tap streams live workspace
+    # activity, so it requires at least the ``user`` role. A ``restricted``
+    # account authenticates but may NOT subscribe — 403 forbidden_role (the
+    # HTTP analogue of the session WS 4403 close, mirroring the 401 above and
+    # the include-time require_user dependency).
+    if user.role not in ("user", "admin"):
+        raise HTTPException(status_code=403, detail={"error": "forbidden_role"})
 
     app_state = request.app.state
     router = getattr(app_state, "workspace_tap_router", None)
