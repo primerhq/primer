@@ -94,6 +94,7 @@ TOOL_LIST = make_tool(
         ToolExample(args={}, returns="first page of harnesses"),
         ToolExample(args={"status": "installed", "length": 20}, returns="installed only"),
     ],
+    required_role="user",
 )
 
 TOOL_GET = make_tool(
@@ -115,6 +116,7 @@ TOOL_GET = make_tool(
     examples=[
         ToolExample(args={"id": "hns-1"}, returns="the harness row or not-found"),
     ],
+    required_role="user",
 )
 
 TOOL_REGISTER = make_tool(
@@ -150,6 +152,7 @@ TOOL_REGISTER = make_tool(
             note="call harness__fetch next",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_UPDATE = make_tool(
@@ -176,6 +179,7 @@ TOOL_UPDATE = make_tool(
     examples=[
         ToolExample(args={"id": "hns-1", "description": "new text"}, returns="updated row"),
     ],
+    required_role="user",
 )
 
 TOOL_UPDATE_OVERRIDES = make_tool(
@@ -203,6 +207,7 @@ TOOL_UPDATE_OVERRIDES = make_tool(
             note="validated against cached schema",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_FETCH = make_tool(
@@ -225,6 +230,7 @@ TOOL_FETCH = make_tool(
     examples=[
         ToolExample(args={"id": "hns-1"}, returns="enqueued FETCH"),
     ],
+    required_role="user",
 )
 
 TOOL_INSTALL = make_tool(
@@ -251,6 +257,7 @@ TOOL_INSTALL = make_tool(
             note="requires status draft/ready/outdated + overrides cached",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_SYNC = make_tool(
@@ -277,6 +284,7 @@ TOOL_SYNC = make_tool(
             note="requires status installed/outdated",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_UNINSTALL = make_tool(
@@ -298,6 +306,7 @@ TOOL_UNINSTALL = make_tool(
     examples=[
         ToolExample(args={"id": "hns-1"}, returns="enqueued UNINSTALL"),
     ],
+    required_role="user",
 )
 
 

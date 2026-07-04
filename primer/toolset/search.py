@@ -179,6 +179,11 @@ def _descriptor(name: str, pretty: str) -> Tool:
                 returns=f"up to 5 {pretty} ranked by relevance",
             ),
         ],
+        # Internal collections + internal-search config are operator-plane
+        # (§6.2): these tools search the reserved "_internal_*" collections
+        # (agent/graph/collection/tool definitions), not a user's own
+        # knowledge collections (see search_collection = user, system.py).
+        required_role="admin",
     )
 
 
@@ -225,6 +230,7 @@ def build_search_toolset(
                     returns="top doc chunks",
                 ),
             ],
+            required_role="admin",
         ),
         _make_ai_docs_handler(subsystem),
     )
