@@ -168,6 +168,23 @@ class ToolsetProvider(ABC):
         del tool_name
         return False
 
+    def required_role(self, tool_name: str) -> str:
+        """RBAC role required to invoke ``tool_name`` over MCP.
+
+        Consulted by :func:`primer.mcp.dispatch.invoke_exposed` for
+        *every* exposed tool (not just reserved ``system`` mutations) so
+        the declared role is the single source of truth for the gate.
+
+        Default: ``"admin"`` (fail-closed) for providers that don't
+        maintain their own per-tool role registry -- e.g. an
+        externally-configured :class:`primer.toolset.mcp.McpToolsetProvider`
+        proxying a third-party MCP server, which has no ``required_role``
+        concept of its own. :class:`primer.toolset.internal.InternalToolsetProvider`
+        overrides this to read the role declared on the :class:`Tool`.
+        """
+        del tool_name
+        return "admin"
+
     async def aclose(self) -> None:
         """Release backend resources held by this provider. Default no-op."""
         return

@@ -216,7 +216,7 @@ async def test_invoke_unexposable_raises_not_exposed(
 
 @pytest.mark.asyncio
 async def test_invoke_allowed_returns_result(
-    fake_storage_provider, fake_provider_registry_with_tools,
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
 ) -> None:
     """Happy path: provider's ``call`` runs with bare name + principal."""
     deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
@@ -227,7 +227,7 @@ async def test_invoke_allowed_returns_result(
 
     result = await invoke_exposed(
         scoped_id="misc__uuid_v4", arguments={"foo": 1},
-        principal="user@example.com", deps=deps,
+        principal="user@example.com", actor=system_actor, deps=deps,
     )
 
     assert isinstance(result, ToolCallResult)
@@ -286,7 +286,7 @@ async def _seed_required_policy(
 
 @pytest.mark.asyncio
 async def test_invoke_approval_required_blocks(
-    fake_storage_provider, fake_provider_registry_with_tools,
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
 ) -> None:
     """An allowlisted tool with an effective ``required`` policy must be
     REFUSED at dispatch (MCP has no park/resume surface), never run."""
@@ -304,7 +304,7 @@ async def test_invoke_approval_required_blocks(
     with pytest.raises(NotExposed) as excinfo:
         await invoke_exposed(
             scoped_id="misc__uuid_v4", arguments={},
-            principal=None, deps=deps,
+            principal=None, actor=system_actor, deps=deps,
         )
     assert excinfo.value.reason == "approval_required"
     # The tool MUST NOT have executed.
@@ -314,7 +314,7 @@ async def test_invoke_approval_required_blocks(
 
 @pytest.mark.asyncio
 async def test_invoke_disabled_policy_does_not_block(
-    fake_storage_provider, fake_provider_registry_with_tools,
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
 ) -> None:
     """A policy with ``enabled=False`` is stored but skipped; the tool runs."""
     deps = _deps_with_resolver(
@@ -331,7 +331,7 @@ async def test_invoke_disabled_policy_does_not_block(
 
     result = await invoke_exposed(
         scoped_id="misc__uuid_v4", arguments={},
-        principal=None, deps=deps,
+        principal=None, actor=system_actor, deps=deps,
     )
     assert isinstance(result, ToolCallResult)
     assert result.is_error is False
@@ -339,7 +339,7 @@ async def test_invoke_disabled_policy_does_not_block(
 
 @pytest.mark.asyncio
 async def test_invoke_no_policy_runs_with_resolver(
-    fake_storage_provider, fake_provider_registry_with_tools,
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
 ) -> None:
     """With a resolver wired but no matching policy, the tool runs normally."""
     deps = _deps_with_resolver(
@@ -352,7 +352,7 @@ async def test_invoke_no_policy_runs_with_resolver(
 
     result = await invoke_exposed(
         scoped_id="misc__uuid_v4", arguments={},
-        principal=None, deps=deps,
+        principal=None, actor=system_actor, deps=deps,
     )
     assert isinstance(result, ToolCallResult)
     assert result.is_error is False
