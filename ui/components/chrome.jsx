@@ -83,6 +83,7 @@ const NAV = [
   {
     group: "Account",
     items: [
+      { id: "admin-users", label: "Users", icon: "user" },
       { id: "api-tokens", label: "API Tokens", icon: "key" },
       { id: "mcp", label: "MCP Server", icon: "code" },
     ],

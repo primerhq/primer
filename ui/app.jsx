@@ -90,6 +90,10 @@ function App() {
       if (path.startsWith("/settings/mcp")) return "mcp";
       return root;
     }
+    if (root === "admin") {
+      if (path.startsWith("/admin/users")) return "admin-users";
+      return root;
+    }
     return root;
   })();
 
@@ -426,6 +430,7 @@ function App() {
       "trigger-detail": (e) => `/triggers/${e}`,
       "api-tokens": "/settings/api-tokens",
       mcp: "/settings/mcp",
+      "admin-users": "/admin/users",
     };
     const route = ROUTES[target];
     const url = typeof route === "function" ? route(extra) : (route || "/");
@@ -1075,6 +1080,24 @@ function App() {
       </>
     );
     const Comp = window.MC_McpPage;
+    pageBody = Comp ? <Comp /> : null;
+  } else if (page === "admin-users") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Admin</a>
+            <span className="sep">/</span>
+            <span style={{ color: "var(--text)" }}>Users</span>
+          </div>
+          <h1 className="page-title">Users</h1>
+          <div className="page-sub">
+            Operator accounts · roles, access, and password resets · admin-only
+          </div>
+        </div>
+      </>
+    );
+    const Comp = window.ADM_AdminUsersPage;
     pageBody = Comp ? <Comp /> : null;
   } else if (page === "sessions") {
     // PR-B (B6): the global Sessions list is subsumed by the Studio. The
