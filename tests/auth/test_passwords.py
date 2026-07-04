@@ -34,3 +34,11 @@ async def test_hashes_are_salted_unique():
     assert a != b
     assert await verify_password("same-password", a) is True
     assert await verify_password("same-password", b) is True
+
+
+@pytest.mark.asyncio
+async def test_verify_none_hash_returns_false():
+    """A None stored_hash (account provisioned without a password) returns
+    False without raising — so a password-less row can never be logged into
+    and the login endpoint returns 401, not 500."""
+    assert await verify_password("any", None) is False

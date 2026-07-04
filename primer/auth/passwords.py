@@ -34,13 +34,18 @@ async def hash_password(plaintext: str) -> str:
     return await asyncio.to_thread(_hasher.hash, plaintext)
 
 
-async def verify_password(plaintext: str, stored_hash: str) -> bool:
+async def verify_password(plaintext: str, stored_hash: str | None) -> bool:
     """Constant-time-ish password check.
 
     Returns ``True`` on match, ``False`` on mismatch or malformed hash.
     Never raises on bad inputs — wrap argon2's exception taxonomy in
-    a boolean so callers don't need to learn it.
+    a boolean so callers don't need to learn it. A ``None`` or empty
+    ``stored_hash`` — e.g. an account provisioned without a password —
+    returns ``False`` immediately without touching argon2, so a
+    password-less row can never be authenticated.
     """
+    if not stored_hash:
+        return False
 
     def _verify() -> bool:
         try:
