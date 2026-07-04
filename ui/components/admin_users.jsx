@@ -254,6 +254,7 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
         email: email.trim() || null,
         password,
         role,
+        disabled: false,
       };
       await apiFetch("POST", "/admin/users", body);
       if (!mountedRef.current) return;
@@ -361,13 +362,14 @@ function ADM_CreateUserDialog({ onClose, onCreated }) {
 }
 
 // ============================================================================
-// ADM_EditUserDialog — PUT /v1/admin/users/{id}
+// ADM_EditUserDialog — PATCH /v1/admin/users/{id}
 //
-// Sends the FULL user row (primer's generic PUT requires body.id, see
-// _crud.py:363) with edited role / email / disabled merged in. An optional
-// new password re-flags must_change_password server-side. Anti-lockout
-// violations (demoting / disabling the last admin) come back as a 4xx
-// envelope and render in the banner.
+// Sends ONLY the mutable fields {email, role, disabled} plus password
+// when the admin typed a new one — never the full user object (no id /
+// created_at / password_hash on the wire). An optional new password
+// re-flags must_change_password server-side. Anti-lockout violations
+// (demoting / disabling the last admin) come back as a 4xx envelope and
+// render in the banner.
 // ============================================================================
 
 function ADM_EditUserDialog({ user, onClose, onSaved }) {
@@ -392,13 +394,12 @@ function ADM_EditUserDialog({ user, onClose, onSaved }) {
     setBusy(true);
     try {
       const body = {
-        ...user,
         email: email.trim() || null,
         role,
         disabled,
       };
       if (password) body.password = password;
-      await apiFetch("PUT", "/admin/users/" + encodeURIComponent(user.id), body);
+      await apiFetch("PATCH", "/admin/users/" + encodeURIComponent(user.id), body);
       if (!mountedRef.current) return;
       onSaved && onSaved();
     } catch (err) {
