@@ -12,7 +12,7 @@ from starlette.datastructures import State
 from tests.api.conftest import raw_client as client, app, fake_provider_registry  # noqa: F401
 from tests.conftest import _FakeStorageProvider
 
-from primer.api.middleware.auth import AuthMiddleware, _AUTH_DISABLED_USER
+from primer.api.middleware.auth import AuthMiddleware
 from primer.auth.api_tokens import hash_token, mint_plaintext
 from primer.auth.tokens import sign_session
 from primer.model.api_token import ApiToken
@@ -80,8 +80,8 @@ async def test_middleware_resolves_system_actor_when_auth_disabled():
     state = await _drive(app_obj, headers=[])
     assert state.actor is not None
     assert state.actor.type == "system"
-    assert state.actor.source == "system"
-    assert state.actor.role == _AUTH_DISABLED_USER.role  # "admin"
+    assert state.actor.source == "internal"
+    assert state.actor.role is None
 
 
 @pytest.mark.asyncio
