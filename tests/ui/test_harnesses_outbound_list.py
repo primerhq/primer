@@ -50,3 +50,12 @@ def test_list_has_drift_indicator():
     # The orange dot for outdated outbound.
     assert "hr-drift-dot" in src
     assert "OUTDATED" in src or "outdated" in src
+
+
+def test_outbound_row_has_download_bundle_link():
+    src = _src()
+    # Outbound rows expose a download affordance targeting the bundle endpoint.
+    assert "harness-download-bundle" in src
+    assert "/bundle.tar.gz" in src
+    # It is a real browser download link (<a download>), not a JS fetch.
+    assert "download" in src
