@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
-from primer.api.deps import get_storage_provider
+from primer.api.deps import get_storage_provider, require_auth
 from primer.auth.passwords import hash_password, verify_password
 from primer.auth.tokens import sign_session
 from primer.model.user import User
@@ -283,3 +283,39 @@ async def logout(request: Request, response: Response) -> None:
     """Clear the session cookie. Idempotent."""
     cfg = request.app.state.config.auth
     response.delete_cookie(key=cfg.cookie_name, path="/")
+
+
+class ChangePasswordArgs(BaseModel):
+    current_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=_MIN_PASSWORD_LEN)
+
+
+@auth_router.post("/change-password", response_model=AuthOk)
+async def change_password(
+    body: ChangePasswordArgs,
+    request: Request,
+    user: User = Depends(require_auth),
+) -> AuthOk:
+    """Change the authenticated user's password.
+
+    Verifies ``current_password`` against the stored hash, rehashes
+    ``new_password``, and clears ``must_change_password`` so the forced-
+    rotation gate stops firing. A wrong current password (or an SSO-only
+    account whose ``password_hash`` is ``None``, via the verify_password
+    guard) is rejected with 401 ``invalid_credentials``.
+    """
+    if not await verify_password(body.current_password, user.password_hash):
+        logger.info(
+            "auth.change_password fail (bad current) username=%s",
+            user.username,
+        )
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid_credentials"},
+        )
+    user.password_hash = await hash_password(body.new_password)
+    user.must_change_password = False
+    storage = get_storage_provider(request).get_storage(User)
+    await storage.update(user)
+    logger.info("auth.change_password success username=%s", user.username)
+    return AuthOk(username=user.username)
