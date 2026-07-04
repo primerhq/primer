@@ -117,6 +117,13 @@ class AuthMiddleware:
         if user is None:
             user, api_token = await self._try_bearer_auth(scope, storage_provider)
 
+        # A disabled account is treated as unauthenticated so deactivation
+        # takes effect on the very next request (spec §9), uniformly across
+        # REST, WebSocket, and MCP (all read scope.state.user).
+        if user is not None and user.disabled:
+            user = None
+            api_token = None
+
         if user is not None:
             state.user = user
             state.principal = user.username
