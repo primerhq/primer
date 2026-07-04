@@ -39,22 +39,28 @@ async def ensure_admin_exists(storage_provider) -> None:
     password-less (nothing eligible to promote).
     """
     storage = storage_provider.get_storage(User)
-    page = await storage.list(OffsetPage(offset=0, length=_PAGE_SIZE))
 
-    candidate: User | None = None
-    for user in page.items:
-        if user.role == "admin":
-            return  # an admin already exists — nothing to do
-        if (
-            not user.disabled
-            and user.password_hash
-            and (candidate is None or user.created_at < candidate.created_at)
-        ):
-            candidate = user
+    users: list[User] = []
+    offset = 0
+    while True:
+        page = await storage.list(OffsetPage(offset=offset, length=_PAGE_SIZE))
+        users.extend(page.items)
+        if len(page.items) < _PAGE_SIZE:
+            break
+        offset += _PAGE_SIZE
 
-    if candidate is None:
+    # Only accounts that can actually log in locally count as "usable" —
+    # a disabled or password-less role="admin" row must not be treated as
+    # satisfying "an admin already exists", or the eligible user below
+    # would be left permanently locked out.
+    eligible = [u for u in users if not u.disabled and u.password_hash]
+    if any(u.role == "admin" for u in eligible):
+        return  # a usable admin already exists — nothing to do
+
+    if not eligible:
         return  # no eligible user to promote
 
+    candidate = min(eligible, key=lambda u: u.created_at)
     promoted = candidate.model_copy(update={"role": "admin"})
     await storage.update(promoted)
     logger.warning(

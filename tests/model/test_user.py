@@ -12,6 +12,9 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from primer.model.user import User
 
 
@@ -53,3 +56,10 @@ def test_role_and_disabled_and_must_change_password_settable():
     assert u.disabled is True
     assert u.must_change_password is True
     assert u.email == "alice@example.com"
+
+
+def test_role_rejects_unknown_value():
+    """role is constrained to the known RBAC roles via Literal — an unknown
+    value must fail validation rather than being silently accepted."""
+    with pytest.raises(ValidationError):
+        User(**_base_kwargs(role="superadmin"))
