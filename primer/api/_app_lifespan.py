@@ -119,6 +119,15 @@ def _make_lifespan(config: AppConfig):
         # warm disk (models download lazily, not here).
         await run_first_boot_bootstrap(config, storage_provider)
 
+        # Existing-install migration + break-glass: Layer 1 RBAC (Task 2)
+        # added User.role, defaulting existing rows to "user". Promote
+        # the oldest enabled, password-holding user to admin if no admin
+        # exists yet — a no-op on fresh installs (register already makes
+        # the first account admin) and on every subsequent boot.
+        from primer.auth.bootstrap_admin import ensure_admin_exists
+
+        await ensure_admin_exists(storage_provider)
+
         semantic_search_registry = SemanticSearchRegistry(
             storage=storage_provider.get_storage(SemanticSearchProvider),
         )
