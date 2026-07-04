@@ -192,6 +192,12 @@ def _mount_routers(
     app.include_router(
         admin_users_router, prefix=prefix, dependencies=[Depends(require_admin)],
     )
+    # Admin API-key management — view/revoke any user's tokens. Admin-only,
+    # nested under the user for the console drill-down.
+    from primer.api.routers.admin_tokens import admin_tokens_router
+    app.include_router(
+        admin_tokens_router, prefix=prefix, dependencies=[Depends(require_admin)],
+    )
     # Instrumentation endpoints — only mounted when the env var is set.
     # Public to keep the distributed test harness simple; the env var
     # itself is the access gate.
