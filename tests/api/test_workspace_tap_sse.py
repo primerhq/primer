@@ -27,6 +27,7 @@ hazard). Auth uses a real cookie obtained through a normal ASGITransport login.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from datetime import datetime, timezone
 
@@ -46,7 +47,25 @@ from primer.tap.router import WorkspaceTapRouter
 
 
 _NOW = datetime(2026, 6, 30, 12, 0, 0, tzinfo=timezone.utc)
-_FRAME_TIMEOUT = 3.0
+
+# Wall-clock ceiling for the event-driven waits in this module: opening the
+# stream (``_started``), ``_wait_subscribed``, and each frame read. Frame
+# delivery is LOGICALLY GUARANTEED and near-instant once ``_wait_subscribed``
+# has ordered the publish strictly after the subscription (the generator sets
+# its live-from-now cursor and subscribes atomically, with no ``await`` in
+# between, so a registered subscriber implies a fixed cursor). This ceiling is
+# therefore NOT a race window — it is only a safety net so a genuinely stuck
+# stream fails loudly instead of hanging to the 300s pytest-timeout.
+#
+# It is deliberately GENEROUS (was 3.0s): the CI ``test`` job runs the suite
+# under ``-n auto``, where a tap worker can be descheduled for seconds under CPU
+# steal AFTER subscribing but BEFORE its (correct) frame read completes. A tight
+# 3s ceiling then tripped a false ``TimeoutError`` on whichever read happened to
+# be unlucky — the residual flake (e.g. live-from-now). Verified by injecting a
+# 4s read latency: a 3s ceiling times out, a 30s ceiling still delivers with no
+# event loss. 30s survives such stalls while staying well under the 300s hang
+# backstop, and green runs (delivery in microseconds) see no slowdown.
+_FRAME_TIMEOUT = 30.0
 
 
 # ===========================================================================
@@ -323,7 +342,18 @@ class _SSEConnection:
                     self._chunks.put_nowait(body)
 
         self._task = asyncio.create_task(self._app(scope, _receive, _send))
-        await asyncio.wait_for(self._started.wait(), timeout=_FRAME_TIMEOUT)
+        try:
+            await asyncio.wait_for(self._started.wait(), timeout=_FRAME_TIMEOUT)
+        except BaseException:
+            # Never leak the ASGI app task if the stream fails to open in time
+            # (e.g. an extreme CPU-starvation stall on a loaded CI worker). A
+            # dangling task would otherwise surface at loop teardown as "Task
+            # was destroyed but it is pending" / "Event loop is closed" noise
+            # and could fail an unrelated test. Cancel + reap it, then re-raise.
+            self._task.cancel()
+            with contextlib.suppress(BaseException):
+                await self._task
+            raise
         return self
 
     async def __aexit__(self, *exc) -> None:
