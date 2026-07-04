@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import io
+import tarfile
 from datetime import datetime, timezone
 
 import pytest
 
+from primer.model.agent import Agent
 from primer.model.harness import (
     Harness,
     HarnessDirection,
@@ -13,6 +16,19 @@ from primer.model.harness import (
     HarnessStatus,
     TrackedEntity,
 )
+
+
+def _make_agent(*, id: str = "ag-bot", harness_id: str | None = None) -> Agent:
+    return Agent(
+        id=id,
+        name="Bot",
+        description="d",
+        harness_id=harness_id,
+        model={"provider_id": "openai", "model_name": "gpt-4"},
+        temperature=0.2,
+        tools=[],
+        created_at=datetime.now(timezone.utc),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -471,3 +487,60 @@ async def test_create_defaults_to_inbound(client):
     body = r.json()
     assert body["direction"] == "inbound"
     assert body["tracked_entities"] == []
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/harnesses/{id}/bundle.tar.gz — download the built bundle
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_download_bundle_outbound(client, app, fake_storage_provider):
+    # The tracked agent must exist — download builds the bundle from the DB.
+    await fake_storage_provider.get_storage(Agent).create(_make_agent(id="ag-bot"))
+    harness = _make_outbound_harness(id="hns_dl_ok", slug="dl-ok")
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    r = await client.get("/v1/harnesses/hns_dl_ok/bundle.tar.gz")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/gzip"
+    disp = r.headers["content-disposition"]
+    assert "attachment" in disp
+    assert "dl-ok-" in disp and disp.endswith('.tar.gz"')
+
+    tf = tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz")
+    names = set(tf.getnames())
+    assert "harness.yaml" in names
+    assert "overrides.schema.json" in names
+    assert "templates/assistant.yaml" in names
+    # the agent template is non-empty and mentions the entity kind
+    member = tf.extractfile("templates/assistant.yaml").read().decode()
+    assert "kind: agent" in member
+
+
+@pytest.mark.asyncio
+async def test_download_bundle_no_entities(client, app, fake_storage_provider):
+    harness = _make_outbound_harness(
+        id="hns_dl_empty", slug="dl-empty", tracked_entities=[],
+    )
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    r = await client.get("/v1/harnesses/hns_dl_empty/bundle.tar.gz")
+    assert r.status_code == 422
+    assert r.json()["code"] == "outbound_no_entities"
+
+
+@pytest.mark.asyncio
+async def test_download_bundle_inbound_rejected(client, app, fake_storage_provider):
+    harness = _make_inbound_harness(id="hns_dl_in", slug="dl-in")
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    r = await client.get("/v1/harnesses/hns_dl_in/bundle.tar.gz")
+    assert r.status_code == 409
+    assert r.json()["code"] == "direction_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_download_bundle_not_found(client):
+    r = await client.get("/v1/harnesses/hns_nope/bundle.tar.gz")
+    assert r.status_code == 404

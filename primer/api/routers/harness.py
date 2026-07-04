@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Path, Query, Request, status
+from fastapi import APIRouter, Depends, Path, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -29,6 +29,11 @@ from primer.api.deps import get_claim_engine, get_event_bus, get_storage_provide
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
 from primer.harness.hashes import hash_overrides
+from primer.harness.outbound import (
+    OutboundBuildError,
+    build_bundle_targz,
+    build_outbound,
+)
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.harness import (
     Harness,
@@ -698,6 +703,56 @@ async def build_harness(
     return JSONResponse(
         status_code=202,
         content=_harness_to_json(updated),
+    )
+
+
+# ---------------------------------------------------------------------------
+# GET /v1/harnesses/{id}/bundle.tar.gz  — download the bundle (outbound only)
+# ---------------------------------------------------------------------------
+
+
+@harness_router.get(
+    "/{harness_id}/bundle.tar.gz",
+    summary="Download an outbound harness bundle as a gzipped tarball",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def download_harness_bundle(
+    harness_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+):
+    storage = _get_harness_storage(sp)
+    harness = await storage.get(harness_id)
+    if harness is None:
+        raise NotFoundError(f"Harness {harness_id!r} does not exist")
+
+    if harness.direction != HarnessDirection.OUTBOUND:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "code": "direction_mismatch",
+                "detail": (
+                    f"Harness {harness_id!r} is inbound; "
+                    "bundle download is an outbound operation"
+                ),
+            },
+        )
+
+    # Build fresh from the live DB (the source of truth for an outbound
+    # harness) and stream it — no queue, no worker, no ephemeral pod fs.
+    try:
+        result = await build_outbound(harness, storage_provider=sp)
+    except OutboundBuildError as exc:
+        return JSONResponse(
+            status_code=422,
+            content={"code": exc.code, "detail": exc.message},
+        )
+
+    tar_gz = build_bundle_targz(result)
+    filename = f"{harness.slug}-{result.bundle_hash[:12]}.tar.gz"
+    return Response(
+        content=tar_gz,
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

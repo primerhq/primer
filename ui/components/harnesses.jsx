@@ -285,6 +285,18 @@ function HarnessList() {
                         : <span className="muted">-</span>}
                     </td>
                     <td style={{ textAlign: "right" }} onClick={(e) => e.stopPropagation()}>
+                      {isOutbound && (
+                        <a
+                          className="btn btn-sm btn-ghost"
+                          href={"/v1/harnesses/" + encodeURIComponent(h.id) + "/bundle.tar.gz"}
+                          download
+                          data-testid="harness-download-bundle"
+                          title="Download the bundle as a .tar.gz"
+                          style={{ marginRight: 6 }}
+                        >
+                          Download
+                        </a>
+                      )}
                       {isOutbound && canPush ? (
                         <Btn
                           size="sm"

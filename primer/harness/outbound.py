@@ -17,7 +17,9 @@ The result is a :class:`BuildResult` that the dispatch layer hands to
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import tarfile
 from dataclasses import dataclass
 from typing import Any
 
@@ -235,9 +237,30 @@ async def build_outbound(
     )
 
 
+def build_bundle_targz(result: BuildResult) -> bytes:
+    """Package a built bundle as a deterministic gzipped tarball.
+
+    Members are the same ``(template_path, source_bytes)`` pairs that
+    :func:`primer.harness.git.push_bundle` writes to the git tree, so a
+    downloaded tarball is byte-identical in layout to what ``push``
+    publishes. Members are emitted in sorted path order with zeroed
+    mtime/uid/gid for a stable archive.
+    """
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz", format=tarfile.PAX_FORMAT) as tar:
+        for f in sorted(result.files, key=lambda x: x.template_path):
+            data = f.source_bytes
+            info = tarfile.TarInfo(name=f.template_path)
+            info.size = len(data)
+            info.mtime = 0
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
 __all__ = [
     "BuildResult",
     "OutboundBuildError",
     "OutboundFile",
+    "build_bundle_targz",
     "build_outbound",
 ]
