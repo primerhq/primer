@@ -37,6 +37,7 @@ from starlette.datastructures import State
 
 from primer.auth.api_tokens import PLAINTEXT_PREFIX, hash_token
 from primer.auth.tokens import verify_session
+from primer.model.principal import Principal
 from primer.model.user import User
 
 
@@ -89,6 +90,7 @@ class AuthMiddleware:
         state.user = None
         state.principal = None
         state.api_token = None
+        state.actor = None
 
         app_state = scope.get("app").state if scope.get("app") is not None else None
         if app_state is None:
@@ -99,8 +101,17 @@ class AuthMiddleware:
         if config is None or not config.auth.enabled:
             # Auth disabled (or unconfigured): inject the synthetic system
             # user so require_auth accepts the request and routes run
-            # unauthenticated. principal/api_token stay None.
+            # unauthenticated. principal/api_token stay None; actor becomes
+            # a system Principal so RBAC gates reading state.actor treat the
+            # request as fully authorised.
             state.user = _AUTH_DISABLED_USER
+            state.actor = Principal(
+                type="system",
+                id=_AUTH_DISABLED_USER.id,
+                display=_AUTH_DISABLED_USER.username,
+                role=_AUTH_DISABLED_USER.role,
+                source="system",
+            )
             await self.app(scope, receive, send)
             return
 
@@ -128,6 +139,25 @@ class AuthMiddleware:
             state.user = user
             state.principal = user.username
             state.api_token = api_token
+            if api_token is not None:
+                # Bearer path: the resolved ``user`` is the token OWNER, so
+                # the actor carries the owner's role but is typed api_token.
+                state.actor = Principal(
+                    type="api_token",
+                    id=api_token.id,
+                    display=api_token.name,
+                    role=user.role,
+                    source="internal",
+                )
+            else:
+                # Cookie path: full user authority.
+                state.actor = Principal(
+                    type="user",
+                    id=user.id,
+                    display=user.username,
+                    role=user.role,
+                    source="local",
+                )
 
         await self.app(scope, receive, send)
 
