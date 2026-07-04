@@ -41,6 +41,27 @@ def test_inspector_no_activity_neutral_state() -> None:
     assert "no activity yet" in DETAIL
 
 
+def test_inspector_filters_graph_transition_from_display() -> None:
+    # graph_transition frames render as a wall of bare "graph_transition"
+    # lines with no operator value, so they are dropped from the DISPLAYED
+    # stream. The filter runs BEFORE coalescing so every other kind
+    # (assistant_token, tool_call, tool_result, user_input, done, error)
+    # still renders.
+    assert 'cls !== "graph_transition"' in DETAIL
+    assert "_SLS_coalesceMessages(visibleFrames)" in DETAIL
+    # The unfiltered frame list must NOT be what gets coalesced/rendered.
+    assert "_SLS_coalesceMessages(frames)" not in DETAIL
+
+
+def test_inspector_keeps_graph_transition_refetch_listener() -> None:
+    # The live-refresh trigger must survive: the workspace tap listener still
+    # refetches on graph_transition / done / error. Only the DISPLAY is
+    # filtered, never the refetch trigger.
+    assert "useWorkspaceTapListener" in DETAIL
+    assert 'cls === "graph_transition" || cls === "done" || cls === "error"' in DETAIL
+    assert "states.refetch()" in DETAIL
+
+
 def test_bundle_transpiles_with_inspector() -> None:
     from primer.api._jsx_bundle import build_jsx_bundle
 

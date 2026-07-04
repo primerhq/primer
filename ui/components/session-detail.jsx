@@ -666,7 +666,18 @@ function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast }) {
     };
   }, [wid, rid, nodeId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const coalesced = window._SLS_coalesceMessages(frames);
+  // Drop graph_transition frames from the DISPLAYED stream — they render as
+  // a wall of bare "graph_transition" lines with no operator value. A frame's
+  // class/kind lives on kind (tap frames normalise tev.class -> kind; history
+  // records carry it.kind), or on class / payload.class; match the same way
+  // the refetch tap listener detects it (cls === "graph_transition"). NOTE:
+  // this only filters what is rendered — the useWorkspaceTapListener refetch
+  // trigger above is untouched.
+  const visibleFrames = frames.filter((f) => {
+    const cls = (f && f.kind) || (f && f.class) || (f && f.payload && f.payload.class);
+    return cls !== "graph_transition";
+  });
+  const coalesced = window._SLS_coalesceMessages(visibleFrames);
 
   // Empty state: no node selected -> the session-level live stream (the
   // run's End output), so the default view still shows the run's result.
