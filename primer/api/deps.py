@@ -152,6 +152,18 @@ def get_llm_provider_storage(
     return sp.get_storage(LLMProvider)
 
 
+def get_user_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[User]":
+    """Typed :class:`Storage` handle for :class:`User` rows.
+
+    Mirrors :func:`get_llm_provider_storage`. Consumed by the admin
+    users CRUD router and the change-password endpoint. ``User`` is
+    already imported at module top.
+    """
+    return sp.get_storage(User)
+
+
 def get_embedding_provider_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ) -> "Storage[EmbeddingProvider]":
@@ -417,6 +429,57 @@ def require_auth(request: Request = None) -> User | None:  # type: ignore[assign
     return user
 
 
+def require_user(request: Request = None) -> User | None:  # type: ignore[assignment]
+    """FastAPI dependency: valid session AND a non-restricted role.
+
+    Mirrors :func:`require_auth` — same WebSocket ``request is None``
+    short-circuit and the same 401 ``auth_required`` when no valid
+    session is present — then adds a role gate: ``role`` must be
+    ``"user"`` or ``"admin"``. A ``restricted`` user is rejected with
+    HTTP 403 ``{"error": "forbidden_role"}``. Apply to routers whose
+    endpoints require an ordinary operator (agents, graphs, chats, …).
+    """
+    if request is None:
+        # WebSocket scope — WS handlers call require_user_ws() instead.
+        return None
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, User):
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "auth_required"},
+        )
+    if user.role not in ("user", "admin"):
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "forbidden_role"},
+        )
+    return user
+
+
+def require_admin(request: Request = None) -> User | None:  # type: ignore[assignment]
+    """FastAPI dependency: valid session AND ``role == "admin"``.
+
+    Mirrors :func:`require_auth` (WS short-circuit + 401 ``auth_required``)
+    then requires an admin role, rejecting every other authenticated
+    user with HTTP 403 ``{"error": "forbidden_role"}``. Apply to the
+    provider / global-settings / admin routers.
+    """
+    if request is None:
+        return None
+    user = getattr(request.state, "user", None)
+    if not isinstance(user, User):
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "auth_required"},
+        )
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail={"error": "forbidden_role"},
+        )
+    return user
+
+
 def require_auth_ws(websocket) -> User | None:
     """WebSocket-side counterpart to :func:`require_auth`.
 
@@ -478,10 +541,13 @@ __all__ = [
     "get_internal_collections_config_storage",
     "get_internal_collections_subsystem",
     "get_llm_provider_storage",
+    "get_user_storage",
     "get_principal",
     "get_provider_registry",
+    "require_admin",
     "require_auth",
     "require_auth_ws",
+    "require_user",
     "require_scope",
     "get_scheduler",
     "get_semantic_search_registry",
