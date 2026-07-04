@@ -14,7 +14,7 @@ const NAV = [
       { id: "agents", label: "Agents", icon: "agent" },
       { id: "graphs", label: "Graphs", icon: "graph" },
       { id: "chats", label: "Chats", icon: "send", countKey: "chats" },
-      { id: "approvals", label: "Approvals", icon: "check-circle", countKey: "approvals_pending" },
+      { id: "approvals", label: "Approvals", icon: "check-circle", countKey: "approvals_pending", adminOnly: true },
     ],
   },
   {
@@ -22,7 +22,7 @@ const NAV = [
     items: [
       { id: "collections", label: "Collections", icon: "collection" },
       { id: "documents", label: "Documents", icon: "doc" },
-      { id: "internal-collections", label: "Internal Collections", icon: "subsystem", subsystem: true },
+      { id: "internal-collections", label: "Internal Collections", icon: "subsystem", subsystem: true, adminOnly: true },
     ],
   },
   {
@@ -30,13 +30,13 @@ const NAV = [
     items: [
       { id: "workspaces", label: "Workspaces", icon: "box", countKey: "workspaces" },
       { id: "workspace-templates", label: "Templates", icon: "tools" },
-      { id: "workspace-providers", label: "Providers", icon: "box" },
+      { id: "workspace-providers", label: "Providers", icon: "box", adminOnly: true },
     ],
   },
   {
     group: "Web",
     items: [
-      { id: "web-search", label: "Web Search", icon: "search" },
+      { id: "web-search", label: "Web Search", icon: "search", adminOnly: true },
     ],
   },
   {
@@ -49,11 +49,11 @@ const NAV = [
   {
     group: "Providers",
     items: [
-      { id: "llm", label: "LLM", icon: "llm" },
-      { id: "embedding", label: "Embedding", icon: "emb" },
-      { id: "rerank", label: "Cross-Encoder", icon: "emb" },
-      { id: "semantic-search", label: "Semantic Search", icon: "subsystem", countKey: "ssps" },
-      { id: "channel-providers", label: "Channels", icon: "bell" },
+      { id: "llm", label: "LLM", icon: "llm", adminOnly: true },
+      { id: "embedding", label: "Embedding", icon: "emb", adminOnly: true },
+      { id: "rerank", label: "Cross-Encoder", icon: "emb", adminOnly: true },
+      { id: "semantic-search", label: "Semantic Search", icon: "subsystem", countKey: "ssps", adminOnly: true },
+      { id: "channel-providers", label: "Channels", icon: "bell", adminOnly: true },
     ],
   },
   {
@@ -83,9 +83,9 @@ const NAV = [
   {
     group: "Account",
     items: [
-      { id: "admin-users", label: "Users", icon: "user" },
+      { id: "admin-users", label: "Users", icon: "user", adminOnly: true },
       { id: "api-tokens", label: "API Tokens", icon: "key" },
-      { id: "mcp", label: "MCP Server", icon: "code" },
+      { id: "mcp", label: "MCP Server", icon: "code", adminOnly: true },
     ],
   },
   {
@@ -104,7 +104,7 @@ const NAV = [
   },
 ];
 
-function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapsed, onCollapseToggle }) {
+function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapsed, onCollapseToggle, role }) {
   const [collapsed, setCollapsed] = React.useState(() => {
     try { return JSON.parse(localStorage.getItem("primer.sidebar.collapsed") || "{}"); } catch { return {}; }
   });
@@ -115,48 +115,59 @@ function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapse
   };
   return (
     <aside className={`sidebar ${navCollapsed ? "is-collapsed" : ""}`}>
-      {NAV.map((section, i) => (
-        <div key={i} className={`nav-section ${section.group && collapsed[section.group] ? "collapsed" : ""}`}>
-          {section.group && (
-            <div className="nav-group" onClick={() => toggle(section.group)}>
-              <Icon name="chevron-down" size={10} className="chevron" />
-              <span>{section.group}</span>
+      {NAV.map((section, i) => {
+        // Admin-only rows (provider config, approvals, MCP, internal search,
+        // Users — the require_admin set from Task 7) hide for non-admins.
+        // COSMETIC: the API still 403s if a non-admin hits the route directly.
+        // role == null (status not yet loaded, or Task 3 not shipped) shows
+        // everything, so nav never flashes empty for the common admin case.
+        const visibleItems = section.items.filter(
+          (it) => !it.adminOnly || role == null || role === "admin"
+        );
+        if (visibleItems.length === 0) return null;
+        return (
+          <div key={i} className={`nav-section ${section.group && collapsed[section.group] ? "collapsed" : ""}`}>
+            {section.group && (
+              <div className="nav-group" onClick={() => toggle(section.group)}>
+                <Icon name="chevron-down" size={10} className="chevron" />
+                <span>{section.group}</span>
+              </div>
+            )}
+            <div className="nav-items">
+              {visibleItems.map((it) => (
+                it.href ? (
+                  <a
+                    key={it.id}
+                    className="nav-item"
+                    href={it.href}
+                    target="_blank"
+                    rel="noopener"
+                  >
+                    <Icon name={it.icon} className="icon" />
+                    <span className="label">{it.label}</span>
+                    <Icon name="external" className="icon" size={12} />
+                  </a>
+                ) : (
+                  <div
+                    key={it.id}
+                    className={`nav-item ${page === it.id ? "active" : ""}`}
+                    onClick={() => onNavigate(it.id)}
+                  >
+                    <Icon name={it.icon} className="icon" />
+                    <span className="label">{it.label}</span>
+                    {it.subsystem && (
+                      <span className={subsystemOn ? "nav-pill-on" : "nav-pill-off"}>{subsystemOn ? "ON" : "OFF"}</span>
+                    )}
+                    {it.countKey != null && counts[it.countKey] != null && (
+                      <span className="count">{counts[it.countKey]}</span>
+                    )}
+                  </div>
+                )
+              ))}
             </div>
-          )}
-          <div className="nav-items">
-            {section.items.map((it) => (
-              it.href ? (
-                <a
-                  key={it.id}
-                  className="nav-item"
-                  href={it.href}
-                  target="_blank"
-                  rel="noopener"
-                >
-                  <Icon name={it.icon} className="icon" />
-                  <span className="label">{it.label}</span>
-                  <Icon name="external" className="icon" size={12} />
-                </a>
-              ) : (
-                <div
-                  key={it.id}
-                  className={`nav-item ${page === it.id ? "active" : ""}`}
-                  onClick={() => onNavigate(it.id)}
-                >
-                  <Icon name={it.icon} className="icon" />
-                  <span className="label">{it.label}</span>
-                  {it.subsystem && (
-                    <span className={subsystemOn ? "nav-pill-on" : "nav-pill-off"}>{subsystemOn ? "ON" : "OFF"}</span>
-                  )}
-                  {it.countKey != null && counts[it.countKey] != null && (
-                    <span className="count">{counts[it.countKey]}</span>
-                  )}
-                </div>
-              )
-            ))}
           </div>
-        </div>
-      ))}
+        );
+      })}
       <div className="sidebar-foot" onClick={onCollapseToggle} title={navCollapsed ? "Expand sidebar" : "Collapse sidebar"}>
         <Icon name="panel-left" size={13} />
         <span>{navCollapsed ? "Expand sidebar" : "Collapse sidebar"}</span>

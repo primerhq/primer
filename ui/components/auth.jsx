@@ -34,7 +34,18 @@ function AuthGate({ children }) {
       </div>
     );
   }
-  if (status.authenticated) return children;
+  if (status.authenticated) {
+    // Provisioned accounts must set their own password before anything else.
+    // (must_change_password + role are added to /auth/status in Task 3.)
+    if (status.must_change_password) {
+      return <ADM_MustChangePasswordScreen onDone={() => window.location.reload()} />;
+    }
+    // Restricted users are authenticated but have no console access yet.
+    if (status.role === "restricted") {
+      return <ADM_PendingAccessScreen username={status.username} />;
+    }
+    return children;
+  }
   if (!status.has_user) return <RegisterScreen onDone={() => window.location.reload()} />;
   return <LoginScreen onDone={() => window.location.reload()} />;
 }
@@ -353,6 +364,134 @@ function LoginScreen({ onDone }) {
   );
 }
 
+// Shown after login when /v1/auth/status reports must_change_password
+// (admin-provisioned accounts — role/must_change_password added to the
+// status payload in Task 3). POSTs the new password to
+// /v1/auth/change-password (Task 4), which verifies the current password,
+// rehashes, and clears the flag; on success we reload into the main app.
+function ADM_MustChangePasswordScreen({ onDone }) {
+  const [current, setCurrent] = React.useState("");
+  const [next, setNext] = React.useState("");
+  const [confirm, setConfirm] = React.useState("");
+  const [busy, setBusy] = React.useState(false);
+  const [server, setServer] = React.useState(null);
+  const [fieldErrs, setFieldErrs] = React.useState({});
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setServer(null);
+    const errs = {};
+    if (!current) errs.current = "current password is required";
+    if (next.length < 8) errs.next = "value must have at least 8 characters";
+    if (next !== confirm) errs.confirm = "passwords don't match";
+    setFieldErrs(errs);
+    if (Object.keys(errs).length > 0) return;
+
+    setBusy(true);
+    try {
+      await window.primerApi.apiFetch(
+        "POST", "/auth/change-password",
+        { current_password: current, new_password: next }, {},
+      );
+      onDone();
+    } catch (err) {
+      setServer(_extractServerError(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="auth-shell">
+      <div className="auth-wrap">
+        <_AuthBrand />
+        <div className="auth-card">
+          <div className="auth-h">
+            <h1 className="title">Choose a new password</h1>
+            <div className="sub">
+              Your account was provisioned with a temporary password. Set your own to continue.
+            </div>
+            <_InstancePill />
+          </div>
+          <form className="auth-body" onSubmit={submit} noValidate>
+            <_ServerBanner {...(server || {})} />
+            <_PasswordField
+              label="Current password"
+              value={current}
+              onChange={(v) => { setCurrent(v); if (fieldErrs.current) setFieldErrs((p) => ({ ...p, current: undefined })); }}
+              autoComplete="current-password"
+              hasErr={!!fieldErrs.current}
+              errMsg={fieldErrs.current}
+              autoFocus
+            />
+            <_PasswordField
+              label="New password"
+              value={next}
+              onChange={(v) => { setNext(v); if (fieldErrs.next) setFieldErrs((p) => ({ ...p, next: undefined })); }}
+              placeholder="at least 8 characters"
+              autoComplete="new-password"
+              hasErr={!!fieldErrs.next}
+              errMsg={fieldErrs.next}
+            />
+            <_PasswordField
+              label="Confirm new password"
+              value={confirm}
+              onChange={(v) => { setConfirm(v); if (fieldErrs.confirm) setFieldErrs((p) => ({ ...p, confirm: undefined })); }}
+              autoComplete="new-password"
+              hasErr={!!fieldErrs.confirm}
+              errMsg={fieldErrs.confirm}
+            />
+            <button
+              type="submit"
+              className="auth-submit touch-target"
+              disabled={busy || !current || !next || !confirm}
+              style={{ marginTop: 6 }}
+            >
+              {busy ? (<><span className="spinner" /><span>Updating…</span></>) : <span>Update password</span>}
+            </button>
+          </form>
+        </div>
+        <_AuthFooter />
+      </div>
+    </div>
+  );
+}
+
+// Shown when /v1/auth/status reports role === "restricted": the user is
+// authenticated but has no console access yet. Offers only a sign-out.
+function ADM_PendingAccessScreen({ username }) {
+  const onLogout = async () => {
+    try { await window.primerApi.apiFetch("POST", "/auth/logout", null, {}); } catch {}
+    window.location.reload();
+  };
+  return (
+    <div className="auth-shell">
+      <div className="auth-wrap">
+        <_AuthBrand />
+        <div className="auth-card">
+          <div className="auth-h">
+            <h1 className="title">Access pending</h1>
+            <div className="sub">
+              {username ? <>Signed in as <span className="mono">{username}</span>. </> : null}
+              Your account doesn't have console access yet. An administrator must grant you a
+              role before you can continue.
+            </div>
+            <_InstancePill />
+          </div>
+          <div className="auth-body">
+            <button type="button" className="auth-submit touch-target" onClick={onLogout}>
+              <span>Sign out</span>
+            </button>
+          </div>
+        </div>
+        <_AuthFooter />
+      </div>
+    </div>
+  );
+}
+
 window.AuthGate = AuthGate;
 window.RegisterScreen = RegisterScreen;
 window.LoginScreen = LoginScreen;
+window.ADM_MustChangePasswordScreen = ADM_MustChangePasswordScreen;
+window.ADM_PendingAccessScreen = ADM_PendingAccessScreen;
