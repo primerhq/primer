@@ -27,3 +27,5 @@ class SystemState(BaseModel):
     schema_version: int = 1
     last_migration_at: datetime | None = None
     session_secret: str | None = None
+    sso_jit_enabled: bool = False
+    sso_default_access: str | None = None

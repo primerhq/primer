@@ -327,7 +327,9 @@ class SqliteStorageProvider(StorageProvider):
                 "  bootstrap_completed_at TEXT,"
                 "  schema_version         INTEGER NOT NULL DEFAULT 1,"
                 "  last_migration_at      TEXT,"
-                "  session_secret         TEXT"
+                "  session_secret         TEXT,"
+                "  sso_jit_enabled        INTEGER NOT NULL DEFAULT 0,"
+                "  sso_default_access     TEXT"
                 ")"
             )
             # Schema-evolution shim: for installs created before
@@ -338,6 +340,15 @@ class SqliteStorageProvider(StorageProvider):
             if "session_secret" not in cols:
                 await self._conn.execute(
                     "ALTER TABLE system_state ADD COLUMN session_secret TEXT"
+                )
+            if "sso_jit_enabled" not in cols:
+                await self._conn.execute(
+                    "ALTER TABLE system_state ADD COLUMN sso_jit_enabled "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+            if "sso_default_access" not in cols:
+                await self._conn.execute(
+                    "ALTER TABLE system_state ADD COLUMN sso_default_access TEXT"
                 )
             await self._conn.execute(
                 "INSERT INTO system_state (id) VALUES ('singleton') "
@@ -383,14 +394,23 @@ class SqliteStorageProvider(StorageProvider):
         """Return the singleton ``system_state`` row."""
         sql = (
             "SELECT id, bootstrap_completed_at, schema_version, "
-            "       last_migration_at, session_secret "
+            "       last_migration_at, session_secret, "
+            "       sso_jit_enabled, sso_default_access "
             "FROM system_state WHERE id = ?"
         )
         cur = await self.connection.execute(sql, ("singleton",))
         row = await cur.fetchone()
         if row is None:
             return SystemState()
-        id_, bca_text, schema_version, lma_text, session_secret = row
+        (
+            id_,
+            bca_text,
+            schema_version,
+            lma_text,
+            session_secret,
+            sso_jit_enabled,
+            sso_default_access,
+        ) = row
 
         def _parse_ts(s: str | None) -> datetime | None:
             if s is None:
@@ -407,6 +427,8 @@ class SqliteStorageProvider(StorageProvider):
             schema_version=schema_version,
             last_migration_at=_parse_ts(lma_text),
             session_secret=session_secret,
+            sso_jit_enabled=bool(sso_jit_enabled),
+            sso_default_access=sso_default_access,
         )
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
@@ -428,6 +450,22 @@ class SqliteStorageProvider(StorageProvider):
         await self.connection.execute(
             "UPDATE system_state SET session_secret = ? WHERE id = ?",
             (secret, "singleton"),
+        )
+        await self.connection.commit()
+
+    async def set_sso_jit_enabled(self, enabled: bool) -> None:
+        """Persist whether SSO just-in-time user provisioning is enabled."""
+        await self.connection.execute(
+            "UPDATE system_state SET sso_jit_enabled = ? WHERE id = ?",
+            (enabled, "singleton"),
+        )
+        await self.connection.commit()
+
+    async def set_sso_default_access(self, access: str | None) -> None:
+        """Persist the default access level granted to JIT-provisioned users."""
+        await self.connection.execute(
+            "UPDATE system_state SET sso_default_access = ? WHERE id = ?",
+            (access, "singleton"),
         )
         await self.connection.commit()
 

@@ -306,7 +306,9 @@ class PostgresStorageProvider(StorageProvider):
                 f'  bootstrap_completed_at TIMESTAMPTZ,'
                 f'  schema_version         INTEGER NOT NULL DEFAULT 1,'
                 f'  last_migration_at      TIMESTAMPTZ,'
-                f'  session_secret         TEXT'
+                f'  session_secret         TEXT,'
+                f'  sso_jit_enabled        BOOLEAN NOT NULL DEFAULT false,'
+                f'  sso_default_access     TEXT'
                 f')',
             )
             # Schema-evolution: add session_secret column on pre-existing
@@ -314,6 +316,15 @@ class PostgresStorageProvider(StorageProvider):
             await conn.execute(
                 f'ALTER TABLE "{self._schema}"."system_state" '
                 f'ADD COLUMN IF NOT EXISTS session_secret TEXT'
+            )
+            await conn.execute(
+                f'ALTER TABLE "{self._schema}"."system_state" '
+                f'ADD COLUMN IF NOT EXISTS sso_jit_enabled '
+                f'BOOLEAN NOT NULL DEFAULT false'
+            )
+            await conn.execute(
+                f'ALTER TABLE "{self._schema}"."system_state" '
+                f'ADD COLUMN IF NOT EXISTS sso_default_access TEXT'
             )
             await conn.execute(
                 f'INSERT INTO "{self._schema}"."system_state" (id) '
@@ -349,7 +360,8 @@ class PostgresStorageProvider(StorageProvider):
         """Return the singleton ``system_state`` row."""
         sql = (
             f'SELECT id, bootstrap_completed_at, schema_version, '
-            f'       last_migration_at, session_secret '
+            f'       last_migration_at, session_secret, '
+            f'       sso_jit_enabled, sso_default_access '
             f'FROM {self.system_state_table} WHERE id = $1'
         )
         async with self.pool.acquire() as conn:
@@ -363,6 +375,8 @@ class PostgresStorageProvider(StorageProvider):
             schema_version=row["schema_version"],
             last_migration_at=row["last_migration_at"],
             session_secret=row["session_secret"],
+            sso_jit_enabled=row["sso_jit_enabled"],
+            sso_default_access=row["sso_default_access"],
         )
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
@@ -382,6 +396,24 @@ class PostgresStorageProvider(StorageProvider):
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, secret, "singleton")
+
+    async def set_sso_jit_enabled(self, enabled: bool) -> None:
+        """Persist whether SSO just-in-time user provisioning is enabled."""
+        sql = (
+            f'UPDATE {self.system_state_table} '
+            f'SET sso_jit_enabled = $1 WHERE id = $2'
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(sql, enabled, "singleton")
+
+    async def set_sso_default_access(self, access: str | None) -> None:
+        """Persist the default access level granted to JIT-provisioned users."""
+        sql = (
+            f'UPDATE {self.system_state_table} '
+            f'SET sso_default_access = $1 WHERE id = $2'
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(sql, access, "singleton")
 
     def get_content_store(self) -> "PostgresDocumentContentStore":
         """Return the document-body store bound to this provider's pool."""
