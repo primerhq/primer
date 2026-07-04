@@ -614,6 +614,7 @@ def _fetch_models_tool(
                     returns="the provider's available model ids",
                 )
             ],
+            required_role="admin",
         ),
         _handler,
     )
@@ -693,6 +694,7 @@ def _list_toolset_tools_tool(
                     ),
                 )
             ],
+            required_role="user",
         ),
         _handler,
     )
@@ -940,6 +942,7 @@ def _collection_extras(
                     returns="a page of documents in the collection",
                 )
             ],
+            required_role="user",
         ),
         _list_docs,
     )
@@ -996,6 +999,7 @@ def _collection_extras(
                     returns="documents whose meta.source equals 'web'",
                 )
             ],
+            required_role="user",
         ),
         _find_by_meta,
     )
@@ -1107,6 +1111,7 @@ def _collection_extras(
                     ),
                 )
             ],
+            required_role="user",
         ),
         _search,
     )
@@ -1150,6 +1155,7 @@ def _collection_extras(
                     ),
                 )
             ],
+            required_role="user",
         ),
         _refresh,
     )
@@ -1349,6 +1355,7 @@ def _document_extras(
                     returns="``{id, collection_id, path, title, content}``",
                 )
             ],
+            required_role="user",
         ),
         _get_content,
     )
@@ -1398,6 +1405,7 @@ def _document_extras(
                     returns="the stored Document entity",
                 )
             ],
+            required_role="user",
         ),
         _put_document,
     )
@@ -1440,6 +1448,7 @@ def _document_extras(
                     returns="``{documents: [{path, document_id, size}, ...]}``",
                 )
             ],
+            required_role="user",
         ),
         _list_documents,
     )
@@ -1490,6 +1499,7 @@ def _document_extras(
                     returns="``{moved: true, collection_id, from, to}``",
                 )
             ],
+            required_role="user",
         ),
         _move_document,
     )

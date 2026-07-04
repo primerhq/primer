@@ -200,6 +200,7 @@ TOOL_LIST = make_tool(
             returns="enabled cron triggers",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_GET = make_tool(
@@ -215,6 +216,7 @@ TOOL_GET = make_tool(
     examples=[
         ToolExample(args={"id": "trg-1"}, returns="the Trigger row"),
     ],
+    required_role="user",
 )
 
 TOOL_CREATE = make_tool(
@@ -240,6 +242,7 @@ TOOL_CREATE = make_tool(
             returns="the created Trigger",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_UPDATE = make_tool(
@@ -261,6 +264,7 @@ TOOL_UPDATE = make_tool(
             note="disable without deleting",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_DELETE = make_tool(
@@ -277,6 +281,7 @@ TOOL_DELETE = make_tool(
     examples=[
         ToolExample(args={"id": "trg-1"}, returns="{ok: true}"),
     ],
+    required_role="user",
 )
 
 TOOL_FIRE_NOW = make_tool(
@@ -297,6 +302,7 @@ TOOL_FIRE_NOW = make_tool(
             note="bypasses the scheduler",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_LIST_SUBS = make_tool(
@@ -316,6 +322,7 @@ TOOL_LIST_SUBS = make_tool(
             returns="subscriptions of trg-1",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_GET_SUB = make_tool(
@@ -336,6 +343,7 @@ TOOL_GET_SUB = make_tool(
             returns="the Subscription row",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_CREATE_SUB = make_tool(
@@ -364,6 +372,7 @@ TOOL_CREATE_SUB = make_tool(
             returns="the created Subscription",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_UPDATE_SUB = make_tool(
@@ -387,6 +396,7 @@ TOOL_UPDATE_SUB = make_tool(
             returns="the updated Subscription",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_DELETE_SUB = make_tool(
@@ -406,6 +416,7 @@ TOOL_DELETE_SUB = make_tool(
             returns="{ok: true}",
         ),
     ],
+    required_role="user",
 )
 
 TOOL_SUBSCRIBE = make_tool(

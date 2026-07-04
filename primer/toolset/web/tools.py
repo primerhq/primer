@@ -153,6 +153,7 @@ def make_web_search_descriptor(toolset_id: str) -> Tool:
             ToolExample(args={"query": "python 3.13 release notes"}, returns="up to 5 title/url/snippet hits"),
             ToolExample(args={"query": "anthropic api pricing", "count": 10}, returns="up to 10 hits"),
         ],
+        required_role="user",
     )
 
 
@@ -174,6 +175,7 @@ def make_http_request_descriptor(toolset_id: str) -> Tool:
             ToolExample(args={"url": "https://api.github.com/repos/python/cpython"}, returns="status, headers, JSON body"),
             ToolExample(args={"url": "https://api.example.com/items", "method": "POST", "body": "{\"x\": 1}"}, returns="the POST response"),
         ],
+        required_role="user",
     )
 
 
@@ -195,6 +197,7 @@ def make_web_fetch_descriptor(toolset_id: str) -> Tool:
             ToolExample(args={"url": "https://docs.python.org/3/whatsnew/3.13.html"}, returns="clean markdown of the page"),
             ToolExample(args={"url": "https://example.com/article", "max_chars": 4000}, returns="first ~4000 chars of clean markdown"),
         ],
+        required_role="user",
     )
 
 

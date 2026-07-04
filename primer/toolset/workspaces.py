@@ -417,6 +417,7 @@ def _tool(
     *,
     yields: bool = False,
     requires_session: bool = False,
+    required_role: str | None = None,
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
     return name, (
         make_tool(
@@ -428,6 +429,7 @@ def _tool(
             examples=examples,
             yields=yields,
             requires_session=requires_session,
+            required_role=required_role,
         ),
         handler,
     )
@@ -722,6 +724,7 @@ def build_workspaces_toolset(
             ToolExample(args={}, returns="page of WorkspaceProvider rows"),
             ToolExample(args={"limit": 50, "order_by": ["id:asc"]}),
         ],
+        required_role="admin",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -741,6 +744,7 @@ def build_workspaces_toolset(
         examples=[
             ToolExample(args={"id": "local-1"}, returns="the WorkspaceProvider row"),
         ],
+        required_role="admin",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -771,6 +775,7 @@ def build_workspaces_toolset(
                 returns="201 plus the stored provider row",
             ),
         ],
+        required_role="admin",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -790,6 +795,7 @@ def build_workspaces_toolset(
         examples=[
             ToolExample(args={"id": "local-1"}, returns="{deleted: true, id: ...}"),
         ],
+        required_role="admin",
     )
     registry[name] = entry
 
@@ -808,6 +814,7 @@ def build_workspaces_toolset(
             ToolExample(args={}, returns="page of WorkspaceTemplate rows"),
             ToolExample(args={"limit": 10}),
         ],
+        required_role="user",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -824,6 +831,7 @@ def build_workspaces_toolset(
         examples=[
             ToolExample(args={"id": "py-base"}, returns="the WorkspaceTemplate row"),
         ],
+        required_role="user",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -854,6 +862,7 @@ def build_workspaces_toolset(
                 returns="201 plus the stored template row",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -885,6 +894,7 @@ def build_workspaces_toolset(
                 returns="the updated template row",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -903,6 +913,7 @@ def build_workspaces_toolset(
         examples=[
             ToolExample(args={"id": "py-base"}, returns="{deleted: true, id: ...}"),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -920,6 +931,7 @@ def build_workspaces_toolset(
             ToolExample(args={}, returns="page of Workspace rows"),
             ToolExample(args={"limit": 20}),
         ],
+        required_role="user",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -935,6 +947,7 @@ def build_workspaces_toolset(
         examples=[
             ToolExample(args={"id": "ws-1"}, returns="the Workspace row"),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1004,6 +1017,7 @@ def build_workspaces_toolset(
                 note="overrides layer on top of the template",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1036,6 +1050,7 @@ def build_workspaces_toolset(
         examples=[
             ToolExample(args={"id": "ws-1"}, returns="{deleted: true, id: ...}"),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1110,6 +1125,7 @@ def build_workspaces_toolset(
                 returns="a graph session bound to incident-pipeline",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1169,6 +1185,7 @@ def build_workspaces_toolset(
                 ),
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1213,6 +1230,7 @@ def build_workspaces_toolset(
             ),
             ToolExample(args={"workspace_id": "ws-1", "limit": 10, "offset": 0}),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1260,6 +1278,7 @@ def build_workspaces_toolset(
                 returns="{info, status}",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1306,6 +1325,7 @@ def build_workspaces_toolset(
                 returns="{ok: true, session_id: ...}",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
     name, entry = _tool(
@@ -1324,6 +1344,7 @@ def build_workspaces_toolset(
                 returns="{ok: true, session_id: ...}",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1373,6 +1394,7 @@ def build_workspaces_toolset(
                 returns="the appended Instruction object",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1424,6 +1446,7 @@ def build_workspaces_toolset(
                 args={"workspace_id": "ws-1", "path": "src", "recursive": True},
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1459,6 +1482,7 @@ def build_workspaces_toolset(
                 returns="the FileEntry",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1524,6 +1548,7 @@ def build_workspaces_toolset(
                 note="use base64 for binary files",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1558,6 +1583,7 @@ def build_workspaces_toolset(
                 returns="{deleted: true, path: ...}",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1623,6 +1649,7 @@ def build_workspaces_toolset(
                 note="base64 content is decoded to raw bytes",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1670,6 +1697,7 @@ def build_workspaces_toolset(
             ),
             ToolExample(args={"workspace_id": "ws-1", "limit": 10}),
         ],
+        required_role="user",
     )
     registry[name] = entry
 
@@ -1806,6 +1834,7 @@ def build_workspaces_toolset(
                 note="filter to tool_call events; long-poll up to 5s",
             ),
         ],
+        required_role="user",
     )
     registry[name] = entry
 

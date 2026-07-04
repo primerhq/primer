@@ -215,24 +215,29 @@ def build_system_toolset(
     # Note: VectorStoreConfig was removed from this set when vector
     # store configuration moved into AppConfig (it is no longer a
     # storage row).
+    # required_role per §6.2: provider config rows (LLM/embedding/
+    # cross-encoder/semantic-search/artifact-storage/channel-provider),
+    # tool-approval policies -> admin; user-facing feature entities
+    # (agents, graphs, collections/documents, threads, toolsets,
+    # channels, and the toolset row itself) -> user.
     crud_specs = [
-        ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm),
-        ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb),
-        ("cross_encoder_provider", "cross_encoder_providers", CrossEncoderProvider, None, _inv_ce, _inv_ce),
-        ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts),
-        ("agent", "agents", Agent, None, None, None),
-        ("graph", "graphs", Graph, None, None, None),
-        ("collection", "collections", Collection, None, None, None),
-        ("document", "documents", Document, None, None, None),
-        ("agent_thread", "agent_threads", Thread, None, None, None),
-        ("graph_thread", "graph_threads", GraphThread, None, None, None),
-        ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp),
-        ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, None, None),
-        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None),
-        ("channel_provider", "channel_providers", ChannelProvider, None, None, None),
-        ("channel", "channels", Channel, None, None, None),
+        ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm, "admin"),
+        ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb, "admin"),
+        ("cross_encoder_provider", "cross_encoder_providers", CrossEncoderProvider, None, _inv_ce, _inv_ce, "admin"),
+        ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user"),
+        ("agent", "agents", Agent, None, None, None, "user"),
+        ("graph", "graphs", Graph, None, None, None, "user"),
+        ("collection", "collections", Collection, None, None, None, "user"),
+        ("document", "documents", Document, None, None, None, "user"),
+        ("agent_thread", "agent_threads", Thread, None, None, None, "user"),
+        ("graph_thread", "graph_threads", GraphThread, None, None, None, "user"),
+        ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin"),
+        ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, None, None, "admin"),
+        ("tool_approval_policy", "tool_approval_policies", ToolApprovalPolicy, None, None, None, "admin"),
+        ("channel_provider", "channel_providers", ChannelProvider, None, None, None, "admin"),
+        ("channel", "channels", Channel, None, None, None, "user"),
     ]
-    for label, plural, cls, on_c, on_u, on_d in crud_specs:
+    for label, plural, cls, on_c, on_u, on_d, role in crud_specs:
         registry.update(
             _crud_tools_for(
                 entity_label=label,
@@ -242,6 +247,7 @@ def build_system_toolset(
                 on_create=on_c,
                 on_update=on_u,
                 on_delete=on_d,
+                required_role=role,
             )
         )
 
@@ -290,6 +296,7 @@ def build_system_toolset(
                     returns="``{'invalidated': true, 'id': '...'}``",
                 )
             ],
+            required_role="admin",
         ),
         _invalidate_ssp_handler,
     )
@@ -377,6 +384,7 @@ def build_system_toolset(
                     returns="``{ok: true, workspace_id, channel_id, anchor}``",
                 )
             ],
+            required_role="user",
         ),
         _set_reply_binding_handler,
     )
@@ -426,6 +434,7 @@ def build_system_toolset(
                     returns="``{ok: true, workspace_id}``",
                 )
             ],
+            required_role="user",
         ),
         _clear_reply_binding_handler,
     )
@@ -527,6 +536,7 @@ def build_system_toolset(
                     note="slash /deploy -> run the deployer agent, reply in-thread",
                 ),
             ],
+            required_role="user",
         ),
         _create_channel_binding_handler,
     )
@@ -569,6 +579,7 @@ def build_system_toolset(
                     returns="the channel bindings of trg-ch-1",
                 ),
             ],
+            required_role="user",
         ),
         _list_channel_bindings_handler,
     )
@@ -615,6 +626,7 @@ def build_system_toolset(
                     returns="``{ok: true}``",
                 ),
             ],
+            required_role="user",
         ),
         _delete_channel_binding_handler,
     )
@@ -719,6 +731,7 @@ def build_system_toolset(
                     note="blocking subagent",
                 ),
             ],
+            required_role="user",
         ),
         _invoke_agent_handler,
     )
