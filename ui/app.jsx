@@ -209,6 +209,16 @@ function App() {
     (signal) => window.primerApi.apiFetch("GET", "/channels?limit=1", null, { signal }),
     { pollMs: 5000 }
   );
+  // Logged-in user's role — threaded into the sidebar so admin-only nav rows
+  // hide for non-admins. COSMETIC ONLY: the server enforces RBAC on every
+  // route (Task 7); this just declutters the nav. Consumes the `role` field
+  // added to /v1/auth/status in Task 3 (null until then -> show everything).
+  const authStatus = window.primerApi.useResource(
+    "app:auth-status",
+    (signal) => window.primerApi.apiFetch("GET", "/auth/status", null, { signal }),
+    { pollMs: 30000 }
+  );
+  const userRole = authStatus.data?.role || null;
   // Approvals_pending — client-side aggregation: parked sessions
   // (`/sessions/find` with parked_status=parked predicate) +
   // parked chats (no /chats/find route; GET + client filter, matching
@@ -1166,6 +1176,7 @@ function App() {
           subsystemOn,
           collapsed: sidebarCollapsed,
           onCollapseToggle: toggleSidebar,
+          role: userRole,
         };
         return (
           <>
