@@ -669,6 +669,14 @@ class Tool(Describeable):
             "serialization."
         ),
     )
+    required_role: str | None = Field(
+        default=None,
+        description=(
+            "RBAC role required to invoke this tool over the MCP surface "
+            "(e.g. 'admin' or 'user'). None means undeclared; the MCP gate "
+            "treats undeclared reserved tools as admin-only (fail-closed)."
+        ),
+    )
 
 
 ToolChoice = Literal["auto", "required", "none"] | str

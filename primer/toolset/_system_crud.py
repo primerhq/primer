@@ -259,6 +259,7 @@ def _crud_tools_for(
     on_create: _OnMutate = None,
     on_update: _OnMutate = None,
     on_delete: _OnMutate = None,
+    required_role: str | None = None,
 ) -> dict[str, tuple[Tool, ToolHandler]]:
     """Build ``list/get/create/update/delete/find_<entity>`` tools.
 
@@ -308,6 +309,7 @@ def _crud_tools_for(
                     returns=f"a page of {entity_label_plural}",
                 )
             ],
+            required_role=required_role,
         ),
         _list_handler,
     )
@@ -335,6 +337,7 @@ def _crud_tools_for(
             examples=[
                 ToolExample(args={"id": hint.sample_id}, returns=f"the {entity_label}")
             ],
+            required_role=required_role,
         ),
         _get_handler,
     )
@@ -383,6 +386,7 @@ def _crud_tools_for(
                     returns=f"the stored {entity_label}",
                 )
             ],
+            required_role=required_role,
         ),
         _create_handler,
     )
@@ -447,6 +451,7 @@ def _crud_tools_for(
                     returns=f"the updated {entity_label}",
                 )
             ],
+            required_role=required_role,
         ),
         _update_handler,
     )
@@ -489,6 +494,7 @@ def _crud_tools_for(
             examples=[
                 ToolExample(args={"id": hint.sample_id}, returns="deletion ack")
             ],
+            required_role=required_role,
         ),
         _delete_handler,
     )
@@ -538,6 +544,7 @@ def _crud_tools_for(
                     returns="rows whose id equals the sample",
                 )
             ],
+            required_role=required_role,
         ),
         _find_handler,
     )

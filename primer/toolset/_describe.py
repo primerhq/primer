@@ -41,6 +41,7 @@ def make_tool(
     examples: list[ToolExample],
     yields: bool = False,
     requires_session: bool = False,
+    required_role: str | None = None,
 ) -> Tool:
     """Build a Tool with validated examples and the standard description anatomy.
 
@@ -71,4 +72,5 @@ def make_tool(
         examples=examples,
         yields=yields,
         requires_session=requires_session,
+        required_role=required_role,
     )
