@@ -21,11 +21,14 @@ Backends
   runtime's PTY op via
   :meth:`~primer.workspace.runtime.ws_sandbox.WSSandbox.open_pty`.
 
-Availability (spec §13 open question): the terminal is **default-enabled**
-for every workspace in v1 — there is no per-workspace / per-role enable
-toggle yet. Access is auth-gated (``require_auth_ws``); the workspace is the
-sandbox boundary. A workspace kind that supports neither PTY path is closed
-with policy code 1011.
+Availability (spec §6.5, auth plan Task 8): the terminal is a real shell
+inside the workspace sandbox, so it is **admin-only by default**. A
+non-admin is admitted only when an operator flips the per-workspace
+``terminal_user_access`` toggle (and the caller holds at least the ``user``
+role); ``restricted`` accounts never get a shell. Access is auth-gated
+(``require_auth_ws`` → close 4401) then role-gated (close 4403); the
+workspace is the sandbox boundary. A workspace kind that supports neither
+PTY path is closed with policy code 1011.
 """
 
 from __future__ import annotations
@@ -38,7 +41,7 @@ from typing import Any, Protocol
 
 from fastapi import APIRouter, Query, WebSocket
 
-from primer.api.deps import require_auth_ws
+from primer.api.deps import require_auth_ws, require_role_ws, require_user_ws
 from primer.model.except_ import NotFoundError
 
 logger = logging.getLogger(__name__)
@@ -174,6 +177,20 @@ async def workspace_terminal_ws(
         await websocket.accept()
         await websocket.close(code=4404, reason="workspace_not_found")
         return
+
+    # RBAC role gate (auth plan Task 8): the integrated terminal is a real
+    # shell inside the workspace sandbox, so it is admin-only by default. A
+    # non-admin is admitted ONLY when an operator has flipped the
+    # per-workspace ``terminal_user_access`` toggle AND the caller holds at
+    # least the ``user`` role (``restricted`` never gets a shell). Otherwise
+    # close 4403 (mirrors the 4401 auth close above). The toggle lives on the
+    # resolved workspace handle, so this gate runs after get_workspace.
+    if require_role_ws(websocket, "admin") is None:
+        toggled = bool(getattr(workspace, "terminal_user_access", False))
+        if not (toggled and require_user_ws(websocket) is not None):
+            await websocket.accept()
+            await websocket.close(code=4403, reason="forbidden_role")
+            return
 
     resolver = getattr(
         websocket.app.state, "terminal_pty_resolver", _default_resolve_pty,
