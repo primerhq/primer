@@ -376,6 +376,43 @@ class _SSEConnection:
         return frames
 
 
+async def _wait_subscribed(
+    router: WorkspaceTapRouter,
+    workspace_id: str,
+    *,
+    timeout: float = _FRAME_TIMEOUT,
+) -> None:
+    """Block until the tap SSE generator has registered its workspace subscriber.
+
+    This closes the subscribe-race the old ``await asyncio.sleep(0.05)`` guesses
+    papered over. ``_SSEConnection._started`` fires when the ASGI
+    ``http.response.start`` message is sent, but Starlette's
+    ``StreamingResponse`` sends that BEFORE it first iterates the body
+    generator -- so ``_stream_tap`` has not yet reached
+    ``router.subscribe(workspace_id)`` (which runs only after an ``await`` on
+    the initial in-scope resolution). Awaiting the connection open is therefore
+    NOT proof the workspace subscriber exists.
+
+    If a test publishes a tick before the generator subscribes,
+    :meth:`WorkspaceTapRouter._publish` finds no subscriber for the workspace
+    and DROPS the tick (ticks are advisory pointers), and the later
+    ``read_frames`` then starves until ``_FRAME_TIMEOUT`` -- the observed flake.
+    We instead poll the router's real subscriber registry (the authoritative
+    signal that ``subscribe`` has run), so every publish is strictly ordered
+    after the subscription with zero timing guesswork.
+    """
+
+    async def _poll() -> None:
+        # ``_subs[workspace_id]`` is populated synchronously by
+        # ``router.subscribe`` and only removed on disconnect; a non-empty set
+        # means the SSE generator's queue is registered and any subsequent
+        # ``bus.publish`` tick will be fanned into it.
+        while not router._subs.get(workspace_id):
+            await asyncio.sleep(0)  # yield so the generator task advances
+
+    await asyncio.wait_for(_poll(), timeout=timeout)
+
+
 # ===========================================================================
 # Tests
 # ===========================================================================
@@ -399,7 +436,7 @@ async def test_tap_streams_events_in_order_with_cursors(app, workspace_registry)
         ) as conn:
             assert conn.status_code == 200
             assert conn.content_type.startswith("text/event-stream")
-            await asyncio.sleep(0.05)  # let the generator subscribe
+            await _wait_subscribed(router, wid)
             await bus.publish(f"session:{sid}:tick", {"seq": 2})
 
             frames = await conn.read_frames(count=2)
@@ -445,7 +482,7 @@ async def test_tap_event_selector_filters_class(app, workspace_registry):
             cookie=cookie,
         ) as conn:
             assert conn.status_code == 200
-            await asyncio.sleep(0.05)
+            await _wait_subscribed(router, wid)
             await bus.publish(f"session:{sid}:tick", {"seq": 3})
 
             frames = await conn.read_frames(count=1)
@@ -495,7 +532,7 @@ async def test_tap_event_selector_filters_graph_transition(app, workspace_regist
             cookie=cookie,
         ) as conn:
             assert conn.status_code == 200
-            await asyncio.sleep(0.05)
+            await _wait_subscribed(router, wid)
             await bus.publish(f"session:{sid}:tick", {"seq": 4})
 
             frames = await conn.read_frames(count=2)
@@ -527,7 +564,7 @@ async def test_tap_reconnect_with_last_event_id_is_gap_free(app, workspace_regis
         async with _SSEConnection(
             app, f"/v1/workspaces/{wid}/tap", cookie=cookie
         ) as conn:
-            await asyncio.sleep(0.05)
+            await _wait_subscribed(router, wid)
             await bus.publish(f"session:{sid}:tick", {"seq": 2})
             frames = await conn.read_frames(count=2)
         last_cursor = frames[-1].id
@@ -543,7 +580,7 @@ async def test_tap_reconnect_with_last_event_id_is_gap_free(app, workspace_regis
             cookie=cookie,
             headers={"Last-Event-ID": last_cursor},
         ) as conn2:
-            await asyncio.sleep(0.05)
+            await _wait_subscribed(router, wid)
             await bus.publish(f"session:{sid}:tick", {"seq": 3})
             frames2 = await conn2.read_frames(count=1)
             assert [f.data["class"] for f in frames2] == ["done"]
@@ -568,7 +605,7 @@ async def test_tap_live_from_now_skips_preexisting_records(app, workspace_regist
             app, f"/v1/workspaces/{wid}/tap", cookie=cookie
         ) as conn:
             assert conn.status_code == 200
-            await asyncio.sleep(0.05)
+            await _wait_subscribed(router, wid)
             # A new record appended AFTER connect.
             ws.append_record(sid, seq=3, kind="done")
             await bus.publish(f"session:{sid}:tick", {"seq": 3})
@@ -649,7 +686,7 @@ async def test_tap_session_transitioning_into_scope_is_streamed(app, workspace_r
             cookie=cookie,
         ) as conn:
             assert conn.status_code == 200
-            await asyncio.sleep(0.05)  # let the generator subscribe
+            await _wait_subscribed(router, wid)
 
             # --- Tick 1: session is CREATED → out of scope, no frame ---
             ws.append_record(sid, seq=1, kind="user_input")
