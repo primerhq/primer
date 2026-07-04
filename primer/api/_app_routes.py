@@ -184,6 +184,14 @@ def _mount_routers(
     # the primary control.
     from primer.api.routers.mcp_exposure import mcp_exposure_router
     app.include_router(mcp_exposure_router, prefix=prefix, dependencies=admin_dep)
+    # Admin users CRUD — operator-only account management (RBAC). Mounted
+    # at /v1/admin/users and gated by require_admin (stricter than the
+    # require_auth applied to the routers above).
+    from primer.api.routers.admin_users import admin_users_router
+    from primer.api.deps import require_admin
+    app.include_router(
+        admin_users_router, prefix=prefix, dependencies=[Depends(require_admin)],
+    )
     # Instrumentation endpoints — only mounted when the env var is set.
     # Public to keep the distributed test harness simple; the env var
     # itself is the access gate.
