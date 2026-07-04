@@ -13,7 +13,7 @@ import aiohttp
 from aiohttp import web
 from aiohttp.test_utils import TestServer
 
-from primer_runtime.server import build_app, PROTOCOL_VERSION
+from primer_runtime.server import build_app, PROTOCOL_VERSION, RUNTIME_VERSION
 
 
 class WSAuthError(Exception):
@@ -133,3 +133,27 @@ async def test_unknown_op_returns_eunsupported(server: ServerFixture) -> None:
         resp = await ws.receive_json()
         assert resp["ok"] is False
         assert resp["error"]["code"] == "EUNSUPPORTED"
+
+
+@pytest.mark.asyncio
+async def test_health_returns_ok(server: ServerFixture) -> None:
+    """The ``health`` op is a cheap liveness probe used by the platform's
+    workspace probe task and RuntimeClient.ping(); it must reply ok=True
+    with the runtime + protocol versions."""
+    async with server.client(token="abc123") as ws:
+        await ws.send_json(
+            {
+                "req_id": 0,
+                "op": "hello",
+                "args": {"protocol": PROTOCOL_VERSION, "client": "test/0"},
+            }
+        )
+        _ = await ws.receive_json()  # consume hello response
+
+        await ws.send_json({"req_id": 7, "op": "health", "args": {}})
+        resp = await ws.receive_json()
+        assert resp["req_id"] == 7
+        assert resp["ok"] is True
+        assert resp["result"]["ok"] is True
+        assert resp["result"]["version"] == RUNTIME_VERSION
+        assert resp["result"]["protocol"] == PROTOCOL_VERSION

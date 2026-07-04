@@ -160,6 +160,22 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
             op_name: str = frame.get("op", "")
             args: dict = frame.get("args") or {}
 
+            # --- Liveness -------------------------------------------------
+            # Cheap health probe used by the platform's workspace probe task
+            # and RuntimeClient.ping(). Connection-level (not a filesystem
+            # op), so it is answered here rather than via the HANDLERS table.
+            if op_name == OpName.HEALTH:
+                await ws.send_str(serialize(Response(
+                    req_id=frame_req_id,
+                    ok=True,
+                    result={
+                        "ok": True,
+                        "version": RUNTIME_VERSION,
+                        "protocol": PROTOCOL_VERSION,
+                    },
+                )))
+                continue
+
             # --- Watch ops -----------------------------------------------
             if op_name == OpName.WATCH_START:
                 start_watch(
