@@ -17,6 +17,8 @@ slipping bug in either path still leaves the floor enforced.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from primer.agent.tool_manager import invoke_one
 from primer.mcp.exposure import (
     ExposureDeps,
@@ -26,6 +28,9 @@ from primer.mcp.exposure import (
 )
 from primer.mcp.safety import is_exposable, tool_scoped_id
 from primer.model.chat import Tool, ToolCallResult
+
+if TYPE_CHECKING:
+    from primer.model.principal import Principal
 
 
 class NotExposed(Exception):
@@ -137,6 +142,7 @@ async def invoke_exposed(
     arguments: dict,
     principal: str | None,
     deps: ExposureDeps,
+    actor: "Principal | None" = None,
 ) -> ToolCallResult:
     """Dispatch a ``tools/call`` to the owning provider.
 
@@ -172,8 +178,10 @@ async def invoke_exposed(
         malformed, provider missing, target tool missing from the
         provider's catalogue, :func:`is_exposable` rejected the tool, or
         the tool's effective approval policy is ``required``
-        (``reason="approval_required"``). The ``reason`` attribute
-        differentiates the cause.
+        (``reason="approval_required"``), or a reserved ``system``
+        mutation tool (``create_``/``update_``/``delete_``) was invoked
+        by a non-admin actor (``reason="forbidden_role"``). The ``reason``
+        attribute differentiates the cause.
     """
     exposure = await get_exposure(deps)
     if not exposure.enabled or scoped_id not in set(exposure.allowed_tools):
@@ -191,6 +199,20 @@ async def invoke_exposed(
         # distinction below; the resolved id is never dispatched because
         # the provider/tool lookup that follows fails for it by design.
         toolset_id, bare_name = scoped_id.split("__", 1)
+    # RBAC floor: reserved ``system``-toolset mutation tools
+    # (``create_``/``update_``/``delete_``) are admin-only even when the
+    # operator allow-listed them. A system-type Principal (the
+    # auth-disabled bypass) counts as admin; any user/api_token below
+    # admin — or a missing actor — is refused here, before the provider
+    # is ever touched. ``is_exposable`` is deliberately left role-free.
+    if toolset_id == "system" and bare_name.startswith(
+        ("create_", "update_", "delete_")
+    ):
+        is_admin = actor is not None and (
+            actor.type == "system" or actor.role == "admin"
+        )
+        if not is_admin:
+            raise NotExposed(scoped_id, reason="forbidden_role")
     provider = await deps.provider_registry.get_toolset(toolset_id)
     if provider is None:
         raise NotExposed(scoped_id, reason="provider_missing")
