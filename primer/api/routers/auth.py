@@ -196,6 +196,10 @@ async def register(
         username=username,
         password_hash=pw_hash,
         created_at=datetime.now(timezone.utc),
+        # Single-user v1 register is only reachable when no user exists
+        # yet (see the 409 guard above), so this is always the first
+        # account — Layer 1 RBAC requires there's always an admin.
+        role="admin",
     )
     storage = get_storage_provider(request).get_storage(User)
     await storage.create(user)

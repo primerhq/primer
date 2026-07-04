@@ -65,5 +65,10 @@ async def test_auth_disabled_injects_synthetic_user():
 
     await mw(scope, receive, send)
     assert isinstance(captured["user"], User)
+    # RBAC (Task 2): the synthetic user must be admin so RBAC-gated
+    # routes still work when auth is disabled — otherwise "auth
+    # disabled" would silently downgrade to "auth disabled but locked
+    # out of admin-only endpoints".
+    assert captured["user"].role == "admin"
     assert captured["principal"] is None
     assert captured["api_token"] is None
