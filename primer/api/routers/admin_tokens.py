@@ -77,8 +77,8 @@ async def admin_revoke_user_token(
             status_code=404,
             detail={"code": "token_not_found", "message": f"api token {token_id!r} does not exist"},
         )
-    await revoke_token(storage, row)
-    logger.info("admin_tokens.revoke id=%s user=%s name=%s", row.id, user_id, row.name)
+    if await revoke_token(storage, row):
+        logger.info("admin_tokens.revoke id=%s user=%s name=%s", row.id, user_id, row.name)
     return JSONResponse(status_code=204, content=None)
 
 

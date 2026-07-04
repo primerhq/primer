@@ -57,6 +57,33 @@ async def test_admin_revokes_another_users_token(client, app):
 
 
 @pytest.mark.asyncio
+async def test_admin_revoke_twice_is_noop_and_logs_once(client, app, caplog):
+    await client.post("/v1/auth/register", json={"username": "boss", "password": "supersecret"})
+    sp = app.state.storage_provider
+    await _seed_user(sp, "user-bob", "bob")
+    await _seed_token(sp, "at-1", "user-bob", "bob-key")
+
+    with caplog.at_level("INFO", logger="primer.api.routers.admin_tokens"):
+        r1 = await client.delete("/v1/admin/users/user-bob/tokens/at-1")
+        row_after_first = await sp.get_storage(ApiToken).get("at-1")
+        first_revoked_at = row_after_first.revoked_at
+
+        r2 = await client.delete("/v1/admin/users/user-bob/tokens/at-1")
+        row_after_second = await sp.get_storage(ApiToken).get("at-1")
+
+    assert r1.status_code == 204
+    assert r2.status_code == 204
+    # second call is a true no-op — revoked_at does not move.
+    assert row_after_second.revoked_at == first_revoked_at
+
+    revoke_logs = [
+        rec for rec in caplog.records
+        if rec.name == "primer.api.routers.admin_tokens" and "admin_tokens.revoke" in rec.getMessage()
+    ]
+    assert len(revoke_logs) == 1
+
+
+@pytest.mark.asyncio
 async def test_missing_user_or_foreign_token_404(client, app):
     await client.post("/v1/auth/register", json={"username": "boss", "password": "supersecret"})
     sp = app.state.storage_provider

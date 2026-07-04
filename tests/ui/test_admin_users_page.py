@@ -73,6 +73,18 @@ def test_chrome_nav_has_users_entry() -> None:
     assert "admin-users" in CHROME.read_text()
 
 
+def test_keys_drilldown_present() -> None:
+    """Keys drill-down: launch button, dialog, table, per-token revoke, and
+    the admin token-management API path fragments (Spec: admin-api-key-management)."""
+    src = _src()
+    assert "keys-user-btn" in src
+    assert "adm-user-keys-dialog" in src
+    assert "adm-user-keys-table" in src
+    assert "adm-revoke-key-btn" in src
+    assert "/admin/users/" in src
+    assert "/tokens" in src
+
+
 def test_admin_users_transpiles() -> None:
     """Real JSX transpile via the server-side bundler (no jsdom in the py toolchain)."""
     from primer.api._jsx_bundle import JSXBundler
