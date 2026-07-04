@@ -112,3 +112,11 @@ class StorageProvider(ABC):
         ``PRIMER_SESSION_SECRET`` env var override is in effect. Stored
         here so sessions survive process restarts.
         """
+
+    @abstractmethod
+    async def set_sso_jit_enabled(self, enabled: bool) -> None:
+        """Persist the SSO JIT-provisioning master switch on the singleton row."""
+
+    @abstractmethod
+    async def set_sso_default_access(self, access: str | None) -> None:
+        """Persist the default role for JIT-provisioned SSO users on the singleton row."""
