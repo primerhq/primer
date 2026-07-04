@@ -109,8 +109,8 @@ class AuthMiddleware:
                 type="system",
                 id=_AUTH_DISABLED_USER.id,
                 display=_AUTH_DISABLED_USER.username,
-                role=_AUTH_DISABLED_USER.role,
-                source="system",
+                role=None,
+                source="internal",
             )
             await self.app(scope, receive, send)
             return
