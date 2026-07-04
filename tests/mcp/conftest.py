@@ -18,6 +18,7 @@ from collections.abc import Callable
 import pytest
 
 from primer.model.chat import Tool, ToolCallResult
+from primer.model.principal import Principal
 
 
 class FakeToolsetProvider:
@@ -36,12 +37,14 @@ class FakeToolsetProvider:
         yielding: set[str] | None = None,
         sessioned: set[str] | None = None,
         call_handler: Callable[..., ToolCallResult] | None = None,
+        roles: dict[str, str] | None = None,
     ) -> None:
         self.toolset_id = toolset_id
         self._tools = tools
         self._yielding = yielding or set()
         self._sessioned = sessioned or set()
         self._call_handler = call_handler
+        self._roles = roles or {}
         self.calls: list[dict[str, Any]] = []
 
     async def list_tools(
@@ -87,6 +90,12 @@ class FakeToolsetProvider:
 
     def requires_session(self, tool_name: str) -> bool:
         return tool_name in self._sessioned
+
+    def required_role(self, tool_name: str) -> str:
+        """Fail-closed default (``"admin"``), mirroring the real
+        :class:`~primer.int.toolset.ToolsetProvider` ABC default. Tests
+        that need a specific tool gated at a lower role pass ``roles``."""
+        return self._roles.get(tool_name, "admin")
 
 
 class FakeProviderRegistry:
@@ -146,6 +155,24 @@ def fake_provider_registry_with_yielding(
         yielding={"uuid_v4"},
     )
     return FakeProviderRegistry({"misc": provider})
+
+
+@pytest.fixture
+def system_actor() -> Principal:
+    """A system-type Principal (the auth-disabled bypass).
+
+    Clears the Task 3 ``required_role`` RBAC gate unconditionally
+    (:func:`primer.mcp.dispatch._role_allows`), regardless of the
+    fixture provider's fail-closed ``"admin"`` default. Tests in this
+    package that predate the per-tool RBAC gate and aren't themselves
+    exercising it (allowlist / malformed-id / missing-tool / approval-gate
+    plumbing) pass this as ``actor=`` so the gate stays transparent to
+    what they actually assert.
+    """
+    return Principal(
+        type="system", id="test-system", display="test-system",
+        role=None, source="system",
+    )
 
 
 __all__ = [

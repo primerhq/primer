@@ -25,7 +25,8 @@ import pytest
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from primer.mcp.exposure import ExposureDeps, update_exposure
-from primer.mcp.server import build_mcp_server
+from primer.mcp.server import build_mcp_server, current_actor
+from primer.model.principal import Principal
 
 
 def _deps(storage, registry) -> ExposureDeps:
@@ -69,6 +70,11 @@ async def test_call_allowed_returns_result(
     The fake provider's default handler echoes ``f"{name}:{arguments}"``
     so the round-trip can be asserted exactly. ``isError`` must be
     ``False`` and the first content block must carry the echo.
+
+    Sets ``current_actor`` to a system-type Principal (the auth-disabled
+    bypass) before the server task is spawned so it clears the Task 3
+    ``required_role`` RBAC gate — this test is about the SDK round-trip,
+    not RBAC.
     """
     deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
     await update_exposure(
@@ -77,8 +83,17 @@ async def test_call_allowed_returns_result(
     )
     server = build_mcp_server(lambda: deps)
 
-    async with create_connected_server_and_client_session(server) as client:
-        result = await client.call_tool(_SAFE, arguments={"foo": "bar"})
+    actor_tok = current_actor.set(
+        Principal(
+            type="system", id="test-system", display="test-system",
+            role=None, source="system",
+        )
+    )
+    try:
+        async with create_connected_server_and_client_session(server) as client:
+            result = await client.call_tool(_SAFE, arguments={"foo": "bar"})
+    finally:
+        current_actor.reset(actor_tok)
 
     assert result.isError is False
     assert result.content, "expected at least one content block"

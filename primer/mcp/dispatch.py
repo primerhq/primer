@@ -33,6 +33,26 @@ if TYPE_CHECKING:
     from primer.model.principal import Principal
 
 
+_ROLE_RANK = {"restricted": 0, "user": 1, "admin": 2}
+
+
+def _role_allows(actor: "Principal | None", need: str) -> bool:
+    """True iff ``actor`` may invoke a tool requiring role ``need``.
+
+    A ``system``-type actor (the auth-disabled bypass) always passes.
+    A missing actor never does. Otherwise the actor's declared
+    ``role`` must rank at or above ``need`` in :data:`_ROLE_RANK`; an
+    unranked/unknown role loses the comparison (``-1``) and an
+    unranked/unknown ``need`` can never be satisfied (``99``) --
+    both fail closed.
+    """
+    if actor is None:
+        return False
+    if actor.type == "system":
+        return True
+    return _ROLE_RANK.get(actor.role, -1) >= _ROLE_RANK.get(need, 99)
+
+
 class NotExposed(Exception):
     """Raised when a requested scoped id is not currently exposed.
 
@@ -178,10 +198,15 @@ async def invoke_exposed(
         malformed, provider missing, target tool missing from the
         provider's catalogue, :func:`is_exposable` rejected the tool, or
         the tool's effective approval policy is ``required``
-        (``reason="approval_required"``), or a reserved ``system``
-        mutation tool (``create_``/``update_``/``delete_``) was invoked
-        by a non-admin actor (``reason="forbidden_role"``). The ``reason``
-        attribute differentiates the cause.
+        (``reason="approval_required"``). The ``reason`` attribute
+        differentiates the cause.
+
+    A caller whose role does not meet the tool's declared
+    ``required_role`` is NOT raised as :class:`NotExposed` -- the tool
+    genuinely exists and is exposed; this is a per-caller authorization
+    failure, not a "does not exist" signal. An ``is_error``
+    :class:`ToolCallResult` is returned in-band instead, and the
+    provider's handler is never invoked.
     """
     exposure = await get_exposure(deps)
     if not exposure.enabled or scoped_id not in set(exposure.allowed_tools):
@@ -199,20 +224,6 @@ async def invoke_exposed(
         # distinction below; the resolved id is never dispatched because
         # the provider/tool lookup that follows fails for it by design.
         toolset_id, bare_name = scoped_id.split("__", 1)
-    # RBAC floor: reserved ``system``-toolset mutation tools
-    # (``create_``/``update_``/``delete_``) are admin-only even when the
-    # operator allow-listed them. A system-type Principal (the
-    # auth-disabled bypass) counts as admin; any user/api_token below
-    # admin — or a missing actor — is refused here, before the provider
-    # is ever touched. ``is_exposable`` is deliberately left role-free.
-    if toolset_id == "system" and bare_name.startswith(
-        ("create_", "update_", "delete_")
-    ):
-        is_admin = actor is not None and (
-            actor.type == "system" or actor.role == "admin"
-        )
-        if not is_admin:
-            raise NotExposed(scoped_id, reason="forbidden_role")
     provider = await deps.provider_registry.get_toolset(toolset_id)
     if provider is None:
         raise NotExposed(scoped_id, reason="provider_missing")
@@ -226,6 +237,21 @@ async def invoke_exposed(
     ok, reason = is_exposable(tool, provider=provider)
     if not ok:
         raise NotExposed(scoped_id, reason=reason)
+    # RBAC floor: every exposed tool -- across every toolset, not just
+    # ``system`` -- declares (or fails closed to ``admin`` for) a
+    # required_role via the owning provider. The caller's Principal must
+    # meet or exceed it. Denial is returned IN-BAND as an ``is_error``
+    # ToolCallResult rather than raised (see the docstring above); the
+    # handler below is never reached in that case.
+    need = provider.required_role(bare_name)
+    if not _role_allows(actor, need):
+        return ToolCallResult(
+            output=(
+                f"access denied: tool {bare_name!r} requires the "
+                f"{need!r} role"
+            ),
+            is_error=True,
+        )
     await _enforce_approval_gate(
         scoped_id=scoped_id,
         toolset_id=toolset_id,
