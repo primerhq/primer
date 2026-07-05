@@ -63,6 +63,11 @@ def _mount_routers(
     # all runtime modes. The router itself enforces single-user-v1.
     # Public by design (the endpoints ARE the auth surface).
     app.include_router(auth_router, prefix=prefix)
+    # SSO login/callback — sibling of the auth router. Public by design
+    # (these endpoints ARE the SSO login surface); mounted unconditionally
+    # alongside auth_router so SSO login works in all runtime modes.
+    from primer.api.routers.sso import sso_router
+    app.include_router(sso_router, prefix=prefix)
     if runtime_mode == RuntimeMode.WORKER:
         return
 

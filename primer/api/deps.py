@@ -142,6 +142,19 @@ def get_oidc_provider_storage(
     return storage_provider.get_storage(OidcProvider)
 
 
+def get_user_identity_storage(
+    storage_provider: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage":
+    """Typed :class:`Storage` handle for :class:`UserIdentity` rows.
+
+    Mirrors :func:`get_oidc_provider_storage`. Consumed by the SSO
+    callback route to resolve (or JIT-provision) the local account
+    bound to an OIDC ``(provider_id, sub)`` pair.
+    """
+    from primer.model.oidc import UserIdentity
+    return storage_provider.get_storage(UserIdentity)
+
+
 def get_workspace_registry(request: Request) -> WorkspaceRegistry:
     """Resolve the live :class:`WorkspaceRegistry`.
 
@@ -602,6 +615,7 @@ __all__ = [
     "get_session_storage",
     "get_storage_provider",
     "get_toolset_storage",
+    "get_user_identity_storage",
     "get_worker_pool",
     "get_workspace_provider_storage",
     "get_workspace_registry",

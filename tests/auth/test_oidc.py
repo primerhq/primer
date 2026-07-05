@@ -578,6 +578,43 @@ class TestExchangeCode:
         assert "code_verifier=verifier-value" in body
 
     @respx.mock
+    async def test_confidential_client_sends_basic_auth(self):
+        """A provider WITH a client_secret authenticates the token-exchange
+        request via HTTP Basic (RFC 6749 S2.3.1) rather than relying on
+        client_id alone in the body -- deferred from Task 4 because the
+        real exercise of this path only shows up once Task 6 wires a
+        provider that actually carries a client_secret."""
+        token_url = f"https://idp-{uuid.uuid4().hex}.example.com/token"
+        route = respx.post(token_url).mock(
+            return_value=httpx.Response(
+                200, json={"access_token": "at", "id_token": "it", "token_type": "Bearer"}
+            )
+        )
+        provider = OidcProvider(
+            name="Confidential IdP",
+            discovery_url="https://idp.example.com/.well-known/openid-configuration",
+            client_id=CLIENT_ID,
+            client_secret="shh-its-a-secret",
+        )
+
+        result = await oidc.exchange_code(
+            metadata=_metadata(token_endpoint=token_url),
+            provider=provider,
+            code="auth-code",
+            code_verifier="verifier-value",
+            redirect_uri="https://app.example.com/callback",
+        )
+
+        assert result["access_token"] == "at"
+        sent = route.calls.last.request
+        import base64 as _b64
+
+        auth_header = sent.headers.get("authorization")
+        assert auth_header is not None and auth_header.startswith("Basic ")
+        decoded = _b64.b64decode(auth_header.removeprefix("Basic ")).decode()
+        assert decoded == f"{CLIENT_ID}:shh-its-a-secret"
+
+    @respx.mock
     async def test_error_response_raises_oidc_error(self):
         token_url = f"https://idp-{uuid.uuid4().hex}.example.com/token"
         respx.post(token_url).mock(
