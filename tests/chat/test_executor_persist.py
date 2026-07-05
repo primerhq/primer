@@ -20,10 +20,15 @@ class _Msgs:
     async def update(self, row): pass
 
 
+class _Agent:
+    id = "agent-attr"
+
+
 def _runner(chats, msgs) -> ChatTurnRunner:
     r = ChatTurnRunner.__new__(ChatTurnRunner)
     r._chats = chats
     r._messages = msgs
+    r._agent = _Agent()
     return r
 
 
