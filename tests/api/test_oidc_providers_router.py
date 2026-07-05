@@ -58,6 +58,42 @@ async def test_admin_create_and_list_masks_client_secret(client):
 
 
 @pytest.mark.asyncio
+async def test_put_without_client_secret_preserves_existing(client):
+    """Task 9: the admin console's edit modal never round-trips the masked
+    placeholder -- a PUT that omits client_secret (or sends null) must NOT
+    clear a previously-configured secret."""
+    r = await client.post(
+        "/v1/auth/register",
+        json={"username": "testadmin3", "password": "testpassword"},
+    )
+    assert r.status_code == 200, r.text
+
+    r = await client.post("/v1/admin/oidc-providers", json=_BODY)
+    assert r.status_code == 201, r.text
+
+    put_body = {**_BODY, "name": "Okta Renamed"}
+    del put_body["client_secret"]
+    r = await client.put("/v1/admin/oidc-providers/oidc-okta", json=put_body)
+    assert r.status_code == 200, r.text
+    got = r.json()
+    assert got["name"] == "Okta Renamed"
+    assert got["client_secret"] == "**********"
+
+    # Explicit null also preserves (both collapse to entity.client_secret is None).
+    put_body2 = {**_BODY, "name": "Okta Renamed Again", "client_secret": None}
+    r = await client.put("/v1/admin/oidc-providers/oidc-okta", json=put_body2)
+    assert r.status_code == 200, r.text
+    assert r.json()["client_secret"] == "**********"
+
+    # An explicit new secret still overwrites.
+    put_body3 = {**_BODY, "client_secret": "brand-new-secret"}
+    r = await client.put("/v1/admin/oidc-providers/oidc-okta", json=put_body3)
+    assert r.status_code == 200, r.text
+    assert r.json()["client_secret"] == "**********"
+    assert "brand-new-secret" not in r.text
+
+
+@pytest.mark.asyncio
 async def test_role_user_forbidden_on_create_and_list(client, app):
     # First registration => role='admin'.
     r = await client.post(

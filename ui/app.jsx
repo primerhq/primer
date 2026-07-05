@@ -91,6 +91,7 @@ function App() {
       return root;
     }
     if (root === "admin") {
+      if (path.startsWith("/admin/sso-providers")) return "admin-sso-providers";
       if (path.startsWith("/admin/users")) return "admin-users";
       return root;
     }
@@ -441,6 +442,7 @@ function App() {
       "api-tokens": "/settings/api-tokens",
       mcp: "/settings/mcp",
       "admin-users": "/admin/users",
+      "admin-sso-providers": "/admin/sso-providers",
     };
     const route = ROUTES[target];
     const url = typeof route === "function" ? route(extra) : (route || "/");
@@ -1108,6 +1110,24 @@ function App() {
       </>
     );
     const Comp = window.ADM_AdminUsersPage;
+    pageBody = Comp ? <Comp /> : null;
+  } else if (page === "admin-sso-providers") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Admin</a>
+            <span className="sep">/</span>
+            <span style={{ color: "var(--text)" }}>SSO Providers</span>
+          </div>
+          <h1 className="page-title">SSO Providers</h1>
+          <div className="page-sub">
+            OIDC single sign-on providers · JIT provisioning settings · admin-only
+          </div>
+        </div>
+      </>
+    );
+    const Comp = window.SSO_ProvidersPage;
     pageBody = Comp ? <Comp /> : null;
   } else if (page === "sessions") {
     // PR-B (B6): the global Sessions list is subsumed by the Studio. The
