@@ -1360,3 +1360,181 @@ class TestToolCallApprovalWiring:
         node = _ToolCallNode(id="t", tool_id="workspace__write", arguments={})
         await executor._dispatch_toolcall_with_bypass(node, {})
         assert seen["bypass"] is True
+
+
+# ===========================================================================
+# Identity propagation (Layer 3, §8.4) — subgraph children + tool managers
+# ===========================================================================
+
+
+class TestIdentityPropagation:
+    @pytest.mark.asyncio
+    async def test_nested_subgraph_ctx_identity_matches_run_identity(
+        self, tmp_path: Path
+    ) -> None:
+        """A subgraph node's child executor must inherit ``ctx.identity``
+        from the parent run, not silently fall back to ``None``.
+
+        Regression: ``_build_sub_executor`` rebuilt the child WITHOUT
+        ``identity=``, so nested subgraph nodes always saw
+        ``context.ctx.identity is None`` regardless of the parent run's
+        identity.
+        """
+        from primer.model.principal import PrincipalRef
+
+        ref = PrincipalRef(
+            type="user", id="u-42", display="alice", role="admin", source="local",
+        )
+
+        inner_graph = Graph(
+            id="inner",
+            description="single agent that renders ctx.identity into its prompt",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="inner-A", agent_id="x"),
+                _EndNode(id="inner-exit"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="inner-A"),
+                _StaticEdge(from_node="inner-A", to_node="inner-exit"),
+            ],
+        )
+        outer_graph = Graph(
+            id="outer",
+            description="subgraph then exit",
+            nodes=[
+                _BeginNode(id="begin"),
+                _GraphNodeRef(id="SUB", graph_id="inner"),
+                _EndNode(id="exit"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="SUB"),
+                _StaticEdge(from_node="SUB", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(
+            scripts=[
+                [
+                    TextDelta(text="from-inner", index=0),
+                    Done(stop_reason="stop", raw_reason="stop"),
+                ]
+            ]
+        )
+
+        async def graph_resolver(graph_id: str) -> Graph:
+            assert graph_id == "inner"
+            return inner_graph
+
+        agent_with_identity_prompt = Agent(
+            id="x",
+            description="agent x",
+            model=AgentModel(provider_id="p", model_name="m"),
+            system_prompt=["Actor: {{ ctx.identity.id }}"],
+        )
+
+        async def agent_resolver(agent_id: str) -> Agent:
+            return agent_with_identity_prompt
+
+        async def llm_resolver(_a: Agent):
+            return (llm, _model())
+
+        repo = await _make_state_repo(tmp_path)
+        executor = WorkspaceGraphExecutor(
+            graph=outer_graph,
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            state_repo=repo,
+            graph_session_id="gsid-outer-identity",
+            graph_resolver=graph_resolver,
+            identity=ref,
+        )
+        await _drain(executor.invoke([]))
+
+        assert len(llm.calls) == 1
+        sys_msgs = [m for m in llm.calls[0]["messages"] if m.role == "system"]
+        assert len(sys_msgs) == 1
+        sys_text = "".join(
+            p.text for p in sys_msgs[0].parts if hasattr(p, "text")
+        )
+        assert sys_text == "Actor: u-42"
+
+    @pytest.mark.asyncio
+    async def test_graph_node_tool_manager_receives_initiated_by(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A graph agent-node's per-node tool manager (built through
+        ``_wrap_tool_manager_resolver`` when a ``workspace_session`` is
+        wired) must be constructed WITH the graph's ``identity`` as
+        ``initiated_by``, so a ``create_workspace_session`` tool call
+        dispatched from a graph node inherits the graph's initiator
+        instead of silently falling back to ``PrincipalRef.system()``.
+
+        Regression: ``_wrap_tool_manager_resolver`` rebuilt via
+        ``ToolExecutionManager.for_workspace(toolset_providers=...,
+        session=...)`` only, discarding the ``initiated_by`` that
+        ``build_graph_executor`` threads into the raw resolver it wraps.
+        """
+        from primer.agent import tool_manager as tm
+        from primer.model.principal import PrincipalRef
+
+        ref = PrincipalRef(
+            type="trigger", id="trig-1", display="nightly", role=None,
+            source="internal",
+        )
+        captured: dict = {}
+
+        class _FakeMgr:
+            toolset_providers: dict = {}
+
+        def _fake_for_workspace(
+            cls, *, toolset_providers, session, initiated_by=None, **_kw
+        ):
+            captured["initiated_by"] = initiated_by
+            return _FakeMgr()
+
+        monkeypatch.setattr(
+            tm.ToolExecutionManager, "for_workspace",
+            classmethod(_fake_for_workspace),
+        )
+
+        graph = Graph(
+            id="g-init",
+            description="A -> exit",
+            nodes=[
+                _BeginNode(id="begin"),
+                _AgentNodeRef(id="A", agent_id="x"),
+                _EndNode(id="exit"),
+            ],
+            edges=[
+                _StaticEdge(from_node="begin", to_node="A"),
+                _StaticEdge(from_node="A", to_node="exit"),
+            ],
+        )
+        llm = _FakeLLM(
+            scripts=[
+                [
+                    TextDelta(text="hi", index=0),
+                    Done(stop_reason="stop", raw_reason="stop"),
+                ]
+            ]
+        )
+
+        async def agent_resolver(agent_id: str) -> Agent:
+            return _agent(agent_id)
+
+        async def llm_resolver(_a: Agent):
+            return (llm, _model())
+
+        repo = await _make_state_repo(tmp_path)
+        executor = WorkspaceGraphExecutor(
+            graph=graph,
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            state_repo=repo,
+            graph_session_id="gsid-init",
+            workspace_session=_FakeWorkspaceSession(),  # type: ignore[arg-type]
+            identity=ref,
+        )
+        await _drain(executor.invoke([]))
+
+        assert captured.get("initiated_by") is ref
