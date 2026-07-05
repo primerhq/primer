@@ -347,6 +347,16 @@ class WorkspaceSession(Identifiable):
     parent_session_id: str | None = Field(default=None)
     initial_instructions: str | None = Field(default=None)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    autonomous: bool | None = Field(
+        default=None,
+        description=(
+            "Interactive-vs-autonomous control signal (studio-agents-interact "
+            "§8.1). None => derive from binding kind (graph ⇒ autonomous, "
+            "agent ⇒ interactive). True marks an agent self-driving loop as "
+            "autonomous; False forces interactive. Read via "
+            "primer.session.autonomy.session_is_autonomous."
+        ),
+    )
     created_at: datetime
     started_at: datetime | None = Field(default=None)
     last_turn_at: datetime | None = Field(default=None)
