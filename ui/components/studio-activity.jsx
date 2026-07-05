@@ -94,7 +94,7 @@ function SA_informFromEvent(ev) {
 // ActionRequired
 // ---------------------------------------------------------------------------
 
-function ActionRequired({ wid, studio }) {
+function ActionRequired({ wid, studio, onCountChange }) {
   var apiFetch = window.primerApi.apiFetch;
   var useResource = window.primerApi.useResource;
 
@@ -263,6 +263,13 @@ function ActionRequired({ wid, studio }) {
   var visibleItems = items.filter(function(it) { return !hidden[it.tool_call_id]; });
   var visibleInform = informItems.filter(function (it) { return !informDismissed[it.key]; });
   var count = visibleItems.length + visibleInform.length;
+
+  // Task 14: report the live count up to StudioActivity so the collapsed
+  // rail can show a badge without a second fetch — ActionRequired stays the
+  // single source of truth for "how many pending yields right now".
+  React.useEffect(function() {
+    if (typeof onCountChange === "function") onCountChange(count);
+  }, [count, onCountChange]);
 
   return (
     <div
@@ -664,14 +671,32 @@ function WorkspaceActivity({ wid }) {
 }
 
 // ---------------------------------------------------------------------------
-// StudioActivity — right sidebar shell (B4)
+// StudioActivity — right sidebar shell (B4 -> Task 14 collapsed debug view)
 // Replaces <ST_RegionPlaceholder testid="region-activity" /> in studio.jsx
+//
+// Task 14: this column is the GLOBAL debug tracker (Action Required across
+// ALL sessions + the workspace-wide WorkspaceTap feed) — but it starts
+// COLLAPSED so an operator who isn't actively debugging doesn't lose the
+// screen real estate. Collapsing is purely a visual toggle: ActionRequired
+// and WorkspaceActivity stay MOUNTED at all times (only the wrapping
+// `debug-sidebar-body` div's display flips), so their poll timers + tap
+// EventSources never tear down/reconnect on every expand — the badge count
+// on the collapsed rail is always live, and re-expanding shows already-warm
+// data instead of a cold fetch.
 // ---------------------------------------------------------------------------
 
 function StudioActivity({ wid, studio }) {
+  var [collapsed, setCollapsed] = React.useState(true);
+  var [pendingCount, setPendingCount] = React.useState(0);
+
+  function toggle() {
+    setCollapsed(function(c) { return !c; });
+  }
+
   return (
     <div
       data-testid="studio-activity-root"
+      className={collapsed ? "is-collapsed" : ""}
       style={{
         display: "flex",
         flexDirection: "column",
@@ -680,8 +705,66 @@ function StudioActivity({ wid, studio }) {
         borderLeft: "1px solid var(--border)",
       }}
     >
-      <ActionRequired wid={wid} studio={studio} />
-      <WorkspaceActivity wid={wid} />
+      <button
+        type="button"
+        data-testid="debug-sidebar-toggle"
+        aria-expanded={collapsed ? "false" : "true"}
+        aria-label={collapsed ? "Expand debug panel" : "Collapse debug panel"}
+        title={collapsed ? "Expand debug panel (Action Required + Activity)" : "Collapse debug panel"}
+        onClick={toggle}
+        style={{
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          height: 34,
+          padding: "0 12px",
+          border: "none",
+          borderBottom: collapsed ? "none" : "1px solid var(--border)",
+          background: "transparent",
+          color: "var(--text-2)",
+          cursor: "pointer",
+          fontSize: 10.5,
+          textTransform: "uppercase",
+          letterSpacing: "0.06em",
+          fontWeight: 600,
+          font: "inherit",
+        }}
+      >
+        <Icon name={collapsed ? "chevron-left" : "chevron-right"} size={13} style={{ flexShrink: 0, color: "var(--text-3)" }} />
+        <Icon name="bell" size={13} style={{ flexShrink: 0 }} />
+        <span style={{ flex: 1, textAlign: "left" }}>Debug</span>
+        {pendingCount > 0 && (
+          <span
+            data-testid="debug-sidebar-badge"
+            style={{
+              background: "var(--amber-dim)",
+              color: "var(--amber)",
+              borderRadius: 999,
+              padding: "1px 7px",
+              fontSize: 10.5,
+              fontWeight: 700,
+              fontFamily: "IBM Plex Mono, monospace",
+            }}
+          >
+            {pendingCount}
+          </span>
+        )}
+      </button>
+
+      <div
+        data-testid="debug-sidebar-body"
+        style={{
+          display: collapsed ? "none" : "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          overflow: "hidden",
+        }}
+      >
+        <ActionRequired wid={wid} studio={studio} onCountChange={setPendingCount} />
+        <WorkspaceActivity wid={wid} />
+      </div>
     </div>
   );
 }
