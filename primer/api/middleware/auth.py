@@ -121,7 +121,9 @@ class AuthMiddleware:
             return
 
         # 1. Cookie path (primary).
-        user = await self._try_cookie_auth(scope, app_state, config, storage_provider)
+        user, session_src = await self._try_cookie_auth(
+            scope, app_state, config, storage_provider,
+        )
         api_token = None
 
         # 2. Bearer fallback — only when cookie didn't authenticate.
@@ -150,33 +152,35 @@ class AuthMiddleware:
                     source="internal",
                 )
             else:
-                # Cookie path: full user authority.
+                # Cookie path: full user authority. source mirrors how the
+                # session was established — "local" for password login, or
+                # the OIDC provider id for SSO-minted sessions (task 5).
                 state.actor = Principal(
                     type="user",
                     id=user.id,
                     display=user.username,
                     role=user.role,
-                    source="local",
+                    source=session_src or "local",
                 )
 
         await self.app(scope, receive, send)
 
     async def _try_cookie_auth(self, scope, app_state, config, storage_provider):
-        """Existing cookie path. Returns the User or None."""
+        """Existing cookie path. Returns (User, session src) or (None, None)."""
         secret = getattr(app_state, "session_secret", None)
         if not secret:
-            return None
+            return None, None
 
         token = _read_cookie(scope, config.auth.cookie_name)
         if not token:
-            return None
+            return None, None
 
         max_age = config.auth.session_ttl_days * 86400
         payload = verify_session(
             token=token, secret=secret, max_age_seconds=max_age,
         )
         if payload is None:
-            return None
+            return None, None
 
         try:
             from primer.model.user import User
@@ -184,9 +188,9 @@ class AuthMiddleware:
             user = await user_storage.get(payload.user_id)
         except Exception:  # noqa: BLE001
             logger.exception("auth middleware: user lookup failed")
-            return None
+            return None, None
 
-        return user
+        return user, payload.src
 
     async def _try_bearer_auth(self, scope, storage_provider):
         """Bearer fallback. Returns (User, ApiToken) or (None, None)."""
