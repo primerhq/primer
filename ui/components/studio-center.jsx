@@ -7,14 +7,17 @@
 //                        dirty dot, close ×; horizontal overflow; empty state).
 //   the active panel  — chosen by the active tab's kind:
 //     session(agent) → SessionAgentPanel  (header + End/Restart + Transcript/Composer)
-//     session(graph) → SessionGraphPanel  (header + SD_GraphRunView)
+//     session(graph) → SessionGraphPanel  (header + Pause/Cancel/Restart +
+//                       a toggleable SD_GraphRunView over the SAME
+//                       session-backed Transcript/Composer, Task 13)
 //     file           → FilePanel          (preview/edit toggle + Save + 412 flow)
 //
 // REUSE (do NOT rebuild): the graph run-view is still the production
 // component from session-detail.jsx; the agent transcript (Task 12,
-// studio-agents-interact plan) is now chat-refactor's own reused primitives
-// over the session adapter instead — all reached across files as the
-// no-build window globals:
+// studio-agents-interact plan) and the graph panel's bottom transcript
+// (Task 13, this file) are both chat-refactor's own reused primitives over
+// the session adapter — all reached across files as the no-build window
+// globals:
 //   window.SD_GraphRunView        ({ gid, rid, wid, session, pushToast })
 //   window.SA_useSessionConversation ({ sid, wid })  — session-adapter.jsx
 //   window.SA_toTranscript           (records, session)
@@ -22,16 +25,23 @@
 // Markdown preview reuses window.renderMarkdown; code highlight reuses
 // window.primerVendor.highlightPython.
 //
-// REUSE FRICTION (noted for B6): the GRAPH panel's per-session control
-// mutations (pause/resume/steer/cancel) still live *inlined* here
-// (ST_SessionControls below) against the same workspace-scoped endpoints
-// (POST .../sessions/{sid}/{pause|resume|cancel|steer}) — they were never
-// exported as standalone helpers/hooks from session-detail.jsx. The AGENT
-// panel (SessionAgentPanel) no longer has this friction: Stop/End route
-// through SA_useSessionConversation's own stop()/end() (POST
-// .../interrupt / .../cancel), and Restart through a small `restart()`
-// this task added to that same hook (POST .../restart — Task 11's original
-// interface didn't need it; session-adapter.jsx is otherwise untouched).
+// REUSE FRICTION (noted for B6, updated by Task 13): `ST_SessionControls`
+// below (Pause/Resume/Steer/Cancel against the workspace-scoped
+// POST .../sessions/{sid}/{pause|resume|cancel|steer} endpoints) was the
+// pre-Task-13 GRAPH panel's control cluster. Neither run-view panel calls
+// it anymore: the AGENT panel (SessionAgentPanel, Task 12) has its own
+// Stop/End/Restart set over SA_useSessionConversation's stop()/end()/
+// restart(), and the GRAPH panel (SessionGraphPanel, Task 13) now has its
+// own minimal Pause/Cancel/Restart set — Cancel and Restart reuse that
+// SAME adapter's end()/restart() (identical POST .../cancel and
+// .../restart calls the agent panel makes), and Pause is one fresh
+// mutation against the pre-existing POST .../pause endpoint
+// (ST_SessionControls's own pauseMut, copied rather than shared since it
+// was never factored out as a standalone hook). `ST_SessionControls` is
+// left defined-but-unused rather than deleted: it is still exercised by
+// tests/ui/test_studio_run_view_interactive.py's sanity pin (Task 12
+// deliberately asserted the pre-Task-13 graph cluster was untouched by
+// its own change), and by any not-yet-repointed tests/ui_e2e journeys.
 //
 // No-build rules: top-level declarations use `var`; helpers prefixed ST_;
 // every exported symbol is assigned to window.X at the bottom.
@@ -173,8 +183,11 @@ function CenterTabs({ openTabs, activeTabId, onFocus, onClose }) {
 // ---------------------------------------------------------------------------
 // ST_SessionControls — pause/resume · steer · cancel inline control cluster.
 // Re-creates SessionDetail's signal mutations against the same workspace-scoped
-// endpoints (see REUSE FRICTION note at top). Shared by the agent + graph
-// header rows.
+// endpoints (see REUSE FRICTION note at top). Pre-Task-13 this was the graph
+// panel's header cluster; SessionGraphPanel now has its own minimal
+// Pause/Cancel/Restart set instead (see that function), so nothing in this
+// file calls ST_SessionControls anymore — left defined for the reasons in
+// the REUSE FRICTION note (not deleted).
 // ---------------------------------------------------------------------------
 
 function ST_SessionControls({ wid, sid, session, pushToast }) {
@@ -322,8 +335,9 @@ function ST_TokenMeterInline({ session }) {
 // ST_isAutonomous — mirrors primer/session/autonomy.py::session_is_autonomous
 // exactly: an explicit `session.autonomous` flag wins; otherwise derive from
 // the binding kind (graph ⇒ autonomous, agent ⇒ interactive). Gates the
-// agent run view's Stop/End/Restart control set (interactive, this panel)
-// vs. the graph panel's Pause/Steer/Cancel (autonomous, ST_SessionControls).
+// agent run view's Stop/End/Restart control set (interactive,
+// SessionAgentPanel) vs. the graph run view's Pause/Cancel/Restart control
+// set (autonomous, SessionGraphPanel).
 // ---------------------------------------------------------------------------
 
 function ST_isAutonomous(session) {
@@ -584,24 +598,119 @@ function SessionAgentPanel({ wid, sid, session, pushToast }) {
 }
 
 // ---------------------------------------------------------------------------
-// SessionGraphPanel — graph run-view panel.
-//   header: name · status · progress (superstep N · X/Y · current)
-//   body  : the reused SD_GraphRunView (graph canvas + node inspector)
+// SessionGraphPanel — graph run view (Task 13).
+//   header: name · status · progress (superstep N · X/Y · current) + the
+//           toggle-viz control + the AUTONOMOUS control set (pause + cancel,
+//           restart once ended — NO Stop/End, those are the INTERACTIVE
+//           (agent) set's terms; this panel never calls /interrupt).
+//   top   : the reused SD_GraphRunView (graph canvas + node inspector),
+//           shown/hidden by the viz toggle (S6 — OFF collapses to chat only).
+//   bottom: the SAME session-backed <Transcript>/<Composer> the agent panel
+//           uses (SA_useSessionConversation) — graph_transition records
+//           SA_toTranscript already maps to divider rows
+//           (SA_KIND_TO_TRANSCRIPT), so node/phase transitions render
+//           inline with no extra plumbing here.
+//   S7: mounting this panel never fires a control — SD_GraphRunView's own
+//       effects only GET/poll/tail, SA_useSessionConversation's effects
+//       only fetch history + tail the tap, and the three mutations below
+//       are wired exclusively to onClick handlers. Opening the panel on an
+//       already-running auto_start graph therefore never pauses/steers it.
 // ---------------------------------------------------------------------------
 
-function SessionGraphPanel({ wid, sid, session, pushToast }) {
+function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
   var StatusPill = window.StatusPill;
-  var gid = session && session.binding && session.binding.graph_id
+  var { useMutation, apiFetch } = window.primerApi;
+
+  // gid: accept an explicit prop (this task's interface) but fall back to
+  // deriving it from the session binding exactly like the pre-Task-13
+  // panel did — ST_SessionPanel (the only caller today) doesn't pass
+  // gid/rid, so this keeps that call site working unchanged.
+  gid = gid || (session && session.binding && session.binding.graph_id
     ? session.binding.graph_id
-    : (session && session.graph_id) || null;
+    : (session && session.graph_id) || null);
+  // rid: for a graph-bound session the run IS the session, so the run id
+  // passed to SD_GraphRunView below is always `sid` (matching its
+  // pre-existing rid={sid} call in session-detail.jsx and the
+  // test_reuses_sd_graph_run_view pin) — `rid` is accepted here only for
+  // interface parity with SD_GraphRunView's own prop name.
+
   var title = (session && (session.name || session.id)) || sid;
   var superstep = (session && (session.turn_no != null ? session.turn_no : session.turn_count)) || 0;
+  var status = session && session.status;
+  var isTerminal = !!(session && window.SESSION_TERMINAL && window.SESSION_TERMINAL.has(status));
+  var isEnded = status === "ended";
 
   // Progress summary if the row carries node counts (best-effort; the
   // run-view itself owns the authoritative per-node state).
   var done = session && (session.nodes_done != null ? session.nodes_done : null);
   var total = session && (session.nodes_total != null ? session.nodes_total : null);
   var current = session && (session.current_node || session.active_node) || null;
+
+  // Viz toggle (S6) — a pure render toggle, no network effect either way.
+  // Defaults ON so opening the panel shows the live run exactly like the
+  // pre-Task-13 panel did.
+  var [showViz, setShowViz] = React.useState(true);
+
+  // The SAME session-backed conversation hook the agent panel uses.
+  var conv = window.SA_useSessionConversation({ sid: sid, wid: wid });
+  var [composerText, setComposerText] = React.useState("");
+  var scrollRef = React.useRef(null);
+
+  function toastErr(t) {
+    return function (err) {
+      if (typeof pushToast !== "function") return;
+      pushToast({
+        kind: "error",
+        title: (err && err.title) || t,
+        detail: (err && err.detail) || (err && err.message),
+        requestId: err && err.requestId,
+      });
+    };
+  }
+
+  var invalidates = ["studio-session:" + sid, "session-adapter:row:" + sid, "sessions:list"];
+
+  // Autonomous control set (brief §Interface): Pause + Cancel, Restart once
+  // ended. Cancel/Restart reuse the session adapter's own end()/restart()
+  // — the identical POST .../cancel and .../restart calls the agent
+  // panel's End/Restart hit — so the network wiring isn't duplicated.
+  // Pause has no adapter equivalent (its interface is Stop/End/Restart
+  // only), so it is the one fresh mutation here, against the same
+  // workspace-scoped POST .../pause the pre-Task-13 ST_SessionControls
+  // used (reused endpoint, not a new one).
+  var pauseMut = useMutation(
+    function () { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/pause"); },
+    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Session paused" }); }, onError: toastErr("Pause failed") }
+  );
+  var cancelMut = useMutation(
+    function () { return conv.end(); },
+    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "warning", title: "Cancel signal sent" }); }, onError: toastErr("Cancel failed") }
+  );
+  var restartMut = useMutation(
+    function () { return conv.restart(); },
+    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Session restarted" }); }, onError: toastErr("Restart failed") }
+  );
+
+  var rows = React.useMemo(
+    function () { return ST_sessionTranscriptRows(conv.messages, session); },
+    [conv.messages, session]
+  );
+
+  // Stick-to-bottom — same rationale as the agent panel.
+  React.useEffect(function () {
+    var el = scrollRef.current;
+    if (!el) return undefined;
+    var raf = requestAnimationFrame(function () { el.scrollTop = el.scrollHeight; });
+    return function () { cancelAnimationFrame(raf); };
+  }, [rows.length]);
+
+  function onSend() {
+    var text = composerText.trim();
+    if (!text) return;
+    var p = conv.sendMessage(text);
+    setComposerText("");
+    if (p && typeof p.catch === "function") p.catch(toastErr("Send failed"));
+  }
 
   return (
     <div
@@ -624,16 +733,103 @@ function SessionGraphPanel({ wid, sid, session, pushToast }) {
           {current ? " · " + current : ""}
         </span>
         <div style={{ flex: 1 }} />
-        <ST_SessionControls wid={wid} sid={sid} session={session} pushToast={pushToast} />
+        <Btn
+          size="sm"
+          kind={showViz ? "primary" : "ghost"}
+          icon="graph"
+          onClick={function () { setShowViz(function (v) { return !v; }); }}
+          data-testid="ctrl-toggle-viz"
+          title={showViz ? "Hide the run-view canvas — chat only" : "Show the run-view canvas"}
+        >{showViz ? "Hide viz" : "Show viz"}</Btn>
+        <Btn
+          size="sm"
+          icon="pause"
+          disabled={!wid || status !== "running" || pauseMut.loading}
+          onClick={function () { if (wid) pauseMut.mutate(); }}
+          data-testid="ctrl-pause"
+          title={status !== "running" ? "Enabled only when running" : "Pause after current turn"}
+        >Pause</Btn>
+        <Btn
+          size="sm"
+          kind="danger"
+          icon="stop"
+          disabled={!wid || isTerminal || cancelMut.loading}
+          onClick={function () { if (wid) cancelMut.mutate(); }}
+          data-testid="ctrl-cancel"
+          title="Cancel the run"
+        >Cancel</Btn>
+        {isEnded && (
+          <Btn
+            size="sm"
+            kind="primary"
+            icon="refresh"
+            disabled={!wid || restartMut.loading}
+            onClick={function () { if (wid) restartMut.mutate(); }}
+            data-testid="ctrl-restart"
+            title="Re-open this ended run and invoke it"
+          >Restart</Btn>
+        )}
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        {wid && gid && window.SD_GraphRunView
-          ? <window.SD_GraphRunView gid={gid} rid={sid} wid={wid} session={session} pushToast={pushToast} />
-          : (
-            <div className="muted text-sm" style={{ padding: 20, textAlign: "center", color: "var(--text-4)" }}>
-              Run view unavailable — graph binding or workspace missing.
-            </div>
-          )}
+
+      {showViz && (
+        <div
+          data-testid="graph-viz-region"
+          style={{ flex: "0 0 auto", height: 360, minHeight: 0, overflow: "auto", borderBottom: "1px solid var(--border)" }}
+        >
+          {wid && gid && window.SD_GraphRunView
+            ? <window.SD_GraphRunView gid={gid} rid={sid} wid={wid} session={session} pushToast={pushToast} />
+            : (
+              <div className="muted text-sm" style={{ padding: 20, textAlign: "center", color: "var(--text-4)" }}>
+                Run view unavailable — graph binding or workspace missing.
+              </div>
+            )}
+        </div>
+      )}
+
+      <window.Transcript
+        messages={rows}
+        chatId={sid}
+        agentId={null}
+        wsState={conv.wsState}
+        waitingForReply={false}
+        turnStatus={conv.turnStatus}
+        pendingToolCall={null}
+        sendMessage={conv.sendMessage}
+        onRewind={null}
+        // Same rationale as the agent panel: no compaction concept for a
+        // session transcript, and no per-message rewind endpoint here either.
+        compactionBoundarySeq={Number.MAX_SAFE_INTEGER}
+        scrollRef={scrollRef}
+        onScroll={function () {}}
+        loadingOlder={false}
+        hasMoreOlder={false}
+      />
+      <div
+        style={{
+          borderTop: "1px solid var(--border)", padding: 14,
+          display: "flex", gap: 8, alignItems: "stretch", flex: "0 0 auto",
+        }}
+      >
+        <window.Composer
+          value={composerText}
+          onChange={setComposerText}
+          onSend={onSend}
+          // NO Stop affordance on the autonomous set (brief §Interface) —
+          // running is always false so <Composer> never swaps to its Stop
+          // control (which is reserved for the agent panel's interactive
+          // hard-preempt call; this panel must never trigger it). Steering
+          // IS sending a message here too, same as the agent panel.
+          onStop={function () {}}
+          running={false}
+          disabled={isEnded}
+          attachments={[]}
+          onAttach={function () {}}
+          onRemoveAttachment={function () {}}
+          slashCommands={[]}
+          mentionSources={[]}
+          schemaInvalid={false}
+          wsState={conv.wsState}
+        />
       </div>
     </div>
   );
