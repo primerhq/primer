@@ -39,7 +39,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from primer.api.deps import (
     get_agent_storage,
@@ -49,9 +49,14 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
-from primer.model.agent import Agent
+from primer.model.agent import Agent, _validate_response_format_schema
 from primer.model.chats import Chat, ChatMessage
-from primer.model.except_ import ConfigError, ConflictError, NotFoundError
+from primer.model.except_ import (
+    ConfigError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
 from primer.model.provider import LLMProvider
 from primer.model.storage import (
     Op,
@@ -165,6 +170,77 @@ async def switch_chat_agent(
     return chat
 
 
+class ChatResponseFormatBody(BaseModel):
+    """Body of ``PUT /v1/chats/{id}/response_format``.
+
+    Wire compatibility: the JSON key is ``"schema"`` (mirrors
+    :class:`primer.model.chat.ToolDef`'s ``args_schema``/``schema``
+    alias) so clients PUT ``{"schema": {...}}`` or ``{"schema": null}``.
+    Python code reads/writes ``response_format``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    response_format: dict[str, Any] | None = Field(
+        ...,
+        validation_alias="schema",
+        serialization_alias="schema",
+        description=(
+            "Persistent per-chat structured-output JSON Schema, or "
+            "``null`` to clear it. Validated against JSON Schema "
+            "2020-12 (422 on a malformed schema)."
+        ),
+    )
+
+
+@chats_router.put(
+    "/chats/{chat_id}/response_format",
+    response_model=Chat,
+    summary="Set or clear the chat's persistent structured-output schema",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def set_chat_response_format(
+    body: ChatResponseFormatBody,
+    chat_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+) -> Chat:
+    """Persistent (toggle ON) structured-output entry point (R3 / A3).
+
+    Sets or clears ``Chat.response_format`` (A1), which A2's per-turn
+    resolution applies to every subsequent turn on this chat unless an
+    ephemeral per-send override (the other A3 entry point — see
+    :func:`primer.chat.enqueue.append_user_message`) takes precedence
+    for that one turn. Mutating this mid-turn would race the runner's
+    already-resolved effective schema for the turn in flight, so it is
+    rejected with 409 (mirrors :func:`switch_chat_agent`'s guards).
+
+    Status codes:
+
+    * ``200`` — schema set/cleared; body is the updated :class:`Chat`.
+    * ``404`` — no such chat.
+    * ``409`` — the chat has ended, or a worker turn is in flight
+      (``turn_status == "running"``).
+    * ``422`` — the schema failed JSON Schema 2020-12 validation.
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+    if chat.status == "ended":
+        raise ConflictError(f"Chat {chat_id!r} has ended")
+    if chat.turn_status == "running":
+        raise ConflictError(
+            f"Chat {chat_id!r} has a turn in flight; "
+            "wait for it to finish before changing response_format."
+        )
+    try:
+        _validate_response_format_schema(body.response_format)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    chat.response_format = body.response_format
+    return await chats_storage.update(chat)
+
+
 class ChatSendMessageBody(BaseModel):
     """Body of ``POST /v1/chats/{id}/messages``.
 
@@ -184,6 +260,17 @@ class ChatSendMessageBody(BaseModel):
             "(``{\"type\": \"text\"|\"image\"|\"document\"|\"audio\"|"
             "\"video\", ...}``). Validated through the same Part union the "
             "WebSocket path applies."
+        ),
+    )
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Ephemeral (this-send-only) structured-output JSON Schema "
+            "(A3). Stamped onto this row's payload only — it is NOT "
+            "persisted on the chat — and overrides both the per-chat "
+            "and the agent-default schema for the turn this message "
+            "triggers. Validated against JSON Schema 2020-12; a "
+            "malformed schema fails the request with 422."
         ),
     )
 
@@ -247,17 +334,21 @@ async def send_chat_message(
     try:
         user_parts = _parse_user_message_parts(body.model_dump())
     except ValueError as exc:
-        from primer.model.except_ import ValidationError as _ValidationError
-
-        raise _ValidationError(str(exc)) from exc
+        raise ValidationError(str(exc)) from exc
 
     # Persist the user_message row + bump chat.last_seq / title via the
-    # canonical service helper. Do NOT reinvent the append.
-    row = await append_user_message(
-        chat=chat,
-        parts=user_parts,
-        storage_provider=sp,
-    )
+    # canonical service helper. Do NOT reinvent the append. The helper
+    # validates the ephemeral response_format (A3) before persisting
+    # anything; a malformed schema raises ValueError -> 422.
+    try:
+        row = await append_user_message(
+            chat=chat,
+            parts=user_parts,
+            storage_provider=sp,
+            response_format=body.response_format,
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
 
     # Flip turn_status to claimable and wake workers - the exact tail of
     # the WS recv loop. Re-fetch so we update the freshest row.
@@ -979,6 +1070,10 @@ async def _recv_loop(
                 {"kind": "error", "message": str(exc)},
             )
             continue
+        # Ephemeral (this-send-only) structured-output override (A3):
+        # a JSON Schema carried on this frame's payload.response_format,
+        # re-validated + stamped by append_user_message below.
+        ephemeral_response_format = incoming.get("response_format")
         # Re-fetch the chat row so we have the latest last_seq.
         chat = await chats_storage.get(chat_id)
         if chat is None or chat.status == "ended":
@@ -988,11 +1083,18 @@ async def _recv_loop(
         # the trigger dispatcher write user_messages identically.
         from primer.chat.enqueue import append_user_message
 
-        await append_user_message(
-            chat=chat,
-            parts=user_parts,
-            storage_provider=storage_provider,
-        )
+        try:
+            await append_user_message(
+                chat=chat,
+                parts=user_parts,
+                storage_provider=storage_provider,
+                response_format=ephemeral_response_format,
+            )
+        except ValueError as exc:
+            await websocket.send_json(
+                {"kind": "error", "message": str(exc)},
+            )
+            continue
         # Flip turn_status to claimable and wake workers.
         latest = await chats_storage.get(chat_id)
         if latest is not None and latest.status == "active":
@@ -1174,6 +1276,7 @@ def _parse_user_message_parts(frame: dict[str, Any]) -> list:
 
 __all__ = [
     "ChatCreateBody",
+    "ChatResponseFormatBody",
     "ChatSendMessageBody",
     "ChatSwitchAgentBody",
     "CompactResponse",
@@ -1185,5 +1288,6 @@ __all__ = [
     "list_chat_messages",
     "list_chats",
     "send_chat_message",
+    "set_chat_response_format",
     "switch_chat_agent",
 ]

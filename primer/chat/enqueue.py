@@ -20,6 +20,15 @@ attribution dict, when supplied, is stamped onto ``payload["trigger"]``
 so downstream UIs / audit trails can show which subscription fired
 this user turn.
 
+``response_format`` (Task A3 of the chat-refactor plan, spec §6) is the
+EPHEMERAL structured-output entry point: a JSON Schema carried on a
+single send-frame's ``payload.response_format``, applying to that one
+turn only (as opposed to the PERSISTENT ``Chat.response_format`` set
+via ``PUT /v1/chats/{id}/response_format``). It is validated here
+(``ValueError`` on a malformed schema) and, when valid, stamped
+verbatim onto the persisted row's ``payload["response_format"]`` for
+:mod:`primer.chat.dispatch` (A2) to read back on that turn.
+
 The caller is responsible for the next steps: flipping
 ``chat.turn_status`` to ``"claimable"`` and publishing the
 ``chat-claimable`` bus event so a worker picks the turn up.
@@ -30,6 +39,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from primer.model.agent import _validate_response_format_schema
 from primer.model.chats import Chat, ChatMessage
 
 
@@ -101,6 +111,7 @@ async def append_user_message(
     parts: list,
     storage_provider: Any,
     attribution: dict | None = None,
+    response_format: dict | None = None,
 ) -> ChatMessage:
     """Persist a ``user_message`` row, bump ``chat.last_seq``, derive title.
 
@@ -123,7 +134,19 @@ async def append_user_message(
         "fire_id": ...}`` dict. Stamped onto ``payload["trigger"]`` so
         downstream UIs can render which trigger fired this turn. ``None``
         for human-driven turns from the WS recv loop.
+    response_format:
+        Optional ephemeral (this-send-only) JSON Schema. Validated
+        against JSON Schema 2020-12 before anything is persisted;
+        raises ``ValueError`` on a malformed schema (callers turn that
+        into a WS error frame or a 422 REST response). ``None`` omits
+        the key from the payload entirely — it is NOT persisted on the
+        chat, only on this one row.
     """
+    if response_format is not None:
+        # Validate BEFORE any side effect (seq allocation / row create)
+        # so an invalid schema never partially persists.
+        _validate_response_format_schema(response_format)
+
     chats_storage = storage_provider.get_storage(Chat)
     messages_storage = storage_provider.get_storage(ChatMessage)
 
@@ -135,6 +158,8 @@ async def append_user_message(
         payload["content"] = flat
     if attribution:
         payload["trigger"] = dict(attribution)
+    if response_format is not None:
+        payload["response_format"] = response_format
 
     next_seq = chat.last_seq + 1
     row = ChatMessage(
