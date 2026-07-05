@@ -367,6 +367,46 @@ async def test_second_callback_same_sub_reuses_same_user(client, app, rsa_keypai
     assert sum(1 for u in users_page.items if u.id == payload1.user_id) == 1
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_jit_role_clamped_to_safe_set(client, app, rsa_keypair):
+    """``sso_default_access`` is unconstrained free text in ``system_state``
+    -- the JIT path must clamp it to {"restricted", "user"} so a
+    misconfigured (or malicious) "admin" value can never auto-provision an
+    admin account. Only the exact strings "restricted"/"user" pass through;
+    anything else, including unset/None, falls back to "restricted".
+    """
+    priv, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+    await app.state.storage_provider.set_sso_jit_enabled(True)
+
+    cases = [
+        ("admin", "sub-clamp-admin", "restricted"),
+        ("user", "sub-clamp-user", "user"),
+        (None, "sub-clamp-none", "restricted"),
+    ]
+    for configured_access, sub, expected_role in cases:
+        await app.state.storage_provider.set_sso_default_access(configured_access)
+
+        login_resp = await _login(client, provider.id)
+        qs = _query(login_resp.headers["location"])
+        idp.queue_id_token(priv, idp.base_claims(sub=sub, nonce=qs["nonce"]))
+        cb = await _callback(client, provider.id, code=f"code-{sub}", state=qs["state"])
+        assert cb.status_code == 302, cb.text
+
+        payload = verify_session(
+            token=cb.cookies["primer_session"],
+            secret=app.state.session_secret,
+            max_age_seconds=7 * 86400,
+        )
+        assert payload is not None
+        user = await app.state.storage_provider.get_storage(User).get(payload.user_id)
+        assert user is not None
+        assert user.role == expected_role, (configured_access, sub, user.role)
+
+
 # ---------------------------------------------------------------------------
 # Rejections -- the security boundary
 # ---------------------------------------------------------------------------
