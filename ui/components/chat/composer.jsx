@@ -23,8 +23,19 @@
 // word plus a trailing space so the operator can type the argument —
 // Enter then matches the typed word against the registry and runs it
 // with the typed argument. Non-matching text (including a stray
-// leading "/") sends as a normal message. @-mention autocomplete
-// (`mentionSources`) is still Task D3's job — unused until then.
+// leading "/") sends as a normal message.
+//
+// Task D3: @-mentions. Unlike "/", "@" can appear anywhere in the
+// draft (not just at the start), so the trigger is cursor-relative —
+// it looks backward from the caret for the nearest "@" that starts a
+// whitespace-bounded token. `mentionSources` arrives as a flat,
+// already-fetched `{type, id, label, hint}` array built in
+// conversation.jsx (agents via GET /agents, sessions via the chats
+// list, files via this chat's attachments) — this shell stays pure
+// (no network calls or WebSocket code live here either); it only
+// filters by prefix, renders a keyboard-navigable popover mirroring
+// the slash menu, and on selection splices a structured `@type:id`
+// ref token into the text at the trigger's position.
 //
 // Task D1 (R2): the attach control is folded INTO the chatbox — the
 // icon is anchored at the right end of the textarea's own box
@@ -58,6 +69,27 @@ function CT_parseSlashDraft(text) {
   return { word, arg, hasSpace: spaceIdx !== -1 };
 }
 
+// Finds the "@" mention token the caret currently sits inside, if any.
+// Looks backward from `cursor` for the nearest "@" that starts a
+// whitespace-bounded token (start-of-string or preceded by
+// whitespace) and returns its position + the text typed since it —
+// e.g. for "hey @cla|" (caret at "|") this returns
+// { start: 4, query: "cla" }. Returns null once whitespace appears
+// between the "@" and the caret (the operator has moved past the
+// token) or when there's no "@" to find at all.
+function CT_activeMentionQuery(text, cursor) {
+  const raw = String(text || "");
+  const pos = Math.max(0, Math.min(cursor || 0, raw.length));
+  const upTo = raw.slice(0, pos);
+  const at = upTo.lastIndexOf("@");
+  if (at === -1) return null;
+  const before = at === 0 ? "" : upTo[at - 1];
+  if (before && !/\s/.test(before)) return null;
+  const query = upTo.slice(at + 1);
+  if (/\s/.test(query)) return null;
+  return { start: at, query };
+}
+
 function Composer({
   value,
   onChange,
@@ -73,6 +105,7 @@ function Composer({
   schemaInvalid,
 }) {
   const fileInputRef = React.useRef(null);
+  const textareaRef = React.useRef(null);
   const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
   const sendDisabled = disabled || schemaInvalid || (!String(value || "").trim() && !hasAttachments);
 
@@ -116,6 +149,85 @@ function Composer({
     }
   };
 
+  // ---- @-mentions (Task D3) ----------------------------------------------
+  // `cursorPos` mirrors the textarea's own caret position — unlike the
+  // slash menu (only relevant at the very start of the draft), an "@"
+  // mention can be typed anywhere, so the trigger has to be computed
+  // relative to where the caret actually is, not just the string as a
+  // whole. Every handler that can move the caret (typing, click,
+  // arrow-key navigation, selection) keeps this in sync.
+  const [cursorPos, setCursorPos] = React.useState(0);
+  const [mentionDismissedFor, setMentionDismissedFor] = React.useState(null);
+  const [mentionActiveIndex, setMentionActiveIndex] = React.useState(0);
+
+  const mentionSourceList = Array.isArray(mentionSources) ? mentionSources : [];
+  const mentionTrigger = CT_activeMentionQuery(value, cursorPos);
+  const mentionMenuOpen =
+    !!mentionTrigger && !disabled &&
+    mentionDismissedFor !== value && mentionSourceList.length > 0;
+
+  // Debounced filter query (§Deliver: "debounced fetch") — mentionSources
+  // itself is a pre-fetched list (conversation.jsx owns the actual
+  // /agents + /chats calls), so what's debounced here is the re-filter
+  // of that list against fast typing. A *new* "@" token snaps the query
+  // immediately (no stale matches from whatever was typed before); only
+  // further keystrokes within the same token are debounced.
+  const [debouncedMentionQuery, setDebouncedMentionQuery] = React.useState(
+    mentionTrigger ? mentionTrigger.query : ""
+  );
+  const mentionStart = mentionTrigger ? mentionTrigger.start : null;
+  React.useEffect(() => {
+    setDebouncedMentionQuery(mentionTrigger ? mentionTrigger.query : "");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionStart]);
+  React.useEffect(() => {
+    if (mentionStart === null) return undefined;
+    const t = setTimeout(() => setDebouncedMentionQuery(mentionTrigger.query), 120);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mentionTrigger ? mentionTrigger.query : null]);
+
+  const mentionMatches = mentionMenuOpen
+    ? mentionSourceList
+        .filter((m) => (m.label || m.id || "").toLowerCase().startsWith(debouncedMentionQuery.toLowerCase()))
+        .slice(0, 8)
+    : [];
+
+  // Keep the highlighted row in range as the filtered list narrows/widens.
+  React.useEffect(() => {
+    setMentionActiveIndex(0);
+  }, [debouncedMentionQuery]);
+
+  // Splices a structured `@type:id` ref token in place of the "@query"
+  // the operator just typed, then parks the caret right after it (a
+  // trailing space so typing continues as a normal word, same as the
+  // slash menu's argument-taking commands).
+  const pickMention = (item) => {
+    if (!item || !mentionTrigger) return;
+    setMentionDismissedFor(null);
+    const token = `@${item.type}:${item.id} `;
+    const raw = String(value || "");
+    const nextValue = raw.slice(0, mentionTrigger.start) + token + raw.slice(cursorPos);
+    const nextCursor = mentionTrigger.start + token.length;
+    if (typeof onChange === "function") onChange(nextValue);
+    setCursorPos(nextCursor);
+    // The DOM node still holds the pre-insertion value/selection at this
+    // point (onChange only updates the controlled prop) — wait a tick
+    // for the re-render to land before moving the caret past the token.
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) {
+        el.focus();
+        el.setSelectionRange(nextCursor, nextCursor);
+      }
+    });
+  };
+
+  const updateCursorFromEvent = (e) => {
+    const el = e && e.target;
+    if (el && typeof el.selectionStart === "number") setCursorPos(el.selectionStart);
+  };
+
   const handleComposerKeyDown = (e) => {
     if (slashMenuOpen && slashMatches.length > 0) {
       if (e.key === "ArrowDown") {
@@ -136,6 +248,28 @@ function Composer({
       if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
         e.preventDefault();
         pickSlashCommand(slashMatches[slashActiveIndex] || slashMatches[0]);
+        return;
+      }
+    }
+    if (mentionMenuOpen && mentionMatches.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setMentionActiveIndex((i) => (i + 1) % mentionMatches.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setMentionActiveIndex((i) => (i - 1 + mentionMatches.length) % mentionMatches.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setMentionDismissedFor(value);
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickMention(mentionMatches[mentionActiveIndex] || mentionMatches[0]);
         return;
       }
     }
@@ -196,14 +330,21 @@ function Composer({
             separate bottom-left column. */}
         <div style={{ position: "relative", flex: 1, display: "flex" }}>
           <textarea
+            ref={textareaRef}
             className="textarea"
             value={value}
-            onChange={(e) => typeof onChange === "function" && onChange(e.target.value)}
+            onChange={(e) => {
+              if (typeof onChange === "function") onChange(e.target.value);
+              updateCursorFromEvent(e);
+            }}
             placeholder={disabled ? "This chat has ended." : "Send a message…"}
             rows={2}
             style={{ flex: 1, resize: "none", paddingRight: 34 }}
             disabled={disabled}
             onKeyDown={handleComposerKeyDown}
+            onKeyUp={updateCursorFromEvent}
+            onClick={updateCursorFromEvent}
+            onSelect={updateCursorFromEvent}
             onPaste={handlePaste}
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
@@ -285,6 +426,55 @@ function Composer({
                 >
                   <div className="mono">/{c.name}</div>
                   {c.hint ? <div className="muted text-sm">{c.hint}</div> : null}
+                </button>
+              ))}
+            </div>
+          )}
+          {/* @-mention menu (Task D3) — same popover pattern as the slash
+              menu, but the trigger can appear anywhere in the draft (not
+              just at position 0), so it's anchored + gated off the
+              cursor-relative `mentionTrigger` instead of the whole
+              string. Entries are prefix-filtered against `mentionSources`
+              (agents/sessions/files, supplied by conversation.jsx). */}
+          {mentionMenuOpen && mentionMatches.length > 0 && (
+            <div
+              data-testid="chat-mention-menu"
+              className="popover"
+              style={{
+                position: "absolute",
+                left: 0,
+                bottom: "100%",
+                marginBottom: 6,
+                zIndex: 50,
+                width: 280,
+                maxHeight: 220,
+                overflow: "auto",
+                background: "var(--bg-1)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: 4,
+                boxShadow: "0 6px 24px rgba(0,0,0,.3)",
+              }}
+            >
+              {mentionMatches.map((m, i) => (
+                <button
+                  key={`${m.type}:${m.id}`}
+                  type="button"
+                  data-testid={`chat-mention-item-${i}`}
+                  className="menu-item"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickMention(m)}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "6px 8px",
+                    borderRadius: 6,
+                    background: i === mentionActiveIndex ? "var(--bg-active, rgba(255,255,255,.08))" : "transparent",
+                  }}
+                >
+                  <div className="mono">@{m.type}:{m.label || m.id}</div>
+                  {m.hint ? <div className="muted text-sm">{m.hint}</div> : null}
                 </button>
               ))}
             </div>

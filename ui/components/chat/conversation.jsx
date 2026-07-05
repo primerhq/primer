@@ -731,6 +731,63 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     },
   ], [cid, apiFetch, pushToast, handleCompact, navigate]);
 
+  // Task D3: @-mention sources, handed to <Composer> via the
+  // `mentionSources` prop it's accepted since Task B4. Same split as
+  // the slash registry above — <Composer> only filters/renders/inserts
+  // (no apiFetch/WebSocket there); this component owns the actual
+  // fetching: agents reuse the same `GET /agents?limit=200` call +
+  // cache key `CT_AgentSwitcher` (chats.jsx) already uses, sessions
+  // reuse the chats list `ChatsPage` already fetches (`chats:list`),
+  // and files need no fetch at all — they come from this chat's own
+  // attachments already in memory (the draft's pending ones, plus any
+  // already sent earlier in the transcript's `parts`).
+  const agentsForMentions = useResource(
+    "agent-switcher:agents",
+    (s) => apiFetch("GET", "/agents?limit=200", null, { signal: s }),
+    {}
+  );
+  const sessionsForMentions = useResource(
+    "chats:list",
+    (s) => apiFetch("GET", "/chats?limit=200", null, { signal: s }),
+    {}
+  );
+  const mentionSources = React.useMemo(() => {
+    const agentItems = (agentsForMentions.data?.items ?? []).map((a) => ({
+      type: "agent",
+      id: a.id,
+      label: a.id,
+      hint: a.description || "",
+    }));
+    const sessionItems = (sessionsForMentions.data?.items ?? [])
+      .filter((s) => s.id !== cid)
+      .map((s) => ({
+        type: "session",
+        id: s.id,
+        label: s.title || s.id,
+        hint: s.agent_id ? `agent ${s.agent_id}` : "",
+      }));
+    // Files: de-dupe by name across the draft's own pending attachments
+    // and filenames already seen on persisted user_message parts, so a
+    // resend/re-attach doesn't show up twice.
+    const seenNames = new Set();
+    const fileItems = [];
+    for (const a of attachments) {
+      if (!a.name || seenNames.has(a.name)) continue;
+      seenNames.add(a.name);
+      fileItems.push({ type: "file", id: a.name, label: a.name, hint: "attached to this draft" });
+    }
+    for (const m of messages) {
+      if (!Array.isArray(m.parts)) continue;
+      for (const p of m.parts) {
+        if (!p || (p.type !== "image" && p.type !== "document") || !p.filename) continue;
+        if (seenNames.has(p.filename)) continue;
+        seenNames.add(p.filename);
+        fileItems.push({ type: "file", id: p.filename, label: p.filename, hint: "shared earlier in this chat" });
+      }
+    }
+    return [...agentItems, ...sessionItems, ...fileItems];
+  }, [agentsForMentions.data, sessionsForMentions.data, attachments, messages, cid]);
+
   // Bubble status the host's page chrome needs (TokenMeter, connection
   // badge, status pill, "chat not found" gate) up to the parent —
   // rather than each of those living inside this embeddable core.
@@ -846,7 +903,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
             onAttach={handleFilesPicked}
             onRemoveAttachment={removeAttachment}
             slashCommands={slashCommands}
-            mentionSources={[]}
+            mentionSources={mentionSources}
             schemaInvalid={showSchemaPanel ? !schemaValid : false}
           />
         </div>
