@@ -198,6 +198,15 @@ async def test_chat_agent_switch_changes_responder(
         assert sw.status_code == 200, sw.text
         assert sw.json()["agent_id"] == agent_b["agent_id"], sw.text
 
+        # ----- 3b. The switch appended a "switch" agent_marker row ----
+        # (Task A5) so the timeline records the attribution boundary.
+        items = await _messages(client, cid)
+        markers = [it for it in items if it.get("kind") == "agent_marker"]
+        assert len(markers) == 1, f"expected exactly one agent_marker; got {items}"
+        assert markers[0]["marker"] == "switch", markers[0]
+        assert markers[0]["agent_id"] == agent_b["agent_id"], markers[0]
+        assert markers[0]["from_agent_id"] == agent_a["agent_id"], markers[0]
+
         # ----- 4. Next turn: agent-B now answers ---------------------
         await _send_user_message(client, cid, "And now who are you?")
         await _wait_for_reply(client, cid, expect_text="REPLY-FROM-B")
