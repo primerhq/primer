@@ -1,12 +1,12 @@
-/* global React, Icon, Btn, CT_AgentSwitcher, CT_AttachmentChip, Transcript */
+/* global React, Icon, CT_AgentSwitcher, Transcript, Composer, SchemaPanel */
 //
 // <Conversation> — the embeddable core of the chat feature (Task B2 of
 // the chat-refactor plan). Owns ALL WS/data lifecycle + optimistic
 // echo that used to live inline in ChatDetail (ui/components/chats.jsx):
 // initial REST tail-load, WS connect/reconnect/backoff + cursor resume,
 // usage/compaction envelope handling, lazy-load-older, auto-scroll,
-// sendMessage, and (for now, until <Composer> is extracted in B4) the
-// composer surface itself.
+// sendMessage, and the file-attachment read/encode pipeline that feeds
+// the composer.
 //
 // ChatDetail is now a thin host: it renders page chrome (title/back
 // button/status pills/TokenMeter) and mounts this component for the
@@ -22,6 +22,20 @@
 // (ui/components/chat/transcript.jsx). This component still owns
 // coalescing (window.chatCoalesce) and hands the result to <Transcript>
 // as props — no data fetching or WS in that file.
+//
+// Task B4 moved the input surface (textarea + attachment strip + send
+// control) out of this file into the pure <Composer> shell
+// (ui/components/chat/composer.jsx) and added the collapsible
+// <SchemaPanel> shell (ui/components/chat/schema-panel.jsx, R3) as an
+// optional right-hand sibling, gated by `showSchemaPanel`. This
+// component still owns the composer text/attachments state and the
+// send/attach handlers — <Composer> is a controlled, pure-rendering
+// shell. Real Send/Stop cancel wiring (turn_status-driven `running` +
+// POST /cancel) lands in Task C2; for now `running`/`onStop` are inert
+// placeholders so the shell's interface is locked in ahead of that
+// phase. Schema Builder/JSON bodies + persistent/ephemeral application
+// land in Task F1/F2; for now the panel's value/validity state is
+// local and unused by the send path unless `showSchemaPanel` is true.
 //
 // No viewport-relative (vh/dvh) height in this file (per §3) — the
 // component fills its flex parent (height:100%/flex:1); the host owns
@@ -77,7 +91,15 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   const [attachments, setAttachments] = React.useState([]);
   const wsRef = React.useRef(null);
   const scrollRef = React.useRef(null);
-  const fileInputRef = React.useRef(null);
+  // <SchemaPanel> (R3, Task B4 shell / F1-F2 behavior) local state.
+  // Builder/JSON tab bodies + persistent/ephemeral application to the
+  // send path are filled in by Task F1/F2 — this component just holds
+  // the state so the shell's prop surface (and <Composer>'s
+  // `schemaInvalid` gate) is stable ahead of that phase.
+  const [schemaValue, setSchemaValue] = React.useState(null);
+  const [schemaPersistent, setSchemaPersistent] = React.useState(false);
+  const [schemaValid, setSchemaValid] = React.useState(true);
+  const [schemaCollapsed, setSchemaCollapsed] = React.useState(true);
 
   // Initial REST load — fetches the TAIL of the history so the
   // renderer can scroll straight to the bottom without dragging
@@ -561,7 +583,6 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
       });
     }
     setAttachments(next);
-    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
   const removeAttachment = (id) => {
@@ -581,149 +602,130 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
       className="chat-conversation"
       style={{
         display: "flex",
-        flexDirection: "column",
+        flexDirection: "row",
         flex: 1,
         height: "100%",
         minHeight: 0,
         minWidth: 0,
       }}
     >
-      {headerSlot}
-      <Transcript
-        messages={window.chatCoalesce(messages)}
-        chatId={cid}
-        agentId={chatAgent}
-        wsState={wsState}
-        waitingForReply={waitingForReply}
-        turnStatus={chatRow?.turn_status}
-        pendingToolCall={chatRow?.pending_tool_call}
-        scrollRef={scrollRef}
-        onScroll={onScroll}
-        loadingOlder={loadingOlder}
-        hasMoreOlder={hasMoreOlder}
-      />
-
-      {/* Compaction in-progress indicator. Shown from the moment the
-          operator clicks Compact until the server's compaction
-          envelope lands (which clears compactInFlight and appends the
-          completion marker). Without it the only feedback was the
-          disabled button in the header. Rendered as a sibling below
-          the (now self-contained) <Transcript> scroll area rather than
-          as its last child — <Transcript>'s prop surface (Task B3) is
-          the coalesced timeline only, not this live compaction flag. */}
-      {compactInFlight && (
-        <div style={{
-          display: "flex", alignItems: "center", gap: 8,
-          margin: "12px auto", padding: "6px 14px",
-          border: "1px dashed var(--border)", borderRadius: 14,
-          width: "fit-content", fontSize: 12,
-          color: "var(--text-3)", background: "var(--bg-1, var(--bg))",
-        }}>
-          <Icon name="compress" size={12} className="muted" />
-          <span>Compacting conversation history…</span>
-        </div>
-      )}
-
-      {/* Pending-attachments strip — visible only when the composer
-          has files queued. Each chip carries an image thumbnail or a
-          document icon + filename + size; clicking ×  drops it. */}
-      {attachments.length > 0 && (
-        <div
-          style={{
-            borderTop: "1px solid var(--border)",
-            padding: "10px 14px",
-            display: "flex",
-            flexWrap: "wrap",
-            gap: 8,
-          }}
-        >
-          {attachments.map((a) => (
-            <CT_AttachmentChip
-              key={a.id}
-              attachment={a}
-              onRemove={() => removeAttachment(a.id)}
-            />
-          ))}
-        </div>
-      )}
-
       <div
-        className={isMobile ? "composer-sticky" : ""}
-        style={
-          isMobile
-            ? {
-                display: "flex",
-                gap: 8,
-                alignItems: "stretch",
-              }
-            : {
-                borderTop: "1px solid var(--border)",
-                padding: 14,
-                display: "flex",
-                gap: 8,
-                alignItems: "stretch",
-              }
-        }
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          flex: 1,
+          minHeight: 0,
+          minWidth: 0,
+        }}
       >
-        {rightChromeSlot}
-        <CT_AgentSwitcher
+        {headerSlot}
+        <Transcript
+          messages={window.chatCoalesce(messages)}
           chatId={cid}
-          currentAgentId={chatAgent}
-          pushToast={pushToast}
-          placement="up"
-          disabled={chatStatus === "ended"}
-          triggerStyle={{ padding: "0 12px", borderRadius: 6, alignSelf: "stretch" }}
+          agentId={chatAgent}
+          wsState={wsState}
+          waitingForReply={waitingForReply}
+          turnStatus={chatRow?.turn_status}
+          pendingToolCall={chatRow?.pending_tool_call}
+          scrollRef={scrollRef}
+          onScroll={onScroll}
+          loadingOlder={loadingOlder}
+          hasMoreOlder={hasMoreOlder}
         />
-        <button
-          type="button"
-          title="Attach files (images, PDFs)"
-          data-testid="chat-attach-btn"
-          onClick={() => fileInputRef.current && fileInputRef.current.click()}
-          disabled={chatStatus === "ended"}
-          style={{
-            background: "transparent",
-            border: "1px solid var(--border)",
-            borderRadius: 6,
-            padding: "0 10px",
-            color: "var(--text-2)",
-            cursor: chatStatus === "ended" ? "not-allowed" : "pointer",
-            display: "flex",
-            alignItems: "center",
-            opacity: chatStatus === "ended" ? 0.5 : 1,
-          }}
+
+        {/* Compaction in-progress indicator. Shown from the moment the
+            operator clicks Compact until the server's compaction
+            envelope lands (which clears compactInFlight and appends the
+            completion marker). Without it the only feedback was the
+            disabled button in the header. Rendered as a sibling below
+            the (now self-contained) <Transcript> scroll area rather than
+            as its last child — <Transcript>'s prop surface (Task B3) is
+            the coalesced timeline only, not this live compaction flag. */}
+        {compactInFlight && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 8,
+            margin: "12px auto", padding: "6px 14px",
+            border: "1px dashed var(--border)", borderRadius: 14,
+            width: "fit-content", fontSize: 12,
+            color: "var(--text-3)", background: "var(--bg-1, var(--bg))",
+          }}>
+            <Icon name="compress" size={12} className="muted" />
+            <span>Compacting conversation history…</span>
+          </div>
+        )}
+
+        <div
+          className={isMobile ? "composer-sticky" : ""}
+          style={
+            isMobile
+              ? {
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "stretch",
+                }
+              : {
+                  borderTop: "1px solid var(--border)",
+                  padding: 14,
+                  display: "flex",
+                  gap: 8,
+                  alignItems: "stretch",
+                }
+          }
         >
-          <Icon name="paperclip" size={14} />
-        </button>
-        <input
-          ref={fileInputRef}
-          type="file"
-          multiple
-          accept="image/*,application/pdf"
-          style={{ display: "none" }}
-          onChange={(e) => handleFilesPicked(e.target.files)}
-        />
-        <textarea
-          className="textarea"
-          value={composer}
-          onChange={(e) => setComposer(e.target.value)}
-          placeholder={chatStatus === "ended" ? "This chat has ended." : "Send a message…"}
-          rows={2}
-          style={{ flex: 1, resize: "none" }}
-          disabled={chatStatus === "ended"}
-          onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); onSubmitComposer(); } }}
-        />
-        <Btn
-          kind="primary"
-          icon="send"
-          disabled={(!composer.trim() && attachments.length === 0) || chatStatus === "ended" || wsState !== "open"}
-          onClick={onSubmitComposer}
-          style={{ alignSelf: "stretch", paddingLeft: 16, paddingRight: 16 }}
-        >Send</Btn>
+          {rightChromeSlot}
+          <CT_AgentSwitcher
+            chatId={cid}
+            currentAgentId={chatAgent}
+            pushToast={pushToast}
+            placement="up"
+            disabled={chatStatus === "ended"}
+            triggerStyle={{ padding: "0 12px", borderRadius: 6, alignSelf: "stretch" }}
+          />
+          {/* Task B4 shell: the input surface (attachment strip,
+              attach control, textarea, Send/Stop) now lives in
+              <Composer>. This component keeps the composer text +
+              attachments state and the send/attach handlers — the
+              wsState-not-open case is still handled (sendMessage()
+              below shows a "Not connected" toast), it just no longer
+              disables the Send button pre-emptively since <Composer>'s
+              `disabled` prop maps 1:1 to "chat ended" the same way the
+              textarea's disabled attribute always has. Real
+              running/Stop wiring lands in Task C2. */}
+          <Composer
+            value={composer}
+            onChange={setComposer}
+            onSend={onSubmitComposer}
+            onStop={() => {}}
+            running={false}
+            disabled={chatStatus === "ended"}
+            attachments={attachments}
+            onAttach={handleFilesPicked}
+            onRemoveAttachment={removeAttachment}
+            slashCommands={[]}
+            mentionSources={[]}
+            schemaInvalid={showSchemaPanel ? !schemaValid : false}
+          />
+        </div>
       </div>
 
-      {/* SchemaPanel (R3) arrives in Task F2; showSchemaPanel is
-          accepted now so the prop surface is stable for that phase. */}
-      {showSchemaPanel ? null : null}
+      {/* <SchemaPanel> (R3) — collapsible right-hand sibling of the
+          timeline + composer column, per §3's layout. Builder/JSON
+          bodies + persistent/ephemeral application to the send path
+          land in Task F1/F2; this mounts the Task B4 shell now that
+          showSchemaPanel (accepted since Task B2) has something to
+          gate. */}
+      {showSchemaPanel && (
+        <SchemaPanel
+          value={schemaValue}
+          onChange={setSchemaValue}
+          persistent={schemaPersistent}
+          onPersistentChange={setSchemaPersistent}
+          valid={schemaValid}
+          onValidityChange={setSchemaValid}
+          collapsed={schemaCollapsed}
+          onToggle={() => setSchemaCollapsed((c) => !c)}
+        />
+      )}
     </div>
   );
 }
