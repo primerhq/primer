@@ -66,57 +66,76 @@ async def _realize_pending_messages(
     deps: "ChatDispatchDeps",
     chat_id: str,
 ) -> bool:
-    """Realize deferred follow-ups (``Chat.pending_user_messages``) into
-    real seq'd user_messages once the active turn has completed.
+    """Realize deferred follow-ups (``PendingChatMessage`` rows) into real
+    seq'd user_messages once the active turn has completed.
 
     Called at the drain-empty checkpoint — AFTER the completed turn's
-    terminal row and BEFORE the chat would otherwise go idle. Each
-    pending entry is appended via ``append_user_message`` in order, so it
-    gets the next real seq (strictly greater than the terminal row),
-    which fixes BOTH the seq-collision (no seq is assigned mid-turn) and
-    the ordering (the follow-up sorts AFTER the response). The
-    ``client_msg_id`` is carried onto the realized row so the client can
-    reconcile its optimistic "(queued)" placeholder.
+    terminal row and BEFORE the chat would otherwise go idle. Each pending
+    row is appended via ``append_user_message`` in ``enqueued_at`` order, so
+    it gets the next real seq (strictly greater than the terminal row):
+    fixes BOTH the seq-collision (no seq is assigned mid-turn) and the
+    ordering (the follow-up sorts AFTER the response). ``client_msg_id`` is
+    carried onto the realized row so the client can reconcile its optimistic
+    "(queued)" placeholder; the pending row is then deleted. A row inserted
+    concurrently after the query is picked up on the next drain-empty
+    checkpoint — never lost or reordered (there is no shared-list
+    read-modify-write to race on, unlike the old chat-row list).
 
     Returns True when at least one message was realized (the caller
     continues its drain loop so the realized rows run as the next
     turn(s)); False when there was nothing to realize.
     """
     from primer.chat.enqueue import append_user_message
+    from primer.model.chats import PendingChatMessage
+
+    pending_storage = deps.storage_provider.get_storage(PendingChatMessage)
+    # length is capped at 200 by OffsetPage. A single mid-turn burst of
+    # >200 follow-ups is implausible, but if it ever happens the drain is
+    # still correct: we realize + delete this batch (oldest 200 by
+    # enqueued_at), the caller re-enters the drain loop, and the next
+    # drain-empty checkpoint calls us again to pick up the remainder — in
+    # order, since we deleted the batch we just drained.
+    page = await pending_storage.find(
+        Predicate(
+            left=FieldRef(name="chat_id"), op=Op.EQ,
+            right=Value(value=chat_id),
+        ),
+        OffsetPage(offset=0, length=200),
+        order_by=[
+            OrderBy(field="enqueued_at", direction="asc"),
+            OrderBy(field="id", direction="asc"),
+        ],
+    )
+    rows = list(page.items)
+    if not rows:
+        return False
 
     chat_storage = deps.storage_provider.get_storage(Chat)
     chat = await chat_storage.get(chat_id)
-    if chat is None or not chat.pending_user_messages:
+    if chat is None:
+        # Chat gone: reap the orphaned pending rows so they don't leak.
+        for row in rows:
+            await pending_storage.delete(row.id)
         return False
 
-    pending = list(chat.pending_user_messages)
-    # Clear on the in-memory copy first so the per-append chat persists
-    # (append_user_message writes the whole row) don't keep re-persisting
-    # the now-draining queue.
-    chat.pending_user_messages = []
     realized_any = False
     max_seq = chat.last_seq
-    for entry in pending:
-        raw_parts = entry.get("parts") or []
-        if not raw_parts:
-            continue
-        row = await append_user_message(
-            chat=chat,
-            parts=raw_parts,
-            storage_provider=deps.storage_provider,
-            attribution=entry.get("attribution") or None,
-            client_msg_id=entry.get("client_msg_id"),
-        )
-        max_seq = max(max_seq, row.seq)
-        realized_any = True
+    for row in rows:
+        if row.parts:
+            realized = await append_user_message(
+                chat=chat,
+                parts=row.parts,
+                storage_provider=deps.storage_provider,
+                attribution=row.attribution or None,
+                client_msg_id=row.client_msg_id,
+            )
+            max_seq = max(max_seq, realized.seq)
+            realized_any = True
+        # Delete whether or not it was usable, so the drain loop can't spin
+        # re-reading a part-less entry.
+        await pending_storage.delete(row.id)
 
     if not realized_any:
-        # The queue held only unusable (part-less) entries: still clear it
-        # so the drain loop doesn't spin re-reading the same junk.
-        fresh = await chat_storage.get(chat_id)
-        if fresh is not None and fresh.pending_user_messages:
-            fresh.pending_user_messages = []
-            await chat_storage.update(fresh)
         return False
 
     # Publish a tick so the client receives the realized rows promptly
@@ -349,7 +368,7 @@ async def run_one_chat_turn(
                 # is the structural fix: no seq is ever assigned to a
                 # follow-up mid-turn, so it can never collide with an
                 # in-flight assistant_token, and it always sorts after the
-                # response. See Chat.pending_user_messages.
+                # response. See the PendingChatMessage model.
                 if await _realize_pending_messages(deps, chat_id):
                     continue
                 final = await chat_storage.get(chat_id)

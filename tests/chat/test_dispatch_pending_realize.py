@@ -12,11 +12,12 @@ row for the follow-up that then collided with the executor's first
 ``assistant_token`` (also ``seq=2``), raising ``ConflictError`` and
 aborting the turn.
 
-With the deferred queue the follow-up is held on
-``Chat.pending_user_messages`` (no seq) until the turn's terminal row
-lands, then realized via ``append_user_message`` — so it is impossible
-for it to share a seq with an in-flight row, and it sorts AFTER the
-response.
+With the deferred queue the follow-up is held as its own
+``PendingChatMessage`` row (no seq) until the turn's terminal row lands,
+then realized via ``append_user_message`` — so it is impossible for it to
+share a seq with an in-flight row, and it sorts AFTER the response. Being
+its own row (atomic INSERT) rather than a list on the chat means the
+enqueue and the drain can't lose-update each other across processes.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ from primer.chat.dispatch import ChatDispatchDeps, run_one_chat_turn
 from primer.chat.tick_router import ChatTickRouter
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, StreamEvent, TextDelta
-from primer.model.chats import Chat, ChatMessage
+from primer.model.chats import Chat, ChatMessage, PendingChatMessage
 from primer.model.provider import (
     AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
 )
@@ -44,7 +45,7 @@ from primer.model.storage import (
 
 class _ThinkingSeederLLM:
     """Fake LLM that — during the FIRST turn, BEFORE the first assistant
-    token — enqueues a follow-up onto ``chat.pending_user_messages``,
+    token — enqueues a follow-up as a ``PendingChatMessage`` row,
     simulating the deferred-queue WS recv loop receiving a second send
     while the agent is still "Thinking…". Later turns stream a plain
     ``TextDelta`` + ``Done`` so the drain loop terminates cleanly."""
@@ -109,17 +110,20 @@ async def test_followup_during_thinking_is_deferred_and_realized_after_turn(
 
     async def _enqueue_pending_followup() -> None:
         # Mirror exactly what the WS recv loop does when a frame arrives
-        # while a turn is active: hold it on pending_user_messages (NO seq).
-        cur = await chats.get("c1")
-        cur.pending_user_messages = [
-            {
-                "parts": [{"type": "text", "text": "second"}],
-                "attribution": None,
-                "client_msg_id": "cid-2",
-                "queued_at": datetime.now(timezone.utc).isoformat(),
-            }
-        ]
-        await chats.update(cur)
+        # while a turn is active: insert its OWN PendingChatMessage row
+        # (NO seq).
+        enq = datetime.now(timezone.utc)
+        await fake_storage_provider.get_storage(PendingChatMessage).create(
+            PendingChatMessage(
+                id=f"c1:pending:{enq.isoformat()}:seed",
+                chat_id="c1",
+                parts=[{"type": "text", "text": "second"}],
+                attribution=None,
+                client_msg_id="cid-2",
+                enqueued_at=enq,
+                created_at=enq,
+            )
+        )
 
     fake_llm = _ThinkingSeederLLM(on_first_thinking=_enqueue_pending_followup)
 
@@ -185,7 +189,13 @@ async def test_followup_during_thinking_is_deferred_and_realized_after_turn(
         for r in rows[realized_idx:]
     ), kinds
 
-    # Pending list drained; clean disposition.
-    final = await chats.get("c1")
-    assert final.pending_user_messages == []
+    # Pending rows drained (deleted) after realization; clean disposition.
+    pending_page = await fake_storage_provider.get_storage(
+        PendingChatMessage
+    ).find(
+        Predicate(left=FieldRef(name="chat_id"), op=Op.EQ,
+                  right=Value(value="c1")),
+        OffsetPage(offset=0, length=200),
+    )
+    assert list(pending_page.items) == []
     assert disposition == "idle"

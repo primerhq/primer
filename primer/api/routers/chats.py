@@ -24,6 +24,7 @@ plugs in by replacing :class:`ChatTurnRunner.run_turn`.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -64,6 +65,18 @@ import primer.observability.metrics as _metrics
 
 
 logger = logging.getLogger(__name__)
+
+# Per-process monotonic tiebreaker for deferred-follow-up ordering. Two
+# follow-ups received back-to-back by the single WS recv loop can land in
+# the SAME wall-clock microsecond, so ``enqueued_at`` alone ties and the
+# drain's secondary sort (by id) would otherwise fall to a random uuid ->
+# reordered follow-ups (FIFO violation). Embedding this strictly-increasing
+# count in the id, zero-padded so it sorts lexicographically, makes the
+# tie break resolve to receive order. ``next()`` is atomic under the GIL.
+# Only a tiebreak WITHIN a microsecond: ``enqueued_at`` remains the primary
+# ordering key, so a process restart resetting the count is harmless (no
+# two follow-ups straddle a restart in the same microsecond).
+_pending_enqueue_counter = itertools.count()
 
 
 chats_router = APIRouter(tags=["chats"])
@@ -979,6 +992,24 @@ async def chat_ws(
             _span.set_attribute("ws.frames_sent", _frames_sent)
 
 
+async def _chat_has_pending(pending_storage, chat_id: str) -> bool:
+    """True when the chat has at least one un-drained ``PendingChatMessage``
+    row (a follow-up queued mid-turn but not yet realized).
+
+    The recv loop uses this to keep a newly-arrived follow-up queued BEHIND
+    earlier ones rather than leapfrogging them via the idle fast-path (which
+    would give the newcomer a lower seq and reorder the client's view).
+    """
+    from primer.model.chats import PendingChatMessage
+    from primer.model.storage import OffsetPage
+
+    page = await pending_storage.find(
+        Q(PendingChatMessage).where("chat_id", chat_id).build(),
+        OffsetPage(offset=0, length=1),
+    )
+    return bool(list(page.items))
+
+
 async def _recv_loop(
     websocket: WebSocket,
     chat_id: str,
@@ -1044,25 +1075,71 @@ async def _recv_loop(
         # (claimable/running) we must NOT allocate this follow-up a seq
         # mid-turn — that is exactly what collided with the in-flight
         # turn's assistant_token seq and aborted the turn. Instead hold
-        # it on ``pending_user_messages`` (no seq); the dispatch loop
-        # realizes it AFTER the turn's terminal row. When idle, keep the
-        # original behaviour: append a real seq'd row + wake a worker.
-        if chat.turn_status in ("claimable", "running"):
-            pending = list(chat.pending_user_messages or [])
-            pending.append({
-                "parts": [p.model_dump(mode="json") for p in user_parts],
-                "attribution": None,
-                "client_msg_id": client_msg_id,
-                "queued_at": datetime.now(timezone.utc).isoformat(),
-            })
-            chat.pending_user_messages = pending
-            await chats_storage.update(chat)
-            # Do NOT publish chat-claimable: no new claimable work landed;
-            # the client already renders this optimistically.
+        # it as its own ``PendingChatMessage`` row (no seq); the dispatch
+        # loop realizes it AFTER the turn's terminal row.
+        #
+        # We ALSO defer when the chat looks idle but earlier follow-ups are
+        # still queued (not yet realized): appending a real seq'd row here
+        # would leapfrog those pending rows with a LOWER seq, so the client
+        # would see the follow-ups out of order. Queue behind them instead;
+        # the realize drain then emits the whole run in enqueued order.
+        from primer.model.chats import PendingChatMessage
+        pending_storage = storage_provider.get_storage(PendingChatMessage)
+        turn_active = chat.turn_status in ("claimable", "running")
+        if turn_active or await _chat_has_pending(pending_storage, chat_id):
+            # Deferred-queue: a follow-up is stored as its OWN row (atomic
+            # INSERT), NOT appended to a chat-row list. That list was
+            # read-modify-written by three coroutines (this recv loop, the
+            # running turn's per-token chat persists, and the realize drain)
+            # on a last-writer-wins store — which lost/reordered follow-ups
+            # across the API/worker process split. The dispatch loop drains
+            # these (ordered by enqueued_at) after the turn's terminal row.
+            now = datetime.now(timezone.utc)
+            # id: chat:pending:<iso>:<seq>:<rand>. The zero-padded seq is a
+            # per-process receive-order tiebreaker so two follow-ups sharing
+            # an ``enqueued_at`` microsecond still drain FIFO (see
+            # _pending_enqueue_counter); the random suffix only guards
+            # against a true id collision across processes.
+            seq = next(_pending_enqueue_counter)
+            await pending_storage.create(
+                PendingChatMessage(
+                    id=(
+                        f"{chat_id}:pending:{now.isoformat()}"
+                        f":{seq:018d}:{uuid.uuid4().hex[:8]}"
+                    ),
+                    chat_id=chat_id,
+                    parts=[p.model_dump(mode="json") for p in user_parts],
+                    attribution=None,
+                    client_msg_id=client_msg_id,
+                    enqueued_at=now,
+                    created_at=now,
+                )
+            )
+            # Lost-wakeup guard. The active turn may have ENDED between our
+            # turn_status read above and this INSERT — in which case its
+            # drain-empty realize checkpoint already ran and MISSED this row,
+            # leaving it stranded while the chat sits idle (nothing else
+            # would ever drain it). Re-read; if the chat is now idle, flip it
+            # claimable and wake a worker so the realize checkpoint runs again
+            # and drains the pending rows. When a turn is still active its own
+            # checkpoint drains them, so we leave it alone (no spurious claim).
+            latest = await chats_storage.get(chat_id)
+            if (
+                latest is not None
+                and latest.status == "active"
+                and latest.turn_status == "idle"
+            ):
+                latest.turn_status = "claimable"
+                await chats_storage.update(latest)
+                await event_bus.publish("chat-claimable", {"chat_id": chat_id})
+                if claim_engine is not None:
+                    from primer.int.claim import ClaimKind
+                    await claim_engine.upsert(ClaimKind.CHAT, chat_id, priority=10)
             continue
-        # Idle: persist the user_message row + update chat.last_seq / title.
-        # Delegate to the canonical service helper so the WS path and
-        # the trigger dispatcher write user_messages identically.
+        # Idle AND nothing queued: persist the user_message row + update
+        # chat.last_seq / title. Delegate to the canonical service helper so
+        # the WS path and the trigger dispatcher write user_messages
+        # identically.
         from primer.chat.enqueue import append_user_message
 
         await append_user_message(
