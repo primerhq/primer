@@ -277,6 +277,48 @@ function _AuthFooter() {
   );
 }
 
+// Lists enabled SSO providers (Layer 2 OIDC) below the username/password
+// form on LoginScreen. Fetches GET /auth/sso/providers on mount; renders
+// nothing (no divider, no buttons) when the list is empty or the fetch
+// fails, so a console with no SSO providers configured looks exactly as
+// before. Each button does a full-page navigation (not an apiFetch call)
+// to the backend's OIDC redirect endpoint, which 302s to the provider.
+function _SsoButtons() {
+  const [providers, setProviders] = React.useState([]);
+
+  React.useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await window.primerApi.apiFetch("GET", "/auth/sso/providers", null, {});
+        if (!cancelled && Array.isArray(r)) setProviders(r);
+      } catch {
+        /* no providers configured, or the endpoint isn't reachable yet —
+           degrade to the plain username/password form. */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  if (!providers.length) return null;
+
+  return (
+    <div className="auth-sso">
+      <div className="auth-or"><span>— or —</span></div>
+      {providers.map((p) => (
+        <button
+          key={p.id}
+          type="button"
+          className="auth-sso-btn touch-target"
+          onClick={() => { window.location.href = "/v1/auth/sso/" + encodeURIComponent(p.id) + "/login"; }}
+        >
+          Sign in with {p.name}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function LoginScreen({ onDone }) {
   const [username, setUsername] = React.useState("");
   const [password, setPassword] = React.useState("");
@@ -357,6 +399,7 @@ function LoginScreen({ onDone }) {
               {busy ? (<><span className="spinner" /><span>Signing in…</span></>) : <span>Sign in</span>}
             </button>
           </form>
+          <_SsoButtons />
         </div>
         <_AuthFooter />
       </div>

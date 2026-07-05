@@ -2012,6 +2012,44 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 @keyframes auth-spin { to { transform: rotate(360deg); } }
 
+.auth-sso { margin-top: 4px; }
+
+.auth-or {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 16px 0 12px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+.auth-or::before,
+.auth-or::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+.auth-sso-btn {
+  width: 100%;
+  background: var(--bg-1);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+.auth-sso-btn:hover { background: var(--bg-2); border-color: var(--border-strong); }
+.auth-sso-btn:active { transform: translateY(1px); }
+
 .auth-banner {
   display: flex;
   align-items: flex-start;
