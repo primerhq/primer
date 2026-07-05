@@ -882,6 +882,52 @@ function CompactionMarker({ m }) {
 }
 
 // ============================================================================
+// CT_ConnectionStatus — connection + turn-status indicator (Task G1 / §4.5)
+// ============================================================================
+//
+// <Transcript> is the pure core Studio embeds directly (no ChatDetail page
+// chrome) — the WS badge that already lives in the /chats page host
+// (ui/components/chats.jsx's wsBadge) isn't guaranteed to be visible to
+// every host. This renders the SAME wsState (open/connecting/closed) pill
+// styling inline in the transcript itself, plus a `turn_status`
+// (idle/claimable/running) pill right alongside it — "surface turn_status
+// ... as a real indicator alongside the WS badge" per the plan — so
+// connection + turn legibility travels with the component wherever it's
+// embedded, not just the /chats page's own header.
+function CT_ConnectionStatus({ wsState, turnStatus }) {
+  const wsPillClass = wsState === "open"
+    ? "pill pill-running"
+    : wsState === "connecting"
+      ? "pill pill-paused"
+      : "pill pill-ended";
+  const wsLabel = wsState === "open" ? "live" : wsState === "connecting" ? "connecting" : "offline";
+  const turn = turnStatus || "idle";
+  const turnPillClass = turn === "running"
+    ? "pill pill-running"
+    : turn === "claimable"
+      ? "pill pill-claimed"
+      : "pill pill-created";
+  return (
+    <div
+      className="chat-connection-status"
+      data-testid="chat-connection-status"
+      style={{
+        display: "flex", alignItems: "center", gap: 8, flex: "0 0 auto",
+        padding: "6px 24px", fontSize: 11,
+        borderBottom: "1px solid var(--border)",
+      }}
+    >
+      <span className={wsPillClass} title={`WebSocket ${wsState}`}>
+        <span className="dot"></span>{wsLabel}
+      </span>
+      <span className={turnPillClass} data-testid="chat-turn-status" title={`Turn status: ${turn}`}>
+        <span className="dot"></span>{turn}
+      </span>
+    </div>
+  );
+}
+
+// ============================================================================
 // Transcript — the timeline itself (Task B3)
 // ============================================================================
 //
@@ -944,67 +990,85 @@ function Transcript({
   }
 
   return (
-    <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0, minWidth: 0 }}>
-      {(loadingOlder || hasMoreOlder) && messages.length > 0 && (
-        <div
-          className="muted text-sm"
-          style={{ textAlign: "center", padding: "6px 0 12px", fontSize: 11 }}
-          data-testid="chat-load-older"
-        >
-          {loadingOlder ? "Loading older…" : "Scroll up to load older"}
-        </div>
-      )}
-      {messages.length === 0 && (
-        <div className="muted text-sm" style={{ textAlign: "center", padding: 24 }}>
-          {wsState === "connecting" ? "Connecting…" : "No messages yet. Say hello to the agent."}
-        </div>
-      )}
-      {messages.map((m) => {
-        // A tool_result that pairs with a tool_call present in this same
-        // window (Task C3) folds into that call's row above — it doesn't
-        // get a row of its own.
-        if (m.kind === "tool_result" && m.id && toolCallIdsPresent.has(m.id)) {
-          return null;
-        }
-        const pairedResult = m.kind === "tool_call" && m.id
-          ? toolResultsById.get(m.id)
-          : undefined;
-        // A pending optimistic echo (Task C2) has no `seq` yet — key off
-        // its `clientId` instead so it doesn't collide with (or get
-        // confused for) a persisted row while it's still in flight. A
-        // tool_call's key additionally folds in run/done state (Task C3)
-        // so the row remounts — and so its default-open state resets from
-        // "expanded while running" to "collapsed once done" — the instant
-        // its tool_result pairs up, rather than staying stuck open.
-        const key = m.kind === "assistant_message"
-          ? `am-${m.startSeq}-${m.endSeq}`
-          : m.clientId
-            ? `pending-${m.clientId}`
-            : m.kind === "tool_call"
-              ? `${m.seq}-${m.kind}-${pairedResult ? "done" : "running"}`
-              : `${m.seq}-${m.kind}`;
-        return (
-          <Message
-            key={key}
-            m={m}
-            pairedResult={pairedResult}
-            chatId={chatId}
-            onRewind={onRewind}
-            rewindDisabled={rewindDisabled}
-            compactionBoundarySeq={compactionBoundarySeq}
-          />
-        );
-      })}
+    <div style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0 }}>
+      {/* Task G1 (§4.5): connection + turn-status legibility that travels
+          with the component wherever it's embedded — see
+          CT_ConnectionStatus above. */}
+      <CT_ConnectionStatus wsState={wsState} turnStatus={turnStatus} />
+      <div
+        ref={scrollRef}
+        onScroll={onScroll}
+        // Task G1 (§4.5): the timeline is a live region — streaming
+        // assistant text (coalesced into assistant_message rows) and new
+        // tool rows (tool_call/tool_result) are appended into this same
+        // subtree, so role="log" + aria-live="polite" is enough for a
+        // screen reader to announce each addition without re-reading the
+        // whole transcript.
+        role="log"
+        aria-live="polite"
+        style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0, minWidth: 0 }}
+      >
+        {(loadingOlder || hasMoreOlder) && messages.length > 0 && (
+          <div
+            className="muted text-sm"
+            style={{ textAlign: "center", padding: "6px 0 12px", fontSize: 11 }}
+            data-testid="chat-load-older"
+          >
+            {loadingOlder ? "Loading older…" : "Scroll up to load older"}
+          </div>
+        )}
+        {messages.length === 0 && (
+          <div className="muted text-sm" style={{ textAlign: "center", padding: 24 }}>
+            {wsState === "connecting" ? "Connecting…" : "No messages yet. Say hello to the agent."}
+          </div>
+        )}
+        {messages.map((m) => {
+          // A tool_result that pairs with a tool_call present in this same
+          // window (Task C3) folds into that call's row above — it doesn't
+          // get a row of its own.
+          if (m.kind === "tool_result" && m.id && toolCallIdsPresent.has(m.id)) {
+            return null;
+          }
+          const pairedResult = m.kind === "tool_call" && m.id
+            ? toolResultsById.get(m.id)
+            : undefined;
+          // A pending optimistic echo (Task C2) has no `seq` yet — key off
+          // its `clientId` instead so it doesn't collide with (or get
+          // confused for) a persisted row while it's still in flight. A
+          // tool_call's key additionally folds in run/done state (Task C3)
+          // so the row remounts — and so its default-open state resets from
+          // "expanded while running" to "collapsed once done" — the instant
+          // its tool_result pairs up, rather than staying stuck open.
+          const key = m.kind === "assistant_message"
+            ? `am-${m.startSeq}-${m.endSeq}`
+            : m.clientId
+              ? `pending-${m.clientId}`
+              : m.kind === "tool_call"
+                ? `${m.seq}-${m.kind}-${pairedResult ? "done" : "running"}`
+                : `${m.seq}-${m.kind}`;
+          return (
+            <Message
+              key={key}
+              m={m}
+              pairedResult={pairedResult}
+              chatId={chatId}
+              onRewind={onRewind}
+              rewindDisabled={rewindDisabled}
+              compactionBoundarySeq={compactionBoundarySeq}
+            />
+          );
+        })}
 
-      {/* Thinking indicator — see _QUIET_LAST_KINDS above for why this
-          checks the coalesced last row rather than the raw one; see
-          thinkingLabel above (Task C2) for the tool-labeled live state. */}
-      {showThinking ? <CT_ThinkingBubble label={thinkingLabel} /> : null}
+        {/* Thinking indicator — see _QUIET_LAST_KINDS above for why this
+            checks the coalesced last row rather than the raw one; see
+            thinkingLabel above (Task C2) for the tool-labeled live state. */}
+        {showThinking ? <CT_ThinkingBubble label={thinkingLabel} /> : null}
 
-      {/* Task C4: inline Approve/Deny under the gating assistant message —
-          see CT_ApprovalGate above for why rendering it here (right after
-          the last row) satisfies "under the gating assistant message". */}
-      {gateAwaitingApproval ? <CT_ApprovalGate sendMessage={sendMessage} /> : null}
+        {/* Task C4: inline Approve/Deny under the gating assistant message —
+            see CT_ApprovalGate above for why rendering it here (right after
+            the last row) satisfies "under the gating assistant message". */}
+        {gateAwaitingApproval ? <CT_ApprovalGate sendMessage={sendMessage} /> : null}
+      </div>
     </div>
   );
 }
