@@ -305,6 +305,8 @@ class _FakeStorageProvider:
         return SystemState(
             bootstrap_completed_at=self._bootstrap_completed_at,
             session_secret=getattr(self, "_session_secret", None),
+            sso_jit_enabled=getattr(self, "_sso_jit_enabled", False),
+            sso_default_access=getattr(self, "_sso_default_access", None),
         )
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
@@ -312,6 +314,12 @@ class _FakeStorageProvider:
 
     async def set_session_secret(self, secret: str) -> None:
         self._session_secret = secret
+
+    async def set_sso_jit_enabled(self, enabled: bool) -> None:
+        self._sso_jit_enabled = enabled
+
+    async def set_sso_default_access(self, access: str | None) -> None:
+        self._sso_default_access = access
 
 
 @pytest.fixture
