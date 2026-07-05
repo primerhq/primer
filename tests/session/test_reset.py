@@ -96,6 +96,21 @@ async def test_reset_reopens_row_and_writes_divider():
 
 
 @pytest.mark.asyncio
+async def test_reset_clears_stale_interrupt_requested():
+    row = _ended_row()
+    row.interrupt_requested = True
+    slot = _Slot()
+    ws = _WS(slot)
+    deps = SessionResetDeps(
+        storage_provider=_SP(row), workspace_registry=_Registry(ws),
+    )
+    out, _invocation = await reset_session(
+        workspace_id="ws-1", session_id="sess-1", deps=deps,
+    )
+    assert out.interrupt_requested is False
+
+
+@pytest.mark.asyncio
 async def test_reset_rejects_non_ended():
     row = _ended_row()
     row.status = SessionStatus.RUNNING
