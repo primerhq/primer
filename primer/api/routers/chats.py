@@ -35,6 +35,7 @@ from fastapi import (
     Path,
     Query,
     Request,
+    Response,
     WebSocket,
     WebSocketDisconnect,
     status,
@@ -952,6 +953,105 @@ async def rewind_chat(
 
     return ChatRewindResponse(
         chat_id=chat_id, truncated_to_seq=body.seq, deleted=deleted,
+    )
+
+
+# ===========================================================================
+# REST: artifact content fetch (inline previews, §4.4)
+# ===========================================================================
+
+
+async def _chat_references_artifact(
+    sp, chat_id: str, artifact_id: str,
+) -> bool:
+    """Cheap chat-local authz check for the artifact-fetch route.
+
+    Blobs live in a store keyed globally by ``artifact_id`` (see
+    :mod:`primer.artifact.db`), so nothing stops a client that knows an
+    id from probing it directly — this scans ``chat_id``'s own rows and
+    only allows the fetch when the id actually appears in one of them
+    (``payload['media']``, or the forward-compat ``payload['parts']``
+    key used elsewhere — see ``derive_final_relay_media`` in
+    :mod:`primer.channel.chat_dispatcher`). Bounded by this chat's row
+    count (paged 200 at a time), not a global scan, and computed once
+    per request rather than a standing index.
+    """
+    from primer.model.storage import OffsetPage
+
+    messages = sp.get_storage(ChatMessage)
+    offset = 0
+    while True:
+        page = await messages.find(
+            Q(ChatMessage).where("chat_id", chat_id).build(),
+            OffsetPage(offset=offset, length=200),
+            order_by=[OrderBy(field="seq", direction="asc")],
+        )
+        for row in page.items:
+            payload = row.payload or {}
+            for key in ("media", "parts"):
+                entries = payload.get(key)
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("artifact_id") == artifact_id
+                    ):
+                        return True
+        if len(page.items) < 200:
+            break
+        offset += 200
+    return False
+
+
+@chats_router.get(
+    "/chats/{chat_id}/artifacts/{artifact_id}",
+    summary="Fetch a tool-produced artifact's bytes for inline preview",
+    responses=common_responses(404, 500),
+)
+async def get_chat_artifact(
+    request: Request,
+    chat_id: str = Path(...),
+    artifact_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+) -> Response:
+    """Stream an artifact's raw bytes back for an inline preview.
+
+    Persisted tool-produced media parts carry only an ``artifact_id``
+    (no inline ``data`` — see :mod:`primer.channel.media`); there was
+    previously no byte-serving route. This one is scoped under the
+    chat so authz stays chat-local even though the artifact store
+    itself is global (:func:`_chat_references_artifact`).
+
+    * ``200`` — the raw bytes, with ``Content-Type`` set to the
+      blob's stored ``mime_type`` and ``Content-Disposition: inline``.
+    * ``404`` — unknown chat, the artifact id isn't referenced by this
+      chat's rows, no default artifact store is configured, or the
+      blob itself is missing from the store.
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+
+    if not await _chat_references_artifact(sp, chat_id, artifact_id):
+        raise NotFoundError(
+            f"Artifact {artifact_id!r} is not referenced by chat "
+            f"{chat_id!r}"
+        )
+
+    registry = getattr(request.app.state, "artifact_storage_registry", None)
+    if registry is None:
+        raise NotFoundError("Artifact storage registry is not configured")
+    store = await registry.get_default()
+    blob = await store.get(artifact_id)
+    if blob is None:
+        raise NotFoundError(f"Artifact {artifact_id!r} does not exist")
+
+    return Response(
+        content=blob.data,
+        media_type=blob.mime_type,
+        headers={"Content-Disposition": "inline"},
     )
 
 
