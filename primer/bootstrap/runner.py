@@ -28,6 +28,7 @@ Usage example (from the lifespan)::
 from __future__ import annotations
 
 import copy
+import importlib.util
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -241,6 +242,20 @@ class BootstrapRunner:
                 result.skipped.append(reserved_id)
                 return
 
+            # Only register the default HuggingFace embedder when its backing
+            # dependency is installed. The slim image ships without the
+            # 'huggingface' extra (sentence-transformers), so registering the
+            # row here would create a default provider that fails at use time.
+            if importlib.util.find_spec("sentence_transformers") is None:
+                result.skipped.append(reserved_id)
+                logger.info(
+                    "bootstrap: skipping default embedder %r — the "
+                    "'huggingface' extra (sentence-transformers) is not "
+                    "installed",
+                    reserved_id,
+                )
+                return
+
             spec = copy.deepcopy(RESERVED_EMBEDDERS[reserved_id])
             entity = EmbeddingProvider(**spec)
             await self._embedder_storage.create(entity)
@@ -260,6 +275,18 @@ class BootstrapRunner:
             existing = await self._ssp_storage.get(reserved_id)
             if existing is not None:
                 result.skipped.append(reserved_id)
+                return
+
+            # Only register the default Lance SSP when lancedb is installed
+            # (the 'lance' extra). A build without it shouldn't carry a
+            # default provider that can't open a store.
+            if importlib.util.find_spec("lancedb") is None:
+                result.skipped.append(reserved_id)
+                logger.info(
+                    "bootstrap: skipping default Lance SSP %r — the 'lance' "
+                    "extra (lancedb) is not installed",
+                    reserved_id,
+                )
                 return
 
             raw_spec = RESERVED_SSPS[reserved_id]
@@ -282,6 +309,18 @@ class BootstrapRunner:
             existing = await self._cross_encoder_storage.get(reserved_id)
             if existing is not None:
                 result.skipped.append(reserved_id)
+                return
+
+            # Slim image ships without the 'huggingface' extra; don't register
+            # a default cross-encoder that can't import at rerank time.
+            if importlib.util.find_spec("sentence_transformers") is None:
+                result.skipped.append(reserved_id)
+                logger.info(
+                    "bootstrap: skipping default cross-encoder %r — the "
+                    "'huggingface' extra (sentence-transformers) is not "
+                    "installed",
+                    reserved_id,
+                )
                 return
 
             spec = copy.deepcopy(RESERVED_CROSS_ENCODERS[reserved_id])
