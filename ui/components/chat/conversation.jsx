@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, CT_AgentSwitcher, CT_AttachmentChip, Message, CT_ThinkingBubble */
+/* global React, Icon, Btn, CT_AgentSwitcher, CT_AttachmentChip, Transcript */
 //
 // <Conversation> — the embeddable core of the chat feature (Task B2 of
 // the chat-refactor plan). Owns ALL WS/data lifecycle + optimistic
@@ -14,6 +14,14 @@
 // that now lives in here (wsState, usage, compact-in-flight, a
 // compact-trigger, and a 404 history error) is bubbled up via the
 // `onStatus` callback rather than duplicated.
+//
+// Task B3 moved the single-column timeline (the row renderers Message,
+// CT_ExpandableToolRow, CT_AttachmentPart, CompactionMarker,
+// CT_ThinkingBubble, plus the scrollable container itself) out of this
+// file into the pure <Transcript> renderer
+// (ui/components/chat/transcript.jsx). This component still owns
+// coalescing (window.chatCoalesce) and hands the result to <Transcript>
+// as props — no data fetching or WS in that file.
 //
 // No viewport-relative (vh/dvh) height in this file (per §3) — the
 // component fills its flex parent (height:100%/flex:1); the host owns
@@ -581,77 +589,40 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
       }}
     >
       {headerSlot}
-      <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0, minWidth: 0 }}>
-        {(loadingOlder || hasMoreOlder) && messages.length > 0 && (
-          <div
-            className="muted text-sm"
-            style={{ textAlign: "center", padding: "6px 0 12px", fontSize: 11 }}
-            data-testid="chat-load-older"
-          >
-            {loadingOlder ? "Loading older…" : "Scroll up to load older"}
-          </div>
-        )}
-        {messages.length === 0 && !historyError && (
-          <div className="muted text-sm" style={{ textAlign: "center", padding: 24 }}>
-            {wsState === "connecting" ? "Connecting…" : "No messages yet. Say hello to the agent."}
-          </div>
-        )}
-        {window.chatCoalesce(messages).map((m) =>
-          m.kind === "assistant_message" ? (
-            <Message key={`am-${m.startSeq}-${m.endSeq}`} m={m} />
-          ) : (
-            <Message key={`${m.seq}-${m.kind}`} m={m} />
-          )
-        )}
+      <Transcript
+        messages={window.chatCoalesce(messages)}
+        chatId={cid}
+        agentId={chatAgent}
+        wsState={wsState}
+        waitingForReply={waitingForReply}
+        turnStatus={chatRow?.turn_status}
+        pendingToolCall={chatRow?.pending_tool_call}
+        scrollRef={scrollRef}
+        onScroll={onScroll}
+        loadingOlder={loadingOlder}
+        hasMoreOlder={hasMoreOlder}
+      />
 
-        {/* Thinking indicator — local flag for the freshly-sent
-            turn, plus a turn-status fallback driven by the chat row.
-            Visible whenever the turn is in flight AND the last
-            persisted row is NOT itself the agent's active response
-            or a terminal close-out. This covers the gap between a
-            tool_call landing and the next assistant_token streaming
-            — without it the operator sees the indicator vanish at
-            the first tool call even though the worker is still busy
-            processing the result. */}
-        {(() => {
-          const lastRow = messages.length > 0 ? messages[messages.length - 1] : null;
-          const turnInFlight = chatRow
-            && (chatRow.turn_status === "claimable" || chatRow.turn_status === "running");
-          // Rows that mean "agent is currently producing visible
-          // output, no thinking placeholder needed" or "turn closed
-          // out, definitely no placeholder."
-          const QUIET_LAST_KINDS = new Set([
-            "assistant_token",  // currently streaming a response
-            "done",
-            "error",
-            "cancelled",
-            "yielded",
-          ]);
-          const lastIsQuiet = lastRow && QUIET_LAST_KINDS.has(lastRow.kind);
-          const showThinking =
-            waitingForReply
-            || (turnInFlight && !lastIsQuiet);
-          return showThinking ? <CT_ThinkingBubble /> : null;
-        })()}
-
-        {/* Compaction in-progress indicator. Shown from the moment the
-            operator clicks Compact until the server's compaction
-            envelope lands (which clears compactInFlight and appends the
-            completion marker). Without it the only feedback was the
-            disabled button in the header. */}
-        {compactInFlight && (
-          <div style={{
-            display: "flex", alignItems: "center", gap: 8,
-            margin: "12px auto", padding: "6px 14px",
-            border: "1px dashed var(--border)", borderRadius: 14,
-            width: "fit-content", fontSize: 12,
-            color: "var(--text-3)", background: "var(--bg-1, var(--bg))",
-          }}>
-            <Icon name="compress" size={12} className="muted" />
-            <span>Compacting conversation history…</span>
-          </div>
-        )}
-      </div>
+      {/* Compaction in-progress indicator. Shown from the moment the
+          operator clicks Compact until the server's compaction
+          envelope lands (which clears compactInFlight and appends the
+          completion marker). Without it the only feedback was the
+          disabled button in the header. Rendered as a sibling below
+          the (now self-contained) <Transcript> scroll area rather than
+          as its last child — <Transcript>'s prop surface (Task B3) is
+          the coalesced timeline only, not this live compaction flag. */}
+      {compactInFlight && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 8,
+          margin: "12px auto", padding: "6px 14px",
+          border: "1px dashed var(--border)", borderRadius: 14,
+          width: "fit-content", fontSize: 12,
+          color: "var(--text-3)", background: "var(--bg-1, var(--bg))",
+        }}>
+          <Icon name="compress" size={12} className="muted" />
+          <span>Compacting conversation history…</span>
+        </div>
+      )}
 
       {/* Pending-attachments strip — visible only when the composer
           has files queued. Each chip carries an image thumbnail or a
