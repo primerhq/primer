@@ -1448,8 +1448,9 @@ class TestWorkspacesToolsetRegistration:
         ):
             assert name in names, f"missing {name}"
         # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
-        # plus workspace_tap (the workspace tap MCP drain tool) = 27.
-        assert len(names) == 27
+        # plus workspace_tap (the workspace tap MCP drain tool) = 27, plus
+        # restart_workspace_session (Task 8) = 28.
+        assert len(names) == 28
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names
         assert "workspace_tap" in names
