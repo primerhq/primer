@@ -426,6 +426,7 @@ function ST_sessionTranscriptRows(records, session) {
   return ST_coalesceAssistantRows(mapped);
 }
 
+
 // ---------------------------------------------------------------------------
 // SessionAgentPanel — agent run view = a session-backed <Conversation>.
 //   header: title · status pill · turn · token meter + End/Restart
@@ -571,6 +572,11 @@ function SessionAgentPanel({ wid, sid, session, pushToast }) {
         loadingOlder={false}
         hasMoreOlder={false}
       />
+      {/* Task 14: this session's own pending interaction, inline — the
+          session-scoped counterpart to the global right-sidebar Action
+          Required list (studio-activity.jsx). Renders nothing when there's
+          nothing parked. */}
+      <ST_InlineYields wid={wid} sid={sid} pending={conv.pending} messages={conv.messages} pushToast={pushToast} />
       <div
         style={{
           borderTop: "1px solid var(--border)", padding: 14,
@@ -804,6 +810,11 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
         loadingOlder={false}
         hasMoreOlder={false}
       />
+      {/* Task 14: same inline pending-interaction affordance as the agent
+          panel — a graph-bound session parks on a yield exactly the same
+          way (studio-agents-interact §5.4), so it needs the same inline
+          Approve/Deny/respond surface over its own chat stream. */}
+      <ST_InlineYields wid={wid} sid={sid} pending={conv.pending} messages={conv.messages} pushToast={pushToast} />
       <div
         style={{
           borderTop: "1px solid var(--border)", padding: 14,
@@ -834,6 +845,225 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// ST_InlineYields — Task 14: the ACTIVE session's own pending interaction(s)
+// rendered INLINE in its stream (right after <Transcript>, before the
+// Composer) — the session-scoped counterpart to studio-activity.jsx's
+// GLOBAL "Action Required" list. Both surfaces hit the exact same
+// endpoints (tool_approval/respond, ask_user/respond, yields/{id}/cancel)
+// so responding here clears the identical server-side yield the global
+// sidebar is tracking — there is no separate "inline" state to drift.
+//
+// Data: `pending` is session-adapter.jsx's own `conv.pending`
+// (GET .../workspaces/{wid}/sessions/{sid}/yields/pending, Task 10, polled
+// every 4s) — passed down from the panel, no second fetch here.
+//
+// Reconcile: rather than opening a SECOND EventSource onto the session-
+// scoped tap (the adapter already tails it into `conv.messages`), this
+// watches the tail of `messages` for a fresh "yielded"/"resumed" record and
+// force-refetches both the session-scoped AND workspace-wide pending
+// caches via window.primerApi._resource — the same findKeys/refetchKey
+// primitive useMutation's own `invalidates` list uses (use-mutation.js).
+// One live connection (the adapter's), two caches kept in sync.
+//
+// Placed AFTER SessionGraphPanel (below) rather than up here next to its
+// sibling pure helpers (ST_isAutonomous / ST_sessionTranscriptRows) — those
+// are deliberately JSX-free so tests/ui/test_studio_run_view_interactive.py
+// + test_studio_graph_run_view.py can `py_mini_racer`-eval that exact slice
+// of the file; this component (JSX-bearing) would break that eval if it
+// sat inside the same gap.
+// ---------------------------------------------------------------------------
+
+function ST_yieldInvalidates(wid, sid) {
+  return ["session-adapter:pending:" + sid, "studio-yields-pending:" + wid];
+}
+
+function ST_InlineYields({ wid, sid, pending, messages, pushToast }) {
+  var apiFetch = window.primerApi.apiFetch;
+  var useMutation = window.primerApi.useMutation;
+  var invalidates = ST_yieldInvalidates(wid, sid);
+
+  function toastErr(title) {
+    return function (err) {
+      if (typeof pushToast !== "function") return;
+      pushToast({
+        kind: "error",
+        title: (err && err.title) || title,
+        detail: (err && err.detail) || (err && err.message),
+        requestId: err && err.requestId,
+      });
+    };
+  }
+
+  var approveMut = useMutation(
+    function (item) {
+      return apiFetch(
+        "POST",
+        "/sessions/" + encodeURIComponent(item.session_id) + "/tool_approval/respond",
+        { tool_call_id: item.tool_call_id, decision: "approved" }
+      );
+    },
+    { invalidates: invalidates, onError: toastErr("Approve failed") }
+  );
+  var rejectMut = useMutation(
+    function (item) {
+      return apiFetch(
+        "POST",
+        "/sessions/" + encodeURIComponent(item.session_id) + "/tool_approval/respond",
+        { tool_call_id: item.tool_call_id, decision: "rejected", reason: "" }
+      );
+    },
+    { invalidates: invalidates, onError: toastErr("Reject failed") }
+  );
+  var respondMut = useMutation(
+    function (payload) {
+      return apiFetch(
+        "POST",
+        "/sessions/" + encodeURIComponent(payload.item.session_id) + "/ask_user/respond",
+        { tool_call_id: payload.item.tool_call_id, response: payload.text }
+      );
+    },
+    { invalidates: invalidates, onError: toastErr("Respond failed") }
+  );
+  var cancelMut = useMutation(
+    function (item) {
+      return apiFetch(
+        "POST",
+        "/sessions/" + encodeURIComponent(item.session_id) + "/yields/" + encodeURIComponent(item.tool_call_id) + "/cancel",
+        { reason: "operator cancelled" }
+      );
+    },
+    { invalidates: invalidates, onError: toastErr("Cancel failed") }
+  );
+
+  // Tap-tail reconcile — see file-header comment above. Only reacts to a
+  // NEW last record (guarded by seq) so this doesn't refetch on every
+  // unrelated render (assistant tokens streaming in, etc).
+  var lastSeqRef = React.useRef(null);
+  React.useEffect(function () {
+    if (!messages || !messages.length) return;
+    var last = messages[messages.length - 1];
+    if (last.seq === lastSeqRef.current) return;
+    lastSeqRef.current = last.seq;
+    if (last.kind !== "yielded" && last.kind !== "resumed") return;
+    var resourceApi = window.primerApi._resource;
+    if (!resourceApi) return;
+    invalidates.forEach(function (baseKey) {
+      resourceApi.findKeys(baseKey).forEach(function (key) { resourceApi.refetchKey(key); });
+    });
+  }, [messages]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  var [drafts, setDrafts] = React.useState({});
+  function getDraft(id) { return drafts[id] || ""; }
+  function setDraft(id, text) {
+    setDrafts(function (prev) {
+      var next = Object.assign({}, prev);
+      next[id] = text;
+      return next;
+    });
+  }
+
+  if (!wid || !sid || !pending || !pending.length) return null;
+
+  var busy = approveMut.loading || rejectMut.loading || respondMut.loading || cancelMut.loading;
+
+  return (
+    <div
+      data-testid="session-inline-yields"
+      style={{ borderTop: "1px solid var(--border)", background: "var(--bg-2)", flex: "0 0 auto" }}
+    >
+      {pending.map(function (item, idx) {
+        var isApproval = item.kind === "approval";
+        var isAsk = item.kind === "ask_user";
+        var isCancelable = item.kind === "watch_files" || item.kind === "sleep";
+        var actionable = !!item.tool_call_id;
+        var draft = getDraft(item.tool_call_id || String(idx));
+
+        return (
+          <div
+            key={item.tool_call_id || idx}
+            data-testid="session-yield-item"
+            style={{ padding: "10px 14px", display: "flex", flexDirection: "column", gap: 8 }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span style={{ color: "var(--amber)", fontSize: 12 }}>⚠</span>
+              <span
+                style={{
+                  fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em",
+                  fontWeight: 600, color: "var(--amber)",
+                }}
+              >
+                Waiting on you — {item.kind}
+              </span>
+            </div>
+
+            {item.prompt && (
+              <div style={{ fontSize: 12.5, lineHeight: 1.5, color: "var(--text-2)", whiteSpace: "pre-wrap" }}>
+                {item.prompt}
+              </div>
+            )}
+
+            {isApproval && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <Btn
+                  size="sm" kind="primary" icon="check"
+                  disabled={!actionable || busy}
+                  data-testid="session-yield-approve"
+                  onClick={function () { approveMut.mutate(item); }}
+                >Approve</Btn>
+                <Btn
+                  size="sm" kind="danger" icon="x"
+                  disabled={!actionable || busy}
+                  data-testid="session-yield-deny"
+                  onClick={function () { rejectMut.mutate(item); }}
+                >Deny</Btn>
+              </div>
+            )}
+
+            {isAsk && (
+              <div style={{ display: "flex", gap: 8 }}>
+                <input
+                  type="text"
+                  data-testid="session-yield-respond"
+                  placeholder="Type a response… Enter to send"
+                  value={draft}
+                  disabled={busy || !actionable}
+                  onChange={function (e) { setDraft(item.tool_call_id || String(idx), e.target.value); }}
+                  onKeyDown={function (e) {
+                    if (e.key !== "Enter" || e.shiftKey) return;
+                    e.preventDefault();
+                    var text = draft.trim();
+                    if (!text) return;
+                    respondMut.mutate({ item: item, text: text });
+                    setDraft(item.tool_call_id || String(idx), "");
+                  }}
+                  style={{
+                    flex: 1, background: "var(--bg-0)", border: "1px solid var(--border)",
+                    borderRadius: 6, padding: "5px 10px", fontSize: 12.5, color: "var(--text)",
+                    fontFamily: "inherit", outline: "none",
+                  }}
+                />
+              </div>
+            )}
+
+            {isCancelable && (
+              <div>
+                <Btn
+                  size="sm" kind="ghost" icon="x-circle"
+                  disabled={!actionable || busy}
+                  data-testid="session-yield-cancel"
+                  onClick={function () { cancelMut.mutate(item); }}
+                >Cancel</Btn>
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 
 // ---------------------------------------------------------------------------
 // ST_SessionPanel — resolves a session tab to the agent or graph panel.
