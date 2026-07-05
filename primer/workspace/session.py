@@ -583,6 +583,34 @@ class AgentSession:
                         extra={"session_id": self.session_id, "error": str(exc)},
                     )
 
+    async def reopen(self) -> None:
+        """Force an ENDED slot back to RUNNING for reset-same-session.
+
+        The ONLY sanctioned way out of the terminal ENDED state
+        (studio-agents-interact §5.2). Bypasses ``_LEGAL_TRANSITIONS`` (which
+        makes ENDED terminal), clears ``ended_reason``/``ended_at``, and
+        commits ``session.json``. Idempotent no-op when not currently ENDED.
+        The append-only ``messages.jsonl`` history is preserved.
+        """
+        async with self._lock:
+            if self._info.status != SessionStatus.ENDED:
+                return
+            now = datetime.now(timezone.utc)
+            updated_info = self._info.model_copy(update={
+                "status": SessionStatus.RUNNING,
+                "ended_reason": None,
+                "ended_at": None,
+                "last_activity_at": now,
+            })
+            sid_short = self.session_id[-12:]
+            await self._state.commit(
+                self.session_id,
+                summary=f"reopen[{sid_short}]: ended -> running",
+                op="status_change",
+                files={"session.json": updated_info.model_dump_json(indent=2)},
+            )
+            self._info = updated_info
+
     async def take_pending_messages(self) -> list[Message]:
         """Return the messages added since the last assistant turn.
 

@@ -34,6 +34,7 @@ class TapEventClass(StrEnum):
     DONE = "done"
     CANCELLED = "cancelled"
     ERROR = "error"
+    INVOCATION_DIVIDER = "invocation_divider"
 
     # -- tap-layer extension -------------------------------------------------
     GRAPH_TRANSITION = "graph_transition"

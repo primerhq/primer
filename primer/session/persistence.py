@@ -90,12 +90,19 @@ class WorkspaceMessageWriter:
     Args:
         workspace_io: Dependency satisfying :class:`WorkspaceIO`.
         session_id: Identifies the workspace session being written.
+        start_seq: Initial value of the internal seq counter (default 0).
+            The first appended record gets ``start_seq + 1``. Callers
+            that append to a session with existing history (e.g.
+            ``reset_session`` writing an invocation divider) pass the
+            row's current ``last_seq`` so seqs stay monotonic.
     """
 
-    def __init__(self, *, workspace_io: WorkspaceIO, session_id: str) -> None:
+    def __init__(
+        self, *, workspace_io: WorkspaceIO, session_id: str, start_seq: int = 0,
+    ) -> None:
         self._io = workspace_io
         self._session_id = session_id
-        self._seq: int = 0
+        self._seq: int = start_seq
 
         # Buffer state
         self._buffer: list[bytes] = []
