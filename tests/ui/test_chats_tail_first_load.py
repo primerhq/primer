@@ -20,10 +20,21 @@ from pathlib import Path
 
 
 CHATS_JSX = Path(__file__).resolve().parents[2] / "ui" / "components" / "chats.jsx"
+# Task B2 (chat-refactor plan) moved the WS/data lifecycle + tail-load
+# wholesale out of ChatDetail (chats.jsx) into the embeddable
+# <Conversation> core — read both files so these behavioral-contract
+# assertions keep holding regardless of which file the logic lives in.
+CONVERSATION_JSX = (
+    Path(__file__).resolve().parents[2] / "ui" / "components" / "chat" / "conversation.jsx"
+)
 
 
 def _src() -> str:
-    return CHATS_JSX.read_text(encoding="utf-8")
+    return (
+        CHATS_JSX.read_text(encoding="utf-8")
+        + "\n"
+        + CONVERSATION_JSX.read_text(encoding="utf-8")
+    )
 
 
 def test_initial_fetch_uses_before_seq_sentinel() -> None:
