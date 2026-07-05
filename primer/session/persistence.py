@@ -109,6 +109,17 @@ class WorkspaceMessageWriter:
         self._buffer_size: int = 0
         self._oldest_at: float | None = None  # monotonic clock at first buffered record
 
+    @property
+    def last_seq(self) -> int:
+        """The highest seq assigned so far (== ``start_seq`` before any append).
+
+        Callers persist this back to the session row's ``last_seq`` at turn
+        boundaries so the next turn's writer (and any concurrent
+        ``wake_session``/``reset_session``) seed past this turn's records and
+        ``(session_id, seq)`` stays monotonic across turns.
+        """
+        return self._seq
+
     async def append(self, record: SessionMessageRecord) -> int:
         """Append a record; flush per buffer policy.
 

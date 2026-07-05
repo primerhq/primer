@@ -214,12 +214,22 @@ async def run_one_session_turn(
     # earlier, already-serviced steer would never be cleared (nothing else
     # writes turn_status back to "idle") and would spin-claim this session
     # forever.
+    # Capture the row's CURRENT last_seq under the lifecycle lock — the SAME
+    # lock wake_session/reset_session hold for their own USER_INPUT / divider
+    # seq writes — so the per-turn writer is seeded with a value that already
+    # reflects any seq a preceding wake_session wrote before it pulsed the
+    # scheduler. This is the authoritative fresh read (not the possibly-cached
+    # `session` object loaded above), so it also covers the case where the
+    # worker's `session` snapshot predates that write.
+    seed_seq = session.last_seq
     async with session_lifecycle_lock().acquire(session_id):
         fresh_before_turn = await session_storage.get(session_id)
-        if fresh_before_turn is not None and fresh_before_turn.turn_status == "claimable":
-            await session_storage.update(
-                fresh_before_turn.model_copy(update={"turn_status": "idle"})
-            )
+        if fresh_before_turn is not None:
+            seed_seq = fresh_before_turn.last_seq
+            if fresh_before_turn.turn_status == "claimable":
+                await session_storage.update(
+                    fresh_before_turn.model_copy(update={"turn_status": "idle"})
+                )
 
     # ------------------------------------------------------------------
     # 2. Build executor
@@ -261,6 +271,10 @@ async def run_one_session_turn(
     writer = WorkspaceMessageWriter(
         workspace_io=deps.workspace_io,
         session_id=session_id,
+        # Seed past the row's existing history so this turn's records continue
+        # the per-session (session_id, seq) sequence monotonically instead of
+        # restarting at seq=1 and colliding with prior turns / USER_INPUT rows.
+        start_seq=seed_seq,
     )
     turn_log = deps.turn_log_writer_factory(deps.workspace_io, session_id)
 
@@ -480,6 +494,7 @@ async def run_one_session_turn(
         # that eventually resumes this park.
         async with session_lifecycle_lock().acquire(session_id):
             await _clear_interrupt_requested(session_storage, session_id)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq)
 
         return ReleaseOutcome(
             success=True,
@@ -557,6 +572,7 @@ async def run_one_session_turn(
                 ended_reason="failed",
             )
             await _clear_interrupt_requested(session_storage, session_id)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq)
         await turn_log.aclose()
         return ReleaseOutcome(success=False, drop_lease=True)
 
@@ -617,6 +633,7 @@ async def run_one_session_turn(
                 executor=executor,
             )
             await _clear_interrupt_requested(session_storage, session_id)
+            await _persist_last_seq(session_storage, session_id, writer.last_seq)
         await turn_log.aclose()
         return ReleaseOutcome(success=True, drop_lease=True)
 
@@ -651,6 +668,7 @@ async def run_one_session_turn(
             executor=executor,
         )
         await _clear_interrupt_requested(session_storage, session_id)
+        await _persist_last_seq(session_storage, session_id, writer.last_seq)
 
     await _safe_turn_log(turn_log, TurnLogCompleted(
         seq=0,
@@ -862,6 +880,28 @@ def _apply_interactive(
     ):
         return (SessionStatus.WAITING, None)
     return (status, reason)
+
+
+async def _persist_last_seq(
+    session_storage, session_id: str, seq: int,
+) -> None:
+    """Persist the turn writer's advancing seq back to the session row.
+
+    Seeds the NEXT turn's :class:`WorkspaceMessageWriter` (and any later
+    ``wake_session`` / ``reset_session``) so ``(session_id, seq)`` stays
+    strictly monotonic across turns instead of every turn restarting at
+    seq=1. Re-reads the fresh row and only ADVANCES ``last_seq`` (never
+    downgrades) so a concurrent steer that already wrote a higher USER_INPUT
+    seq is not clobbered. Always called from inside a
+    ``session_lifecycle_lock`` critical section — the same lock
+    ``wake_session``/``reset_session`` use for their own ``last_seq`` writes —
+    so this read-modify-write cannot interleave with a racing seq write.
+    """
+    fresh = await session_storage.get(session_id)
+    if fresh is not None and seq > fresh.last_seq:
+        await session_storage.update(
+            fresh.model_copy(update={"last_seq": seq})
+        )
 
 
 async def _clear_interrupt_requested(session_storage, session_id: str) -> None:
