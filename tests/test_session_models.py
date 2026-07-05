@@ -357,6 +357,9 @@ class TestSessionMessageKind:
             # Graph-runtime node enter/exit transition (spec §2.6 /
             # plan Task 3.1). Shared 1:1 with TapEventClass.GRAPH_TRANSITION.
             "graph_transition",
+            # Reset-same-session ENDED->CREATED marker (studio-agents-interact
+            # §5.2 / plan Task 6).
+            "invocation_divider",
         }
         actual = {k.value for k in SessionMessageKind}
         assert actual == expected
