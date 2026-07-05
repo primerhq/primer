@@ -236,3 +236,8 @@ class TestCtx:
         )
         result = render_template_safely("{{ ctx.artifact_dir }}", ctx)
         assert result == "artifacts/gsid-2"
+
+
+def test_node_template_preserves_trailing_newline() -> None:
+    ctx = GraphContext(initial_input=[], iteration=0, nodes={})
+    assert render_input_template("hello\n", context=ctx) == "hello\n"
