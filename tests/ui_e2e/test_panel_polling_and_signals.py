@@ -113,6 +113,60 @@ def _seed_ladder(base_url: str, unique_suffix: str, tmp_path):
     return wid, sid, cleanup_urls
 
 
+def _seed_graph(base_url: str, gid: str, agent_id: str) -> None:
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = c.post("/v1/graphs", json={
+            "id": gid, "description": "pause-disabled probe",
+            "nodes": [
+                {"kind": "begin", "id": "begin"},
+                {"kind": "agent", "id": "drafter", "agent_id": agent_id},
+                {"kind": "end", "id": "end", "output_template": ""},
+            ],
+            "edges": [
+                {"kind": "static", "from_node": "begin", "to_node": "drafter"},
+                {"kind": "static", "from_node": "drafter", "to_node": "end"},
+            ],
+        })
+        assert r.status_code == 201, f"seed graph failed: {r.text}"
+
+
+def _seed_graph_session(base_url: str, workspace_id: str, gid: str) -> str:
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = c.post(
+            f"/v1/workspaces/{workspace_id}/sessions",
+            json={"binding": {"kind": "graph", "graph_id": gid}, "auto_start": False},
+        )
+        assert r.status_code == 201, f"seed graph session failed: {r.text}"
+        return r.json()["id"]
+
+
+def _seed_graph_ladder(base_url: str, unique_suffix: str, tmp_path):
+    """Same ladder as ``_seed_ladder`` but binds the session to a graph —
+    Task 13 moved Pause off the agent panel onto the graph panel, so a
+    Pause-control pin now needs a graph-bound session rather than an
+    agent-bound one."""
+    pid = f"llm-psg-{unique_suffix}"
+    aid = f"ag-psg-{unique_suffix}"
+    gid = f"gr-psg-{unique_suffix}"
+    wp_id = f"wp-psg-{unique_suffix}"
+    tpl_id = f"tpl-psg-{unique_suffix}"
+    _seed_llm_provider(base_url, pid)
+    _seed_agent(base_url, aid, pid)
+    _seed_graph(base_url, gid, aid)
+    wid = _seed_workspace(base_url, wp_id, tpl_id, tmp_path)
+    sid = _seed_graph_session(base_url, wid, gid)
+    cleanup_urls = [
+        f"/v1/workspaces/{wid}/sessions/{sid}/cancel",
+        f"/v1/workspaces/{wid}",
+        f"/v1/workspace_templates/{tpl_id}",
+        f"/v1/workspace_providers/{wp_id}",
+        f"/v1/graphs/{gid}",
+        f"/v1/agents/{aid}",
+        f"/v1/llm_providers/{pid}",
+    ]
+    return wid, sid, cleanup_urls
+
+
 def _ask_item(sid, *, tool_call_id, prompt):
     return {"kind": "ask_user", "session_id": sid, "tool_call_id": tool_call_id, "prompt": prompt}
 
@@ -243,15 +297,20 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
 def test_u0070_pause_button_disabled_when_status_not_running(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0070 — Re-pointed to the Studio's ``ctrl-pause``. Per
-    studio-center.jsx ``ST_SessionControls`` the Pause button is
+    """U0070 — Re-pointed to the Studio's ``ctrl-pause`` on the GRAPH
+    panel. Task 13 moved Pause (and Cancel) off the agent panel onto
+    SessionGraphPanel — the agent panel (SessionAgentPanel) has no Pause
+    control at all now (Stop/End/Restart only). Per studio-center.jsx
+    SessionGraphPanel the Pause button is still
     ``disabled={!wid || status !== "running" || pauseMut.loading}`` with
     a title "Enabled only when running" for a non-running (CREATED)
-    session. Pins both the disabled attr AND the title affordance.
+    session — same logic as the retired ST_SessionControls cluster, now
+    pinned against a graph-bound session. Pins both the disabled attr AND
+    the title affordance.
     """
-    wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
+    wid, sid, cleanup_urls = _seed_graph_ladder(base_url, unique_suffix, tmp_path)
     try:
-        open_session_in_studio(page, console_url, wid, sid, kind="agent")
+        open_session_in_studio(page, console_url, wid, sid, kind="graph")
 
         pause = page.locator("[data-testid='ctrl-pause']").first
         expect(pause).to_be_visible(timeout=10_000)
@@ -273,47 +332,50 @@ def test_u0070_pause_button_disabled_when_status_not_running(
 def test_u0067_resume_re_toasts_on_repeat_click(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0067 — Clicking Resume on a CREATED session emits a
-    "Resume signal sent" toast each time (the primer POST is
-    idempotent — 2xx no-op if already running). The UI's onResume
-    handler shows a toast on each click without an error toast,
-    even if the row was already running by the time the second
-    click landed.
+    """U0067 — Re-pointed: the Studio's agent panel has no dedicated
+    Resume control anymore (studio-center.jsx's retired
+    ST_SessionControls cluster is defined but never mounted by
+    SessionAgentPanel). Per session-adapter.jsx's SA_useSessionConversation
+    comment, "one input, three behaviours": a Composer send to a CREATED
+    session invokes it, to RUNNING/WAITING it steers, and to PAUSED it
+    resumes — always the SAME idempotent POST .../steer call
+    (session/enqueue.py's wake_session). Sending a message now covers
+    what a Resume click used to gate: repeating the (idempotent) send
+    must never surface an error toast even as the session's status moves
+    out from under it.
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
         open_session_in_studio(page, console_url, wid, sid, kind="agent")
-        resume = page.locator("[data-testid='ctrl-resume']").first
-        resume.wait_for(state="visible", timeout=10_000)
 
-        # First click → toast.
-        resume.click()
+        composer = page.locator("textarea[placeholder='Send a message…']")
+        composer.wait_for(state="visible", timeout=10_000)
+        send_btn = page.locator("[data-testid='chat-send-btn']")
+
+        # First send — invokes the CREATED session (steer semantics). The
+        # persisted USER_INPUT is the surviving positive signal (no
+        # "Resume signal sent" toast exists anymore for a Composer send).
+        composer.fill("resume probe one")
+        send_btn.click()
         expect(
-            page.get_by_text("Resume signal sent", exact=False).first
-        ).to_be_visible(timeout=5_000)
+            page.get_by_text("resume probe one", exact=False).first
+        ).to_be_visible(timeout=10_000)
 
-        # Second click — even if status is mid-transition, the toast
-        # should appear again (the UI doesn't gate on status before
-        # calling resume). No error toast should fire.
-        # Wait briefly so the first toast doesn't mask the second.
+        # Second send — same idempotent call while the session may
+        # already be transitioning off CREATED. Tolerate the Composer
+        # swapping to its Stop affordance (turn in flight) by only
+        # retrying while Send is still the visible control.
         page.wait_for_timeout(500)
-        # The Resume button may or may not still be visible depending
-        # on the polled session state. If it's gone (status changed),
-        # treat the first click + toast as the contract pin and stop.
-        if resume.is_visible():
-            resume.click()
-            # Either the toast appears again OR (if the row terminated
-            # before the second click landed) the cancel/error path
-            # surfaces. Tolerate both — the negative contract is
-            # "no /errors/internal-style toast".
+        if send_btn.is_visible():
+            composer.fill("resume probe two")
+            send_btn.click()
             page.wait_for_timeout(1_500)
 
-        # No error-toast leak ("failed" appearing as a toast title).
-        # The toast container uses kind="error" for failures; assert
-        # we never see the standard "Resume failed" copy from the
-        # onError handler.
-        assert page.get_by_text("Resume failed", exact=False).count() == 0, (
-            "Resume click produced an error toast"
+        # No error-toast leak — the negative contract survives verbatim:
+        # a repeated idempotent send must never surface the generic
+        # "Send failed" error-toast copy from the onSend catch handler.
+        assert page.get_by_text("Send failed", exact=False).count() == 0, (
+            "repeated composer send produced an error toast"
         )
     finally:
         _cleanup(base_url, cleanup_urls)

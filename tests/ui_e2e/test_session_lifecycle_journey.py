@@ -4,11 +4,11 @@ Two complex multi-page journeys that traverse 3-4 console pages each,
 mimicking a realistic operator workflow:
 
 * U0103 — Sessions full-lifecycle journey: seed agent + workspace + session
-  via API; user lands on /sessions, sees the row, drills into detail,
-  clicks Cancel, confirms in the modal, observes the "Cancel signal
-  sent" toast, watches the status caption poll to a terminal value,
-  navigates back to the list via the breadcrumb, sees the row with a
-  non-CREATED status pill.
+  via API; user opens the workspace's Studio, clicks the sidebar row to
+  open the agent panel, clicks End (fires directly, no confirm modal),
+  observes the "Session ended" toast, watches the status pill poll to a
+  terminal value, and confirms the sidebar still lists the row with a
+  non-CREATED status.
 
 * U0104 — Workspace detail Sessions tab reflects API-seeded session within
   the polling cadence: user lands on /workspaces/{wid}, clicks the
@@ -146,25 +146,30 @@ def test_u0103_sessions_full_lifecycle_journey(
     console_messages: list[dict],
     failed_requests: list[dict],
 ) -> None:
-    """U0103 — Multi-page session-lifecycle journey.
+    """U0103 — Studio session-lifecycle journey.
+
+    Re-pointed to the Studio (the retired /sessions list + /sessions/{id}
+    detail page + breadcrumb nav no longer exist): a session opens as a
+    center tab inside its workspace's single-page Studio.
 
     Steps:
       1. Seed agent + workspace + session via API.
-      2. Navigate to /sessions list — assert seeded session row visible.
-      3. Click the row → land on /sessions/{id}.
-      4. Click the Cancel button → confirmation modal opens.
-      5. Click the "Cancel session" confirm button.
-      6. Assert "Cancel signal sent" toast appears.
-      7. Watch the status pill poll OFF of CREATED within the
-         polling cadence (the API mutation flips the row to
-         cancelled/ending; UI polls /v1/sessions/{id} every 2 s).
-      8. Click the "Sessions" breadcrumb to navigate back to /sessions.
-      9. Assert the row is still listed with a non-CREATED status.
+      2. Enter the workspace's Studio — assert the seeded session row is
+         visible in the sidebar.
+      3. Click the row → center tab + agent panel (panel-agent) open.
+      4. Click ctrl-end (fires directly, no confirm modal — the agent
+         panel's End control is SessionAgentPanel's own, distinct from
+         the retired Cancel-with-confirmation flow).
+      5. Assert the "Session ended" toast appears.
+      6. Watch the panel header's status pill poll OFF of CREATED within
+         the polling cadence (ST_SessionPanel polls /v1/sessions/{id}
+         every 2 s while non-terminal).
+      7. Assert the session is still listed as a sidebar row with a
+         non-CREATED status.
 
-    Pages traversed: /console/ → /sessions → /sessions/{id} → /sessions.
-    Signals fired: cancel via UI.
-    Observed: list-row visibility, detail polling, terminal status pill,
-    breadcrumb navigation.
+    Signals fired: End (POST .../cancel) via the Studio agent panel.
+    Observed: sidebar row visibility, panel-header polling, terminal
+    status pill, sidebar row persistence post-end.
     """
     ids = _seed_session_ladder(base_url, unique_suffix)
     wid = ids["workspace"]
@@ -186,14 +191,18 @@ def test_u0103_sessions_full_lifecycle_journey(
             timeout=15_000,
         )
 
-        # Sanity: the ctrl-cancel control is enabled (session non-terminal).
-        cancel_btn = page.locator('[data-testid="ctrl-cancel"]').first
-        expect(cancel_btn).to_be_enabled(timeout=10_000)
+        # Sanity: the ctrl-end control is enabled (session non-terminal).
+        # Re-pointed: the agent panel's cancel affordance is now ``ctrl-end``
+        # (SessionAgentPanel's End button, POST .../cancel via
+        # SA_useSessionConversation's end()) — ``ctrl-cancel`` no longer
+        # exists on the agent panel (Task 13 moved it to the graph panel).
+        end_btn = page.locator('[data-testid="ctrl-end"]').first
+        expect(end_btn).to_be_enabled(timeout=10_000)
 
-        # --- 3. Click ctrl-cancel (fires directly, no confirm modal) --------
-        cancel_btn.click()
-        # Toast from ST_SessionControls has title "Cancel signal sent".
-        expect(page.get_by_text("Cancel signal sent")).to_be_visible(
+        # --- 3. Click ctrl-end (fires directly, no confirm modal) -----------
+        end_btn.click()
+        # Toast from SessionAgentPanel's endMut has title "Session ended".
+        expect(page.get_by_text("Session ended")).to_be_visible(
             timeout=10_000,
         )
 
