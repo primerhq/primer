@@ -521,7 +521,7 @@ async def sso_callback(
     if (
         not isinstance(expected_state, str)
         or not isinstance(state, str)
-        or not secrets.compare_digest(state, expected_state)
+        or not secrets.compare_digest(state.encode("utf-8"), expected_state.encode("utf-8"))
     ):
         raise _reject(400, "invalid_state", "missing or mismatched state parameter")
 
