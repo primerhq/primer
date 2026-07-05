@@ -126,4 +126,30 @@ async def reset_session(
         return reopened, invocation
 
 
-__all__ = ["SessionResetDeps", "reset_session"]
+async def restart_session(
+    *,
+    workspace_id: str,
+    session_id: str,
+    instruction: str | None,
+    reset_deps: "SessionResetDeps",
+    wake_deps,  # primer.session.enqueue.SessionWakeDeps
+) -> WorkspaceSession:
+    """Reset an ENDED session then invoke it (studio-agents-interact §5.3).
+
+    Restart = reset-same-session (§5.2) + auto-wake (§5.1). Works for
+    completed / failed / cancelled sessions.
+    """
+    from primer.session.enqueue import wake_session
+
+    await reset_session(
+        workspace_id=workspace_id, session_id=session_id, deps=reset_deps,
+    )
+    return await wake_session(
+        workspace_id=workspace_id,
+        session_id=session_id,
+        instruction=instruction,
+        deps=wake_deps,
+    )
+
+
+__all__ = ["SessionResetDeps", "reset_session", "restart_session"]
