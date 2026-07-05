@@ -20,6 +20,15 @@ attribution dict, when supplied, is stamped onto ``payload["trigger"]``
 so downstream UIs / audit trails can show which subscription fired
 this user turn.
 
+``response_format`` (Task A3 of the chat-refactor plan, spec §6) is the
+EPHEMERAL structured-output entry point: a JSON Schema carried on a
+single send-frame's ``payload.response_format``, applying to that one
+turn only (as opposed to the PERSISTENT ``Chat.response_format`` set
+via ``PUT /v1/chats/{id}/response_format``). It is validated here
+(``ValueError`` on a malformed schema) and, when valid, stamped
+verbatim onto the persisted row's ``payload["response_format"]`` for
+:mod:`primer.chat.dispatch` (A2) to read back on that turn.
+
 The caller is responsible for the next steps: flipping
 ``chat.turn_status`` to ``"claimable"`` and publishing the
 ``chat-claimable`` bus event so a worker picks the turn up.
@@ -30,6 +39,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
+from primer.model.agent import _validate_response_format_schema
 from primer.model.chats import Chat, ChatMessage
 
 
@@ -101,6 +111,7 @@ async def append_user_message(
     parts: list,
     storage_provider: Any,
     attribution: dict | None = None,
+    response_format: dict | None = None,
     client_msg_id: str | None = None,
 ) -> ChatMessage:
     """Persist a ``user_message`` row, bump ``chat.last_seq``, derive title.
@@ -124,6 +135,13 @@ async def append_user_message(
         "fire_id": ...}`` dict. Stamped onto ``payload["trigger"]`` so
         downstream UIs can render which trigger fired this turn. ``None``
         for human-driven turns from the WS recv loop.
+    response_format:
+        Optional ephemeral (this-send-only) JSON Schema. Validated
+        against JSON Schema 2020-12 before anything is persisted;
+        raises ``ValueError`` on a malformed schema (callers turn that
+        into a WS error frame or a 422 REST response). ``None`` omits
+        the key from the payload entirely — it is NOT persisted on the
+        chat, only on this one row.
     client_msg_id:
         Optional client-generated id carried on a deferred-queue
         follow-up. Stamped onto ``payload["client_msg_id"]`` so the
@@ -132,6 +150,11 @@ async def append_user_message(
         ordinary idle send path (the client renders the server echo
         directly and has no placeholder to reconcile).
     """
+    if response_format is not None:
+        # Validate BEFORE any side effect (seq allocation / row create)
+        # so an invalid schema never partially persists.
+        _validate_response_format_schema(response_format)
+
     chats_storage = storage_provider.get_storage(Chat)
     messages_storage = storage_provider.get_storage(ChatMessage)
 
@@ -143,6 +166,8 @@ async def append_user_message(
         payload["content"] = flat
     if attribution:
         payload["trigger"] = dict(attribution)
+    if response_format is not None:
+        payload["response_format"] = response_format
     if client_msg_id:
         payload["client_msg_id"] = client_msg_id
 
@@ -168,4 +193,64 @@ async def append_user_message(
     return row
 
 
-__all__ = ["append_user_message"]
+async def append_agent_marker(
+    chat: Chat,
+    storage_provider: Any,
+    *,
+    marker: str,
+    agent_id: str,
+    from_agent_id: str | None = None,
+) -> ChatMessage:
+    """Persist an ``agent_marker`` row at an attribution boundary (Task A5).
+
+    Called at each point the chat's *producing* agent changes mid-history:
+    an operator-driven switch (``POST /v1/chats/{id}/agent``) or a
+    ``switch_to_agent`` tool handoff. Bumps ``chat.last_seq`` the same way
+    :func:`append_user_message` does; the caller is responsible for
+    publishing the ``chat:{id}:tick`` bus event so live WS + cursor
+    replay pick up the new row (this helper is bus-agnostic, mirroring
+    :func:`append_user_message`).
+
+    :func:`primer.chat.executor.ChatTurnRunner._load_history` already
+    skips ``agent_marker`` rows (Task A4) — they are legibility markers
+    for the UI timeline, never model-visible history.
+
+    Parameters
+    ----------
+    chat:
+        The in-memory chat row. Mutated: ``last_seq`` is bumped before
+        being persisted via ``chats_storage.update``.
+    storage_provider:
+        Anything with ``get_storage(model_cls)``.
+    marker:
+        ``"switch"`` (operator-driven ``POST /v1/chats/{id}/agent``) or
+        ``"handoff"`` (the ``switch_to_agent`` tool path).
+    agent_id:
+        The agent the chat is switching TO.
+    from_agent_id:
+        The agent the chat is switching FROM. ``None`` omits the key
+        (both current call sites always supply it).
+    """
+    chats_storage = storage_provider.get_storage(Chat)
+    messages_storage = storage_provider.get_storage(ChatMessage)
+
+    payload: dict[str, Any] = {"marker": marker, "agent_id": agent_id}
+    if from_agent_id is not None:
+        payload["from_agent_id"] = from_agent_id
+
+    next_seq = chat.last_seq + 1
+    row = ChatMessage(
+        id=ChatMessage.make_id(chat.id, next_seq),
+        chat_id=chat.id,
+        seq=next_seq,
+        kind="agent_marker",
+        payload=payload,
+        created_at=datetime.now(timezone.utc),
+    )
+    await messages_storage.create(row)
+    chat.last_seq = next_seq
+    await chats_storage.update(chat)
+    return row
+
+
+__all__ = ["append_agent_marker", "append_user_message"]

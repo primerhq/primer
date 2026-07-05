@@ -36,11 +36,12 @@ from fastapi import (
     Path,
     Query,
     Request,
+    Response,
     WebSocket,
     WebSocketDisconnect,
     status,
 )
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from primer.api.deps import (
     get_agent_storage,
@@ -50,12 +51,18 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.pagination import parse_page
-from primer.model.agent import Agent
+from primer.model.agent import Agent, _validate_response_format_schema
 from primer.model.chats import Chat, ChatMessage
-from primer.model.except_ import ConfigError, ConflictError, NotFoundError
+from primer.model.except_ import (
+    ConfigError,
+    ConflictError,
+    NotFoundError,
+    ValidationError,
+)
 from primer.model.principal import PrincipalRef
 from primer.model.provider import LLMProvider
 from primer.model.storage import (
+    CursorPage,
     Op,
     OrderBy,
     PageRequest,
@@ -155,6 +162,7 @@ class ChatSwitchAgentBody(BaseModel):
 )
 async def switch_chat_agent(
     body: ChatSwitchAgentBody,
+    request: Request,
     chat_id: str = Path(...),
     sp=Depends(get_storage_provider),
     agents=Depends(get_agent_storage),
@@ -165,7 +173,12 @@ async def switch_chat_agent(
     ``chat.agent_id``, so updating that field is the entire switch — the
     conversation history is shared context the new agent inherits. Any
     pending gate (ask_user / approval) is auto-rejected first so the
-    append-only history stays valid before the handoff.
+    append-only history stays valid before the handoff — ordering reads
+    gate-close -> switch. Once the field flips, a ``agent_marker``
+    row (``marker="switch"``, Task A5) is appended via
+    :func:`primer.chat.enqueue.append_agent_marker` so the timeline
+    records the attribution boundary, and a ``chat:{id}:tick`` is
+    published so any live WS subscriber + cursor replay pick it up.
     """
     chats_storage = sp.get_storage(Chat)
     chat = await chats_storage.get(chat_id)
@@ -189,9 +202,161 @@ async def switch_chat_agent(
             terminal_reason="agent_switch",
             approval_records=sp.get_storage(ToolApprovalRecord),
         )
+    old_agent_id = chat.agent_id
     chat.agent_id = body.agent_id
     await chats_storage.update(chat)
+
+    from primer.chat.enqueue import append_agent_marker
+    await append_agent_marker(
+        chat, sp,
+        marker="switch", agent_id=body.agent_id, from_agent_id=old_agent_id,
+    )
+    event_bus = getattr(request.app.state, "event_bus", None)
+    if event_bus is not None:
+        try:
+            await event_bus.publish(
+                f"chat:{chat_id}:tick", {"seq": chat.last_seq},
+            )
+        except Exception:  # noqa: BLE001 — never break the REST response
+            logger.exception(
+                "switch_chat_agent: failed to publish tick for chat %s",
+                chat_id,
+            )
     return chat
+
+
+class ChatResponseFormatBody(BaseModel):
+    """Body of ``PUT /v1/chats/{id}/response_format``.
+
+    Wire compatibility: the JSON key is ``"schema"`` (mirrors
+    :class:`primer.model.chat.ToolDef`'s ``args_schema``/``schema``
+    alias) so clients PUT ``{"schema": {...}}`` or ``{"schema": null}``.
+    Python code reads/writes ``response_format``.
+    """
+
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    response_format: dict[str, Any] | None = Field(
+        ...,
+        validation_alias="schema",
+        serialization_alias="schema",
+        description=(
+            "Persistent per-chat structured-output JSON Schema, or "
+            "``null`` to clear it. Validated against JSON Schema "
+            "2020-12 (422 on a malformed schema)."
+        ),
+    )
+
+
+@chats_router.put(
+    "/chats/{chat_id}/response_format",
+    response_model=Chat,
+    summary="Set or clear the chat's persistent structured-output schema",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def set_chat_response_format(
+    body: ChatResponseFormatBody,
+    chat_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+) -> Chat:
+    """Persistent (toggle ON) structured-output entry point (R3 / A3).
+
+    Sets or clears ``Chat.response_format`` (A1), which A2's per-turn
+    resolution applies to every subsequent turn on this chat unless an
+    ephemeral per-send override (the other A3 entry point — see
+    :func:`primer.chat.enqueue.append_user_message`) takes precedence
+    for that one turn. Mutating this mid-turn would race the runner's
+    already-resolved effective schema for the turn in flight, so it is
+    rejected with 409 (mirrors :func:`switch_chat_agent`'s guards).
+
+    Status codes:
+
+    * ``200`` — schema set/cleared; body is the updated :class:`Chat`.
+    * ``404`` — no such chat.
+    * ``409`` — the chat has ended, or a worker turn is in flight
+      (``turn_status == "running"``).
+    * ``422`` — the schema failed JSON Schema 2020-12 validation.
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+    if chat.status == "ended":
+        raise ConflictError(f"Chat {chat_id!r} has ended")
+    if chat.turn_status == "running":
+        raise ConflictError(
+            f"Chat {chat_id!r} has a turn in flight; "
+            "wait for it to finish before changing response_format."
+        )
+    try:
+        _validate_response_format_schema(body.response_format)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+    chat.response_format = body.response_format
+    return await chats_storage.update(chat)
+
+
+class ChatCancelResponse(BaseModel):
+    """Body of a successful ``POST /v1/chats/{id}/cancel``."""
+
+    cancel_requested: bool = Field(
+        default=True,
+        description=(
+            "Always ``true`` on success — signals the in-flight turn's "
+            "cancellation was requested. The turn itself stops "
+            "asynchronously once the worker observes it."
+        ),
+    )
+
+
+@chats_router.post(
+    "/chats/{chat_id}/cancel",
+    response_model=ChatCancelResponse,
+    status_code=202,
+    summary="Request cancellation of a chat's in-flight turn (Stop button)",
+    responses=common_responses(404, 409, 500),
+)
+async def cancel_chat_turn(
+    request: Request,
+    chat_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+) -> ChatCancelResponse:
+    """REST Stop-button entry point (A6).
+
+    Mirrors the ``interrupt`` WS frame's tail in ``_recv_loop``: stamps
+    ``chat.cancel_requested_at`` so the owning worker's heartbeat poll
+    picks it up, and publishes a ``chat:{id}:cancel`` bus event for a
+    faster wake-up. Reachable over REST so the composer's Stop button
+    works without a live WS connection.
+
+    Status codes:
+
+    * ``202`` — cancellation requested; body is
+      ``{"cancel_requested": true}``.
+    * ``404`` — no such chat.
+    * ``409`` — nothing to cancel (``turn_status != "running"``).
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+    if chat.turn_status != "running":
+        raise ConflictError(
+            f"Chat {chat_id!r} has no turn in flight to cancel "
+            f"(turn_status={chat.turn_status!r})."
+        )
+    chat.cancel_requested_at = datetime.now(timezone.utc)
+    await chats_storage.update(chat)
+    event_bus = getattr(request.app.state, "event_bus", None)
+    if event_bus is not None:
+        try:
+            await event_bus.publish(f"chat:{chat_id}:cancel", {})
+        except Exception:  # noqa: BLE001 — never break the REST response
+            logger.exception(
+                "cancel_chat_turn: failed to publish cancel for chat %s",
+                chat_id,
+            )
+    return ChatCancelResponse(cancel_requested=True)
 
 
 class ChatSendMessageBody(BaseModel):
@@ -213,6 +378,17 @@ class ChatSendMessageBody(BaseModel):
             "(``{\"type\": \"text\"|\"image\"|\"document\"|\"audio\"|"
             "\"video\", ...}``). Validated through the same Part union the "
             "WebSocket path applies."
+        ),
+    )
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Ephemeral (this-send-only) structured-output JSON Schema "
+            "(A3). Stamped onto this row's payload only — it is NOT "
+            "persisted on the chat — and overrides both the per-chat "
+            "and the agent-default schema for the turn this message "
+            "triggers. Validated against JSON Schema 2020-12; a "
+            "malformed schema fails the request with 422."
         ),
     )
 
@@ -276,17 +452,21 @@ async def send_chat_message(
     try:
         user_parts = _parse_user_message_parts(body.model_dump())
     except ValueError as exc:
-        from primer.model.except_ import ValidationError as _ValidationError
-
-        raise _ValidationError(str(exc)) from exc
+        raise ValidationError(str(exc)) from exc
 
     # Persist the user_message row + bump chat.last_seq / title via the
-    # canonical service helper. Do NOT reinvent the append.
-    row = await append_user_message(
-        chat=chat,
-        parts=user_parts,
-        storage_provider=sp,
-    )
+    # canonical service helper. Do NOT reinvent the append. The helper
+    # validates the ephemeral response_format (A3) before persisting
+    # anything; a malformed schema raises ValueError -> 422.
+    try:
+        row = await append_user_message(
+            chat=chat,
+            parts=user_parts,
+            storage_provider=sp,
+            response_format=body.response_format,
+        )
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
 
     # Flip turn_status to claimable and wake workers - the exact tail of
     # the WS recv loop. Re-fetch so we update the freshest row.
@@ -679,6 +859,232 @@ async def compact_chat(
         summary=result.summary_text,
         tokens_before=result.tokens_before,
         tokens_after=result.tokens_after,
+    )
+
+
+# ===========================================================================
+# REST: rewind truncation (R4)
+# ===========================================================================
+
+
+class ChatRewindBody(BaseModel):
+    """Body of ``POST /v1/chats/{id}/rewind``."""
+
+    seq: int = Field(
+        ...,
+        ge=1,
+        description=(
+            "Sequence number of the user_message row to rewind TO. That "
+            "row is KEPT; every row with seq > this value is deleted."
+        ),
+    )
+
+
+class ChatRewindResponse(BaseModel):
+    """Body of a successful ``POST /v1/chats/{id}/rewind``."""
+
+    chat_id: str = Field(..., description="The chat that was truncated.")
+    truncated_to_seq: int = Field(
+        ..., description="The kept seq — echoes the request body's seq."
+    )
+    deleted: int = Field(
+        ..., description="Number of chat_messages rows deleted (seq > truncated_to_seq)."
+    )
+
+
+@chats_router.post(
+    "/chats/{chat_id}/rewind",
+    response_model=ChatRewindResponse,
+    summary="Truncate a chat's history back to a kept user_message (R4)",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def rewind_chat(
+    body: ChatRewindBody,
+    request: Request,
+    chat_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+) -> ChatRewindResponse:
+    """Discard every row after ``body.seq``, keeping ``body.seq`` itself.
+
+    Lets an operator retry from an earlier point in the conversation —
+    the composer's "rewind" affordance. Delegates the actual deletion +
+    chat-row reset to :func:`primer.chat.rewind.truncate_chat_after`;
+    this endpoint only enforces the pre-flight guards and publishes the
+    live-update tick.
+
+    Status codes:
+
+    * ``200`` — truncated; body carries ``truncated_to_seq`` + ``deleted``.
+    * ``404`` — no such chat.
+    * ``409`` — a worker turn is in flight (``turn_status == "running"``)
+      — mirrors ``POST /compact``'s running guard.
+    * ``422`` — the target row doesn't exist, isn't a ``user_message``,
+      is at or behind the latest ``compaction_marker`` (rewinding into
+      compacted history would desync the summary), or is at/beyond
+      ``chat.last_seq`` (nothing to discard).
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+
+    if chat.turn_status == "running":
+        raise ConflictError(
+            f"Chat {chat_id!r} has a turn in flight; "
+            "wait for it to finish before rewinding."
+        )
+
+    messages_storage = sp.get_storage(ChatMessage)
+    target = await messages_storage.get(ChatMessage.make_id(chat_id, body.seq))
+    if target is None:
+        raise ValidationError(
+            f"Chat {chat_id!r} has no message at seq {body.seq}"
+        )
+    if target.kind != "user_message":
+        raise ValidationError(
+            f"seq {body.seq} is a {target.kind!r} row; rewind targets "
+            "must be a user_message"
+        )
+
+    # Compaction guard: rewinding to (or behind) the latest compaction
+    # marker would desync the marker's summary from the history it
+    # claims to replace, so it's rejected outright.
+    marker_page = await messages_storage.find(
+        Q(ChatMessage)
+        .where("chat_id", chat_id)
+        .where("kind", "compaction_marker")
+        .build(),
+        CursorPage(cursor=None, length=1),
+        order_by=[OrderBy(field="seq", direction="desc")],
+    )
+    if marker_page.items and body.seq <= marker_page.items[0].seq:
+        raise ValidationError(
+            f"seq {body.seq} is at or behind the latest compaction_marker "
+            f"(seq={marker_page.items[0].seq}); cannot rewind into "
+            "compacted history"
+        )
+
+    if body.seq >= chat.last_seq:
+        raise ValidationError(
+            f"seq {body.seq} is at or beyond last_seq={chat.last_seq}; "
+            "nothing to discard"
+        )
+
+    from primer.chat.rewind import truncate_chat_after
+    deleted = await truncate_chat_after(chat, body.seq, storage_provider=sp)
+
+    event_bus = getattr(request.app.state, "event_bus", None)
+    if event_bus is not None:
+        try:
+            await event_bus.publish(
+                f"chat:{chat_id}:tick", {"seq": body.seq},
+            )
+        except Exception:  # noqa: BLE001 — never break the REST response
+            logger.exception(
+                "rewind_chat: failed to publish tick for chat %s", chat_id,
+            )
+
+    return ChatRewindResponse(
+        chat_id=chat_id, truncated_to_seq=body.seq, deleted=deleted,
+    )
+
+
+# ===========================================================================
+# REST: artifact content fetch (inline previews, §4.4)
+# ===========================================================================
+
+
+async def _chat_references_artifact(
+    sp, chat_id: str, artifact_id: str,
+) -> bool:
+    """Cheap chat-local authz check for the artifact-fetch route.
+
+    Blobs live in a store keyed globally by ``artifact_id`` (see
+    :mod:`primer.artifact.db`), so nothing stops a client that knows an
+    id from probing it directly — this scans ``chat_id``'s own rows and
+    only allows the fetch when the id actually appears in one of them
+    (``payload['media']``, or the forward-compat ``payload['parts']``
+    key used elsewhere — see ``derive_final_relay_media`` in
+    :mod:`primer.channel.chat_dispatcher`). Bounded by this chat's row
+    count (paged 200 at a time), not a global scan, and computed once
+    per request rather than a standing index.
+    """
+    from primer.model.storage import OffsetPage
+
+    messages = sp.get_storage(ChatMessage)
+    offset = 0
+    while True:
+        page = await messages.find(
+            Q(ChatMessage).where("chat_id", chat_id).build(),
+            OffsetPage(offset=offset, length=200),
+            order_by=[OrderBy(field="seq", direction="asc")],
+        )
+        for row in page.items:
+            payload = row.payload or {}
+            for key in ("media", "parts"):
+                entries = payload.get(key)
+                if not isinstance(entries, list):
+                    continue
+                for entry in entries:
+                    if (
+                        isinstance(entry, dict)
+                        and entry.get("artifact_id") == artifact_id
+                    ):
+                        return True
+        if len(page.items) < 200:
+            break
+        offset += 200
+    return False
+
+
+@chats_router.get(
+    "/chats/{chat_id}/artifacts/{artifact_id}",
+    summary="Fetch a tool-produced artifact's bytes for inline preview",
+    responses=common_responses(404, 500),
+)
+async def get_chat_artifact(
+    request: Request,
+    chat_id: str = Path(...),
+    artifact_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+) -> Response:
+    """Stream an artifact's raw bytes back for an inline preview.
+
+    Persisted tool-produced media parts carry only an ``artifact_id``
+    (no inline ``data`` — see :mod:`primer.channel.media`); there was
+    previously no byte-serving route. This one is scoped under the
+    chat so authz stays chat-local even though the artifact store
+    itself is global (:func:`_chat_references_artifact`).
+
+    * ``200`` — the raw bytes, with ``Content-Type`` set to the
+      blob's stored ``mime_type`` and ``Content-Disposition: inline``.
+    * ``404`` — unknown chat, the artifact id isn't referenced by this
+      chat's rows, no default artifact store is configured, or the
+      blob itself is missing from the store.
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+
+    if not await _chat_references_artifact(sp, chat_id, artifact_id):
+        raise NotFoundError(
+            f"Artifact {artifact_id!r} is not referenced by chat "
+            f"{chat_id!r}"
+        )
+
+    registry = getattr(request.app.state, "artifact_storage_registry", None)
+    if registry is None:
+        raise NotFoundError("Artifact storage registry is not configured")
+    store = await registry.get_default()
+    blob = await store.get(artifact_id)
+    if blob is None:
+        raise NotFoundError(f"Artifact {artifact_id!r} does not exist")
+
+    return Response(
+        content=blob.data,
+        media_type=blob.mime_type,
+        headers={"Content-Disposition": "inline"},
     )
 
 
@@ -1082,6 +1488,10 @@ async def _recv_loop(
                 {"kind": "error", "message": str(exc)},
             )
             continue
+        # Ephemeral (this-send-only) structured-output override (A3):
+        # a JSON Schema carried on this frame's payload.response_format,
+        # re-validated + stamped by append_user_message below.
+        ephemeral_response_format = incoming.get("response_format")
         # Optional client-generated id (a uuid per send). Carried through
         # so the client can reconcile its optimistic "(queued)" placeholder
         # with the realized row when it eventually arrives over the WS.
@@ -1162,12 +1572,19 @@ async def _recv_loop(
         # identically.
         from primer.chat.enqueue import append_user_message
 
-        await append_user_message(
-            chat=chat,
-            parts=user_parts,
-            storage_provider=storage_provider,
-            client_msg_id=client_msg_id,
-        )
+        try:
+            await append_user_message(
+                chat=chat,
+                parts=user_parts,
+                storage_provider=storage_provider,
+                response_format=ephemeral_response_format,
+                client_msg_id=client_msg_id,
+            )
+        except ValueError as exc:
+            await websocket.send_json(
+                {"kind": "error", "message": str(exc)},
+            )
+            continue
         # Flip turn_status to claimable and wake workers.
         latest = await chats_storage.get(chat_id)
         if latest is not None and latest.status == "active":
@@ -1349,6 +1766,7 @@ def _parse_user_message_parts(frame: dict[str, Any]) -> list:
 
 __all__ = [
     "ChatCreateBody",
+    "ChatResponseFormatBody",
     "ChatSendMessageBody",
     "ChatSwitchAgentBody",
     "CompactResponse",
@@ -1360,5 +1778,6 @@ __all__ = [
     "list_chat_messages",
     "list_chats",
     "send_chat_message",
+    "set_chat_response_format",
     "switch_chat_agent",
 ]
