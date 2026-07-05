@@ -1263,16 +1263,18 @@ class ChatTurnRunner:
         turn's stale in-memory copy (a concurrent writer), the next
         ``_append`` computes its seq from the refreshed value and can
         never re-use an already-taken seq (which would raise a composite
-        (chat_id, seq) ConflictError and abort the turn). Also carries
-        forward the deferred follow-up queue so a turn's persist doesn't
-        clobber a follow-up that landed on ``pending_user_messages``.
+        (chat_id, seq) ConflictError and abort the turn).
+
+        Deferred follow-ups are no longer a field on the chat row (they are
+        their own ``PendingChatMessage`` rows now), so there is nothing to
+        carry forward for them here — the per-token persist can't clobber
+        them.
         """
         latest = await self._chats.get(chat.id)
         if latest is not None:
             chat.cancel_requested_at = latest.cancel_requested_at
             chat.agent_id = latest.agent_id
             chat.pending_handoff = latest.pending_handoff
-            chat.pending_user_messages = latest.pending_user_messages
             chat.last_seq = max(chat.last_seq, latest.last_seq)
         await self._chats.update(chat)
 

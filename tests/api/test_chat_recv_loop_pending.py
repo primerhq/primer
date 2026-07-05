@@ -1,9 +1,14 @@
 """The WS recv loop must DEFER a user_message that arrives while a turn
-is active (turn_status in {claimable, running}) onto
-``Chat.pending_user_messages`` — NOT allocate it a seq mid-turn (which
-is what collided with the executor's assistant_token seq). When the
-chat is idle it keeps the current behaviour: append a real seq'd row
-and flip turn_status to claimable.
+is active (turn_status in {claimable, running}) as its own
+``PendingChatMessage`` row — NOT allocate it a seq mid-turn (which is
+what collided with the executor's assistant_token seq). When the chat is
+idle it keeps the current behaviour: append a real seq'd row and flip
+turn_status to claimable.
+
+The pending follow-up lives in its OWN row (atomic INSERT) rather than a
+list on the chat row, so the recv loop (possibly a different process from
+the worker) can never lose-update or reorder against the running turn's
+per-token chat persists or the realize drain.
 """
 
 from __future__ import annotations
@@ -14,7 +19,7 @@ import pytest
 from fastapi import WebSocketDisconnect
 
 from primer.api.routers.chats import _recv_loop
-from primer.model.chats import Chat, ChatMessage
+from primer.model.chats import Chat, ChatMessage, PendingChatMessage
 from primer.model.storage import OffsetPage, OrderBy, Predicate, FieldRef, Op, Value
 
 
@@ -52,6 +57,17 @@ async def _all_messages(msgs, chat_id):
     return list(page.items)
 
 
+async def _all_pending(provider, chat_id):
+    pending = provider.get_storage(PendingChatMessage)
+    page = await pending.find(
+        Predicate(left=FieldRef(name="chat_id"), op=Op.EQ,
+                  right=Value(value=chat_id)),
+        OffsetPage(offset=0, length=200),
+        order_by=[OrderBy(field="enqueued_at", direction="asc")],
+    )
+    return list(page.items)
+
+
 @pytest.mark.asyncio
 async def test_recv_loop_appends_real_row_when_idle(fake_storage_provider):
     chats = fake_storage_provider.get_storage(Chat)
@@ -77,7 +93,8 @@ async def test_recv_loop_appends_real_row_when_idle(fake_storage_provider):
     chat = await chats.get("c1")
     assert chat.last_seq == 1
     assert chat.turn_status == "claimable"
-    assert chat.pending_user_messages == []
+    # Idle path allocates a real row, never a deferred one.
+    assert await _all_pending(fake_storage_provider, "c1") == []
     assert any(k == "chat-claimable" for k, _ in bus.published)
 
 
@@ -105,11 +122,12 @@ async def test_recv_loop_defers_when_running(fake_storage_provider):
     chat = await chats.get("c1")
     assert chat.last_seq == 3
     assert chat.turn_status == "running"  # not flipped
-    # Held on the deferred queue with its client_msg_id for reconcile.
-    assert len(chat.pending_user_messages) == 1
-    entry = chat.pending_user_messages[0]
-    assert entry["client_msg_id"] == "cid-2"
-    assert entry["parts"] == [{"type": "text", "text": "queued while busy"}]
+    # Held as its own pending row with its client_msg_id for reconcile.
+    pending = await _all_pending(fake_storage_provider, "c1")
+    assert len(pending) == 1
+    assert pending[0].chat_id == "c1"
+    assert pending[0].client_msg_id == "cid-2"
+    assert pending[0].parts == [{"type": "text", "text": "queued while busy"}]
     # A deferred message does NOT wake a worker.
     assert all(k != "chat-claimable" for k, _ in bus.published)
 
@@ -132,7 +150,7 @@ async def test_recv_loop_defers_when_claimable(fake_storage_provider):
 
     rows = await _all_messages(msgs, "c1")
     assert rows == []
-    chat = await chats.get("c1")
-    assert len(chat.pending_user_messages) == 1
+    pending = await _all_pending(fake_storage_provider, "c1")
+    assert len(pending) == 1
     # client_msg_id is optional on the frame; stored as None when absent.
-    assert chat.pending_user_messages[0]["client_msg_id"] is None
+    assert pending[0].client_msg_id is None

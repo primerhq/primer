@@ -172,23 +172,6 @@ class Chat(Identifiable):
             "pending_tool_call (which awaits a human reply)."
         ),
     )
-    pending_user_messages: list[dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "Deferred-queue: follow-up user_messages received over the WS "
-            "recv loop WHILE a turn is active (turn_status in "
-            "{'claimable','running'}). They are NOT assigned a seq at "
-            "receipt — that is what collided with the in-flight turn's "
-            "assistant_token seq allocation and aborted the turn. Instead "
-            "each is held here as a raw dict "
-            "``{parts, attribution, client_msg_id, queued_at}`` and "
-            "REALIZED (drained via append_user_message, ordered AFTER the "
-            "turn's terminal row) by the dispatch loop once the current "
-            "turn completes. Cleared on realization. The client renders "
-            "these optimistically with a '(queued)' badge and reconciles "
-            "by ``client_msg_id`` when the realized row arrives."
-        ),
-    )
     channel_binding: ChatChannelBinding | None = Field(
         default=None,
         description=(
@@ -230,10 +213,42 @@ class ChatMessage(Identifiable):
         return f"{chat_id}:{seq:020d}"
 
 
+class PendingChatMessage(Identifiable):
+    """A follow-up user message received over the WS recv loop while a turn
+    was already active (turn_status in {'claimable','running'}).
+
+    Held as its OWN row — NOT a list on the :class:`Chat` — so the enqueue
+    (WS recv loop, possibly a different process) and the drain (dispatch
+    realize, in the worker) can never lose-update or reorder each other on a
+    last-writer-wins store. The dispatch loop drains these in ``enqueued_at``
+    order at the drain-empty checkpoint (AFTER the active turn's terminal
+    row), turning each into a real seq'd ``user_message`` and deleting the
+    row. Not assigning a seq at receipt is what avoided colliding with the
+    in-flight turn's assistant_token seq; realizing after the terminal row
+    keeps the follow-up ordered AFTER the response.
+
+    ``id`` shape: ``"{chat_id}:pending:{enqueued_at}:{seq}:{rand}"``. The
+    drain orders by ``(enqueued_at, id)``; the zero-padded ``seq`` (a
+    per-process receive-order counter, see the recv loop) is the id's
+    leading tiebreaker so two follow-ups sharing an ``enqueued_at``
+    microsecond still drain in receive order rather than by the random
+    suffix (which exists only to guard against a cross-process id
+    collision).
+    """
+
+    chat_id: str = Field(..., min_length=1)
+    parts: list[dict[str, Any]] = Field(default_factory=list)
+    attribution: dict[str, Any] | None = Field(default=None)
+    client_msg_id: str | None = Field(default=None)
+    enqueued_at: datetime = Field(...)
+    created_at: datetime = Field(...)
+
+
 __all__ = [
     "Chat",
     "ChatChannelBinding",
     "ChatMessage",
     "ChatMessageKind",
     "ChatStatus",
+    "PendingChatMessage",
 ]
