@@ -702,3 +702,80 @@ async def test_build_executor_notfound_converges_to_ended_failed(
         f"session left at {row.status!r} instead of ENDED"
     )
     assert row.ended_reason == "failed"
+
+
+# ---------------------------------------------------------------------------
+# Task 9 — Stop (interrupt) stays alive: WAITING, not ENDED
+# ---------------------------------------------------------------------------
+
+
+def test_interrupt_transitions_to_waiting_not_ended() -> None:
+    from primer.session.dispatch import _interrupt_post_status
+
+    assert _interrupt_post_status() == (SessionStatus.WAITING, None)
+
+
+@pytest.mark.asyncio
+async def test_interrupt_mid_stream_lands_waiting_and_clears_flag(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """Interrupt (Stop) published mid-stream: CANCELLED record written
+    (reason='operator_interrupt'), but the row lands WAITING — alive —
+    instead of ENDED, and interrupt_requested is cleared so the next
+    turn is not re-interrupted."""
+    import json
+
+    # Flip the row's interrupt flag on disk — mirrors what the
+    # /interrupt route does for a RUNNING session.
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    seeded_session.interrupt_requested = True
+    await storage.update(seeded_session)
+
+    gate = asyncio.Event()
+
+    class _SlowExecutor:
+        async def invoke(self, messages: list[Any], **kwargs: Any):
+            yield TextDelta(text="starting…", index=0)
+            await gate.wait()
+            yield TextDelta(text="should-not-persist", index=0)
+
+    async def _build_executor(session: WorkspaceSession):
+        return _SlowExecutor()
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+
+    turn_task = asyncio.create_task(run_one_session_turn(lease, deps))
+
+    await asyncio.sleep(0.05)
+    await fake_event_bus.publish(f"session:{seeded_session.id}:cancel", {})
+    await asyncio.sleep(0.05)
+    gate.set()
+
+    outcome = await asyncio.wait_for(turn_task, timeout=2.0)
+
+    assert outcome.success is True
+    assert outcome.drop_lease is True
+
+    lines = fake_workspace_io.read_lines(seeded_session.id)
+    records = [json.loads(ln) for ln in lines]
+    kinds = [r["kind"] for r in records]
+    assert SessionMessageKind.CANCELLED in kinds
+    assert SessionMessageKind.DONE not in kinds
+    cancelled = next(r for r in records if r["kind"] == SessionMessageKind.CANCELLED)
+    assert cancelled["payload"]["reason"] == "operator_interrupt"
+
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.WAITING, (
+        f"interrupted session left at {row.status!r} instead of WAITING"
+    )
+    assert row.ended_at is None
+    assert row.interrupt_requested is False
