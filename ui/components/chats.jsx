@@ -508,6 +508,12 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   // Mobile-only kebab actions sheet (collapses Token meter + Compact +
   // status pill that don't fit in the slim mobile header).
   const [actionsOpen, setActionsOpen] = React.useState(false);
+  // R3 (Task F2) built the structured-output <SchemaPanel> shell but
+  // ChatDetail hard-coded it permanently hidden with no way for an
+  // operator to reach it. This toggle lives in the same top-right
+  // chrome slot as the agent selector (R1) so flipping it on shows the
+  // panel as <Conversation>'s collapsible right-hand sibling.
+  const [showSchemaPanel, setShowSchemaPanel] = React.useState(false);
 
   // Status bag reported by <Conversation> (Task B2 moved the WS/data
   // lifecycle wholesale into that component) — this host only needs
@@ -646,15 +652,28 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           // flips to "down" (was "up" in the old bottom-composer spot)
           // since the popover now opens below the trigger.
           rightChromeSlot={
-            <CT_AgentSwitcher
-              chatId={cid}
-              currentAgentId={chatAgent}
-              pushToast={pushToast}
-              placement="down"
-              disabled={chatStatus === "ended"}
-            />
+            <>
+              <CT_AgentSwitcher
+                chatId={cid}
+                currentAgentId={chatAgent}
+                pushToast={pushToast}
+                placement="down"
+                disabled={chatStatus === "ended"}
+              />
+              <button
+                type="button"
+                className={"chip" + (showSchemaPanel ? " active" : "")}
+                onClick={() => setShowSchemaPanel((v) => !v)}
+                title={showSchemaPanel ? "Hide structured output schema panel" : "Show structured output schema panel"}
+                data-testid="chat-schema-panel-toggle"
+                style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}
+              >
+                <Icon name="settings" size={12} />
+                schema
+              </button>
+            </>
           }
-          showSchemaPanel={false}
+          showSchemaPanel={showSchemaPanel}
         />
       </div>
 

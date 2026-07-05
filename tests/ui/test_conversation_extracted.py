@@ -69,6 +69,33 @@ def test_chats_jsx_mounts_conversation_and_no_longer_owns_the_raw_socket() -> No
     )
 
 
+def test_chats_jsx_exposes_a_reachable_schema_panel_toggle() -> None:
+    """R3's <SchemaPanel> (Task F2) was fully built but ChatDetail hard-coded
+    `showSchemaPanel={false}` with no toggle, so operators could never reach
+    it. A "schema" toggle now lives in the same top-right chrome slot as the
+    agent selector (R1) and drives real state through to <Conversation>.
+    """
+    src = CHATS.read_text(encoding="utf-8")
+    assert "const [showSchemaPanel, setShowSchemaPanel] = React.useState(false);" in src
+    assert 'data-testid="chat-schema-panel-toggle"' in src
+    assert "onClick={() => setShowSchemaPanel((v) => !v)}" in src
+    assert "showSchemaPanel={showSchemaPanel}" in src
+    assert "showSchemaPanel={false}" not in src, (
+        "ChatDetail must no longer hard-code showSchemaPanel to false"
+    )
+
+
+def test_conversation_schema_effects_are_gated_on_show_schema_panel() -> None:
+    """The schema-hydration effect and the debounced persist effect used to
+    run unconditionally even with the panel hidden, silently re-PUTting
+    Chat.response_format ~500ms after load. Both must bail out early when
+    the panel isn't shown.
+    """
+    src = CONVERSATION.read_text(encoding="utf-8")
+    assert "if (!showSchemaPanel) return;" in src
+    assert "if (!showSchemaPanel) return undefined;" in src
+
+
 def test_use_transcript_exports_flatten_and_coalesce() -> None:
     assert USE_TRANSCRIPT.exists(), "ui/components/chat/use-transcript.js is missing"
     src = USE_TRANSCRIPT.read_text(encoding="utf-8")
