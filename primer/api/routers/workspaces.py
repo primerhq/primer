@@ -71,7 +71,8 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
-from primer.model.workspace_session import WorkspaceSession
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.session.mutation_lock import session_lifecycle_lock
 
 
 logger = logging.getLogger(__name__)
@@ -851,6 +852,50 @@ async def restart_session_route(
             event_bus=event_bus,
         ),
     )
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/interrupt",
+    response_model=WorkspaceSession,
+    summary="Stop the in-flight turn but keep the session alive",
+    responses=common_responses(404, 409, 500),
+)
+async def interrupt_session(
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    sessions=Depends(get_session_storage),
+    event_bus=Depends(get_event_bus),
+) -> WorkspaceSession:
+    """Stop (interrupt) the running turn without ending the session.
+
+    RUNNING: flag ``interrupt_requested`` + publish ``session:{sid}:cancel``
+    so the worker preempts the turn and lands the session in WAITING (alive).
+    Non-running: 200 no-op. ENDED: 409 (studio-agents-interact §4.4).
+    """
+    async with session_lifecycle_lock().acquire(session_id):
+        s = await sessions.get(session_id)
+        if s is None or s.workspace_id != workspace_id:
+            raise NotFoundError(
+                f"Session {session_id!r} does not exist on workspace "
+                f"{workspace_id!r}"
+            )
+        if s.status == SessionStatus.ENDED:
+            raise ConflictError(f"Session {session_id!r} has ended")
+        if s.status == SessionStatus.RUNNING:
+            s.interrupt_requested = True
+            s.cancel_requested_at = datetime.now(timezone.utc)
+            await sessions.update(s)
+            if event_bus is not None:
+                try:
+                    await event_bus.publish(
+                        f"session:{session_id}:cancel", {}
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "interrupt_session: bus publish failed for %s",
+                        session_id,
+                    )
+        return s
 
 
 # ===========================================================================

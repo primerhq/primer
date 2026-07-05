@@ -384,6 +384,15 @@ class WorkspaceSession(Identifiable):
     # Cancel/pause request flags (set by API, read by worker)
     pause_requested: bool = Field(default=False)
     cancel_requested: bool = Field(default=False)
+    interrupt_requested: bool = Field(
+        default=False,
+        description=(
+            "Set by POST .../interrupt (Stop). The worker preempts the "
+            "in-flight turn like a cancel but transitions the session to "
+            "WAITING (alive/idle) instead of ENDED, so the user can keep "
+            "chatting (studio-agents-interact §4.4). Cleared by the worker."
+        ),
+    )
 
     # ----------------------------------------------------------------------
     # Yielding-tool park state (M1 of the yielding-tools feature).
