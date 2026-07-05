@@ -24,7 +24,7 @@ Sessions:
     create_workspace_session, cancel_workspace_session,
     list_workspace_sessions, get_workspace_session,
     pause_workspace_session, resume_workspace_session,
-    steer_workspace_session
+    steer_workspace_session, restart_workspace_session
 
 Files:
     list_workspace_files, get_workspace_file_info,
@@ -156,6 +156,13 @@ class _WorkspaceSessionArgs(BaseModel):
 
 class _SteerArgs(_WorkspaceSessionArgs):
     instruction: str = Field(..., min_length=1)
+
+
+class _RestartArgs(_WorkspaceSessionArgs):
+    input: str | None = Field(
+        default=None,
+        description="Optional new initial input for the re-opened session.",
+    )
 
 
 class _WorkspaceListSessionsArgs(BaseModel):
@@ -1383,6 +1390,71 @@ def build_workspaces_toolset(
                     "instruction": "Focus on the failing test first.",
                 },
                 returns="the appended Instruction object",
+            ),
+        ],
+    )
+    registry[name] = entry
+
+    async def _restart_session(arguments: dict[str, Any]) -> ToolCallResult:
+        if scheduler is None or claim_engine is None:
+            return _err(
+                "session tools unavailable: scheduler/claim_engine not wired",
+                error_type="unavailable",
+            )
+        try:
+            args = _RestartArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        from primer.session.enqueue import SessionWakeDeps
+        from primer.session.reset import SessionResetDeps, restart_session
+
+        try:
+            row = await restart_session(
+                workspace_id=args.workspace_id,
+                session_id=args.session_id,
+                instruction=args.input,
+                reset_deps=SessionResetDeps(
+                    storage_provider=storage_provider,
+                    workspace_registry=workspace_registry,
+                    event_bus=event_bus,
+                ),
+                wake_deps=SessionWakeDeps(
+                    storage_provider=storage_provider,
+                    scheduler=scheduler,
+                    claim_engine=claim_engine,
+                    workspace_registry=workspace_registry,
+                    event_bus=event_bus,
+                ),
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
+        return _ok(row.model_dump(mode="json"))
+
+    name, entry = _tool(
+        "restart_workspace_session",
+        (
+            "Re-open an ended session and re-invoke it on the same "
+            "workspace. Works for completed, failed, or cancelled sessions; "
+            "appends an 'invocation N' divider to the same stream and "
+            "returns the re-armed session."
+        ),
+        (
+            "Use when you want to run an ended session again (optionally "
+            "with new input) without creating a new one; not to steer a "
+            "live session (use ``steer_workspace_session``)."
+        ),
+        _RestartArgs,
+        _restart_session,
+        examples=[
+            ToolExample(
+                args={
+                    "workspace_id": "ws-1",
+                    "session_id": "sess-1",
+                    "input": "run again with the new config",
+                },
+                returns="the re-armed session {status:\"running\"}",
             ),
         ],
     )
