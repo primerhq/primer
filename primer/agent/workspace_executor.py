@@ -36,6 +36,7 @@ from primer.model.yield_ import YieldToWorker
 if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
+    from primer.model.principal import PrincipalRef
     from primer.model.provider import LLMModel
     from primer.workspace.session import AgentSession
 
@@ -62,6 +63,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         session: "AgentSession",
         compaction: CompactionStrategy | None = None,
         principal: str | None = None,
+        identity: "PrincipalRef | None" = None,
     ) -> None:
         # Extend the agent's system prompt with the workspace fragment
         # so the LLM sees workspace-tool documentation in its system
@@ -96,6 +98,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
             workspace_id=session.workspace_id,
             session_id=session.session_id,
             principal=principal,
+            identity=identity,
         )
         # Trailing :class:`Done.stop_reason` from the most recent
         # :meth:`invoke` call. ``None`` until the first invoke completes.
