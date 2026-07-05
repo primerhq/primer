@@ -19,6 +19,14 @@ Fix 4 - Composer clear only on successful send
     chats.jsx sendMessage must return a boolean; onSubmitComposer must
     gate setComposer("") on that return value so a failed send (WS not
     open) leaves the user's text intact.
+
+    Superseded in part by Task G1 of the chat-refactor plan
+    (queue-on-reconnect, §4.5): sendMessage no longer returns false when
+    the socket is momentarily not open — it queues the frame instead of
+    hard-rejecting, so the "leaves the user's text intact" guarantee now
+    holds because the send always succeeds (composer clears immediately;
+    the optimistic echo reconciles once the queued frame actually lands),
+    not because it's rejected.
 """
 
 from __future__ import annotations
@@ -210,13 +218,18 @@ def test_graphs_page_has_accurate_subtitle() -> None:
 
 
 def test_chats_send_message_returns_bool() -> None:
+    # Task G1 (queue-on-reconnect, §4.5) superseded the old "return false
+    # when the socket is not open" branch: sendMessage now queues the
+    # frame (outboxRef) and still returns true, so onSubmitComposer's
+    # optimistic-echo/clear path always runs — the queued frame flushes
+    # in ws.onopen once the socket reopens instead of being dropped.
     src = _chats()
-    assert "return false" in src, (
-        "sendMessage must return false when the WS is not open "
-        "so onSubmitComposer can preserve the composer text"
-    )
     assert "return true" in src, (
         "sendMessage must return true on a successful enqueue"
+    )
+    assert "outboxRef.current.push(frame)" in src, (
+        "sendMessage must queue the frame (Task G1) rather than hard-reject "
+        "when the socket is not open"
     )
 
 
