@@ -75,6 +75,10 @@ def test_link_provider_diff_and_redirect_anchor() -> None:
     assert '"/link"' in src
     # Diff against already-linked provider_ids.
     assert "linkedProviderIds" in src or "provider_id" in src
+    # The provider id must be encoded before it's spliced into the nav URL
+    # (guards against a future edit dropping the encode — unescaped-id nav
+    # injection).
+    assert "encodeURIComponent(p.id)" in src
 
 
 def test_empty_state_present() -> None:

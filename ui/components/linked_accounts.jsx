@@ -28,7 +28,7 @@ function LA_extractError(err) {
   let code = null;
   let msg = null;
   if (envDetail && typeof envDetail === "object") {
-    code = envDetail.code || null;
+    code = envDetail.error || envDetail.code || null;
     msg = envDetail.message || null;
   }
   if (!msg && typeof err.detail === "string") msg = err.detail;
