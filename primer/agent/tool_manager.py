@@ -47,6 +47,7 @@ from primer.model.except_ import (
     PrimerError,
     UnsupportedContentError,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import ToolContext, Yielded, YieldToWorker
 from primer.observability import tracing as _tracing
 import primer.observability.metrics as _metrics
@@ -111,6 +112,7 @@ class ToolExecutionManager:
         tools: list[str] | None = None,
         chat_id: str | None = None,
         graph_invocation_services: "Any | None" = None,
+        initiated_by: "PrincipalRef | None" = None,
     ) -> None:
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
@@ -122,6 +124,13 @@ class ToolExecutionManager:
         # Any to avoid importing primer.graph here). None outside a
         # workspace-session dispatch; stamped onto the workspace ToolContext.
         self._graph_services = graph_invocation_services
+        # Persisted attribution of the enclosing run (the workspace
+        # session's own ``initiated_by``, or a richer per-call identity a
+        # future MCP dispatch thread supplies). Stamped onto every
+        # ``ToolContext`` this manager builds so a tool that creates a
+        # child session (``create_workspace_session``) can propagate it —
+        # see ``ToolContext.initiated_by``.
+        self._initiated_by = initiated_by
         self._inform_sink: "Callable[[str], Awaitable[int]] | None" = None
         # The agent's scoped-tool surface. Filters list_tools() to just
         # the listed ids and execute() rejects calls for anything else.
@@ -181,6 +190,7 @@ class ToolExecutionManager:
         provider_registry: object | None = None,
         tools: list[str] | None = None,
         graph_invocation_services: "Any | None" = None,
+        initiated_by: "PrincipalRef | None" = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -190,6 +200,9 @@ class ToolExecutionManager:
         see :class:`primer.model.agent.Agent.tools`.
         ``graph_invocation_services`` (when supplied) wires invoke_graph
         so the dispatched tool can run a child graph in this session.
+        ``initiated_by`` (when supplied) is the enclosing session's own
+        attribution, propagated onto every ``ToolContext`` this manager
+        builds — see ``ToolContext.initiated_by``.
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
         return cls(
@@ -200,6 +213,7 @@ class ToolExecutionManager:
             provider_registry=provider_registry,
             tools=tools,
             graph_invocation_services=graph_invocation_services,
+            initiated_by=initiated_by,
         )
 
     async def list_tools(
@@ -447,6 +461,7 @@ class ToolExecutionManager:
                 workspace_id=sess.workspace_id,
                 inform=self._inform_sink,
                 graph_services=self._graph_services,
+                initiated_by=self._initiated_by,
             )
         elif self._chat_id is not None:
             ctx = ToolContext(
@@ -455,6 +470,7 @@ class ToolExecutionManager:
                 workspace_id=None,
                 chat_id=self._chat_id,
                 inform=self._inform_sink,
+                initiated_by=self._initiated_by,
             )
         try:
             result = await provider.call(

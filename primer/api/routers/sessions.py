@@ -7,7 +7,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Path, Query
+from fastapi import APIRouter, Depends, Path, Query, Request
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
@@ -92,6 +92,7 @@ class SessionCreateBody(BaseModel):
 )
 async def create_session(
     body: SessionCreateBody,
+    request: Request,
     workspace_id: str = Path(...),
     scheduler=Depends(get_scheduler),
     workspace_registry=Depends(get_workspace_registry),
@@ -119,6 +120,7 @@ async def create_session(
     5. If ``auto_start``: bump status to ``RUNNING``, stamp
        ``started_at``, and enqueue with the scheduler.
     """
+    from primer.model.principal import PrincipalRef
     from primer.workspace.session_factory import (
         SessionFactoryDeps,
         start_workspace_session,
@@ -130,6 +132,18 @@ async def create_session(
         scheduler=scheduler,
         workspace_registry=workspace_registry,
     )
+    # Attribution (spec §8.1): project the request's resolved actor (Layer 1
+    # AuthMiddleware, ``request.state.actor``) into the persisted
+    # PrincipalRef. ``actor`` is only absent when auth is enabled and the
+    # request carries no valid session/token -- require_auth already 401s
+    # that case before this handler runs, so the fallback below is a
+    # defensive belt-and-braces rather than a reachable production path.
+    actor = getattr(request.state, "actor", None)
+    initiated_by = (
+        PrincipalRef.from_principal(actor)
+        if actor is not None
+        else PrincipalRef.system()
+    )
     return await start_workspace_session(
         workspace_id=workspace_id,
         binding=body.binding,
@@ -139,6 +153,7 @@ async def create_session(
         metadata=body.metadata,
         parent_session_id=body.parent_session_id,
         name=body.name,
+        initiated_by=initiated_by,
         deps=deps,
     )
 

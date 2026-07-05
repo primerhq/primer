@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import logging
 
+from primer.model.principal import PrincipalRef
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import (
@@ -99,6 +100,13 @@ class AgentFreshSessionDispatcher:
                     "fired_at": fire_context.get("fired_at"),
                 },
                 parent_session_id=None,
+                initiated_by=PrincipalRef(
+                    type="trigger",
+                    id=sub.trigger_id,
+                    display=sub.trigger_id,
+                    role=None,
+                    source="internal",
+                ),
                 deps=factory_deps,
             )
         except Exception as exc:  # noqa: BLE001 — defensive perimeter

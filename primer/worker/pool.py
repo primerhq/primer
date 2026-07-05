@@ -780,13 +780,19 @@ class WorkerPool:
         return await executor_builders.build_session_executor(self, session)
 
     def _build_graph_invocation_services(
-        self, *, workspace, workspace_session, graph_session_id: str,
+        self,
+        *,
+        workspace,
+        workspace_session,
+        graph_session_id: str,
+        initiated_by=None,
     ):
         return executor_builders.build_graph_invocation_services(
             self,
             workspace=workspace,
             workspace_session=workspace_session,
             graph_session_id=graph_session_id,
+            initiated_by=initiated_by,
         )
 
     async def _build_agent_executor(self, session: WorkspaceSession, workspace):

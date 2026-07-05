@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.pool import _toolset_ids_from_scoped
 
@@ -65,13 +66,23 @@ async def build_session_executor(pool: "WorkerPool", session: WorkspaceSession):
 
 
 def build_graph_invocation_services(
-    pool: "WorkerPool", *, workspace, workspace_session, graph_session_id: str,
+    pool: "WorkerPool",
+    *,
+    workspace,
+    workspace_session,
+    graph_session_id: str,
+    initiated_by: "PrincipalRef | None" = None,
 ):
     """Build the GraphInvocationServices bundle for invoke_graph, or None
     when this workspace can't host a child graph executor (no state_repo /
     no holder session). Mirrors the per-node resolvers in
     _build_graph_executor so an invoked graph nests under the session's
-    state with full parity (routers, approvals, subgraphs)."""
+    state with full parity (routers, approvals, subgraphs).
+
+    ``initiated_by`` is the enclosing (durable) session's attribution —
+    threaded onto the child graph's ``ToolExecutionManager`` so a nested
+    ``create_workspace_session`` call inherits the run's identity rather
+    than falling back to the system principal."""
     from primer.agent.tool_manager import ToolExecutionManager
     from primer.graph.invoke_graph import GraphInvocationServices
     from primer.graph.workspace_executor import WorkspaceGraphExecutor
@@ -105,6 +116,7 @@ def build_graph_invocation_services(
             approval_resolver=pool._approval_resolver,
             provider_registry=pool._provider_registry,
             tools=agent.tools,
+            initiated_by=initiated_by,
         )
 
     async def graph_resolver(graph_id: str):
@@ -211,10 +223,18 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # ``tools`` list is the agent's scoped-tool surface - the
     # manager exposes exactly those tools to the LLM and rejects
     # dispatch on anything else.
+    #
+    # ``initiated_by`` propagates this session's own attribution onto the
+    # ToolExecutionManager so a tool that spawns a child session
+    # (create_workspace_session) inherits it instead of falling back to
+    # the system principal. ``session.initiated_by`` is only absent for
+    # historical rows created before this attribution landed.
+    initiated_by = session.initiated_by or PrincipalRef.system()
     gis = pool._build_graph_invocation_services(
         workspace=workspace,
         workspace_session=agent_session,
         graph_session_id=session.id,
+        initiated_by=initiated_by,
     )
     tool_manager = ToolExecutionManager.for_workspace(
         toolset_providers=toolset_providers,
@@ -223,6 +243,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         provider_registry=pool._provider_registry,
         tools=agent.tools,
         graph_invocation_services=gis,
+        initiated_by=initiated_by,
     )
 
     from primer.agent.inform import SessionInformSink
@@ -335,6 +356,11 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # system prompt augmentation + workspace tools per-node.
     workspace_session = await workspace.get_session(session.id)
 
+    # This graph session's own attribution, propagated onto every
+    # per-node ToolExecutionManager so a tool_call node's
+    # create_workspace_session inherits it (see build_agent_executor).
+    initiated_by = session.initiated_by or PrincipalRef.system()
+
     async def tool_manager_resolver(agent):
         toolset_ids = _toolset_ids_from_scoped(agent.tools)
         toolset_providers: dict = {}
@@ -348,6 +374,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 workspace=workspace,
                 workspace_session=workspace_session,
                 graph_session_id=session.id,
+                initiated_by=initiated_by,
             )
             return ToolExecutionManager.for_workspace(
                 toolset_providers=toolset_providers,
@@ -356,12 +383,14 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 provider_registry=pool._provider_registry,
                 tools=agent.tools,
                 graph_invocation_services=gis,
+                initiated_by=initiated_by,
             )
         return ToolExecutionManager(
             toolset_providers=toolset_providers,
             approval_resolver=pool._approval_resolver,
             provider_registry=pool._provider_registry,
             tools=agent.tools,
+            initiated_by=initiated_by,
         )
 
     # (4) Optional handles wired in later phases.

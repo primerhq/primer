@@ -41,6 +41,8 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
+from primer.model.principal import PrincipalRef
+
 
 # ===========================================================================
 # Sentinels returned by yielding tools
@@ -208,6 +210,15 @@ class ToolContext:
         ``None`` outside a workspace-session tool dispatch. Typed ``Any``
         to avoid a layering import cycle (primer.graph depends on this
         module, not vice versa).
+    initiated_by
+        Persisted attribution of the enclosing run, so a tool that
+        CREATES a session (``create_workspace_session``) can stamp the
+        child's ``initiated_by``. Set by :class:`ToolExecutionManager`
+        from the enclosing workspace session's own ``initiated_by`` (or
+        a richer per-call identity if the dispatch layer threads one);
+        ``None`` outside a workspace-session tool dispatch, in which
+        case the MCP session-create handler falls back to the system
+        principal rather than fabricating a ``user`` attribution.
     """
 
     tool_call_id: str
@@ -217,6 +228,7 @@ class ToolContext:
     chat_id: str | None = None
     inform: Callable[[str], Awaitable[int]] | None = None
     graph_services: Any | None = None
+    initiated_by: PrincipalRef | None = None
 
 
 # ===========================================================================

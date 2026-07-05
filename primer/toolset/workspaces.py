@@ -1055,7 +1055,9 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     # ------------------- Sessions sub-resource ------------------------
-    async def _create_session(arguments: dict[str, Any]) -> ToolCallResult:
+    async def _create_session(
+        arguments: dict[str, Any], ctx: ToolContext | None = None,
+    ) -> ToolCallResult:
         if scheduler is None or claim_engine is None:
             return _err(
                 "session tools unavailable: scheduler/claim_engine not wired",
@@ -1065,6 +1067,7 @@ def build_workspaces_toolset(
             args = _CreateSessionArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        from primer.model.principal import PrincipalRef
         from primer.workspace.session_factory import (
             SessionFactoryDeps,
             start_workspace_session,
@@ -1085,6 +1088,9 @@ def build_workspaces_toolset(
                 auto_start=args.auto_start,
                 metadata=args.metadata,
                 parent_session_id=args.parent_session_id,
+                initiated_by=(
+                    getattr(ctx, "initiated_by", None) or PrincipalRef.system()
+                ),
                 deps=deps,
             )
         except NotFoundError as exc:
