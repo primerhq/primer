@@ -16,9 +16,10 @@
 // inline versions; only the file (and, for the two helpers, adjacent
 // grouping) changed.
 //
-// chatId / agentId / onRewind are accepted now so the prop surface is
-// stable for the phase that fills them in (rewind icon, not yet built) —
-// mirrors the showSchemaPanel precedent in <Conversation> (B2).
+// chatId / agentId are accepted so the prop surface stays stable for
+// future consumers; onRewind + compactionBoundarySeq (Task F3, R4) drive
+// CT_RewindButton — see that component below for the compaction-guard
+// gating and the confirm -> POST /rewind flow.
 // pendingToolCall + sendMessage (Task C4) drive CT_ApprovalGate — see
 // that component below for why a still-open approval-mode gate is
 // resolved through the SAME sendMessage <Conversation> uses for composer
@@ -371,10 +372,70 @@ function CT_MarkdownBody({ text }) {
 }
 
 // ============================================================================
+// CT_RewindButton — rewind-to-here affordance on a user message (Task F3
+// / R4)
+// ============================================================================
+//
+// Rendered by Message (below) only for a user_message that is (a) not
+// still-optimistic (a pending echo has no persisted `seq` yet — nothing
+// to rewind to) and (b) strictly AFTER the compaction boundary
+// <Conversation> computed and passed down as `compactionBoundarySeq` —
+// rewinding to (or behind) the latest `compaction_marker` would desync
+// that marker's summary from the history it replaced, so the affordance
+// simply doesn't appear there (mirrors backend A7's 422 for the same
+// case, without letting the operator click into a guaranteed error).
+//
+// `disabled` (turn_status === "running") mirrors A7's 409-while-running
+// guard — greyed out rather than hidden so the operator can see the
+// message is a valid future rewind target, just not mid-turn.
+//
+// No new endpoint: clicking confirms (window.confirm, same pattern as
+// triggers.jsx / studio-center.jsx's destructive-action confirms) then
+// hands the row's `seq` up to `onRewind` — <Conversation> owns the
+// actual `POST /chats/{id}/rewind` call + local truncation.
+function CT_RewindButton({ seq, disabled, onRewind }) {
+  const handleClick = () => {
+    if (disabled || typeof onRewind !== "function") return;
+    const ok = window.confirm(
+      "Rewind to this message? Everything sent or received after it will be discarded."
+    );
+    if (!ok) return;
+    onRewind(seq);
+  };
+  return (
+    <button
+      type="button"
+      className="chat-rewind-btn"
+      data-testid="chat-rewind-btn"
+      title={disabled ? "Cannot rewind while a turn is running" : "Rewind to this message"}
+      aria-label="Rewind to this message"
+      disabled={!!disabled}
+      onClick={handleClick}
+      style={{
+        marginLeft: "auto",
+        flexShrink: 0,
+        alignSelf: "flex-start",
+        padding: 2,
+        border: "none",
+        background: "none",
+        color: "var(--text-3)",
+        cursor: disabled ? "not-allowed" : "pointer",
+        opacity: disabled ? 0.35 : 0.55,
+      }}
+    >
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M11 19L2 12l9-7v14z" />
+        <path d="M22 19l-9-7 9-7v14z" />
+      </svg>
+    </button>
+  );
+}
+
+// ============================================================================
 // Message — one row in the conversation
 // ============================================================================
 
-function Message({ m, pairedResult, chatId }) {
+function Message({ m, pairedResult, chatId, onRewind, rewindDisabled, compactionBoundarySeq }) {
   const kind = m.kind;
 
   if (kind === "tool_call") {
@@ -564,6 +625,11 @@ function Message({ m, pairedResult, chatId }) {
   // row — it disappears the moment the persisted row (same text, real
   // seq) reconciles it in place.
   const isPending = isUser && m.pending === true;
+  // Task F3 (R4): the rewind icon only ever appears on a persisted (not
+  // still-optimistic) user_message strictly after the compaction
+  // boundary — see CT_RewindButton above for the full rationale.
+  const canRewind = isUser && !isPending
+    && typeof m.seq === "number" && m.seq > (compactionBoundarySeq || 0);
   return (
     <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
       <CT_Attribution
@@ -585,6 +651,9 @@ function Message({ m, pairedResult, chatId }) {
           </div>
         )}
       </div>
+      {canRewind && (
+        <CT_RewindButton seq={m.seq} disabled={rewindDisabled} onRewind={onRewind} />
+      )}
     </div>
   );
 }
@@ -836,9 +905,15 @@ const _QUIET_LAST_KINDS = new Set([
 
 function Transcript({
   messages, chatId, agentId, wsState, waitingForReply, turnStatus,
-  pendingToolCall, sendMessage, onRewind, scrollRef, onScroll, loadingOlder, hasMoreOlder,
+  pendingToolCall, sendMessage, onRewind, compactionBoundarySeq,
+  scrollRef, onScroll, loadingOlder, hasMoreOlder,
 }) {
   const turnInFlight = turnStatus === "claimable" || turnStatus === "running";
+  // Task F3 (R4): mirrors A7's own 409 guard exactly — `turn_status ===
+  // "running"` — rather than the broader claimable-or-running
+  // `turnInFlight` used for Send/Stop above, since a claimable (not yet
+  // picked up) turn isn't actually racing the rewind's own DB writes.
+  const rewindDisabled = turnStatus === "running";
   // Task C4: an approval-mode gate (see CT_ApprovalGate above) renders
   // inline Approve/Deny right after the timeline — it never coexists with
   // the Thinking bubble in practice (the gate holds turn_status idle until
@@ -908,7 +983,17 @@ function Transcript({
             : m.kind === "tool_call"
               ? `${m.seq}-${m.kind}-${pairedResult ? "done" : "running"}`
               : `${m.seq}-${m.kind}`;
-        return <Message key={key} m={m} pairedResult={pairedResult} chatId={chatId} />;
+        return (
+          <Message
+            key={key}
+            m={m}
+            pairedResult={pairedResult}
+            chatId={chatId}
+            onRewind={onRewind}
+            rewindDisabled={rewindDisabled}
+            compactionBoundarySeq={compactionBoundarySeq}
+          />
+        );
       })}
 
       {/* Thinking indicator — see _QUIET_LAST_KINDS above for why this
