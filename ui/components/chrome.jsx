@@ -86,6 +86,7 @@ const NAV = [
       { id: "admin-users", label: "Users", icon: "user", adminOnly: true },
       { id: "admin-sso-providers", label: "SSO Providers", icon: "key", adminOnly: true },
       { id: "api-tokens", label: "API Tokens", icon: "key" },
+      { id: "linked-accounts", label: "Linked accounts", icon: "link" },
       { id: "mcp", label: "MCP Server", icon: "code", adminOnly: true },
     ],
   },

@@ -88,6 +88,7 @@ function App() {
     if (root === "settings") {
       if (path.startsWith("/settings/api-tokens")) return "api-tokens";
       if (path.startsWith("/settings/mcp")) return "mcp";
+      if (path.startsWith("/settings/linked-accounts")) return "linked-accounts";
       return root;
     }
     if (root === "admin") {
@@ -441,6 +442,7 @@ function App() {
       "trigger-detail": (e) => `/triggers/${e}`,
       "api-tokens": "/settings/api-tokens",
       mcp: "/settings/mcp",
+      "linked-accounts": "/settings/linked-accounts",
       "admin-users": "/admin/users",
       "admin-sso-providers": "/admin/sso-providers",
     };
@@ -1092,6 +1094,24 @@ function App() {
       </>
     );
     const Comp = window.MC_McpPage;
+    pageBody = Comp ? <Comp /> : null;
+  } else if (page === "linked-accounts") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Account</a>
+            <span className="sep">/</span>
+            <span style={{ color: "var(--text)" }}>Linked accounts</span>
+          </div>
+          <h1 className="page-title">Linked accounts</h1>
+          <div className="page-sub">
+            Single sign-on identities linked to your account · manage or unlink at any time
+          </div>
+        </div>
+      </>
+    );
+    const Comp = window.LA_LinkedAccountsPage;
     pageBody = Comp ? <Comp /> : null;
   } else if (page === "admin-users") {
     pageHeader = (
