@@ -6,25 +6,32 @@
 //   CenterTabs        — the tab bar over studio.state.openTabs (glyph/title,
 //                        dirty dot, close ×; horizontal overflow; empty state).
 //   the active panel  — chosen by the active tab's kind:
-//     session(agent) → SessionAgentPanel  (header + controls + SessionLiveStream)
+//     session(agent) → SessionAgentPanel  (header + End/Restart + Transcript/Composer)
 //     session(graph) → SessionGraphPanel  (header + SD_GraphRunView)
 //     file           → FilePanel          (preview/edit toggle + Save + 412 flow)
 //
-// REUSE (do NOT rebuild): the agent transcript and the graph run-view are the
-// production components from session-detail.jsx, reached across files as the
+// REUSE (do NOT rebuild): the graph run-view is still the production
+// component from session-detail.jsx; the agent transcript (Task 12,
+// studio-agents-interact plan) is now chat-refactor's own reused primitives
+// over the session adapter instead — all reached across files as the
 // no-build window globals:
-//   window.SessionLiveStream  ({ sid, wid, session, pushToast })
-//   window.SD_GraphRunView    ({ gid, rid, wid, session, pushToast })
+//   window.SD_GraphRunView        ({ gid, rid, wid, session, pushToast })
+//   window.SA_useSessionConversation ({ sid, wid })  — session-adapter.jsx
+//   window.SA_toTranscript           (records, session)
+//   window.Transcript / window.Composer              — chat-refactor
 // Markdown preview reuses window.renderMarkdown; code highlight reuses
 // window.primerVendor.highlightPython.
 //
-// REUSE FRICTION (noted for B6): the per-session control mutations
-// (pause/resume/steer/cancel) live *inlined* inside SessionDetail in
-// session-detail.jsx — they are NOT exported as standalone helpers/hooks.
-// Rather than touch session-detail.jsx (out of scope for B3), this file
-// re-creates those mutations against the SAME workspace-scoped endpoints
-// (POST .../sessions/{sid}/{pause|resume|cancel|steer}). B6 will extract the
-// shared control surface and this panel can swap to it.
+// REUSE FRICTION (noted for B6): the GRAPH panel's per-session control
+// mutations (pause/resume/steer/cancel) still live *inlined* here
+// (ST_SessionControls below) against the same workspace-scoped endpoints
+// (POST .../sessions/{sid}/{pause|resume|cancel|steer}) — they were never
+// exported as standalone helpers/hooks from session-detail.jsx. The AGENT
+// panel (SessionAgentPanel) no longer has this friction: Stop/End route
+// through SA_useSessionConversation's own stop()/end() (POST
+// .../interrupt / .../cancel), and Restart through a small `restart()`
+// this task added to that same hook (POST .../restart — Task 11's original
+// interface didn't need it; session-adapter.jsx is otherwise untouched).
 //
 // No-build rules: top-level declarations use `var`; helpers prefixed ST_;
 // every exported symbol is assigned to window.X at the bottom.
@@ -312,15 +319,183 @@ function ST_TokenMeterInline({ session }) {
 }
 
 // ---------------------------------------------------------------------------
-// SessionAgentPanel — agent transcript panel.
-//   header: title · status pill · turn · token meter + inline controls
-//   body  : the reused SessionLiveStream (session-scoped tap + history)
+// ST_isAutonomous — mirrors primer/session/autonomy.py::session_is_autonomous
+// exactly: an explicit `session.autonomous` flag wins; otherwise derive from
+// the binding kind (graph ⇒ autonomous, agent ⇒ interactive). Gates the
+// agent run view's Stop/End/Restart control set (interactive, this panel)
+// vs. the graph panel's Pause/Steer/Cancel (autonomous, ST_SessionControls).
+// ---------------------------------------------------------------------------
+
+function ST_isAutonomous(session) {
+  if (!session) return false;
+  if (session.autonomous != null) return !!session.autonomous;
+  var kind = (session.binding && session.binding.kind) || session.binding_kind || null;
+  return kind === "graph";
+}
+
+// ---------------------------------------------------------------------------
+// ST_sessionRowToTranscript / ST_coalesceAssistantRows / ST_sessionTranscriptRows
+//   — adapt SA_toTranscript's rows (Task 11) to what chat-refactor's
+//   <Transcript>/<Message> row renderer (ui/components/chat/transcript.jsx)
+//   actually reads off the top level of each row (m.text, m.arguments,
+//   m.result, m.id, ...) — mirroring window.chatFlatten's `{...payload,
+//   ...row}` spread for a ChatMessage. SA_toTranscript deliberately keeps
+//   `payload` NESTED (locked contract, tests/ui/test_session_adapter.py), so
+//   this spreads it back out here rather than changing that file.
+//
+//   A couple of field names differ between a SessionMessageRecord's payload
+//   (primer/session/persistence.py) and the ChatMessage wire shape Message()
+//   was built against: a tool_result's pairing key is `call_id`
+//   (<Transcript> pairs tool_call<->tool_result by `.id`) and its output
+//   lives under `output` (Message() reads `.result`) — aliased below.
+//   Divider/lifecycle/interaction rows (graph_transition/invocation_divider/
+//   yielded/resumed/done/cancelled/error) have no dedicated Message() branch
+//   for these collapsed kinds, so they fall through to the generic bubble;
+//   seeding `.text` from the divider label (or the nearest payload field)
+//   keeps that bubble from rendering blank.
+// ---------------------------------------------------------------------------
+
+function ST_sessionRowToTranscript(row) {
+  var payload = row.payload || {};
+  var flat = Object.assign({}, payload, {
+    seq: row.seq,
+    kind: row.kind,
+    nodeId: row.nodeId,
+    created_at: row.createdAt,
+  });
+  if (row.kind === "tool_result") {
+    if (flat.id == null && payload.call_id != null) flat.id = payload.call_id;
+    if (flat.result === undefined && payload.output !== undefined) flat.result = payload.output;
+  }
+  if (flat.text == null && flat.content == null) {
+    flat.text = row.label || payload.message || payload.reason || payload.stop_reason || payload.tool_name || "";
+  }
+  return flat;
+}
+
+// Merges a run of consecutive per-token "assistant_message" rows (each
+// SA_toTranscript's 1:1 mapping of one ASSISTANT_TOKEN SessionMessageRecord)
+// into a single bubble — same idea as window.chatCoalesce
+// (ui/components/chat/use-transcript.js), but keyed off `text` (the
+// session's own payload field, primer/session/persistence.py) rather than
+// `delta` (the chat WS frame's field), and stamping startSeq/endSeq the same
+// way — <Transcript>'s row key (`am-${startSeq}-${endSeq}`) needs them, or
+// every assistant bubble in a session collides on the same React key.
+function ST_coalesceAssistantRows(rows) {
+  var out = [];
+  var buffer = null;
+  function flush() {
+    if (buffer && buffer.text.trim().length > 0) out.push(buffer);
+    buffer = null;
+  }
+  for (var i = 0; i < rows.length; i++) {
+    var m = rows[i];
+    if (m.kind === "assistant_message") {
+      var delta = typeof m.text === "string" ? m.text : "";
+      if (!buffer) {
+        buffer = Object.assign({}, m, { text: delta, startSeq: m.seq, endSeq: m.seq });
+      } else {
+        buffer.text += delta;
+        buffer.endSeq = m.seq;
+      }
+      continue;
+    }
+    flush();
+    out.push(m);
+  }
+  flush();
+  return out;
+}
+
+function ST_sessionTranscriptRows(records, session) {
+  var mapped = window.SA_toTranscript(records, session).map(ST_sessionRowToTranscript);
+  return ST_coalesceAssistantRows(mapped);
+}
+
+// ---------------------------------------------------------------------------
+// SessionAgentPanel — agent run view = a session-backed <Conversation>.
+//   header: title · status pill · turn · token meter + End/Restart
+//   body  : <Transcript> fed by SA_toTranscript (Task 11) + <Composer>
+//           docked at the bottom — no dedicated steer button (steering IS
+//           sending a message, studio-agents-interact §4.2). Composer's own
+//           Stop affordance maps to the adapter's stop() (POST .../interrupt);
+//           End/Restart are the two extra header controls this panel adds
+//           (POST .../cancel and .../restart respectively) since the brief's
+//           interactive control set (§Interface) has no Pause.
 // ---------------------------------------------------------------------------
 
 function SessionAgentPanel({ wid, sid, session, pushToast }) {
   var StatusPill = window.StatusPill;
+  var { useMutation } = window.primerApi;
+  var conv = window.SA_useSessionConversation({ sid: sid, wid: wid });
+  var [composerText, setComposerText] = React.useState("");
+  var scrollRef = React.useRef(null);
+
   var title = (session && (session.name || session.id)) || sid;
   var turnNo = (session && (session.turn_no != null ? session.turn_no : session.turn_count)) || 0;
+  var status = (session && session.status) || conv.status;
+  var isEnded = status === "ended";
+  var turnInFlight = conv.turnStatus === "claimable" || conv.turnStatus === "running";
+  var agentId = (session && session.binding && session.binding.agent_id) || null;
+
+  function toastErr(title) {
+    return function (err) {
+      if (typeof pushToast !== "function") return;
+      pushToast({
+        kind: "error",
+        title: (err && err.title) || title,
+        detail: (err && err.detail) || (err && err.message),
+        requestId: err && err.requestId,
+      });
+    };
+  }
+
+  var invalidates = ["studio-session:" + sid, "session-adapter:row:" + sid, "sessions:list"];
+
+  var endMut = useMutation(
+    function () { return conv.end(); },
+    {
+      invalidates: invalidates,
+      onSuccess: function () { pushToast && pushToast({ kind: "warning", title: "Session ended" }); },
+      onError: toastErr("End failed"),
+    }
+  );
+  var restartMut = useMutation(
+    function () { return conv.restart(); },
+    {
+      invalidates: invalidates,
+      onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Session restarted" }); },
+      onError: toastErr("Restart failed"),
+    }
+  );
+
+  function onSend() {
+    var text = composerText.trim();
+    if (!text) return;
+    var p = conv.sendMessage(text);
+    setComposerText("");
+    if (p && typeof p.catch === "function") p.catch(toastErr("Send failed"));
+  }
+
+  function onStop() {
+    var p = conv.stop();
+    if (p && typeof p.catch === "function") p.catch(toastErr("Stop failed"));
+  }
+
+  var rows = React.useMemo(
+    function () { return ST_sessionTranscriptRows(conv.messages, session); },
+    [conv.messages, session]
+  );
+
+  // Stick-to-bottom: a session transcript has no lazy-load-older (history is
+  // a single bounded fetch, session-adapter.jsx), so unlike <Conversation>
+  // this only ever needs to follow the tail as new rows arrive.
+  React.useEffect(function () {
+    var el = scrollRef.current;
+    if (!el) return undefined;
+    var raf = requestAnimationFrame(function () { el.scrollTop = el.scrollHeight; });
+    return function () { cancelAnimationFrame(raf); };
+  }, [rows.length]);
 
   return (
     <div
@@ -340,16 +515,69 @@ function SessionAgentPanel({ wid, sid, session, pushToast }) {
         <span className="mono" style={{ fontSize: 11, color: "var(--text-4)" }}>turn {turnNo}</span>
         <div style={{ flex: 1 }} />
         <ST_TokenMeterInline session={session} />
-        <ST_SessionControls wid={wid} sid={sid} session={session} pushToast={pushToast} />
+        <Btn
+          size="sm"
+          kind="danger"
+          icon="x-circle"
+          disabled={!wid || isEnded || endMut.loading}
+          onClick={function () { if (wid) endMut.mutate(); }}
+          data-testid="ctrl-end"
+          title="End this session (cancel — hard stop)"
+        >End</Btn>
+        {isEnded && (
+          <Btn
+            size="sm"
+            kind="primary"
+            icon="refresh"
+            disabled={!wid || restartMut.loading}
+            onClick={function () { if (wid) restartMut.mutate(); }}
+            data-testid="ctrl-restart"
+            title="Re-open this ended session and invoke it"
+          >Restart</Btn>
+        )}
       </div>
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-        {wid && window.SessionLiveStream
-          ? <window.SessionLiveStream sid={sid} wid={wid} session={session} pushToast={pushToast} />
-          : (
-            <div className="muted text-sm" style={{ padding: 20, textAlign: "center", color: "var(--text-4)" }}>
-              Live stream unavailable — session has no workspace.
-            </div>
-          )}
+      <window.Transcript
+        messages={rows}
+        chatId={sid}
+        agentId={agentId}
+        wsState={conv.wsState}
+        waitingForReply={false}
+        turnStatus={conv.turnStatus}
+        pendingToolCall={null}
+        sendMessage={conv.sendMessage}
+        onRewind={null}
+        // No compaction concept for a session transcript — a boundary of
+        // +Infinity means "nothing is ever past it", which keeps
+        // <Transcript>'s per-message rewind icon (a chat-only affordance,
+        // Task F3) from rendering on every user row for a surface that has
+        // no POST /rewind endpoint to back it.
+        compactionBoundarySeq={Number.MAX_SAFE_INTEGER}
+        scrollRef={scrollRef}
+        onScroll={function () {}}
+        loadingOlder={false}
+        hasMoreOlder={false}
+      />
+      <div
+        style={{
+          borderTop: "1px solid var(--border)", padding: 14,
+          display: "flex", gap: 8, alignItems: "stretch", flex: "0 0 auto",
+        }}
+      >
+        <window.Composer
+          value={composerText}
+          onChange={setComposerText}
+          onSend={onSend}
+          onStop={onStop}
+          running={turnInFlight}
+          disabled={isEnded}
+          attachments={[]}
+          onAttach={function () {}}
+          onRemoveAttachment={function () {}}
+          slashCommands={[]}
+          mentionSources={[]}
+          schemaInvalid={false}
+          wsState={conv.wsState}
+        />
       </div>
     </div>
   );
@@ -880,6 +1108,8 @@ function StudioCenter({ wid, studio }) {
 // ---------------------------------------------------------------------------
 window.StudioCenter = StudioCenter;
 window.CenterTabs = CenterTabs;
+window.ST_isAutonomous = ST_isAutonomous;
+window.ST_sessionTranscriptRows = ST_sessionTranscriptRows;
 window.SessionAgentPanel = SessionAgentPanel;
 window.SessionGraphPanel = SessionGraphPanel;
 window.FilePanel = FilePanel;
