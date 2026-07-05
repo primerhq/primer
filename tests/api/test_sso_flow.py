@@ -159,10 +159,15 @@ async def _login(client, provider_id: str, **params) -> httpx.Response:
     )
 
 
-async def _callback(client, provider_id: str, *, code: str, state: str) -> httpx.Response:
+async def _callback(client, provider_id: str, *, code: str, state: str | None) -> httpx.Response:
+    """``state=None`` OMITS the query param entirely (simulates a provider
+    that dropped it), as opposed to passing an empty string."""
+    params: dict[str, str] = {"code": code}
+    if state is not None:
+        params["state"] = state
     return await client.get(
         f"/v1/auth/sso/{provider_id}/callback",
-        params={"code": code, "state": state},
+        params=params,
         follow_redirects=False,
     )
 
@@ -405,6 +410,73 @@ async def test_jit_role_clamped_to_safe_set(client, app, rsa_keypair):
         user = await app.state.storage_provider.get_storage(User).get(payload.user_id)
         assert user is not None
         assert user.role == expected_role, (configured_access, sub, user.role)
+
+
+# ---------------------------------------------------------------------------
+# OAuth `state` query-param binding -- defense-in-depth on top of the
+# signed state cookie + PKCE + id_token nonce.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_callback_state_param_round_tripped_happy_path(client, app, rsa_keypair):
+    """The ``state`` value minted at /login is echoed by the (fake) IdP and
+    must match what's bound inside the signed cookie -- happy path."""
+    priv, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+    await app.state.storage_provider.set_sso_jit_enabled(True)
+
+    login_resp = await _login(client, provider.id)
+    qs = _query(login_resp.headers["location"])
+    assert qs["state"]
+
+    idp.queue_id_token(priv, idp.base_claims(sub="sub-state-happy", nonce=qs["nonce"]))
+    cb = await _callback(client, provider.id, code="code-state-happy", state=qs["state"])
+    assert cb.status_code == 302, cb.text
+    assert "primer_session" in cb.cookies
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_callback_mismatched_state_param_rejected(client, app, rsa_keypair):
+    priv, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+    await app.state.storage_provider.set_sso_jit_enabled(True)
+
+    login_resp = await _login(client, provider.id)
+    qs = _query(login_resp.headers["location"])
+    idp.queue_id_token(priv, idp.base_claims(sub="sub-state-mismatch", nonce=qs["nonce"]))
+
+    cb = await _callback(
+        client, provider.id, code="code-state-mismatch", state="not-the-real-state",
+    )
+    assert cb.status_code == 400, cb.text
+    assert cb.json()["detail"]["error"] == "invalid_state"
+    assert "primer_session" not in cb.cookies
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_callback_missing_state_param_rejected(client, app, rsa_keypair):
+    priv, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+    await app.state.storage_provider.set_sso_jit_enabled(True)
+
+    login_resp = await _login(client, provider.id)
+    qs = _query(login_resp.headers["location"])
+    idp.queue_id_token(priv, idp.base_claims(sub="sub-state-missing", nonce=qs["nonce"]))
+
+    cb = await _callback(client, provider.id, code="code-state-missing", state=None)
+    assert cb.status_code == 400, cb.text
+    assert cb.json()["detail"]["error"] == "invalid_state"
+    assert "primer_session" not in cb.cookies
 
 
 # ---------------------------------------------------------------------------

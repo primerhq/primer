@@ -13,8 +13,9 @@ Endpoints (all under ``/v1/auth/sso``):
   short-lived, HttpOnly cookie, and 302s the browser to the provider's
   ``authorization_endpoint``.
 * ``GET /{provider_id}/callback`` — completes the flow: verifies the
-  signed state cookie, exchanges the code, validates the id_token, and
-  resolves a local account.
+  signed state cookie, checks the returned ``state`` query param against
+  the value bound inside that cookie, exchanges the code, validates the
+  id_token, and resolves a local account.
 
 Authenticated router (``sso_authed_router``, ``require_user`` applied at
 ``include_router`` time in ``_app_routes.py``) — account linking + the
@@ -71,6 +72,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import re
+import secrets
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import urlencode, urlsplit
@@ -106,7 +108,7 @@ sso_router = APIRouter(prefix="/auth/sso", tags=["auth", "sso"])
 # vice versa.
 sso_authed_router = APIRouter(prefix="/auth/sso", tags=["auth", "sso"])
 
-# Cookie carrying the signed {provider_id, nonce, code_verifier,
+# Cookie carrying the signed {provider_id, state, nonce, code_verifier,
 # return_to} payload between /login and /callback. Short-lived: an
 # abandoned login attempt's cookie is worthless after this window.
 _STATE_COOKIE_NAME = "primer_sso_state"
@@ -415,6 +417,13 @@ async def _begin_oidc_flow(
     secret = request.app.state.session_secret
     state_payload = {
         "provider_id": provider.id,
+        # Bound into the signed cookie AND sent as the OAuth `state` query
+        # param below -- the callback compares the two. Defense-in-depth
+        # on top of the cookie's own signature/expiry + PKCE + id_token
+        # nonce: an attacker who can't forge the cookie gains nothing from
+        # this, but it's the standard OAuth CSRF control and catches any
+        # future weakening of the cookie's own guarantees.
+        "state": state_value,
         "nonce": nonce,
         "code_verifier": code_verifier,
         "return_to": safe_return_to,
@@ -490,6 +499,7 @@ async def sso_callback(
     provider_id: str,
     request: Request,
     code: str | None = Query(default=None),
+    state: str | None = Query(default=None),
     oidc_provider_storage=Depends(get_oidc_provider_storage),
     user_identity_storage=Depends(get_user_identity_storage),
     user_storage=Depends(get_user_storage),
@@ -500,6 +510,20 @@ async def sso_callback(
     state_payload = oidc.verify_state(cookie_value, secret, _STATE_MAX_AGE_SECONDS)
     if state_payload is None:
         raise _reject(400, "invalid_state", "missing, expired, or tampered state cookie")
+
+    # OAuth `state` query param, round-tripped by the IdP, bound against
+    # the value carried inside the (already signature/expiry-verified)
+    # state cookie -- constant-time so a byte-by-byte timing probe can't
+    # be used to guess it. This is IN ADDITION to the cookie's own
+    # signature, the PKCE verifier, and the id_token nonce check below --
+    # none of those checks are weakened or replaced by this one.
+    expected_state = state_payload.get("state")
+    if (
+        not isinstance(expected_state, str)
+        or not isinstance(state, str)
+        or not secrets.compare_digest(state, expected_state)
+    ):
+        raise _reject(400, "invalid_state", "missing or mismatched state parameter")
 
     if not code:
         raise _reject(400, "missing_code")
