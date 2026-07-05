@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 
+from primer.model.principal import PrincipalRef
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Subscription
 from primer.model.workspace_session import (
@@ -128,6 +129,13 @@ class GraphFreshSessionDispatcher:
                     "graph_input": graph_input,
                 },
                 parent_session_id=None,
+                initiated_by=PrincipalRef(
+                    type="trigger",
+                    id=sub.trigger_id,
+                    display=sub.trigger_id,
+                    role=None,
+                    source="internal",
+                ),
                 deps=factory_deps,
             )
         except Exception as exc:  # noqa: BLE001 — defensive perimeter
