@@ -12,6 +12,7 @@ import pytest
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.agent.workspace_executor import WorkspaceAgentExecutor
 from primer.model.chat import Done, Message, TextDelta, TextPart
+from primer.model.principal import PrincipalRef
 from tests.agent.test_workspace_executor import (
     _FakeLLM,
     _agent,
@@ -67,3 +68,22 @@ async def test_workspace_invoke_creates_artifact_dir(tmp_path: Path) -> None:
     root = session.workspace_root
     assert root is not None
     assert (root / "artifacts" / session.session_id).is_dir()
+
+
+@pytest.mark.asyncio
+async def test_workspace_execution_context_identity(tmp_path: Path) -> None:
+    _backend, _workspace, session = await _build_session(tmp_path)
+    mgr = ToolExecutionManager.for_workspace(toolset_providers={}, session=session)
+    ref = PrincipalRef(
+        type="user", id="u-1", display="alice", role="user", source="local",
+    )
+    ex = WorkspaceAgentExecutor(
+        agent=_agent(system_prompt=["base"]),
+        llm=_FakeLLM(scripts=[]),  # type: ignore[arg-type]
+        llm_model=_model(),
+        tool_manager=mgr,
+        session=session,
+        identity=ref,
+    )
+    assert ex._execution_context.identity is not None
+    assert ex._execution_context.identity.id == "u-1"

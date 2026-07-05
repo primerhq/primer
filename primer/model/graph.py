@@ -27,6 +27,7 @@ from pydantic import (
 
 from primer.model.chat import Message
 from primer.model.common import Describeable, Identifiable
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import SessionStatus
 
 
@@ -162,6 +163,16 @@ class ExecutionContext(BaseModel):
         ),
     )
     principal: str | None = None
+    identity: PrincipalRef | None = Field(
+        default=None,
+        description=(
+            "Rich actor projection for this run (§8.4), exposed to templates "
+            "as ctx.identity.{type,id,display,role,source}. Sourced from the "
+            "session/chat's persisted initiated_by (system fallback for "
+            "historical rows). Exposes no secrets. Distinct from the bare "
+            "back-compat `principal` string above."
+        ),
+    )
     now: str | None = Field(
         default=None, description="ISO-8601 UTC, captured once at construction."
     )
@@ -174,6 +185,7 @@ def build_execution_context(
     session_id: str | None = None,
     graph_id: str | None = None,
     principal: str | None = None,
+    identity: PrincipalRef | None = None,
     now: str | None = None,
 ) -> "ExecutionContext":
     """Single source of truth for an :class:`ExecutionContext`.
@@ -193,6 +205,7 @@ def build_execution_context(
         graph_id=graph_id,
         artifact_dir=artifact_dir,
         principal=principal,
+        identity=identity,
         now=now,
     )
 

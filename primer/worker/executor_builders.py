@@ -142,6 +142,7 @@ def build_graph_invocation_services(
             graph_resolver=graph_resolver,
             router_registry=router_registry,
             principal=None,
+            identity=initiated_by,
             owns_session_lifecycle=False,
             toolset_resolver=toolset_resolver,
             approval_resolver=pool._approval_resolver,
@@ -262,6 +263,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         llm_model=llm_model,
         tool_manager=tool_manager,
         session=agent_session,
+        identity=initiated_by,
     )
     return _TurnDriver(executor)
 
@@ -437,6 +439,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         router_registry=router_registry,
         graph_input=graph_input,
         principal=None,
+        identity=initiated_by,
         owns_session_lifecycle=True,
         toolset_resolver=toolset_resolver,
         approval_resolver=pool._approval_resolver,

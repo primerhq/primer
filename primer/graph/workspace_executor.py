@@ -62,6 +62,7 @@ from primer.observability.turn_log_writer import (
 if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
+    from primer.model.principal import PrincipalRef
     from primer.model.provider import LLMModel
     from primer.workspace.session import AgentSession
     from primer.workspace.local.state import LocalStateRepo
@@ -103,6 +104,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         graph_resolver: Callable[[str], Awaitable[Graph]] | None = None,
         router_registry: RouterRegistry | None = None,
         principal: str | None = None,
+        identity: "PrincipalRef | None" = None,
         graph_input: Any = None,
         tool_manager: ToolExecutionManager | None = None,
         owns_session_lifecycle: bool = False,
@@ -143,6 +145,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             session_id=graph_session_id,
             graph_id=graph.id,
             principal=principal,
+            identity=identity,
         )
         # Only the top-level (worker-built) executor owns the on-disk
         # session holder's lifecycle. Subgraph child executors share the
