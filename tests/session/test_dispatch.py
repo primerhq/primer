@@ -95,12 +95,15 @@ class FakeExecutor:
 async def _seed_session(
     storage_provider,
     session_id: str = "s1",
+    *,
+    autonomous: bool | None = None,
 ) -> WorkspaceSession:
     sess = WorkspaceSession(
         id=session_id,
         workspace_id="w1",
         binding=AgentSessionBinding(agent_id="ag1"),
         status=SessionStatus.RUNNING,
+        autonomous=autonomous,
         created_at=_now(),
         turn_status="running",
     )
@@ -483,14 +486,16 @@ async def test_already_ended_row_drops_lease_without_executor(
 
 @pytest.mark.asyncio
 async def test_clean_completion_transitions_to_ended_completed(
-    seeded_session: WorkspaceSession,
     fake_workspace_io: FakeWorkspaceIO,
     fake_event_bus: InMemoryEventBus,
     fake_storage_provider,
 ) -> None:
-    """After a clean turn (Done with stop_reason='stop'), the session
-    row MUST transition to ENDED/completed. Pre-fix the row stayed
-    at RUNNING forever — a one-shot session would never end."""
+    """After a clean turn (Done with stop_reason='stop'), an AUTONOMOUS
+    session's row MUST transition to ENDED/completed. Pre-fix the row
+    stayed at RUNNING forever — a one-shot session would never end.
+    (Seeded ``autonomous=True`` — an interactive agent session now stays
+    WAITING instead; see test_dispatch_interactive_alive.py.)"""
+    session = await _seed_session(fake_storage_provider, autonomous=True)
     fake_executor = FakeExecutor([
         TextDelta(text="4", index=0),
         Done(stop_reason="stop", raw_reason="stop"),
@@ -505,13 +510,13 @@ async def test_clean_completion_transitions_to_ended_completed(
         event_bus=fake_event_bus,
         build_executor=_build_executor,
     )
-    lease = _make_lease(seeded_session.id)
+    lease = _make_lease(session.id)
     outcome = await run_one_session_turn(lease, deps)
 
     assert outcome.success is True
 
     storage = fake_storage_provider.get_storage(WorkspaceSession)
-    row = await storage.get(seeded_session.id)
+    row = await storage.get(session.id)
     assert row.status == SessionStatus.ENDED
     assert row.ended_reason == "completed"
     assert row.ended_at is not None
@@ -540,7 +545,6 @@ class _ExecutorWithSession(FakeExecutor):
 
 @pytest.mark.asyncio
 async def test_clean_completion_mirrors_ended_onto_agent_session_slot(
-    seeded_session: WorkspaceSession,
     fake_workspace_io: FakeWorkspaceIO,
     fake_event_bus: InMemoryEventBus,
     fake_storage_provider,
@@ -551,7 +555,10 @@ async def test_clean_completion_mirrors_ended_onto_agent_session_slot(
     worker-run session as still ``running``. The executor leaves its
     AgentSession at RUNNING after a clean ``stop`` (dispatch decides ENDED),
     so without the mirror the slot would stay RUNNING forever.
+    (Seeded ``autonomous=True`` so this AUTONOMOUS-session case is unaffected
+    by the interactive-stays-WAITING behaviour.)
     """
+    session = await _seed_session(fake_storage_provider, autonomous=True)
     slot = _RecordingSlotSession()
     fake_executor = _ExecutorWithSession(
         [TextDelta(text="ok", index=0), Done(stop_reason="stop", raw_reason="stop")],
@@ -567,11 +574,11 @@ async def test_clean_completion_mirrors_ended_onto_agent_session_slot(
         event_bus=fake_event_bus,
         build_executor=_build_executor,
     )
-    outcome = await run_one_session_turn(_make_lease(seeded_session.id), deps)
+    outcome = await run_one_session_turn(_make_lease(session.id), deps)
     assert outcome.success is True
     # The scheduler row AND the on-disk slot both reached ENDED/completed.
     storage = fake_storage_provider.get_storage(WorkspaceSession)
-    assert (await storage.get(seeded_session.id)).status == SessionStatus.ENDED
+    assert (await storage.get(session.id)).status == SessionStatus.ENDED
     assert slot.calls == [(SessionStatus.ENDED, "completed")]
 
 
