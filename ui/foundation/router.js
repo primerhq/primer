@@ -58,6 +58,7 @@
     { pattern: "/triggers/:id",                    page: "TriggerDetailPage" },
     { pattern: "/settings/api-tokens",             page: "ApiTokensPage" },
     { pattern: "/settings/mcp",                    page: "McpPage" },
+    { pattern: "/settings/linked-accounts",        page: "LinkedAccountsPage" },
     { pattern: "/admin/users",                     page: "AdminUsersPage" },
     { pattern: "/admin/sso-providers",             page: "SsoProvidersPage" },
     { pattern: "/web-search",                      page: "WebSearchPage" },
