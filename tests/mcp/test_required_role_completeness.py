@@ -108,3 +108,52 @@ async def test_every_exposable_reserved_tool_declares_a_role(
         "exposable tools without an explicit required_role: "
         f"{sorted(missing)}"
     )
+
+
+@pytest.mark.asyncio
+async def test_call_tool_meta_dispatcher_never_exposable(
+    reserved_provider_registry: ProviderRegistry,
+) -> None:
+    """Regression pin: ``system__call_tool`` must never pass ``is_exposable``.
+
+    WHY THIS MATTERS (read before "fixing" this test): ``call_tool``'s
+    handler (``primer.toolset._system_crud._call_tool_tool``) invokes
+    ``provider.call(...)`` DIRECTLY. It does NOT go through
+    ``primer.mcp.dispatch``'s ``invoke_exposed`` path, which is where the
+    RBAC gate lives (comparing the caller's role against each tool's
+    declared ``required_role``). So ``call_tool`` bypasses RBAC entirely
+    for whatever inner tool it dispatches to.
+
+    That is safe TODAY only because ``call_tool`` is declared
+    ``yields=True`` (it can park mid-dispatch for tool-approval), which
+    makes ``is_exposable`` reject it via the "yielding_unsupported" branch
+    before RBAC would ever matter — a non-admin MCP caller can never reach
+    the meta-dispatcher at all. That safety is COINCIDENTAL — a side
+    effect of ``yields=True`` — not an explicit guard.
+
+    If a future change ever drops ``yields=True`` from ``call_tool`` (say,
+    to make its non-approval-gated path exposable), this test starts
+    failing. That failure is the signal that a user-role MCP caller could
+    now reach ``call_tool`` and use its direct ``provider.call(...)`` to
+    invoke ANY tool from ANY toolset with no RBAC check — silent full-admin
+    privilege escalation. Do not just delete/relax this test to make it
+    pass; either keep ``call_tool`` yielding, or first route it through
+    ``invoke_exposed`` (or add back an explicit hard-deny) so RBAC is
+    re-checked on the inner dispatch.
+    """
+    provider = await reserved_provider_registry.get_toolset("system")
+    call_tool = None
+    async for tool in provider.list_tools():
+        if tool.id == "call_tool":
+            call_tool = tool
+            break
+    assert call_tool is not None, "system toolset must still define call_tool"
+
+    ok, reason = is_exposable(call_tool, provider=provider)
+
+    assert ok is False, (
+        "system__call_tool became exposable over MCP — its handler "
+        "bypasses the invoke_exposed RBAC gate via a direct "
+        "provider.call(...); see this test's docstring before relaxing it"
+    )
+    assert reason == "yielding_unsupported"
