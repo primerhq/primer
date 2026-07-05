@@ -276,6 +276,19 @@
 }
 .st-resize:hover, .st-resize.is-active { background: var(--accent-border); }
 
+/* Terminal splitter (horizontal). 5px hit area straddling the panel's top
+   border; row-resize cursor. Mirrors .st-resize, rotated to the Y axis. */
+.st-term-resize {
+  position: relative;
+  z-index: 5;
+  flex: 0 0 5px;
+  height: 5px;
+  margin: -3px 0;
+  cursor: row-resize;
+  background: transparent;
+}
+.st-term-resize:hover, .st-term-resize.is-active { background: var(--accent-border); }
+
 /* Collapsible sidebar sections (VS Code style). */
 .st-section { display: flex; flex-direction: column; min-height: 0; }
 .st-section + .st-section { border-top: 1px solid var(--border); }
@@ -556,7 +569,7 @@
    mobile media query below): xterm.js + a PTY needs real keyboard/paste
    affordances the touch shell doesn't have room for in v1. */
 .st-term-panel {
-  flex: 0 0 240px;
+  flex: 0 0 var(--st-term-h, 240px);
   display: flex;
   flex-direction: column;
   min-height: 0;
