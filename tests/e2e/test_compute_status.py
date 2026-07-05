@@ -3702,36 +3702,37 @@ async def test_t0563_post_entity_description_with_deep_unicode_escapes(
 
 
 @pytest.mark.asyncio
-async def test_t0567_graph_post_empty_nodes_returns_422(
+async def test_t0567_graph_post_empty_nodes_now_allowed(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0567 — Per primer/model/graph.py:365-368, Graph.nodes is
-    `list[GraphNode]` with `min_length=1`. Pin: empty nodes list
-    is rejected at create with 422 /errors/validation-error
-    (Pydantic min_length); never /errors/internal.
+    """T0567 — Empty/partial graphs are now creatable; runnability is a
+    graph-session-start concern, not a create-time one (Graph.nodes dropped
+    its min_length=1). Pin: POST with an empty nodes list succeeds (201),
+    the row is created, and it never leaks /errors/internal.
     """
     graph_id = f"graph-t0567-{unique_suffix}"
     body = {
         "id": graph_id,
         "description": "T0567 empty nodes",
-        "nodes": [],  # rejected by min_length=1
+        "nodes": [],
         "edges": [],
-        "entry_node_id": "anything",
     }
     resp = await client.post("/v1/graphs", json=body)
-    envelope = resp.json() if resp.content else {}
-    assert envelope.get("type") != "/errors/internal", (
-        f"empty nodes leaked /errors/internal: {resp.text}"
-    )
-    assert resp.status_code == 422, (
-        f"empty nodes should be 422; got "
-        f"{resp.status_code}: {resp.text}"
-    )
-    assert envelope.get("type") == "/errors/validation-error", envelope
-
-    # Defence: row not created
-    got = await client.get(f"/v1/graphs/{graph_id}")
-    assert got.status_code == 404, got.text
+    try:
+        envelope = resp.json() if resp.content else {}
+        assert envelope.get("type") != "/errors/internal", (
+            f"empty nodes leaked /errors/internal: {resp.text}"
+        )
+        assert resp.status_code == 201, (
+            f"empty graph should now be creatable (unrunnable until it has "
+            f"a Begin -> ... -> End); got {resp.status_code}: {resp.text}"
+        )
+        # Row created, and empty.
+        got = await client.get(f"/v1/graphs/{graph_id}")
+        assert got.status_code == 200, got.text
+        assert got.json()["nodes"] == [], got.json()
+    finally:
+        await client.delete(f"/v1/graphs/{graph_id}")
 
 
 # ============================================================================
@@ -3740,13 +3741,13 @@ async def test_t0567_graph_post_empty_nodes_returns_422(
 
 
 @pytest.mark.asyncio
-async def test_t0568_graph_post_entry_node_id_missing_returns_422(
+async def test_t0568_graph_post_missing_begin_now_allowed(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0568 — Per primer/model/graph.py:399-402, the topology
-    validator rejects entry_node_id values not present in nodes.
-    Pin: 422 /errors/validation-error; never /errors/internal;
-    row not created.
+    """T0568 — A graph with no Begin node is now creatable (it just isn't
+    runnable until it has a Begin -> ... -> End); runnability is enforced at
+    graph-session start. Pin: POST succeeds (201), row created, never leaks
+    /errors/internal.
     """
     provider_id = f"llm-t0568-{unique_suffix}"
     agent_id = f"agent-t0568-{unique_suffix}"
@@ -3761,9 +3762,9 @@ async def test_t0568_graph_post_entry_node_id_missing_returns_422(
     assert ag.status_code == 201, ag.text
 
     try:
-        # T0568: entry_node_id is no longer a separate field — it was removed.
-        # The begin node now defines the entry point. Pin that a graph with
-        # a missing begin node (no node of kind "begin") is rejected with 422.
+        # entry_node_id is no longer a separate field — the Begin node
+        # defines the entry point. A graph with no Begin node is now
+        # creatable (unrunnable until it has one); pin the 201.
         body = {
             "id": graph_id,
             "description": "T0568",
@@ -3781,15 +3782,13 @@ async def test_t0568_graph_post_entry_node_id_missing_returns_422(
             f"missing begin node leaked /errors/internal: "
             f"{resp.text}"
         )
-        assert resp.status_code == 422, (
-            f"graph without begin node should be 422; got "
+        assert resp.status_code == 201, (
+            f"missing-begin graph should now be creatable; got "
             f"{resp.status_code}: {resp.text}"
         )
-        # Detail mentions the topology error
-        assert envelope.get("type") == "/errors/validation-error", envelope
-
+        # Row created (begin-less, hence not runnable until edited).
         got = await client.get(f"/v1/graphs/{graph_id}")
-        assert got.status_code == 404, got.text
+        assert got.status_code == 200, got.text
     finally:
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
@@ -4471,14 +4470,13 @@ async def test_t0617_graph_node_with_both_agent_id_and_graph_id_clean(
 
 
 @pytest.mark.asyncio
-async def test_t0618_graph_put_entry_node_id_missing_returns_422(
+async def test_t0618_graph_put_missing_begin_now_allowed(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0618 — Mirror of T0568 for the PUT path. The same topology
-    validator that rejects entry_node_id-not-in-nodes at POST must
-    reject it at PUT. The original row must NOT be corrupted by
-    the rejected PUT (the description and entry_node_id should be
-    unchanged after the failed call).
+    """T0618 — Mirror of T0568 for the PUT path. A graph can be edited into a
+    not-yet-runnable state (e.g. a PUT that drops the Begin node): the PUT
+    succeeds (200) and the row is updated; runnability is enforced later at
+    graph-session start.
     """
     provider_id = f"llm-t0618-{unique_suffix}"
     agent_id = f"agent-t0618-{unique_suffix}"
@@ -4509,8 +4507,8 @@ async def test_t0618_graph_put_entry_node_id_missing_returns_422(
     assert create.status_code == 201, create.text
 
     try:
-        # PUT with a graph missing the required begin node — topology
-        # validator must reject with 422
+        # PUT a graph that drops the required Begin node — now accepted (the
+        # graph becomes not-yet-runnable rather than being rejected at edit).
         put_body = {
             "id": graph_id,
             "description": "T0618 attempted-corrupt",
@@ -4527,19 +4525,17 @@ async def test_t0618_graph_put_entry_node_id_missing_returns_422(
         assert envelope.get("type") != "/errors/internal", (
             f"PUT missing begin node leaked /errors/internal: {resp.text}"
         )
-        assert resp.status_code == 422, (
-            f"PUT with missing begin node should be 422; got "
+        assert resp.status_code == 200, (
+            f"PUT into a not-yet-runnable state should now succeed; got "
             f"{resp.status_code}: {resp.text}"
         )
-        assert envelope.get("type") == "/errors/validation-error", envelope
 
-        # Defence: original row unchanged
+        # The row is updated to the new (begin-less) content.
         got = await client.get(f"/v1/graphs/{graph_id}")
         assert got.status_code == 200, got.text
-        assert got.json()["description"] == "T0618 original", got.json()
-        # begin node should still be present
+        assert got.json()["description"] == "T0618 attempted-corrupt", got.json()
         node_kinds = [n["kind"] for n in got.json()["nodes"]]
-        assert "begin" in node_kinds, got.json()
+        assert "begin" not in node_kinds, got.json()
     finally:
         await client.delete(f"/v1/graphs/{graph_id}")
         await client.delete(f"/v1/agents/{agent_id}")
