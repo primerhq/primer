@@ -265,6 +265,69 @@ async def set_chat_response_format(
     return await chats_storage.update(chat)
 
 
+class ChatCancelResponse(BaseModel):
+    """Body of a successful ``POST /v1/chats/{id}/cancel``."""
+
+    cancel_requested: bool = Field(
+        default=True,
+        description=(
+            "Always ``true`` on success — signals the in-flight turn's "
+            "cancellation was requested. The turn itself stops "
+            "asynchronously once the worker observes it."
+        ),
+    )
+
+
+@chats_router.post(
+    "/chats/{chat_id}/cancel",
+    response_model=ChatCancelResponse,
+    status_code=202,
+    summary="Request cancellation of a chat's in-flight turn (Stop button)",
+    responses=common_responses(404, 409, 500),
+)
+async def cancel_chat_turn(
+    request: Request,
+    chat_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+) -> ChatCancelResponse:
+    """REST Stop-button entry point (A6).
+
+    Mirrors the ``interrupt`` WS frame's tail in ``_recv_loop``: stamps
+    ``chat.cancel_requested_at`` so the owning worker's heartbeat poll
+    picks it up, and publishes a ``chat:{id}:cancel`` bus event for a
+    faster wake-up. Reachable over REST so the composer's Stop button
+    works without a live WS connection.
+
+    Status codes:
+
+    * ``202`` — cancellation requested; body is
+      ``{"cancel_requested": true}``.
+    * ``404`` — no such chat.
+    * ``409`` — nothing to cancel (``turn_status != "running"``).
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+    if chat.turn_status != "running":
+        raise ConflictError(
+            f"Chat {chat_id!r} has no turn in flight to cancel "
+            f"(turn_status={chat.turn_status!r})."
+        )
+    chat.cancel_requested_at = datetime.now(timezone.utc)
+    await chats_storage.update(chat)
+    event_bus = getattr(request.app.state, "event_bus", None)
+    if event_bus is not None:
+        try:
+            await event_bus.publish(f"chat:{chat_id}:cancel", {})
+        except Exception:  # noqa: BLE001 — never break the REST response
+            logger.exception(
+                "cancel_chat_turn: failed to publish cancel for chat %s",
+                chat_id,
+            )
+    return ChatCancelResponse(cancel_requested=True)
+
+
 class ChatSendMessageBody(BaseModel):
     """Body of ``POST /v1/chats/{id}/messages``.
 
