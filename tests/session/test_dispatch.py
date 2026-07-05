@@ -1004,3 +1004,301 @@ async def test_turn_start_consumes_claimable_and_mid_turn_steer_survives(
         "a steer landing mid-turn must survive to release so the pool's "
         "re-arm can see it"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-session seq monotonicity across turns (invoke + follow-up steer)
+# ---------------------------------------------------------------------------
+#
+# Regression for the HIGH-severity per-session seq bug: dispatch created the
+# per-turn WorkspaceMessageWriter with NO start_seq (each turn restarted at
+# seq=1) and never persisted the advancing seq back to the row. That collided
+# every turn's records with wake_session's USER_INPUT seqs and with the prior
+# turn's records, so the seq-filtered tap path silently dropped physically
+# later records whose seq <= a previously-seen value.
+
+
+class _SeqFakeSlot:
+    """On-disk slot stub: records the FIFO instructions wake_session appends."""
+
+    def __init__(self) -> None:
+        self.appended: list[str] = []
+
+    async def append_instruction(self, content: str) -> None:
+        self.appended.append(content)
+
+
+class _BridgingWorkspaceIO:
+    """Workspace IO serving BOTH surfaces the seq path touches.
+
+    * ``append_message_line`` — used by the WorkspaceMessageWriter that both
+      ``wake_session`` (USER_INPUT rows) and ``dispatch`` (turn output) drive.
+    * ``read_file`` + ``state_path`` + ``get_session`` — the tap reader's
+      seq-filtered live path (``read_session_since``) and wake's slot lookup.
+
+    Both writers and the reader target the same ``messages.jsonl`` bytes so a
+    tap client sees exactly what the two turns persisted.
+    """
+
+    state_path = ".state"
+
+    def __init__(self) -> None:
+        self._files: dict[str, bytes] = {}
+        self._slot = _SeqFakeSlot()
+
+    def _path(self, session_id: str) -> str:
+        return f"{self.state_path}/sessions/{session_id}/messages.jsonl"
+
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        p = self._path(session_id)
+        self._files[p] = self._files.get(p, b"") + line
+
+    async def read_file(self, path: str) -> bytes:
+        from primer.model.except_ import NotFoundError
+
+        if path not in self._files:
+            raise NotFoundError(f"{path!r} not found")
+        return self._files[path]
+
+    async def get_session(self, session_id: str) -> _SeqFakeSlot:
+        return self._slot
+
+    def read_records(self, session_id: str) -> list[dict[str, Any]]:
+        import json
+
+        raw = self._files.get(self._path(session_id), b"")
+        return [
+            json.loads(ln) for ln in raw.decode().splitlines() if ln.strip()
+        ]
+
+
+class _SeqFakeRegistry:
+    def __init__(self, ws: _BridgingWorkspaceIO) -> None:
+        self._ws = ws
+
+    async def get_workspace(self, workspace_id: str) -> _BridgingWorkspaceIO:
+        return self._ws
+
+
+class _SeqFakeScheduler:
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    async def enqueue(self, session_id: str) -> None:
+        self.enqueued.append(session_id)
+
+
+class _SeqFakeEngine:
+    async def upsert(self, kind, session_id, *, priority=100, next_attempt_at=None):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_seq_strictly_increases_across_invoke_and_steer(
+    fake_storage_provider,
+    fake_event_bus: InMemoryEventBus,
+) -> None:
+    """Two turns on ONE interactive session (first invoke + follow-up steer)
+    must persist strictly-increasing unique seqs, and a seq-filtered tap
+    reader that already consumed turn 1 must surface ALL of turn 2 (none
+    dropped).
+
+    FAILS before the dispatch seed+persist fix (turn writers restart at
+    seq=1, colliding with the USER_INPUT rows and each other, so the
+    ``after_seq`` reader drops turn 2 entirely).
+    """
+    from primer.session.enqueue import SessionWakeDeps, wake_session
+    from primer.tap.reader import read_session_since
+    from primer.tap.selector import TapSelector
+
+    io = _BridgingWorkspaceIO()
+    registry = _SeqFakeRegistry(io)
+    scheduler = _SeqFakeScheduler()
+    engine = _SeqFakeEngine()
+
+    session_id = "s-seq"
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(
+        WorkspaceSession(
+            id=session_id,
+            workspace_id="w1",
+            binding=AgentSessionBinding(agent_id="ag1"),
+            status=SessionStatus.CREATED,
+            # Interactive: stays WAITING after a clean turn so a follow-up
+            # steer (turn 2) can re-arm it instead of dead-ending at ENDED.
+            autonomous=False,
+            created_at=_now(),
+            turn_status="idle",
+        )
+    )
+
+    wake_deps = SessionWakeDeps(
+        storage_provider=fake_storage_provider,
+        scheduler=scheduler,
+        claim_engine=engine,
+        workspace_registry=registry,
+        event_bus=fake_event_bus,
+    )
+
+    def _dispatch_deps(events: list[Any]) -> SessionDispatchDeps:
+        async def _build(session: WorkspaceSession):
+            return FakeExecutor(events)
+
+        return SessionDispatchDeps(
+            storage_provider=fake_storage_provider,
+            workspace_io=io,
+            event_bus=fake_event_bus,
+            build_executor=_build,
+        )
+
+    # --- Turn 1: first invoke ---
+    await wake_session(
+        workspace_id="w1", session_id=session_id,
+        instruction="first", deps=wake_deps,
+    )
+    await run_one_session_turn(
+        _make_lease(session_id),
+        _dispatch_deps([
+            TextDelta(text="alpha", index=0),
+            Done(stop_reason="stop", raw_reason="stop"),
+        ]),
+    )
+    row = await storage.get(session_id)
+    assert row.status == SessionStatus.WAITING, (
+        "interactive session must stay alive after a clean turn so it can "
+        "be steered"
+    )
+
+    # --- Turn 2: follow-up steer on the same session ---
+    await wake_session(
+        workspace_id="w1", session_id=session_id,
+        instruction="second", deps=wake_deps,
+    )
+    await run_one_session_turn(
+        _make_lease(session_id),
+        _dispatch_deps([
+            TextDelta(text="beta", index=0),
+            Done(stop_reason="stop", raw_reason="stop"),
+        ]),
+    )
+
+    # --- All persisted records: strictly increasing, unique seqs ---
+    recs = io.read_records(session_id)
+    seqs = [r["seq"] for r in recs]
+    assert seqs == sorted(seqs), f"seqs not strictly increasing in file order: {seqs}"
+    assert len(seqs) == len(set(seqs)), f"duplicate seqs across turns: {seqs}"
+    # USER_INPUT(first), ASSISTANT_TOKEN, DONE, USER_INPUT(second), ASSISTANT_TOKEN, DONE
+    assert len(recs) == 6, f"expected 6 records, got {len(recs)}: {[r['kind'] for r in recs]}"
+    assert [r["kind"] for r in recs].count(SessionMessageKind.USER_INPUT) == 2
+
+    # --- Seq-filtered tap: a client that consumed turn 1 sees ALL of turn 2 ---
+    row = await storage.get(session_id)
+    turn1 = recs[:3]
+    high_water = max(r["seq"] for r in turn1)
+    events, _ = await read_session_since(
+        io,
+        workspace_id="w1",
+        session=row,
+        after_seq=high_water,
+        selector=TapSelector(),
+        from_offset=0,
+    )
+    surfaced = sorted(e.seq for e in events)
+    assert len(events) == 3, (
+        "seq-filtered tap dropped physically-later turn-2 records: "
+        f"surfaced {surfaced} after after_seq={high_water}"
+    )
+    assert min(surfaced) > high_water
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Residual mid-turn concurrent-steer race: wake_session's USER_INPUT "
+        "writer and the in-flight turn writer own INDEPENDENT seq counters. A "
+        "steer landing DURING a running turn (before that turn persists its "
+        "advancing last_seq at turn end) reads a stale row.last_seq and its "
+        "USER_INPUT seq collides with the turn's still-buffered output. "
+        "Persisting the row per-flush does not help — the two counters can't "
+        "be reconciled without a single shared per-session seq source (both "
+        "writers incrementing row.last_seq under the lifecycle lock per "
+        "record), which is a WorkspaceMessageWriter redesign tracked as a "
+        "follow-up. This test marks that boundary and will flip to a failing "
+        "XPASS once the shared-seq-source fix lands."
+    ),
+)
+@pytest.mark.asyncio
+async def test_midturn_concurrent_steer_seq_collision_is_known_gap(
+    fake_storage_provider,
+    fake_event_bus: InMemoryEventBus,
+) -> None:
+    """Documents the residual mid-turn-concurrent-steer seq collision.
+
+    A steer that lands WHILE turn 1 is streaming (its writer counter still
+    mid-flight, last_seq not yet persisted) writes a USER_INPUT whose seq
+    collides with turn 1's output. Strictly-increasing unique seqs therefore
+    do NOT hold — the known gap the turn-boundary fix does not close.
+    """
+    from primer.session.enqueue import SessionWakeDeps, wake_session
+
+    io = _BridgingWorkspaceIO()
+    wake_deps = SessionWakeDeps(
+        storage_provider=fake_storage_provider,
+        scheduler=_SeqFakeScheduler(),
+        claim_engine=_SeqFakeEngine(),
+        workspace_registry=_SeqFakeRegistry(io),
+        event_bus=fake_event_bus,
+    )
+
+    session_id = "s-seq-mid"
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    await storage.create(
+        WorkspaceSession(
+            id=session_id,
+            workspace_id="w1",
+            binding=AgentSessionBinding(agent_id="ag1"),
+            status=SessionStatus.CREATED,
+            autonomous=False,
+            created_at=_now(),
+            turn_status="idle",
+        )
+    )
+
+    # Turn 1 invoke.
+    await wake_session(
+        workspace_id="w1", session_id=session_id,
+        instruction="first", deps=wake_deps,
+    )
+
+    async def _steer_mid_turn() -> None:
+        await wake_session(
+            workspace_id="w1", session_id=session_id,
+            instruction="steer-mid", deps=wake_deps,
+        )
+
+    class _MidTurnSteerExecutor:
+        async def invoke(self, messages: list[Any], **kwargs: Any):
+            yield TextDelta(text="x", index=0)
+            # A concurrent steer lands mid-turn: wake_session writes a
+            # USER_INPUT record now, while this turn's buffered text is not
+            # yet flushed and its writer counter has not advanced.
+            await _steer_mid_turn()
+            yield Done(stop_reason="stop", raw_reason="stop")
+
+    async def _build(session: WorkspaceSession):
+        return _MidTurnSteerExecutor()
+
+    await run_one_session_turn(
+        _make_lease(session_id),
+        SessionDispatchDeps(
+            storage_provider=fake_storage_provider,
+            workspace_io=io,
+            event_bus=fake_event_bus,
+            build_executor=_build,
+        ),
+    )
+
+    seqs = [r["seq"] for r in io.read_records(session_id)]
+    assert seqs == sorted(seqs) and len(seqs) == len(set(seqs)), (
+        f"mid-turn steer produced non-monotonic/duplicate seqs: {seqs}"
+    )
