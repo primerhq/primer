@@ -46,11 +46,21 @@
       if (m.kind === "assistant_token") {
         const delta = typeof m.delta === "string" ? m.delta : "";
         if (!buffer) {
+          // Stamp agent_id/created_at from the FIRST raw token of the run
+          // onto the synthetic assistant_message (Task C2 fold-in fix).
+          // REST-loaded history already carries these per-row (Task C1
+          // reads m.agent_id/m.created_at off the persisted ChatMessage),
+          // but a LIVE-STREAMED reply only has them on the raw
+          // assistant_token frames that get coalesced away here — without
+          // forwarding them, a live reply's attribution/timestamp went
+          // missing until the next REST reload.
           buffer = {
             kind: "assistant_message",
             text: delta,
             startSeq: m.seq,
             endSeq: m.seq,
+            agent_id: m.agent_id,
+            created_at: m.created_at,
           };
         } else {
           buffer.text += delta;
