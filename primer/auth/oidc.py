@@ -5,11 +5,15 @@ for Layer 2 SSO -- every check it performs guards against a specific
 real-world attack:
 
 * **alg pinning** -- ``algorithms`` passed to :func:`jwt.decode` is
-  ALWAYS the single asymmetric algorithm the provider advertised at
-  discovery time (never derived from the token's own header). This is
-  the standard defense against the "alg confusion" family of attacks
-  (RFC 8725 S2.1): an attacker cannot downgrade to ``alg: none`` or to
-  an HMAC algorithm keyed with the provider's *public* RSA/EC key.
+  ALWAYS the full set of asymmetric algorithms the provider advertised
+  at discovery time (never derived from the token's own header). This
+  is the standard defense against the "alg confusion" family of
+  attacks (RFC 8725 S2.1): an attacker cannot downgrade to ``alg:
+  none`` or to an HMAC algorithm keyed with the provider's *public*
+  RSA/EC key. Pinning the full asymmetric subset (rather than a single
+  preferred alg) avoids locking out providers that rotate between, or
+  simultaneously advertise, more than one asymmetric algorithm (e.g.
+  RS256 + ES256).
 * **iss** -- exact string match against the discovered issuer.
 * **aud / azp** -- ``client_id`` must be a member of ``aud`` (which may
   be a single string or a list); when the token carries more than one
@@ -51,7 +55,6 @@ _STATE_SALT = "primer.oidc.state.v1"
 # provider-signed id_token -- both open key-confusion attacks (the
 # provider's *public* signing key would be usable as an HMAC secret).
 _ASYMMETRIC_ALG_PREFIXES = ("RS", "ES", "PS")
-_PREFERRED_ALGS = ("RS256", "PS256", "ES256")
 
 _DISCOVERY_TTL_SECONDS = 3600.0
 _JWKS_TTL_SECONDS = 3600.0
@@ -78,12 +81,12 @@ class OidcMetadata(BaseModel):
     authorization_endpoint: str
     token_endpoint: str
     jwks_uri: str
-    id_token_signing_alg: str = Field(
+    id_token_signing_algs: list[str] = Field(
         ...,
         description=(
-            "Single asymmetric algorithm chosen from the provider's "
+            "All asymmetric algorithms from the provider's "
             "id_token_signing_alg_values_supported; this is what gets "
-            "pinned as the sole entry of jwt.decode's `algorithms=`."
+            "pinned wholesale as jwt.decode's `algorithms=`."
         ),
     )
 
@@ -102,8 +105,13 @@ _discovery_cache: dict[str, _CacheEntry] = {}
 _jwks_cache: dict[str, _CacheEntry] = {}
 
 
-def _pick_signing_alg(supported: list[str] | None) -> str:
-    """Choose a single asymmetric alg to pin from the discovery document.
+def _pick_signing_algs(supported: list[str] | None) -> list[str]:
+    """Choose the full set of asymmetric algs to pin from the discovery doc.
+
+    Pinning the whole asymmetric subset (rather than a single preferred
+    alg) keeps us from locking out a provider that advertises more than
+    one asymmetric algorithm (e.g. ``["RS256", "ES256"]``) -- any of
+    them is safe to accept since none is symmetric/none.
 
     Raises :class:`OidcError` if the provider advertises only symmetric
     (HS*) algorithms -- we refuse to configure ourselves into a
@@ -116,10 +124,7 @@ def _pick_signing_alg(supported: list[str] | None) -> str:
             "provider does not advertise any asymmetric id_token signing "
             f"algorithm (id_token_signing_alg_values_supported={algs!r})"
         )
-    for preferred in _PREFERRED_ALGS:
-        if preferred in asymmetric:
-            return preferred
-    return asymmetric[0]
+    return asymmetric
 
 
 async def discover(discovery_url: str) -> OidcMetadata:
@@ -156,7 +161,7 @@ async def discover(discovery_url: str) -> OidcMetadata:
             authorization_endpoint=doc["authorization_endpoint"],
             token_endpoint=doc["token_endpoint"],
             jwks_uri=doc["jwks_uri"],
-            id_token_signing_alg=_pick_signing_alg(
+            id_token_signing_algs=_pick_signing_algs(
                 doc.get("id_token_signing_alg_values_supported")
             ),
         )
@@ -276,12 +281,13 @@ async def validate_id_token(
     Raises :class:`OidcError` on any failure. See the module docstring
     for the full list of checks and the attack each one closes.
     """
-    alg = metadata.id_token_signing_alg
-    if not alg.upper().startswith(_ASYMMETRIC_ALG_PREFIXES):
+    algs = metadata.id_token_signing_algs
+    if not algs or any(not a.upper().startswith(_ASYMMETRIC_ALG_PREFIXES) for a in algs):
         # Defense in depth: even if `metadata` was hand-built rather than
-        # produced by discover(), never verify with a symmetric/none alg.
+        # produced by discover(), never verify with an empty alg set or
+        # one containing a symmetric/none alg.
         raise OidcError(
-            f"refusing to validate id_token with non-asymmetric alg {alg!r}"
+            f"refusing to validate id_token with non-asymmetric alg set {algs!r}"
         )
 
     try:
@@ -315,11 +321,14 @@ async def validate_id_token(
             # Pinned from discovery metadata, NEVER from the token's own
             # header -- this is what makes alg-confusion attacks
             # (alg:none, HS256-with-public-RSA-key) impossible.
-            algorithms=[alg],
+            algorithms=algs,
             audience=provider.client_id,
             issuer=metadata.issuer,
             leeway=_EXP_LEEWAY_SECONDS,
-            options={"require": ["exp", "iat", "aud", "iss"]},
+            # `sub` is required -- it's the key used to match the token
+            # to a local UserIdentity row; a token without one must never
+            # reach account-matching logic.
+            options={"require": ["exp", "iat", "aud", "iss", "sub"]},
         )
     except jwt.PyJWTError as exc:
         raise OidcError(f"id_token signature/claims validation failed: {exc}") from exc
@@ -335,7 +344,12 @@ async def validate_id_token(
             "id_token has multiple audiences but azp does not equal client_id"
         )
 
-    if claims.get("nonce") != nonce:
+    # `not nonce` closes the vacuous-empty case: if the caller passes an
+    # empty/falsy expected nonce and the token also omits (or blanks)
+    # its nonce claim, `claims.get("nonce") != nonce` alone would be
+    # `"" != ""` -> False and wrongly "pass". A blank nonce provides no
+    # session-binding at all, so it must always be rejected.
+    if not nonce or claims.get("nonce") != nonce:
         raise OidcError("id_token nonce does not match the expected value")
 
     return claims
