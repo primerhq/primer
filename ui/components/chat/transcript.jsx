@@ -16,10 +16,13 @@
 // inline versions; only the file (and, for the two helpers, adjacent
 // grouping) changed.
 //
-// chatId / agentId / pendingToolCall / onRewind are accepted now so
-// the prop surface is stable for the phases that fill them in
-// (attribution + rewind icon in C1, inline Approve/Deny in C4) —
+// chatId / agentId / onRewind are accepted now so the prop surface is
+// stable for the phase that fills them in (rewind icon, not yet built) —
 // mirrors the showSchemaPanel precedent in <Conversation> (B2).
+// pendingToolCall + sendMessage (Task C4) drive CT_ApprovalGate — see
+// that component below for why a still-open approval-mode gate is
+// resolved through the SAME sendMessage <Conversation> uses for composer
+// sends, not a new endpoint.
 
 // Map a chat_messages row kind → simple bubble role for layout.
 function CT_roleForKind(kind) {
@@ -140,6 +143,59 @@ function CT_ThinkingBubble({ label }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// CT_ApprovalGate — inline Approve/Deny under a gating assistant message
+// (Task C4)
+// ============================================================================
+//
+// A chat-surface approval gate (primer/chat/executor.py::soft_yield,
+// tool_name == "_approval") never appends a `tool_call` row — it appends an
+// assistant_token prompt ("I'd like to run `X`... Approve? (yes/no)") and
+// stamps `chat.pending_tool_call = {mode: "approval", ...}` on the chat row
+// itself. The gate blocks further turn activity, so that prompt is
+// guaranteed to be the LAST row in the timeline for as long as
+// `pendingToolCall.mode === "approval"` holds — rendering this right after
+// the message list is exactly "under the gating assistant message".
+//
+// No protocol change: Approve/Deny are plain `user_message` sends of the
+// literal tokens `"yes"`/`"no"` through the SAME `sendMessage` <Conversation>
+// already uses for composer sends — `primer/chat/executor.py::resume_pending`
+// parses those tokens on the next turn. Disables both buttons for the
+// duration of a single decision so a double-click can't fire twice; the gate
+// disappearing (pendingToolCall polled back to null in <Conversation>) is
+// what actually clears it, per the plan's "vanish once the gate clears".
+function CT_ApprovalGate({ sendMessage }) {
+  const [sending, setSending] = React.useState(false);
+  const decide = (text) => {
+    if (sending) return;
+    setSending(true);
+    const enqueued = typeof sendMessage === "function" ? sendMessage(text) : false;
+    if (!enqueued) setSending(false); // send failed (WS not open) — let the operator retry
+  };
+  return (
+    <div style={{ marginLeft: 60, marginTop: 2, marginBottom: 14, display: "flex", gap: 8 }}>
+      <button
+        type="button"
+        className="btn"
+        data-testid="chat-gate-deny"
+        disabled={sending}
+        onClick={() => decide("no")}
+      >
+        Deny
+      </button>
+      <button
+        type="button"
+        className="btn btn-primary"
+        data-testid="chat-gate-approve"
+        disabled={sending}
+        onClick={() => decide("yes")}
+      >
+        Approve
+      </button>
     </div>
   );
 }
@@ -610,9 +666,14 @@ const _QUIET_LAST_KINDS = new Set([
 
 function Transcript({
   messages, chatId, agentId, wsState, waitingForReply, turnStatus,
-  pendingToolCall, onRewind, scrollRef, onScroll, loadingOlder, hasMoreOlder,
+  pendingToolCall, sendMessage, onRewind, scrollRef, onScroll, loadingOlder, hasMoreOlder,
 }) {
   const turnInFlight = turnStatus === "claimable" || turnStatus === "running";
+  // Task C4: an approval-mode gate (see CT_ApprovalGate above) renders
+  // inline Approve/Deny right after the timeline — it never coexists with
+  // the Thinking bubble in practice (the gate holds turn_status idle until
+  // the human's yes/no resumes the turn).
+  const gateAwaitingApproval = !!(pendingToolCall && pendingToolCall.mode === "approval");
   const lastRow = messages.length > 0 ? messages[messages.length - 1] : null;
   const lastIsQuiet = lastRow && _QUIET_LAST_KINDS.has(lastRow.kind);
   const showThinking = waitingForReply || (turnInFlight && !lastIsQuiet);
@@ -684,6 +745,11 @@ function Transcript({
           checks the coalesced last row rather than the raw one; see
           thinkingLabel above (Task C2) for the tool-labeled live state. */}
       {showThinking ? <CT_ThinkingBubble label={thinkingLabel} /> : null}
+
+      {/* Task C4: inline Approve/Deny under the gating assistant message —
+          see CT_ApprovalGate above for why rendering it here (right after
+          the last row) satisfies "under the gating assistant message". */}
+      {gateAwaitingApproval ? <CT_ApprovalGate sendMessage={sendMessage} /> : null}
     </div>
   );
 }
