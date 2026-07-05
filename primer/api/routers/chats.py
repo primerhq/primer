@@ -738,6 +738,39 @@ def _usage_envelope(chat_id: str, context_length: int) -> dict[str, Any]:
     }
 
 
+async def _seed_usage_cache_from_history(sp, chat_id: str) -> None:
+    """Warm the volatile usage cache from the last persisted ``done`` row.
+
+    The per-chat token counters live only in the in-memory
+    :mod:`primer.chat.usage_cache`, so a fresh process (e.g. after a
+    restart) has a cold cache and the context meter would read 0 for any
+    chat whose turns ran previously. Each ``done`` row now carries the
+    turn's ``input_tokens``/``output_tokens``; recover the newest one here.
+    Best-effort and non-clobbering: a warm cache (a live or just-finished
+    turn) always wins.
+    """
+    from primer.chat.usage_cache import get_usage, set_usage
+    from primer.model.storage import OffsetPage
+
+    cur = get_usage(chat_id)
+    if cur["input_tokens"] or cur["output_tokens"]:
+        return
+    messages = sp.get_storage(ChatMessage)
+    q = Q(ChatMessage).where("chat_id", chat_id).where("kind", "done")
+    result = await messages.find(
+        q.build(),
+        OffsetPage(offset=0, length=1),
+        order_by=[OrderBy(field="seq", direction="desc")],
+    )
+    for row in result.items:
+        payload = row.payload or {}
+        input_t = int(payload.get("input_tokens") or 0)
+        output_t = int(payload.get("output_tokens") or 0)
+        if input_t or output_t:
+            set_usage(chat_id, input_t, output_t)
+        return
+
+
 async def _resolve_context_length(sp, chat_id: str) -> int:
     """Resolve the agent's model ``context_length`` for a chat.
 
@@ -863,6 +896,16 @@ async def chat_ws(
             # counters live in primer.chat.usage_cache and are updated
             # by ChatTurnRunner after every Usage event.
             context_length = await _resolve_context_length(sp, chat_id)
+
+            # Recover the usage numerator from the last persisted turn when
+            # this process's in-memory cache is cold (e.g. after a restart)
+            # so the context meter isn't stuck at 0. Best-effort.
+            try:
+                await _seed_usage_cache_from_history(sp, chat_id)
+            except Exception:  # noqa: BLE001 -- never fail the WS connect
+                logger.debug(
+                    "usage cache seed from history failed", exc_info=True,
+                )
 
             # Spec §6.4: send an initial ``usage`` frame so the
             # client's TokenMeter renders immediately on connect,
