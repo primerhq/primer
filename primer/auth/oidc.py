@@ -29,6 +29,10 @@ keyed by URL so a login flow doesn't round-trip to the provider on
 every request; :func:`fetch_jwks` additionally bypasses the cache
 when asked to look up a ``kid`` it doesn't recognize, so a provider's
 key rotation doesn't lock users out until the TTL happens to expire.
+That bypass is itself rate-limited per JWKS URI (see
+``_JWKS_REFETCH_COOLDOWN_SECONDS``) so an attacker sending id_tokens
+with random ``kid``s can't turn every login attempt into a forced
+network round-trip.
 """
 
 from __future__ import annotations
@@ -59,6 +63,14 @@ _ASYMMETRIC_ALG_PREFIXES = ("RS", "ES", "PS")
 _DISCOVERY_TTL_SECONDS = 3600.0
 _JWKS_TTL_SECONDS = 3600.0
 _HTTP_TIMEOUT_SECONDS = 10.0
+
+# Anti-abuse bound on fetch_jwks's unknown-kid-triggered refresh: without
+# this, an attacker sending id_tokens with random `kid`s could force a
+# JWKS network round-trip on every single login attempt (a DoS on us and
+# on the provider). At most one forced refetch per URI per cooldown
+# window; anything sooner just uses the cache as-is and fails closed,
+# same as before this feature existed.
+_JWKS_REFETCH_COOLDOWN_SECONDS = 60.0
 
 # ~60s leeway on exp/iat/nbf checks to absorb clock skew between us and
 # the provider, per the brief's "exp with ~60s leeway" requirement.
@@ -103,6 +115,11 @@ class _CacheEntry:
 # tasks rather than long-lived threads contending on the dict.
 _discovery_cache: dict[str, _CacheEntry] = {}
 _jwks_cache: dict[str, _CacheEntry] = {}
+
+# Monotonic timestamp of the last unknown-kid-triggered (forced) JWKS
+# refetch per jwks_uri -- NOT updated on ordinary TTL-driven or
+# first-ever fetches, only on the bypass path. Backs the cooldown above.
+_jwks_forced_refetch_at: dict[str, float] = {}
 
 
 def _pick_signing_algs(supported: list[str] | None) -> list[str]:
@@ -180,6 +197,28 @@ def _has_kid(jwks: dict, kid: str) -> bool:
     return any(k.get("kid") == kid for k in jwks.get("keys", []))
 
 
+def unverified_kid(id_token: str) -> str | None:
+    """Best-effort read of the ``kid`` header claim, WITHOUT verifying
+    the token's signature.
+
+    This is purely a hint for :func:`fetch_jwks` -- callers should pass
+    its result as ``fetch_jwks(..., kid=unverified_kid(id_token))``
+    *before* calling :func:`validate_id_token`, so a ``kid`` the cache
+    doesn't recognize (e.g. because the provider just rotated its
+    signing key) triggers a refresh instead of failing closed until the
+    TTL expires. The header is completely attacker-controlled at this
+    point, so this must never be used for anything security-relevant --
+    :func:`validate_id_token` re-parses the header itself and is the
+    only thing that actually enforces anything. Returns ``None`` on any
+    malformed input; a malformed token is still correctly rejected
+    downstream by :func:`validate_id_token`.
+    """
+    try:
+        return jwt.get_unverified_header(id_token).get("kid")
+    except jwt.PyJWTError:
+        return None
+
+
 async def fetch_jwks(jwks_uri: str, *, kid: str | None = None) -> dict:
     """Fetch + TTL-cache the JWKS document at ``jwks_uri``.
 
@@ -188,12 +227,25 @@ async def fetch_jwks(jwks_uri: str, *, kid: str | None = None) -> dict:
     its signing key) and a fresh copy is fetched immediately, bypassing
     the TTL -- this keeps a rotation from stranding logins until the
     next TTL expiry.
+
+    That bypass is rate-limited to at most one forced refetch per
+    ``jwks_uri`` per :data:`_JWKS_REFETCH_COOLDOWN_SECONDS`: a ``kid``
+    that's unknown while a forced refetch for this URI happened more
+    recently than the cooldown just falls through to the still-cached
+    value (and the caller fails closed), instead of hitting the network
+    again. This is what keeps an unknown ``kid`` from being usable as a
+    DoS lever (e.g. an attacker submitting id_tokens with random
+    ``kid``s to force a JWKS round-trip on every request).
     """
     now = time.monotonic()
     cached = _jwks_cache.get(jwks_uri)
     if cached is not None and cached.expires_at > now:
         if kid is None or _has_kid(cached.value, kid):
             return cached.value
+        last_forced = _jwks_forced_refetch_at.get(jwks_uri)
+        if last_forced is not None and now - last_forced < _JWKS_REFETCH_COOLDOWN_SECONDS:
+            return cached.value
+        _jwks_forced_refetch_at[jwks_uri] = now
 
     async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
         try:

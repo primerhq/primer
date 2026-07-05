@@ -307,9 +307,164 @@ class TestFetchJwks:
         assert route.call_count == 2
         assert _has_kid(refreshed, "key-2")
 
+    @respx.mock
+    async def test_repeated_unknown_kid_within_cooldown_does_not_refetch(
+        self, rsa_keypair, other_rsa_keypair
+    ):
+        """Anti-abuse bound: an attacker sending id_tokens with random
+        `kid`s must not be able to turn every login attempt into a JWKS
+        network round-trip. Once a forced re-fetch has happened for a
+        URI, a second still-unknown kid arriving within the cooldown
+        window is served from the (already-refreshed) cache -- no extra
+        fetch -- and fails closed exactly like before this feature."""
+        _, pub1 = rsa_keypair
+        _, pub2 = other_rsa_keypair
+        url = f"https://idp-{uuid.uuid4().hex}.example.com/jwks.json"
+
+        route = respx.get(url).mock(
+            side_effect=[
+                httpx.Response(200, json=_jwks(pub1, kid="key-1")),
+                httpx.Response(200, json=_jwks(pub2, kid="key-2")),
+            ]
+        )
+
+        await oidc.fetch_jwks(url)
+        assert route.call_count == 1
+
+        # First unknown kid -- forced refetch, consumes the cooldown.
+        refreshed = await oidc.fetch_jwks(url, kid="key-2")
+        assert route.call_count == 2
+        assert _has_kid(refreshed, "key-2")
+
+        # A second, different unknown kid arriving immediately after
+        # (well within the cooldown window) must NOT hit the network
+        # again -- only two side_effect responses were registered above,
+        # so a third fetch attempt would raise StopIteration.
+        still_cached = await oidc.fetch_jwks(url, kid="some-attacker-kid")
+        assert route.call_count == 2
+        assert still_cached == refreshed
+        assert not _has_kid(still_cached, "some-attacker-kid")
+
 
 def _has_kid(jwks: dict, kid: str) -> bool:
     return any(k.get("kid") == kid for k in jwks["keys"])
+
+
+# --- JWKS rotation end-to-end (fetch_jwks + validate_id_token) -------------
+
+
+class TestJwksKeyRotation:
+    """Exercises the real call-site wiring: the caller reads the token's
+    (unverified) `kid` via ``oidc.unverified_kid`` and passes it into
+    ``fetch_jwks`` *before* validation, exactly like
+    ``sso.py::sso_callback`` does -- this is what makes key rotation
+    resilience actually take effect in the login flow, not just in
+    ``fetch_jwks`` isolation."""
+
+    @respx.mock
+    async def test_kid_absent_then_present_after_refetch_validates(
+        self, rsa_keypair, other_rsa_keypair
+    ):
+        old_priv, old_pub = rsa_keypair
+        new_priv, new_pub = other_rsa_keypair
+        url = f"https://idp-{uuid.uuid4().hex}.example.com/jwks.json"
+        route = respx.get(url).mock(
+            side_effect=[
+                httpx.Response(200, json=_jwks(old_pub, kid="old-key")),
+                httpx.Response(200, json=_jwks(new_pub, kid="new-key")),
+            ]
+        )
+
+        # Cache is warmed with the pre-rotation JWKS (e.g. by /login).
+        await oidc.fetch_jwks(url)
+        assert route.call_count == 1
+
+        # The provider rotated: this token is signed with the new key,
+        # whose kid isn't in the cache yet.
+        token = _sign(new_priv, _claims(), kid="new-key")
+        kid = oidc.unverified_kid(token)
+        assert kid == "new-key"
+
+        jwks = await oidc.fetch_jwks(url, kid=kid)
+        assert route.call_count == 2  # the unknown kid forced a re-fetch
+
+        claims = await oidc.validate_id_token(
+            token,
+            provider=_provider(),
+            metadata=_metadata(jwks_uri=url),
+            jwks=jwks,
+            nonce="expected-nonce",
+        )
+        assert claims["sub"] == "user-123"
+
+    @respx.mock
+    async def test_second_unknown_kid_within_cooldown_fails_closed_no_refetch(
+        self, rsa_keypair, other_rsa_keypair
+    ):
+        old_priv, old_pub = rsa_keypair
+        _, rotated_pub = other_rsa_keypair
+        url = f"https://idp-{uuid.uuid4().hex}.example.com/jwks.json"
+        route = respx.get(url).mock(
+            side_effect=[
+                httpx.Response(200, json=_jwks(old_pub, kid="old-key")),
+                httpx.Response(200, json=_jwks(rotated_pub, kid="rotated-key")),
+            ]
+        )
+
+        await oidc.fetch_jwks(url)
+        assert route.call_count == 1
+
+        # First bogus kid -- forced refetch, consumes the cooldown window.
+        first_token = _sign(old_priv, _claims(), kid="attacker-kid-1")
+        await oidc.fetch_jwks(url, kid=oidc.unverified_kid(first_token))
+        assert route.call_count == 2
+
+        # A second, different bogus kid arriving right after must not
+        # trigger a third network round-trip (only 2 responses are
+        # registered above) -- it fails closed against the cache as-is.
+        second_token = _sign(old_priv, _claims(), kid="attacker-kid-2")
+        jwks = await oidc.fetch_jwks(url, kid=oidc.unverified_kid(second_token))
+        assert route.call_count == 2
+
+        with pytest.raises(oidc.OidcError):
+            await oidc.validate_id_token(
+                second_token,
+                provider=_provider(),
+                metadata=_metadata(jwks_uri=url),
+                jwks=jwks,
+                nonce="expected-nonce",
+            )
+
+    @respx.mock
+    async def test_kid_still_unknown_after_refetch_fails_closed(
+        self, rsa_keypair, other_rsa_keypair
+    ):
+        priv, pub = rsa_keypair
+        _, rotated_pub = other_rsa_keypair
+        url = f"https://idp-{uuid.uuid4().hex}.example.com/jwks.json"
+        respx.get(url).mock(
+            side_effect=[
+                httpx.Response(200, json=_jwks(pub, kid="old-key")),
+                httpx.Response(200, json=_jwks(rotated_pub, kid="rotated-key")),
+            ]
+        )
+
+        await oidc.fetch_jwks(url)
+
+        # Token's kid is neither in the cached set NOR in the
+        # post-rotation set fetched on retry (e.g. a garbage/attacker kid).
+        token = _sign(priv, _claims(), kid="not-a-real-kid")
+        jwks = await oidc.fetch_jwks(url, kid=oidc.unverified_kid(token))
+        assert not _has_kid(jwks, "not-a-real-kid")
+
+        with pytest.raises(oidc.OidcError):
+            await oidc.validate_id_token(
+                token,
+                provider=_provider(),
+                metadata=_metadata(jwks_uri=url),
+                jwks=jwks,
+                nonce="expected-nonce",
+            )
 
 
 # --- id_token validation ---------------------------------------------------
