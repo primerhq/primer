@@ -695,6 +695,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
           waitingForReply={waitingForReply}
           turnStatus={chatRow?.turn_status}
           pendingToolCall={chatRow?.pending_tool_call}
+          sendMessage={sendMessage}
           scrollRef={scrollRef}
           onScroll={onScroll}
           loadingOlder={loadingOlder}
