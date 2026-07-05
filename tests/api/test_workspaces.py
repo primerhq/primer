@@ -1034,14 +1034,57 @@ class TestSessionsSubResource:
         assert resume.json()["status"] == "running"
 
     @pytest.mark.asyncio
-    async def test_steer(self, client, wsr) -> None:
+    async def test_steer(self, client, wsr, sp) -> None:
+        # Steer now auto-wakes (Task 4): the route requires a persisted
+        # WorkspaceSession row to re-arm, same seeding as pause/resume above.
+        from primer.model.workspace_session import (
+            AgentSessionBinding,
+            WorkspaceSession,
+        )
+
         wid = await self._setup(client, wsr)
+        session = WorkspaceSession(
+            id="sess-1",
+            workspace_id=wid,
+            binding=AgentSessionBinding(agent_id="agt-1"),
+            status=SessionStatus.RUNNING,
+            created_at=datetime.now(timezone.utc),
+            started_at=datetime.now(timezone.utc),
+        )
+        await sp.get_storage(WorkspaceSession).create(session)
         resp = await client.post(
             f"/v1/workspaces/{wid}/sessions/sess-1/steer",
             json={"instruction": "please write tests"},
         )
-        assert resp.status_code == 200
-        assert resp.json()["content"] == "please write tests"
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "running"
+        assert body["turn_status"] == "claimable"
+
+    @pytest.mark.asyncio
+    async def test_steer_wakes_created_session(self, client, wsr, sp) -> None:
+        from primer.model.workspace_session import (
+            AgentSessionBinding,
+            WorkspaceSession,
+        )
+
+        wid = await self._setup(client, wsr)
+        session = WorkspaceSession(
+            id="sess-1",
+            workspace_id=wid,
+            binding=AgentSessionBinding(agent_id="agt-1"),
+            status=SessionStatus.CREATED,
+            created_at=datetime.now(timezone.utc),
+        )
+        await sp.get_storage(WorkspaceSession).create(session)
+        resp = await client.post(
+            f"/v1/workspaces/{wid}/sessions/sess-1/steer",
+            json={"instruction": "start working"},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] == "running"
+        assert body["turn_status"] == "claimable"
 
 
 # ===========================================================================

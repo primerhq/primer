@@ -595,16 +595,9 @@ class TestSubResourceHandlers:
             arguments={"workspace_id": seeded, "session_id": "sess-1"},
         )
         assert not resume.is_error
-        steer = await toolset.call(
-            tool_name="steer_workspace_session",
-            arguments={
-                "workspace_id": seeded,
-                "session_id": "sess-1",
-                "instruction": "go",
-            },
-        )
-        assert not steer.is_error
-        assert json.loads(steer.output)["content"] == "go"
+        # steer_workspace_session now auto-wakes (needs scheduler/claim_engine
+        # + a persisted WorkspaceSession row) — covered by TestSteerWorkspaceSession
+        # below via ``session_toolset``.
 
     @pytest.mark.asyncio
     async def test_file_ops_text_round_trip(self, toolset, seeded) -> None:
@@ -863,8 +856,11 @@ class TestErrorPaths:
             assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
-    async def test_steer_unknown_session(self, toolset, seeded) -> None:
-        result = await toolset.call(
+    async def test_steer_unknown_session(self, session_toolset, seeded) -> None:
+        # steer_workspace_session now needs scheduler/claim_engine wired
+        # (auto-wake) to get past the ``unavailable`` guard — use
+        # ``session_toolset`` (defined below, alongside its fakes).
+        result = await session_toolset.call(
             tool_name="steer_workspace_session",
             arguments={
                 "workspace_id": seeded,
@@ -876,8 +872,8 @@ class TestErrorPaths:
         assert json.loads(result.output)["type"] == "not-found"
 
     @pytest.mark.asyncio
-    async def test_steer_unknown_workspace(self, toolset) -> None:
-        result = await toolset.call(
+    async def test_steer_unknown_workspace(self, session_toolset) -> None:
+        result = await session_toolset.call(
             tool_name="steer_workspace_session",
             arguments={
                 "workspace_id": "no-such",
@@ -970,13 +966,14 @@ class TestErrorPaths:
     async def test_validation_error_on_each_subresource(self, toolset) -> None:
         # Each sub-resource handler validates its arg model before the
         # workspace lookup; supplying empty args triggers the
-        # validation-error branch.
+        # validation-error branch. ``steer_workspace_session`` is excluded
+        # here (like create/cancel) since it now checks scheduler/claim_engine
+        # availability before arg validation — see TestSteerWorkspaceSession.
         for tool_name in (
             "list_workspace_sessions",
             "get_workspace_session",
             "pause_workspace_session",
             "resume_workspace_session",
-            "steer_workspace_session",
             "list_workspace_files",
             "get_workspace_file_info",
             "read_workspace_file",
@@ -1216,6 +1213,77 @@ class TestCancelWorkspaceSession:
         result = await ts.call(
             tool_name="cancel_workspace_session",
             arguments={"workspace_id": "ws-stub", "session_id": "x"},
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "unavailable"
+
+
+# ===========================================================================
+# steer_workspace_session tool (Task 4: auto-wake)
+# ===========================================================================
+
+
+class TestSteerWorkspaceSession:
+    @pytest.mark.asyncio
+    async def test_steer_wakes_created_session(
+        self, session_toolset, seeded, sp
+    ) -> None:
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(
+            sp, status=SessionStatus.CREATED, sid="sess-c1", workspace_id=seeded
+        )
+        result = await session_toolset.call(
+            tool_name="steer_workspace_session",
+            arguments={
+                "workspace_id": seeded,
+                "session_id": "sess-c1",
+                "instruction": "go",
+            },
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "running"
+        assert body["turn_status"] == "claimable"
+
+    @pytest.mark.asyncio
+    async def test_steer_ended_session_is_conflict(
+        self, session_toolset, seeded, sp
+    ) -> None:
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(
+            sp, status=SessionStatus.ENDED, sid="sess-c1", workspace_id=seeded
+        )
+        result = await session_toolset.call(
+            tool_name="steer_workspace_session",
+            arguments={
+                "workspace_id": seeded,
+                "session_id": "sess-c1",
+                "instruction": "go",
+            },
+        )
+        assert result.is_error
+        assert json.loads(result.output)["type"] == "conflict"
+
+    @pytest.mark.asyncio
+    async def test_steer_without_scheduler_is_unavailable(
+        self, sp, workspace_registry
+    ) -> None:
+        ts = build_workspaces_toolset(
+            storage_provider=sp,
+            workspace_registry=workspace_registry,
+            scheduler=None,
+            claim_engine=None,
+            event_bus=None,
+        )
+        result = await ts.call(
+            tool_name="steer_workspace_session",
+            arguments={
+                "workspace_id": "ws-stub",
+                "session_id": "x",
+                "instruction": "y",
+            },
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "unavailable"

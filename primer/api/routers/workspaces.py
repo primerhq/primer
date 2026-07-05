@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
+    get_claim_engine,
     get_event_bus,
     get_scheduler,
     get_session_storage,
@@ -70,6 +71,7 @@ from primer.model.workspace import (
     WorkspaceTemplate,
     WorkspaceTemplateOverrides,
 )
+from primer.model.workspace_session import WorkspaceSession
 
 
 logger = logging.getLogger(__name__)
@@ -829,7 +831,8 @@ async def rename_session(
 
 @sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/steer",
-    summary="Append a steering user instruction",
+    response_model=WorkspaceSession,
+    summary="Send a message — invoke / steer / resume (auto-wake)",
     responses=common_responses(404, 409, 422, 500),
 )
 async def steer_session(
@@ -837,16 +840,33 @@ async def steer_session(
     workspace_id: str = Path(...),
     session_id: str = Path(...),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
-) -> dict:
-    ws = await registry.get_workspace(workspace_id)
-    session = await ws.get_session(session_id)
-    if session is None:
-        raise NotFoundError(
-            f"Session {session_id!r} does not exist on workspace "
-            f"{workspace_id!r}"
-        )
-    instruction = await session.append_instruction(body.instruction)
-    return instruction.model_dump(mode="json")
+    scheduler=Depends(get_scheduler),
+    engine=Depends(get_claim_engine),
+    storage_provider=Depends(get_storage_provider),
+    event_bus=Depends(get_event_bus),
+) -> WorkspaceSession:
+    """Send a user message to a session and auto-wake it.
+
+    One input, three behaviours (studio-agents-interact §5.1): a message to
+    a CREATED session invokes it; to a RUNNING/WAITING session it queues as
+    the next turn (steer); to a PAUSED session it resumes. 409 when the
+    session has ENDED — restart it first.
+    """
+    from primer.session.enqueue import SessionWakeDeps, wake_session
+
+    deps = SessionWakeDeps(
+        storage_provider=storage_provider,
+        scheduler=scheduler,
+        claim_engine=engine,
+        workspace_registry=registry,
+        event_bus=event_bus,
+    )
+    return await wake_session(
+        workspace_id=workspace_id,
+        session_id=session_id,
+        instruction=body.instruction,
+        deps=deps,
+    )
 
 
 # ===========================================================================
