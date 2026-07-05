@@ -9,10 +9,22 @@
 // logic) — this component is a controlled, pure-rendering shell that
 // forwards events, so this move is structural, not a behavior change.
 //
-// Slash-command detection and @-mention autocomplete are Task
-// D2/D3's job — the `slashCommands`/`mentionSources` props are
-// accepted now so the prop surface is stable ahead of that phase,
-// but are otherwise unused until then.
+// Task D2: slash commands. Typing `/` at the very start of the
+// message opens a discoverable command menu, filtered as the operator
+// keeps typing the command word. The registry itself is NOT owned
+// here — it arrives via the `slashCommands` prop (already reserved
+// since Task B4) as a plain `{name, hint, run, takesArg}` array, kept
+// external so this component stays a pure, non-fetching shell (no
+// network calls or WebSocket code live here — see conversation.jsx,
+// which builds the registry against its own existing REST actions:
+// /compact, /agent, chat creation, chat deletion). Selecting/confirming a
+// no-arg command runs it immediately and clears the composer;
+// argument-taking commands (e.g. `/agent <name>`) fill in the command
+// word plus a trailing space so the operator can type the argument —
+// Enter then matches the typed word against the registry and runs it
+// with the typed argument. Non-matching text (including a stray
+// leading "/") sends as a normal message. @-mention autocomplete
+// (`mentionSources`) is still Task D3's job — unused until then.
 //
 // Task D1 (R2): the attach control is folded INTO the chatbox — the
 // icon is anchored at the right end of the textarea's own box
@@ -33,6 +45,19 @@
 // (Task C2) — this component just renders the correct control for
 // whatever it's given.
 
+// Splits a composer draft like "/agent claude-x" into the command
+// word ("agent") and the rest of the text as its argument
+// ("claude-x"). Returns null for anything that doesn't start with
+// "/" — plain messages never enter slash-command territory.
+function CT_parseSlashDraft(text) {
+  const raw = String(text || "");
+  if (!raw.startsWith("/")) return null;
+  const spaceIdx = raw.indexOf(" ");
+  const word = spaceIdx === -1 ? raw.slice(1) : raw.slice(1, spaceIdx);
+  const arg = spaceIdx === -1 ? "" : raw.slice(spaceIdx + 1);
+  return { word, arg, hasSpace: spaceIdx !== -1 };
+}
+
 function Composer({
   value,
   onChange,
@@ -50,6 +75,86 @@ function Composer({
   const fileInputRef = React.useRef(null);
   const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
   const sendDisabled = disabled || schemaInvalid || (!String(value || "").trim() && !hasAttachments);
+
+  // ---- Slash commands (Task D2) -----------------------------------------
+  // `slashDismissedFor` remembers the exact draft string an Escape was
+  // pressed against, so the menu stays closed for that draft but pops
+  // back open the moment the operator edits it further.
+  const [slashDismissedFor, setSlashDismissedFor] = React.useState(null);
+  const [slashActiveIndex, setSlashActiveIndex] = React.useState(0);
+
+  const slashRegistry = Array.isArray(slashCommands) ? slashCommands : [];
+  const slashDraft = CT_parseSlashDraft(value);
+  const slashMenuOpen =
+    !!slashDraft && !slashDraft.hasSpace && !disabled &&
+    slashDismissedFor !== value && slashRegistry.length > 0;
+  const slashMatches = slashMenuOpen
+    ? slashRegistry.filter((c) => c.name.toLowerCase().startsWith(slashDraft.word.toLowerCase()))
+    : [];
+
+  // Keep the highlighted row in range as the filtered list narrows/widens
+  // while typing (e.g. "/c" -> "/co" narrows from several matches to one).
+  React.useEffect(() => {
+    setSlashActiveIndex(0);
+  }, [value]);
+
+  const runSlashCommand = (cmd, arg) => {
+    setSlashDismissedFor(null);
+    if (typeof onChange === "function") onChange("");
+    if (cmd && typeof cmd.run === "function") cmd.run(arg);
+  };
+
+  // Argument-taking commands (e.g. `/agent`) fill in the word + a
+  // trailing space instead of running immediately — the operator still
+  // has to type the argument, and Enter (below) runs it once they do.
+  const pickSlashCommand = (cmd) => {
+    if (!cmd) return;
+    if (cmd.takesArg) {
+      if (typeof onChange === "function") onChange(`/${cmd.name} `);
+    } else {
+      runSlashCommand(cmd, "");
+    }
+  };
+
+  const handleComposerKeyDown = (e) => {
+    if (slashMenuOpen && slashMatches.length > 0) {
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        setSlashActiveIndex((i) => (i + 1) % slashMatches.length);
+        return;
+      }
+      if (e.key === "ArrowUp") {
+        e.preventDefault();
+        setSlashActiveIndex((i) => (i - 1 + slashMatches.length) % slashMatches.length);
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        setSlashDismissedFor(value);
+        return;
+      }
+      if (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey)) {
+        e.preventDefault();
+        pickSlashCommand(slashMatches[slashActiveIndex] || slashMatches[0]);
+        return;
+      }
+    }
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      if (running) return;
+      // Non-command text (including a stray leading "/" that doesn't
+      // match a registered command word) sends as a normal message.
+      const draft = CT_parseSlashDraft(value);
+      const match = draft && slashRegistry.find(
+        (c) => c.name.toLowerCase() === draft.word.toLowerCase()
+      );
+      if (draft && match) {
+        runSlashCommand(match, draft.arg.trim());
+        return;
+      }
+      if (typeof onSend === "function") onSend();
+    }
+  };
 
   // Drag-and-drop onto the textarea forwards the dropped files through
   // the same `onAttach` callback the hidden file input uses — the cap +
@@ -98,12 +203,7 @@ function Composer({
             rows={2}
             style={{ flex: 1, resize: "none", paddingRight: 34 }}
             disabled={disabled}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                if (!running && typeof onSend === "function") onSend();
-              }
-            }}
+            onKeyDown={handleComposerKeyDown}
             onPaste={handlePaste}
             onDrop={handleDrop}
             onDragOver={(e) => e.preventDefault()}
@@ -142,6 +242,53 @@ function Composer({
               if (fileInputRef.current) fileInputRef.current.value = "";
             }}
           />
+          {/* Slash-command menu (Task D2) — anchored above the textarea,
+              same popover pattern as CT_AgentSwitcher's picker. Only the
+              commands whose name starts with what's typed so far show up,
+              so the list narrows as the operator keeps typing. */}
+          {slashMenuOpen && slashMatches.length > 0 && (
+            <div
+              data-testid="chat-slash-menu"
+              className="popover"
+              style={{
+                position: "absolute",
+                left: 0,
+                bottom: "100%",
+                marginBottom: 6,
+                zIndex: 50,
+                width: 280,
+                maxHeight: 220,
+                overflow: "auto",
+                background: "var(--bg-1)",
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                padding: 4,
+                boxShadow: "0 6px 24px rgba(0,0,0,.3)",
+              }}
+            >
+              {slashMatches.map((c, i) => (
+                <button
+                  key={c.name}
+                  type="button"
+                  data-testid={`chat-slash-item-${c.name}`}
+                  className="menu-item"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => pickSlashCommand(c)}
+                  style={{
+                    display: "block",
+                    width: "100%",
+                    textAlign: "left",
+                    padding: "6px 8px",
+                    borderRadius: 6,
+                    background: i === slashActiveIndex ? "var(--bg-active, rgba(255,255,255,.08))" : "transparent",
+                  }}
+                >
+                  <div className="mono">/{c.name}</div>
+                  {c.hint ? <div className="muted text-sm">{c.hint}</div> : null}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
         {running ? (
           <Btn

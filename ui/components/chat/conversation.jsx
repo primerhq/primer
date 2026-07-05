@@ -42,8 +42,9 @@
 // viewport-relative sizing.
 
 function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, onStatus, pushToast }) {
-  const { useResource, useViewport, apiFetch } = window.primerApi;
+  const { useResource, useViewport, apiFetch, useRouter } = window.primerApi;
   const { isMobile } = useViewport();
+  const { navigate } = useRouter();
   const cid = chatId;
 
   // Chat row (status, agent_id) — small one-shot fetch + light polling
@@ -657,6 +658,79 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     setAttachments((prev) => prev.filter((a) => a.id !== id));
   };
 
+  // Task D2: slash-command registry, handed to <Composer> via the
+  // `slashCommands` prop it's accepted since Task B4. <Composer> only
+  // renders the menu, filters by prefix, and matches on Enter — it
+  // stays a pure, non-fetching shell (no apiFetch/WebSocket import
+  // there); the real REST actions live here, next to the ones they
+  // reuse (handleCompact above; /agent, chat creation, chat deletion
+  // mirror CT_AgentSwitcher / ChatsPage in chats.jsx). Kept as a plain
+  // {name, hint, run, takesArg} array — not a component — so a future
+  // embedder can extend it by concatenating more entries.
+  const slashCommands = React.useMemo(() => [
+    {
+      name: "compact",
+      hint: "Compact this conversation's history",
+      run: () => handleCompact(),
+    },
+    {
+      name: "agent",
+      hint: "<agent-id> — switch this chat's agent",
+      takesArg: true,
+      run: async (arg) => {
+        const agentId = String(arg || "").trim();
+        if (!agentId) {
+          if (typeof pushToast === "function") {
+            pushToast({ kind: "error", title: "Usage: /agent <agent-id>" });
+          }
+          return;
+        }
+        try {
+          const row = await apiFetch("POST", `/chats/${encodeURIComponent(cid)}/agent`, { agent_id: agentId });
+          if (typeof pushToast === "function") {
+            pushToast({ kind: "success", title: "Agent switched", detail: row?.agent_id || agentId });
+          }
+        } catch (err) {
+          if (typeof pushToast === "function") {
+            pushToast({
+              kind: "error",
+              title: err?.title || "Switch failed",
+              detail: err?.detail || err?.message,
+              requestId: err?.requestId,
+            });
+          }
+        }
+      },
+    },
+    {
+      name: "new",
+      hint: "Start a new chat",
+      run: () => navigate("/chats"),
+    },
+    {
+      name: "end",
+      hint: "End (delete) this chat",
+      run: async () => {
+        try {
+          await apiFetch("DELETE", `/chats/${encodeURIComponent(cid)}?force=true`);
+          if (typeof pushToast === "function") {
+            pushToast({ kind: "success", title: "Chat ended", detail: cid });
+          }
+          navigate("/chats");
+        } catch (err) {
+          if (typeof pushToast === "function") {
+            pushToast({
+              kind: "error",
+              title: err?.title || "End failed",
+              detail: err?.detail || err?.message,
+              requestId: err?.requestId,
+            });
+          }
+        }
+      },
+    },
+  ], [cid, apiFetch, pushToast, handleCompact, navigate]);
+
   // Bubble status the host's page chrome needs (TokenMeter, connection
   // badge, status pill, "chat not found" gate) up to the parent —
   // rather than each of those living inside this embeddable core.
@@ -771,7 +845,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
             attachments={attachments}
             onAttach={handleFilesPicked}
             onRemoveAttachment={removeAttachment}
-            slashCommands={[]}
+            slashCommands={slashCommands}
             mentionSources={[]}
             schemaInvalid={showSchemaPanel ? !schemaValid : false}
           />
