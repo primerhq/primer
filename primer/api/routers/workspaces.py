@@ -869,6 +869,58 @@ async def steer_session(
     )
 
 
+class RestartBody(BaseModel):
+    """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/restart``."""
+
+    input: str | None = Field(
+        default=None,
+        description=(
+            "Optional new initial input to invoke the re-opened session "
+            "with. Omit to re-open and invoke with the existing queued "
+            "state only."
+        ),
+    )
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/restart",
+    response_model=WorkspaceSession,
+    summary="Reset an ended session and re-invoke (reset-same-session + wake)",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def restart_session_route(
+    body: RestartBody,
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    scheduler=Depends(get_scheduler),
+    engine=Depends(get_claim_engine),
+    storage_provider=Depends(get_storage_provider),
+    event_bus=Depends(get_event_bus),
+) -> WorkspaceSession:
+    """Re-open an ENDED session and invoke it (studio-agents-interact §5.3)."""
+    from primer.session.enqueue import SessionWakeDeps
+    from primer.session.reset import SessionResetDeps, restart_session
+
+    return await restart_session(
+        workspace_id=workspace_id,
+        session_id=session_id,
+        instruction=body.input,
+        reset_deps=SessionResetDeps(
+            storage_provider=storage_provider,
+            workspace_registry=registry,
+            event_bus=event_bus,
+        ),
+        wake_deps=SessionWakeDeps(
+            storage_provider=storage_provider,
+            scheduler=scheduler,
+            claim_engine=engine,
+            workspace_registry=registry,
+            event_bus=event_bus,
+        ),
+    )
+
+
 # ===========================================================================
 # Files sub-resource
 # ===========================================================================
