@@ -826,6 +826,55 @@ class TestChatWebSocket:
                 assert msg["kind"] == "error"
                 assert "image" in msg["message"].lower() or "data" in msg["message"].lower()
 
+    async def test_ws_stamps_ephemeral_response_format(
+        self, app, fake_llm, seeded_agent,
+    ):
+        """Task A3: a response_format on the user_message frame is
+        validated + stamped onto that row's payload (WS ingress path)."""
+        from starlette.testclient import TestClient as SyncTestClient
+
+        schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+        with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
+                ws.send_json({
+                    "kind": "user_message",
+                    "content": "hi",
+                    "response_format": schema,
+                })
+                got = [ws.receive_json() for _ in range(4)]  # user/assistant/done/usage
+        assert got[0]["kind"] == "user_message"
+        assert got[0]["response_format"] == schema
+
+    async def test_ws_rejects_invalid_ephemeral_response_format(
+        self, app, seeded_agent,
+    ):
+        """An invalid ephemeral schema on the WS frame is rejected with
+        a typed error frame — NO row is persisted for that send."""
+        from starlette.testclient import TestClient as SyncTestClient
+
+        with SyncTestClient(app) as sclient:
+            sclient.post("/v1/auth/register", json={"username": "testuser", "password": "testpassword"})
+            sclient.post("/v1/auth/login", json={"username": "testuser", "password": "testpassword"})
+            r = sclient.post("/v1/chats", json={"agent_id": "ag-chat"})
+            cid = r.json()["id"]
+            with sclient.websocket_connect(f"/v1/chats/{cid}/ws") as ws:
+                assert ws.receive_json()["kind"] == "usage"  # initial usage frame
+                ws.send_json({
+                    "kind": "user_message",
+                    "content": "hi",
+                    "response_format": {"type": "nonsense-☠"},
+                })
+                msg = ws.receive_json()
+                assert msg["kind"] == "error"
+        # No row was persisted — the chat's last_seq stayed at 0.
+        chat = await app.state.storage_provider.get_storage(Chat).get(cid)
+        assert chat.last_seq == 0
+
     async def test_ws_rejects_empty_user_message(self, app, seeded_agent):
         from starlette.testclient import TestClient as SyncTestClient
 
