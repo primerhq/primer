@@ -19,8 +19,9 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from primer.model.agent import _validate_response_format_schema
 from primer.model.common import Identifiable
 from primer.model.principal import PrincipalRef
 
@@ -188,6 +189,19 @@ class Chat(Identifiable):
             "and (multi-type only) the thread id. Outbound relay reads this; "
             "inbound thread->chat lookup matches on it."
         ),
+    )
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Persistent per-chat structured-output JSON Schema (R3, persistent "
+            "toggle ON). When set, constrains EVERY turn in this chat via "
+            "invoke(response_format=...), overriding the agent's default "
+            "response_format for THIS chat only (the agent config is untouched). "
+            "None => no per-chat override. Validated against JSON Schema 2020-12."
+        ),
+    )
+    _validate_response_format = field_validator("response_format")(
+        _validate_response_format_schema
     )
 
 
