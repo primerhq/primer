@@ -40,6 +40,19 @@ function CT_textOf(m) {
   return "";
 }
 
+// Format a row's `created_at` (ISO 8601, from the persisted ChatMessage —
+// REST rows carry it directly; see window.chatFlatten) into a short
+// local-time label for the per-message timestamp (Task C1 / §4.1).
+// Returns "" for a missing/unparsable value (e.g. a live WS frame, whose
+// `_message_to_wire` envelope doesn't include `created_at`) so callers
+// can conditionally render without flashing "Invalid Date".
+function CT_formatTime(createdAt) {
+  if (!createdAt) return "";
+  const d = new Date(createdAt);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 // ============================================================================
 // Helpers: thinking indicator + attachment part
 // ============================================================================
@@ -169,6 +182,46 @@ function CT_ExpandableToolRow({
 
 
 // ============================================================================
+// CT_Attribution — per-message agent/user label + timestamp (Task C1)
+// ============================================================================
+//
+// The left-rail label used to be a hardcoded `isUser ? "user" : "agent"`
+// literal — every agent reply read as generically "agent" regardless of
+// which one produced it. This renders the real producing agent id
+// (`m.agent_id`, stamped by the backend on every non-user row — Task A4)
+// for agent rows, "user" for the user's own rows, plus the row's
+// `created_at` underneath when one is available.
+
+function CT_Attribution({ label, isUser, time }) {
+  return (
+    <div style={{
+      width: 48, flexShrink: 0,
+      fontFamily: "IBM Plex Mono, monospace",
+      fontSize: 10.5,
+      textTransform: "uppercase",
+      letterSpacing: "0.06em",
+      color: isUser ? "var(--text-2)" : "var(--accent)",
+      fontWeight: 600,
+      paddingTop: 2,
+    }}>
+      <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {label}
+      </div>
+      {time && (
+        <div style={{
+          fontWeight: 400,
+          textTransform: "none",
+          letterSpacing: "normal",
+          color: "var(--text-3)",
+          fontSize: 9.5,
+          marginTop: 2,
+        }}>{time}</div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // Message — one row in the conversation
 // ============================================================================
 
@@ -229,10 +282,45 @@ function Message({ m }) {
     );
   }
 
-  if (kind === "yielded" || kind === "resumed" || kind === "done" || kind === "cancelled") {
+  if (kind === "yielded" || kind === "resumed" || kind === "done") {
     return (
       <div style={{ marginLeft: 60, marginTop: 4, marginBottom: 4 }}>
         <span className="muted text-sm mono">· {kind}</span>
+      </div>
+    );
+  }
+
+  // First-class marker row for a Stop (Task A6) — promoted out of the
+  // generic "· kind" dot above so a cancelled turn reads as a distinct
+  // timeline event rather than blending in with the terminal-status dots.
+  if (kind === "cancelled") {
+    return (
+      <div style={{ marginLeft: 60, marginTop: 6, marginBottom: 6 }}>
+        <span className="muted text-sm mono" style={{ color: "var(--red)" }}>
+          ■ cancelled
+        </span>
+      </div>
+    );
+  }
+
+  // First-class marker row for an attribution boundary (Task A5): the
+  // agent handling the chat changed. `marker` distinguishes an operator-
+  // driven switch (POST /chats/{id}/agent) from a tool-driven handoff
+  // (switch_to_agent) from an initial join; `agent_id` is the row's
+  // incoming/new agent (stamped per Task A4).
+  if (kind === "agent_marker") {
+    const agent = m.agent_id || "agent";
+    const marker = m.marker;
+    const label = marker === "handoff"
+      ? `⇄ handoff → ${agent}`
+      : marker === "joined"
+        ? `▶ ${agent} joined`
+        : `⇄ switched to ${agent}`;
+    return (
+      <div style={{ marginLeft: 60, marginTop: 6, marginBottom: 6 }}>
+        <span className="muted text-sm mono" style={{ color: "var(--accent)" }}>
+          {label}
+        </span>
       </div>
     );
   }
@@ -248,16 +336,11 @@ function Message({ m }) {
   if (kind === "assistant_message") {
     return (
       <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
-        <div style={{
-          width: 48, flexShrink: 0,
-          fontFamily: "IBM Plex Mono, monospace",
-          fontSize: 10.5,
-          textTransform: "uppercase",
-          letterSpacing: "0.06em",
-          color: "var(--accent)",
-          fontWeight: 600,
-          paddingTop: 2,
-        }}>agent</div>
+        <CT_Attribution
+          label={m.agent_id || "agent"}
+          isUser={false}
+          time={CT_formatTime(m.created_at)}
+        />
         <div className="md-body" style={{
           flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
           borderLeft: "2px solid var(--accent)", paddingLeft: 12,
@@ -278,18 +361,14 @@ function Message({ m }) {
   const attachmentParts = (isUser && Array.isArray(m.parts))
     ? m.parts.filter((p) => p && (p.type === "image" || p.type === "document"))
     : [];
+  const attribLabel = isUser ? "user" : (m.agent_id || "agent");
   return (
     <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
-      <div style={{
-        width: 48, flexShrink: 0,
-        fontFamily: "IBM Plex Mono, monospace",
-        fontSize: 10.5,
-        textTransform: "uppercase",
-        letterSpacing: "0.06em",
-        color: isUser ? "var(--text-2)" : "var(--accent)",
-        fontWeight: 600,
-        paddingTop: 2,
-      }}>{isUser ? "user" : "agent"}</div>
+      <CT_Attribution
+        label={attribLabel}
+        isUser={isUser}
+        time={CT_formatTime(m.created_at)}
+      />
       <div style={{ flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.55, color: "var(--text)", borderLeft: `2px solid ${isUser ? "var(--border)" : "var(--accent)"}`, paddingLeft: 12 }}>
         {CT_textOf(m) && <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{CT_textOf(m)}</div>}
         {attachmentParts.length > 0 && (
