@@ -15,6 +15,7 @@ than a shared import: ``agent/`` must not import ``graph/`` (``graph/`` imports
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
@@ -24,6 +25,9 @@ from jinja2.sandbox import SandboxedEnvironment
 
 from primer.model.except_ import BadRequestError
 from primer.model.graph import ExecutionContext
+
+
+logger = logging.getLogger(__name__)
 
 
 def _fromjson(value: Any) -> Any:
@@ -56,6 +60,7 @@ _ENV: SandboxedEnvironment = SandboxedEnvironment(
     autoescape=False,
     trim_blocks=False,
     lstrip_blocks=False,
+    keep_trailing_newline=True,
 )
 _ENV.filters["fromjson"] = _fromjson
 _ENV.filters["strip_fences"] = _strip_fences
@@ -84,3 +89,27 @@ def render_system_prompt(
         raise BadRequestError(
             f"render_system_prompt: render error: {exc!s}"
         ) from exc
+
+
+def render_system_prompt_or_raw(
+    system_prompt: list[str], ctx: ExecutionContext
+) -> str:
+    """Render ``system_prompt`` against ``ctx``; on a render/syntax error log a
+    warning and fall back to the raw ``"\\n\\n".join(...)`` (§8.5 always-render +
+    fallback). This is the single entry point every assembly site uses so the
+    fallback behaviour is uniform across the chat, agent, subagent, and graph
+    paths. NOTE (§8.5): this bounds only the CRASH case — a well-formed
+    ``{# comment #}`` or ``{{ "literal" }}`` renders *differently* with no error
+    and cannot be caught here; agent prompts are Jinja-rendered so ``{{``, ``{%``,
+    and ``{#`` are significant.
+    """
+    try:
+        return render_system_prompt(system_prompt, ctx)
+    except BadRequestError as exc:
+        logger.warning(
+            "render_system_prompt failed; using raw fragment: %s", exc,
+        )
+        return "\n\n".join(system_prompt)
+
+
+__all__ = ["render_system_prompt", "render_system_prompt_or_raw"]

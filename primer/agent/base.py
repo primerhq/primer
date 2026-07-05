@@ -50,7 +50,7 @@ from primer.agent.events import (
     Subscription,
     _ExecutorToolResult,
 )
-from primer.agent.prompt_render import render_system_prompt
+from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import (
     ExtendedEvent,
@@ -335,7 +335,7 @@ class _BaseAgentExecutor(ABC):
         """Assemble the full prompt: system + history + new user input."""
         parts: list[Message] = []
         if self._agent.system_prompt:
-            sys_text = render_system_prompt(
+            sys_text = render_system_prompt_or_raw(
                 self._agent.system_prompt, self._execution_context
             )
             parts.append(

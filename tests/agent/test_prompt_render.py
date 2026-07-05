@@ -54,3 +54,28 @@ def test_raw_block_passes_literal_braces() -> None:
     ctx = build_execution_context(surface="chat")
     out = render_system_prompt(["{% raw %}{{ literal }}{% endraw %}"], ctx)
     assert out == "{{ literal }}"
+
+
+def test_trailing_newline_preserved_byte_identical() -> None:
+    """A marker-free prompt must render byte-for-byte identical to the old
+    '\\n\\n'.join(...), INCLUDING a trailing newline (keep_trailing_newline)."""
+    ctx = build_execution_context(surface="chat")
+    frags = ["line1\n", "line2\n"]
+    assert render_system_prompt(frags, ctx) == "\n\n".join(frags)
+
+
+def test_render_or_raw_falls_back_on_bad_template() -> None:
+    from primer.agent.prompt_render import render_system_prompt_or_raw
+
+    ctx = build_execution_context(surface="workspace", session_id="s")
+    frags = ["{{ ctx.surfce }}"]  # typo -> StrictUndefined -> BadRequestError
+    # render_system_prompt raises; the wrapper logs + returns the raw join.
+    assert render_system_prompt_or_raw(frags, ctx) == "\n\n".join(frags)
+
+
+def test_render_or_raw_renders_when_valid() -> None:
+    from primer.agent.prompt_render import render_system_prompt_or_raw
+
+    ctx = build_execution_context(surface="workspace", session_id="sess-1")
+    out = render_system_prompt_or_raw(["dir={{ ctx.artifact_dir }}"], ctx)
+    assert out == "dir=artifacts/sess-1"

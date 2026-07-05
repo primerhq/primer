@@ -94,6 +94,7 @@ _ENV: SandboxedEnvironment = SandboxedEnvironment(
     autoescape=False,  # rendering plain text, not HTML
     trim_blocks=False,
     lstrip_blocks=False,
+    keep_trailing_newline=True,
 )
 # Custom filters. ``fromjson`` parses a JSON string (e.g. a tool_call node's
 # ``text`` output) so downstream nodes can index into it; see ``_fromjson``.

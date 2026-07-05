@@ -7,9 +7,13 @@ from __future__ import annotations
 import contextlib
 import contextvars
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from primer.model.chat import Message, TextPart
+
+
+if TYPE_CHECKING:
+    from primer.model.principal import PrincipalRef
 
 
 MAX_INVOCATION_DEPTH = int(os.environ.get("PRIMER_MAX_INVOCATION_DEPTH", "8"))
@@ -174,6 +178,7 @@ async def run_subagent(
     workspace_id: str | None = None,
     chat_id: str | None = None,
     invoke_tool_call_id: str | None = None,
+    identity: "PrincipalRef | None" = None,
 ) -> str:
     """Run agent ``agent_id`` once on ``prompt`` (stateless: system prompt +
     prompt, no shared history) and return the final assistant text.
@@ -215,7 +220,20 @@ async def run_subagent(
         approval_resolver=approval_resolver,
     )
 
-    sys_text = "\n\n".join(agent.system_prompt) if agent.system_prompt else ""
+    from primer.model.graph import build_execution_context
+    from primer.agent.prompt_render import render_system_prompt_or_raw
+
+    surface = "workspace" if workspace_id else ("chat" if chat_id else "memory")
+    _sub_ctx = build_execution_context(
+        surface=surface,
+        workspace_id=workspace_id,
+        session_id=session_id,
+        identity=identity,
+    )
+    sys_text = (
+        render_system_prompt_or_raw(agent.system_prompt, _sub_ctx)
+        if agent.system_prompt else ""
+    )
     prompt_msgs: list[Message] = []
     if sys_text:
         prompt_msgs.append(Message(role="system", parts=[TextPart(text=sys_text)]))
