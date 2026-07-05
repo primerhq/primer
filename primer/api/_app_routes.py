@@ -219,6 +219,12 @@ def _mount_routers(
     app.include_router(
         oidc_providers_router, prefix=prefix, dependencies=[Depends(require_admin)],
     )
+    # SSO JIT-provisioning settings (sso_jit_enabled / sso_default_access) —
+    # sibling of oidc_providers_router; system configuration => admin only.
+    from primer.api.routers.sso_settings import sso_settings_router
+    app.include_router(
+        sso_settings_router, prefix=prefix, dependencies=[Depends(require_admin)],
+    )
     # Instrumentation endpoints — only mounted when the env var is set.
     # Public to keep the distributed test harness simple; the env var
     # itself is the access gate.
