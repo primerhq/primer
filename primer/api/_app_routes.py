@@ -90,6 +90,16 @@ def _mount_routers(
     from primer.api.routers.api_tokens import api_tokens_router
     app.include_router(api_tokens_router, prefix=prefix, dependencies=user_dep)
 
+    # OIDC account linking + linked-identity list/unlink — sibling of the
+    # (public) sso_router mounted above. Personal per-user resource, same
+    # rationale as api_tokens_router: any user/admin manages their OWN
+    # linked identities; require_user (not require_auth) so a restricted
+    # user can't link/unlink either. Public login/callback stay untouched
+    # on sso_router — this is a SEPARATE router so the auth gate can never
+    # leak onto (or off of) the login surface.
+    from primer.api.routers.sso import sso_authed_router
+    app.include_router(sso_authed_router, prefix=prefix, dependencies=user_dep)
+
     # Phase 1 — providers (system configuration => admin only).
     app.include_router(providers.llm_provider_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.embedding_provider_router, prefix=prefix, dependencies=admin_dep)

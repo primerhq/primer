@@ -32,7 +32,7 @@ from jwt.algorithms import RSAAlgorithm
 # Convention: shared API test fixtures (see test_oidc_providers_router.py).
 from tests.api.conftest import raw_client as client, app  # noqa: F401
 
-from primer.auth.tokens import verify_session
+from primer.auth.tokens import sign_session, verify_session
 from primer.model.oidc import OidcProvider, UserIdentity
 from primer.model.storage import OffsetPage
 from primer.model.user import User
@@ -638,3 +638,284 @@ async def test_return_to_external_url_is_clamped(client, app, rsa_keypair):
     cb = await _callback(client, provider.id, code="code", state=qs["state"])
     assert cb.status_code == 302, cb.text
     assert cb.headers["location"] == "/console/"
+
+
+# ---------------------------------------------------------------------------
+# Authenticated account linking -- GET /{provider_id}/link + shared callback
+# ---------------------------------------------------------------------------
+
+
+async def _login_as(
+    client_: httpx.AsyncClient, app, *, user_id: str, username: str, role: str = "user",
+) -> User:
+    """Seed *user_id* directly and stamp *client_* with a valid session cookie.
+
+    Bypasses ``POST /auth/register`` (locked to the FIRST user ever,
+    single-user v1) and ``POST /auth/login`` (needs a real password
+    hash) -- tests that need a SECOND already-logged-in account forge
+    the cookie the same way the real login flow would, using the exact
+    same signing helper (``sign_session``) the auth router uses.
+    """
+    sp = app.state.storage_provider
+    user = await sp.get_storage(User).create(
+        User(
+            id=user_id, username=username, password_hash=None,
+            created_at=datetime.now(timezone.utc), role=role,
+        )
+    )
+    token = sign_session(
+        user_id=user.id, username=user.username, secret=app.state.session_secret,
+    )
+    client_.cookies.set(app.state.config.auth.cookie_name, token)
+    return user
+
+
+async def _link(client_: httpx.AsyncClient, provider_id: str, **params) -> httpx.Response:
+    return await client_.get(
+        f"/v1/auth/sso/{provider_id}/link", params=params, follow_redirects=False,
+    )
+
+
+def _second_client(app) -> httpx.AsyncClient:
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_link_requires_session(client, app, rsa_keypair):
+    _, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+
+    r = await _link(client, provider.id)
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_link_callback_attaches_identity_to_logged_in_user(client, app, rsa_keypair):
+    priv, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+    alice = await _login_as(client, app, user_id="user-alice", username="alice")
+
+    users_before = await app.state.storage_provider.get_storage(User).list(
+        OffsetPage(offset=0, length=50)
+    )
+
+    link_resp = await _link(client, provider.id)
+    assert link_resp.status_code == 302, link_resp.text
+    qs = _query(link_resp.headers["location"])
+
+    idp.queue_id_token(priv, idp.base_claims(sub="sub-link-1", nonce=qs["nonce"]))
+    cb = await _callback(client, provider.id, code="link-code-1", state=qs["state"])
+    assert cb.status_code == 302, cb.text
+    assert cb.headers["location"] == "/console/"
+    # No new session minted -- the caller was already logged in as alice.
+    assert "primer_session" not in cb.cookies
+
+    users_after = await app.state.storage_provider.get_storage(User).list(
+        OffsetPage(offset=0, length=50)
+    )
+    assert len(users_after.items) == len(users_before.items)
+
+    identities = await app.state.storage_provider.get_storage(UserIdentity).list(
+        OffsetPage(offset=0, length=50)
+    )
+    matched = [
+        i for i in identities.items
+        if i.provider_id == provider.id and i.subject == "sub-link-1"
+    ]
+    assert len(matched) == 1
+    assert matched[0].user_id == alice.id
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_link_conflict_when_identity_owned_by_another_user(client, app, rsa_keypair):
+    priv, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+
+    bob = await _login_as(client, app, user_id="user-bob", username="bob")
+    # bob already owns this (provider_id, sub).
+    await app.state.storage_provider.get_storage(UserIdentity).create(
+        UserIdentity(
+            user_id=bob.id, provider_id=provider.id, subject="sub-taken",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    async with _second_client(app) as client2:
+        await _login_as(client2, app, user_id="user-carol", username="carol")
+
+        link_resp = await _link(client2, provider.id)
+        assert link_resp.status_code == 302, link_resp.text
+        qs = _query(link_resp.headers["location"])
+        idp.queue_id_token(priv, idp.base_claims(sub="sub-taken", nonce=qs["nonce"]))
+        cb = await _callback(client2, provider.id, code="link-code-conflict", state=qs["state"])
+        assert cb.status_code == 409, cb.text
+
+    identities = await app.state.storage_provider.get_storage(UserIdentity).list(
+        OffsetPage(offset=0, length=50)
+    )
+    matched = [
+        i for i in identities.items
+        if i.provider_id == provider.id and i.subject == "sub-taken"
+    ]
+    assert len(matched) == 1
+    assert matched[0].user_id == bob.id  # unchanged -- never reassigned
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_link_relinking_same_identity_is_idempotent(client, app, rsa_keypair):
+    priv, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+    dave = await _login_as(client, app, user_id="user-dave", username="dave")
+    await app.state.storage_provider.get_storage(UserIdentity).create(
+        UserIdentity(
+            user_id=dave.id, provider_id=provider.id, subject="sub-relink",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    link_resp = await _link(client, provider.id)
+    qs = _query(link_resp.headers["location"])
+    idp.queue_id_token(priv, idp.base_claims(sub="sub-relink", nonce=qs["nonce"]))
+    cb = await _callback(client, provider.id, code="link-code-relink", state=qs["state"])
+    assert cb.status_code == 302, cb.text  # idempotent -- no 500 on the unique index
+
+    identities = await app.state.storage_provider.get_storage(UserIdentity).list(
+        OffsetPage(offset=0, length=50)
+    )
+    matched = [
+        i for i in identities.items
+        if i.provider_id == provider.id and i.subject == "sub-relink"
+    ]
+    assert len(matched) == 1
+    assert matched[0].user_id == dave.id
+
+
+# ---------------------------------------------------------------------------
+# GET /identities + DELETE /identities/{id}
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_identities_requires_session(client, app):
+    r = await client.get("/v1/auth/sso/identities")
+    assert r.status_code == 401, r.text
+
+
+@pytest.mark.asyncio
+async def test_list_identities_returns_only_callers_and_tolerates_deleted_provider(client, app):
+    provider = await app.state.storage_provider.get_storage(OidcProvider).create(
+        OidcProvider(
+            name="Test IdP",
+            discovery_url="https://idp-identities.example.com/.well-known/openid-configuration",
+            client_id=CLIENT_ID,
+        )
+    )
+    erin = await _login_as(client, app, user_id="user-erin", username="erin")
+    now = datetime.now(timezone.utc)
+    identity_storage = app.state.storage_provider.get_storage(UserIdentity)
+    mine = await identity_storage.create(
+        UserIdentity(
+            user_id=erin.id, provider_id=provider.id, subject="sub-erin",
+            email="erin@example.com", created_at=now,
+        )
+    )
+    # Points at a provider that's since been deleted -- must not 500.
+    orphaned = await identity_storage.create(
+        UserIdentity(
+            user_id=erin.id, provider_id="oidc-provider-deleted", subject="sub-erin-2",
+            created_at=now,
+        )
+    )
+
+    async with _second_client(app) as client2:
+        frank = await _login_as(client2, app, user_id="user-frank", username="frank")
+        await identity_storage.create(
+            UserIdentity(
+                user_id=frank.id, provider_id=provider.id, subject="sub-frank", created_at=now,
+            )
+        )
+
+    r = await client.get("/v1/auth/sso/identities")
+    assert r.status_code == 200, r.text
+    items = r.json()
+    ids = {item["id"] for item in items}
+    assert ids == {mine.id, orphaned.id}
+
+    matched = next(item for item in items if item["id"] == mine.id)
+    assert matched["provider_id"] == provider.id
+    assert matched["provider_name"] == "Test IdP"
+    assert matched["subject"] == "sub-erin"
+    assert matched["email"] == "erin@example.com"
+
+    orphan_item = next(item for item in items if item["id"] == orphaned.id)
+    assert orphan_item["provider_id"] == "oidc-provider-deleted"
+    assert orphan_item["provider_name"]  # tolerate deleted provider -- no 500
+
+
+@pytest.mark.asyncio
+async def test_delete_identity_unlinks(client, app):
+    provider = await app.state.storage_provider.get_storage(OidcProvider).create(
+        OidcProvider(
+            name="Test IdP",
+            discovery_url="https://idp-del.example.com/.well-known/openid-configuration",
+            client_id=CLIENT_ID,
+        )
+    )
+    grace = await _login_as(client, app, user_id="user-grace", username="grace")
+    identity_storage = app.state.storage_provider.get_storage(UserIdentity)
+    row = await identity_storage.create(
+        UserIdentity(
+            user_id=grace.id, provider_id=provider.id, subject="sub-grace",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    r = await client.delete(f"/v1/auth/sso/identities/{row.id}")
+    assert r.status_code == 204, r.text
+    assert await identity_storage.get(row.id) is None
+
+
+@pytest.mark.asyncio
+async def test_delete_identity_masked_404_for_other_users_identity(client, app):
+    provider = await app.state.storage_provider.get_storage(OidcProvider).create(
+        OidcProvider(
+            name="Test IdP",
+            discovery_url="https://idp-del2.example.com/.well-known/openid-configuration",
+            client_id=CLIENT_ID,
+        )
+    )
+    identity_storage = app.state.storage_provider.get_storage(UserIdentity)
+
+    async with _second_client(app) as client2:
+        heidi = await _login_as(client2, app, user_id="user-heidi", username="heidi")
+        row = await identity_storage.create(
+            UserIdentity(
+                user_id=heidi.id, provider_id=provider.id, subject="sub-heidi",
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    await _login_as(client, app, user_id="user-ivan", username="ivan")
+
+    r = await client.delete(f"/v1/auth/sso/identities/{row.id}")
+    assert r.status_code == 404, r.text
+    assert await identity_storage.get(row.id) is not None
+
+
+@pytest.mark.asyncio
+async def test_delete_identity_404_for_unknown_id(client, app):
+    await _login_as(client, app, user_id="user-jack", username="jack")
+    r = await client.delete("/v1/auth/sso/identities/does-not-exist")
+    assert r.status_code == 404, r.text
