@@ -205,7 +205,11 @@ async def _resolve_or_provision_user(
     if not state.sso_jit_enabled:
         raise _reject(403, "sso_jit_disabled", "no linked account and JIT provisioning is off")
 
-    role = state.sso_default_access or "restricted"
+    # Defense-in-depth clamp: sso_default_access is unconstrained str | None
+    # from system_state (validated at the admin-settings write path, but
+    # never trusted here) — a misconfigured "admin" must never let the JIT
+    # path auto-provision an admin account.
+    role = state.sso_default_access if state.sso_default_access in ("restricted", "user") else "restricted"
     username = await _derive_unique_username(
         user_storage, provider_id=provider_id, subject=subject, email=email,
     )
