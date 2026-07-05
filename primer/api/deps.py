@@ -130,6 +130,18 @@ def get_artifact_storage_provider_storage(
     return storage_provider.get_storage(ArtifactStorageProvider)
 
 
+def get_oidc_provider_storage(
+    storage_provider=Depends(get_storage_provider),
+) -> "Storage":
+    """Typed :class:`Storage` handle for :class:`OidcProvider` rows.
+
+    Mirrors :func:`get_artifact_storage_provider_storage`. Consumed by
+    the admin OIDC-providers CRUD router.
+    """
+    from primer.model.oidc import OidcProvider
+    return storage_provider.get_storage(OidcProvider)
+
+
 def get_workspace_registry(request: Request) -> WorkspaceRegistry:
     """Resolve the live :class:`WorkspaceRegistry`.
 
@@ -573,6 +585,7 @@ __all__ = [
     "get_internal_collections_config_storage",
     "get_internal_collections_subsystem",
     "get_llm_provider_storage",
+    "get_oidc_provider_storage",
     "get_user_storage",
     "get_principal",
     "get_provider_registry",
