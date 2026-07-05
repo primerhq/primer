@@ -331,3 +331,78 @@ async def test_bootstrap_skips_existing_local_workspace_template(
     got = await tpl_storage.get(RESERVED_LOCAL_WORKSPACE_TEMPLATE)
     assert got is not None
     assert got.description == "operator-pre-seeded description"
+
+
+@pytest.mark.asyncio
+async def test_run_skips_huggingface_defaults_when_dep_missing(
+    storage_provider: SqliteStorageProvider,
+    root_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Slim image: without the 'huggingface' extra (sentence-transformers)
+    the default embedder + cross-encoder are SKIPPED (not created, not
+    errored) so no unusable default provider is registered; bootstrap still
+    completes and dep-independent defaults (e.g. the Lance SSP) are created."""
+    import importlib.util as _ilu
+
+    from primer.model.provider import CrossEncoderProvider, EmbeddingProvider
+
+    real_find_spec = _ilu.find_spec
+
+    def fake_find_spec(name: str, *args: Any, **kwargs: Any):
+        if name == "sentence_transformers":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(_ilu, "find_spec", fake_find_spec)
+
+    runner = _make_runner(storage_provider, root_dir)
+    result = await runner.run()
+
+    assert RESERVED_HUGGINGFACE_EMBEDDER not in result.created
+    assert RESERVED_HUGGINGFACE_CROSS_ENCODER not in result.created
+    assert RESERVED_HUGGINGFACE_EMBEDDER in result.skipped
+    assert RESERVED_HUGGINGFACE_CROSS_ENCODER in result.skipped
+    assert result.errors == []
+    # The provider rows were NOT persisted.
+    assert await storage_provider.get_storage(EmbeddingProvider).get(
+        RESERVED_HUGGINGFACE_EMBEDDER) is None
+    assert await storage_provider.get_storage(CrossEncoderProvider).get(
+        RESERVED_HUGGINGFACE_CROSS_ENCODER) is None
+    # Skips are not errors, so bootstrap completes + the marker is stamped.
+    state = await storage_provider.get_system_state()
+    assert state.bootstrap_completed_at is not None
+    # lancedb is present here, so the Lance SSP is still created.
+    assert RESERVED_LANCE_SSP in result.created
+
+
+@pytest.mark.asyncio
+async def test_run_skips_lance_ssp_when_lancedb_missing(
+    storage_provider: SqliteStorageProvider,
+    root_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without the 'lance' extra (lancedb) the default Lance SSP is skipped."""
+    import importlib.util as _ilu
+
+    from primer.model.provider import SemanticSearchProvider
+
+    real_find_spec = _ilu.find_spec
+
+    def fake_find_spec(name: str, *args: Any, **kwargs: Any):
+        if name == "lancedb":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(_ilu, "find_spec", fake_find_spec)
+
+    runner = _make_runner(storage_provider, root_dir)
+    result = await runner.run()
+
+    assert RESERVED_LANCE_SSP not in result.created
+    assert RESERVED_LANCE_SSP in result.skipped
+    assert result.errors == []
+    assert await storage_provider.get_storage(SemanticSearchProvider).get(
+        RESERVED_LANCE_SSP) is None
+    # sentence-transformers present → huggingface defaults still created.
+    assert RESERVED_HUGGINGFACE_EMBEDDER in result.created
