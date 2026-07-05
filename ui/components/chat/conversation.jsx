@@ -33,9 +33,10 @@
 // shell. Real Send/Stop cancel wiring (turn_status-driven `running` +
 // POST /cancel) lands in Task C2; for now `running`/`onStop` are inert
 // placeholders so the shell's interface is locked in ahead of that
-// phase. Schema Builder/JSON bodies + persistent/ephemeral application
-// land in Task F1/F2; for now the panel's value/validity state is
-// local and unused by the send path unless `showSchemaPanel` is true.
+// phase. Task F2 filled in the Schema Builder/JSON bodies
+// (schema-panel.jsx) and wired persistent/ephemeral application here:
+// Persistent ON PUTs Chat.response_format (A3); OFF rides the next
+// send frame only (see sendMessage's `frame.response_format`).
 //
 // No viewport-relative (vh/dvh) height in this file (per §3) — the
 // component fills its flex parent (height:100%/flex:1); the host owns
@@ -96,15 +97,81 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   const [attachments, setAttachments] = React.useState([]);
   const wsRef = React.useRef(null);
   const scrollRef = React.useRef(null);
-  // <SchemaPanel> (R3, Task B4 shell / F1-F2 behavior) local state.
-  // Builder/JSON tab bodies + persistent/ephemeral application to the
-  // send path are filled in by Task F1/F2 — this component just holds
-  // the state so the shell's prop surface (and <Composer>'s
-  // `schemaInvalid` gate) is stable ahead of that phase.
+  // <SchemaPanel> (R3, Task F2) local state. `schemaValue`/`schemaValid`
+  // are driven by <SchemaPanel>'s Builder/JSON tabs (JSON is the source
+  // of truth there); this component owns applying them: persistent ON
+  // pushes to the server via PUT (below), OFF rides the next send frame
+  // only (see sendMessage's `frame.response_format`).
   const [schemaValue, setSchemaValue] = React.useState(null);
   const [schemaPersistent, setSchemaPersistent] = React.useState(false);
   const [schemaValid, setSchemaValid] = React.useState(true);
   const [schemaCollapsed, setSchemaCollapsed] = React.useState(true);
+
+  // One-time hydration: once the chat row's own fetch resolves, seed
+  // the panel from any existing per-chat persistent schema (A1's
+  // `Chat.response_format`) so reopening a chat that already has one
+  // shows the toggle ON with its JSON populated, instead of looking
+  // reset to empty/OFF. Guarded by a ref (not state) so the chat row's
+  // 10s poll (above) never stomps on an operator's in-progress edit.
+  const schemaHydratedRef = React.useRef(false);
+  React.useEffect(() => {
+    if (schemaHydratedRef.current || !chatRow) return;
+    schemaHydratedRef.current = true;
+    if (chatRow.response_format != null) {
+      setSchemaValue(chatRow.response_format);
+      setSchemaPersistent(true);
+    }
+  }, [chatRow]);
+
+  // Persistent toggle ON (§8.3/R3): PUT the current schema so it
+  // constrains every subsequent turn on this chat (A3). OFF: clear the
+  // per-chat override immediately (PUT {schema: null}) — it reverts to
+  // next-turn-only, applied instead via the ephemeral send-frame path
+  // in sendMessage below.
+  const handleSchemaPersistentChange = React.useCallback((next) => {
+    setSchemaPersistent(next);
+    if (next && !schemaValid) {
+      if (typeof pushToast === "function") {
+        pushToast({ kind: "error", title: "Cannot persist an invalid schema" });
+      }
+      return;
+    }
+    apiFetch("PUT", `/chats/${encodeURIComponent(cid)}/response_format`, {
+      schema: next ? schemaValue : null,
+    }).catch((err) => {
+      if (typeof pushToast === "function") {
+        pushToast({
+          kind: "error",
+          title: err?.title || "Schema update failed",
+          detail: err?.detail || err?.message,
+          requestId: err?.requestId,
+        });
+      }
+    });
+  }, [cid, apiFetch, pushToast, schemaValid, schemaValue]);
+
+  // Keeps the persisted schema in sync with further Builder/JSON edits
+  // made while Persistent is already ON (debounced so keystrokes in the
+  // JSON tab don't spam the endpoint). The toggle flip itself is
+  // handled immediately above; this only covers subsequent edits.
+  const schemaPersistTimerRef = React.useRef(null);
+  React.useEffect(() => {
+    if (!schemaPersistent || !schemaValid) return undefined;
+    if (schemaPersistTimerRef.current) clearTimeout(schemaPersistTimerRef.current);
+    schemaPersistTimerRef.current = setTimeout(() => {
+      apiFetch("PUT", `/chats/${encodeURIComponent(cid)}/response_format`, { schema: schemaValue }).catch((err) => {
+        if (typeof pushToast === "function") {
+          pushToast({
+            kind: "error",
+            title: err?.title || "Schema update failed",
+            detail: err?.detail || err?.message,
+            requestId: err?.requestId,
+          });
+        }
+      });
+    }, 500);
+    return () => { if (schemaPersistTimerRef.current) clearTimeout(schemaPersistTimerRef.current); };
+  }, [schemaValue, schemaPersistent, schemaValid, cid, apiFetch, pushToast]);
 
   // Initial REST load — fetches the TAIL of the history so the
   // renderer can scroll straight to the bottom without dragging
@@ -521,6 +588,13 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     if (atts && atts.length > 0) {
       frame.parts = partsForAttachments(atts);
     }
+    // R3 ephemeral structured-output override (A3): only this one turn
+    // — Persistent ON is already enforced server-side via
+    // Chat.response_format (handleSchemaPersistentChange /
+    // the debounced PUT effect above), so it needn't ride every frame.
+    if (showSchemaPanel && !schemaPersistent && schemaValid && schemaValue) {
+      frame.response_format = schemaValue;
+    }
     ws.send(JSON.stringify(frame));
     setWaitingForReply(true);
     return true;
@@ -931,16 +1005,16 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
 
       {/* <SchemaPanel> (R3) — collapsible right-hand sibling of the
           timeline + composer column, per §3's layout. Builder/JSON
-          bodies + persistent/ephemeral application to the send path
-          land in Task F1/F2; this mounts the Task B4 shell now that
-          showSchemaPanel (accepted since Task B2) has something to
-          gate. */}
+          bodies + persistent/ephemeral application (Task F2) are wired
+          above (handleSchemaPersistentChange, the debounced persist
+          effect, sendMessage's ephemeral frame.response_format, and the
+          one-time chatRow.response_format hydration). */}
       {showSchemaPanel && (
         <SchemaPanel
           value={schemaValue}
           onChange={setSchemaValue}
           persistent={schemaPersistent}
-          onPersistentChange={setSchemaPersistent}
+          onPersistentChange={handleSchemaPersistentChange}
           valid={schemaValid}
           onValidityChange={setSchemaValid}
           collapsed={schemaCollapsed}
