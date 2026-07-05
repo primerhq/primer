@@ -340,10 +340,41 @@ function CT_Attribution({ label, isUser, time }) {
 }
 
 // ============================================================================
+// CT_MarkdownBody — assistant markdown body with a collapsible wrapper for
+// long sections (Task E1 / D6)
+// ============================================================================
+//
+// A long assistant reply (multi-paragraph analysis, a large embedded code
+// dump rendered by ui/vendor/markdown.jsx's fenced-block branch) otherwise
+// always renders in full, pushing everything above it out of view. Past a
+// length threshold this wraps the rendered markdown in a native
+// `<details>` — OPEN by default (nothing that was visible before now
+// hides) so it's purely an opt-in "collapse this" affordance, not a
+// de-facto truncation. Short replies (the common case) skip the wrapper
+// entirely and render exactly as before.
+const _LONG_SECTION_CHARS = 1200;
+
+function CT_MarkdownBody({ text }) {
+  const body = typeof window.renderMarkdown === "function"
+    ? window.renderMarkdown(text)
+    : <div style={{ whiteSpace: "pre-wrap" }}>{text}</div>;
+  const isLong = typeof text === "string" && text.length > _LONG_SECTION_CHARS;
+  if (!isLong) return body;
+  return (
+    <details className="md-collapsible" open>
+      <summary style={{ cursor: "pointer", fontSize: 11, color: "var(--text-3)", marginBottom: 6 }}>
+        Long response ({text.length.toLocaleString()} chars) — click to collapse
+      </summary>
+      {body}
+    </details>
+  );
+}
+
+// ============================================================================
 // Message — one row in the conversation
 // ============================================================================
 
-function Message({ m, pairedResult }) {
+function Message({ m, pairedResult, chatId }) {
   const kind = m.kind;
 
   if (kind === "tool_call") {
@@ -366,21 +397,27 @@ function Message({ m, pairedResult }) {
       const durationLabel = CT_formatDuration(CT_toolDuration(m, pairedResult));
       const keyArg = CT_keyArgPreview(args);
       return (
-        <CT_ExpandableToolRow
-          icon={isError ? "x-circle" : "check"}
-          iconColor={isError ? "var(--red)" : "var(--green)"}
-          borderColor={isError ? "var(--red)" : "var(--border)"}
-          name={name}
-          separator="("
-          previewText={`${keyArg})`}
-          fullText={combinedFull}
-          defaultOpen={false}
-          endBadge={
-            <span className={isError ? "fail" : "ok"}>
-              {isError ? "✗" : "✓"}{durationLabel ? ` ${durationLabel}` : ""}
-            </span>
-          }
-        />
+        <>
+          <CT_ExpandableToolRow
+            icon={isError ? "x-circle" : "check"}
+            iconColor={isError ? "var(--red)" : "var(--green)"}
+            borderColor={isError ? "var(--red)" : "var(--border)"}
+            name={name}
+            separator="("
+            previewText={`${keyArg})`}
+            fullText={combinedFull}
+            defaultOpen={false}
+            endBadge={
+              <span className={isError ? "fail" : "ok"}>
+                {isError ? "✗" : "✓"}{durationLabel ? ` ${durationLabel}` : ""}
+              </span>
+            }
+          />
+          {/* Task E1: a tool-produced media part (payload.media, flattened
+              onto the row — see primer/chat/executor.py::_tool_media_parts)
+              renders inline right under the collapsed result chip. */}
+          <CT_ToolMedia media={pairedResult.media} chatId={chatId} />
+        </>
       );
     }
 
@@ -416,15 +453,18 @@ function Message({ m, pairedResult }) {
       ? m.result
       : (m.result != null ? JSON.stringify(m.result) : "");
     return (
-      <CT_ExpandableToolRow
-        icon={isError ? "x-circle" : "check"}
-        iconColor={isError ? "var(--red)" : "var(--green)"}
-        borderColor={isError ? "var(--red)" : "var(--green)"}
-        name={name}
-        separator="→"
-        previewText={previewStr}
-        fullText={fullStr}
-      />
+      <>
+        <CT_ExpandableToolRow
+          icon={isError ? "x-circle" : "check"}
+          iconColor={isError ? "var(--red)" : "var(--green)"}
+          borderColor={isError ? "var(--red)" : "var(--green)"}
+          name={name}
+          separator="→"
+          previewText={previewStr}
+          fullText={fullStr}
+        />
+        <CT_ToolMedia media={m.media} chatId={chatId} />
+      </>
     );
   }
 
@@ -502,9 +542,7 @@ function Message({ m, pairedResult }) {
           flex: 1, minWidth: 0, fontSize: 13, lineHeight: 1.55, color: "var(--text)",
           borderLeft: "2px solid var(--accent)", paddingLeft: 12,
         }}>
-          {typeof window.renderMarkdown === "function"
-            ? window.renderMarkdown(m.text)
-            : <div style={{ whiteSpace: "pre-wrap" }}>{m.text}</div>}
+          <CT_MarkdownBody text={m.text} />
         </div>
       </div>
     );
@@ -537,7 +575,7 @@ function Message({ m, pairedResult }) {
         {CT_textOf(m) && <div style={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{CT_textOf(m)}</div>}
         {attachmentParts.length > 0 && (
           <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {attachmentParts.map((p, i) => <CT_AttachmentPart key={i} part={p} />)}
+            {attachmentParts.map((p, i) => <CT_AttachmentPart key={i} part={p} chatId={chatId} />)}
           </div>
         )}
         {isPending && (
@@ -551,46 +589,178 @@ function Message({ m, pairedResult }) {
   );
 }
 
-// Inline-render one attachment Part as it appears inside a user_message
-// bubble. Image parts show a small thumbnail; document parts show a
-// filename + mime badge. The persisted ChatMessage row keeps the full
-// base64 payload, so thumbnails work from cursor-replay without a
-// follow-up fetch.
-function CT_AttachmentPart({ part }) {
-  if (part.type === "image") {
-    const src = part.url
-      ? part.url
-      : (part.data ? `data:${part.mime_type || "image/png"};base64,${part.data}` : null);
-    if (!src) return null;
-    return (
-      <a href={src} target="_blank" rel="noreferrer" style={{ display: "inline-block" }}>
-        <img
+// ============================================================================
+// Inline artifact previews (Task E1) — CT_AttachmentPart + helpers
+// ============================================================================
+//
+// A media part is either an inline base64 blob (`part.data`, the composer's
+// pre-A8 attach path) or an artifact-backed reference (`part.artifact_id`,
+// no `data` — the shape tool-produced media always takes; see
+// primer/chat/executor.py::_tool_media_parts and
+// tests/e2e/test_chat_artifact_fetch.py). The A8 route
+// (`GET /v1/chats/{chat_id}/artifacts/{artifact_id}`) serves the latter's
+// bytes directly, so an artifact-only part's `src` is that raw versioned
+// path — not the base-relative data-fetch helper the rest of the console
+// uses, since this becomes a real `<img src>` / `<a href>` / `<embed
+// src>` attribute, not a fetch call.
+
+function CT_artifactUrl(chatId, artifactId) {
+  if (!chatId || !artifactId) return null;
+  return "/v1/chats/" + chatId + "/artifacts/" + artifactId;
+}
+
+// Best-effort human size label. A persisted artifact-only part doesn't
+// carry a byte count (see the shape above), so this only has something to
+// show when the part still carries inline base64 `data` (or an explicit
+// `size`/`bytes` field some future caller sets) — otherwise it degrades to
+// "" and the chip just omits the size, same precedent as CT_formatTime's
+// empty-string degrade for a missing created_at.
+function CT_formatBytes(n) {
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function CT_partSizeLabel(part) {
+  if (Number.isFinite(part.size)) return CT_formatBytes(part.size);
+  if (Number.isFinite(part.bytes)) return CT_formatBytes(part.bytes);
+  if (typeof part.data === "string" && part.data.length > 0) {
+    const len = part.data.length;
+    const padding = part.data.endsWith("==") ? 2 : part.data.endsWith("=") ? 1 : 0;
+    return CT_formatBytes(Math.floor((len * 3) / 4) - padding);
+  }
+  return "";
+}
+
+// Thumb -> click-to-expand image preview: starts small, click toggles a
+// larger inline view instead of leaving the page to see the full image.
+function CT_ImagePreview({ src, filename }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const toggle = () => setExpanded((v) => !v);
+  return (
+    <div style={{ display: "inline-flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+      <img
+        src={src}
+        alt={filename || "image"}
+        onClick={toggle}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
+        style={{
+          maxHeight: expanded ? 480 : 160,
+          maxWidth: expanded ? 480 : 240,
+          borderRadius: 4,
+          border: "1px solid var(--border)",
+          display: "block",
+          cursor: "zoom-in",
+        }}
+      />
+      <a href={src} download={filename || undefined} target="_blank" rel="noreferrer" className="muted text-sm">
+        open ↗
+      </a>
+    </div>
+  );
+}
+
+// PDFs render inline via <embed> at a compact size that expands on click —
+// same thumb -> click-to-expand pattern as CT_ImagePreview.
+function CT_PdfPreview({ src, filename }) {
+  const [expanded, setExpanded] = React.useState(false);
+  const toggle = () => setExpanded((v) => !v);
+  return (
+    <div style={{ display: "inline-flex", flexDirection: "column", gap: 4, alignItems: "flex-start" }}>
+      <div
+        onClick={toggle}
+        role="button"
+        tabIndex={0}
+        onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); } }}
+        title={expanded ? "Collapse preview" : "Expand preview"}
+        style={{ cursor: "pointer" }}
+      >
+        <embed
           src={src}
-          alt={part.filename || "image"}
+          type="application/pdf"
           style={{
-            maxHeight: 160, maxWidth: 240, borderRadius: 4,
-            border: "1px solid var(--border)", display: "block",
+            width: expanded ? 480 : 200,
+            height: expanded ? 620 : 150,
+            border: "1px solid var(--border)",
+            borderRadius: 4,
+            display: "block",
           }}
         />
-      </a>
-    );
-  }
-  if (part.type === "document") {
-    const filename = part.filename || "document";
-    const mime = part.mime_type || "application/octet-stream";
-    return (
-      <div style={{
-        display: "inline-flex", alignItems: "center", gap: 6,
-        padding: "4px 8px", border: "1px solid var(--border)",
-        borderRadius: 4, background: "var(--bg-0)",
-      }}>
-        <Icon name="file" size={12} className="muted" />
-        <span className="mono text-sm">{filename}</span>
-        <span className="muted text-sm" style={{ fontSize: 10.5 }}>{mime}</span>
       </div>
-    );
+      <a href={src} download={filename || undefined} target="_blank" rel="noreferrer" className="muted text-sm">
+        {filename || "document.pdf"} · open ↗
+      </a>
+    </div>
+  );
+}
+
+// Anything that isn't inline-previewable (a document that isn't a PDF, or
+// a preview-able type with no usable src) renders as a compact chip:
+// filename + mime type + a best-effort size, plus open/download.
+function CT_FileChip({ part, mime, src }) {
+  const filename = part.filename || (part.type === "image" ? "image" : "document");
+  const sizeLabel = CT_partSizeLabel(part);
+  return (
+    <div style={{
+      display: "inline-flex", alignItems: "center", gap: 6,
+      padding: "4px 8px", border: "1px solid var(--border)",
+      borderRadius: 4, background: "var(--bg-0)",
+    }}>
+      <Icon name="file" size={12} className="muted" />
+      <span className="mono text-sm">{filename}</span>
+      <span className="muted text-sm" style={{ fontSize: 10.5 }}>
+        {mime}{sizeLabel ? ` · ${sizeLabel}` : ""}
+      </span>
+      {src && (
+        <a href={src} download={filename} target="_blank" rel="noreferrer" className="muted text-sm" title="Open / download">
+          <Icon name="external" size={11} />
+        </a>
+      )}
+    </div>
+  );
+}
+
+// Inline-render one attachment Part as it appears inside a user_message
+// bubble or under a tool_result's media (Task E1 extends this to the
+// latter — see CT_ToolMedia below). Image/PDF parts get a thumb ->
+// click-to-expand inline preview; anything else renders as a chip.
+// `chatId` builds the A8 artifact-fetch src for a part that carries only
+// `artifact_id` (no inline `data`); the pre-existing inline base64
+// (`part.data`) and public `part.url` paths keep working unchanged.
+function CT_AttachmentPart({ part, chatId }) {
+  if (!part) return null;
+  const mime = part.mime_type || (part.type === "image" ? "image/png" : "application/octet-stream");
+  const src = part.url
+    ? part.url
+    : (part.data
+      ? `data:${mime};base64,${part.data}`
+      : CT_artifactUrl(chatId, part.artifact_id));
+
+  if (part.type === "image" && src) {
+    return <CT_ImagePreview src={src} filename={part.filename} />;
+  }
+  if (part.type === "document" && mime === "application/pdf" && src) {
+    return <CT_PdfPreview src={src} filename={part.filename} />;
+  }
+  if (part.type === "image" || part.type === "document" || part.type === "audio" || part.type === "video") {
+    return <CT_FileChip part={part} mime={mime} src={src} />;
   }
   return null;
+}
+
+// A tool_result's payload.media (flattened onto the row — see
+// primer/chat/executor.py::_tool_media_parts) renders as a row of
+// CT_AttachmentPart previews right under the tool's collapsed result chip.
+function CT_ToolMedia({ media, chatId }) {
+  if (!Array.isArray(media) || media.length === 0) return null;
+  return (
+    <div style={{ marginLeft: 60, marginTop: -2, marginBottom: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
+      {media.map((p, i) => <CT_AttachmentPart key={i} part={p} chatId={chatId} />)}
+    </div>
+  );
 }
 
 // ============================================================================
@@ -738,7 +908,7 @@ function Transcript({
             : m.kind === "tool_call"
               ? `${m.seq}-${m.kind}-${pairedResult ? "done" : "running"}`
               : `${m.seq}-${m.kind}`;
-        return <Message key={key} m={m} pairedResult={pairedResult} />;
+        return <Message key={key} m={m} pairedResult={pairedResult} chatId={chatId} />;
       })}
 
       {/* Thinking indicator — see _QUIET_LAST_KINDS above for why this
