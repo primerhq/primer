@@ -22,6 +22,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from primer.model.common import Identifiable
+from primer.model.principal import PrincipalRef
 
 
 ChatStatus = Literal["active", "ended"]
@@ -92,6 +93,14 @@ class Chat(Identifiable):
         ),
     )
     created_at: datetime = Field(...)
+    initiated_by: PrincipalRef | None = Field(
+        default=None,
+        description=(
+            "Persisted projection of the actor that created this chat "
+            "(§8.2); rehydrated into ctx.identity by the worker-side "
+            "ChatTurnRunner. None on historical rows -> system fallback."
+        ),
+    )
     status: ChatStatus = Field(default="active")
     title: str | None = Field(
         default=None,
