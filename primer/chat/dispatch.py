@@ -42,23 +42,36 @@ async def _apply_switch_handoff(
     exc: YieldToWorker,
     deps: ChatDispatchDeps,
 ) -> str:
-    """End the current turn, switch the chat's agent, and queue the handoff
-    prompt as the next user_message so the new agent runs it. Returns the
-    turn_status the caller should release with (``'claimable'`` — the queued
-    handoff is re-served and runs under the new agent)."""
-    from primer.chat.enqueue import append_user_message
+    """End the current turn, switch the chat's agent, append a ``handoff``
+    ``agent_marker`` row (Task A5) so the timeline records the attribution
+    boundary, and queue the handoff prompt as the next user_message so
+    the new agent runs it. Returns the turn_status the caller should
+    release with (``'claimable'`` — the queued handoff is re-served and
+    runs under the new agent)."""
+    from primer.chat.enqueue import append_agent_marker, append_user_message
 
+    old_agent_id = chat.agent_id
     await runner.handle_switch(chat, exc)
     chat_storage = deps.storage_provider.get_storage(Chat)
     fresh = await chat_storage.get(chat.id)
-    if fresh is not None and fresh.pending_handoff:
-        await append_user_message(
-            chat=fresh,
-            parts=[TextPart(text=fresh.pending_handoff)],
-            storage_provider=deps.storage_provider,
+    if fresh is not None:
+        await append_agent_marker(
+            fresh, deps.storage_provider,
+            marker="handoff", agent_id=fresh.agent_id,
+            from_agent_id=old_agent_id,
         )
-        fresh.pending_handoff = None
-        await chat_storage.update(fresh)
+        if deps.event_bus is not None:
+            await deps.event_bus.publish(
+                f"chat:{chat.id}:tick", {"seq": fresh.last_seq},
+            )
+        if fresh.pending_handoff:
+            await append_user_message(
+                chat=fresh,
+                parts=[TextPart(text=fresh.pending_handoff)],
+                storage_provider=deps.storage_provider,
+            )
+            fresh.pending_handoff = None
+            await chat_storage.update(fresh)
     return "claimable"  # re-serve: new claim runs the new agent
 
 

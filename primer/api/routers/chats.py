@@ -131,6 +131,7 @@ class ChatSwitchAgentBody(BaseModel):
 )
 async def switch_chat_agent(
     body: ChatSwitchAgentBody,
+    request: Request,
     chat_id: str = Path(...),
     sp=Depends(get_storage_provider),
     agents=Depends(get_agent_storage),
@@ -141,7 +142,12 @@ async def switch_chat_agent(
     ``chat.agent_id``, so updating that field is the entire switch — the
     conversation history is shared context the new agent inherits. Any
     pending gate (ask_user / approval) is auto-rejected first so the
-    append-only history stays valid before the handoff.
+    append-only history stays valid before the handoff — ordering reads
+    gate-close -> switch. Once the field flips, a ``agent_marker``
+    row (``marker="switch"``, Task A5) is appended via
+    :func:`primer.chat.enqueue.append_agent_marker` so the timeline
+    records the attribution boundary, and a ``chat:{id}:tick`` is
+    published so any live WS subscriber + cursor replay pick it up.
     """
     chats_storage = sp.get_storage(Chat)
     chat = await chats_storage.get(chat_id)
@@ -165,8 +171,26 @@ async def switch_chat_agent(
             terminal_reason="agent_switch",
             approval_records=sp.get_storage(ToolApprovalRecord),
         )
+    old_agent_id = chat.agent_id
     chat.agent_id = body.agent_id
     await chats_storage.update(chat)
+
+    from primer.chat.enqueue import append_agent_marker
+    await append_agent_marker(
+        chat, sp,
+        marker="switch", agent_id=body.agent_id, from_agent_id=old_agent_id,
+    )
+    event_bus = getattr(request.app.state, "event_bus", None)
+    if event_bus is not None:
+        try:
+            await event_bus.publish(
+                f"chat:{chat_id}:tick", {"seq": chat.last_seq},
+            )
+        except Exception:  # noqa: BLE001 — never break the REST response
+            logger.exception(
+                "switch_chat_agent: failed to publish tick for chat %s",
+                chat_id,
+            )
     return chat
 
 
