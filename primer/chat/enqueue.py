@@ -183,4 +183,64 @@ async def append_user_message(
     return row
 
 
-__all__ = ["append_user_message"]
+async def append_agent_marker(
+    chat: Chat,
+    storage_provider: Any,
+    *,
+    marker: str,
+    agent_id: str,
+    from_agent_id: str | None = None,
+) -> ChatMessage:
+    """Persist an ``agent_marker`` row at an attribution boundary (Task A5).
+
+    Called at each point the chat's *producing* agent changes mid-history:
+    an operator-driven switch (``POST /v1/chats/{id}/agent``) or a
+    ``switch_to_agent`` tool handoff. Bumps ``chat.last_seq`` the same way
+    :func:`append_user_message` does; the caller is responsible for
+    publishing the ``chat:{id}:tick`` bus event so live WS + cursor
+    replay pick up the new row (this helper is bus-agnostic, mirroring
+    :func:`append_user_message`).
+
+    :func:`primer.chat.executor.ChatTurnRunner._load_history` already
+    skips ``agent_marker`` rows (Task A4) — they are legibility markers
+    for the UI timeline, never model-visible history.
+
+    Parameters
+    ----------
+    chat:
+        The in-memory chat row. Mutated: ``last_seq`` is bumped before
+        being persisted via ``chats_storage.update``.
+    storage_provider:
+        Anything with ``get_storage(model_cls)``.
+    marker:
+        ``"switch"`` (operator-driven ``POST /v1/chats/{id}/agent``) or
+        ``"handoff"`` (the ``switch_to_agent`` tool path).
+    agent_id:
+        The agent the chat is switching TO.
+    from_agent_id:
+        The agent the chat is switching FROM. ``None`` omits the key
+        (both current call sites always supply it).
+    """
+    chats_storage = storage_provider.get_storage(Chat)
+    messages_storage = storage_provider.get_storage(ChatMessage)
+
+    payload: dict[str, Any] = {"marker": marker, "agent_id": agent_id}
+    if from_agent_id is not None:
+        payload["from_agent_id"] = from_agent_id
+
+    next_seq = chat.last_seq + 1
+    row = ChatMessage(
+        id=ChatMessage.make_id(chat.id, next_seq),
+        chat_id=chat.id,
+        seq=next_seq,
+        kind="agent_marker",
+        payload=payload,
+        created_at=datetime.now(timezone.utc),
+    )
+    await messages_storage.create(row)
+    chat.last_seq = next_seq
+    await chats_storage.update(chat)
+    return row
+
+
+__all__ = ["append_agent_marker", "append_user_message"]
