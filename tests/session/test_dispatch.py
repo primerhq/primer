@@ -451,6 +451,50 @@ async def test_cancel_requested_on_entry_ends_without_executor(
 
 
 @pytest.mark.asyncio
+async def test_pause_requested_on_entry_clears_stale_interrupt_requested(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """A row that carries pause_requested=True AND a stale
+    interrupt_requested=True (left over from an earlier turn that never
+    consumed it) must transition to PAUSED with interrupt_requested cleared
+    — otherwise a later /resume could downgrade a genuine Cancel to a Stop."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    seeded_session.pause_requested = True
+    seeded_session.pause_requested_at = _now()
+    seeded_session.interrupt_requested = True
+    await storage.update(seeded_session)
+
+    executor_called = False
+
+    async def _build_executor(session: WorkspaceSession):
+        nonlocal executor_called
+        executor_called = True
+        return FakeExecutor([])
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is True
+    assert outcome.drop_lease is True
+    assert outcome.preserve_park is True
+    assert not executor_called, (
+        "executor must NOT be built when pause_requested is set on entry"
+    )
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.PAUSED
+    assert row.interrupt_requested is False
+
+
+@pytest.mark.asyncio
 async def test_already_ended_row_drops_lease_without_executor(
     seeded_session: WorkspaceSession,
     fake_workspace_io: FakeWorkspaceIO,

@@ -168,11 +168,19 @@ async def run_one_session_turn(
     #   (_run_one_turn) into this function; without it a paused parked
     #   session gets silently resumed to completion (e2e t0867).
     if session.pause_requested:
-        await _transition_session_status(
-            session_storage,
-            session,
-            new_status=SessionStatus.PAUSED,
-        )
+        # Serialize the status transition + interrupt-flag clear against a
+        # concurrent resume/pause/cancel/interrupt API call (T0432-style
+        # lost update; see primer.session.mutation_lock). A stale
+        # interrupt_requested carried into the PAUSED row must not leak
+        # into the turn that eventually resumes it, else it could downgrade
+        # a later genuine Cancel to a Stop.
+        async with session_lifecycle_lock().acquire(session_id):
+            await _transition_session_status(
+                session_storage,
+                session,
+                new_status=SessionStatus.PAUSED,
+            )
+            await _clear_interrupt_requested(session_storage, session_id)
         # Drop the lease but preserve the park columns: a paused session that
         # was 'resumable' keeps its marker + parked_state so a later /resume
         # re-arms the lease and replays the hook. preserve_park also blocks

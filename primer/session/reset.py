@@ -102,6 +102,7 @@ async def reset_session(
             "cancel_requested_at": None,
             "pause_requested": False,
             "pause_requested_at": None,
+            "interrupt_requested": False,
             "parked_status": None,
             "parked_event_key": None,
             "parked_event_keys": None,
