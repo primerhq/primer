@@ -515,25 +515,48 @@ async def run_one_session_turn(
     # 5b. Cancel path — write CANCELLED record, transition row to ENDED
     # ------------------------------------------------------------------
     if cancel_requested:
+        # Re-read to see whether this preemption was a Stop (interrupt,
+        # stay alive) or an End/Cancel (terminal). The interrupt path and
+        # the cancel path both fire session:{sid}:cancel on the bus.
+        fresh = await session_storage.get(session_id)
+        is_interrupt = bool(fresh and fresh.interrupt_requested)
         await _safe_turn_log(turn_log, TurnLogCancelled(
             seq=0,
             ts=_now(),
             turn_no=session.turn_no,
-            reason=cancel_reason,
+            reason="operator_interrupt" if is_interrupt else cancel_reason,
         ))
-        rec = _cancelled_record(cancel_reason)
+        rec = _cancelled_record(
+            "operator_interrupt" if is_interrupt else cancel_reason
+        )
         seq = await writer.append(rec)
         await writer.flush()
         await deps.event_bus.publish(
             f"session:{session_id}:tick", {"seq": seq}
         )
-        await _transition_session_status(
-            session_storage,
-            session,
-            new_status=SessionStatus.ENDED,
-            ended_reason="cancelled",
-            executor=executor,
-        )
+        if is_interrupt:
+            new_status, ended_reason = _interrupt_post_status()
+            await _transition_session_status(
+                session_storage,
+                session,
+                new_status=new_status,
+                ended_reason=ended_reason,
+                executor=executor,
+            )
+            # Clear the flag so the next turn is not re-interrupted.
+            latest = await session_storage.get(session_id)
+            if latest is not None and latest.interrupt_requested:
+                await session_storage.update(
+                    latest.model_copy(update={"interrupt_requested": False})
+                )
+        else:
+            await _transition_session_status(
+                session_storage,
+                session,
+                new_status=SessionStatus.ENDED,
+                ended_reason="cancelled",
+                executor=executor,
+            )
         await turn_log.aclose()
         return ReleaseOutcome(success=True, drop_lease=True)
 
@@ -691,6 +714,11 @@ async def _read_agent_session_status(executor) -> SessionStatus | None:
         return await status_fn()
     except Exception:  # noqa: BLE001
         return None
+
+
+def _interrupt_post_status() -> tuple[SessionStatus, str | None]:
+    """Stop (interrupt) leaves the session alive/idle, awaiting input."""
+    return (SessionStatus.WAITING, None)
 
 
 # Mapping from Done.stop_reason -> (new_status, ended_reason).
