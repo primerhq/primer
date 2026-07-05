@@ -39,6 +39,7 @@ from primer.agent.compaction_mixin import (
     apply_compaction as _mixin_apply_compaction,
     should_compact as _mixin_should_compact,
 )
+from primer.agent.prompt_render import render_system_prompt_or_raw
 from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
 from primer.int.storage import Storage
 from primer.model.chat import (
@@ -55,6 +56,7 @@ from primer.model.chat import (
     Usage,
 )
 from primer.model.chats import Chat, ChatMessage
+from primer.model.graph import ExecutionContext, build_execution_context
 from primer.model.yield_ import YieldToWorker
 from primer.model.storage import (
     CursorPage,
@@ -266,6 +268,7 @@ class ChatTurnRunner:
         cancel_event: asyncio.Event | None = None,
         artifact_storage: object | None = None,
         approval_record_storage: object | None = None,
+        execution_context: "ExecutionContext | None" = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -274,6 +277,15 @@ class ChatTurnRunner:
         self._chats = chat_storage
         self._messages = message_storage
         self._cancel_event = cancel_event
+        # ExecutionContext (§8.4): exposes ``ctx.identity`` (the persisted
+        # ``Chat.initiated_by`` projection) to the agent's system_prompt
+        # template. Callers that don't pass one (legacy direct construction,
+        # the compaction ``__new__`` path guarded separately) still get a
+        # valid chat-surface context so ``_build_prompt`` never has to
+        # special-case ``None``.
+        self._execution_context = execution_context or build_execution_context(
+            surface="chat",
+        )
         # Optional storage for durable resolved tool-approval records. When
         # wired, an approval resolved on the chat surface (operator yes/no, or
         # a cancel-while-awaiting) writes a ToolApprovalRecord. None -> skip.
@@ -1208,7 +1220,9 @@ class ChatTurnRunner:
     ) -> list[Message]:
         prompt: list[Message] = []
         if self._agent.system_prompt:
-            sys_text = "\n\n".join(self._agent.system_prompt)
+            sys_text = render_system_prompt_or_raw(
+                self._agent.system_prompt, self._execution_context,
+            )
             prompt.append(
                 Message(role="system", parts=[TextPart(text=sys_text)]),
             )

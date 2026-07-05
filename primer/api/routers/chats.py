@@ -52,6 +52,7 @@ from primer.api.pagination import parse_page
 from primer.model.agent import Agent
 from primer.model.chats import Chat, ChatMessage
 from primer.model.except_ import ConfigError, ConflictError, NotFoundError
+from primer.model.principal import PrincipalRef
 from primer.model.provider import LLMProvider
 from primer.model.storage import (
     Op,
@@ -92,19 +93,34 @@ class ChatCreateBody(BaseModel):
     responses=common_responses(404, 422, 500),
 )
 async def create_chat(
+    request: Request,
     body: ChatCreateBody,
     sp=Depends(get_storage_provider),
     agents=Depends(get_agent_storage),
 ) -> Chat:
-    """Allocate a new chat row + an id. Validates the agent exists."""
+    """Allocate a new chat row + an id. Validates the agent exists.
+
+    Attribution (spec §8.4): project the request's resolved actor (Layer 1
+    AuthMiddleware, ``request.state.actor``) into the persisted
+    ``PrincipalRef``, mirroring ``create_session`` (spec §8.1). ``actor``
+    is only absent when auth is enabled and the request carries no valid
+    session/token -- require_auth already 401s that case before this
+    handler runs, so the fallback below is a defensive belt-and-braces
+    rather than a reachable production path.
+    """
     agent = await agents.get(body.agent_id)
     if agent is None:
         raise NotFoundError(f"Agent {body.agent_id!r} does not exist")
     chats_storage = sp.get_storage(Chat)
+    actor = getattr(request.state, "actor", None)
     chat = Chat(
         id=f"chat-{uuid.uuid4().hex[:12]}",
         agent_id=body.agent_id,
         created_at=datetime.now(timezone.utc),
+        initiated_by=(
+            PrincipalRef.from_principal(actor) if actor is not None
+            else PrincipalRef.system()
+        ),
     )
     return await chats_storage.create(chat)
 
@@ -517,6 +533,7 @@ async def compact_chat(
     from primer.agent.compaction_mixin import force_compact
     from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
     from primer.chat.executor import ChatTurnRunner
+    from primer.model.graph import build_execution_context
 
     # 1) Chat exists?
     chat_storage = sp.get_storage(Chat)
@@ -576,6 +593,9 @@ async def compact_chat(
     runner._marker_persisted = False
     runner._last_input_tokens = None
     runner._last_output_tokens = None
+    # Compaction never renders a system prompt, but keep the attribute
+    # present so ChatTurnRunner invariants hold (§8.4).
+    runner._execution_context = build_execution_context(surface="chat")
     history = await runner._load_history(chat_id)
 
     # 5) Force-compact (bypasses the should_compact threshold check).

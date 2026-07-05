@@ -24,6 +24,8 @@ from primer.model.agent import Agent
 from primer.model.chat import TextPart
 from primer.model.chats import Chat, ChatMessage
 from primer.model.except_ import ConfigError, NotFoundError
+from primer.model.graph import build_execution_context
+from primer.model.principal import PrincipalRef
 from primer.model.provider import LLMProvider
 from primer.model.storage import (
     FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,
@@ -489,6 +491,10 @@ async def _build_runner(
         except Exception:
             logger.warning("chat runner: no default artifact store available")
     from primer.model.tool_approval import ToolApprovalRecord
+    exec_ctx = build_execution_context(
+        surface="chat",
+        identity=(chat.initiated_by or PrincipalRef.system()),
+    )
     return ChatTurnRunner(
         agent=agent,
         llm=llm,
@@ -501,6 +507,7 @@ async def _build_runner(
         approval_record_storage=deps.storage_provider.get_storage(
             ToolApprovalRecord
         ),
+        execution_context=exec_ctx,
     ), None
 
 
