@@ -268,6 +268,7 @@ class ChatTurnRunner:
         cancel_event: asyncio.Event | None = None,
         artifact_storage: object | None = None,
         approval_record_storage: object | None = None,
+        response_format: dict[str, Any] | None = None,
         execution_context: "ExecutionContext | None" = None,
     ) -> None:
         self._agent = agent
@@ -294,6 +295,16 @@ class ChatTurnRunner:
         # convert + store it so the tool_result row carries media parts the
         # channel relay can forward. None -> tool media is not surfaced.
         self._artifacts = artifact_storage
+        # Effective response_format the caller (dispatch) has already
+        # resolved as per-chat -> agent default (chat-refactor plan §6,
+        # Task A2). ``run_turn`` may override this per-call with an
+        # ephemeral (this-send-only) schema; ``_default_response_format``
+        # is kept separately as the fallback so a later turn WITHOUT an
+        # ephemeral override doesn't inherit a prior turn's override —
+        # this runner instance is reused across every queued turn in one
+        # dispatch drain (see ``run_one_chat_turn``'s while loop).
+        self._default_response_format = response_format
+        self._response_format = response_format
         # Pre-turn auto-compaction state.
         self._marker_persisted: bool = False
         # Last Usage event consumed from the LLM stream; populated by
@@ -321,6 +332,7 @@ class ChatTurnRunner:
         user_input: "str | list",
         *,
         already_persisted_user_msg: "ChatMessage | None" = None,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncIterator[ChatMessage]:
         """Persist + stream rows for one chat turn.
 
@@ -336,10 +348,25 @@ class ChatTurnRunner:
         ``last_seq`` so subsequent rows are appended after it. The
         ``chat.last_seq`` field is NOT updated to match (the caller
         should ensure it is already ≥ the row's seq before calling).
+
+        ``response_format``: an ephemeral (this-send-only) structured-
+        output schema, pre-resolved + re-validated by the caller from
+        the row being processed. When given it overrides the resolved
+        per-chat/agent-default schema for THIS turn only; ``None``
+        (default) leaves the constructor-resolved value standing.
         """
         # Stash the active chat id so ``_record_usage`` can route the
         # Usage event into the per-chat cache (spec §6.4).
         self._active_chat_id = chat.id
+        # Resolve THIS turn's effective response_format. Re-derived from
+        # the constructor default on every call (rather than mutated in
+        # place) so a prior turn's ephemeral override can't leak onto a
+        # later turn served by the same reused runner instance.
+        self._response_format = (
+            response_format
+            if response_format is not None
+            else self._default_response_format
+        )
 
         # Normalise to a list of Parts.
         if isinstance(user_input, str):
@@ -511,6 +538,7 @@ class ChatTurnRunner:
                     model=self._model.name,
                     messages=prompt,
                     tools=tools or None,
+                    response_format=self._response_format,
                 ):
                     async for row in self._handle_event(
                         event=event,
@@ -1083,7 +1111,11 @@ class ChatTurnRunner:
                         ),
                     )
                 continue
-            # done / yielded / resumed / error — boundary markers; skip.
+            # done / yielded / resumed / error / agent_marker — boundary
+            # markers; skip. (agent_marker rows carry no model-visible
+            # content — they're legibility markers for the agent-timeline
+            # UI, chat-refactor plan Task A4/A5 — so they fall through
+            # here untouched, same as the other terminal/marker kinds.)
 
         flush_assistant()
         flush_tool_results()
@@ -1250,7 +1282,16 @@ class ChatTurnRunner:
         externally-mutable fields from storage first (``cancel_requested_at``
         from an ``interrupt``, ``agent_id`` from a mid-chat agent switch) so a
         concurrent change isn't clobbered by this turn's stale in-memory copy.
+
+        Every row this method writes is stamped with the id of the agent
+        that produced it (``payload["agent_id"]``), via ``setdefault`` so a
+        caller-supplied value (none currently) would win. This is the
+        per-turn attribution the agent-timeline UI reads (chat-refactor plan
+        Task A4). ``user_message`` rows are persisted by
+        :func:`primer.chat.enqueue.append_user_message`, NOT this method, so
+        they correctly carry no ``agent_id``.
         """
+        payload.setdefault("agent_id", self._agent.id)
         next_seq = chat.last_seq + 1
         row = ChatMessage(
             id=ChatMessage.make_id(chat.id, next_seq),

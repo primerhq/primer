@@ -20,7 +20,7 @@ from primer.chat.executor import ChatTurnRunner
 from primer.chat.tick_router import ChatTickRouter
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
-from primer.model.agent import Agent
+from primer.model.agent import Agent, _validate_response_format_schema
 from primer.model.chat import TextPart
 from primer.model.chats import Chat, ChatMessage
 from primer.model.except_ import ConfigError, NotFoundError
@@ -44,23 +44,36 @@ async def _apply_switch_handoff(
     exc: YieldToWorker,
     deps: ChatDispatchDeps,
 ) -> str:
-    """End the current turn, switch the chat's agent, and queue the handoff
-    prompt as the next user_message so the new agent runs it. Returns the
-    turn_status the caller should release with (``'claimable'`` — the queued
-    handoff is re-served and runs under the new agent)."""
-    from primer.chat.enqueue import append_user_message
+    """End the current turn, switch the chat's agent, append a ``handoff``
+    ``agent_marker`` row (Task A5) so the timeline records the attribution
+    boundary, and queue the handoff prompt as the next user_message so
+    the new agent runs it. Returns the turn_status the caller should
+    release with (``'claimable'`` — the queued handoff is re-served and
+    runs under the new agent)."""
+    from primer.chat.enqueue import append_agent_marker, append_user_message
 
+    old_agent_id = chat.agent_id
     await runner.handle_switch(chat, exc)
     chat_storage = deps.storage_provider.get_storage(Chat)
     fresh = await chat_storage.get(chat.id)
-    if fresh is not None and fresh.pending_handoff:
-        await append_user_message(
-            chat=fresh,
-            parts=[TextPart(text=fresh.pending_handoff)],
-            storage_provider=deps.storage_provider,
+    if fresh is not None:
+        await append_agent_marker(
+            fresh, deps.storage_provider,
+            marker="handoff", agent_id=fresh.agent_id,
+            from_agent_id=old_agent_id,
         )
-        fresh.pending_handoff = None
-        await chat_storage.update(fresh)
+        if deps.event_bus is not None:
+            await deps.event_bus.publish(
+                f"chat:{chat.id}:tick", {"seq": fresh.last_seq},
+            )
+        if fresh.pending_handoff:
+            await append_user_message(
+                chat=fresh,
+                parts=[TextPart(text=fresh.pending_handoff)],
+                storage_provider=deps.storage_provider,
+            )
+            fresh.pending_handoff = None
+            await chat_storage.update(fresh)
     return "claimable"  # re-serve: new claim runs the new agent
 
 
@@ -378,12 +391,29 @@ async def run_one_chat_turn(
                     final.cancel_requested_at = None
                     await chat_storage.update(final)
                 return "idle"
+            # Ephemeral (this-send-only) response_format override (A2/A3):
+            # stamped on the row's payload by the send path. Server-side
+            # re-validate here (defense-in-depth behind the client's live
+            # validation) — an invalid schema fails the turn closed with
+            # an error row instead of ever reaching the LLM stream.
+            ephemeral_response_format = (next_um.payload or {}).get(
+                "response_format",
+            )
+            if ephemeral_response_format is not None:
+                try:
+                    _validate_response_format_schema(ephemeral_response_format)
+                except ValueError as exc:
+                    await _persist_invalid_response_format_error(
+                        deps, chat, str(exc),
+                    )
+                    continue
             try:
                 turn_parts = await _hydrate_media_parts(deps, _parts_from(next_um))
                 async for row in runner.run_turn(
                     chat,
                     turn_parts,
                     already_persisted_user_msg=next_um,
+                    response_format=ephemeral_response_format,
                 ):
                     await deps.event_bus.publish(
                         f"chat:{chat_id}:tick", {"seq": row.seq},
@@ -510,6 +540,17 @@ async def _build_runner(
         except Exception:
             logger.warning("chat runner: no default artifact store available")
     from primer.model.tool_approval import ToolApprovalRecord
+    # Resolution precedence (A2, chat-refactor plan §6): per-chat
+    # ``Chat.response_format`` (A1) overrides the agent's default for
+    # THIS chat only; falls back to the agent default when the chat has
+    # no override. The ephemeral (this-send-only) layer is resolved
+    # per-turn from the user_message row in ``run_one_chat_turn`` below
+    # and passed into ``run_turn`` as the highest-precedence override.
+    effective_response_format = (
+        chat.response_format
+        if chat.response_format is not None
+        else agent.response_format
+    )
     exec_ctx = build_execution_context(
         surface="chat",
         identity=(chat.initiated_by or PrincipalRef.system()),
@@ -526,6 +567,7 @@ async def _build_runner(
         approval_record_storage=deps.storage_provider.get_storage(
             ToolApprovalRecord
         ),
+        response_format=effective_response_format,
         execution_context=exec_ctx,
     ), None
 
@@ -555,6 +597,38 @@ async def _persist_build_error(
     await chats.update(chat)
     # The terminal turn_status ('idle') is applied by the fenced adapter
     # from the 'idle' disposition run_one_chat_turn returns after this.
+    await deps.event_bus.publish(
+        f"chat:{chat.id}:tick", {"seq": next_seq},
+    )
+
+
+async def _persist_invalid_response_format_error(
+    deps: ChatDispatchDeps,
+    chat: Chat,
+    detail: str,
+) -> None:
+    """Persist a terminal ``error`` row for a turn whose ephemeral
+    ``response_format`` failed server-side re-validation (A2), so the
+    turn is skipped closed rather than ever reaching the LLM stream.
+
+    This closes the turn (an ``error`` row is a member of ``_TERMINALS``)
+    so :func:`_find_next_user_message` advances past the offending
+    user_message on the next drain instead of re-serving it forever.
+    """
+    chats = deps.storage_provider.get_storage(Chat)
+    msgs = deps.storage_provider.get_storage(ChatMessage)
+    next_seq = chat.last_seq + 1
+    await msgs.create(ChatMessage(
+        id=ChatMessage.make_id(chat.id, next_seq),
+        chat_id=chat.id, seq=next_seq, kind="error",
+        payload={
+            "message": f"invalid response_format: {detail}",
+            "code": "invalid_response_format",
+        },
+        created_at=datetime.now(timezone.utc),
+    ))
+    chat.last_seq = next_seq
+    await chats.update(chat)
     await deps.event_bus.publish(
         f"chat:{chat.id}:tick", {"seq": next_seq},
     )
