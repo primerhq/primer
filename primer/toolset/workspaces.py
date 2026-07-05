@@ -1330,26 +1330,36 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     async def _steer_session(arguments: dict[str, Any]) -> ToolCallResult:
+        if scheduler is None or claim_engine is None:
+            return _err(
+                "session tools unavailable: scheduler/claim_engine not wired",
+                error_type="unavailable",
+            )
         try:
             args = _SteerArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        from primer.session.enqueue import SessionWakeDeps, wake_session
+
+        deps = SessionWakeDeps(
+            storage_provider=storage_provider,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            workspace_registry=workspace_registry,
+            event_bus=event_bus,
+        )
         try:
-            ws = await workspace_registry.get_workspace(args.workspace_id)
+            row = await wake_session(
+                workspace_id=args.workspace_id,
+                session_id=args.session_id,
+                instruction=args.instruction,
+                deps=deps,
+            )
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
-        session = await ws.get_session(args.session_id)
-        if session is None:
-            return _err(
-                f"Session {args.session_id!r} does not exist on "
-                f"workspace {args.workspace_id!r}",
-                error_type="not-found",
-            )
-        try:
-            instruction = await session.append_instruction(args.instruction)
-        except PrimerError as exc:
+        except ConflictError as exc:
             return _err_from_primer(exc, error_type="conflict")
-        return _ok(instruction.model_dump(mode="json"))
+        return _ok(row.model_dump(mode="json"))
 
     name, entry = _tool(
         "steer_workspace_session",
