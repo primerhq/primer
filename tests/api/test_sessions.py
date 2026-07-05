@@ -330,6 +330,20 @@ async def test_create_session_with_auto_start_enqueues(
     assert body["started_at"] is not None
 
 
+async def test_create_session_persists_autonomous_flag(
+    sessions_client, seeded_workspace, seeded_agent,
+):
+    resp = await sessions_client.post(
+        f"/v1/workspaces/{seeded_workspace.id}/sessions",
+        json={
+            "binding": {"kind": "agent", "agent_id": seeded_agent.id},
+            "autonomous": True,
+        },
+    )
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["autonomous"] is True
+
+
 async def test_create_session_unknown_workspace_404(
     sessions_client, seeded_agent,
 ):

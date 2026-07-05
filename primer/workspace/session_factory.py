@@ -95,6 +95,7 @@ async def start_workspace_session(
     auto_start: bool,
     metadata: dict | None,
     parent_session_id: str | None,
+    autonomous: bool | None = None,
     deps: SessionFactoryDeps,
 ) -> WorkspaceSession:
     """Full create flow shared by the REST route and the workspaces tool:
@@ -237,6 +238,7 @@ async def start_workspace_session(
         auto_start=auto_start,
         metadata=metadata,
         parent_session_id=parent_session_id,
+        autonomous=autonomous,
         session_id=sid,
         deps=SessionFactoryDeps(
             storage_provider=deps.storage_provider,
@@ -258,6 +260,7 @@ async def create_session(
     deps: SessionFactoryDeps,
     parent_session_id: str | None = None,
     session_id: str | None = None,
+    autonomous: bool | None = None,
 ) -> WorkspaceSession:
     """Persist a :class:`WorkspaceSession` row + optionally auto-start.
 
@@ -317,6 +320,7 @@ async def create_session(
         parent_session_id=parent_session_id,
         initial_instructions=initial_instructions,
         metadata=md,
+        autonomous=autonomous,
         created_at=now,
     )
     sessions_storage = deps.storage_provider.get_storage(WorkspaceSession)
