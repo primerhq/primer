@@ -1,0 +1,384 @@
+"""OIDC client core: discovery, JWKS, id_token validation, PKCE, state.
+
+Security-critical module. :func:`validate_id_token` is the auth boundary
+for Layer 2 SSO -- every check it performs guards against a specific
+real-world attack:
+
+* **alg pinning** -- ``algorithms`` passed to :func:`jwt.decode` is
+  ALWAYS the single asymmetric algorithm the provider advertised at
+  discovery time (never derived from the token's own header). This is
+  the standard defense against the "alg confusion" family of attacks
+  (RFC 8725 S2.1): an attacker cannot downgrade to ``alg: none`` or to
+  an HMAC algorithm keyed with the provider's *public* RSA/EC key.
+* **iss** -- exact string match against the discovered issuer.
+* **aud / azp** -- ``client_id`` must be a member of ``aud`` (which may
+  be a single string or a list); when the token carries more than one
+  audience, ``azp`` must equal ``client_id`` (OIDC Core 3.1.3.7 #6),
+  so a token minted for a *different* client of the same provider
+  cannot be replayed against us.
+* **exp** -- checked with ~60s leeway for clock skew.
+* **nonce** -- must equal the value the caller generated for this
+  login attempt, binding the id_token to a single browser session.
+
+Discovery documents and JWKS are TTL-cached in module-level dicts
+keyed by URL so a login flow doesn't round-trip to the provider on
+every request; :func:`fetch_jwks` additionally bypasses the cache
+when asked to look up a ``kid`` it doesn't recognize, so a provider's
+key rotation doesn't lock users out until the TTL happens to expire.
+"""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+import secrets
+import time
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+import jwt
+from itsdangerous import BadSignature, SignatureExpired, URLSafeTimedSerializer
+from pydantic import BaseModel, Field
+
+from primer.model.except_ import PrimerError
+from primer.model.oidc import OidcProvider
+
+
+_STATE_SALT = "primer.oidc.state.v1"
+
+# RFC 8725 S3.1: never accept a symmetric (HS*) or "none" alg for a
+# provider-signed id_token -- both open key-confusion attacks (the
+# provider's *public* signing key would be usable as an HMAC secret).
+_ASYMMETRIC_ALG_PREFIXES = ("RS", "ES", "PS")
+_PREFERRED_ALGS = ("RS256", "PS256", "ES256")
+
+_DISCOVERY_TTL_SECONDS = 3600.0
+_JWKS_TTL_SECONDS = 3600.0
+_HTTP_TIMEOUT_SECONDS = 10.0
+
+# ~60s leeway on exp/iat/nbf checks to absorb clock skew between us and
+# the provider, per the brief's "exp with ~60s leeway" requirement.
+_EXP_LEEWAY_SECONDS = 60
+
+
+class OidcError(PrimerError):
+    """Raised for any discovery / JWKS / id_token-validation failure.
+
+    Callers MUST treat this as a hard auth-bypass-prevention boundary:
+    on this exception, the login attempt is rejected outright -- never
+    fall back to a partially-validated claim set.
+    """
+
+
+class OidcMetadata(BaseModel):
+    """The subset of the OpenID Provider discovery document we rely on."""
+
+    issuer: str
+    authorization_endpoint: str
+    token_endpoint: str
+    jwks_uri: str
+    id_token_signing_alg: str = Field(
+        ...,
+        description=(
+            "Single asymmetric algorithm chosen from the provider's "
+            "id_token_signing_alg_values_supported; this is what gets "
+            "pinned as the sole entry of jwt.decode's `algorithms=`."
+        ),
+    )
+
+
+@dataclass
+class _CacheEntry:
+    value: Any
+    expires_at: float
+
+
+# Module-level TTL caches, keyed by URL. Deliberately simple (no lock):
+# worst case under concurrent misses is a few redundant fetches, not a
+# correctness problem, and this module's callers are per-request async
+# tasks rather than long-lived threads contending on the dict.
+_discovery_cache: dict[str, _CacheEntry] = {}
+_jwks_cache: dict[str, _CacheEntry] = {}
+
+
+def _pick_signing_alg(supported: list[str] | None) -> str:
+    """Choose a single asymmetric alg to pin from the discovery document.
+
+    Raises :class:`OidcError` if the provider advertises only symmetric
+    (HS*) algorithms -- we refuse to configure ourselves into a
+    key-confusion hole even before a single id_token is seen.
+    """
+    algs = supported or ["RS256"]
+    asymmetric = [a for a in algs if a.upper().startswith(_ASYMMETRIC_ALG_PREFIXES)]
+    if not asymmetric:
+        raise OidcError(
+            "provider does not advertise any asymmetric id_token signing "
+            f"algorithm (id_token_signing_alg_values_supported={algs!r})"
+        )
+    for preferred in _PREFERRED_ALGS:
+        if preferred in asymmetric:
+            return preferred
+    return asymmetric[0]
+
+
+async def discover(discovery_url: str) -> OidcMetadata:
+    """Fetch + TTL-cache the OpenID Provider discovery document."""
+    now = time.monotonic()
+    cached = _discovery_cache.get(discovery_url)
+    if cached is not None and cached.expires_at > now:
+        return cached.value
+
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+        try:
+            resp = await client.get(discovery_url)
+        except httpx.HTTPError as exc:
+            raise OidcError(
+                f"discovery request to {discovery_url!r} failed: {exc}", cause=exc
+            ) from exc
+
+    if resp.status_code != 200:
+        raise OidcError(
+            f"discovery endpoint {discovery_url!r} returned HTTP {resp.status_code}"
+        )
+    try:
+        doc = resp.json()
+    except ValueError as exc:
+        raise OidcError(
+            f"discovery document at {discovery_url!r} is not valid JSON"
+        ) from exc
+    if not isinstance(doc, dict):
+        raise OidcError(f"discovery document at {discovery_url!r} is not a JSON object")
+
+    try:
+        metadata = OidcMetadata(
+            issuer=doc["issuer"],
+            authorization_endpoint=doc["authorization_endpoint"],
+            token_endpoint=doc["token_endpoint"],
+            jwks_uri=doc["jwks_uri"],
+            id_token_signing_alg=_pick_signing_alg(
+                doc.get("id_token_signing_alg_values_supported")
+            ),
+        )
+    except KeyError as exc:
+        raise OidcError(
+            f"discovery document at {discovery_url!r} missing required field: {exc}"
+        ) from exc
+
+    _discovery_cache[discovery_url] = _CacheEntry(
+        value=metadata, expires_at=now + _DISCOVERY_TTL_SECONDS
+    )
+    return metadata
+
+
+def _has_kid(jwks: dict, kid: str) -> bool:
+    return any(k.get("kid") == kid for k in jwks.get("keys", []))
+
+
+async def fetch_jwks(jwks_uri: str, *, kid: str | None = None) -> dict:
+    """Fetch + TTL-cache the JWKS document at ``jwks_uri``.
+
+    If ``kid`` is given and is not present among the currently cached
+    keys, the cache is treated as stale (the provider likely rotated
+    its signing key) and a fresh copy is fetched immediately, bypassing
+    the TTL -- this keeps a rotation from stranding logins until the
+    next TTL expiry.
+    """
+    now = time.monotonic()
+    cached = _jwks_cache.get(jwks_uri)
+    if cached is not None and cached.expires_at > now:
+        if kid is None or _has_kid(cached.value, kid):
+            return cached.value
+
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+        try:
+            resp = await client.get(jwks_uri)
+        except httpx.HTTPError as exc:
+            raise OidcError(
+                f"JWKS request to {jwks_uri!r} failed: {exc}", cause=exc
+            ) from exc
+
+    if resp.status_code != 200:
+        raise OidcError(f"JWKS endpoint {jwks_uri!r} returned HTTP {resp.status_code}")
+    try:
+        doc = resp.json()
+    except ValueError as exc:
+        raise OidcError(f"JWKS document at {jwks_uri!r} is not valid JSON") from exc
+    if not isinstance(doc, dict) or "keys" not in doc:
+        raise OidcError(f"JWKS document at {jwks_uri!r} is missing a 'keys' array")
+
+    _jwks_cache[jwks_uri] = _CacheEntry(value=doc, expires_at=now + _JWKS_TTL_SECONDS)
+    return doc
+
+
+def make_pkce() -> tuple[str, str]:
+    """Generate a fresh PKCE (verifier, challenge) pair using S256.
+
+    Verifier is 32 random bytes, base64url-encoded (43 chars, no
+    padding). Challenge is base64url(sha256(verifier)), also unpadded.
+    """
+    verifier = (
+        base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
+    )
+    challenge = (
+        base64.urlsafe_b64encode(hashlib.sha256(verifier.encode("ascii")).digest())
+        .rstrip(b"=")
+        .decode("ascii")
+    )
+    return verifier, challenge
+
+
+def gen_state() -> str:
+    """Fresh high-entropy value for the OAuth ``state`` parameter."""
+    return secrets.token_urlsafe(32)
+
+
+def gen_nonce() -> str:
+    """Fresh high-entropy value for the OIDC ``nonce`` parameter."""
+    return secrets.token_urlsafe(32)
+
+
+def sign_state(payload: dict, secret: str) -> str:
+    """Sign a state payload (dict) for embedding as the ``state`` param."""
+    s = URLSafeTimedSerializer(secret, salt=_STATE_SALT)
+    return s.dumps(payload)
+
+
+def verify_state(token: str, secret: str, max_age: int) -> dict | None:
+    """Verify signature + age of a ``state`` token.
+
+    Returns ``None`` for any failure (missing/expired/forged/malformed)
+    -- callers only need the truthy/falsy distinction, mirroring
+    :func:`primer.auth.tokens.verify_session`.
+    """
+    if not token:
+        return None
+    s = URLSafeTimedSerializer(secret, salt=_STATE_SALT)
+    try:
+        payload = s.loads(token, max_age=max_age)
+    except (BadSignature, SignatureExpired):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload
+
+
+async def validate_id_token(
+    id_token: str,
+    *,
+    provider: OidcProvider,
+    metadata: OidcMetadata,
+    jwks: dict,
+    nonce: str,
+) -> dict:
+    """Validate an id_token per OIDC Core 3.1.3.7, returning verified claims.
+
+    Raises :class:`OidcError` on any failure. See the module docstring
+    for the full list of checks and the attack each one closes.
+    """
+    alg = metadata.id_token_signing_alg
+    if not alg.upper().startswith(_ASYMMETRIC_ALG_PREFIXES):
+        # Defense in depth: even if `metadata` was hand-built rather than
+        # produced by discover(), never verify with a symmetric/none alg.
+        raise OidcError(
+            f"refusing to validate id_token with non-asymmetric alg {alg!r}"
+        )
+
+    try:
+        header = jwt.get_unverified_header(id_token)
+    except jwt.PyJWTError as exc:
+        raise OidcError(f"malformed id_token header: {exc}") from exc
+
+    try:
+        jwk_set = jwt.PyJWKSet.from_dict(jwks)
+    except jwt.PyJWTError as exc:
+        raise OidcError(f"invalid JWKS document: {exc}") from exc
+
+    kid = header.get("kid")
+    if kid is not None:
+        try:
+            signing_key = jwk_set[kid]
+        except KeyError as exc:
+            raise OidcError(f"no JWKS key found for kid={kid!r}") from exc
+    elif len(jwk_set.keys) == 1:
+        signing_key = jwk_set.keys[0]
+    else:
+        raise OidcError(
+            "id_token header has no 'kid' and JWKS has multiple keys; "
+            "cannot unambiguously select a signing key"
+        )
+
+    try:
+        claims = jwt.decode(
+            id_token,
+            key=signing_key.key,
+            # Pinned from discovery metadata, NEVER from the token's own
+            # header -- this is what makes alg-confusion attacks
+            # (alg:none, HS256-with-public-RSA-key) impossible.
+            algorithms=[alg],
+            audience=provider.client_id,
+            issuer=metadata.issuer,
+            leeway=_EXP_LEEWAY_SECONDS,
+            options={"require": ["exp", "iat", "aud", "iss"]},
+        )
+    except jwt.PyJWTError as exc:
+        raise OidcError(f"id_token signature/claims validation failed: {exc}") from exc
+
+    # jwt.decode's `audience=` check only proves client_id is a MEMBER of
+    # aud (str or list) -- it does not reject a token also aimed at other
+    # clients. OIDC Core 3.1.3.7 #6 closes that gap: when aud names more
+    # than one client, azp must identify us specifically.
+    aud = claims.get("aud")
+    aud_list = aud if isinstance(aud, list) else [aud]
+    if len(aud_list) > 1 and claims.get("azp") != provider.client_id:
+        raise OidcError(
+            "id_token has multiple audiences but azp does not equal client_id"
+        )
+
+    if claims.get("nonce") != nonce:
+        raise OidcError("id_token nonce does not match the expected value")
+
+    return claims
+
+
+async def exchange_code(
+    *,
+    metadata: OidcMetadata,
+    provider: OidcProvider,
+    code: str,
+    code_verifier: str,
+    redirect_uri: str,
+) -> dict:
+    """Trade an authorization code for tokens at the provider's token_endpoint."""
+    body: dict[str, str] = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+        "client_id": provider.client_id,
+    }
+    auth: tuple[str, str] | None = None
+    if provider.client_secret is not None:
+        auth = (provider.client_id, provider.client_secret.get_secret_value())
+
+    async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS) as client:
+        try:
+            resp = await client.post(
+                metadata.token_endpoint,
+                data=body,
+                auth=auth,
+                headers={"Content-Type": "application/x-www-form-urlencoded"},
+            )
+        except httpx.HTTPError as exc:
+            raise OidcError(
+                f"token exchange request failed: {exc}", cause=exc
+            ) from exc
+
+    if resp.status_code >= 400:
+        raise OidcError(
+            f"token endpoint returned HTTP {resp.status_code}: {resp.text}"
+        )
+    try:
+        return resp.json()
+    except ValueError as exc:
+        raise OidcError("token endpoint response is not valid JSON") from exc
