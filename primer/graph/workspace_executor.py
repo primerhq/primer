@@ -116,7 +116,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             agent_resolver, workspace_session
         )
         wrapped_tool_manager_resolver = self._wrap_tool_manager_resolver(
-            tool_manager_resolver, workspace_session
+            tool_manager_resolver, workspace_session, identity
         )
         super().__init__(
             graph=graph,
@@ -131,6 +131,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         self._state_repo = state_repo
         self._graph_session_id = graph_session_id
         self._workspace_session = workspace_session
+        self._identity = identity
         # Override the base's in-memory context with real workspace ids so node
         # templates can reference {{ ctx.artifact_dir }} etc. Subgraph children
         # get their own scope automatically: _build_sub_executor constructs the
@@ -312,6 +313,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
     def _wrap_tool_manager_resolver(
         base: Callable[["Agent"], Awaitable[ToolExecutionManager]] | None,
         workspace_session: "AgentSession | None",
+        identity: "PrincipalRef | None" = None,
     ) -> Callable[["Agent"], Awaitable[ToolExecutionManager]] | None:
         """Compose the workspace's tools onto every per-node tool manager."""
         if workspace_session is None:
@@ -325,6 +327,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             return ToolExecutionManager.for_workspace(
                 toolset_providers=providers,
                 session=workspace_session,
+                initiated_by=identity,
             )
 
         return _resolve
@@ -611,6 +614,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             graph_resolver=self._graph_resolver,
             router_registry=self._router_registry,
             principal=self._principal,
+            identity=self._identity,
             toolset_resolver=self._toolset_resolver,
             approval_resolver=self._approval_resolver,
             # Inherit the parent's per-superstep fan-out cap (BE5).
