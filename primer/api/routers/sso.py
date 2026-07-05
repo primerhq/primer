@@ -533,7 +533,13 @@ async def sso_callback(
         id_token = token_response.get("id_token")
         if not id_token:
             raise oidc.OidcError("token endpoint response is missing id_token")
-        jwks = await oidc.fetch_jwks(metadata.jwks_uri)
+        # Pass the token's (unverified) kid so fetch_jwks can detect a
+        # provider key rotation and force a bounded refresh instead of
+        # failing closed on a signing key we haven't cached yet -- see
+        # the module docstring in primer/auth/oidc.py.
+        jwks = await oidc.fetch_jwks(
+            metadata.jwks_uri, kid=oidc.unverified_kid(id_token)
+        )
         claims = await oidc.validate_id_token(
             id_token, provider=provider, metadata=metadata, jwks=jwks, nonce=nonce,
         )
