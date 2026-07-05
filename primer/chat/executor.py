@@ -266,6 +266,7 @@ class ChatTurnRunner:
         cancel_event: asyncio.Event | None = None,
         artifact_storage: object | None = None,
         approval_record_storage: object | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -282,6 +283,16 @@ class ChatTurnRunner:
         # convert + store it so the tool_result row carries media parts the
         # channel relay can forward. None -> tool media is not surfaced.
         self._artifacts = artifact_storage
+        # Effective response_format the caller (dispatch) has already
+        # resolved as per-chat -> agent default (chat-refactor plan §6,
+        # Task A2). ``run_turn`` may override this per-call with an
+        # ephemeral (this-send-only) schema; ``_default_response_format``
+        # is kept separately as the fallback so a later turn WITHOUT an
+        # ephemeral override doesn't inherit a prior turn's override —
+        # this runner instance is reused across every queued turn in one
+        # dispatch drain (see ``run_one_chat_turn``'s while loop).
+        self._default_response_format = response_format
+        self._response_format = response_format
         # Pre-turn auto-compaction state.
         self._marker_persisted: bool = False
         # Last Usage event consumed from the LLM stream; populated by
@@ -309,6 +320,7 @@ class ChatTurnRunner:
         user_input: "str | list",
         *,
         already_persisted_user_msg: "ChatMessage | None" = None,
+        response_format: dict[str, Any] | None = None,
     ) -> AsyncIterator[ChatMessage]:
         """Persist + stream rows for one chat turn.
 
@@ -324,10 +336,25 @@ class ChatTurnRunner:
         ``last_seq`` so subsequent rows are appended after it. The
         ``chat.last_seq`` field is NOT updated to match (the caller
         should ensure it is already ≥ the row's seq before calling).
+
+        ``response_format``: an ephemeral (this-send-only) structured-
+        output schema, pre-resolved + re-validated by the caller from
+        the row being processed. When given it overrides the resolved
+        per-chat/agent-default schema for THIS turn only; ``None``
+        (default) leaves the constructor-resolved value standing.
         """
         # Stash the active chat id so ``_record_usage`` can route the
         # Usage event into the per-chat cache (spec §6.4).
         self._active_chat_id = chat.id
+        # Resolve THIS turn's effective response_format. Re-derived from
+        # the constructor default on every call (rather than mutated in
+        # place) so a prior turn's ephemeral override can't leak onto a
+        # later turn served by the same reused runner instance.
+        self._response_format = (
+            response_format
+            if response_format is not None
+            else self._default_response_format
+        )
 
         # Normalise to a list of Parts.
         if isinstance(user_input, str):
@@ -499,6 +526,7 @@ class ChatTurnRunner:
                     model=self._model.name,
                     messages=prompt,
                     tools=tools or None,
+                    response_format=self._response_format,
                 ):
                     async for row in self._handle_event(
                         event=event,
