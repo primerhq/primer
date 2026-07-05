@@ -1022,11 +1022,36 @@ async def _recv_loop(
                 {"kind": "error", "message": str(exc)},
             )
             continue
-        # Re-fetch the chat row so we have the latest last_seq.
+        # Optional client-generated id (a uuid per send). Carried through
+        # so the client can reconcile its optimistic "(queued)" placeholder
+        # with the realized row when it eventually arrives over the WS.
+        _cid = incoming.get("client_msg_id")
+        client_msg_id = _cid if isinstance(_cid, str) and _cid else None
+        # Re-fetch the chat row so we have the latest last_seq / turn_status.
         chat = await chats_storage.get(chat_id)
         if chat is None or chat.status == "ended":
             return
-        # Persist the user_message row + update chat.last_seq / title.
+        # Deferred-queue branch. When a turn is already active
+        # (claimable/running) we must NOT allocate this follow-up a seq
+        # mid-turn — that is exactly what collided with the in-flight
+        # turn's assistant_token seq and aborted the turn. Instead hold
+        # it on ``pending_user_messages`` (no seq); the dispatch loop
+        # realizes it AFTER the turn's terminal row. When idle, keep the
+        # original behaviour: append a real seq'd row + wake a worker.
+        if chat.turn_status in ("claimable", "running"):
+            pending = list(chat.pending_user_messages or [])
+            pending.append({
+                "parts": [p.model_dump(mode="json") for p in user_parts],
+                "attribution": None,
+                "client_msg_id": client_msg_id,
+                "queued_at": datetime.now(timezone.utc).isoformat(),
+            })
+            chat.pending_user_messages = pending
+            await chats_storage.update(chat)
+            # Do NOT publish chat-claimable: no new claimable work landed;
+            # the client already renders this optimistically.
+            continue
+        # Idle: persist the user_message row + update chat.last_seq / title.
         # Delegate to the canonical service helper so the WS path and
         # the trigger dispatcher write user_messages identically.
         from primer.chat.enqueue import append_user_message
@@ -1035,6 +1060,7 @@ async def _recv_loop(
             chat=chat,
             parts=user_parts,
             storage_provider=storage_provider,
+            client_msg_id=client_msg_id,
         )
         # Flip turn_status to claimable and wake workers.
         latest = await chats_storage.get(chat_id)

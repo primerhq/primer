@@ -62,6 +62,69 @@ async def _apply_switch_handoff(
     return "claimable"  # re-serve: new claim runs the new agent
 
 
+async def _realize_pending_messages(
+    deps: "ChatDispatchDeps",
+    chat_id: str,
+) -> bool:
+    """Realize deferred follow-ups (``Chat.pending_user_messages``) into
+    real seq'd user_messages once the active turn has completed.
+
+    Called at the drain-empty checkpoint — AFTER the completed turn's
+    terminal row and BEFORE the chat would otherwise go idle. Each
+    pending entry is appended via ``append_user_message`` in order, so it
+    gets the next real seq (strictly greater than the terminal row),
+    which fixes BOTH the seq-collision (no seq is assigned mid-turn) and
+    the ordering (the follow-up sorts AFTER the response). The
+    ``client_msg_id`` is carried onto the realized row so the client can
+    reconcile its optimistic "(queued)" placeholder.
+
+    Returns True when at least one message was realized (the caller
+    continues its drain loop so the realized rows run as the next
+    turn(s)); False when there was nothing to realize.
+    """
+    from primer.chat.enqueue import append_user_message
+
+    chat_storage = deps.storage_provider.get_storage(Chat)
+    chat = await chat_storage.get(chat_id)
+    if chat is None or not chat.pending_user_messages:
+        return False
+
+    pending = list(chat.pending_user_messages)
+    # Clear on the in-memory copy first so the per-append chat persists
+    # (append_user_message writes the whole row) don't keep re-persisting
+    # the now-draining queue.
+    chat.pending_user_messages = []
+    realized_any = False
+    max_seq = chat.last_seq
+    for entry in pending:
+        raw_parts = entry.get("parts") or []
+        if not raw_parts:
+            continue
+        row = await append_user_message(
+            chat=chat,
+            parts=raw_parts,
+            storage_provider=deps.storage_provider,
+            attribution=entry.get("attribution") or None,
+            client_msg_id=entry.get("client_msg_id"),
+        )
+        max_seq = max(max_seq, row.seq)
+        realized_any = True
+
+    if not realized_any:
+        # The queue held only unusable (part-less) entries: still clear it
+        # so the drain loop doesn't spin re-reading the same junk.
+        fresh = await chat_storage.get(chat_id)
+        if fresh is not None and fresh.pending_user_messages:
+            fresh.pending_user_messages = []
+            await chat_storage.update(fresh)
+        return False
+
+    # Publish a tick so the client receives the realized rows promptly
+    # (carrying client_msg_id) even before the next turn's first token.
+    await deps.event_bus.publish(f"chat:{chat_id}:tick", {"seq": max_seq})
+    return True
+
+
 @dataclass
 class ChatDispatchDeps:
     """Bundle of runtime dependencies the worker injects per task."""
@@ -277,6 +340,18 @@ async def run_one_chat_turn(
                 continue
             next_um = await _find_next_user_message(deps, chat_id)
             if next_um is None:
+                # Deferred-queue realization. The FIFO queue is drained
+                # (the just-completed turn's terminal row has landed);
+                # BEFORE going idle, realize any follow-ups that were
+                # queued while this turn was active into real seq'd
+                # user_messages ordered AFTER that terminal row, then loop
+                # so they run as the next turn(s) on this same claim. This
+                # is the structural fix: no seq is ever assigned to a
+                # follow-up mid-turn, so it can never collide with an
+                # in-flight assistant_token, and it always sorts after the
+                # response. See Chat.pending_user_messages.
+                if await _realize_pending_messages(deps, chat_id):
+                    continue
                 final = await chat_storage.get(chat_id)
                 if final is not None and final.cancel_requested_at is not None:
                     final.cancel_requested_at = None

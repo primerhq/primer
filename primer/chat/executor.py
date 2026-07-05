@@ -1257,12 +1257,23 @@ class ChatTurnRunner:
         ``cancel_requested_at`` (an interrupt frame) and ``agent_id`` (a
         mid-chat agent switch). Without this the running turn's writes would
         clobber them.
+
+        Also refreshes ``last_seq`` to ``max(in-memory, storage)`` as
+        defense in depth: should storage's counter ever move ahead of this
+        turn's stale in-memory copy (a concurrent writer), the next
+        ``_append`` computes its seq from the refreshed value and can
+        never re-use an already-taken seq (which would raise a composite
+        (chat_id, seq) ConflictError and abort the turn). Also carries
+        forward the deferred follow-up queue so a turn's persist doesn't
+        clobber a follow-up that landed on ``pending_user_messages``.
         """
         latest = await self._chats.get(chat.id)
         if latest is not None:
             chat.cancel_requested_at = latest.cancel_requested_at
             chat.agent_id = latest.agent_id
             chat.pending_handoff = latest.pending_handoff
+            chat.pending_user_messages = latest.pending_user_messages
+            chat.last_seq = max(chat.last_seq, latest.last_seq)
         await self._chats.update(chat)
 
     async def _sanitize_unsupported_attachments(self, chat: Chat) -> int:
