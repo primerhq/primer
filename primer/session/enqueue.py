@@ -24,8 +24,14 @@ from typing import Any
 
 from primer.int.claim import ClaimKind
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.model.workspace_session import (
+    SessionMessageKind,
+    SessionMessageRecord,
+    SessionStatus,
+    WorkspaceSession,
+)
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.persistence import WorkspaceMessageWriter
 
 logger = logging.getLogger(__name__)
 
@@ -80,18 +86,38 @@ async def wake_session(
                 f"Session {session_id!r} has ended; restart it to re-open."
             )
 
-        # 1. Append the user message to the on-disk slot FIFO (the queue).
+        # 1. Append the user message to the on-disk slot FIFO (the queue) and
+        #    persist a USER_INPUT record to messages.jsonl so the sent message
+        #    shows in the session transcript. The slot FIFO is the worker's
+        #    queue; messages.jsonl is the display log — separate surfaces, so
+        #    the USER_INPUT record is written even when the slot is absent
+        #    (mirrors the chat lane's append_user_message + reset_session's
+        #    divider write via WorkspaceMessageWriter). Exactly one record per
+        #    supplied instruction, so a steer/invoke never double-records.
+        user_input_seq: int | None = None
         if instruction:
             ws = await deps.workspace_registry.get_workspace(workspace_id)
             slot = await ws.get_session(session_id)
             if slot is not None:
                 await slot.append_instruction(instruction)
+            writer = WorkspaceMessageWriter(
+                workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
+            )
+            user_input_seq = await writer.append(SessionMessageRecord(
+                seq=1,  # overwritten by the writer's monotonic counter
+                kind=SessionMessageKind.USER_INPUT,
+                payload={"text": instruction},
+                created_at=datetime.now(timezone.utc),
+            ))
+            await writer.flush()
 
         # 2. Re-arm the scheduler-visible row: claimable + clear pause;
         #    CREATED/PAUSED/WAITING advance to RUNNING (like /resume).
         row.turn_status = "claimable"
         row.pause_requested = False
         row.pause_requested_at = None
+        if user_input_seq is not None:
+            row.last_seq = user_input_seq
         if row.status in _RESUMABLE:
             row.status = SessionStatus.RUNNING
             if row.started_at is None:
@@ -112,6 +138,19 @@ async def wake_session(
                     "wake_session: failed to publish claimable for %s",
                     session_id,
                 )
+            # Tick so the workspace tap surfaces the just-persisted USER_INPUT
+            # record live (reset_session publishes the same event for its
+            # invocation divider). Advisory — never break the wake.
+            if user_input_seq is not None:
+                try:
+                    await deps.event_bus.publish(
+                        f"session:{session_id}:tick", {"seq": user_input_seq}
+                    )
+                except Exception:  # noqa: BLE001 -- advisory
+                    logger.exception(
+                        "wake_session: failed to publish tick for %s",
+                        session_id,
+                    )
         return row
 
 

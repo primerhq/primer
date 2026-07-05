@@ -43,9 +43,15 @@ class _FakeSlot:
 class _FakeWorkspace:
     def __init__(self, slot):
         self._slot = slot
+        # Captures messages.jsonl lines the WorkspaceMessageWriter appends
+        # (wake_session persists a USER_INPUT record via workspace_io).
+        self.message_lines: list[bytes] = []
 
     async def get_session(self, sid):
         return self._slot
+
+    async def append_message_line(self, session_id, line):
+        self.message_lines.append(line)
 
 
 class _FakeRegistry:
