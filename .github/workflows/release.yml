@@ -177,15 +177,37 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build + push primer
+      # Fat image (default): batteries-included, every optional backend
+      # (huggingface, docling, lance, channels, docker, kubernetes). The
+      # unsuffixed :{version} / :latest tags stay = fat for backward compat.
+      - name: Build + push primer (fat)
         uses: docker/build-push-action@v7
         with:
           context: .
           file: ./Dockerfile
           push: true
+          build-args: |
+            UV_SYNC_EXTRAS=--all-extras
           tags: |
             ghcr.io/primerhq/primer:${{ needs.release.outputs.version }}
             ghcr.io/primerhq/primer:latest
+            ghcr.io/primerhq/primer:${{ needs.release.outputs.version }}-fat
+            ghcr.io/primerhq/primer:latest-fat
+      # Slim image: core + the light operational extras only (kubernetes,
+      # docker, channels, lance); drops the multi-GB huggingface + docling
+      # torch stack. BootstrapRunner self-skips the dep-backed default
+      # providers whose extra is absent, so it boots cleanly.
+      - name: Build + push primer (slim)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          build-args: |
+            UV_SYNC_EXTRAS=--extra kubernetes --extra docker --extra channels --extra lance
+          tags: |
+            ghcr.io/primerhq/primer:${{ needs.release.outputs.version }}-slim
+            ghcr.io/primerhq/primer:latest-slim
       - name: Build + push primer-runtime
         uses: docker/build-push-action@v7
         with:
