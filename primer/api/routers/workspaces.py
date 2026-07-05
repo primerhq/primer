@@ -1491,6 +1491,48 @@ async def list_pending_yields(
     return {"items": items}
 
 
+@yields_pending_router.get(
+    "/workspaces/{workspace_id}/sessions/{session_id}/yields/pending",
+    summary="Pending yields for one session (inline session-stream affordances)",
+    responses=common_responses(404, 500),
+)
+async def list_session_pending_yields(
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    session_storage=Depends(get_session_storage),
+) -> dict:
+    """Return the pending yield(s) for a single session.
+
+    Same item shape as the aggregated ``/workspaces/{wid}/yields/pending``
+    but scoped to one session, so the run-view can render Approve/Deny /
+    respond affordances inline in the stream while the right sidebar keeps
+    the global Action-Required list (studio-agents-interact §5.4 / §4.5).
+    """
+    sess = await session_storage.get(session_id)
+    if sess is None or sess.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    items: list[dict] = []
+    if sess.parked_status == "parked":
+        blob: dict = sess.parked_state or {}
+        yielded_blob: dict = blob.get("yielded") or {}
+        tool_name: str = yielded_blob.get("tool_name") or ""
+        metadata: dict = yielded_blob.get("resume_metadata") or {}
+        items.append({
+            "session_id": sess.id,
+            "kind": _extract_yield_kind(tool_name),
+            "prompt": _extract_yield_prompt(tool_name, metadata),
+            "tool_call_id": _tool_call_id_from_blob(blob),
+            "parked_at": (
+                sess.parked_at.isoformat()
+                if sess.parked_at is not None else None
+            ),
+        })
+    return {"items": items}
+
+
 # ===========================================================================
 # Workspace events history sub-resource (Studio activity backfill)
 # ===========================================================================
