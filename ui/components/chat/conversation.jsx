@@ -661,6 +661,56 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     }
   }, [cid, compactInFlight, apiFetch, pushToast]);
 
+  // Task F3 (R4): compaction guard for the rewind affordance — the
+  // highest `seq` among loaded `compaction_marker` rows. <Transcript>
+  // gates the rewind icon per-message against this boundary (only
+  // rendered on a user_message whose seq is AFTER it) rather than
+  // re-scanning `messages` itself, mirroring the server's own guard
+  // (A7 422s a rewind at/behind this same seq — rewinding into
+  // compacted history would desync the marker's summary from the
+  // history it replaced).
+  const compactionBoundarySeq = React.useMemo(() => {
+    let boundary = 0;
+    for (const m of messages) {
+      if (m.kind === "compaction_marker" && typeof m.seq === "number" && m.seq > boundary) {
+        boundary = m.seq;
+      }
+    }
+    return boundary;
+  }, [messages]);
+
+  // Task F3 (R4): rewind to an earlier user message. <Transcript>'s
+  // CT_RewindButton already confirmed (window.confirm) and gated on the
+  // compaction boundary + turn_status before calling this — this just
+  // POSTs A7's truncation endpoint and drops the locally-held rows after
+  // the kept seq (cheaper than a full REST refetch; the server's success
+  // response already tells us exactly what was kept/deleted, and A7's
+  // pre-flight guards mean there's nothing to reconcile on failure).
+  const handleRewind = React.useCallback(async (seq) => {
+    try {
+      const result = await apiFetch("POST", `/chats/${encodeURIComponent(cid)}/rewind`, { seq });
+      const keptSeq = (result && typeof result.truncated_to_seq === "number") ? result.truncated_to_seq : seq;
+      setMessages((prev) => prev.filter((m) => typeof m.seq !== "number" || m.seq <= keptSeq));
+      setLastSeq(keptSeq);
+      if (typeof pushToast === "function") {
+        pushToast({
+          kind: "success",
+          title: "Rewound",
+          detail: `Discarded ${result?.deleted ?? 0} message(s)`,
+        });
+      }
+    } catch (err) {
+      if (typeof pushToast === "function") {
+        pushToast({
+          kind: "error",
+          title: err?.title || "Rewind failed",
+          detail: err?.detail || err?.message,
+          requestId: err?.requestId,
+        });
+      }
+    }
+  }, [cid, apiFetch, pushToast]);
+
   // Stop button (Task C2, backend A6) — POSTs the REST cancel endpoint
   // rather than sending a WS `interrupt` frame so it works even if the
   // socket has dropped. A 409 means the turn already finished/idled
@@ -930,6 +980,8 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
           turnStatus={chatRow?.turn_status}
           pendingToolCall={chatRow?.pending_tool_call}
           sendMessage={sendMessage}
+          onRewind={handleRewind}
+          compactionBoundarySeq={compactionBoundarySeq}
           scrollRef={scrollRef}
           onScroll={onScroll}
           loadingOlder={loadingOlder}
