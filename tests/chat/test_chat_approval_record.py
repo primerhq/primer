@@ -25,6 +25,10 @@ class _FakeTools:
         return ToolResultPart(id=call.id, output="ran", error=False)
 
 
+class _Agent:
+    id = "agt"
+
+
 def _pending(tcid="ctc-1"):
     return {
         "tool_call_id": tcid,
@@ -42,7 +46,7 @@ async def _runner_and_storage():
     msgs = sp.get_storage(ChatMessage)
     records = sp.get_storage(ToolApprovalRecord)
     runner = ChatTurnRunner(
-        agent=object(),
+        agent=_Agent(),
         llm=object(),
         llm_model=object(),
         tool_manager=_FakeTools(),
