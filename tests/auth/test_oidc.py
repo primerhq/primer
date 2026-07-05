@@ -19,7 +19,7 @@ import httpx
 import jwt
 import pytest
 import respx
-from jwt.algorithms import RSAAlgorithm
+from jwt.algorithms import ECAlgorithm, RSAAlgorithm
 
 from primer.auth import oidc
 from primer.model.oidc import OidcProvider
@@ -50,16 +50,28 @@ def other_rsa_keypair():
     return private_key, private_key.public_key()
 
 
-def _jwk_dict(public_key, kid: str) -> dict:
-    jwk = json.loads(RSAAlgorithm.to_jwk(public_key))
+@pytest.fixture(scope="module")
+def ec_keypair():
+    """EC (P-256) keypair -- used to prove the full asymmetric-alg-subset
+    pin actually accepts a second asymmetric algorithm (ES256), not just
+    the single preferred RS256."""
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    private_key = ec.generate_private_key(ec.SECP256R1())
+    return private_key, private_key.public_key()
+
+
+def _jwk_dict(public_key, kid: str, *, alg: str = "RS256") -> dict:
+    to_jwk = ECAlgorithm.to_jwk if alg.upper().startswith("ES") else RSAAlgorithm.to_jwk
+    jwk = json.loads(to_jwk(public_key))
     jwk["kid"] = kid
     jwk["use"] = "sig"
-    jwk["alg"] = "RS256"
+    jwk["alg"] = alg
     return jwk
 
 
-def _jwks(public_key, kid: str = KID) -> dict:
-    return {"keys": [_jwk_dict(public_key, kid)]}
+def _jwks(public_key, kid: str = KID, *, alg: str = "RS256") -> dict:
+    return {"keys": [_jwk_dict(public_key, kid, alg=alg)]}
 
 
 def _provider(client_id: str = CLIENT_ID) -> OidcProvider:
@@ -77,7 +89,7 @@ def _metadata(**overrides) -> oidc.OidcMetadata:
         "authorization_endpoint": "https://idp.example.com/authorize",
         "token_endpoint": "https://idp.example.com/token",
         "jwks_uri": "https://idp.example.com/jwks.json",
-        "id_token_signing_alg": "RS256",
+        "id_token_signing_algs": ["RS256"],
     }
     fields.update(overrides)
     return oidc.OidcMetadata(**fields)
@@ -94,6 +106,17 @@ def _claims(*, nonce: str = "expected-nonce", aud=None, iss=None, exp_delta: int
         "nonce": nonce,
     }
     claims.update(overrides)
+    return claims
+
+
+def _claims_without(*keys: str, **kwargs) -> dict:
+    """``_claims()`` with the given claim(s) removed entirely -- for
+    proving `options={"require": [...]}` actually rejects an *absent*
+    claim (as opposed to one present-but-falsy, which "require" does not
+    catch)."""
+    claims = _claims(**kwargs)
+    for key in keys:
+        claims.pop(key, None)
     return claims
 
 
@@ -187,9 +210,29 @@ class TestDiscover:
         assert metadata.authorization_endpoint == doc["authorization_endpoint"]
         assert metadata.token_endpoint == doc["token_endpoint"]
         assert metadata.jwks_uri == doc["jwks_uri"]
-        # RS256 preferred over HS256 -- HS256 is symmetric and must never
-        # be selected even when the provider advertises it as a fallback.
-        assert metadata.id_token_signing_alg == "RS256"
+        # HS256 is symmetric and must never be pinned, even alongside an
+        # asymmetric alg the provider also advertises.
+        assert metadata.id_token_signing_algs == ["RS256"]
+
+    @respx.mock
+    async def test_parses_full_asymmetric_alg_subset(self):
+        """A provider advertising more than one asymmetric alg must have
+        ALL of them pinned -- not just a single "preferred" one -- so we
+        don't lock out a provider that (e.g.) uses RS256 for some keys
+        and ES256 for others."""
+        url = f"https://idp-{uuid.uuid4().hex}.example.com/.well-known/openid-configuration"
+        doc = {
+            "issuer": "https://idp.example.com/",
+            "authorization_endpoint": "https://idp.example.com/authorize",
+            "token_endpoint": "https://idp.example.com/token",
+            "jwks_uri": "https://idp.example.com/jwks.json",
+            "id_token_signing_alg_values_supported": ["RS256", "ES256", "HS256"],
+        }
+        respx.get(url).mock(return_value=httpx.Response(200, json=doc))
+
+        metadata = await oidc.discover(url)
+
+        assert metadata.id_token_signing_algs == ["RS256", "ES256"]
 
     @respx.mock
     async def test_caches_repeat_calls(self):
@@ -414,6 +457,95 @@ class TestValidateIdToken:
                 provider=_provider(),
                 metadata=_metadata(),
                 jwks=_jwks(pub),
+                nonce="expected-nonce",
+            )
+
+    async def test_rejects_missing_sub(self, rsa_keypair):
+        priv, pub = rsa_keypair
+        # `sub` is the account-matching key -- a token without one must
+        # never reach account-matching logic downstream.
+        token = _sign(priv, _claims_without("sub"))
+
+        with pytest.raises(oidc.OidcError):
+            await oidc.validate_id_token(
+                token,
+                provider=_provider(),
+                metadata=_metadata(),
+                jwks=_jwks(pub),
+                nonce="expected-nonce",
+            )
+
+    async def test_rejects_empty_expected_nonce_even_if_token_omits_nonce(
+        self, rsa_keypair
+    ):
+        """An empty/falsy expected nonce must never be treated as
+        satisfied. A caller that (by bug) generates/stores an
+        empty-string nonce, paired with a token that also has no nonce
+        claim, must still be rejected -- a blank nonce provides no
+        session-binding at all."""
+        priv, pub = rsa_keypair
+        token = _sign(priv, _claims_without("nonce"))
+
+        with pytest.raises(oidc.OidcError):
+            await oidc.validate_id_token(
+                token,
+                provider=_provider(),
+                metadata=_metadata(),
+                jwks=_jwks(pub),
+                nonce="",
+            )
+
+    async def test_accepts_es256_when_provider_advertises_multiple_asymmetric_algs(
+        self, ec_keypair
+    ):
+        """Proves the full-asymmetric-alg-subset pin: a provider that
+        advertises both RS256 and ES256 must have an ES256-signed token
+        accepted, not just RS256 -- pinning a single "preferred" alg
+        would otherwise lock this provider's ES256-signed tokens out."""
+        priv, pub = ec_keypair
+        token = _sign(priv, _claims(), alg="ES256")
+
+        claims = await oidc.validate_id_token(
+            token,
+            provider=_provider(),
+            metadata=_metadata(id_token_signing_algs=["RS256", "ES256"]),
+            jwks=_jwks(pub, alg="ES256"),
+            nonce="expected-nonce",
+        )
+
+        assert claims["sub"] == "user-123"
+
+    async def test_multi_alg_provider_still_rejects_alg_none(self, ec_keypair):
+        _, pub = ec_keypair
+        token = jwt.encode(_claims(), key="", algorithm="none", headers={"kid": KID})
+
+        with pytest.raises(oidc.OidcError):
+            await oidc.validate_id_token(
+                token,
+                provider=_provider(),
+                metadata=_metadata(id_token_signing_algs=["RS256", "ES256"]),
+                jwks=_jwks(pub, alg="ES256"),
+                nonce="expected-nonce",
+            )
+
+    async def test_multi_alg_provider_still_rejects_hs256(self, ec_keypair):
+        _, pub = ec_keypair
+        # HS256 is symmetric -- even though it's not in the pinned list,
+        # this proves an HS256-signed token is rejected outright rather
+        # than accidentally verified against the EC public key bytes.
+        token = jwt.encode(
+            _claims(),
+            "some-hmac-secret-that-is-at-least-32-bytes-long",
+            algorithm="HS256",
+            headers={"kid": KID},
+        )
+
+        with pytest.raises(oidc.OidcError):
+            await oidc.validate_id_token(
+                token,
+                provider=_provider(),
+                metadata=_metadata(id_token_signing_algs=["RS256", "ES256"]),
+                jwks=_jwks(pub, alg="ES256"),
                 nonce="expected-nonce",
             )
 
