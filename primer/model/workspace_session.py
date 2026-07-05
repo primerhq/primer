@@ -518,6 +518,10 @@ class SessionMessageKind(StrEnum):
     #    "status": str | None}`` (status populated on exit with the node
     # outcome, None on enter).
     GRAPH_TRANSITION = "graph_transition"
+    # Written by reset_session on ENDED->CREATED re-open. Payload:
+    # ``{"invocation": int}``. Rendered by the UI session adapter as a
+    # "— invocation N —" divider row (studio-agents-interact §5.2 / §3).
+    INVOCATION_DIVIDER = "invocation_divider"
 
 
 class SessionMessageRecord(BaseModel):
