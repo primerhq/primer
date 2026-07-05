@@ -96,6 +96,7 @@ async def start_workspace_session(
     auto_start: bool,
     metadata: dict | None,
     parent_session_id: str | None,
+    autonomous: bool | None = None,
     deps: SessionFactoryDeps,
     name: str | None = None,
     initiated_by: PrincipalRef | None = None,
@@ -252,6 +253,7 @@ async def start_workspace_session(
         auto_start=auto_start,
         metadata=metadata,
         parent_session_id=parent_session_id,
+        autonomous=autonomous,
         session_id=sid,
         name=name,
         initiated_by=initiated_by,
@@ -275,6 +277,7 @@ async def create_session(
     deps: SessionFactoryDeps,
     parent_session_id: str | None = None,
     session_id: str | None = None,
+    autonomous: bool | None = None,
     name: str | None = None,
     initiated_by: PrincipalRef | None = None,
 ) -> WorkspaceSession:
@@ -337,6 +340,7 @@ async def create_session(
         parent_session_id=parent_session_id,
         initial_instructions=initial_instructions,
         metadata=md,
+        autonomous=autonomous,
         initiated_by=initiated_by,
         created_at=now,
     )

@@ -24,7 +24,7 @@ Sessions:
     create_workspace_session, cancel_workspace_session,
     list_workspace_sessions, get_workspace_session,
     pause_workspace_session, resume_workspace_session,
-    steer_workspace_session
+    steer_workspace_session, restart_workspace_session
 
 Files:
     list_workspace_files, get_workspace_file_info,
@@ -143,6 +143,7 @@ class _CreateSessionArgs(BaseModel):
     binding: SessionBinding
     initial_instructions: str | None = None
     auto_start: bool = True
+    autonomous: bool | None = None
     graph_input: Any | None = None
     parent_session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -155,6 +156,13 @@ class _WorkspaceSessionArgs(BaseModel):
 
 class _SteerArgs(_WorkspaceSessionArgs):
     instruction: str = Field(..., min_length=1)
+
+
+class _RestartArgs(_WorkspaceSessionArgs):
+    input: str | None = Field(
+        default=None,
+        description="Optional new initial input for the re-opened session.",
+    )
 
 
 class _WorkspaceListSessionsArgs(BaseModel):
@@ -1088,6 +1096,7 @@ def build_workspaces_toolset(
                 auto_start=args.auto_start,
                 metadata=args.metadata,
                 parent_session_id=args.parent_session_id,
+                autonomous=args.autonomous,
                 initiated_by=(
                     getattr(ctx, "initiated_by", None) or PrincipalRef.system()
                 ),
@@ -1355,26 +1364,36 @@ def build_workspaces_toolset(
     registry[name] = entry
 
     async def _steer_session(arguments: dict[str, Any]) -> ToolCallResult:
+        if scheduler is None or claim_engine is None:
+            return _err(
+                "session tools unavailable: scheduler/claim_engine not wired",
+                error_type="unavailable",
+            )
         try:
             args = _SteerArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
+        from primer.session.enqueue import SessionWakeDeps, wake_session
+
+        deps = SessionWakeDeps(
+            storage_provider=storage_provider,
+            scheduler=scheduler,
+            claim_engine=claim_engine,
+            workspace_registry=workspace_registry,
+            event_bus=event_bus,
+        )
         try:
-            ws = await workspace_registry.get_workspace(args.workspace_id)
+            row = await wake_session(
+                workspace_id=args.workspace_id,
+                session_id=args.session_id,
+                instruction=args.instruction,
+                deps=deps,
+            )
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")
-        session = await ws.get_session(args.session_id)
-        if session is None:
-            return _err(
-                f"Session {args.session_id!r} does not exist on "
-                f"workspace {args.workspace_id!r}",
-                error_type="not-found",
-            )
-        try:
-            instruction = await session.append_instruction(args.instruction)
-        except PrimerError as exc:
+        except ConflictError as exc:
             return _err_from_primer(exc, error_type="conflict")
-        return _ok(instruction.model_dump(mode="json"))
+        return _ok(row.model_dump(mode="json"))
 
     name, entry = _tool(
         "steer_workspace_session",
@@ -1398,6 +1417,72 @@ def build_workspaces_toolset(
                     "instruction": "Focus on the failing test first.",
                 },
                 returns="the appended Instruction object",
+            ),
+        ],
+        required_role="user",
+    )
+    registry[name] = entry
+
+    async def _restart_session(arguments: dict[str, Any]) -> ToolCallResult:
+        if scheduler is None or claim_engine is None:
+            return _err(
+                "session tools unavailable: scheduler/claim_engine not wired",
+                error_type="unavailable",
+            )
+        try:
+            args = _RestartArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        from primer.session.enqueue import SessionWakeDeps
+        from primer.session.reset import SessionResetDeps, restart_session
+
+        try:
+            row = await restart_session(
+                workspace_id=args.workspace_id,
+                session_id=args.session_id,
+                instruction=args.input,
+                reset_deps=SessionResetDeps(
+                    storage_provider=storage_provider,
+                    workspace_registry=workspace_registry,
+                    event_bus=event_bus,
+                ),
+                wake_deps=SessionWakeDeps(
+                    storage_provider=storage_provider,
+                    scheduler=scheduler,
+                    claim_engine=claim_engine,
+                    workspace_registry=workspace_registry,
+                    event_bus=event_bus,
+                ),
+            )
+        except NotFoundError as exc:
+            return _err_from_primer(exc, error_type="not-found")
+        except ConflictError as exc:
+            return _err_from_primer(exc, error_type="conflict")
+        return _ok(row.model_dump(mode="json"))
+
+    name, entry = _tool(
+        "restart_workspace_session",
+        (
+            "Re-open an ended session and re-invoke it on the same "
+            "workspace. Works for completed, failed, or cancelled sessions; "
+            "appends an 'invocation N' divider to the same stream and "
+            "returns the re-armed session."
+        ),
+        (
+            "Use when you want to run an ended session again (optionally "
+            "with new input) without creating a new one; not to steer a "
+            "live session (use ``steer_workspace_session``)."
+        ),
+        _RestartArgs,
+        _restart_session,
+        examples=[
+            ToolExample(
+                args={
+                    "workspace_id": "ws-1",
+                    "session_id": "sess-1",
+                    "input": "run again with the new config",
+                },
+                returns="the re-armed session {status:\"running\"}",
             ),
         ],
         required_role="user",
