@@ -172,6 +172,23 @@ class Chat(Identifiable):
             "pending_tool_call (which awaits a human reply)."
         ),
     )
+    pending_user_messages: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Deferred-queue: follow-up user_messages received over the WS "
+            "recv loop WHILE a turn is active (turn_status in "
+            "{'claimable','running'}). They are NOT assigned a seq at "
+            "receipt — that is what collided with the in-flight turn's "
+            "assistant_token seq allocation and aborted the turn. Instead "
+            "each is held here as a raw dict "
+            "``{parts, attribution, client_msg_id, queued_at}`` and "
+            "REALIZED (drained via append_user_message, ordered AFTER the "
+            "turn's terminal row) by the dispatch loop once the current "
+            "turn completes. Cleared on realization. The client renders "
+            "these optimistically with a '(queued)' badge and reconciles "
+            "by ``client_msg_id`` when the realized row arrives."
+        ),
+    )
     channel_binding: ChatChannelBinding | None = Field(
         default=None,
         description=(

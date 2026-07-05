@@ -42,3 +42,30 @@ async def test_append_preserves_externally_switched_agent_id():
     assert chats.updated is not None
     assert chats.updated.agent_id == "agent-B"
     assert chats.updated.last_seq == 6
+
+
+@pytest.mark.asyncio
+async def test_persist_chat_refreshes_last_seq_from_storage():
+    """Defense in depth: if storage's last_seq has moved ahead of this
+    turn's stale in-memory counter, `_persist_chat` refreshes it to the
+    max so the next `_append` can never reuse an already-taken seq."""
+    stored = Chat(id="chat-1", agent_id="a", created_at=_now(), last_seq=9)
+    chats = _Chats(stored)
+    runner = _runner(chats, _Msgs())
+    stale = Chat(id="chat-1", agent_id="a", created_at=_now(), last_seq=4)
+    await runner._persist_chat(stale)
+    assert chats.updated is not None
+    assert chats.updated.last_seq == 9
+
+
+@pytest.mark.asyncio
+async def test_persist_chat_keeps_higher_in_memory_last_seq():
+    """The refresh takes the max — it must never REGRESS a fresher
+    in-memory last_seq back to a stale storage value."""
+    stored = Chat(id="chat-1", agent_id="a", created_at=_now(), last_seq=3)
+    chats = _Chats(stored)
+    runner = _runner(chats, _Msgs())
+    current = Chat(id="chat-1", agent_id="a", created_at=_now(), last_seq=7)
+    await runner._persist_chat(current)
+    assert chats.updated is not None
+    assert chats.updated.last_seq == 7

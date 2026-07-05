@@ -848,8 +848,19 @@ function ChatDetail({ chatId, onBack, pushToast }) {
         if (typeof msg.seq === "number") {
           if (msg.seq > latestSeq) latestSeq = msg.seq;
           setMessages((prev) => {
-            if (prev.some((p) => p.seq === msg.seq)) return prev;
-            return [...prev, msg];
+            // Reconcile an optimistic "(queued)" placeholder: a realized
+            // follow-up row carries the same client_msg_id we stamped on
+            // the placeholder. Drop the placeholder (it has no seq, so
+            // the seq de-dupe below never catches it) before appending
+            // the real row. Supports multiple queued messages.
+            let base = prev;
+            if (msg.kind === "user_message" && msg.client_msg_id) {
+              base = prev.filter(
+                (p) => !(p.queued && p.client_msg_id === msg.client_msg_id),
+              );
+            }
+            if (base.some((p) => typeof p.seq === "number" && p.seq === msg.seq)) return base;
+            return [...base, msg];
           });
           setLastSeq((prev) => (msg.seq > prev ? msg.seq : prev));
           // The agent is now producing output (or finished); drop the
@@ -939,17 +950,43 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       }
       return false;
     }
-    const frame = { kind: "user_message" };
+    // Per-send client id (uuid) so we can reconcile an optimistic
+    // "(queued)" placeholder with the realized seq'd row when it later
+    // arrives over the WS carrying the same id.
+    const clientMsgId = (typeof crypto !== "undefined" && crypto.randomUUID)
+      ? crypto.randomUUID()
+      : `cmid-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    const parts = (atts && atts.length > 0)
+      ? atts.map((a) => ({
+          type: a.kind,           // "image" or "document"
+          data: a.dataB64,
+          mime_type: a.mime,
+          ...(a.kind === "document" && a.name ? { filename: a.name } : {}),
+        }))
+      : null;
+    const frame = { kind: "user_message", client_msg_id: clientMsgId };
     if (text) frame.content = text;
-    if (atts && atts.length > 0) {
-      frame.parts = atts.map((a) => ({
-        type: a.kind,           // "image" or "document"
-        data: a.dataB64,
-        mime_type: a.mime,
-        ...(a.kind === "document" && a.name ? { filename: a.name } : {}),
-      }));
-    }
+    if (parts) frame.parts = parts;
     ws.send(JSON.stringify(frame));
+    // If a turn is already in flight the server DEFERS this message
+    // (holds it on pending_user_messages with no seq) and won't echo it
+    // until the current turn finishes. Render it optimistically now —
+    // AFTER the Thinking bubble, with a "(queued)" badge — so the user
+    // sees it immediately. It is removed/reconciled by client_msg_id
+    // when the realized row arrives. When idle the server echoes the
+    // message right away, so we skip the placeholder to avoid a dup.
+    const turnActive = waitingForReply
+      || (chatRow
+        && (chatRow.turn_status === "claimable" || chatRow.turn_status === "running"));
+    if (turnActive) {
+      setMessages((prev) => [...prev, {
+        kind: "user_message",
+        queued: true,
+        client_msg_id: clientMsgId,
+        content: text || "",
+        parts: parts || [],
+      }]);
+    }
     setWaitingForReply(true);
     return true;
   };
@@ -1159,7 +1196,10 @@ function ChatDetail({ chatId, onBack, pushToast }) {
               {wsState === "connecting" ? "Connecting…" : "No messages yet. Say hello to the agent."}
             </div>
           )}
-          {CT_coalesceMessages(messages).map((m) =>
+          {/* Optimistic "(queued)" placeholders are held out of the main
+              list so they can render AFTER the Thinking bubble (pinned at
+              the bottom) — see below. */}
+          {CT_coalesceMessages(messages.filter((m) => !m.queued)).map((m) =>
             m.kind === "assistant_message" ? (
               <Message key={`am-${m.startSeq}-${m.endSeq}`} m={m} />
             ) : (
@@ -1196,6 +1236,28 @@ function ChatDetail({ chatId, onBack, pushToast }) {
               || (turnInFlight && !lastIsQuiet);
             return showThinking ? <CT_ThinkingBubble /> : null;
           })()}
+
+          {/* Optimistic queued follow-ups. Rendered AFTER the Thinking
+              bubble so a message the user sent while the agent is still
+              "Thinking…" appears pinned at the bottom with a "(queued)"
+              badge. Each is removed when its realized seq'd row arrives
+              (reconciled by client_msg_id in onmessage above). Supports
+              multiple queued messages. */}
+          {messages.filter((m) => m.queued).map((m) => (
+            <div
+              key={`queued-${m.client_msg_id}`}
+              data-testid="chat-queued-msg"
+              style={{ opacity: 0.72 }}
+            >
+              <Message m={m} />
+              <div
+                className="muted mono"
+                style={{ marginLeft: 60, marginTop: -8, marginBottom: 12, fontSize: 11 }}
+              >
+                (queued)
+              </div>
+            </div>
+          ))}
 
           {/* Compaction in-progress indicator. Shown from the moment the
               operator clicks Compact until the server's compaction

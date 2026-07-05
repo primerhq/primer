@@ -101,6 +101,7 @@ async def append_user_message(
     parts: list,
     storage_provider: Any,
     attribution: dict | None = None,
+    client_msg_id: str | None = None,
 ) -> ChatMessage:
     """Persist a ``user_message`` row, bump ``chat.last_seq``, derive title.
 
@@ -123,6 +124,13 @@ async def append_user_message(
         "fire_id": ...}`` dict. Stamped onto ``payload["trigger"]`` so
         downstream UIs can render which trigger fired this turn. ``None``
         for human-driven turns from the WS recv loop.
+    client_msg_id:
+        Optional client-generated id carried on a deferred-queue
+        follow-up. Stamped onto ``payload["client_msg_id"]`` so the
+        client can reconcile its optimistic "(queued)" placeholder with
+        the realized row when it arrives over the WS. ``None`` on the
+        ordinary idle send path (the client renders the server echo
+        directly and has no placeholder to reconcile).
     """
     chats_storage = storage_provider.get_storage(Chat)
     messages_storage = storage_provider.get_storage(ChatMessage)
@@ -135,6 +143,8 @@ async def append_user_message(
         payload["content"] = flat
     if attribution:
         payload["trigger"] = dict(attribution)
+    if client_msg_id:
+        payload["client_msg_id"] = client_msg_id
 
     next_seq = chat.last_seq + 1
     row = ChatMessage(
