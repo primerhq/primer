@@ -234,3 +234,69 @@ class TestUsageEnvelopeOnConnect:
         # And the pong arrives after the usage frame — proves the
         # initial envelope didn't displace normal protocol traffic.
         assert frames[1].get("kind") == "pong", frames
+
+
+class TestUsageRecoveryFromHistory:
+    """The usage numerator must survive a process restart: the live cache
+    is volatile, so a cold cache is re-seeded from the last persisted
+    ``done`` row (which now carries the turn's token counts)."""
+
+    @pytest.mark.asyncio
+    async def test_seed_recovers_last_done_usage_when_cache_cold(
+        self, fake_storage_provider,
+    ) -> None:
+        from primer.api.routers.chats import _seed_usage_cache_from_history
+        from primer.chat.usage_cache import get_usage
+        from primer.model.chats import Chat
+
+        sp = fake_storage_provider
+        await sp.get_storage(Chat).create(
+            Chat(
+                id="c9", agent_id="ag",
+                created_at=datetime.now(timezone.utc),
+                last_seq=3, next_unprocessed_seq=4,
+            )
+        )
+        await sp.get_storage(ChatMessage).create(
+            ChatMessage(
+                id=ChatMessage.make_id("c9", 3), chat_id="c9", seq=3,
+                kind="done",
+                payload={
+                    "stop_reason": "stop",
+                    "input_tokens": 4096, "output_tokens": 128,
+                },
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        # Cold cache (post-restart) → numerator would be 0 without recovery.
+        assert get_usage("c9") == {"input_tokens": 0, "output_tokens": 0}
+        await _seed_usage_cache_from_history(sp, "c9")
+        assert get_usage("c9") == {"input_tokens": 4096, "output_tokens": 128}
+
+    @pytest.mark.asyncio
+    async def test_seed_is_noop_when_cache_already_warm(
+        self, fake_storage_provider,
+    ) -> None:
+        from primer.api.routers.chats import _seed_usage_cache_from_history
+        from primer.chat.usage_cache import get_usage, set_usage
+        from primer.model.chats import Chat
+
+        sp = fake_storage_provider
+        set_usage("c9", input_tokens=999, output_tokens=9)  # a live turn
+        await sp.get_storage(Chat).create(
+            Chat(
+                id="c9", agent_id="ag",
+                created_at=datetime.now(timezone.utc),
+                last_seq=3, next_unprocessed_seq=4,
+            )
+        )
+        await sp.get_storage(ChatMessage).create(
+            ChatMessage(
+                id=ChatMessage.make_id("c9", 3), chat_id="c9", seq=3,
+                kind="done", payload={"input_tokens": 1, "output_tokens": 1},
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        await _seed_usage_cache_from_history(sp, "c9")
+        # Live counters win — history must not clobber a warmer cache.
+        assert get_usage("c9") == {"input_tokens": 999, "output_tokens": 9}

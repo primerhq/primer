@@ -579,7 +579,14 @@ class ChatTurnRunner:
                 done_msg = await self._append(
                     chat,
                     kind="done",
-                    payload={"stop_reason": stop_reason},
+                    payload={
+                        "stop_reason": stop_reason,
+                        # Persist the turn's token usage so the context meter
+                        # can recover it after a process restart (the live
+                        # usage_cache is volatile and cold on reconnect).
+                        "input_tokens": self._last_input_tokens or 0,
+                        "output_tokens": self._last_output_tokens or 0,
+                    },
                 )
                 yield done_msg
                 return
