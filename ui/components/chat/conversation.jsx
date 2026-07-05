@@ -97,6 +97,13 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   const [attachments, setAttachments] = React.useState([]);
   const wsRef = React.useRef(null);
   const scrollRef = React.useRef(null);
+  // Task G1 (§4.5): queue-on-reconnect — outbound frames buffered here
+  // while the socket is not open (connecting/closed) and flushed in
+  // order the instant it reopens (see ws.onopen below), instead of
+  // hard-rejecting the send. Reset on chat switch (the tail-load effect
+  // below) — a queued frame belongs to the PREVIOUS chat's socket, not
+  // the new one.
+  const outboxRef = React.useRef([]);
   // <SchemaPanel> (R3, Task F2) local state. `schemaValue`/`schemaValid`
   // are driven by <SchemaPanel>'s Builder/JSON tabs (JSON is the source
   // of truth there); this component owns applying them: persistent ON
@@ -201,6 +208,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     setOldestSeq(null);
     setHasMoreOlder(false);
     setInitialLoadedSeq(null);
+    outboxRef.current = [];
     (async () => {
       try {
         let collected = []; // prepended each iteration so it stays ASC
@@ -362,6 +370,17 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
       ws.onopen = () => {
         setWsState("open");
         backoffMs = 1000; // reset on successful connect
+        // Task G1 (§4.5): flush any frames queued while the socket was
+        // not open (queue-on-reconnect) — in order, exactly once, on
+        // this exact socket instance (the one that just opened).
+        if (outboxRef.current.length > 0) {
+          const queued = outboxRef.current;
+          outboxRef.current = [];
+          for (const frame of queued) {
+            try { ws.send(JSON.stringify(frame)); } catch { /* dropped; nothing to reconcile against a frame that never reached the server */ }
+          }
+          setWaitingForReply(true);
+        }
       };
 
       ws.onmessage = (ev) => {
@@ -573,16 +592,15 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     ...(a.kind === "document" && a.name ? { filename: a.name } : {}),
   }));
 
-  // Returns true if the frame was enqueued; false if the socket was not
-  // ready (user-facing toast fires on false so the text is preserved).
+  // Returns true if the frame was accepted — either sent live or queued
+  // for the next reconnect (Task G1, queue-on-reconnect). The composer
+  // no longer needs to hard-reject solely because the socket is
+  // momentarily not open; a brief reconnect is exactly what the WS
+  // effect's own backoff loop above is for. `false` is reserved for a
+  // caller precondition failure (none currently — kept for API
+  // symmetry with onSubmitComposer's `if (sent)` gate).
   const sendMessage = (text, atts) => {
     const ws = wsRef.current;
-    if (!ws || ws.readyState !== 1) {
-      if (typeof pushToast === "function") {
-        pushToast({ kind: "error", title: "Not connected", detail: "WebSocket is not open" });
-      }
-      return false;
-    }
     const frame = { kind: "user_message" };
     if (text) frame.content = text;
     if (atts && atts.length > 0) {
@@ -594,6 +612,21 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     // the debounced PUT effect above), so it needn't ride every frame.
     if (showSchemaPanel && !schemaPersistent && schemaValid && schemaValue) {
       frame.response_format = schemaValue;
+    }
+    if (!ws || ws.readyState !== 1) {
+      // Task G1 (§4.5): queue instead of hard-rejecting — buffered here
+      // and flushed in ws.onopen the instant the socket reopens, rather
+      // than dropping the message and forcing the operator to notice a
+      // toast and retype/resend.
+      outboxRef.current.push(frame);
+      if (typeof pushToast === "function") {
+        pushToast({
+          kind: "info",
+          title: "Message queued",
+          detail: "Will send automatically once reconnected.",
+        });
+      }
+      return true;
     }
     ws.send(JSON.stringify(frame));
     setWaitingForReply(true);
@@ -1031,11 +1064,12 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
               attach control, textarea, Send/Stop) now lives in
               <Composer>. This component keeps the composer text +
               attachments state and the send/attach handlers — the
-              wsState-not-open case is still handled (sendMessage()
-              below shows a "Not connected" toast), it just no longer
-              disables the Send button pre-emptively since <Composer>'s
-              `disabled` prop maps 1:1 to "chat ended" the same way the
-              textarea's disabled attribute always has. `running` (Task
+              wsState-not-open case is handled by queueing (Task G1,
+              sendMessage's outboxRef buffer, flushed in ws.onopen)
+              rather than a hard reject, so <Composer>'s `disabled`
+              prop still maps 1:1 to "chat ended" only, never to
+              connection state; `wsState` is passed through purely for
+              the queue-on-reconnect legibility hint. `running` (Task
               C2) mirrors turn_status (claimable/running) and `onStop`
               POSTs /cancel (A6) — see turnInFlight/handleStop above. */}
           <Composer
@@ -1051,6 +1085,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
             slashCommands={slashCommands}
             mentionSources={mentionSources}
             schemaInvalid={showSchemaPanel ? !schemaValid : false}
+            wsState={wsState}
           />
         </div>
       </div>

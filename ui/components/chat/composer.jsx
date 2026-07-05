@@ -49,6 +49,13 @@
 // validity wiring — `disabled || schemaInvalid` already disables Send
 // so F2 only needs to start passing a real value.
 //
+// `wsState` (Task G1, §4.5) is NOT part of the send-gate — a brief WS
+// reconnect no longer hard-disables Send; <Conversation>'s
+// `sendMessage` queues the frame and flushes it once the socket
+// reopens. This prop only drives a legibility hint (a small line above
+// the input row) so the operator understands why their message hasn't
+// visibly landed yet.
+//
 // The Send/Stop control is context-aware per the plan: `running`
 // swaps the affordance to Stop (calling `onStop`) instead of Send.
 // <Conversation> wires the real turn-running signal (turn_status
@@ -103,11 +110,18 @@ function Composer({
   slashCommands,
   mentionSources,
   schemaInvalid,
+  wsState,
 }) {
   const fileInputRef = React.useRef(null);
   const textareaRef = React.useRef(null);
   const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
   const sendDisabled = disabled || schemaInvalid || (!String(value || "").trim() && !hasAttachments);
+  // Task G1 (§4.5): connection legibility for the composer itself — a
+  // brief WS reconnect no longer hard-disables Send (see sendMessage's
+  // queue-on-reconnect in conversation.jsx); this hint is the only
+  // visible difference, so the operator understands WHY their message
+  // hasn't landed yet instead of assuming Send silently failed.
+  const wsNotOpen = !!wsState && wsState !== "open";
 
   // ---- Slash commands (Task D2) -----------------------------------------
   // `slashDismissedFor` remembers the exact draft string an Escape was
@@ -322,6 +336,16 @@ function Composer({
         </div>
       )}
 
+      {/* Task G1 (§4.5): queue-on-reconnect legibility — Send stays
+          enabled (see sendDisabled above, which never checks wsState);
+          this is the only cue that a brief reconnect will queue the
+          message instead of sending it immediately. */}
+      {wsNotOpen && !disabled && (
+        <div className="muted text-sm" data-testid="chat-queue-hint" style={{ fontSize: 11 }}>
+          {wsState === "connecting" ? "Reconnecting…" : "Offline"} — messages will queue and send automatically once reconnected.
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
         {/* Task D1 (R2): the attach control is folded into the chatbox
             itself — this wrapper gives the textarea a `position:
@@ -495,6 +519,7 @@ function Composer({
             data-testid="chat-send-btn"
             disabled={sendDisabled}
             onClick={onSend}
+            title={wsNotOpen ? "Send (queues until reconnected)" : undefined}
             style={{ alignSelf: "stretch", paddingLeft: 16, paddingRight: 16 }}
           >Send</Btn>
         )}
