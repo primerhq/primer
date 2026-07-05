@@ -27,6 +27,11 @@
 //     + live tap, deduped+sorted by seq) — callers apply SA_toTranscript
 //     themselves once they also have the `session` row in hand (Task 12's
 //     SessionAgentPanel renders `<Transcript>` "fed by SA_toTranscript").
+//     Also returns `wsState` ("connecting"/"open"/"closed", the tap SSE's
+//     connection legibility — feeds <Transcript> the same way a chat's
+//     WebSocket wsState does) and `restart()` (POST .../restart — a Task 12
+//     addition; Task 11's original interface only needed sendMessage/
+//     stop/end).
 
 // ---------------------------------------------------------------------------
 // Pure mapping: SessionMessageKind -> transcript row kind
@@ -154,6 +159,15 @@ function SA_useSessionConversation(opts) {
   var historyLoaded = historyLoadedState[0];
   var setHistoryLoaded = historyLoadedState[1];
   var historyCursorRef = React.useRef(0);
+  // Connection legibility for the live tail (Task 12 addition — Task 11's
+  // original interface didn't need it, since nothing consumed it yet).
+  // Mirrors <Conversation>'s wsState ("connecting"/"open"/"closed") so a
+  // caller can feed it straight into <Transcript>'s CT_ConnectionStatus
+  // pill, even though the transport here is the tap SSE (EventSource), not
+  // a WebSocket.
+  var wsStateState = React.useState("connecting");
+  var wsState = wsStateState[0];
+  var setWsState = wsStateState[1];
 
   // History load — GET /sessions/{sid}/messages (paginated; the server
   // caps a single page at 1000, comfortably above one session's log in
@@ -198,7 +212,12 @@ function SA_useSessionConversation(opts) {
   // tail — the REST history above is already the full transcript).
   React.useEffect(function () {
     if (!wid || !sid || !historyLoaded) return undefined;
-    if (status === "ended") return undefined;
+    if (status === "ended") {
+      // Nothing left to tail on a terminal session — reflect that instead
+      // of leaving a stale "connecting" pill from before it ended.
+      setWsState("closed");
+      return undefined;
+    }
 
     var selector = window.WTP_buildSelector ? window.WTP_buildSelector(null, sid) : null;
     var highWater = historyCursorRef.current || 0;
@@ -214,8 +233,11 @@ function SA_useSessionConversation(opts) {
     try {
       es = new EventSource(url, { withCredentials: true });
     } catch (_e) {
+      setWsState("closed");
       return undefined;
     }
+
+    es.onopen = function () { setWsState("open"); };
 
     es.onmessage = function (ev) {
       var tev;
@@ -240,15 +262,22 @@ function SA_useSessionConversation(opts) {
       });
     };
 
-    es.onerror = function () { /* EventSource reconnects natively via Last-Event-ID */ };
+    es.onerror = function () {
+      // EventSource reconnects natively via Last-Event-ID; the browser
+      // flips readyState back to CONNECTING for us, so mirror that here
+      // rather than parking on a stale "open" pill.
+      setWsState("connecting");
+    };
 
     return function () { try { es.close(); } catch (_e) { /* no-op */ } };
   }, [wid, sid, historyLoaded, status]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // sendMessage/stop/end — one input, three behaviours (§5.1): a message
-  // to a CREATED session invokes it, to RUNNING/WAITING it steers, to
-  // PAUSED it resumes (all auto-wake, server-side). Stop preempts the
-  // turn but keeps the session alive; End hard-cancels it.
+  // sendMessage/stop/end/restart — one input, three behaviours (§5.1): a
+  // message to a CREATED session invokes it, to RUNNING/WAITING it steers,
+  // to PAUSED it resumes (all auto-wake, server-side). Stop preempts the
+  // turn but keeps the session alive; End hard-cancels it. Restart (Task
+  // 12 addition — not part of Task 11's original interface) re-opens an
+  // ENDED session and invokes it (studio-agents-interact §5.3).
   var sendMessage = React.useCallback(function (text) {
     if (!wid || !sid) return Promise.reject(new Error("sendMessage: wid and sid are required"));
     return apiFetch(
@@ -274,13 +303,24 @@ function SA_useSessionConversation(opts) {
     );
   }, [apiFetch, wid, sid]);
 
+  var restart = React.useCallback(function () {
+    if (!wid || !sid) return Promise.resolve();
+    return apiFetch(
+      "POST",
+      "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/restart",
+      {}
+    );
+  }, [apiFetch, wid, sid]);
+
   return {
     messages: records,
     status: status,
     turnStatus: turnStatus,
+    wsState: wsState,
     sendMessage: sendMessage,
     stop: stop,
     end: end,
+    restart: restart,
     pending: pending,
   };
 }
