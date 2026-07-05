@@ -298,14 +298,22 @@ class LocalWorkspace(Workspace):
             return session
 
     async def remove_session(self, session_id: str) -> bool:
-        """Drop the in-memory handle for ``session_id``.
+        """Drop the in-memory handle for ``session_id`` and reap its slot.
 
-        The on-disk slot under ``.state/sessions/<sid>/`` is removed by
-        the API handler; this just unbinds the in-memory cache entry so
-        ``list_sessions()`` stops reporting it.
+        Pops the cached handle and best-effort removes the persisted slot
+        under ``.state/sessions/<sid>/`` so a rehydrating ``get_session`` /
+        ``list_sessions`` no longer resurrects the deleted session. The reap
+        lives here (not in the API handler) so each backend removes its OWN
+        persisted slot. Returns ``True`` when a cached entry was removed.
         """
         async with self._lock:
-            return self._sessions.pop(session_id, None) is not None
+            removed = self._sessions.pop(session_id, None) is not None
+            # Best-effort, held under the lock so the pop + reap are atomic
+            # w.r.t. a concurrent rehydrate. ignore_errors keeps a slow /
+            # failed rmtree from wedging the delete.
+            slot = self._state.path / "sessions" / session_id
+            await asyncio.to_thread(shutil.rmtree, slot, ignore_errors=True)
+            return removed
 
     async def list_files(
         self,

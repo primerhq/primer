@@ -258,16 +258,31 @@ class SandboxWorkspace(Workspace):
             return await self._rehydrate_locked(session_id)
 
     async def remove_session(self, session_id: str) -> bool:
-        """Drop the in-memory handle for ``session_id``.
+        """Drop the in-memory handle for ``session_id`` and reap its slot.
 
-        Mirrors :meth:`LocalWorkspace.remove_session`: the on-disk slot is
-        reaped by the API handler; this just unbinds the in-memory cache so
-        a subsequent :meth:`list_sessions` (which rehydrates) won't surface
-        a session whose persisted slot has been removed. Returns ``True``
-        when an entry was removed.
+        Pops the cached handle, then best-effort removes the persisted slot
+        (``sessions/<sid>/session.json`` + ``agent.json``) from the pod's
+        runtime state repo so a rehydrating :meth:`list_sessions` /
+        :meth:`get_session` no longer surfaces the deleted session. The
+        sandbox backend keeps its slot inside the pod's ``.state`` git repo
+        (via ``_state_repo``), which the API handler's local-only host
+        rmtree never reached -- so the reap has to happen here. Returns
+        ``True`` when a cached entry was removed.
         """
         async with self._lock:
-            return self._sessions.pop(session_id, None) is not None
+            removed = self._sessions.pop(session_id, None) is not None
+        # Reap outside the lock: it's a runtime RPC round-trip that must
+        # never wedge the in-memory registry, and it's best-effort -- an
+        # unreachable workspace must not fail the delete.
+        try:
+            await self._state_repo.delete_session(session_id)
+        except Exception:  # noqa: BLE001
+            logger.debug(
+                "SandboxWorkspace.remove_session: slot reap failed for %s",
+                session_id,
+                exc_info=True,
+            )
+        return removed
 
     async def _rehydrate_locked(self, session_id: str) -> AgentSession | None:
         """Rebuild one session handle from persisted state. Caller holds

@@ -414,6 +414,28 @@ class TestWorkspaceSessions:
         with pytest.raises(ConflictError):
             await ws.start_session(_binding(), id="dup")
 
+    async def test_remove_session_reaps_on_disk_slot(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """remove_session reaps the on-disk slot so a rehydrating
+        get_session no longer resurrects the deleted session.
+
+        Regression: the reap used to live only in the API delete handler
+        (a host rmtree), so remove_session alone left the persisted slot
+        under ``.state/sessions/<sid>/`` on disk and get_session rebuilt
+        the handle straight back from it.
+        """
+        ws = await provider.create(_template())
+        await ws.start_session(_binding(), id="sess-reap-local")
+        slot = ws.state_repo.path / "sessions" / "sess-reap-local"
+        assert slot.exists()
+
+        assert await ws.remove_session("sess-reap-local") is True
+
+        # Slot reaped on disk, so the rehydrating get_session returns None.
+        assert not slot.exists()
+        assert await ws.get_session("sess-reap-local") is None
+
     async def test_get_session_heals_stale_cached_status_from_disk(
         self, provider: LocalWorkspaceBackend
     ) -> None:

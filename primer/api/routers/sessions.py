@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -399,31 +398,20 @@ async def delete_session(
                 },
             )
 
-    # Best-effort: reap the on-disk session slot AND drop the
-    # in-memory session handle so list_sessions() stops returning it.
+    # Best-effort: drop the in-memory session handle AND reap the persisted
+    # on-disk slot so list_sessions() stops returning it. Each backend reaps
+    # its OWN slot inside remove_session (LocalWorkspace rmtrees
+    # .state/sessions/<sid>/; SandboxWorkspace git-rm's the slot in the pod's
+    # runtime state repo). The previous local-only host rmtree here silently
+    # skipped the sandbox backend -- which keeps its slot via _state_repo,
+    # not _state -- so the pod slot survived and rehydrated the "deleted"
+    # session on the next list.
     try:
         live_workspace = await workspace_registry.get_workspace(workspace_id)
-        # Unbind the in-memory handle first — the workspace exposes the
-        # ABC method since the diagnostic-report follow-up landed.
-        try:
-            await live_workspace.remove_session(session_id)
-        except Exception:  # noqa: BLE001
-            logger.debug(
-                "delete_session: remove_session raised; continuing",
-                exc_info=True,
-            )
-        state_root = getattr(live_workspace, "_state", None)
-        state_path = getattr(state_root, "path", None) if state_root else None
-        if state_path is not None:
-            import shutil
-            session_dir = state_path / "sessions" / session_id
-            if session_dir.exists():
-                await asyncio.to_thread(
-                    shutil.rmtree, session_dir, ignore_errors=True
-                )
+        await live_workspace.remove_session(session_id)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "delete_session: on-disk cleanup failed (row still removed)",
+            "delete_session: session-slot cleanup failed (row still removed)",
             extra={
                 "session_id": session_id,
                 "workspace_id": workspace_id,
