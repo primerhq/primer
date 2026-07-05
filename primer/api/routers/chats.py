@@ -59,6 +59,7 @@ from primer.model.except_ import (
 )
 from primer.model.provider import LLMProvider
 from primer.model.storage import (
+    CursorPage,
     Op,
     OrderBy,
     PageRequest,
@@ -824,6 +825,133 @@ async def compact_chat(
         summary=result.summary_text,
         tokens_before=result.tokens_before,
         tokens_after=result.tokens_after,
+    )
+
+
+# ===========================================================================
+# REST: rewind truncation (R4)
+# ===========================================================================
+
+
+class ChatRewindBody(BaseModel):
+    """Body of ``POST /v1/chats/{id}/rewind``."""
+
+    seq: int = Field(
+        ...,
+        ge=1,
+        description=(
+            "Sequence number of the user_message row to rewind TO. That "
+            "row is KEPT; every row with seq > this value is deleted."
+        ),
+    )
+
+
+class ChatRewindResponse(BaseModel):
+    """Body of a successful ``POST /v1/chats/{id}/rewind``."""
+
+    chat_id: str = Field(..., description="The chat that was truncated.")
+    truncated_to_seq: int = Field(
+        ..., description="The kept seq — echoes the request body's seq."
+    )
+    deleted: int = Field(
+        ..., description="Number of chat_messages rows deleted (seq > truncated_to_seq)."
+    )
+
+
+@chats_router.post(
+    "/chats/{chat_id}/rewind",
+    response_model=ChatRewindResponse,
+    summary="Truncate a chat's history back to a kept user_message (R4)",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def rewind_chat(
+    body: ChatRewindBody,
+    request: Request,
+    chat_id: str = Path(...),
+    sp=Depends(get_storage_provider),
+) -> ChatRewindResponse:
+    """Discard every row after ``body.seq``, keeping ``body.seq`` itself.
+
+    Lets an operator retry from an earlier point in the conversation —
+    the composer's "rewind" affordance. Delegates the actual deletion +
+    chat-row reset to :func:`primer.chat.rewind.truncate_chat_after`;
+    this endpoint only enforces the pre-flight guards and publishes the
+    live-update tick.
+
+    Status codes:
+
+    * ``200`` — truncated; body carries ``truncated_to_seq`` + ``deleted``.
+    * ``404`` — no such chat.
+    * ``409`` — a worker turn is in flight (``turn_status == "running"``)
+      — mirrors ``POST /compact``'s running guard.
+    * ``422`` — the target row doesn't exist, isn't a ``user_message``,
+      is at or behind the latest ``compaction_marker`` (rewinding into
+      compacted history would desync the summary), or is at/beyond
+      ``chat.last_seq`` (nothing to discard).
+    """
+    chats_storage = sp.get_storage(Chat)
+    chat = await chats_storage.get(chat_id)
+    if chat is None:
+        raise NotFoundError(f"Chat {chat_id!r} does not exist")
+
+    if chat.turn_status == "running":
+        raise ConflictError(
+            f"Chat {chat_id!r} has a turn in flight; "
+            "wait for it to finish before rewinding."
+        )
+
+    messages_storage = sp.get_storage(ChatMessage)
+    target = await messages_storage.get(ChatMessage.make_id(chat_id, body.seq))
+    if target is None:
+        raise ValidationError(
+            f"Chat {chat_id!r} has no message at seq {body.seq}"
+        )
+    if target.kind != "user_message":
+        raise ValidationError(
+            f"seq {body.seq} is a {target.kind!r} row; rewind targets "
+            "must be a user_message"
+        )
+
+    # Compaction guard: rewinding to (or behind) the latest compaction
+    # marker would desync the marker's summary from the history it
+    # claims to replace, so it's rejected outright.
+    marker_page = await messages_storage.find(
+        Q(ChatMessage)
+        .where("chat_id", chat_id)
+        .where("kind", "compaction_marker")
+        .build(),
+        CursorPage(cursor=None, length=1),
+        order_by=[OrderBy(field="seq", direction="desc")],
+    )
+    if marker_page.items and body.seq <= marker_page.items[0].seq:
+        raise ValidationError(
+            f"seq {body.seq} is at or behind the latest compaction_marker "
+            f"(seq={marker_page.items[0].seq}); cannot rewind into "
+            "compacted history"
+        )
+
+    if body.seq >= chat.last_seq:
+        raise ValidationError(
+            f"seq {body.seq} is at or beyond last_seq={chat.last_seq}; "
+            "nothing to discard"
+        )
+
+    from primer.chat.rewind import truncate_chat_after
+    deleted = await truncate_chat_after(chat, body.seq, storage_provider=sp)
+
+    event_bus = getattr(request.app.state, "event_bus", None)
+    if event_bus is not None:
+        try:
+            await event_bus.publish(
+                f"chat:{chat_id}:tick", {"seq": body.seq},
+            )
+        except Exception:  # noqa: BLE001 — never break the REST response
+            logger.exception(
+                "rewind_chat: failed to publish tick for chat %s", chat_id,
+            )
+
+    return ChatRewindResponse(
+        chat_id=chat_id, truncated_to_seq=body.seq, deleted=deleted,
     )
 
 
