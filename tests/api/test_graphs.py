@@ -1,10 +1,16 @@
 """CRUD coverage for the /v1/graphs router with Begin/End topology.
 
 Spec §7.1 acceptance: the REST surface accepts/rejects the new node
-shapes (Begin / End), preserves conditional edges with
-:class:`BranchCondition` lists across save+load round-trips, and emits
-422 on topology violations (two Begin nodes, missing End, unreachable
-End, malformed JSON Schema).
+shapes (Begin / End) and preserves conditional edges with
+:class:`BranchCondition` lists across save+load round-trips.
+
+NOTE (runnability split): graph *creation* is a draft operation — empty
+and partial graphs (including topologies that aren't yet runnable: two
+Begin nodes, no End, an unreachable End) are accepted with 201. The
+"is this graph runnable?" invariants are enforced later, at session-start
+(``Graph.assert_runnable`` via the session factory), NOT at POST /graphs.
+Only *referential* problems (bad edge endpoints, duplicate ids, malformed
+JSON Schema) still 422 at creation.
 
 Uses the shared ``client`` fixture from ``tests/api/conftest.py``:
 in-memory storage + auto-registered test user. Each test posts a fresh
@@ -103,8 +109,10 @@ async def test_create_minimal_begin_end_graph_returns_201(client) -> None:
 
 
 @pytest.mark.asyncio
-async def test_create_two_begin_nodes_returns_422(client) -> None:
-    """Topology rule (spec §1.5): exactly one Begin node per graph."""
+async def test_create_two_begin_nodes_now_allowed(client) -> None:
+    """Two-Begin is a runnability problem, not a creation problem: the
+    draft persists with 201; ``assert_runnable`` rejects it at
+    session-start (see tests/workspace/test_session_factory.py)."""
     body = _minimal_begin_end_body("g-two-begin")
     # Inject a second Begin node — both with valid ids.
     body["nodes"].insert(
@@ -112,12 +120,13 @@ async def test_create_two_begin_nodes_returns_422(client) -> None:
         {"kind": "begin", "id": "rogue_begin"},
     )
     resp = await client.post("/v1/graphs", json=body)
-    assert resp.status_code == 422, resp.text
+    assert resp.status_code == 201, resp.text
 
 
 @pytest.mark.asyncio
-async def test_create_no_end_node_returns_422(client) -> None:
-    """Topology rule (spec §1.5): at least one End node per graph."""
+async def test_create_no_end_node_now_allowed(client) -> None:
+    """A graph with no End persists as a draft (201); the missing End is
+    a runnability problem enforced at session-start, not creation."""
     body = {
         "id": "g-no-end",
         "description": "missing End",
@@ -130,12 +139,13 @@ async def test_create_no_end_node_returns_422(client) -> None:
         ],
     }
     resp = await client.post("/v1/graphs", json=body)
-    assert resp.status_code == 422, resp.text
+    assert resp.status_code == 201, resp.text
 
 
 @pytest.mark.asyncio
-async def test_create_unreachable_end_returns_422(client) -> None:
-    """Topology rule (spec §1.5): every End reachable from Begin via forward BFS."""
+async def test_create_unreachable_end_now_allowed(client) -> None:
+    """An unreachable End is a runnability problem, not a creation one:
+    the draft persists (201) and is rejected at session-start instead."""
     body = {
         "id": "g-unreachable",
         "description": "End not reachable from Begin",
@@ -149,9 +159,38 @@ async def test_create_unreachable_end_returns_422(client) -> None:
         ],
     }
     resp = await client.post("/v1/graphs", json=body)
+    assert resp.status_code == 201, resp.text
+
+
+@pytest.mark.asyncio
+async def test_create_empty_graph_now_allowed(client) -> None:
+    """An empty graph (no nodes/edges) is a valid draft — 201 at creation.
+    Runnability is enforced later, at session-start."""
+    body = {"id": "g-empty", "description": "empty draft", "nodes": [], "edges": []}
+    resp = await client.post("/v1/graphs", json=body)
+    assert resp.status_code == 201, resp.text
+    out = resp.json()
+    assert out["nodes"] == []
+
+
+@pytest.mark.asyncio
+async def test_create_bad_edge_endpoint_still_returns_422(client) -> None:
+    """Referential integrity is still enforced at creation: an edge whose
+    endpoint references a missing node id is rejected with 422 even though
+    runnability checks are deferred."""
+    body = {
+        "id": "g-bad-edge",
+        "description": "edge to nowhere",
+        "nodes": [
+            {"kind": "begin", "id": "start"},
+            {"kind": "end", "id": "finish"},
+        ],
+        "edges": [
+            {"kind": "static", "from_node": "start", "to_node": "ghost"},
+        ],
+    }
+    resp = await client.post("/v1/graphs", json=body)
     assert resp.status_code == 422, resp.text
-    # The error message should reference the orphan node id.
-    assert "orphan" in resp.text
 
 
 # ===========================================================================

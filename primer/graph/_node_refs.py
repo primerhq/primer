@@ -426,12 +426,22 @@ def _resolve_initial_ready_node(graph: "Graph") -> str:
     """Return the id of the unique :class:`_BeginNode` that seeds the
     executor's initial ready set.
 
-    Spec §2.3: the topology validator already guarantees exactly one
-    Begin node; this guard is defence in depth against bypassed
-    validators (e.g. ``Graph.model_construct``).
+    Graph *creation* now permits empty / partial drafts (runnability is
+    enforced at session-start via :meth:`Graph.assert_runnable`). This is
+    defence in depth for the executor: if an unrunnable graph reaches
+    ``invoke`` anyway (e.g. a bypassed session-start check, or a graph
+    built via ``Graph.model_construct``), surface the same clear,
+    enumerated runnability error rather than a bare mid-run ``ValueError``
+    (or an ``IndexError`` on ``begins[0]`` for an empty graph).
     """
     begins = [n for n in graph.nodes if isinstance(n, _BeginNode)]
     if len(begins) != 1:
+        # Route through the shared runnability check so the caller gets the
+        # clear, enumerated message (empty graph / wrong Begin count / …)
+        # instead of a bare mid-run ValueError or an IndexError on
+        # ``begins[0]``. assert_runnable always raises when the Begin count
+        # is wrong; the explicit raise below is an unreachable safety net.
+        graph.assert_runnable()
         raise ValueError(
             f"graph {graph.id!r} must have exactly one Begin node; got {len(begins)}"
         )
