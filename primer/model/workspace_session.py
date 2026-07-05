@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
 from pydantic import BaseModel, Field
 
 from primer.model.common import Identifiable
+from primer.model.principal import PrincipalRef
 
 if TYPE_CHECKING:
     from primer.model.agent import Agent
@@ -364,6 +365,16 @@ class WorkspaceSession(Identifiable):
     parent_session_id: str | None = Field(default=None)
     initial_instructions: str | None = Field(default=None)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    initiated_by: PrincipalRef | None = Field(
+        default=None,
+        description=(
+            "Persisted projection of the Principal that created this session "
+            "(§8.2). Read back on worker/scheduler resume to populate "
+            "ctx.identity so the originating identity survives the async "
+            "boundary. None on historical rows -> readers fall back to the "
+            "system principal (PrincipalRef.system())."
+        ),
+    )
     created_at: datetime
     started_at: datetime | None = Field(default=None)
     last_turn_at: datetime | None = Field(default=None)

@@ -44,6 +44,7 @@ from primer.model.except_ import (
     ValidationError,
 )
 from primer.model.graph import Graph
+from primer.model.principal import PrincipalRef
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.model.workspace_session import (
@@ -97,6 +98,7 @@ async def start_workspace_session(
     parent_session_id: str | None,
     deps: SessionFactoryDeps,
     name: str | None = None,
+    initiated_by: PrincipalRef | None = None,
 ) -> WorkspaceSession:
     """Full create flow shared by the REST route and the workspaces tool:
     validate workspace + binding (+ graph_input vs Begin.input_schema),
@@ -252,6 +254,7 @@ async def start_workspace_session(
         parent_session_id=parent_session_id,
         session_id=sid,
         name=name,
+        initiated_by=initiated_by,
         deps=SessionFactoryDeps(
             storage_provider=deps.storage_provider,
             claim_engine=deps.claim_engine,
@@ -273,6 +276,7 @@ async def create_session(
     parent_session_id: str | None = None,
     session_id: str | None = None,
     name: str | None = None,
+    initiated_by: PrincipalRef | None = None,
 ) -> WorkspaceSession:
     """Persist a :class:`WorkspaceSession` row + optionally auto-start.
 
@@ -333,6 +337,7 @@ async def create_session(
         parent_session_id=parent_session_id,
         initial_instructions=initial_instructions,
         metadata=md,
+        initiated_by=initiated_by,
         created_at=now,
     )
     sessions_storage = deps.storage_provider.get_storage(WorkspaceSession)
