@@ -4,7 +4,7 @@ Covers:
 * U0052 — AskUserPanel does NOT render on a terminal session
   (the panel's polling stops on TERMINAL_STATUSES per
   ui/components/session-detail.jsx).
-* U0031 — Session pause + resume buttons toggle visible status.
+* U0031 — Composer send (invoke/steer/resume) toggles visible status.
 * U0027 — Empty per-collection search renders "No matches" cleanly.
 """
 
@@ -158,21 +158,25 @@ def test_u0052_ask_user_panel_hidden_on_terminal_session(
 def test_u0031_session_pause_resume_buttons_toggle_status(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0031 — Seed a CREATED session, click Resume on the detail page
+    """U0031 — Seed a CREATED session, send a message via the Composer
     (CREATED → WAITING / RUNNING since the worker pool will pick it up
     even though no real LLM is configured, the placeholder Ollama
     provider triggers a fatal which transitions the session toward
-    terminal). Then click Pause. Assert each click produces visible
-    status text changes within polling cadence.
+    terminal). Assert the send produces a visible status-pill change
+    within the polling cadence.
 
-    Priority area 2 — mutation feedback. Re-pointed to the Studio's
-    ``session-controls`` (``ctrl-resume``) in the center agent panel
-    (studio-center.jsx ``ST_SessionControls``).
+    Priority area 2 — mutation feedback. Re-pointed: the Studio's agent
+    panel has no Pause/Resume controls anymore (studio-center.jsx's
+    ST_SessionControls cluster is defined but never mounted by
+    SessionAgentPanel). Per session-adapter.jsx, resuming a CREATED
+    session is now "send a message via the Composer" — the SAME
+    POST .../steer call auto-wakes a CREATED/PAUSED/WAITING session
+    (session/enqueue.py's wake_session, "one input, three behaviours").
 
     We tolerate the session reaching terminal (ended/failed) at any
     point — the LLM provider points at a closed port so the worker's
-    LLM call will fail. The CONTRACT under test is that the BUTTONS
-    transition the visible UI state, not that the session actually
+    LLM call will fail. The CONTRACT under test is that the Composer
+    send transitions the visible UI state, not that the session actually
     runs to completion.
     """
     pid = f"llm-u31-{unique_suffix}"
@@ -192,21 +196,19 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
         f"/v1/llm_providers/{pid}",
     ]
     try:
-        # Open the session in the Studio — the agent panel + controls mount.
+        # Open the session in the Studio — the agent panel + Composer mount.
         open_session_in_studio(page, console_url, wid, sid, kind="agent")
-        resume_btn = page.locator("[data-testid='ctrl-resume']").first
-        resume_btn.wait_for(state="visible", timeout=10_000)
+        composer = page.locator("textarea[placeholder='Send a message…']")
+        composer.wait_for(state="visible", timeout=10_000)
 
         # The panel header StatusPill reads "created" initially.
         body_initial = (page.locator("body").text_content() or "").lower()
         assert "created" in body_initial, "expected initial 'created' status"
 
-        # Click Resume — should send the signal + show a toast.
-        resume_btn.click()
-        # Toast confirms the signal was sent.
-        page.get_by_text("Resume signal sent", exact=False).first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        # Send a message via the Composer — this is the resume/steer/invoke
+        # signal now (POST .../steer, session-adapter.jsx sendMessage).
+        composer.fill("please resume")
+        page.locator("[data-testid='chat-send-btn']").click()
 
         # Status moves off CREATED within ~12s (poll cadence 2s + worker
         # claim cycle + LLM fail path). Accept any non-CREATED status.
