@@ -94,6 +94,58 @@ async def test_list_files_recursive(tmp_path: Path) -> None:
     assert any(p.endswith("b.txt") for p in paths)
 
 
+class _AbsPathSandbox(FakeSandbox):
+    """Mimics the real container/k8s runtime, whose ``list_dir`` returns
+    ABSOLUTE entry paths (``/workspace/...``) — unlike FakeSandbox, which
+    returns basenames. Reproduces the list/read path double-anchor bug so
+    it can't regress."""
+
+    async def list_dir(self, path):  # type: ignore[override]
+        from primer.int.sandbox import FileStat
+        base = path.rstrip("/")
+        return [
+            FileStat(
+                path=f"{base}/{e.path}",
+                kind=e.kind,
+                size_bytes=e.size_bytes,
+                mode=e.mode,
+                modified_at=e.modified_at,
+            )
+            for e in await super().list_dir(path)
+        ]
+
+
+@pytest.mark.asyncio
+async def test_list_files_roundtrip_with_absolute_runtime_paths(tmp_path: Path) -> None:
+    """The real runtime returns ABSOLUTE list_dir paths; the consumer must
+    still emit workspace-RELATIVE FileEntry.path that round-trips through
+    read_file (bug: root files 404), and must list nested dirs (bug: the
+    artifacts directory can't be expanded)."""
+    sb = _AbsPathSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-1", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws.write_file(".runtime.ready", b"ok")
+    await ws.write_file("artifacts/sess/recommendation.md", b"# rec")
+
+    # Flat root listing -> relative paths, never absolute /workspace/...
+    entries = await ws.list_files(".", recursive=False)
+    by_path = {e.path for e in entries}
+    assert ".runtime.ready" in by_path
+    assert "artifacts" in by_path
+    assert not any(p.startswith("/workspace") for p in by_path)
+
+    # Reading the LISTED path round-trips (the .runtime.ready 404 bug).
+    ready = next(e for e in entries if e.path.endswith(".runtime.ready"))
+    assert await ws.read_file(ready.path) == b"ok"
+
+    # Expanding a nested directory works (the artifacts-expand bug).
+    sub = await ws.list_files("artifacts", recursive=False)
+    assert any(e.path == "artifacts/sess" for e in sub)
+
+
 @pytest.mark.asyncio
 async def test_make_dir_then_listed(tmp_path: Path) -> None:
     sb = FakeSandbox(root=tmp_path)

@@ -379,13 +379,20 @@ class SandboxWorkspace(Workspace):
             out.sort(key=lambda fe: fe.path)
             return out
         for fs in await self._sandbox.list_dir(target):
-            child = f"{target}/{fs.path}"
+            # The runtime's list_dir returns each entry's ABSOLUTE path
+            # (/workspace/foo); FakeSandbox returns a basename. Take the
+            # basename either way so we don't double-anchor the workspace
+            # root (which yielded an absolute FileEntry.path that the read
+            # endpoint then re-anchored a second time -> ENOENT).
+            name = fs.path.rsplit("/", 1)[-1]
+            child = f"{target}/{name}"
             out.append(self._file_entry_from_stat(fs, child))
         return out
 
     async def _walk(self, dir_abs: str, out: list[FileEntry]) -> None:
         for fs in await self._sandbox.list_dir(dir_abs):
-            child = f"{dir_abs}/{fs.path}"
+            name = fs.path.rsplit("/", 1)[-1]
+            child = f"{dir_abs}/{name}"
             out.append(self._file_entry_from_stat(fs, child))
             if fs.kind == "dir":
                 await self._walk(child, out)
