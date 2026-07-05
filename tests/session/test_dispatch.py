@@ -779,3 +779,184 @@ async def test_interrupt_mid_stream_lands_waiting_and_clears_flag(
     )
     assert row.ended_at is None
     assert row.interrupt_requested is False
+
+
+@pytest.mark.asyncio
+async def test_real_cancel_wins_over_stuck_interrupt_flag(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """I2 regression: a stale interrupt_requested=True (leaked from an
+    earlier turn that never consumed it) must not downgrade a genuine
+    concurrent Cancel to a Stop. Cancel is the stronger intent: when
+    cancel_requested is ALSO true at the disambiguation point, the row
+    must land ENDED/cancelled, not WAITING."""
+    import json
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    # Stale interrupt flag, as if left over from a previous turn that
+    # completed/parked/failed before ever consuming it.
+    seeded_session.interrupt_requested = True
+    await storage.update(seeded_session)
+
+    gate = asyncio.Event()
+
+    class _SlowExecutor:
+        async def invoke(self, messages: list[Any], **kwargs: Any):
+            yield TextDelta(text="starting…", index=0)
+            await gate.wait()
+            yield TextDelta(text="should-not-persist", index=0)
+
+    async def _build_executor(session: WorkspaceSession):
+        return _SlowExecutor()
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+
+    turn_task = asyncio.create_task(run_one_session_turn(lease, deps))
+
+    await asyncio.sleep(0.05)
+    # A genuine hard cancel lands mid-turn (mirrors cancel_session()'s
+    # cancel_requested=True write; both interrupt and cancel publish the
+    # same "session:{id}:cancel" bus event).
+    row = await storage.get(seeded_session.id)
+    row.cancel_requested = True
+    await storage.update(row)
+    await fake_event_bus.publish(f"session:{seeded_session.id}:cancel", {})
+    await asyncio.sleep(0.05)
+    gate.set()
+
+    outcome = await asyncio.wait_for(turn_task, timeout=2.0)
+
+    assert outcome.success is True
+    assert outcome.drop_lease is True
+
+    lines = fake_workspace_io.read_lines(seeded_session.id)
+    records = [json.loads(ln) for ln in lines]
+    kinds = [r["kind"] for r in records]
+    assert SessionMessageKind.CANCELLED in kinds
+
+    # The functionally meaningful assertion: cancel must win the
+    # disambiguation, landing the row ENDED/cancelled (terminal) rather
+    # than WAITING (a Stop leaves the session alive). Note the CANCELLED
+    # record's payload["reason"] text is not a reliable signal here: it's
+    # sourced from a `cancel_reason` local that's hardcoded to
+    # "operator_interrupt" on both branches (a pre-existing, unrelated
+    # cosmetic gap) -- the row's status/ended_reason is the real contract.
+    row = await storage.get(seeded_session.id)
+    assert row.status == SessionStatus.ENDED, (
+        f"cancel was downgraded to a stop: row left at {row.status!r} "
+        "instead of ENDED"
+    )
+    assert row.ended_reason == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_interrupt_requested_cleared_after_clean_completion(
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """I2 regression: a stale interrupt_requested=True that this turn
+    never consumed (e.g. it completed cleanly before any cancel event
+    fired) must not survive past the turn -- every terminal path clears
+    it, not just the interrupt-disambiguation branch, so it can't leak
+    into and downgrade a future genuine Cancel."""
+    session = await _seed_session(fake_storage_provider, autonomous=True)
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    session.interrupt_requested = True
+    await storage.update(session)
+
+    fake_executor = FakeExecutor([
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+
+    async def _build_executor(_session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is True
+    row = await storage.get(session.id)
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "completed"
+    assert row.interrupt_requested is False
+
+
+# ---------------------------------------------------------------------------
+# C1 — steering a RUNNING session must not strand the queued turn
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_turn_start_consumes_claimable_and_mid_turn_steer_survives(
+    seeded_session: WorkspaceSession,
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """C1 regression (dispatch-side half): run_one_session_turn must (a)
+    consume ("idle") a turn_status="claimable" it started with -- proving
+    a stale, already-serviced claimable can't spin-claim this session
+    forever -- and (b) leave turn_status="claimable" on the row if a NEW
+    wake_session() steer lands mid-turn, so the worker pool's
+    post-release re-arm (WorkerPool._maybe_rearm_session, exercised
+    end-to-end in tests/worker/test_pool.py) has a real signal to act on."""
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    seeded_session.turn_status = "claimable"
+    await storage.update(seeded_session)
+
+    seen_turn_status_at_start = None
+
+    class _SteeringExecutor:
+        async def invoke(self, messages: list[Any], **kwargs: Any):
+            nonlocal seen_turn_status_at_start
+            # By the time the executor is invoked, the turn-start consume
+            # step must already have cleared turn_status to "idle".
+            row = await storage.get(seeded_session.id)
+            seen_turn_status_at_start = row.turn_status
+            yield TextDelta(text="thinking", index=0)
+            # Simulate a wake_session() steer landing mid-turn (its
+            # row-write half; the messages.jsonl append is irrelevant to
+            # this assertion).
+            fresh = await storage.get(seeded_session.id)
+            fresh.turn_status = "claimable"
+            await storage.update(fresh)
+            yield Done(stop_reason="stop", raw_reason="stop")
+
+    async def _build_executor(session: WorkspaceSession):
+        return _SteeringExecutor()
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    lease = _make_lease(seeded_session.id)
+    outcome = await run_one_session_turn(lease, deps)
+
+    assert outcome.success is True
+    assert seen_turn_status_at_start == "idle", (
+        "turn-start must consume ('idle') a claimable it started with, "
+        f"but the executor saw {seen_turn_status_at_start!r}"
+    )
+    row = await storage.get(seeded_session.id)
+    assert row.turn_status == "claimable", (
+        "a steer landing mid-turn must survive to release so the pool's "
+        "re-arm can see it"
+    )

@@ -593,6 +593,68 @@ class WorkerPool:
                 logger.exception(
                     "_run_engine_session: engine.release for %s failed", sid,
                 )
+            else:
+                # C1 fix: a wake_session() steer that lands while this
+                # worker holds the lease sets turn_status="claimable" but
+                # (unable to touch an already-claimed lease) can't create a
+                # new claim itself. Every ReleaseOutcome dispatch.py returns
+                # for a session drops the lease unconditionally, so without
+                # this the queued turn is stranded: no lease exists for the
+                # engine to ever re-claim. Re-arm AFTER the release (once
+                # the old lease is actually gone) so a genuinely queued
+                # turn always gets a fresh claim.
+                await self._maybe_rearm_session(sid)
+
+    async def _maybe_rearm_session(self, session_id: str) -> None:
+        """Re-arm a fresh SESSION claim lease if a turn is still queued.
+
+        Mirrors the CHAT lane's keep-the-lease-while-there's-more-work rule
+        (``primer.worker.pool._run_engine_chat`` maps its turn's
+        disposition to ``drop_lease``, and ``ChatClaimAdapter.on_release``
+        is the single writer of the resulting ``turn_status``). Sessions
+        can't reuse that exact shape because every session
+        ``ReleaseOutcome`` drops the lease unconditionally (see
+        ``primer.session.dispatch``), so instead of keeping the old lease
+        alive this re-upserts a brand-new one, once release has actually
+        dropped the old one -- calling upsert first would just touch the
+        (still held-by-us, about to be dropped) lease's priority and be
+        wiped out the instant release runs.
+
+        ``run_one_session_turn`` consumes ("idle"s) any ``turn_status``
+        it started with before running the turn, so a lingering
+        ``turn_status == "claimable"`` at this point can only mean a
+        ``wake_session()`` steer landed during (or right after) the turn
+        that just released -- not a stale, already-serviced signal.
+
+        No-ops when the session ended (a restart is required, and reset
+        clears turn_status itself) or is not RUNNING/WAITING (e.g.
+        PAUSED, or parked -- its own resume event re-arms it, not this
+        generic path, so re-arming here would race the resumable-park
+        dispatch above).
+        """
+        if self._storage is None:
+            return
+        session_storage = self._storage.get_storage(WorkspaceSession)
+        try:
+            fresh = await session_storage.get(session_id)
+        except Exception:
+            logger.exception(
+                "_maybe_rearm_session: failed to read session %s", session_id,
+            )
+            return
+        if fresh is None or fresh.parked_status is not None:
+            return
+        if fresh.status not in (SessionStatus.RUNNING, SessionStatus.WAITING):
+            return
+        if fresh.turn_status != "claimable":
+            return
+        try:
+            await self._engine.upsert(ClaimKind.SESSION, session_id)
+        except Exception:
+            logger.exception(
+                "_maybe_rearm_session: claim_engine.upsert failed for %s",
+                session_id,
+            )
 
     async def _end_session(self, session, *, reason: str):
         """Write a terminal ENDED status to the session row and return a
