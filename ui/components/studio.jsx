@@ -36,6 +36,7 @@ var ST_PERSIST_KEYS = [
   "activeChips",
   "leftWidth",
   "rightWidth",
+  "terminalHeight",
 ];
 
 function ST_storageKey(wid) {
@@ -174,6 +175,7 @@ function ST_defaultState() {
     fileModes: {},
     // Terminal placeholders (P7)
     terminalOpen: false,
+    terminalHeight: 240,
     termTabs: [{ id: "bash", title: "bash" }],
     activeTermId: "bash",
     // Right sidebar activity-feed chip filter
@@ -427,6 +429,10 @@ function useStudioState(wid, initialOpen) {
   var setRightWidth = React.useCallback(function (w) {
     setState(function (s) { return Object.assign({}, s, { rightWidth: w }); });
   }, []);
+  // Terminal (bottom panel) vertical resize — persisted like the column widths.
+  var setTerminalHeight = React.useCallback(function (h) {
+    setState(function (s) { return Object.assign({}, s, { terminalHeight: h }); });
+  }, []);
 
   // Generic patch escape hatch for B2–B4 to set fields not covered above
   // (fileModes, lastSelection, etc.) without re-plumbing the hook each time.
@@ -451,6 +457,7 @@ function useStudioState(wid, initialOpen) {
     toggleChip: toggleChip,
     setLeftWidth: setLeftWidth,
     setRightWidth: setRightWidth,
+    setTerminalHeight: setTerminalHeight,
     patch: patch,
     // B5: palette / quick-open
     openPalette: openPalette,
@@ -705,6 +712,32 @@ function Studio({ wid, pushToast, initialOpen }) {
     window.addEventListener("mouseup", onUp);
   }
 
+  // Terminal vertical resize: mirror startResize but on the Y axis. The panel
+  // sits BELOW StudioCenter, so dragging the divider UP must GROW the terminal
+  // — hence delta = startY - clientY (inverted vs. the column handles). Clamp
+  // to a sane band so it can't collapse to nothing or eat the whole viewport;
+  // xterm re-fits automatically via its ResizeObserver as the height changes.
+  var termDragRef = React.useRef(null);
+  function startTermResize(e) {
+    e.preventDefault();
+    termDragRef.current = { startY: e.clientY, startH: s.terminalHeight };
+    function onMove(ev) {
+      var d = termDragRef.current;
+      if (!d) return;
+      var delta = d.startY - ev.clientY;
+      var maxH = Math.min(800, Math.round(window.innerHeight * 0.7));
+      var h = Math.max(120, Math.min(maxH, d.startH + delta));
+      studio.setTerminalHeight(h);
+    }
+    function onUp() {
+      termDragRef.current = null;
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    }
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }
+
   function selectWorkspace(newWid) {
     // Navigate to the new workspace route; the hook re-hydrates from that
     // wid's persisted layout. Drop any stale ?open= from the previous ws.
@@ -741,7 +774,7 @@ function Studio({ wid, pushToast, initialOpen }) {
       data-theme={s.theme}
       data-density={s.density}
       data-testid="studio-root"
-      style={{ "--st-left-w": s.leftWidth + "px", "--st-right-w": s.rightWidth + "px" }}
+      style={{ "--st-left-w": s.leftWidth + "px", "--st-right-w": s.rightWidth + "px", "--st-term-h": s.terminalHeight + "px" }}
     >
       <StudioHeader
         wid={wid}
@@ -775,6 +808,11 @@ function Studio({ wid, pushToast, initialOpen }) {
         {/* ---- CENTER: B3 StudioCenter (tabs + active panel) + P7 terminal ---- */}
         <div className="st-col st-col-center" data-testid="studio-center">
           <StudioCenter wid={wid} studio={studio} />
+          {/* Horizontal splitter: drag to resize the terminal (writes
+              terminalHeight → --st-term-h). Mirrors the column handles. */}
+          {s.terminalOpen && (
+            <div className="st-term-resize" data-testid="terminal-resize" onMouseDown={startTermResize} />
+          )}
           {/* Collapsible bottom terminal panel (Ctrl-` / the header toggle
               flip terminalOpen). Only mounted while open — unmounting tears
               down every tab's xterm instance + WS (see studio-terminal.jsx),
