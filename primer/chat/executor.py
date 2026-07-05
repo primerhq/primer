@@ -1092,7 +1092,11 @@ class ChatTurnRunner:
                         ),
                     )
                 continue
-            # done / yielded / resumed / error — boundary markers; skip.
+            # done / yielded / resumed / error / agent_marker — boundary
+            # markers; skip. (agent_marker rows carry no model-visible
+            # content — they're legibility markers for the agent-timeline
+            # UI, chat-refactor plan Task A4/A5 — so they fall through
+            # here untouched, same as the other terminal/marker kinds.)
 
         flush_assistant()
         flush_tool_results()
@@ -1257,7 +1261,16 @@ class ChatTurnRunner:
         externally-mutable fields from storage first (``cancel_requested_at``
         from an ``interrupt``, ``agent_id`` from a mid-chat agent switch) so a
         concurrent change isn't clobbered by this turn's stale in-memory copy.
+
+        Every row this method writes is stamped with the id of the agent
+        that produced it (``payload["agent_id"]``), via ``setdefault`` so a
+        caller-supplied value (none currently) would win. This is the
+        per-turn attribution the agent-timeline UI reads (chat-refactor plan
+        Task A4). ``user_message`` rows are persisted by
+        :func:`primer.chat.enqueue.append_user_message`, NOT this method, so
+        they correctly carry no ``agent_id``.
         """
+        payload.setdefault("agent_id", self._agent.id)
         next_seq = chat.last_seq + 1
         row = ChatMessage(
             id=ChatMessage.make_id(chat.id, next_seq),

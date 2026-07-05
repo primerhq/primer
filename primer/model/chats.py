@@ -51,12 +51,19 @@ ChatMessageKind = Literal[
     "cancelled",
     "error",
     "compaction_marker",
+    "agent_marker",
 ]
 """The wire-level message kinds emitted by the chat executor.
 
 The set mirrors the M6 spec (§8.5). Each row in ``chat_messages``
 carries the kind plus a kind-specific ``payload`` JSON blob — see
 the spec for the per-kind schema.
+
+``agent_marker`` rows are legibility markers for the agent-timeline UI
+(chat-refactor plan Task A5): they note an attribution boundary
+(``switch`` / ``handoff``) but carry no model-visible content, so
+:meth:`primer.chat.executor.ChatTurnRunner._load_history` drops them
+from the prompt.
 """
 
 
