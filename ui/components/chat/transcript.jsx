@@ -65,7 +65,12 @@ function CT_formatTime(createdAt) {
 // but before the first assistant_token / tool_call / done row lands.
 // Same horizontal layout as a real agent bubble so it doesn't shift
 // when the first delta arrives.
-function CT_ThinkingBubble() {
+//
+// `label` (Task C2) lets the caller swap the generic animated
+// "Thinking…" text for a tool-labeled live state ("running <tool>…")
+// when the last row is a still-running tool_call — same bubble so the
+// layout doesn't jump when the label changes.
+function CT_ThinkingBubble({ label }) {
   return (
     <div style={{ display: "flex", gap: 12, marginBottom: 14 }} aria-live="polite">
       <div style={{
@@ -87,10 +92,14 @@ function CT_ThinkingBubble() {
         paddingLeft: 12,
         fontStyle: "italic",
       }}>
-        Thinking
-        <span className="thinking-dots" style={{ marginLeft: 2 }}>
-          <span>.</span><span>.</span><span>.</span>
-        </span>
+        {label ? label : (
+          <>
+            Thinking
+            <span className="thinking-dots" style={{ marginLeft: 2 }}>
+              <span>.</span><span>.</span><span>.</span>
+            </span>
+          </>
+        )}
       </div>
     </div>
   );
@@ -362,6 +371,13 @@ function Message({ m }) {
     ? m.parts.filter((p) => p && (p.type === "image" || p.type === "document"))
     : [];
   const attribLabel = isUser ? "user" : (m.agent_id || "agent");
+  // Optimistic echo (Task C2): <Conversation> pushes a synthetic
+  // user_message row (marked `pending: true`, carrying a `clientId`) the
+  // instant the operator hits Send, before the WS round-trip confirms
+  // it's persisted. This tick is the only visual difference from a real
+  // row — it disappears the moment the persisted row (same text, real
+  // seq) reconciles it in place.
+  const isPending = isUser && m.pending === true;
   return (
     <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
       <CT_Attribution
@@ -374,6 +390,12 @@ function Message({ m }) {
         {attachmentParts.length > 0 && (
           <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6 }}>
             {attachmentParts.map((p, i) => <CT_AttachmentPart key={i} part={p} />)}
+          </div>
+        )}
+        {isPending && (
+          <div className="pill pill-created" style={{ marginTop: 6, width: "fit-content" }}>
+            <Icon name="clock" size={9} />
+            sending
           </div>
         )}
       </div>
@@ -502,6 +524,15 @@ function Transcript({
   const lastRow = messages.length > 0 ? messages[messages.length - 1] : null;
   const lastIsQuiet = lastRow && _QUIET_LAST_KINDS.has(lastRow.kind);
   const showThinking = waitingForReply || (turnInFlight && !lastIsQuiet);
+  // Task C2: a still-running tool_call is exactly the last coalesced row
+  // that hasn't yet been followed by its tool_result (pairing the two by
+  // id to also handle a *completed* tool as the last row is Task C3's
+  // job) — label the live state with what the agent is doing instead of
+  // the generic "Thinking…".
+  const runningToolName = lastRow && lastRow.kind === "tool_call"
+    ? (lastRow.name || lastRow.tool_name || "tool")
+    : null;
+  const thinkingLabel = runningToolName ? `running ${runningToolName}…` : null;
 
   return (
     <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0, minWidth: 0 }}>
@@ -519,17 +550,22 @@ function Transcript({
           {wsState === "connecting" ? "Connecting…" : "No messages yet. Say hello to the agent."}
         </div>
       )}
-      {messages.map((m) =>
-        m.kind === "assistant_message" ? (
-          <Message key={`am-${m.startSeq}-${m.endSeq}`} m={m} />
-        ) : (
-          <Message key={`${m.seq}-${m.kind}`} m={m} />
-        )
-      )}
+      {messages.map((m) => {
+        // A pending optimistic echo (Task C2) has no `seq` yet — key off
+        // its `clientId` instead so it doesn't collide with (or get
+        // confused for) a persisted row while it's still in flight.
+        const key = m.kind === "assistant_message"
+          ? `am-${m.startSeq}-${m.endSeq}`
+          : m.clientId
+            ? `pending-${m.clientId}`
+            : `${m.seq}-${m.kind}`;
+        return <Message key={key} m={m} />;
+      })}
 
       {/* Thinking indicator — see _QUIET_LAST_KINDS above for why this
-          checks the coalesced last row rather than the raw one. */}
-      {showThinking ? <CT_ThinkingBubble /> : null}
+          checks the coalesced last row rather than the raw one; see
+          thinkingLabel above (Task C2) for the tool-labeled live state. */}
+      {showThinking ? <CT_ThinkingBubble label={thinkingLabel} /> : null}
     </div>
   );
 }
