@@ -479,6 +479,29 @@ async def test_callback_missing_state_param_rejected(client, app, rsa_keypair):
     assert "primer_session" not in cb.cookies
 
 
+@pytest.mark.asyncio
+@respx.mock
+async def test_callback_non_ascii_state_param_rejected(client, app, rsa_keypair):
+    """A non-ASCII ``state`` query param (attacker-controlled, arbitrary
+    Unicode via percent-encoding) must be rejected as a clean 400
+    ``invalid_state`` -- NOT surface a 500 from ``secrets.compare_digest``,
+    which raises ``TypeError`` on ``str`` operands outside ASCII."""
+    priv, pub = rsa_keypair
+    idp = _IdpFixture(pub)
+    idp.register()
+    provider = await _seed_provider(app, idp)
+    await app.state.storage_provider.set_sso_jit_enabled(True)
+
+    login_resp = await _login(client, provider.id)
+    qs = _query(login_resp.headers["location"])
+    idp.queue_id_token(priv, idp.base_claims(sub="sub-state-non-ascii", nonce=qs["nonce"]))
+
+    cb = await _callback(client, provider.id, code="code-state-non-ascii", state="é")
+    assert cb.status_code == 400, cb.text
+    assert cb.json()["detail"]["error"] == "invalid_state"
+    assert "primer_session" not in cb.cookies
+
+
 # ---------------------------------------------------------------------------
 # Rejections -- the security boundary
 # ---------------------------------------------------------------------------
