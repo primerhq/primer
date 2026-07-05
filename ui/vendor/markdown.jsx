@@ -171,9 +171,15 @@
             }
           }
         }
+        const body = buf.join("\n");
+        const highlightCode = window.primerVendor?.highlightCode;
         pushBlock(
           <pre className={`md-pre lang-${lang || "plain"}`}>
-            <code>{buf.join("\n")}</code>
+            {highlightCode ? (
+              <code dangerouslySetInnerHTML={{ __html: highlightCode(body, lang) }} />
+            ) : (
+              <code>{body}</code>
+            )}
           </pre>
         );
         continue;
