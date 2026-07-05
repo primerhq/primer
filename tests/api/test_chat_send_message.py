@@ -173,3 +173,38 @@ class TestSendChatMessage:
         assert resp.status_code == 409
         # The append-only history is untouched while a turn is running.
         assert await _messages(app, "c1") == []
+
+    async def test_202_stamps_ephemeral_response_format(self, client, app) -> None:
+        """Task A3: an ephemeral response_format on the send body is
+        stamped onto the persisted row's payload (not on the chat)."""
+        await _seed_chat(app, chat_id="c1", turn_status="idle", last_seq=0)
+        schema = {"type": "object", "properties": {"a": {"type": "string"}}}
+
+        resp = await client.post(
+            "/v1/chats/c1/messages",
+            json={"content": "hello", "response_format": schema},
+        )
+        assert resp.status_code == 202, resp.text
+        assert resp.json()["payload"]["response_format"] == schema
+
+        rows = await _messages(app, "c1")
+        assert rows[0].payload.get("response_format") == schema
+        # Not persisted on the chat itself — this is the ephemeral path.
+        chat = await app.state.storage_provider.get_storage(Chat).get("c1")
+        assert chat.response_format is None
+
+    async def test_422_when_ephemeral_response_format_invalid(
+        self, client, app,
+    ) -> None:
+        await _seed_chat(app, chat_id="c1", turn_status="idle", last_seq=0)
+
+        resp = await client.post(
+            "/v1/chats/c1/messages",
+            json={
+                "content": "hello",
+                "response_format": {"type": "nonsense-☠"},
+            },
+        )
+        assert resp.status_code == 422, resp.text
+        # No row appended — validation fails before any persistence.
+        assert await _messages(app, "c1") == []
