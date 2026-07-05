@@ -684,13 +684,17 @@ function ST_SessionPanel({ wid, sid, pushToast }) {
   }
   if (!session) return null;
 
-  // Resolve binding kind; mirror SessionLiveStream/SD_GraphRunView's defensive
-  // reads (binding.kind || binding_kind).
-  var kind = (session.binding && session.binding.kind) || session.binding_kind || "agent";
+  // Route through ST_isAutonomous (the byte-mirror of backend
+  // session_is_autonomous): an explicit `session.autonomous` flag wins,
+  // else derive from the binding kind (graph ⇒ autonomous). Branching on
+  // the raw binding.kind instead would send an explicit-override session
+  // (autonomous flag contradicting binding.kind) to the wrong panel. For a
+  // session WITHOUT an explicit override this is identical to the old
+  // `binding.kind === "graph"` branch (agent/missing ⇒ agent panel).
   // The session's own workspace_id is authoritative; fall back to the route wid.
   var effWid = session.workspace_id || wid;
 
-  if (kind === "graph") {
+  if (ST_isAutonomous(session)) {
     return <SessionGraphPanel wid={effWid} sid={sid} session={session} pushToast={pushToast} />;
   }
   return <SessionAgentPanel wid={effWid} sid={sid} session={session} pushToast={pushToast} />;
