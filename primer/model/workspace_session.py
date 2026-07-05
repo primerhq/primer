@@ -365,6 +365,16 @@ class WorkspaceSession(Identifiable):
     parent_session_id: str | None = Field(default=None)
     initial_instructions: str | None = Field(default=None)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    autonomous: bool | None = Field(
+        default=None,
+        description=(
+            "Interactive-vs-autonomous control signal (studio-agents-interact "
+            "§8.1). None => derive from binding kind (graph ⇒ autonomous, "
+            "agent ⇒ interactive). True marks an agent self-driving loop as "
+            "autonomous; False forces interactive. Read via "
+            "primer.session.autonomy.session_is_autonomous."
+        ),
+    )
     initiated_by: PrincipalRef | None = Field(
         default=None,
         description=(
@@ -402,6 +412,15 @@ class WorkspaceSession(Identifiable):
     # Cancel/pause request flags (set by API, read by worker)
     pause_requested: bool = Field(default=False)
     cancel_requested: bool = Field(default=False)
+    interrupt_requested: bool = Field(
+        default=False,
+        description=(
+            "Set by POST .../interrupt (Stop). The worker preempts the "
+            "in-flight turn like a cancel but transitions the session to "
+            "WAITING (alive/idle) instead of ENDED, so the user can keep "
+            "chatting (studio-agents-interact §4.4). Cleared by the worker."
+        ),
+    )
 
     # ----------------------------------------------------------------------
     # Yielding-tool park state (M1 of the yielding-tools feature).
@@ -536,6 +555,10 @@ class SessionMessageKind(StrEnum):
     #    "status": str | None}`` (status populated on exit with the node
     # outcome, None on enter).
     GRAPH_TRANSITION = "graph_transition"
+    # Written by reset_session on ENDED->CREATED re-open. Payload:
+    # ``{"invocation": int}``. Rendered by the UI session adapter as a
+    # "— invocation N —" divider row (studio-agents-interact §5.2 / §3).
+    INVOCATION_DIVIDER = "invocation_divider"
 
 
 class SessionMessageRecord(BaseModel):
