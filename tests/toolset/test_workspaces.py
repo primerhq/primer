@@ -396,11 +396,13 @@ class TestCatalog:
         assert WORKSPACES_TOOLSET_ID == "workspaces"
         names = [t.id async for t in toolset.list_tools()]
         # 28 minus watch_files + invoke_graph (both moved to the
-        # ``workspace_ext`` toolset) = 26, plus workspace_tap = 27.
-        assert len(names) == 27
+        # ``workspace_ext`` toolset) = 26, plus workspace_tap = 27, plus
+        # restart_workspace_session (Task 8) = 28.
+        assert len(names) == 28
         assert "create_workspace_session" in names
         assert "cancel_workspace_session" in names
         assert "workspace_tap" in names
+        assert "restart_workspace_session" in names
         # watch_files + invoke_graph moved to workspace_ext.
         assert "watch_files" not in names
         assert "invoke_graph" not in names
@@ -498,8 +500,9 @@ class TestBootstrapIngestsWorkspacesTools:
             if doc_id.startswith("workspaces::")
         }
         # 28 minus watch_files + invoke_graph (moved to workspace_ext) = 26,
-        # plus workspace_tap = 27.
-        assert len(ws_ingested) == 27
+        # plus workspace_tap = 27, plus restart_workspace_session (Task 8)
+        # = 28.
+        assert len(ws_ingested) == 28
         for expected in (
             "workspaces::list_workspace_providers",
             "workspaces::create_workspace_template",
