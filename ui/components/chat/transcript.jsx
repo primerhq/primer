@@ -53,6 +53,45 @@ function CT_formatTime(createdAt) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+// Duration between a tool_call and its paired tool_result, in ms — used
+// for the collapsed chip's "✓ 2.1s" badge (Task C3). Both rows need a
+// `created_at` to compute this; a live WS frame doesn't carry one (see
+// CT_formatTime above), so a still-fresh pairing renders without a
+// duration until the REST reload backfills it — same graceful-degrade
+// precedent as the timestamp.
+function CT_toolDuration(call, result) {
+  if (!call || !result) return null;
+  const start = call.created_at ? new Date(call.created_at).getTime() : NaN;
+  const end = result.created_at ? new Date(result.created_at).getTime() : NaN;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const ms = end - start;
+  return ms >= 0 ? ms : null;
+}
+
+function CT_formatDuration(ms) {
+  if (ms == null || !Number.isFinite(ms)) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// Pick a short "key argument" to surface next to the tool name in the
+// collapsed chip (Task C3) — `bash(ls -la)` reads far better than
+// `bash({"command":"ls -la"})`. A single-arg call just shows that
+// value; a multi-arg call prefers a handful of common single-purpose
+// keys (command/path/query/…); anything else falls back to compact JSON.
+const _TOOL_KEY_ARG_PRIORITY = ["command", "cmd", "path", "file", "filename", "query", "url", "name"];
+function CT_keyArgPreview(args) {
+  if (!args || typeof args !== "object") return "";
+  const keys = Object.keys(args);
+  if (keys.length === 0) return "";
+  const pick = keys.length === 1
+    ? keys[0]
+    : (_TOOL_KEY_ARG_PRIORITY.find((k) => k in args) || keys[0]);
+  const v = args[pick];
+  const s = typeof v === "string" ? v : (() => { try { return JSON.stringify(v); } catch { return ""; } })();
+  return (s || "").replace(/\s+/g, " ");
+}
+
 // ============================================================================
 // Helpers: thinking indicator + attachment part
 // ============================================================================
@@ -123,8 +162,15 @@ const _TOOL_PREVIEW_CHARS = 80;
 function CT_ExpandableToolRow({
   icon, iconColor, borderColor,
   name, separator, previewText, fullText, endBadge,
+  defaultOpen,
 }) {
-  const [open, setOpen] = React.useState(false);
+  // Task C3: initial open state is caller-driven — a still-running tool
+  // call auto-expands (defaultOpen=true); a completed one starts
+  // collapsed to its result chip (defaultOpen=false, the useState
+  // default). The row that calls this with defaultOpen also keys the
+  // element on run/done state (see Transcript below) so a running ->
+  // paired transition remounts fresh instead of staying stuck open.
+  const [open, setOpen] = React.useState(!!defaultOpen);
   const preview = (previewText || "").replace(/\s+/g, " ");
   const truncated = preview.length > _TOOL_PREVIEW_CHARS;
   const previewShown = truncated
@@ -180,10 +226,17 @@ function CT_ExpandableToolRow({
           fontFamily: "IBM Plex Mono, monospace",
           color: "var(--text-2)",
           whiteSpace: "pre-wrap",
-          wordBreak: "break-all",
+          wordBreak: "break-word",
           maxHeight: 360,
           overflow: "auto",
-        }}>{fullText}</pre>
+        }}>
+          {/* Task C3: schema-light highlighted payload (B1's vendored
+              highlighter) instead of a bare wall of JSON text — falls back
+              to the raw string if the vendor script hasn't loaded. */}
+          {window.primerVendor && window.primerVendor.highlightCode
+            ? <code dangerouslySetInnerHTML={{ __html: window.primerVendor.highlightCode(fullText || "", "json") }} />
+            : (fullText || "")}
+        </pre>
       )}
     </div>
   );
@@ -234,7 +287,7 @@ function CT_Attribution({ label, isUser, time }) {
 // Message — one row in the conversation
 // ============================================================================
 
-function Message({ m }) {
+function Message({ m, pairedResult }) {
   const kind = m.kind;
 
   if (kind === "tool_call") {
@@ -242,6 +295,39 @@ function Message({ m }) {
     const args = m.args || m.arguments || {};
     const argsFull = (() => { try { return JSON.stringify(args, null, 2); } catch { return ""; } })();
     const argsPreview = (() => { try { return JSON.stringify(args); } catch { return ""; } })();
+
+    // Task C3 / D4: hybrid rendering. While unpaired (no tool_result with
+    // a matching `id` has landed yet) the call is still running — render
+    // it expanded so the args are visible live. Once Transcript pairs it
+    // with its tool_result, collapse to a one-line result chip
+    // (`name(key-arg) ✓ 2.1s`) that re-expands on click.
+    if (pairedResult) {
+      const isError = !!pairedResult.error;
+      const resultFull = typeof pairedResult.result === "string"
+        ? pairedResult.result
+        : (pairedResult.result != null ? JSON.stringify(pairedResult.result, null, 2) : "");
+      const combinedFull = `// args\n${argsFull}\n\n// result\n${resultFull}`;
+      const durationLabel = CT_formatDuration(CT_toolDuration(m, pairedResult));
+      const keyArg = CT_keyArgPreview(args);
+      return (
+        <CT_ExpandableToolRow
+          icon={isError ? "x-circle" : "check"}
+          iconColor={isError ? "var(--red)" : "var(--green)"}
+          borderColor={isError ? "var(--red)" : "var(--border)"}
+          name={name}
+          separator="("
+          previewText={`${keyArg})`}
+          fullText={combinedFull}
+          defaultOpen={false}
+          endBadge={
+            <span className={isError ? "fail" : "ok"}>
+              {isError ? "✗" : "✓"}{durationLabel ? ` ${durationLabel}` : ""}
+            </span>
+          }
+        />
+      );
+    }
+
     return (
       <CT_ExpandableToolRow
         icon="play"
@@ -251,6 +337,7 @@ function Message({ m }) {
         separator="("
         previewText={argsPreview}
         fullText={argsFull}
+        defaultOpen={true}
         endBadge={m.pending_approval ? (
           <span className="pill pill-paused"><span className="dot"></span>awaiting approval</span>
         ) : null}
@@ -259,6 +346,11 @@ function Message({ m }) {
   }
 
   if (kind === "tool_result") {
+    // Fallback-only path (Task C3): a tool_result whose matching
+    // tool_call is present in the same loaded window folds into that
+    // call's row instead (see Transcript below) and never reaches this
+    // branch. This renders standalone only when the pairing call has
+    // scrolled out of the loaded history — same look as before C3.
     const name = m.name || m.tool_name || "tool";
     const isError = !!m.error;
     const fullStr = typeof m.result === "string"
@@ -534,6 +626,17 @@ function Transcript({
     : null;
   const thinkingLabel = runningToolName ? `running ${runningToolName}…` : null;
 
+  // Task C3: pair tool_call + tool_result rows by shared `id` so a
+  // completed tool renders as ONE hybrid row instead of two separate
+  // one-line dumps. toolCallIdsPresent lets a tool_result whose call has
+  // scrolled out of the loaded window still fall back to its own row.
+  const toolResultsById = new Map();
+  const toolCallIdsPresent = new Set();
+  for (const row of messages) {
+    if (row.kind === "tool_result" && row.id) toolResultsById.set(row.id, row);
+    if (row.kind === "tool_call" && row.id) toolCallIdsPresent.add(row.id);
+  }
+
   return (
     <div ref={scrollRef} onScroll={onScroll} style={{ flex: 1, overflow: "auto", padding: "18px 24px", minHeight: 0, minWidth: 0 }}>
       {(loadingOlder || hasMoreOlder) && messages.length > 0 && (
@@ -551,15 +654,30 @@ function Transcript({
         </div>
       )}
       {messages.map((m) => {
+        // A tool_result that pairs with a tool_call present in this same
+        // window (Task C3) folds into that call's row above — it doesn't
+        // get a row of its own.
+        if (m.kind === "tool_result" && m.id && toolCallIdsPresent.has(m.id)) {
+          return null;
+        }
+        const pairedResult = m.kind === "tool_call" && m.id
+          ? toolResultsById.get(m.id)
+          : undefined;
         // A pending optimistic echo (Task C2) has no `seq` yet — key off
         // its `clientId` instead so it doesn't collide with (or get
-        // confused for) a persisted row while it's still in flight.
+        // confused for) a persisted row while it's still in flight. A
+        // tool_call's key additionally folds in run/done state (Task C3)
+        // so the row remounts — and so its default-open state resets from
+        // "expanded while running" to "collapsed once done" — the instant
+        // its tool_result pairs up, rather than staying stuck open.
         const key = m.kind === "assistant_message"
           ? `am-${m.startSeq}-${m.endSeq}`
           : m.clientId
             ? `pending-${m.clientId}`
-            : `${m.seq}-${m.kind}`;
-        return <Message key={key} m={m} />;
+            : m.kind === "tool_call"
+              ? `${m.seq}-${m.kind}-${pairedResult ? "done" : "running"}`
+              : `${m.seq}-${m.kind}`;
+        return <Message key={key} m={m} pairedResult={pairedResult} />;
       })}
 
       {/* Thinking indicator — see _QUIET_LAST_KINDS above for why this
