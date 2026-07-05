@@ -46,6 +46,7 @@ from primer.model.turn_log import (
     TurnLogYielded,
 )
 from primer.model.yield_ import YieldToWorker
+from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import (
     WorkspaceIO,
     WorkspaceMessageWriter,
@@ -181,6 +182,38 @@ async def run_one_session_turn(
         )
 
     # ------------------------------------------------------------------
+    # 1.5 Consume the claimable signal before running the turn.
+    # ------------------------------------------------------------------
+    # wake_session() sets turn_status="claimable" on every steer, INCLUDING
+    # the case where a worker already holds this session's lease (steering
+    # a RUNNING session). That write can't create a new claim by itself
+    # (the lease is already held -- ClaimEngine.upsert on an already-claimed
+    # lease is a no-op on claimed_by), so the only way the queued
+    # instruction is not stranded is for THIS turn to notice, once it's
+    # done, that a steer landed. Consuming the signal here (flipping it
+    # back to "idle" under the session lifecycle lock, same lock
+    # wake_session uses for its own read-modify-write) means:
+    #   * a wake_session() call that lands BEFORE this point is exactly
+    #     what executor.invoke() below will read from messages.jsonl (a
+    #     one-shot snapshot taken at invoke() entry) -- no re-arm needed.
+    #   * a wake_session() call that lands AFTER this point (during the
+    #     turn, or in the gap before release) re-sets turn_status to
+    #     "claimable" again, which the caller (WorkerPool._run_engine_session
+    #     / _maybe_rearm_session) detects post-release and re-arms a fresh
+    #     lease for -- since every ReleaseOutcome this function returns
+    #     drops the lease.
+    # Without this consume step a turn_status="claimable" written by a much
+    # earlier, already-serviced steer would never be cleared (nothing else
+    # writes turn_status back to "idle") and would spin-claim this session
+    # forever.
+    async with session_lifecycle_lock().acquire(session_id):
+        fresh_before_turn = await session_storage.get(session_id)
+        if fresh_before_turn is not None and fresh_before_turn.turn_status == "claimable":
+            await session_storage.update(
+                fresh_before_turn.model_copy(update={"turn_status": "idle"})
+            )
+
+    # ------------------------------------------------------------------
     # 2. Build executor
     # ------------------------------------------------------------------
     # Building the executor can raise a fatal resolution error BEFORE the
@@ -198,12 +231,17 @@ async def run_one_session_turn(
             "session %s failed to build executor; ending failed",
             session_id,
         )
-        await _transition_session_status(
-            session_storage,
-            session,
-            new_status=SessionStatus.ENDED,
-            ended_reason="failed",
-        )
+        # Serialize the terminal transition + interrupt-flag clear against
+        # a concurrent resume/pause/cancel/interrupt API call (T0432-style
+        # lost update; see primer.session.mutation_lock).
+        async with session_lifecycle_lock().acquire(session_id):
+            await _transition_session_status(
+                session_storage,
+                session,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+            )
+            await _clear_interrupt_requested(session_storage, session_id)
         return ReleaseOutcome(success=False, drop_lease=True)
     if executor is None:
         logger.warning("executor builder returned None for session %s", session_id)
@@ -427,6 +465,14 @@ async def run_one_session_turn(
             session_id, yielded.tool_name, yielded.event_key, timeout,
         )
 
+        # A park doesn't touch session.status, but a stale interrupt_requested
+        # (e.g. an interrupt fired but the executor parked on a tool before
+        # the cancel_event check ran, so the disambiguation branch below
+        # never got a chance to consume it) must not leak into the turn
+        # that eventually resumes this park.
+        async with session_lifecycle_lock().acquire(session_id):
+            await _clear_interrupt_requested(session_storage, session_id)
+
         return ReleaseOutcome(
             success=True,
             drop_lease=True,
@@ -495,12 +541,14 @@ async def run_one_session_turn(
                 " failure; session will still be transitioned to ENDED",
                 session_id,
             )
-        await _transition_session_status(
-            session_storage,
-            session,
-            new_status=SessionStatus.ENDED,
-            ended_reason="failed",
-        )
+        async with session_lifecycle_lock().acquire(session_id):
+            await _transition_session_status(
+                session_storage,
+                session,
+                new_status=SessionStatus.ENDED,
+                ended_reason="failed",
+            )
+            await _clear_interrupt_requested(session_storage, session_id)
         await turn_log.aclose()
         return ReleaseOutcome(success=False, drop_lease=True)
 
@@ -517,9 +565,17 @@ async def run_one_session_turn(
     if cancel_requested:
         # Re-read to see whether this preemption was a Stop (interrupt,
         # stay alive) or an End/Cancel (terminal). The interrupt path and
-        # the cancel path both fire session:{sid}:cancel on the bus.
+        # the cancel path both fire session:{sid}:cancel on the bus, so
+        # both flags can be set on the same row (e.g. a stuck
+        # interrupt_requested left over from an earlier turn that never
+        # consumed it, plus a brand-new hard cancel). Cancel is always the
+        # stronger intent: require interrupt_requested AND NOT
+        # cancel_requested, so a genuine Cancel is never downgraded to a
+        # Stop.
         fresh = await session_storage.get(session_id)
-        is_interrupt = bool(fresh and fresh.interrupt_requested)
+        is_interrupt = bool(
+            fresh and fresh.interrupt_requested and not fresh.cancel_requested
+        )
         await _safe_turn_log(turn_log, TurnLogCancelled(
             seq=0,
             ts=_now(),
@@ -536,6 +592,15 @@ async def run_one_session_turn(
         )
         if is_interrupt:
             new_status, ended_reason = _interrupt_post_status()
+        else:
+            new_status, ended_reason = SessionStatus.ENDED, "cancelled"
+        # Serialize the terminal transition + interrupt-flag clear against
+        # a concurrent resume/pause/cancel/interrupt API call (T0432-style
+        # lost update; see primer.session.mutation_lock). The flag is
+        # cleared on BOTH branches (not just the interrupt one) so a flag
+        # that lost the disambiguation above (Cancel won) can't persist
+        # into a future turn either.
+        async with session_lifecycle_lock().acquire(session_id):
             await _transition_session_status(
                 session_storage,
                 session,
@@ -543,20 +608,7 @@ async def run_one_session_turn(
                 ended_reason=ended_reason,
                 executor=executor,
             )
-            # Clear the flag so the next turn is not re-interrupted.
-            latest = await session_storage.get(session_id)
-            if latest is not None and latest.interrupt_requested:
-                await session_storage.update(
-                    latest.model_copy(update={"interrupt_requested": False})
-                )
-        else:
-            await _transition_session_status(
-                session_storage,
-                session,
-                new_status=SessionStatus.ENDED,
-                ended_reason="cancelled",
-                executor=executor,
-            )
+            await _clear_interrupt_requested(session_storage, session_id)
         await turn_log.aclose()
         return ReleaseOutcome(success=True, drop_lease=True)
 
@@ -575,13 +627,22 @@ async def run_one_session_turn(
         last_done_reason, agent_status,
         is_autonomous=session_is_autonomous(session),
     )
-    await _transition_session_status(
-        session_storage,
-        session,
-        new_status=new_status,
-        ended_reason=ended_reason,
-        executor=executor,
-    )
+    # Serialize the terminal transition + interrupt-flag clear against a
+    # concurrent resume/pause/cancel/interrupt API call (T0432-style lost
+    # update; see primer.session.mutation_lock). A clean completion can
+    # still carry a stale interrupt_requested (e.g. the interrupt fired
+    # too late to be observed by this turn's cancel_event check), so clear
+    # it here too -- every terminal path must, or it leaks into a future
+    # turn and can downgrade a later genuine Cancel to a Stop.
+    async with session_lifecycle_lock().acquire(session_id):
+        await _transition_session_status(
+            session_storage,
+            session,
+            new_status=new_status,
+            ended_reason=ended_reason,
+            executor=executor,
+        )
+        await _clear_interrupt_requested(session_storage, session_id)
 
     await _safe_turn_log(turn_log, TurnLogCompleted(
         seq=0,
@@ -793,6 +854,27 @@ def _apply_interactive(
     ):
         return (SessionStatus.WAITING, None)
     return (status, reason)
+
+
+async def _clear_interrupt_requested(session_storage, session_id: str) -> None:
+    """Best-effort clear of a (possibly stale) ``interrupt_requested`` flag.
+
+    Called on every terminal/park exit from :func:`run_one_session_turn`
+    (clean completion, build/executor failure, park, and both branches of
+    the cancel/interrupt disambiguation) so a flag this turn didn't
+    consume -- e.g. the turn parked or failed before the cancel_event
+    check ever ran, or a concurrent Cancel won the disambiguation instead
+    -- cannot leak into a future turn and downgrade a later genuine
+    Cancel to a Stop. Always called from inside a
+    ``session_lifecycle_lock`` critical section alongside the terminal
+    transition so the two writes can't interleave with a racing
+    resume/pause/cancel/interrupt API call.
+    """
+    fresh = await session_storage.get(session_id)
+    if fresh is not None and fresh.interrupt_requested:
+        await session_storage.update(
+            fresh.model_copy(update={"interrupt_requested": False})
+        )
 
 
 async def _transition_session_status(

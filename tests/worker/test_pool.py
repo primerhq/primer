@@ -747,6 +747,147 @@ async def test_run_engine_session_releases_engine_lease_on_success(
     assert released[0][1].success is True
 
 
+# ---------------------------------------------------------------------------
+# C1 — steering a RUNNING (leased) session must not strand the queued turn
+# ---------------------------------------------------------------------------
+
+
+async def test_steering_a_running_session_rearms_a_fresh_claim(scheduler, monkeypatch):
+    """C1 regression, end-to-end at the claim-engine level.
+
+    Uses a REAL InMemoryClaimEngine + SessionClaimAdapter (not the old
+    unconditionally-recording _FakeEngine) so the held-lease upsert-is-a-
+    no-op semantics of the real engine are exercised. Sequence:
+      1. Genuinely claim the session's lease (mirrors claim_due handing it
+         to this worker).
+      2. Simulate a wake_session() steer landing WHILE the lease is held:
+         set turn_status="claimable" and upsert -- on the real engine this
+         is a no-op on the held lease's claimed_by, exactly the bug.
+      3. Drive _run_engine_session to completion (a fake run_one_session_turn
+         mirrors dispatch.py's real behaviour: it always drops the lease).
+      4. Assert a FRESH claim is now possible -- proving the queued turn is
+         not stranded.
+    """
+    from tests.conftest import _FakeStorageProvider
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    sid = "sess-steer-rearm-1"
+    sp = _FakeStorageProvider()
+    session_storage = sp.get_storage(WorkspaceSession)
+    fake_session = WorkspaceSession(
+        id=sid, workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+    )
+    await session_storage.create(fake_session)
+
+    adapter = SessionClaimAdapter(session_storage=session_storage)
+    real_engine = InMemoryClaimEngine(adapters={ClaimKind.SESSION: adapter})
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=scheduler,
+        storage=sp,
+        workspace_registry=None,     # type: ignore[arg-type]
+        provider_registry=None,      # type: ignore[arg-type]
+        engine=real_engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-test"
+
+    # 1. Genuinely claim the lease (as claim_due would for the worker
+    # about to run this session's turn).
+    await real_engine.upsert(ClaimKind.SESSION, sid)
+    [engine_lease] = await real_engine.claim_due("wrk-test", max_count=1)
+    assert engine_lease.entity_id == sid
+
+    # 2. Steer while the lease is held -- wake_session()'s exact write:
+    # flip turn_status + upsert. On the real engine this touches only
+    # priority/next_attempt_at on the still-claimed row.
+    row = await session_storage.get(sid)
+    row.turn_status = "claimable"
+    await session_storage.update(row)
+    await real_engine.upsert(ClaimKind.SESSION, sid)
+    held = real_engine._leases[(ClaimKind.SESSION, sid)]
+    assert held.claimed_by == "wrk-test", (
+        "steering while held must not itself release/reassign the lease"
+    )
+
+    # 3. Run the turn. dispatch.py always returns drop_lease=True.
+    with patch(
+        "primer.worker.pool.run_one_session_turn",
+        return_value=ReleaseOutcome(success=True, drop_lease=True),
+    ):
+        await pool._run_engine_session(engine_lease)
+
+    # The old lease is gone...
+    assert (ClaimKind.SESSION, sid) not in real_engine._leases or (
+        real_engine._leases[(ClaimKind.SESSION, sid)].claimed_by is None
+    )
+
+    # 4. ...but a FRESH claim must be possible: the queued turn is not
+    # stranded. A second worker can pick it up right away.
+    fresh_leases = await real_engine.claim_due("wrk-test-2", max_count=1)
+    assert [l.entity_id for l in fresh_leases] == [sid], (
+        "steering a RUNNING session left the queued turn unclaimable -- "
+        "the C1 regression"
+    )
+
+
+async def test_steering_a_running_session_no_rearm_when_nothing_queued(
+    scheduler, monkeypatch,
+):
+    """Sibling of the C1 regression test: when NO steer lands during the
+    turn, the post-release re-arm must be a no-op (no spin-claiming an
+    empty session)."""
+    from tests.conftest import _FakeStorageProvider
+    from primer.claim.adapters.sessions import SessionClaimAdapter
+    from primer.claim.in_memory import InMemoryClaimEngine
+
+    sid = "sess-steer-rearm-2"
+    sp = _FakeStorageProvider()
+    session_storage = sp.get_storage(WorkspaceSession)
+    fake_session = WorkspaceSession(
+        id=sid, workspace_id="ws-1",
+        binding=AgentSessionBinding(agent_id="ag-1"),
+        status=SessionStatus.RUNNING,
+        created_at=datetime.now(timezone.utc),
+        turn_no=0,
+        turn_status="idle",
+    )
+    await session_storage.create(fake_session)
+
+    adapter = SessionClaimAdapter(session_storage=session_storage)
+    real_engine = InMemoryClaimEngine(adapters={ClaimKind.SESSION: adapter})
+
+    pool = WorkerPool(
+        config=WorkerConfig(concurrency=1),
+        scheduler=scheduler,
+        storage=sp,
+        workspace_registry=None,     # type: ignore[arg-type]
+        provider_registry=None,      # type: ignore[arg-type]
+        engine=real_engine,
+        event_bus=None,
+    )
+    pool._worker_id = "wrk-test"
+
+    await real_engine.upsert(ClaimKind.SESSION, sid)
+    [engine_lease] = await real_engine.claim_due("wrk-test", max_count=1)
+
+    with patch(
+        "primer.worker.pool.run_one_session_turn",
+        return_value=ReleaseOutcome(success=True, drop_lease=True),
+    ):
+        await pool._run_engine_session(engine_lease)
+
+    assert (ClaimKind.SESSION, sid) not in real_engine._leases, (
+        "no steer landed -- the session must not be re-armed"
+    )
+
+
 async def test_build_session_executor_returns_callable(scheduler, engine, monkeypatch):
     """pool._build_session_executor(session) returns an awaitable executor
     by delegating to _build_executor after resolving the workspace."""
