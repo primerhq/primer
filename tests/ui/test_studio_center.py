@@ -2,7 +2,7 @@
 
 The center region is the tab bar + the active document panel. B3 builds:
   - CenterTabs        — tab bar over studio.state.openTabs
-  - SessionAgentPanel — agent transcript (reuses SessionLiveStream)
+  - SessionAgentPanel — agent transcript (session adapter + Transcript/Composer)
   - SessionGraphPanel — graph run-view (reuses SD_GraphRunView)
   - FilePanel         — file preview/edit + 412-conflict save flow
   - StudioCenter      — wires CenterTabs + the active panel into the shell
@@ -76,17 +76,23 @@ def test_center_defines_components() -> None:
 
 
 # ---------------------------------------------------------------------------
-# REUSE — the agent transcript + graph run-view are the production components
-# from session-detail.jsx, reached as window globals (NOT reimplemented).
+# REUSE — the graph run-view is the production component from session-detail.jsx;
+# the agent transcript is now chat-refactor's Transcript/Composer over the
+# session adapter (Task 12) — both reached as window globals (NOT reimplemented).
 # ---------------------------------------------------------------------------
 
 
-def test_reuses_session_live_stream() -> None:
+def test_agent_panel_uses_session_adapter_and_chat_primitives() -> None:
+    # Task 12 retired the pre-Task-12 SessionLiveStream reuse for the agent
+    # panel (it deliberately no longer reuses window.SessionLiveStream); the
+    # panel now composes the session adapter + the reused chat primitives.
+    # (The graph run-view still reuses SD_GraphRunView — see below.)
     src = _center_src()
-    assert "window.SessionLiveStream" in src, "must reuse SessionLiveStream, not rebuild it"
-    # Passed the props it already expects.
-    for prop in ("sid={sid}", "wid={wid}", "session={session}"):
-        assert prop in src, f"SessionLiveStream prop missing: {prop}"
+    assert "window.SessionLiveStream" not in src, "agent panel must NOT reuse SessionLiveStream"
+    assert "window.SA_useSessionConversation(" in src, "must drive the panel off the session adapter"
+    assert "window.SA_toTranscript(records, session)" in src, "transcript must be fed by SA_toTranscript"
+    assert "<window.Transcript" in src, "must reuse the chat <Transcript> primitive"
+    assert "<window.Composer" in src, "must reuse the chat <Composer> primitive"
 
 
 def test_reuses_sd_graph_run_view() -> None:
@@ -113,7 +119,8 @@ def test_does_not_reimplement_reused_components() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Session panel routing: fetch the session, branch on binding.kind.
+# Session panel routing: fetch the session, branch on ST_isAutonomous
+# (explicit session.autonomous wins; else the binding kind).
 # ---------------------------------------------------------------------------
 
 
@@ -121,9 +128,66 @@ def test_session_panel_fetches_and_branches_on_binding_kind() -> None:
     src = _center_src()
     assert "/sessions/" in src, "must GET /v1/sessions/{ref}"
     assert "useResource" in src
-    # Branch agent vs graph off binding.kind (with the defensive binding_kind alias).
+    # Branch agent vs graph via ST_isAutonomous, which itself reads binding.kind
+    # (with the defensive binding_kind alias).
     assert "binding.kind" in src
     assert "graph" in src and "agent" in src
+
+
+def _session_panel_src() -> str:
+    """Just the ST_SessionPanel router body — scopes the routing assertions
+    to the resolver, not the whole file."""
+    src = _center_src()
+    start = src.index("function ST_SessionPanel(")
+    end = src.index("function ST_FilePreview(", start)
+    return src[start:end]
+
+
+def _is_autonomous_src() -> str:
+    """The pure ST_isAutonomous helper (no JSX) — directly MiniRacer-evaluable
+    like test_studio_run_view_interactive.py's `_pure_helpers_src`."""
+    src = _center_src()
+    start = src.index("function ST_isAutonomous(")
+    end = src.index("function ST_sessionRowToTranscript(", start)
+    return src[start:end]
+
+
+def test_session_panel_routes_through_st_is_autonomous() -> None:
+    # ST_isAutonomous is the byte-mirror of backend session_is_autonomous:
+    # an explicit `session.autonomous` flag wins over the binding kind. The
+    # router MUST gate agent-vs-graph on it (not the raw `binding.kind ===
+    # "graph"`), or an explicit override that contradicts the binding kind
+    # routes to the WRONG panel.
+    router = _session_panel_src()
+    assert "ST_isAutonomous(session)" in router, "router must branch on ST_isAutonomous"
+    # The old router re-derived `var kind = ... binding.kind ...` and branched
+    # on `kind === "graph"`; that derivation must be gone (the check lives in
+    # ST_isAutonomous now). Asserts on the removed code, not the prose comment.
+    assert "var kind =" not in router, "router must not re-derive the raw binding kind to branch on"
+    assert "<SessionGraphPanel" in router and "<SessionAgentPanel" in router
+
+
+def test_explicit_override_session_routes_per_st_is_autonomous() -> None:
+    # Prove the override semantics the router now delegates to: an explicit
+    # `autonomous` flag decides the panel regardless of binding.kind. The
+    # router (asserted above) renders the graph/autonomous panel iff
+    # ST_isAutonomous(session) is truthy, else SessionAgentPanel.
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(_is_autonomous_src())
+
+    # agent binding + explicit autonomous:true -> ST_isAutonomous true ->
+    # SessionGraphPanel (override wins over binding.kind).
+    assert ctx.eval('ST_isAutonomous({binding: {kind: "agent"}, autonomous: true})') is True
+    # graph binding + explicit autonomous:false -> ST_isAutonomous false ->
+    # SessionAgentPanel (override wins over binding.kind).
+    assert ctx.eval('ST_isAutonomous({binding: {kind: "graph"}, autonomous: false})') is False
+    # No override: behaves exactly like the old `binding.kind === "graph"`
+    # branch, so non-override routing is unchanged.
+    assert ctx.eval('ST_isAutonomous({binding: {kind: "graph"}})') is True
+    assert ctx.eval('ST_isAutonomous({binding: {kind: "agent"}})') is False
 
 
 # ---------------------------------------------------------------------------
