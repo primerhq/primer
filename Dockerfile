@@ -56,11 +56,18 @@ WORKDIR /app
 # ----- Layer 2/3: dependency install (cached on pyproject+lock) -----
 # README.md is referenced by pyproject.toml's `readme = "README.md"`
 # field, so hatchling needs it present even for a deps-only sync.
-# --all-extras: the published image is batteries-included (primer-ai[full]),
-# shipping every optional backend (huggingface, docling, lance, channels,
-# docker, kubernetes). Slim is for pip/pipx users who opt out via extras.
+# UV_SYNC_EXTRAS selects which optional backends are installed. The default
+# builds the batteries-included "fat" image (--all-extras: huggingface,
+# docling, lance, channels, docker, kubernetes). The release also builds a
+# "slim" image by passing only the light operational extras, dropping the
+# multi-GB huggingface + docling torch stack:
+#   --build-arg UV_SYNC_EXTRAS="--extra kubernetes --extra docker \
+#                               --extra channels --extra lance"
+# BootstrapRunner self-skips dep-backed default providers whose extra is
+# absent, so a slim image boots cleanly.
+ARG UV_SYNC_EXTRAS="--all-extras"
 COPY pyproject.toml uv.lock README.md ./
-RUN uv sync --all-extras --frozen --no-install-project --no-dev
+RUN uv sync ${UV_SYNC_EXTRAS} --frozen --no-install-project --no-dev
 
 # ----- Layer 4: project source -----
 COPY primer ./primer
@@ -72,7 +79,7 @@ RUN chmod +x /usr/local/bin/primer-entrypoint.sh
 # ----- Layer 5: install the project itself -----
 # Editable install (uv default) so /app/primer is the live tree -
 # necessary for the console mount's `_UI_DIR` path math.
-RUN uv sync --all-extras --frozen --no-dev
+RUN uv sync ${UV_SYNC_EXTRAS} --frozen --no-dev
 
 EXPOSE 8000
 

@@ -13,7 +13,12 @@ PYTEST_IGNORES := \
 	--ignore=tests/integration \
 	--ignore=tests/llm
 
-.PHONY: help setup test lint fmt cov docs-hygiene serve docker-build
+.PHONY: help setup test lint fmt cov docs-hygiene serve docker-build docker-build-slim docker-build-all
+
+# Optional-backend extras baked into the slim image: the light operational
+# set (k8s/docker/channels/lance), dropping the multi-GB huggingface + docling
+# torch stack. Override on the CLI to curate a different slim set.
+SLIM_EXTRAS ?= --extra kubernetes --extra docker --extra channels --extra lance
 
 help: ## Show this help
 	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -45,5 +50,10 @@ docs-hygiene: ## Run the docs hygiene suite (em-dash ban, links, frontmatter)
 serve: ## Start the API server (with embedded worker)
 	uv run primer api
 
-docker-build: ## Build the primer container image
+docker-build: ## Build the primer container image (fat — all extras)
 	docker compose build primer
+
+docker-build-slim: ## Build the slim primer image (core + light extras, no huggingface/docling)
+	docker build --build-arg UV_SYNC_EXTRAS="$(SLIM_EXTRAS)" -t primer-primer:slim .
+
+docker-build-all: docker-build docker-build-slim ## Build both the fat and slim images
