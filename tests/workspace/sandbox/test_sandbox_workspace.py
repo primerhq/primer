@@ -470,10 +470,51 @@ async def test_remove_session_drops_in_memory_handle(tmp_path: Path) -> None:
     await ws.start_session(_binding(), id="sess-rm-1")
     assert await ws.remove_session("sess-rm-1") is True
     assert "sess-rm-1" not in ws._sessions
-    # No persisted slot was reaped in this test, so a rehydrating
-    # list_sessions would re-surface it -- remove_session only unbinds the
-    # cache, exactly like LocalWorkspace.remove_session.
+    # remove_session also reaps the persisted slot (see
+    # test_remove_session_reaps_persisted_slot); removing a session that was
+    # never started returns False and is a harmless no-op reap.
     assert await ws.remove_session("never-existed") is False
+
+
+@pytest.mark.asyncio
+async def test_remove_session_reaps_persisted_slot(tmp_path: Path) -> None:
+    """remove_session reaps the persisted slot so a rehydrating
+    list_sessions / get_session no longer resurrects the deleted session.
+
+    Regression test for the console "deleted session reappears" bug: the
+    sandbox backend keeps its slot inside the pod's ``.state`` git repo
+    (via ``_state_repo``), which the old local-only host rmtree in the API
+    delete handler never reached, so ``_rehydrate_all_sessions`` kept
+    re-surfacing the session on the next list.
+    """
+    sb = FakeSandbox(root=tmp_path)
+    ws = await SandboxWorkspace.materialise(
+        workspace_id="ws-reap", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    await ws.start_session(_binding(), id="sess-reap-1")
+    # Persisted + listed before removal.
+    infos = await ws.list_sessions()
+    assert [i.session_id for i in infos] == ["sess-reap-1"]
+
+    assert await ws.remove_session("sess-reap-1") is True
+
+    # Same wrapper: the in-memory handle is gone AND the rehydrating
+    # list_sessions no longer surfaces it (the persisted slot was reaped).
+    assert await ws.list_sessions() == []
+    assert await ws.get_session("sess-reap-1") is None
+
+    # A fresh wrapper over the same sandbox has an empty in-memory registry,
+    # so it can only learn about the session by rehydrating persisted state.
+    # If the slot had survived it would re-surface here -- exactly the bug.
+    ws_fresh = await SandboxWorkspace.materialise(
+        workspace_id="ws-reap", template=_template(),
+        sandbox=sb, backend_kind="container",
+        runtime_meta=_runtime_meta(),
+    )
+    assert await ws_fresh.list_sessions() == []
+    assert await ws_fresh.get_session("sess-reap-1") is None
 
 
 @pytest.mark.asyncio

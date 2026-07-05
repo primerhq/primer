@@ -359,6 +359,47 @@ class SandboxStateRepo:
             raise
 
     # ------------------------------------------------------------------
+    # delete_session
+    # ------------------------------------------------------------------
+
+    async def delete_session(self, session_id: str) -> None:
+        """Reap a session's persisted slot from the runtime state repo.
+
+        Removes ``sessions/<session_id>/session.json``, ``agent.json`` and
+        ``waiting.json`` via a state-op commit (a ``git rm`` inside the pod).
+        Dropping ``session.json`` / ``agent.json`` is sufficient to make
+        :meth:`SandboxWorkspace._rehydrate_locked` skip the session on the
+        next :meth:`SandboxWorkspace.list_sessions`: ``load_session_info`` /
+        ``load_agent_binding`` then read the (now absent) files and return
+        ``None``.
+
+        Uses the state ops -- not an ``exec rm`` or file ``delete`` -- on
+        purpose: the slot lives in the runtime-managed working tree that
+        ``state_read`` consults, so a ``git rm`` commit removes exactly the
+        file ``state_read`` would otherwise return. A raw filesystem delete
+        of a separately-computed path could miss (or, in FakeSandbox, never
+        touch) the tracked copy. Idempotent: git rm uses
+        ``--ignore-unmatch`` and the commit is ``--allow-empty``, so
+        deleting an already-gone slot is a harmless no-op.
+
+        Best-effort at the caller: exceptions propagate so the workspace
+        layer can log-and-continue when the workspace is unreachable.
+        """
+        self._require_state_ops()
+        _validate_session_id(session_id)
+        await self.commit_arbitrary(
+            summary=f"{session_id}: detach",
+            delete_files=[
+                f"sessions/{session_id}/session.json",
+                f"sessions/{session_id}/agent.json",
+                f"sessions/{session_id}/waiting.json",
+            ],
+            trailers={_TRAILER_SESSION: session_id},
+        )
+        # Drop the agent-id cache entry so a stale binding can't linger.
+        self._agent_by_session.pop(session_id, None)
+
+    # ------------------------------------------------------------------
     # commit
     # ------------------------------------------------------------------
 
