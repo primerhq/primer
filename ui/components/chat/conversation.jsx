@@ -122,13 +122,14 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   // 10s poll (above) never stomps on an operator's in-progress edit.
   const schemaHydratedRef = React.useRef(false);
   React.useEffect(() => {
+    if (!showSchemaPanel) return;
     if (schemaHydratedRef.current || !chatRow) return;
     schemaHydratedRef.current = true;
     if (chatRow.response_format != null) {
       setSchemaValue(chatRow.response_format);
       setSchemaPersistent(true);
     }
-  }, [chatRow]);
+  }, [showSchemaPanel, chatRow]);
 
   // Persistent toggle ON (§8.3/R3): PUT the current schema so it
   // constrains every subsequent turn on this chat (A3). OFF: clear the
@@ -163,6 +164,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   // handled immediately above; this only covers subsequent edits.
   const schemaPersistTimerRef = React.useRef(null);
   React.useEffect(() => {
+    if (!showSchemaPanel) return undefined;
     if (!schemaPersistent || !schemaValid) return undefined;
     if (schemaPersistTimerRef.current) clearTimeout(schemaPersistTimerRef.current);
     schemaPersistTimerRef.current = setTimeout(() => {
@@ -178,7 +180,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
       });
     }, 500);
     return () => { if (schemaPersistTimerRef.current) clearTimeout(schemaPersistTimerRef.current); };
-  }, [schemaValue, schemaPersistent, schemaValid, cid, apiFetch, pushToast]);
+  }, [showSchemaPanel, schemaValue, schemaPersistent, schemaValid, cid, apiFetch, pushToast]);
 
   // Initial REST load — fetches the TAIL of the history so the
   // renderer can scroll straight to the bottom without dragging
