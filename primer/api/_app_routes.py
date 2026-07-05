@@ -198,6 +198,12 @@ def _mount_routers(
     app.include_router(
         admin_tokens_router, prefix=prefix, dependencies=[Depends(require_admin)],
     )
+    # OIDC SSO providers CRUD — system configuration => admin only.
+    # client_secret (SecretStr) is auto-masked by pydantic's default dump.
+    from primer.api.routers.oidc_providers import oidc_providers_router
+    app.include_router(
+        oidc_providers_router, prefix=prefix, dependencies=[Depends(require_admin)],
+    )
     # Instrumentation endpoints — only mounted when the env var is set.
     # Public to keep the distributed test harness simple; the env var
     # itself is the access gate.
