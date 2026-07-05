@@ -143,6 +143,7 @@ class _CreateSessionArgs(BaseModel):
     binding: SessionBinding
     initial_instructions: str | None = None
     auto_start: bool = True
+    autonomous: bool | None = None
     graph_input: Any | None = None
     parent_session_id: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -1070,6 +1071,7 @@ def build_workspaces_toolset(
                 auto_start=args.auto_start,
                 metadata=args.metadata,
                 parent_session_id=args.parent_session_id,
+                autonomous=args.autonomous,
                 deps=deps,
             )
         except NotFoundError as exc:
