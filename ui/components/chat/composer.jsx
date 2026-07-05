@@ -21,10 +21,10 @@
 //
 // The Send/Stop control is context-aware per the plan: `running`
 // swaps the affordance to Stop (calling `onStop`) instead of Send.
-// <Conversation> wires the real turn-running signal + the
-// `/chats/{id}/cancel` POST behind `onStop` starting in Task C2 — for
-// now the shell just renders the correct control for whatever it's
-// given.
+// <Conversation> wires the real turn-running signal (turn_status
+// claimable/running) and the `/chats/{id}/cancel` POST behind `onStop`
+// (Task C2) — this component just renders the correct control for
+// whatever it's given.
 
 function Composer({
   value,

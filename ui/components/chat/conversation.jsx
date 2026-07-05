@@ -59,6 +59,10 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   const chatRow = chat.data;
   const chatStatus = chatRow?.status || "active";
   const chatAgent = chatRow?.agent_id || "—";
+  // Drives the composer's Send/Stop control (Task C2) — mirrors
+  // <Transcript>'s own turnInFlight calc (turn_status claimable/running)
+  // since both need the same "a turn is in flight" signal.
+  const turnInFlight = chatRow?.turn_status === "claimable" || chatRow?.turn_status === "running";
 
   const [messages, setMessages] = React.useState([]);
   const [lastSeq, setLastSeq] = React.useState(0);
@@ -390,6 +394,26 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
           if (msg.seq > latestSeq) latestSeq = msg.seq;
           setMessages((prev) => {
             if (prev.some((p) => p.seq === msg.seq)) return prev;
+            // Reconcile the optimistic echo (Task C2): the persisted
+            // user_message row for what we just sent has arrived. Swap
+            // the pending placeholder for the real row IN PLACE (same
+            // text wins; the oldest still-pending row is the fallback so
+            // one straggler doesn't leave a phantom bubble behind)
+            // rather than appending a duplicate — storage stays truth,
+            // this only changes which row stands in for it on screen.
+            if (msg.kind === "user_message") {
+              let pendingIdx = prev.findIndex(
+                (p) => p.pending && p.kind === "user_message" && (p.content || "") === (msg.content || "")
+              );
+              if (pendingIdx === -1) {
+                pendingIdx = prev.findIndex((p) => p.pending && p.kind === "user_message");
+              }
+              if (pendingIdx !== -1) {
+                const next = prev.slice();
+                next[pendingIdx] = msg;
+                return next;
+              }
+            }
             return [...prev, msg];
           });
           setLastSeq((prev) => (msg.seq > prev ? msg.seq : prev));
@@ -470,6 +494,17 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     return () => cancelAnimationFrame(raf);
   }, [lastSeq, waitingForReply]);
 
+  // Build the WS frame's `parts` list from the composer's pending
+  // attachments. Shared by sendMessage (the real frame) and
+  // onSubmitComposer's optimistic echo (Task C2) so the synthetic
+  // preview row renders identically to what's actually on the wire.
+  const partsForAttachments = (atts) => atts.map((a) => ({
+    type: a.kind,           // "image" or "document"
+    data: a.dataB64,
+    mime_type: a.mime,
+    ...(a.kind === "document" && a.name ? { filename: a.name } : {}),
+  }));
+
   // Returns true if the frame was enqueued; false if the socket was not
   // ready (user-facing toast fires on false so the text is preserved).
   const sendMessage = (text, atts) => {
@@ -483,12 +518,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
     const frame = { kind: "user_message" };
     if (text) frame.content = text;
     if (atts && atts.length > 0) {
-      frame.parts = atts.map((a) => ({
-        type: a.kind,           // "image" or "document"
-        data: a.dataB64,
-        mime_type: a.mime,
-        ...(a.kind === "document" && a.name ? { filename: a.name } : {}),
-      }));
+      frame.parts = partsForAttachments(atts);
     }
     ws.send(JSON.stringify(frame));
     setWaitingForReply(true);
@@ -496,12 +526,28 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   };
 
   // Clear the composer and attachments only after a successful send so a
-  // failed send (WS not open) leaves the user's text intact.
+  // failed send (WS not open) leaves the user's text intact. On success,
+  // also push an optimistic echo (Task C2): a synthetic user_message row
+  // with a client id + a "sending" tick (rendered by <Transcript>'s
+  // Message), so the operator sees their own message the instant they
+  // hit Send instead of waiting on the WS round-trip. It's reconciled/
+  // deduped against the persisted row (same text, real seq) once that
+  // arrives — see the onmessage handler above; storage stays truth.
   const onSubmitComposer = () => {
     const text = composer.trim();
     if (!text && attachments.length === 0) return;
-    const sent = sendMessage(text, attachments);
+    const atts = attachments;
+    const sent = sendMessage(text, atts);
     if (sent) {
+      const clientId = `client-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      setMessages((prev) => [...prev, {
+        kind: "user_message",
+        content: text || undefined,
+        parts: atts.length > 0 ? partsForAttachments(atts) : undefined,
+        pending: true,
+        clientId,
+        created_at: new Date().toISOString(),
+      }]);
       setComposer("");
       setAttachments([]);
     }
@@ -539,6 +585,28 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
       setCompactInFlight(false);
     }
   }, [cid, compactInFlight, apiFetch, pushToast]);
+
+  // Stop button (Task C2, backend A6) — POSTs the REST cancel endpoint
+  // rather than sending a WS `interrupt` frame so it works even if the
+  // socket has dropped. A 409 means the turn already finished/idled
+  // between the click and the request landing (a race with the worker
+  // heartbeat) — nothing to surface, the composer flips back to Send on
+  // the next chat-row poll regardless. Any other failure gets a toast.
+  const handleStop = React.useCallback(async () => {
+    try {
+      await apiFetch("POST", `/chats/${encodeURIComponent(cid)}/cancel`);
+    } catch (err) {
+      if (err?.status === 409) return;
+      if (typeof pushToast === "function") {
+        pushToast({
+          kind: "error",
+          title: err?.title || "Stop failed",
+          detail: err?.detail || err?.message,
+          requestId: err?.requestId,
+        });
+      }
+    }
+  }, [cid, apiFetch, pushToast]);
 
   // ---- File picking + base64 encoding ----------------------------------
   // The chat protocol's user_message.parts list expects each binary part
@@ -689,14 +757,15 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
               below shows a "Not connected" toast), it just no longer
               disables the Send button pre-emptively since <Composer>'s
               `disabled` prop maps 1:1 to "chat ended" the same way the
-              textarea's disabled attribute always has. Real
-              running/Stop wiring lands in Task C2. */}
+              textarea's disabled attribute always has. `running` (Task
+              C2) mirrors turn_status (claimable/running) and `onStop`
+              POSTs /cancel (A6) — see turnInFlight/handleStop above. */}
           <Composer
             value={composer}
             onChange={setComposer}
             onSend={onSubmitComposer}
-            onStop={() => {}}
-            running={false}
+            onStop={handleStop}
+            running={turnInFlight}
             disabled={chatStatus === "ended"}
             attachments={attachments}
             onAttach={handleFilesPicked}
