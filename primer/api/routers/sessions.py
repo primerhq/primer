@@ -69,6 +69,14 @@ class SessionCreateBody(BaseModel):
     initial_instructions: str | None = None
     parent_session_id: str | None = None
     auto_start: bool = False
+    autonomous: bool | None = Field(
+        default=None,
+        description=(
+            "Interactive-vs-autonomous control signal. None => derive from "
+            "binding kind (graph autonomous, agent interactive). True marks "
+            "an agent self-driving loop autonomous."
+        ),
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
     graph_input: Any | None = Field(
         default=None,
@@ -152,6 +160,7 @@ async def create_session(
         auto_start=body.auto_start,
         metadata=body.metadata,
         parent_session_id=body.parent_session_id,
+        autonomous=body.autonomous,
         name=body.name,
         initiated_by=initiated_by,
         deps=deps,
