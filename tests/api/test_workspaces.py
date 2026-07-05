@@ -238,6 +238,12 @@ class _FakeWorkspace:
             raise BadRequestError("null byte in path")
         self._files[path] = content
 
+    async def append_message_line(self, session_id, line):
+        # WorkspaceIO write surface used by WorkspaceMessageWriter: wake_session
+        # persists a USER_INPUT record to messages.jsonl on steer/invoke.
+        path = f".state/sessions/{session_id}/messages.jsonl"
+        self._files[path] = self._files.get(path, b"") + line
+
     async def make_dir(self, path):
         if "\x00" in path:
             raise BadRequestError("null byte in path")
