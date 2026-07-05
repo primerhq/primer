@@ -28,6 +28,12 @@ from pathlib import Path
 UI = Path(__file__).resolve().parents[2] / "ui"
 APP = UI / "app.jsx"
 CHATS = UI / "components" / "chats.jsx"
+# Task B2 (chat-refactor plan) moved the WS reconnect machinery and
+# sendMessage/onSubmitComposer wholesale out of ChatDetail (chats.jsx)
+# into the embeddable <Conversation> core — read both files so the
+# Fix 2 / Fix 4 assertions below keep validating the same behavioral
+# contract regardless of which file the logic lives in.
+CONVERSATION = UI / "components" / "chat" / "conversation.jsx"
 SDET = UI / "components" / "session-detail.jsx"
 
 
@@ -36,7 +42,7 @@ def _app() -> str:
 
 
 def _chats() -> str:
-    return CHATS.read_text(encoding="utf-8")
+    return CHATS.read_text(encoding="utf-8") + "\n" + CONVERSATION.read_text(encoding="utf-8")
 
 
 def _sdet() -> str:
