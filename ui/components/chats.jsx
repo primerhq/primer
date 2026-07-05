@@ -639,7 +639,21 @@ function ChatDetail({ chatId, onBack, pushToast }) {
           pushToast={pushToast}
           onStatus={setConvStatus}
           headerSlot={null}
-          rightChromeSlot={null}
+          // R1: the agent selector lives in the host's top-right chrome
+          // slot now, next to the back/title chrome above, instead of
+          // the composer row — <Conversation> just renders whatever
+          // node this host hands it (see conversation.jsx). `placement`
+          // flips to "down" (was "up" in the old bottom-composer spot)
+          // since the popover now opens below the trigger.
+          rightChromeSlot={
+            <CT_AgentSwitcher
+              chatId={cid}
+              currentAgentId={chatAgent}
+              pushToast={pushToast}
+              placement="down"
+              disabled={chatStatus === "ended"}
+            />
+          }
           showSchemaPanel={false}
         />
       </div>

@@ -1,4 +1,4 @@
-/* global React, Icon, CT_AgentSwitcher, Transcript, Composer, SchemaPanel */
+/* global React, Icon, Transcript, Composer, SchemaPanel */
 //
 // <Conversation> — the embeddable core of the chat feature (Task B2 of
 // the chat-refactor plan). Owns ALL WS/data lifecycle + optimistic
@@ -817,7 +817,36 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
           minWidth: 0,
         }}
       >
-        {headerSlot}
+        {/* Top-of-panel host chrome row (R1): the agent selector moved
+            out of the bottom-left composer row up here — "top-right,
+            next to the back button" per the chat-refactor plan's R1
+            (docs/superpowers/reqs/chat-refactor.md §3/§5). `headerSlot`
+            and `rightChromeSlot` are opaque host-supplied nodes — this
+            component doesn't know or care what's inside them. ChatDetail
+            (chats.jsx) fills `rightChromeSlot` with <CT_AgentSwitcher>;
+            a Studio host embedding <Conversation> directly (no back
+            button of its own) can fill either slot with its own
+            top-right chrome instead. Rendered only when the host
+            actually supplies something, so a bare embed with both
+            slots null doesn't grow an empty bordered row. */}
+        {(headerSlot || rightChromeSlot) && (
+          <div
+            className="chat-conversation-header"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "10px 14px",
+              borderBottom: "1px solid var(--border)",
+              flex: "0 0 auto",
+            }}
+          >
+            <div style={{ flex: 1, minWidth: 0 }}>{headerSlot}</div>
+            <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+              {rightChromeSlot}
+            </div>
+          </div>
+        )}
         <Transcript
           messages={window.chatCoalesce(messages)}
           chatId={cid}
@@ -872,15 +901,6 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
                 }
           }
         >
-          {rightChromeSlot}
-          <CT_AgentSwitcher
-            chatId={cid}
-            currentAgentId={chatAgent}
-            pushToast={pushToast}
-            placement="up"
-            disabled={chatStatus === "ended"}
-            triggerStyle={{ padding: "0 12px", borderRadius: 6, alignSelf: "stretch" }}
-          />
           {/* Task B4 shell: the input surface (attachment strip,
               attach control, textarea, Send/Stop) now lives in
               <Composer>. This component keeps the composer text +
