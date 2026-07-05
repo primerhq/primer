@@ -3,7 +3,13 @@
 The session cookie's value is a ``itsdangerous.URLSafeTimedSerializer``-
 produced string carrying a small JSON payload:
 
-    {"uid": "<user_id>", "username": "<lowercase>"}
+    {"uid": "<user_id>", "username": "<lowercase>", "src": "<auth source>"}
+
+``src`` records how the session was established: ``"local"`` for
+password login (the default), or an OIDC provider id (e.g.
+``"oidc-provider-1"``) for SSO-minted sessions. Legacy cookies signed
+before this field existed have no ``src`` key; ``verify_session``
+defaults those to ``"local"`` rather than rejecting them.
 
 The serializer's HMAC-SHA256 signature is appended; ``verify_session``
 re-checks the signature and the max-age (``session_ttl_days``) on read.
@@ -34,12 +40,15 @@ class SessionPayload:
 
     user_id: str
     username: str
+    src: str = "local"
 
 
-def sign_session(*, user_id: str, username: str, secret: str) -> str:
+def sign_session(
+    *, user_id: str, username: str, secret: str, src: str = "local",
+) -> str:
     """Produce a signed cookie value for the given user."""
     s = URLSafeTimedSerializer(secret, salt=_SALT)
-    return s.dumps({"uid": user_id, "username": username})
+    return s.dumps({"uid": user_id, "username": username, "src": src})
 
 
 def verify_session(
@@ -62,6 +71,9 @@ def verify_session(
         return None
     uid = payload.get("uid")
     username = payload.get("username")
+    src = payload.get("src", "local")
     if not isinstance(uid, str) or not isinstance(username, str):
         return None
-    return SessionPayload(user_id=uid, username=username)
+    if not isinstance(src, str):
+        src = "local"
+    return SessionPayload(user_id=uid, username=username, src=src)

@@ -141,11 +141,12 @@ def _set_session_cookie(
     user: User,
     *,
     remember: bool = True,
+    src: str = "local",
 ) -> None:
     cfg = request.app.state.config.auth
     secret = request.app.state.session_secret
     token = sign_session(
-        user_id=user.id, username=user.username, secret=secret,
+        user_id=user.id, username=user.username, secret=secret, src=src,
     )
     # remember=False omits Max-Age so the browser treats it as a
     # session cookie (cleared on browser close). The token's signed
