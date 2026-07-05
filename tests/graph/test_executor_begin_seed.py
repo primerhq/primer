@@ -1,8 +1,11 @@
 """Executor's initial ready set seeds from the unique Begin node.
 
-The new topology rules forbid zero-Begin graphs at construction time, so
-the only valid case is the happy path; the multi-Begin guard remains as
-defence in depth against bypassed validators (e.g. ``model_construct``).
+Runnability (exactly one Begin, etc.) is enforced at session-start via
+``Graph.assert_runnable``; graph construction now permits partial drafts.
+``_resolve_initial_ready_node`` re-checks runnability as defence in depth
+so an unrunnable graph that reaches ``invoke`` (e.g. via ``model_construct``
+or a bypassed session-start check) surfaces the clear enumerated error
+rather than a bare mid-run ``ValueError`` / ``IndexError``.
 """
 
 from __future__ import annotations

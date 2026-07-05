@@ -129,6 +129,16 @@ async def start_workspace_session(
             raise ValidationError(
                 f"Graph {binding.graph_id!r} does not exist"
             )
+        # Enforce runnability at session-start (the canonical create path
+        # for REST + create_workspace_session MCP). Graph *creation* now
+        # permits empty / partial drafts; a graph must actually be runnable
+        # — exactly one Begin, >=1 End, End reachable, bounded loops —
+        # before a session may bind to it. Surface as 422, not a mid-run
+        # crash.
+        try:
+            resolved_graph.assert_runnable()
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
         # Pre-validate graph_input against the graph's Begin.input_schema
         # before persisting the session row. The workspace executor reads
         # ``session.metadata['graph_input']`` as the initial input, so any

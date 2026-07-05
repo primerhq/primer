@@ -754,9 +754,14 @@ class Graph(Describeable):
     _id_prefix: ClassVar[str] = "graph"
 
     nodes: list[GraphNode] = Field(
-        ...,
-        min_length=1,
-        description="Discriminated union of agent / subgraph / terminal nodes.",
+        default_factory=list,
+        description=(
+            "Discriminated union of agent / subgraph / terminal nodes. "
+            "May be empty: an empty or partial graph is a valid *draft* "
+            "that persists fine but is not runnable until it satisfies the "
+            "runnability invariants checked by :meth:`assert_runnable` "
+            "(enforced at session-start, not at creation)."
+        ),
     )
     edges: list[GraphEdge] = Field(
         default_factory=list,
@@ -792,16 +797,25 @@ class Graph(Describeable):
 
     @model_validator(mode="after")
     def _validate_topology(self) -> "Graph":
-        # Spec §1.5 topology rules:
+        # Persist-time validation enforces only *referential integrity* —
+        # the rules that must hold for the stored row to make sense at
+        # all, regardless of whether the graph is a finished, runnable
+        # graph or a half-built draft:
         #   - Unique node ids
-        #   - Exactly one Begin node
-        #   - At least one End node
-        #   - Begin has no incoming edges
-        #   - End nodes have no outgoing edges
-        #   - Every End reachable from Begin (forward BFS)
+        #   - ``on_max_iterations`` (when set) references an existing node
         #   - Every edge endpoint (static to_node, conditional router
-        #     branch to_node, conditional router default_to) references
-        #     an existing node id
+        #     branch to_node / default_to, from_node) references an
+        #     existing node id
+        #   - Begin has no incoming edges / End has no outgoing edges
+        #   - FanOut / FanIn structural rules (Spec B §1.3)
+        #
+        # The *runnability* invariants (exactly one Begin, >=1 End, every
+        # End reachable from Begin, bounded loops) are intentionally NOT
+        # enforced here: an empty or partial graph is a valid draft. Those
+        # are checked at session-start via :meth:`assert_runnable`.
+        #
+        # An empty graph (no nodes) trivially satisfies every referential
+        # rule below, so it early-returns as a valid draft.
         ids: set[str] = set()
         for n in self.nodes:
             if n.id in ids:
@@ -818,14 +832,11 @@ class Graph(Describeable):
 
         begins = [n for n in self.nodes if n.kind == "begin"]
         ends = [n for n in self.nodes if n.kind == "end"]
-        if len(begins) != 1:
-            raise ValueError(
-                f"graph must have exactly one Begin node; got {len(begins)}"
-            )
-        if len(ends) < 1:
-            raise ValueError("graph must have at least one End node")
-
-        begin_id = begins[0].id
+        # NOTE: exactly-one-Begin / >=1-End are *runnability* invariants
+        # (see assert_runnable), not persist-time rules. Resolve the unique
+        # Begin id only when there IS exactly one; the incoming-edge rule
+        # below is skipped for zero-or-many-Begin drafts.
+        begin_id = begins[0].id if len(begins) == 1 else None
         end_ids = {e.id for e in ends}
 
         # Build adjacency from static + conditional edges; conditional
@@ -882,7 +893,7 @@ class Graph(Describeable):
                             continue
                         outgoing[edge.from_node].add(nid)
 
-        if incoming[begin_id]:
+        if begin_id is not None and incoming[begin_id]:
             raise ValueError(
                 f"Begin node {begin_id!r} must have no incoming edges"
             )
@@ -963,80 +974,151 @@ class Graph(Describeable):
                     f"FanIn {n.id!r} must have at least one incoming edge"
                 )
 
-        # Reachability through FanOut implicit edges - rebuild adjacency
-        # extending the static/conditional graph with FanOut-spec targets.
-        adj: dict[str, set[str]] = {n.id: set(outgoing[n.id]) for n in self.nodes}
-        for n in self.nodes:
-            if n.kind != "fan_out":
-                continue
-            for spec in n.specs:
-                if spec.kind in ("broadcast", "map"):
-                    if spec.target_node_id is not None:
-                        adj[n.id].add(spec.target_node_id)
-                else:
-                    for tid in (spec.target_node_ids or []):
-                        adj[n.id].add(tid)
+        # Runnability invariants (End reachability, loopability, exactly
+        # one Begin, >=1 End) are deliberately NOT enforced here — see
+        # :meth:`assert_runnable`, called at session-start.
+        return self
 
-        # ===== Loopability rule =====
-        # A graph that can loop without an iteration ceiling runs
-        # unbounded (cyclic supersteps never terminate). Require
-        # ``max_iterations`` whenever the graph can loop: either a
-        # directed cycle exists over the statically-known edges
-        # (static + json-path conditional + fanout-spec targets), OR a
-        # callable router is present (it can return ANY node id at run
-        # time, so treat its mere presence as making the graph
-        # potentially cyclic). The callable router's synthetic
+    def assert_runnable(self) -> None:
+        """Raise ``ValueError`` if this graph cannot be executed.
+
+        Persist-time validation (:meth:`_validate_topology`) permits empty
+        and partial graphs as drafts; a graph must only satisfy these
+        *runnability* invariants when a session actually binds to it
+        (session-start):
+
+        * the graph has at least one node,
+        * exactly one Begin node,
+        * at least one End node,
+        * every End is forward-reachable from Begin, and
+        * any loop (directed cycle or callable router) is bounded by
+          ``max_iterations``.
+
+        The message enumerates *every* problem found so the operator can
+        fix them in one pass rather than one-at-a-time.
+        """
+        problems = self._runnability_problems()
+        if problems:
+            raise ValueError(
+                f"graph {self.id!r} is not runnable: " + "; ".join(problems)
+            )
+
+    def _runnability_problems(self) -> list[str]:
+        """Return a list of human-readable runnability problems (empty
+        when the graph is runnable). Backs :meth:`assert_runnable`."""
+        problems: list[str] = []
+        if not self.nodes:
+            problems.append("graph is empty (no nodes)")
+            return problems
+
+        begins = [n for n in self.nodes if n.kind == "begin"]
+        ends = [n for n in self.nodes if n.kind == "end"]
+        if len(begins) != 1:
+            problems.append(
+                f"graph must have exactly one Begin node; got {len(begins)}"
+            )
+        if len(ends) < 1:
+            problems.append("graph must have at least one End node")
+
+        # ===== Loopability =====
+        # A graph that can loop without an iteration ceiling runs unbounded
+        # (cyclic supersteps never terminate). Require ``max_iterations``
+        # whenever the graph can loop: either a directed cycle exists over
+        # the statically-known edges (static + json-path conditional +
+        # fanout-spec targets), OR a callable router is present (it can
+        # return ANY node id at run time). The callable router's synthetic
         # "routes-to-any-node" edges are intentionally EXCLUDED from the
-        # cycle adjacency below; its presence alone triggers the rule.
+        # cycle adjacency; its presence alone triggers the rule.
         has_callable_router = any(
             isinstance(e, _ConditionalEdge) and isinstance(e.router, _CallableRouter)
             for e in self.edges
         )
         cycle_adj: dict[str, set[str]] = {n.id: set() for n in self.nodes}
         for edge in self.edges:
+            if edge.from_node not in cycle_adj:
+                continue
             if isinstance(edge, _StaticEdge):
-                cycle_adj[edge.from_node].add(edge.to_node)
+                if edge.to_node in cycle_adj:
+                    cycle_adj[edge.from_node].add(edge.to_node)
             elif isinstance(edge, _ConditionalEdge) and isinstance(
                 edge.router, _JsonPathRouter
             ):
                 for branch in edge.router.branches:
-                    cycle_adj[edge.from_node].add(branch.to_node)
-                if edge.router.default_to is not None:
+                    if branch.to_node in cycle_adj:
+                        cycle_adj[edge.from_node].add(branch.to_node)
+                if edge.router.default_to is not None and edge.router.default_to in cycle_adj:
                     cycle_adj[edge.from_node].add(edge.router.default_to)
         for n in self.nodes:
             if n.kind != "fan_out":
                 continue
             for spec in n.specs:
                 if spec.kind in ("broadcast", "map"):
-                    if spec.target_node_id is not None:
+                    if spec.target_node_id is not None and spec.target_node_id in cycle_adj:
                         cycle_adj[n.id].add(spec.target_node_id)
                 else:
                     for tid in (spec.target_node_ids or []):
-                        cycle_adj[n.id].add(tid)
+                        if tid in cycle_adj:
+                            cycle_adj[n.id].add(tid)
 
-        has_cycle = self._has_cycle(cycle_adj)
-        if (has_cycle or has_callable_router) and self.max_iterations is None:
-            raise ValueError(
+        if (self._has_cycle(cycle_adj) or has_callable_router) and (
+            self.max_iterations is None
+        ):
+            problems.append(
                 "cyclic graph (or callable router) requires max_iterations "
                 "to bound execution"
             )
 
-        # Reachability: BFS from Begin must visit every End.
-        seen_nodes: set[str] = {begin_id}
-        frontier: list[str] = [begin_id]
-        while frontier:
-            cur = frontier.pop()
-            for nxt in adj.get(cur, ()):
-                if nxt in seen_nodes:
+        # ===== End reachability (only meaningful with a unique Begin) =====
+        if len(begins) == 1 and ends:
+            begin_id = begins[0].id
+            end_ids = {e.id for e in ends}
+            adj: dict[str, set[str]] = {n.id: set() for n in self.nodes}
+            for edge in self.edges:
+                if edge.from_node not in adj:
                     continue
-                seen_nodes.add(nxt)
-                frontier.append(nxt)
-        missing = end_ids - seen_nodes
-        if missing:
-            raise ValueError(
-                f"End nodes not reachable from Begin: {sorted(missing)}"
-            )
-        return self
+                if isinstance(edge, _StaticEdge):
+                    if edge.to_node in adj:
+                        adj[edge.from_node].add(edge.to_node)
+                elif isinstance(edge, _ConditionalEdge):
+                    router = edge.router
+                    if isinstance(router, _JsonPathRouter):
+                        for branch in router.branches:
+                            if branch.to_node in adj:
+                                adj[edge.from_node].add(branch.to_node)
+                        if router.default_to is not None and router.default_to in adj:
+                            adj[edge.from_node].add(router.default_to)
+                    else:
+                        # _CallableRouter: may route to any non-Begin node.
+                        for nid in adj:
+                            if nid != begin_id:
+                                adj[edge.from_node].add(nid)
+            for n in self.nodes:
+                if n.kind != "fan_out":
+                    continue
+                for spec in n.specs:
+                    if spec.kind in ("broadcast", "map"):
+                        if spec.target_node_id is not None and spec.target_node_id in adj:
+                            adj[n.id].add(spec.target_node_id)
+                    else:
+                        for tid in (spec.target_node_ids or []):
+                            if tid in adj:
+                                adj[n.id].add(tid)
+            seen_nodes: set[str] = {begin_id}
+            frontier: list[str] = [begin_id]
+            while frontier:
+                cur = frontier.pop()
+                for nxt in adj.get(cur, ()):
+                    if nxt in seen_nodes:
+                        continue
+                    seen_nodes.add(nxt)
+                    frontier.append(nxt)
+            missing = end_ids - seen_nodes
+            if missing:
+                problems.append(
+                    f"End nodes not reachable from Begin: {sorted(missing)}"
+                )
+
+        return problems
 
     @staticmethod
     def _has_cycle(adj: dict[str, set[str]]) -> bool:

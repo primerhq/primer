@@ -1,5 +1,13 @@
-"""Spec §1.5: exactly one Begin, >=1 End, Begin has no incoming, End
-has no outgoing, every End reachable from Begin."""
+"""Spec §1.5 topology rules, split across two phases:
+
+* Persist-time (``Graph(...)`` construction) enforces *referential
+  integrity* only — unique node ids, edge endpoints reference existing
+  nodes, Begin has no incoming edge, End has no outgoing edge.
+* *Runnability* invariants — exactly one Begin, >=1 End, every End
+  reachable from Begin, bounded loops — are enforced later, at
+  session-start, via :meth:`Graph.assert_runnable`. An empty or partial
+  graph is a valid draft that constructs fine but fails ``assert_runnable``.
+"""
 
 from __future__ import annotations
 
@@ -30,28 +38,33 @@ def test_minimal_valid_begin_end_graph() -> None:
     )
 
 
-def test_rejects_zero_begin() -> None:
-    with pytest.raises(ValidationError):
-        _g(
-            [_AgentNodeRef(id="a", agent_id="ag"), _EndNode(id="e")],
-            [_StaticEdge(from_node="a", to_node="e")],
-        )
+def test_zero_begin_constructs_but_not_runnable() -> None:
+    # Runnability moved to session-start: construction succeeds, but the
+    # graph is not runnable (no Begin).
+    g = _g(
+        [_AgentNodeRef(id="a", agent_id="ag"), _EndNode(id="e")],
+        [_StaticEdge(from_node="a", to_node="e")],
+    )
+    with pytest.raises(ValueError):
+        g.assert_runnable()
 
 
-def test_rejects_two_begin() -> None:
-    with pytest.raises(ValidationError):
-        _g(
-            [_BeginNode(id="b1"), _BeginNode(id="b2"), _EndNode(id="e")],
-            [_StaticEdge(from_node="b1", to_node="e")],
-        )
+def test_two_begin_constructs_but_not_runnable() -> None:
+    g = _g(
+        [_BeginNode(id="b1"), _BeginNode(id="b2"), _EndNode(id="e")],
+        [_StaticEdge(from_node="b1", to_node="e")],
+    )
+    with pytest.raises(ValueError):
+        g.assert_runnable()
 
 
-def test_rejects_zero_end() -> None:
-    with pytest.raises(ValidationError):
-        _g(
-            [_BeginNode(id="b"), _AgentNodeRef(id="a", agent_id="ag")],
-            [_StaticEdge(from_node="b", to_node="a")],
-        )
+def test_zero_end_constructs_but_not_runnable() -> None:
+    g = _g(
+        [_BeginNode(id="b"), _AgentNodeRef(id="a", agent_id="ag")],
+        [_StaticEdge(from_node="b", to_node="a")],
+    )
+    with pytest.raises(ValueError):
+        g.assert_runnable()
 
 
 def test_rejects_incoming_edge_into_begin() -> None:
@@ -85,12 +98,14 @@ def test_rejects_outgoing_edge_from_end() -> None:
         )
 
 
-def test_rejects_unreachable_end() -> None:
-    with pytest.raises(ValidationError):
-        _g(
-            [_BeginNode(id="b"), _EndNode(id="e1"), _EndNode(id="e_orphan")],
-            [_StaticEdge(from_node="b", to_node="e1")],
-        )
+def test_unreachable_end_constructs_but_not_runnable() -> None:
+    g = _g(
+        [_BeginNode(id="b"), _EndNode(id="e1"), _EndNode(id="e_orphan")],
+        [_StaticEdge(from_node="b", to_node="e1")],
+    )
+    with pytest.raises(ValueError) as exc:
+        g.assert_runnable()
+    assert "e_orphan" in str(exc.value)
 
 
 def test_rejects_unknown_edge_endpoint() -> None:
@@ -125,10 +140,13 @@ def _cyclic_nodes_edges():
     return nodes, edges
 
 
-def test_cyclic_graph_without_max_iterations_rejected() -> None:
+def test_cyclic_graph_without_max_iterations_not_runnable() -> None:
+    # Construction succeeds (loopability is a runnability rule now); the
+    # unbounded cycle is caught at session-start instead.
     nodes, edges = _cyclic_nodes_edges()
-    with pytest.raises(ValidationError):
-        _g(nodes, edges)
+    g = _g(nodes, edges)
+    with pytest.raises(ValueError):
+        g.assert_runnable()
 
 
 def test_cyclic_graph_with_max_iterations_ok() -> None:
@@ -150,20 +168,21 @@ def test_acyclic_linear_graph_without_max_iterations_ok() -> None:
     )
 
 
-def test_callable_router_without_max_iterations_rejected() -> None:
-    with pytest.raises(ValidationError):
-        _g(
-            [
-                _BeginNode(id="b"),
-                _AgentNodeRef(id="a", agent_id="ag"),
-                _EndNode(id="e"),
-            ],
-            [
-                _StaticEdge(from_node="b", to_node="a"),
-                _StaticEdge(from_node="b", to_node="e"),
-                _ConditionalEdge(
-                    from_node="a",
-                    router=_CallableRouter(callable_id="r"),
-                ),
-            ],
-        )
+def test_callable_router_without_max_iterations_not_runnable() -> None:
+    g = _g(
+        [
+            _BeginNode(id="b"),
+            _AgentNodeRef(id="a", agent_id="ag"),
+            _EndNode(id="e"),
+        ],
+        [
+            _StaticEdge(from_node="b", to_node="a"),
+            _StaticEdge(from_node="b", to_node="e"),
+            _ConditionalEdge(
+                from_node="a",
+                router=_CallableRouter(callable_id="r"),
+            ),
+        ],
+    )
+    with pytest.raises(ValueError):
+        g.assert_runnable()

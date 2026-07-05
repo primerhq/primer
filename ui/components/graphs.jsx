@@ -73,21 +73,29 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
 
   const submit = async () => {
     setFieldErrors({});
-    // Seed a minimal valid graph: Begin → agent → End, wired by
-    // static edges. The Graph model validator requires exactly one
-    // Begin node and at least one End node reachable from Begin.
+    // The seed agent is OPTIONAL. When one is chosen, seed a minimal
+    // runnable skeleton (Begin → agent → End wired by static edges) so
+    // the new graph runs out of the box. When none is chosen, create an
+    // EMPTY graph — it persists fine, but isn't runnable until it has a
+    // Begin → … → End (runnability is enforced at session-start, not at
+    // creation).
+    const skeleton = seedAgentId
+      ? {
+          nodes: [
+            { kind: "begin", id: "begin" },
+            { kind: "agent", id: "start", agent_id: seedAgentId },
+            { kind: "end", id: "end", output_template: "" },
+          ],
+          edges: [
+            { kind: "static", from_node: "begin", to_node: "start" },
+            { kind: "static", from_node: "start", to_node: "end" },
+          ],
+        }
+      : { nodes: [], edges: [] };
     const body = {
       ...(id ? { id } : {}),
       description: description || "(no description)",
-      nodes: [
-        { kind: "begin", id: "begin" },
-        { kind: "agent", id: "start", agent_id: seedAgentId },
-        { kind: "end", id: "end", output_template: "" },
-      ],
-      edges: [
-        { kind: "static", from_node: "begin", to_node: "start" },
-        { kind: "static", from_node: "start", to_node: "end" },
-      ],
+      ...skeleton,
     };
     try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
   };
@@ -103,7 +111,7 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
             kind="primary"
             icon="plus"
             onClick={submit}
-            disabled={!seedAgentId || create.loading}
+            disabled={create.loading}
           >
             {create.loading ? "Creating…" : "Create"}
           </Btn>
@@ -145,7 +153,9 @@ function GR_NewGraphModal({ onClose, onCreate, pushToast }) {
         <label className="field-label">
           Seed agent{" "}
           <span className="hint">
-            required · the new graph starts with Begin → agent → End
+            optional · with one, the graph starts as Begin → agent → End;
+            without, it's created empty (not runnable until it has a
+            Begin → … → End)
           </span>
         </label>
         <div style={{ display: "flex", gap: 6 }}>

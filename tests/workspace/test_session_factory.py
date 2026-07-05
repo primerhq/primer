@@ -21,6 +21,13 @@ from primer.model.except_ import (
     NotFoundError,
     ValidationError,
 )
+from primer.model.graph import (
+    Graph,
+    _AgentNodeRef,
+    _BeginNode,
+    _EndNode,
+    _StaticEdge,
+)
 from primer.model.storage import OffsetPage
 from primer.model.workspace import Workspace as WorkspaceRow
 from primer.model.workspace_session import (
@@ -604,6 +611,83 @@ async def test_start_workspace_session_missing_workspace_raises_not_found(
             deps=deps,
         )
     assert live.started == []
+
+
+async def _seed_graph(sp, graph: Graph) -> None:
+    await sp.get_storage(Graph).create(graph)
+
+
+def _runnable_graph(graph_id="gr-run") -> Graph:
+    return Graph(
+        id=graph_id,
+        description="Begin -> agent -> End",
+        nodes=[
+            _BeginNode(id="b"),
+            _AgentNodeRef(id="a", agent_id="ag-1"),
+            _EndNode(id="e"),
+        ],
+        edges=[
+            _StaticEdge(from_node="b", to_node="a"),
+            _StaticEdge(from_node="a", to_node="e"),
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_workspace_session_unrunnable_graph_raises_validation(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    """Binding a session to an empty / unrunnable graph is rejected at
+    session-start (not at graph creation) with a ValidationError -> 422."""
+    await _seed_workspace(fake_storage_provider)
+    # An empty graph now persists fine, but it is not runnable.
+    await _seed_graph(fake_storage_provider, Graph(id="gr-empty", description="draft", nodes=[], edges=[]))
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+    )
+
+    with pytest.raises(ValidationError):
+        await start_workspace_session(
+            workspace_id="ws-1",
+            binding=GraphSessionBinding(graph_id="gr-empty"),
+            initial_instructions=None,
+            graph_input=None,
+            auto_start=False,
+            metadata={},
+            parent_session_id=None,
+            deps=deps,
+        )
+    # No on-disk slot allocated when runnability validation fails.
+    assert live.started == []
+
+
+@pytest.mark.asyncio
+async def test_start_workspace_session_runnable_graph_happy_path(
+    fake_storage_provider, fake_scheduler, fake_claim_engine,
+):
+    """A runnable Begin -> agent -> End graph still starts a session."""
+    await _seed_workspace(fake_storage_provider)
+    await _seed_graph(fake_storage_provider, _runnable_graph())
+    live = _FakeLiveWorkspace()
+    deps = _full_deps(
+        fake_storage_provider, fake_scheduler, fake_claim_engine, live,
+    )
+
+    sess = await start_workspace_session(
+        workspace_id="ws-1",
+        binding=GraphSessionBinding(graph_id="gr-run"),
+        initial_instructions=None,
+        graph_input=None,
+        auto_start=False,
+        metadata={},
+        parent_session_id=None,
+        deps=deps,
+    )
+
+    assert isinstance(sess, WorkspaceSession)
+    assert isinstance(sess.binding, GraphSessionBinding)
+    assert len(live.started) == 1
 
 
 # ---------------------------------------------------------------------------
