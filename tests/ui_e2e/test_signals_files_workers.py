@@ -1,8 +1,8 @@
 """Session signals + workspace files + sidebar workers UI tests.
 
 Covers backlog items:
-* U0068 — Session detail Steer queue renders submitted instruction in
-  "Queued this session" panel + success toast.
+* U0068 — Steering a session (Composer send) renders the submitted
+  instruction inline in the session transcript.
 * U0072 — Workspace detail Files tab lists a file written via API.
 * U0073 — Sidebar worker-pill text reflects /v1/workers count after
   POSTing a drain signal (activeWorkers drops to 0/1).
@@ -109,16 +109,17 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 def test_u0068_steer_queue_renders_submitted_instruction(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0068 — Re-pointed to the Studio's steer control. Open the session
-    in the Studio (agent panel), click ``ctrl-steer`` to reveal the
-    ``steer-popover``, type an instruction into its textarea, click Queue.
-    Assert the "Steer queued" success toast appears and the popover
-    closes (studio-center.jsx ``ST_SessionControls`` steerMut onSuccess).
-
-    (The retired session-detail rendered a "Queued this session (N)" panel
-    that echoed each submitted instruction; the Studio's steer is a
-    fire-and-forget popover with no queued-echo panel, so that assertion
-    is dropped — the toast + popover-close is the surviving contract.)
+    """U0068 — Re-pointed to the Studio's Composer send. The retired
+    ``ctrl-steer``/``steer-popover`` cluster (studio-center.jsx's
+    ST_SessionControls) is no longer mounted by the agent panel — per
+    the studio-agents-interact brief, steering IS sending a message via
+    the Composer (SessionAgentPanel's onSend -> session-adapter.jsx's
+    sendMessage -> POST .../steer). There is no popover and no success
+    toast surviving from either the pre-Task-13 OR the retired
+    session-detail "Queued this session (N)" surface; the transcript
+    itself is the surviving contract — wake_session persists the steered
+    instruction as a USER_INPUT record (primer/session/enqueue.py), which
+    the session adapter renders inline as a user_message bubble.
     """
     pid = f"llm-st-{unique_suffix}"
     aid = f"ag-st-{unique_suffix}"
@@ -140,22 +141,21 @@ def test_u0068_steer_queue_renders_submitted_instruction(
     try:
         open_session_in_studio(page, console_url, wid, sid, kind="agent")
 
-        # Click ctrl-steer → the steer popover opens with its textarea.
-        steer_btn = page.locator("[data-testid='ctrl-steer']").first
-        steer_btn.wait_for(state="visible", timeout=10_000)
-        steer_btn.click()
+        # Send the instruction via the Composer — this IS steering now
+        # (no dedicated steer button/popover survives on the agent panel).
+        composer = page.locator("textarea[placeholder='Send a message…']")
+        expect(composer).to_be_visible(timeout=10_000)
+        composer.fill(instruction)
+        page.locator("[data-testid='chat-send-btn']").click()
 
-        popover = page.locator("[data-testid='steer-popover']")
-        expect(popover).to_be_visible(timeout=5_000)
-        popover.locator("textarea").fill(instruction)
-        # The Queue button submits (POST .../steer).
-        popover.get_by_role("button", name="Queue", exact=True).click()
-
-        # Success toast, and the popover closes on success.
+        # The steered instruction renders inline in the session transcript
+        # (persisted USER_INPUT on wake) — the surviving positive signal
+        # now that the popover + toast are both retired.
         expect(
-            page.get_by_text("Steer queued", exact=False).first
-        ).to_be_visible(timeout=5_000)
-        expect(popover).to_have_count(0, timeout=5_000)
+            page.get_by_text(instruction, exact=False).first
+        ).to_be_visible(timeout=10_000)
+        # No error toast leak from the send.
+        assert page.get_by_text("Send failed", exact=False).count() == 0
     finally:
         _cleanup(base_url, cleanup_urls)
 
