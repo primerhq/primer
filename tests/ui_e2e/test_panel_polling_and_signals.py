@@ -18,7 +18,11 @@ import json
 import httpx
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_session_in_studio, open_studio
+from tests.ui_e2e._studio_helpers import (
+    expand_debug_sidebar,
+    open_session_in_studio,
+    open_studio,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -210,6 +214,9 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
         page.route(f"**/v1/workspaces/{wid}/yields/pending", _on_pending)
 
         open_studio(page, console_url, wid)
+        # The right-sidebar debug panel (Action Required) starts collapsed;
+        # expand it before looking for action-item content.
+        expand_debug_sidebar(page)
         item = page.locator("[data-testid='action-item']").first
         expect(item).to_be_visible(timeout=10_000)
         expect(item).to_contain_text("What is your name?")
@@ -264,6 +271,9 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
         )
 
         open_studio(page, console_url, wid)
+        # The right-sidebar debug panel (Action Required) starts collapsed;
+        # expand it before looking for action-item content.
+        expand_debug_sidebar(page)
         item = page.locator("[data-testid='action-item']").first
         expect(item).to_be_visible(timeout=10_000)
 

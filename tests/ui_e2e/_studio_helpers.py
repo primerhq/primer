@@ -173,6 +173,27 @@ def open_workspace_settings(
     return modal
 
 
+def expand_debug_sidebar(page: Page, *, timeout: int = 10_000) -> None:
+    """Expand the Studio's right-sidebar debug panel.
+
+    ``StudioActivity`` (studio-activity.jsx) starts COLLAPSED by default
+    (``collapsed = React.useState(true)``) so an operator who isn't
+    actively debugging doesn't lose screen real estate — the
+    ``ActionRequired`` list (``action-item`` / ``action-required-count`` /
+    approval + ask_user controls) and ``WorkspaceActivity`` feed only
+    become VISIBLE once ``debug-sidebar-toggle`` is clicked (it flips the
+    ``debug-sidebar-body`` wrapper's ``display``; both stay mounted so
+    their poll timers never reset). Any test that asserts on content
+    inside that body must call this first — right after ``open_studio`` /
+    ``open_session_in_studio`` / ``open_session_via_sidebar``.
+    """
+    toggle = page.locator("[data-testid='debug-sidebar-toggle']")
+    expect(toggle).to_be_visible(timeout=timeout)
+    if toggle.get_attribute("aria-expanded") != "true":
+        toggle.click()
+    expect(page.locator("[data-testid='debug-sidebar-body']")).to_be_visible(timeout=timeout)
+
+
 def action_item_for_session(page: Page, sid: str):
     """Locate the right-sidebar ``action-item`` for a session id.
 
