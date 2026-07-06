@@ -87,11 +87,15 @@ def test_cancelled_session_shows_outcome_banner(
     it in the Studio, and assert the terminal outcome is surfaced.
 
     Re-pointed: the retired session-detail rendered a ``session-outcome``
-    panel. The Studio's reused ``SessionLiveStream`` (inside ``panel-agent``)
-    surfaces a terminal session as a "Session ended" notice, and the
-    ``panel-agent-header`` StatusPill reads the terminal status — that is
-    the closest real Studio surface for the "session's terminal outcome is
-    legible" intent.
+    panel + a ``SessionLiveStream``-driven "Session ended" notice. The
+    rebuilt ``SessionAgentPanel`` (studio-center.jsx) has no such banner —
+    it drives the session adapter + ``window.Transcript`` directly and
+    exposes the terminal outcome via TWO real, always-rendered signals
+    gated on the panel's own ``isEnded = status === "ended"``: the
+    ``panel-agent-header`` StatusPill reads the terminal status, and the
+    End/Restart control pair flips — ``ctrl-end`` disables and
+    ``ctrl-restart`` appears. That is the closest real Studio surface for
+    the "session's terminal outcome is legible" intent.
     """
     _seed_llm_provider(base_url, "sl-prov")
     _seed_agent(base_url, "sl-agent", "sl-prov")
@@ -100,13 +104,17 @@ def test_cancelled_session_shows_outcome_banner(
     _cancel_session(base_url, wid, sid)
 
     open_session_in_studio(page, console_url, wid, sid, kind="agent")
-    # The reused live-stream shows the terminal "Session ended" notice.
-    expect(page.get_by_text("Session ended", exact=False).first).to_be_visible(
-        timeout=20_000,
-    )
-    # And the panel header StatusPill reads a terminal status (ended).
+    # The panel header StatusPill reads a terminal status (ended).
     header = page.locator('[data-testid="panel-agent-header"]')
     expect(header.locator(".pill").filter(has_text="ended").first).to_be_visible(
+        timeout=20_000,
+    )
+    # And the End/Restart pair reflects isEnded=true: End disables, Restart
+    # appears — the rebuilt panel's terminal-outcome control state.
+    expect(header.locator("[data-testid='ctrl-end']")).to_be_disabled(
+        timeout=10_000,
+    )
+    expect(header.locator("[data-testid='ctrl-restart']")).to_be_visible(
         timeout=10_000,
     )
 

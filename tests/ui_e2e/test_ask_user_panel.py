@@ -32,7 +32,7 @@ import json
 import httpx
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_studio
+from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_studio
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +179,9 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
     try:
         _route_pending_items(page, wid, [_ask_item(sid, prompt="What is your name?")])
         open_studio(page, console_url, wid)
+        # The right-sidebar debug panel (Action Required) starts collapsed;
+        # expand it before looking for action-item content.
+        expand_debug_sidebar(page)
 
         item = page.locator("[data-testid='action-item']").first
         expect(item).to_be_visible(timeout=10_000)
@@ -228,6 +231,9 @@ def test_u0049_ask_user_panel_submit_collapses_and_toasts(
         page.route(f"**/v1/sessions/{sid}/ask_user/respond", _on_respond)
 
         open_studio(page, console_url, wid)
+        # The right-sidebar debug panel (Action Required) starts collapsed;
+        # expand it before looking for action-item content.
+        expand_debug_sidebar(page)
         item = page.locator("[data-testid='action-item']").first
         expect(item).to_be_visible(timeout=10_000)
 
@@ -299,6 +305,9 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
         )
 
         open_studio(page, console_url, wid)
+        # The right-sidebar debug panel (Action Required) starts collapsed;
+        # expand it before looking for action-item content.
+        expand_debug_sidebar(page)
         item = page.locator("[data-testid='action-item']").first
         expect(item).to_be_visible(timeout=10_000)
 

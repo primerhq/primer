@@ -55,7 +55,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_session_in_studio
+from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_session_in_studio
 
 
 # ---------------------------------------------------------------------------
@@ -415,6 +415,9 @@ def test_u0109_approvals_operator_journey(
         # claim-eligibility filter → the worker never resumes it and clears
         # parked_state), making the item deterministic.
         open_session_in_studio(page, console_url, ids["workspace"], sid_banner, kind="agent")
+        # The right-sidebar debug panel (Action Required) starts collapsed;
+        # expand it before looking for action-item content.
+        expand_debug_sidebar(page)
 
         # The Action Required list surfaces the pending approval item.
         approval_item = page.locator("[data-testid='action-item']").filter(

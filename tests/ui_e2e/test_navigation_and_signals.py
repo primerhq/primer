@@ -198,17 +198,22 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
     unique_suffix: str,
     tmp_path,
 ) -> None:
-    """U0030 — Re-pointed to the Studio's ``ctrl-cancel``. Seed a CREATED
-    agent session, open it in the Studio (agent panel), click the
-    ``ctrl-cancel`` control and assert:
+    """U0030 — Re-pointed to the Studio's ``ctrl-end``. This journey seeds
+    an AGENT-bound session, which renders through ``SessionAgentPanel``
+    (studio-center.jsx) — the interactive control set is End/Restart
+    (``ctrl-end``/``ctrl-restart``); ``ctrl-cancel`` only exists on the
+    GRAPH run view's ``SessionGraphPanel`` (autonomous sessions). Seed a
+    CREATED agent session, open it in the Studio (agent panel), click the
+    ``ctrl-end`` control and assert:
 
-    * a "Cancel signal sent" toast appears,
+    * a "Session ended" toast appears (``SessionAgentPanel``'s End mutation
+      ``onSuccess``),
     * the panel-header status transitions to a terminal value
       (ended / cancelled / failed) within a polling interval,
-    * the ``ctrl-cancel`` control becomes disabled once terminal (per
-      studio-center.jsx ``disabled={!wid || isTerminal || …}``).
+    * the ``ctrl-end`` control becomes disabled once terminal (per
+      studio-center.jsx ``disabled={!wid || isEnded || endMut.loading}``).
 
-    Note: the Studio's ctrl-cancel fires the cancel POST DIRECTLY (no
+    Note: the Studio's ctrl-end fires the cancel POST DIRECTLY (no
     confirmation modal — that surface was retired), so the old confirm
     step is dropped. ``ST_SessionPanel`` polls /sessions/{id} every 2s
     while non-terminal, so the status catches up without a manual refresh.
@@ -239,13 +244,13 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
             page, console_url, workspace_id, session_id, kind="agent",
         )
 
-        # The ctrl-cancel control fires the cancel POST directly.
-        cancel_btn = page.locator("[data-testid='ctrl-cancel']").first
+        # The ctrl-end control fires the cancel POST directly.
+        cancel_btn = page.locator("[data-testid='ctrl-end']").first
         cancel_btn.wait_for(state="visible", timeout=10_000)
         cancel_btn.click()
 
         # Toast appears.
-        page.get_by_text("Cancel signal sent", exact=False).first.wait_for(
+        page.get_by_text("Session ended", exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )
 
@@ -265,8 +270,8 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
             "within 15s after cancel"
         )
 
-        # Defence: the ctrl-cancel control is now disabled (isTerminal=true).
-        cancel_btn_after = page.locator("[data-testid='ctrl-cancel']").first
+        # Defence: the ctrl-end control is now disabled (isEnded=true).
+        cancel_btn_after = page.locator("[data-testid='ctrl-end']").first
         deadline = time.monotonic() + 5.0
         disabled = False
         while time.monotonic() < deadline:
@@ -275,7 +280,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
                 break
             page.wait_for_timeout(250)
         assert disabled, (
-            "ctrl-cancel did not become disabled after session "
+            "ctrl-end did not become disabled after session "
             "transitioned to terminal"
         )
     finally:
