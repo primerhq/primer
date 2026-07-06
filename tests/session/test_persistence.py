@@ -270,7 +270,7 @@ def test_translate_tool_call_carries_name_from_start() -> None:
     assert rec.payload.get("name") == "fs__write"
     assert rec.payload.get("arguments") == {"path": "x"}
     # Consumed on End — the map doesn't accumulate dead keys.
-    assert "tc9" not in state.tool_names
+    assert (None, "tc9") not in state.tool_names
 
 
 def test_translate_tool_call_end_without_start_has_null_name() -> None:
@@ -556,6 +556,40 @@ def test_concurrent_nodes_usage_does_not_mix() -> None:
     assert isinstance(rb, SessionMessageRecord)
     assert ra.payload["usage"]["input_tokens"] == 10
     assert rb.payload["usage"]["input_tokens"] == 99
+
+
+def test_concurrent_nodes_tool_name_does_not_mix() -> None:
+    """Two fan-out siblings whose tool-call ids collide (LLM adapters
+    synthesize ids like "call_0" from a fresh per-stream counter, so two
+    concurrent nodes legitimately emit the same id) must not clobber each
+    other's stashed tool name. Interleaved A-start, B-start, A-end, B-end —
+    each TOOL_CALL record must carry its OWN node's tool name."""
+    from primer.model.chat import ToolCallEnd, ToolCallStart
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    same_id = "call_0"
+    translate_stream_event(
+        _wrap_node("a", ToolCallStart(id=same_id, name="fs__write", index=0)), state
+    )
+    translate_stream_event(
+        _wrap_node("b", ToolCallStart(id=same_id, name="fs__read", index=0)), state
+    )
+    rec_a = translate_stream_event(
+        _wrap_node("a", ToolCallEnd(id=same_id, arguments={"path": "a.txt"}, index=0)),
+        state,
+    )
+    rec_b = translate_stream_event(
+        _wrap_node("b", ToolCallEnd(id=same_id, arguments={"path": "b.txt"}, index=0)),
+        state,
+    )
+
+    assert isinstance(rec_a, SessionMessageRecord)
+    assert isinstance(rec_b, SessionMessageRecord)
+    assert rec_a.node_id == "a"
+    assert rec_a.payload["name"] == "fs__write"
+    assert rec_b.node_id == "b"
+    assert rec_b.payload["name"] == "fs__read"
 
 
 def test_agent_only_path_unchanged_node_id_none() -> None:

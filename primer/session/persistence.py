@@ -217,11 +217,17 @@ class _CoalesceState:
     text_buffers: dict[str | None, str] = field(default_factory=dict)
     last_usage_by: dict[str | None, Usage] = field(default_factory=dict)
     # Tool name carried from ToolCallStart (which has it) to the paired
-    # ToolCallEnd (same id, but no name field), keyed by tool_call id — so the
-    # TOOL_CALL record can persist the real name instead of the UI's generic
-    # "tool" fallback. Popped on ToolCallEnd; keyed by id (globally unique)
-    # rather than node_id so concurrent fan-out siblings never collide.
-    tool_names: dict[str, str] = field(default_factory=dict)
+    # ToolCallEnd (same id, but no name field), keyed by (node_id, tool_call
+    # id) — so the TOOL_CALL record can persist the real name instead of the
+    # UI's generic "tool" fallback. Popped on ToolCallEnd. The LLM adapters
+    # synthesize call ids from a per-stream counter (e.g. "call_0"), so bare
+    # ids restart at the same value on every stream — concurrent graph
+    # fan-out siblings can legitimately share an id. Keying by node_id too
+    # (mirroring text_buffers/last_usage_by above) keeps siblings isolated.
+    # An unmatched ToolCallStart (turn cancelled before its ToolCallEnd)
+    # leaves a dangling entry, but it's bounded to this _CoalesceState's
+    # lifetime (one run) — not worth cleanup machinery.
+    tool_names: dict[tuple[str | None, str], str] = field(default_factory=dict)
 
 
 def translate_stream_event(
@@ -235,7 +241,7 @@ def translate_stream_event(
     |----------------------|-------------------------------------------------|
     | TextDelta            | None (coalesces into state.text_buffers[node])  |
     | Usage                | None (accumulated in state.last_usage_by[node]) |
-    | ToolCallStart        | None (records tool name in state.tool_names[id])|
+    | ToolCallStart        | None (records name in state.tool_names[node,id])|
     | ToolCallEnd          | flush text buffer (if any), then TOOL_CALL      |
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
     | ExtendedEvent(_GraphNodeEvent) | reconstruct inner StreamEvent and    |
@@ -359,7 +365,9 @@ def translate_stream_event(
         # ToolCallStart carries the tool name; the paired ToolCallEnd (same
         # id) does not. Stash it so the TOOL_CALL record below can persist the
         # real name. Produces no record itself (the call is persisted on End).
-        state.tool_names[event.id] = event.name
+        # Keyed by (node_id, id): synthesized ids can collide across
+        # concurrent fan-out siblings, so node_id disambiguates.
+        state.tool_names[(node_id, event.id)] = event.name
         return None
 
     if isinstance(event, ToolCallEnd):
@@ -382,7 +390,7 @@ def translate_stream_event(
                 kind=SessionMessageKind.TOOL_CALL,
                 payload={
                     "id": event.id,
-                    "name": state.tool_names.pop(event.id, None),
+                    "name": state.tool_names.pop((node_id, event.id), None),
                     "arguments": event.arguments,
                 },
                 node_id=node_id,
