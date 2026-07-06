@@ -35,6 +35,7 @@ from primer.model.chat import (
     StreamEvent,
     TextDelta,
     ToolCallEnd,
+    ToolCallStart,
     Usage,
     _ExecutorToolResult,
     _GraphNodeEvent,
@@ -215,6 +216,12 @@ class _CoalesceState:
 
     text_buffers: dict[str | None, str] = field(default_factory=dict)
     last_usage_by: dict[str | None, Usage] = field(default_factory=dict)
+    # Tool name carried from ToolCallStart (which has it) to the paired
+    # ToolCallEnd (same id, but no name field), keyed by tool_call id — so the
+    # TOOL_CALL record can persist the real name instead of the UI's generic
+    # "tool" fallback. Popped on ToolCallEnd; keyed by id (globally unique)
+    # rather than node_id so concurrent fan-out siblings never collide.
+    tool_names: dict[str, str] = field(default_factory=dict)
 
 
 def translate_stream_event(
@@ -228,6 +235,7 @@ def translate_stream_event(
     |----------------------|-------------------------------------------------|
     | TextDelta            | None (coalesces into state.text_buffers[node])  |
     | Usage                | None (accumulated in state.last_usage_by[node]) |
+    | ToolCallStart        | None (records tool name in state.tool_names[id])|
     | ToolCallEnd          | flush text buffer (if any), then TOOL_CALL      |
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
     | ExtendedEvent(_GraphNodeEvent) | reconstruct inner StreamEvent and    |
@@ -347,6 +355,13 @@ def translate_stream_event(
         state.text_buffers[node_id] = state.text_buffers.get(node_id, "") + event.text
         return None
 
+    if isinstance(event, ToolCallStart):
+        # ToolCallStart carries the tool name; the paired ToolCallEnd (same
+        # id) does not. Stash it so the TOOL_CALL record below can persist the
+        # real name. Produces no record itself (the call is persisted on End).
+        state.tool_names[event.id] = event.name
+        return None
+
     if isinstance(event, ToolCallEnd):
         records: list[SessionMessageRecord] = []
         buffered = state.text_buffers.get(node_id, "")
@@ -365,7 +380,11 @@ def translate_stream_event(
             SessionMessageRecord(
                 seq=1,
                 kind=SessionMessageKind.TOOL_CALL,
-                payload={"id": event.id, "arguments": event.arguments},
+                payload={
+                    "id": event.id,
+                    "name": state.tool_names.pop(event.id, None),
+                    "arguments": event.arguments,
+                },
                 node_id=node_id,
                 created_at=now,
             )
@@ -443,9 +462,9 @@ def translate_stream_event(
             created_at=now,
         )
 
-    # All other events (StreamStart, ReasoningDelta, ToolCallStart, ToolCallDelta,
-    # MediaDelta, ExtendedEvent without _ExecutorToolResult / _GraphNodeEvent) —
-    # silently dropped.
+    # All other events (StreamStart, ReasoningDelta, ToolCallDelta, MediaDelta,
+    # ExtendedEvent without _ExecutorToolResult / _GraphNodeEvent) — silently
+    # dropped. (ToolCallStart is handled above: it records the tool name.)
     return None
 
 
