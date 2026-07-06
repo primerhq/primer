@@ -50,9 +50,7 @@ def _fn_block(src: str, start_marker: str, end_marker: str) -> str:
 
 def _session_graph_panel_src() -> str:
     """Just the `SessionGraphPanel` function body — scopes assertions to
-    this panel without false-matching `SessionAgentPanel`'s Stop/End set or
-    the still-defined-but-unused `ST_SessionControls` (Pause/Resume/Steer/
-    Cancel, the pre-Task-13 graph cluster neither panel calls anymore)."""
+    this panel without false-matching `SessionAgentPanel`'s Stop/End set."""
     return _fn_block(_center_src(), "function SessionGraphPanel(", "function ST_SessionPanel(")
 
 
@@ -203,17 +201,12 @@ def test_composer_never_shows_stop_and_never_calls_interrupt() -> None:
 
 
 def test_no_dedicated_steer_or_resume_button_on_the_graph_panel() -> None:
-    # ST_SessionControls (Steer/Resume/Pause/Cancel) is the pre-Task-13
-    # cluster; this panel no longer reuses it (its own Pause/Cancel/Restart
-    # set above is self-contained), but the function itself must survive
-    # untouched (test_studio_run_view_interactive.py's own sanity pin).
+    # The graph panel's own Pause/Cancel/Restart set is self-contained; it
+    # has no Steer or Resume control (those lived on the pre-Task-13 cluster,
+    # since removed).
     panel = _session_graph_panel_src()
     assert "ctrl-steer" not in panel
     assert "ctrl-resume" not in panel
-    assert "<ST_SessionControls" not in panel
-    src = _center_src()
-    assert src.count("function ST_SessionControls(") == 1
-    assert 'data-testid="ctrl-steer"' in src  # still defined elsewhere, just unused here
 
 
 # ---------------------------------------------------------------------------

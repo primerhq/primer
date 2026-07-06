@@ -56,8 +56,7 @@ def _fn_block(src: str, start_marker: str, end_marker: str) -> str:
 def _session_agent_panel_src() -> str:
     """Just the `SessionAgentPanel` function body — scopes assertions (like
     "no dedicated steer button") to this panel without false-matching
-    `SessionGraphPanel`'s still-inlined `ST_SessionControls` (which does have
-    a Steer button; the graph panel is untouched by this task)."""
+    `SessionGraphPanel`'s own control cluster."""
     return _fn_block(_center_src(), "function SessionAgentPanel(", "function SessionGraphPanel(")
 
 
@@ -119,15 +118,6 @@ def test_no_dedicated_steer_button_on_the_agent_panel() -> None:
     panel = _session_agent_panel_src()
     assert "ctrl-steer" not in panel
     assert "ST_SessionControls" not in panel
-
-
-def test_session_graph_panel_steer_control_is_untouched() -> None:
-    # Sanity: the graph panel's existing Steer/Pause/Resume/Cancel cluster
-    # (ST_SessionControls) is unaffected by this task — it still exists
-    # exactly once elsewhere in the file.
-    src = _center_src()
-    assert src.count("function ST_SessionControls(") == 1
-    assert 'data-testid="ctrl-steer"' in src
 
 
 # ---------------------------------------------------------------------------
