@@ -1,11 +1,21 @@
-"""FD1b — the per-session pause/resume/steer/cancel mutations are a single
-shared hook, window.useSessionControls, instead of being re-implemented in
-each caller (they used to be inlined in the removed SessionDetail page AND in
-the Studio's ST_SessionControls cluster).
+"""FD1b — the per-session pause/resume/steer/cancel mutations were extracted
+into a single shared hook, window.useSessionControls, instead of being
+re-implemented in each caller (they used to be inlined in the removed
+SessionDetail page AND in the Studio's ST_SessionControls cluster).
 
-Guards that the hook exists + exports the four actions, that studio-center.jsx
-consumes it (and no longer builds the control mutations inline), that it loads
-before studio-center in index.html, and that the bundle transpiles.
+Studio's later session-panel redesign (Task 13) split ST_SessionControls into
+SessionAgentPanel (End/Restart header controls; Stop lives in <Composer>) and
+SessionGraphPanel (Pause/Cancel/Restart header controls) — each panel builds
+its OWN control mutations again instead of calling the shared hook, since the
+two panels' control sets diverged and neither needs a Resume or Steer button
+(steering/resuming a session IS sending it a message). The hook itself is
+unchanged and has no current caller, but stays in the tree as working,
+importable, fully-tested API.
+
+Guards that the hook exists + exports the four actions, that it loads before
+studio-center in index.html, that studio-center.jsx does NOT reach for the
+shared hook (each panel builds its own mutations against the signal
+endpoints it actually needs), and that the bundle transpiles.
 """
 
 from __future__ import annotations
@@ -50,25 +60,34 @@ def test_hook_hits_the_workspace_scoped_endpoints() -> None:
     assert '"/steer"' in src, "steer posts to the /steer endpoint with an instruction body"
 
 
-def test_studio_center_uses_the_shared_hook() -> None:
+def test_studio_center_does_not_use_the_shared_hook() -> None:
+    """SessionAgentPanel and SessionGraphPanel (Task 13) each build their own
+    control mutations directly against useMutation/apiFetch/the session
+    adapter instead of calling window.useSessionControls."""
     src = CENTER.read_text(encoding="utf-8")
-    assert "window.useSessionControls(wid, sid" in src, "ST_SessionControls must call the shared hook"
-    # It threads the caller-specific bits through the hook options.
-    assert "onSteerSuccess" in src
-    assert '"studio-session:" + sid' in src
+    assert "window.useSessionControls(" not in src
+    # Agent panel: End + Restart reuse the session adapter's own
+    # end()/restart() (Stop is <Composer>'s own affordance, wired to the
+    # adapter's stop() — no dedicated ctrl-stop testid in the header).
+    assert 'data-testid="ctrl-end"' in src
+    assert 'data-testid="ctrl-restart"' in src
+    assert "function () { return conv.end(); }" in src
+    assert "function () { return conv.restart(); }" in src
+    # Graph panel: Pause is a fresh mutation (no adapter equivalent); Cancel
+    # reuses conv.end() the same way the agent panel's End does.
+    assert 'data-testid="ctrl-pause"' in src
+    assert 'data-testid="ctrl-cancel"' in src
 
 
-def test_studio_center_no_longer_inlines_control_mutations() -> None:
+def test_studio_center_has_no_resume_or_steer_controls() -> None:
+    """Neither panel offers a dedicated Resume or Steer control — sending a
+    message through the panel's own <Composer> IS the steer/resume path
+    (studio-agents-interact). Only Pause hits a fresh signal endpoint;
+    Resume/Steer never existed in the redesigned panels."""
     src = CENTER.read_text(encoding="utf-8")
-    # The four control mutations must be gone from studio-center (they live in
-    # the hook now). No POST to a session signal endpoint should remain here.
-    for frag in (
-        'encodeURIComponent(sid) + "/pause"',
-        'encodeURIComponent(sid) + "/resume"',
-        'encodeURIComponent(sid) + "/cancel"',
-        'encodeURIComponent(sid) + "/steer"',
-    ):
-        assert frag not in src, f"control endpoint still inlined in studio-center: {frag}"
+    assert 'encodeURIComponent(sid) + "/pause"' in src
+    for frag in ('"/resume"', '"/steer"', "resumeMut", "steerMut"):
+        assert frag not in src, f"unexpected resume/steer control in studio-center: {frag}"
 
 
 def test_index_loads_hook_before_studio_center() -> None:
