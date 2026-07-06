@@ -76,6 +76,18 @@ def test_no_session_websocket_only_rest_and_tap_sse() -> None:
     assert "/messages" in src
 
 
+def test_ws_state_reaches_terminal_closed_when_eventsource_gives_up() -> None:
+    # Connection legibility: es.onerror mirrors the browser's native retry
+    # (readyState CONNECTING) as "connecting", but once EventSource gives up
+    # for good (readyState === 2 / CLOSED) it must flip to a terminal
+    # "closed" so <Transcript>'s pill shows a non-transient failure rather
+    # than parking on "connecting" forever. CT_ConnectionStatus already
+    # renders any non-open/non-connecting value as the offline pill.
+    src = ADAPTER.read_text(encoding="utf-8")
+    assert "es.onerror = function" in src
+    assert 'es.readyState === 2 ? "closed" : "connecting"' in src
+
+
 def test_controls_hit_the_documented_endpoints() -> None:
     src = ADAPTER.read_text(encoding="utf-8")
     assert "/steer" in src
