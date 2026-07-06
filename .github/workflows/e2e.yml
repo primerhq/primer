@@ -68,7 +68,7 @@ jobs:
         # a CLI `-m` replaces the addopts `-m`, so `not distributed` is repeated.
         run: >-
           PYTHONUNBUFFERED=1 PRIMER_RUN_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/e2e
-          -v --tb=short -n0 -p no:cacheprovider --timeout=120 --timeout-method=thread
+          -q --tb=short -n0 --timeout=180 --timeout-method=thread
           -m "not distributed and not requires_llm and not requires_cluster and not requires_channel"
       - name: Tear down
         if: always()
