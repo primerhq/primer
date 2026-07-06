@@ -12,7 +12,13 @@ Behaviour by status (studio-agents-interact §4.2 / §5.1):
   * CREATED           -> invoke  (transition to RUNNING; run with the message)
   * RUNNING / WAITING -> steer   (queue as the next turn; re-arm the claim)
   * PAUSED            -> resume  (clear pause; transition to RUNNING)
-  * ENDED             -> ConflictError (use restart / reset_session first)
+  * ENDED             -> restart (reopen + invocation divider, then invoke)
+
+Uniform "send a message" semantics: every clean agent turn ends the session,
+and sending a NEW message to an ENDED session reopens it (reopen the on-disk
+slot, write an invocation divider, run a fresh turn) instead of erroring. A
+non-restartable ``ended_reason`` (``workspace_lost``/``force_deleted``) still
+raises ConflictError.
 """
 
 from __future__ import annotations
@@ -23,7 +29,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from primer.int.claim import ClaimKind
-from primer.model.except_ import ConflictError, NotFoundError
+from primer.model.except_ import NotFoundError
 from primer.model.workspace_session import (
     SessionMessageKind,
     SessionMessageRecord,
@@ -32,6 +38,7 @@ from primer.model.workspace_session import (
 )
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter
+from primer.session.reset import _reopen_ended_locked
 
 logger = logging.getLogger(__name__)
 
@@ -68,10 +75,14 @@ async def wake_session(
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
-    Raises NotFoundError (missing / workspace mismatch) / ConflictError
-    (already ENDED). Serialised against concurrent cancel/pause/resume via
-    the session lifecycle lock so the ``turn_status`` flip + status
-    transition never interleave with a racing cancel's ENDED write.
+    Raises NotFoundError (missing / workspace mismatch). An ENDED session is
+    reopened in place (reopen slot + invocation divider + ENDED->CREATED)
+    before the normal invoke flow, so a new message restarts it; a
+    non-restartable ``ended_reason`` (``workspace_lost``/``force_deleted``)
+    still raises ConflictError. Serialised against concurrent
+    cancel/pause/resume via the session lifecycle lock so the ``turn_status``
+    flip + status transition never interleave with a racing cancel's ENDED
+    write.
     """
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     async with session_lifecycle_lock().acquire(session_id):
@@ -82,9 +93,33 @@ async def wake_session(
                 f"{workspace_id!r}"
             )
         if row.status == SessionStatus.ENDED:
-            raise ConflictError(
-                f"Session {session_id!r} has ended; restart it to re-open."
+            # Reopen the ended session in place so a NEW message restarts it
+            # (reopen slot + invocation divider + ENDED->CREATED). We hold the
+            # non-reentrant session_lifecycle_lock, and reset_session acquires
+            # the SAME lock -- calling it here would deadlock -- so we share
+            # its lock-free reopen body via _reopen_ended_locked. The helper
+            # raises ConflictError for non-restartable ended_reasons. After
+            # this, row is CREATED and the normal wake flow below appends the
+            # USER_INPUT (after the divider) and runs the turn.
+            row, _invocation = await _reopen_ended_locked(
+                row=row,
+                workspace_id=workspace_id,
+                session_id=session_id,
+                sessions=sessions,
+                workspace_registry=deps.workspace_registry,
             )
+            # Surface the invocation divider live before the USER_INPUT tick
+            # below (mirrors reset_session's divider tick). Advisory.
+            if deps.event_bus is not None:
+                try:
+                    await deps.event_bus.publish(
+                        f"session:{session_id}:tick", {"seq": row.last_seq}
+                    )
+                except Exception:  # noqa: BLE001 -- advisory
+                    logger.exception(
+                        "wake_session: failed to publish divider tick for %s",
+                        session_id,
+                    )
 
         # 1. Append the user message to the on-disk slot FIFO (the queue) and
         #    persist a USER_INPUT record to messages.jsonl so the sent message

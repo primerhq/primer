@@ -644,13 +644,10 @@ async def run_one_session_turn(
     # ------------------------------------------------------------------
     await writer.flush()
 
-    from primer.session.autonomy import session_is_autonomous
-
     last_done_reason = getattr(executor, "last_done_reason", None)
     agent_status = await _read_agent_session_status(executor)
     new_status, ended_reason = _post_turn_status(
         last_done_reason, agent_status,
-        is_autonomous=session_is_autonomous(session),
     )
     # Serialize the terminal transition + interrupt-flag clear against a
     # concurrent resume/pause/cancel/interrupt API call (T0432-style lost
@@ -829,57 +826,36 @@ _STOP_REASON_TO_STATUS: dict[str, tuple[SessionStatus, str | None]] = {
 def _post_turn_status(
     last_done_reason: str | None,
     agent_status: SessionStatus | None,
-    *,
-    is_autonomous: bool = True,
 ) -> tuple[SessionStatus, str | None]:
     """Decide the WorkspaceSession.status to write after a clean turn.
 
     Precedence: a definitive AgentSession decision wins (the executor
     set ENDED on internal error, WAITING on a user-input prompt heuristic,
     etc.). Otherwise fall back to the LLM's last stop reason. The default
-    when neither is informative is ENDED/completed for autonomous sessions.
+    when neither is informative is ENDED/completed.
 
-    For INTERACTIVE sessions (``is_autonomous=False``) a clean terminal
-    ``ENDED/completed`` result is downgraded to ``WAITING`` so the session
-    stays alive — awaiting the user's next message — instead of dead-ending
-    (studio-agents-interact §4.4). Autonomous sessions (graphs, agent loops)
-    keep the existing end-on-completion behaviour.
+    Every clean agent turn ENDS the session — there is no interactive
+    "stays WAITING" downgrade. Sending a NEW message to an ENDED session
+    reopens it (``wake_session``'s ENDED branch), so a one-shot caller
+    (trigger/webhook/API/e2e) never hangs on a session that finished
+    cleanly. The executor-set WAITING (assistant-asked-a-question
+    heuristic) is a distinct, legitimate wait and is preserved below.
     """
     # An executor-set ENDED is authoritative.
     if agent_status == SessionStatus.ENDED:
         # Translate ended-but-stop-reason into a finer reason when we can.
         mapped = _STOP_REASON_TO_STATUS.get(last_done_reason or "", (None, None))
-        return _apply_interactive(
-            SessionStatus.ENDED, mapped[1] or "completed", is_autonomous,
-        )
+        return (SessionStatus.ENDED, mapped[1] or "completed")
     # Executor-set WAITING (e.g. assistant asked a question heuristic).
     if agent_status == SessionStatus.WAITING:
         return (SessionStatus.WAITING, None)
     # Stop-reason mapping.
     if last_done_reason is None:
-        return _apply_interactive(SessionStatus.ENDED, "completed", is_autonomous)
+        return (SessionStatus.ENDED, "completed")
     mapped = _STOP_REASON_TO_STATUS.get(last_done_reason)
     if mapped is None:
-        return _apply_interactive(SessionStatus.ENDED, "completed", is_autonomous)
-    status, reason = mapped
-    if status == SessionStatus.ENDED and reason == "completed":
-        return _apply_interactive(status, reason, is_autonomous)
+        return (SessionStatus.ENDED, "completed")
     return mapped
-
-
-def _apply_interactive(
-    status: SessionStatus,
-    reason: str | None,
-    is_autonomous: bool,
-) -> tuple[SessionStatus, str | None]:
-    """Downgrade a clean ENDED/completed to WAITING for interactive sessions."""
-    if (
-        not is_autonomous
-        and status == SessionStatus.ENDED
-        and reason == "completed"
-    ):
-        return (SessionStatus.WAITING, None)
-    return (status, reason)
 
 
 async def _persist_last_seq(

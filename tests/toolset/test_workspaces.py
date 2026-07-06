@@ -1146,7 +1146,9 @@ class TestCreateWorkspaceSession:
 # ===========================================================================
 
 
-def _seed_session(sp, *, status, sid="sess-c1", workspace_id="ws-stub"):
+def _seed_session(
+    sp, *, status, sid="sess-c1", workspace_id="ws-stub", ended_reason=None,
+):
     from datetime import datetime, timezone
 
     from primer.model.workspace_session import (
@@ -1160,6 +1162,7 @@ def _seed_session(sp, *, status, sid="sess-c1", workspace_id="ws-stub"):
         workspace_id=workspace_id,
         binding=AgentSessionBinding(agent_id="ag-1"),
         status=status,
+        ended_reason=ended_reason,
         created_at=datetime.now(timezone.utc),
     )
 
@@ -1254,13 +1257,43 @@ class TestSteerWorkspaceSession:
         assert body["turn_status"] == "claimable"
 
     @pytest.mark.asyncio
-    async def test_steer_ended_session_is_conflict(
+    async def test_steer_restartable_ended_session_reopens(
         self, session_toolset, seeded, sp
     ) -> None:
+        """A message to a restartable ENDED session reopens it (uniform
+        "send a message" semantics: ENDED -> restart). It runs a new
+        invocation rather than erroring."""
         from primer.model.workspace_session import SessionStatus
 
         _seed_session(
-            sp, status=SessionStatus.ENDED, sid="sess-c1", workspace_id=seeded
+            sp, status=SessionStatus.ENDED, sid="sess-c1", workspace_id=seeded,
+            ended_reason="completed",
+        )
+        result = await session_toolset.call(
+            tool_name="steer_workspace_session",
+            arguments={
+                "workspace_id": seeded,
+                "session_id": "sess-c1",
+                "instruction": "go",
+            },
+        )
+        assert not result.is_error, result.output
+        body = json.loads(result.output)
+        assert body["status"] == "running"
+        assert body["turn_status"] == "claimable"
+        assert body["metadata"]["invocation"] == 2
+
+    @pytest.mark.asyncio
+    async def test_steer_non_restartable_ended_session_is_conflict(
+        self, session_toolset, seeded, sp
+    ) -> None:
+        """A non-restartable ended_reason (workspace_lost / force_deleted)
+        still cannot be reopened by a message — conflict."""
+        from primer.model.workspace_session import SessionStatus
+
+        _seed_session(
+            sp, status=SessionStatus.ENDED, sid="sess-c1", workspace_id=seeded,
+            ended_reason="workspace_lost",
         )
         result = await session_toolset.call(
             tool_name="steer_workspace_session",

@@ -38,6 +38,85 @@ class SessionResetDeps:
     event_bus: Any | None = None
 
 
+async def _reopen_ended_locked(
+    *,
+    row: WorkspaceSession,
+    workspace_id: str,
+    session_id: str,
+    sessions: Any,
+    workspace_registry: Any,
+) -> tuple[WorkspaceSession, int]:
+    """Reopen an ENDED session row IN PLACE — lock-free reopen body.
+
+    Shared by :func:`reset_session` and ``wake_session``'s ENDED branch.
+    Both callers already hold ``session_lifecycle_lock().acquire(session_id)``
+    (a non-reentrant lock), so this helper must NOT re-acquire it — calling
+    ``reset_session`` from inside ``wake_session``'s lock would deadlock.
+
+    Assumes the caller verified ``row.status == SessionStatus.ENDED``.
+    Enforces the ``_RESTARTABLE`` ended_reason guard here (raising
+    ConflictError for ``workspace_lost``/``force_deleted``), reopens the
+    on-disk slot, writes the ``INVOCATION_DIVIDER`` record, bumps the
+    invocation counter, clears terminal + park bookkeeping, and transitions
+    the scheduler row ENDED -> CREATED (turn_status idle). Returns
+    ``(reopened_row, invocation_number)``; does NOT publish events (the
+    caller owns ticks). The divider is written BEFORE the caller appends any
+    USER_INPUT so the invocation divider precedes the message.
+    """
+    if row.ended_reason not in _RESTARTABLE:
+        raise ConflictError(
+            f"Session {session_id!r} ended as {row.ended_reason!r} and "
+            "cannot be re-opened."
+        )
+
+    invocation = int(row.metadata.get("invocation", 1)) + 1
+
+    # 1. Reopen the on-disk slot (ENDED -> RUNNING; sanctioned exception).
+    ws = await workspace_registry.get_workspace(workspace_id)
+    slot = await ws.get_session(session_id)
+    if slot is not None:
+        await slot.reopen()
+
+    # 2. Append the invocation divider to messages.jsonl, seeded past
+    #    existing history so seqs stay monotonic.
+    writer = WorkspaceMessageWriter(
+        workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
+    )
+    new_seq = await writer.append(SessionMessageRecord(
+        seq=1,  # overwritten by the writer's counter
+        kind=SessionMessageKind.INVOCATION_DIVIDER,
+        payload={"invocation": invocation},
+        created_at=datetime.now(timezone.utc),
+    ))
+    await writer.flush()
+
+    # 3. Re-open the scheduler row: ENDED -> CREATED, clear terminal +
+    #    park bookkeeping; bump the invocation counter + last_seq.
+    md = dict(row.metadata)
+    md["invocation"] = invocation
+    reopened = row.model_copy(update={
+        "status": SessionStatus.CREATED,
+        "ended_reason": None,
+        "ended_at": None,
+        "cancel_requested": False,
+        "cancel_requested_at": None,
+        "pause_requested": False,
+        "pause_requested_at": None,
+        "interrupt_requested": False,
+        "parked_status": None,
+        "parked_event_key": None,
+        "parked_event_keys": None,
+        "parked_until": None,
+        "parked_at": None,
+        "parked_state": None,
+        "turn_status": "idle",
+        "last_seq": new_seq,
+        "metadata": md,
+    })
+    await sessions.update(reopened)
+    return reopened, invocation
+
+
 async def reset_session(
     *,
     workspace_id: str,
@@ -63,62 +142,19 @@ async def reset_session(
                 f"Session {session_id!r} is not ENDED (status "
                 f"{row.status.value}); reset only re-opens ended sessions."
             )
-        if row.ended_reason not in _RESTARTABLE:
-            raise ConflictError(
-                f"Session {session_id!r} ended as {row.ended_reason!r} and "
-                "cannot be re-opened."
-            )
 
-        invocation = int(row.metadata.get("invocation", 1)) + 1
-
-        # 1. Reopen the on-disk slot (ENDED -> RUNNING; sanctioned exception).
-        ws = await deps.workspace_registry.get_workspace(workspace_id)
-        slot = await ws.get_session(session_id)
-        if slot is not None:
-            await slot.reopen()
-
-        # 2. Append the invocation divider to messages.jsonl, seeded past
-        #    existing history so seqs stay monotonic.
-        writer = WorkspaceMessageWriter(
-            workspace_io=ws, session_id=session_id, start_seq=row.last_seq,
+        reopened, invocation = await _reopen_ended_locked(
+            row=row,
+            workspace_id=workspace_id,
+            session_id=session_id,
+            sessions=sessions,
+            workspace_registry=deps.workspace_registry,
         )
-        new_seq = await writer.append(SessionMessageRecord(
-            seq=1,  # overwritten by the writer's counter
-            kind=SessionMessageKind.INVOCATION_DIVIDER,
-            payload={"invocation": invocation},
-            created_at=datetime.now(timezone.utc),
-        ))
-        await writer.flush()
-
-        # 3. Re-open the scheduler row: ENDED -> CREATED, clear terminal +
-        #    park bookkeeping; bump the invocation counter + last_seq.
-        md = dict(row.metadata)
-        md["invocation"] = invocation
-        reopened = row.model_copy(update={
-            "status": SessionStatus.CREATED,
-            "ended_reason": None,
-            "ended_at": None,
-            "cancel_requested": False,
-            "cancel_requested_at": None,
-            "pause_requested": False,
-            "pause_requested_at": None,
-            "interrupt_requested": False,
-            "parked_status": None,
-            "parked_event_key": None,
-            "parked_event_keys": None,
-            "parked_until": None,
-            "parked_at": None,
-            "parked_state": None,
-            "turn_status": "idle",
-            "last_seq": new_seq,
-            "metadata": md,
-        })
-        await sessions.update(reopened)
 
         if deps.event_bus is not None:
             try:
                 await deps.event_bus.publish(
-                    f"session:{session_id}:tick", {"seq": new_seq}
+                    f"session:{session_id}:tick", {"seq": reopened.last_seq}
                 )
             except Exception:  # noqa: BLE001 -- advisory
                 logger.exception(
@@ -138,7 +174,12 @@ async def restart_session(
     """Reset an ENDED session then invoke it (studio-agents-interact §5.3).
 
     Restart = reset-same-session (§5.2) + auto-wake (§5.1). Works for
-    completed / failed / cancelled sessions.
+    completed / failed / cancelled sessions; a non-ENDED (active) session
+    is rejected by ``reset_session`` with a ConflictError (the restart 409
+    gate). ``reset_session`` moves the row ENDED->CREATED first, so the
+    subsequent ``wake_session`` sees CREATED and merely invokes — its ENDED
+    reopen branch never fires here, so there is exactly one invocation
+    divider (no double-reopen).
     """
     from primer.session.enqueue import wake_session
 
@@ -153,4 +194,9 @@ async def restart_session(
     )
 
 
-__all__ = ["SessionResetDeps", "reset_session", "restart_session"]
+__all__ = [
+    "SessionResetDeps",
+    "_reopen_ended_locked",
+    "reset_session",
+    "restart_session",
+]
