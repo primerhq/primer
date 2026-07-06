@@ -42,7 +42,11 @@ jobs:
   e2e:
     name: e2e (live server)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # The e2e suite runs serially (-n0, shared live server + DB) and has grown
+    # past the old 30-min budget (already borderline on main); --timeout=300
+    # (pyproject addopts) still fails any genuinely-hung test, so a job-level
+    # timeout here only bounds total wall-clock.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
