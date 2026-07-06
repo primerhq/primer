@@ -39,6 +39,23 @@ function SA_short(sid) {
   return sid.slice(0, 10) + "…" + sid.slice(-6);
 }
 
+// Global (this file) -> inline (studio-center.jsx's ST_InlineYields) sync.
+// The four raw-apiFetch handlers below aren't wired through useMutation's
+// `invalidates` option, so a successful respond here only ever refreshed
+// THIS component's own "studio-yields-pending:{wid}" resource (via hide()'s
+// delayed pending.refetch()) — the session-scoped "session-adapter:pending:
+// {sid}" cache SA_useSessionConversation polls for the inline panel was left
+// to catch up on its own 4s poll. Force it immediately, using the exact same
+// findKeys/refetchKey primitive ST_yieldInvalidates' callers (useMutation)
+// use, and the exact same key string SA_useSessionConversation registers
+// (session-adapter.jsx's `"session-adapter:pending:" + sid` resource key).
+function SA_invalidateSessionPending(sessionId) {
+  var resourceApi = window.primerApi && window.primerApi._resource;
+  if (!resourceApi || !sessionId) return;
+  var baseKey = "session-adapter:pending:" + sessionId;
+  resourceApi.findKeys(baseKey).forEach(function(key) { resourceApi.refetchKey(key); });
+}
+
 // ---------------------------------------------------------------------------
 // ActionRequired
 // ---------------------------------------------------------------------------
@@ -135,6 +152,7 @@ function ActionRequired({ wid, studio, onCountChange }) {
       { tool_call_id: item.tool_call_id, decision: "approved" }
     ).then(function() {
       hide(item.tool_call_id);
+      SA_invalidateSessionPending(item.session_id);
     }).catch(function(err) {
       // Surface error inline — stay visible so user can retry
       patchRespond(item.tool_call_id, { error: (err && (err.detail || err.title || err.message)) || "Approve failed" });
@@ -149,6 +167,7 @@ function ActionRequired({ wid, studio, onCountChange }) {
       { tool_call_id: item.tool_call_id, decision: "rejected", reason: "" }
     ).then(function() {
       hide(item.tool_call_id);
+      SA_invalidateSessionPending(item.session_id);
     }).catch(function(err) {
       patchRespond(item.tool_call_id, { error: (err && (err.detail || err.title || err.message)) || "Reject failed" });
     });
@@ -165,6 +184,7 @@ function ActionRequired({ wid, studio, onCountChange }) {
       { tool_call_id: item.tool_call_id, response: rs.draft.trim() }
     ).then(function() {
       hide(item.tool_call_id);
+      SA_invalidateSessionPending(item.session_id);
     }).catch(function(err) {
       patchRespond(item.tool_call_id, { submitting: false, error: (err && (err.detail || err.title || err.message)) || "Respond failed" });
     });
@@ -185,6 +205,7 @@ function ActionRequired({ wid, studio, onCountChange }) {
       { reason: "operator cancelled" }
     ).then(function() {
       hide(item.tool_call_id);
+      SA_invalidateSessionPending(item.session_id);
     }).catch(function(err) {
       patchRespond(item.tool_call_id, { error: (err && (err.detail || err.title || err.message)) || "Cancel failed" });
     });
@@ -585,6 +606,7 @@ function StudioActivity({ wid, studio }) {
         type="button"
         data-testid="debug-sidebar-toggle"
         aria-expanded={collapsed ? "false" : "true"}
+        aria-controls="debug-sidebar-body"
         aria-label={collapsed ? "Expand debug panel" : "Collapse debug panel"}
         title={collapsed ? "Expand debug panel (Action Required + Activity)" : "Collapse debug panel"}
         onClick={toggle}
@@ -629,6 +651,7 @@ function StudioActivity({ wid, studio }) {
       </button>
 
       <div
+        id="debug-sidebar-body"
         data-testid="debug-sidebar-body"
         style={{
           display: collapsed ? "none" : "flex",
