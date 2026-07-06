@@ -93,6 +93,15 @@ def test_debug_sidebar_body_hidden_while_collapsed() -> None:
     assert 'display: collapsed ? "none" : "flex"' in fn
 
 
+def test_debug_sidebar_toggle_has_aria_controls_matching_body_id() -> None:
+    # a11y: the toggle button announces which element it expands/collapses.
+    # aria-controls must reference the ACTUAL id on the body wrapper, not
+    # just a matching-looking string in isolation.
+    fn = _studio_activity_fn_src()
+    assert 'aria-controls="debug-sidebar-body"' in fn
+    assert 'id="debug-sidebar-body"' in fn
+
+
 def test_debug_sidebar_expands_to_action_required_and_workspace_tap() -> None:
     # The body wrapper (hidden while collapsed, per the test above) still
     # contains BOTH the global Action Required list and the reused
@@ -248,6 +257,81 @@ def test_inline_yields_reconciles_via_the_adapters_tap_tail_not_a_second_stream(
     assert "new EventSource" not in fn, "must reuse session-adapter.jsx's existing tap, not open a second one"
     assert 'last.kind !== "yielded" && last.kind !== "resumed"' in fn
     assert "resourceApi.findKeys(baseKey).forEach(function (key) { resourceApi.refetchKey(key); });" in fn
+
+
+# ---------------------------------------------------------------------------
+# The other half of the sync: GLOBAL Action Required (studio-activity.jsx)
+# responding to a yield must invalidate the session-scoped cache immediately
+# too, so the INLINE panel (above) doesn't wait out its 4s poll to notice the
+# yield the global sidebar just cleared.
+# ---------------------------------------------------------------------------
+
+
+def test_action_required_defines_a_session_pending_invalidation_helper() -> None:
+    src = _activity_src()
+    assert "function SA_invalidateSessionPending(sessionId)" in src
+    # Same findKeys/refetchKey primitive ST_yieldInvalidates' useMutation
+    # callers use (studio-center.jsx), not a bespoke mechanism.
+    helper = _fn_block(src, "function SA_invalidateSessionPending(", "function ActionRequired(")
+    assert "window.primerApi && window.primerApi._resource" in helper
+    assert "resourceApi.findKeys(baseKey).forEach(function(key) { resourceApi.refetchKey(key); });" in helper
+
+
+def test_all_four_global_yield_handlers_invalidate_session_scoped_pending() -> None:
+    # approve / reject / respond / cancel — none of them special-cases only
+    # the workspace-wide cache; every write path that clears a yield also
+    # nudges the session-scoped one the inline panel reads.
+    fn = _action_required_fn_src()
+    assert fn.count("SA_invalidateSessionPending(item.session_id);") == 4
+
+
+def test_sa_invalidate_session_pending_uses_the_exact_key_sa_useSessionConversation_registers() -> None:
+    # Load-bearing string match: SA_useSessionConversation (session-adapter.jsx)
+    # registers its pending resource under "session-adapter:pending:" + sid
+    # with useResource's own deps-suffix composition (":: " + JSON deps).
+    # findKeys() only matches on an EXACT key or a "<base>::"-prefixed key, so
+    # SA_invalidateSessionPending must pass that literal base string — a
+    # mismatched key (e.g. missing/extra text) would silently no-op.
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval(
+        """
+        var window = {
+          primerApi: {
+            _resource: {
+              findKeysCalls: [],
+              refetchCalls: [],
+              findKeys: function(base) {
+                window.primerApi._resource.findKeysCalls.push(base);
+                return [base + '::["sess1","ws1"]'];
+              },
+              refetchKey: function(key) {
+                window.primerApi._resource.refetchCalls.push(key);
+              }
+            }
+          }
+        };
+        """
+    )
+    fn_src = _fn_block(_activity_src(), "function SA_invalidateSessionPending(", "function ActionRequired(")
+    ctx.eval(fn_src)
+    ctx.eval('SA_invalidateSessionPending("sess1");')
+    assert ctx.eval("window.primerApi._resource.findKeysCalls[0]") == "session-adapter:pending:sess1"
+    assert ctx.eval("window.primerApi._resource.refetchCalls[0]") == 'session-adapter:pending:sess1::["sess1","ws1"]'
+
+
+def test_sa_invalidate_session_pending_is_a_no_op_without_resource_api_or_session_id() -> None:
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    fn_src = _fn_block(_activity_src(), "function SA_invalidateSessionPending(", "function ActionRequired(")
+    ctx.eval(fn_src)
+    # Must not throw when primerApi/_resource is missing (no window.primerApi
+    # configured yet) or sessionId is falsy.
+    ctx.eval('SA_invalidateSessionPending("sess1");')
+    ctx.eval('SA_invalidateSessionPending(null);')
 
 
 # ---------------------------------------------------------------------------
