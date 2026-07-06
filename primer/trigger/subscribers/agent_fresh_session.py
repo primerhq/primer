@@ -93,6 +93,13 @@ class AgentFreshSessionDispatcher:
                 initial_instructions=rendered_payload,
                 graph_input=None,
                 auto_start=True,
+                # Trigger/webhook-fired agent sessions are one-shot: no
+                # interactive human is driving them, so they must END on a
+                # clean turn. Without this, studio-agents-interact's
+                # interactive-by-default (agent ⇒ interactive) downgrades the
+                # terminal ENDED to WAITING and the session parks forever,
+                # hanging every caller that waits for a terminal state.
+                autonomous=True,
                 metadata={
                     "trigger_id": sub.trigger_id,
                     "subscription_id": sub.id,
