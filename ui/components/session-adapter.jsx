@@ -44,11 +44,17 @@ var SA_KIND_TO_TRANSCRIPT = {
   tool_result: "tool_result",
   graph_transition: "divider",
   invocation_divider: "divider",
-  yielded: "interaction",
-  resumed: "interaction",
-  done: "lifecycle",
-  cancelled: "lifecycle",
-  error: "lifecycle",
+  // Lifecycle rows map to the SAME-named kinds <Transcript>'s Message()
+  // already renders with dedicated styling: yielded/resumed/done as a muted
+  // "· kind" dot, cancelled as a red "■ cancelled" marker, error as an error
+  // banner. Collapsing them into a generic "lifecycle"/"interaction" bucket
+  // (which Message() has no branch for) fell through to the plain agent
+  // bubble and lost that styling.
+  yielded: "yielded",
+  resumed: "resumed",
+  done: "done",
+  cancelled: "cancelled",
+  error: "error",
 };
 
 // Divider label for the two kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
