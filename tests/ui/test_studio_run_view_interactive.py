@@ -279,9 +279,11 @@ def test_session_transcript_rows_flattens_and_coalesces_via_mini_racer() -> None
     # Aliased from the session payload's `output` -> Message()'s `.result`.
     assert ctx.eval("out[3].result") == "contents"
 
-    assert ctx.eval("out[4].kind") == "lifecycle"
-    # No dedicated Message() branch for a collapsed "lifecycle" row; falls
-    # back to a payload field instead of rendering a blank bubble.
+    # A DONE record maps to Message()'s dedicated "done" kind (a muted
+    # "· done" row), not a generic "lifecycle" bubble.
+    assert ctx.eval("out[4].kind") == "done"
+    # The flatten still seeds text from the payload (stop_reason); the "done"
+    # branch renders "· done" and ignores it, so this is harmless.
     assert ctx.eval("out[4].text") == "end_turn"
 
 
