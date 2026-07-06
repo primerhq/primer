@@ -24,25 +24,6 @@
 //   window.Transcript / window.Composer              — chat-refactor
 // Markdown preview reuses window.renderMarkdown; code highlight reuses
 // window.primerVendor.highlightPython.
-//
-// REUSE FRICTION (noted for B6, updated by Task 13): `ST_SessionControls`
-// below (Pause/Resume/Steer/Cancel against the workspace-scoped
-// POST .../sessions/{sid}/{pause|resume|cancel|steer} endpoints) was the
-// pre-Task-13 GRAPH panel's control cluster. Neither run-view panel calls
-// it anymore: the AGENT panel (SessionAgentPanel, Task 12) has its own
-// Stop/End/Restart set over SA_useSessionConversation's stop()/end()/
-// restart(), and the GRAPH panel (SessionGraphPanel, Task 13) now has its
-// own minimal Pause/Cancel/Restart set — Cancel and Restart reuse that
-// SAME adapter's end()/restart() (identical POST .../cancel and
-// .../restart calls the agent panel makes), and Pause is one fresh
-// mutation against the pre-existing POST .../pause endpoint
-// (ST_SessionControls's own pauseMut, copied rather than shared since it
-// was never factored out as a standalone hook). `ST_SessionControls` is
-// left defined-but-unused rather than deleted: it is still exercised by
-// tests/ui/test_studio_run_view_interactive.py's sanity pin (Task 12
-// deliberately asserted the pre-Task-13 graph cluster was untouched by
-// its own change), and by any not-yet-repointed tests/ui_e2e journeys.
-//
 // No-build rules: top-level declarations use `var`; helpers prefixed ST_;
 // every exported symbol is assigned to window.X at the bottom.
 
@@ -176,139 +157,6 @@ function CenterTabs({ openTabs, activeTabId, onFocus, onClose }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// ST_SessionControls — pause/resume · steer · cancel inline control cluster.
-// Re-creates SessionDetail's signal mutations against the same workspace-scoped
-// endpoints (see REUSE FRICTION note at top). Pre-Task-13 this was the graph
-// panel's header cluster; SessionGraphPanel now has its own minimal
-// Pause/Cancel/Restart set instead (see that function), so nothing in this
-// file calls ST_SessionControls anymore — left defined for the reasons in
-// the REUSE FRICTION note (not deleted).
-// ---------------------------------------------------------------------------
-
-function ST_SessionControls({ wid, sid, session, pushToast }) {
-  var { useMutation, apiFetch } = window.primerApi;
-  var [steerOpen, setSteerOpen] = React.useState(false);
-  var [steerText, setSteerText] = React.useState("");
-
-  var status = session && session.status;
-  var isTerminal = !!(session && window.SESSION_TERMINAL && window.SESSION_TERMINAL.has(status));
-
-  function toastErr(title) {
-    return function (err) {
-      if (typeof pushToast !== "function") return;
-      pushToast({
-        kind: "error",
-        title: (err && err.title) || title,
-        detail: (err && err.detail) || (err && err.message),
-        requestId: err && err.requestId,
-      });
-    };
-  }
-
-  var invalidates = ["studio-session:" + sid, "session-detail:" + sid, "sessions:list"];
-
-  var pauseMut = useMutation(
-    function () { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/pause"); },
-    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Session paused" }); }, onError: toastErr("Pause failed") }
-  );
-  var resumeMut = useMutation(
-    function () { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/resume"); },
-    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Resume signal sent" }); }, onError: toastErr("Resume failed") }
-  );
-  var cancelMut = useMutation(
-    function () { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/cancel"); },
-    { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "warning", title: "Cancel signal sent" }); }, onError: toastErr("Cancel failed") }
-  );
-  var steerMut = useMutation(
-    function (instruction) { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/steer", { instruction: instruction }); },
-    {
-      invalidates: invalidates,
-      onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Steer queued" }); setSteerText(""); setSteerOpen(false); },
-      onError: toastErr("Steer failed"),
-    }
-  );
-
-  function submitSteer() {
-    var text = steerText.trim();
-    if (!text || !wid) return;
-    steerMut.mutate(text);
-  }
-
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, position: "relative" }} data-testid="session-controls">
-      <Btn
-        size="sm"
-        icon="pause"
-        disabled={!wid || status !== "running" || pauseMut.loading}
-        onClick={function () { if (wid) pauseMut.mutate(); }}
-        data-testid="ctrl-pause"
-        title={status !== "running" ? "Enabled only when running" : "Pause after current turn"}
-      >Pause</Btn>
-      <Btn
-        size="sm"
-        icon="play"
-        disabled={!wid || isTerminal || resumeMut.loading}
-        onClick={function () { if (wid) resumeMut.mutate(); }}
-        data-testid="ctrl-resume"
-        title="Resume (idempotent)"
-      >Resume</Btn>
-      <Btn
-        size="sm"
-        icon="send"
-        disabled={!wid || isTerminal}
-        onClick={function () { setSteerOpen(function (o) { return !o; }); }}
-        data-testid="ctrl-steer"
-        title="Queue a steer instruction"
-      >Steer</Btn>
-      <Btn
-        size="sm"
-        kind="danger"
-        icon="stop"
-        disabled={!wid || isTerminal || cancelMut.loading}
-        onClick={function () { if (wid) cancelMut.mutate(); }}
-        data-testid="ctrl-cancel"
-        title="Cancel the run"
-      >Cancel</Btn>
-
-      {steerOpen && (
-        <div
-          style={{
-            position: "absolute",
-            top: 30,
-            right: 0,
-            zIndex: 30,
-            width: 320,
-            background: "var(--bg-elev)",
-            border: "1px solid var(--border-strong)",
-            borderRadius: 9,
-            boxShadow: "var(--shadow)",
-            padding: 10,
-          }}
-          data-testid="steer-popover"
-        >
-          <textarea
-            placeholder="Drop a hint or directive for the next turn…"
-            value={steerText}
-            onChange={function (e) { setSteerText(e.target.value); }}
-            rows={3}
-            autoFocus
-            style={{
-              width: "100%", padding: "6px 8px", fontSize: 12, background: "var(--bg-2)",
-              border: "1px solid var(--border)", borderRadius: 6, color: "var(--text)",
-              resize: "none", fontFamily: "IBM Plex Mono, monospace", outline: "none", marginBottom: 8,
-            }}
-          />
-          <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
-            <Btn size="sm" kind="ghost" onClick={function () { setSteerOpen(false); }}>Cancel</Btn>
-            <Btn size="sm" kind="primary" icon="send" disabled={!steerText.trim() || steerMut.loading} onClick={submitSteer}>Queue</Btn>
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -682,7 +530,7 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
   // panel's End/Restart hit — so the network wiring isn't duplicated.
   // Pause has no adapter equivalent (its interface is Stop/End/Restart
   // only), so it is the one fresh mutation here, against the same
-  // workspace-scoped POST .../pause the pre-Task-13 ST_SessionControls
+  // workspace-scoped POST .../pause the pre-Task-13 graph cluster
   // used (reused endpoint, not a new one).
   var pauseMut = useMutation(
     function () { return apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/" + encodeURIComponent(sid) + "/pause"); },
