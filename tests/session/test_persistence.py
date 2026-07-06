@@ -246,6 +246,48 @@ def test_translate_tool_call_end_flushes_text_buffer() -> None:
     assert result[1].kind == SessionMessageKind.TOOL_CALL
 
 
+def test_translate_tool_call_carries_name_from_start() -> None:
+    """ToolCallStart records the tool name (which ToolCallEnd lacks) so the
+    paired TOOL_CALL record persists it, id-keyed, instead of leaving the UI
+    to fall back to the generic "tool" label."""
+    from primer.model.chat import ToolCallEnd, ToolCallStart
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    # Start carries the name but produces no record of its own.
+    assert (
+        translate_stream_event(
+            ToolCallStart(id="tc9", name="fs__write", index=0), state
+        )
+        is None
+    )
+    rec = translate_stream_event(
+        ToolCallEnd(id="tc9", arguments={"path": "x"}, index=0), state
+    )
+    assert isinstance(rec, SessionMessageRecord)
+    assert rec.kind == SessionMessageKind.TOOL_CALL
+    assert rec.payload.get("id") == "tc9"
+    assert rec.payload.get("name") == "fs__write"
+    assert rec.payload.get("arguments") == {"path": "x"}
+    # Consumed on End — the map doesn't accumulate dead keys.
+    assert "tc9" not in state.tool_names
+
+
+def test_translate_tool_call_end_without_start_has_null_name() -> None:
+    """A ToolCallEnd with no preceding ToolCallStart (name unknown) still
+    emits a TOOL_CALL record; name is None and the UI falls back to "tool"."""
+    from primer.model.chat import ToolCallEnd
+    from primer.session.persistence import _CoalesceState, translate_stream_event
+
+    state = _CoalesceState()
+    rec = translate_stream_event(
+        ToolCallEnd(id="tc-orphan", arguments={}, index=0), state
+    )
+    assert isinstance(rec, SessionMessageRecord)
+    assert rec.kind == SessionMessageKind.TOOL_CALL
+    assert rec.payload.get("name") is None
+
+
 def test_translate_executor_tool_result() -> None:
     """ExtendedEvent wrapping _ExecutorToolResult emits a TOOL_RESULT record."""
     from primer.model.chat import ExtendedEvent, _ExecutorToolResult
