@@ -246,7 +246,8 @@ def test_session_transcript_rows_flattens_and_coalesces_via_mini_racer() -> None
           {seq: 2, kind: "assistant_token", payload: {text: "Hel"}, created_at: "t2", node_id: null},
           {seq: 3, kind: "assistant_token", payload: {text: "lo!"}, created_at: "t3", node_id: null},
           {seq: 4, kind: "tool_call",
-           payload: {id: "call-1", arguments: {path: "a.txt"}}, created_at: "t4", node_id: null},
+           payload: {id: "call-1", name: "fs__write", arguments: {path: "a.txt"}},
+           created_at: "t4", node_id: null},
           {seq: 5, kind: "tool_result",
            payload: {call_id: "call-1", output: "contents", error: null}, created_at: "t5", node_id: null},
           {seq: 6, kind: "done", payload: {stop_reason: "end_turn"}, created_at: "t6", node_id: null},
@@ -267,6 +268,10 @@ def test_session_transcript_rows_flattens_and_coalesces_via_mini_racer() -> None
 
     assert ctx.eval("out[2].kind") == "tool_call"
     assert ctx.eval("out[2].id") == "call-1"
+    # The persisted tool name (primer/session/persistence.py TOOL_CALL payload)
+    # flattens onto the top-level `name` Message() reads (m.name || m.tool_name
+    # || "tool"), so the row shows the real tool instead of the generic "tool".
+    assert ctx.eval("out[2].name") == "fs__write"
 
     assert ctx.eval("out[3].kind") == "tool_result"
     # Aliased so <Transcript> pairs tool_call<->tool_result by `.id`.
