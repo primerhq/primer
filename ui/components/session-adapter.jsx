@@ -263,10 +263,13 @@ function SA_useSessionConversation(opts) {
     };
 
     es.onerror = function () {
-      // EventSource reconnects natively via Last-Event-ID; the browser
-      // flips readyState back to CONNECTING for us, so mirror that here
-      // rather than parking on a stale "open" pill.
-      setWsState("connecting");
+      // EventSource reconnects natively via Last-Event-ID; while it is
+      // retrying the browser holds readyState at CONNECTING, so mirror that
+      // rather than parking on a stale "open" pill. But once it gives up for
+      // good (readyState === 2 / CLOSED) no reconnect is coming — surface a
+      // terminal "closed" state so <Transcript>'s pill shows a non-transient
+      // failure ("offline") instead of an indefinite "connecting".
+      setWsState(es.readyState === 2 ? "closed" : "connecting");
     };
 
     return function () { try { es.close(); } catch (_e) { /* no-op */ } };
