@@ -2564,21 +2564,18 @@ async def test_t0398_session_cancel_while_paused_converges_to_terminal(
 async def test_t0399_session_steer_after_terminal_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0399 — Spec §11 line 493 documents steer as "Does NOT gate on
-    session status — instructions can be queued on a CREATED, PAUSED,
-    or RUNNING session". ENDED is not in that list. Meanwhile
-    primer/workspace/session.py:352 raises ConflictError on ENDED.
-    There's a known stale-cache between the two: the WorkspaceRegistry
-    holds an in-memory Session view whose `_info.status` doesn't
-    refresh from storage right after cancel, so the 200/409 outcome
-    depends on cache state.
+    """T0399 — Sending a message (steer) to an ENDED but *restartable*
+    session REOPENS it as a fresh invocation (studio-agents-interact
+    §5.1): every clean agent turn ends the session, and a new message
+    to an ended session restarts it rather than 409-ing.
 
-    Hard contract pinned here: never 5xx, never /errors/internal,
-    and the session row stays in the terminal ENDED state regardless
-    of which path the steer takes (no flapping). Status code may be
-    200 (succeeded against stale view) or 409 (rejected against
-    refreshed view) — both are acceptable until the cache drift is
-    resolved.
+    Contract pinned here: after cancel drives the session to
+    ENDED/cancelled, a steer returns 200, the row is reopened (status
+    running under a bumped invocation, ended bookkeeping cleared), and
+    an INVOCATION_DIVIDER is appended to the recorded message log. The
+    reopen is durable: the bumped invocation survives even if the
+    freshly-invoked turn later ends again (e.g. fails against the
+    placeholder credentials). Never 5xx, never /errors/internal.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     workspace_id: str | None = None
@@ -2587,35 +2584,45 @@ async def test_t0399_session_steer_after_terminal_clean_envelope(
             client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
         )
 
-        # Drive the session to ENDED via cancel
+        # Drive the session to ENDED via cancel (CREATED → ENDED/cancelled)
         cancel = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
         )
         assert cancel.status_code == 200, cancel.text
         assert cancel.json()["status"] == "ended", cancel.json()
+        assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
 
-        # Steer on the now-ended session
+        # Steer on the now-ended session REOPENS it as a fresh invocation
         steer = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
             json={"instruction": "post-terminal-steer"},
         )
-        # Hard pin: never 5xx
-        assert steer.status_code < 500, steer.text
-        # Permissive: 200 (stale-cache let it through) or 4xx
-        assert steer.status_code == 200 or 400 <= steer.status_code < 500, (
-            f"unexpected status: {steer.status_code}: {steer.text}"
-        )
-        if steer.status_code >= 400:
-            envelope = steer.json()
-            assert envelope.get("type", "").startswith("/errors/"), envelope
-            assert envelope.get("type") != "/errors/internal", envelope
+        assert steer.status_code == 200, steer.text
+        reopened = steer.json()
+        # Reopened: back to running under a new invocation, ended
+        # bookkeeping cleared (no longer the terminal cancelled no-op).
+        assert reopened["status"] == "running", reopened
+        assert reopened.get("ended_reason") is None, reopened
+        assert reopened["metadata"].get("invocation") == 2, reopened
 
-        # Defence: session row remains in ENDED state (no flapping back
-        # to RUNNING/PAUSED no matter which steer outcome).
+        # The reopen wrote an INVOCATION_DIVIDER to the recorded log.
+        msgs = await client.get(f"/v1/sessions/{session_id}/messages")
+        assert msgs.status_code == 200, msgs.text
+        kinds = [it.get("kind") for it in msgs.json()["items"]]
+        assert "invocation_divider" in kinds, kinds
+
+        # Durable: the bumped invocation persists even if the fresh turn
+        # later ends again — it never flaps back to the pre-reopen
+        # cancelled no-op. (A brand-new invocation ends under its own
+        # reason, never the stale pre-reopen 'cancelled'.)
         after = await client.get(f"/v1/sessions/{session_id}")
         assert after.status_code == 200, after.text
-        assert after.json()["status"] == "ended", after.json()
-        assert after.json()["ended_reason"] == "cancelled", after.json()
+        after_body = after.json()
+        assert after_body["metadata"].get("invocation") == 2, after_body
+        assert not (
+            after_body["status"] == "ended"
+            and after_body["ended_reason"] == "cancelled"
+        ), after_body
     finally:
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
@@ -3318,22 +3325,18 @@ async def test_t0433_top_level_get_reflects_fatal_ended_reason(
 async def test_t0441_session_pause_then_cancel_then_steer_clean(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0441 — Sibling of T0399 (cancel→steer where steer 200s due
-    to stale in-memory Session view). T0441 walks pause→cancel→steer:
+    """T0441 — Sibling of T0399 across pause→cancel→steer. A steer on an
+    ENDED (restartable) session reopens it as a fresh invocation
+    (studio-agents-interact §5.1), regardless of whether the session
+    reached ENDED directly or via PAUSED:
 
       1. CREATED → pause (204) → PAUSED
       2. PAUSED → cancel (200) → ENDED/cancelled
-      3. ENDED → steer
+      3. ENDED → steer (200) → reopened (running, invocation bumped,
+         INVOCATION_DIVIDER appended)
 
-    Two cache layers are at play here:
-      - sessions_storage (the row): definitely ENDED after step 2
-      - WorkspaceRegistry's in-memory AgentSession (`_info.status`):
-        may still show PAUSED (stale) until refreshed
-
-    Hard pin: never 5xx, never `/errors/internal`, and the row
-    persisted in storage stays ENDED/cancelled regardless of which
-    code path the steer takes (200 stale-cache, or 409 fresh-view).
-    Subsequent reads must show the terminal state — no flapping.
+    Hard pin: never 5xx, never `/errors/internal`. The bumped
+    invocation is durable across the freshly-invoked turn re-ending.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     workspace_id: str | None = None
@@ -3348,8 +3351,8 @@ async def test_t0441_session_pause_then_cancel_then_steer_clean(
         )
         assert pause.status_code == 204, pause.text
 
-        # 2. cancel from PAUSED (sessions.py:287-296 transitions
-        # PAUSED → ENDED directly)
+        # 2. cancel from PAUSED (sessions.py transitions PAUSED → ENDED
+        # directly)
         cancel = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
         )
@@ -3357,27 +3360,33 @@ async def test_t0441_session_pause_then_cancel_then_steer_clean(
         assert cancel.json()["status"] == "ended", cancel.json()
         assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
 
-        # 3. steer on ENDED — pin no 5xx, accept 200 (stale-cache
-        # let it through, T0399 sibling) or 409 (fresh view rejected)
+        # 3. steer on ENDED — reopens it as a fresh invocation
         steer = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
             json={"instruction": "post-pause-cancel-steer"},
         )
-        assert steer.status_code < 500, steer.text
-        assert steer.status_code == 200 or 400 <= steer.status_code < 500, (
-            f"unexpected steer status: {steer.status_code}: {steer.text}"
-        )
-        if steer.status_code >= 400:
-            envelope = steer.json()
-            assert envelope.get("type", "").startswith("/errors/"), envelope
-            assert envelope.get("type") != "/errors/internal", envelope
+        assert steer.status_code == 200, steer.text
+        reopened = steer.json()
+        assert reopened["status"] == "running", reopened
+        assert reopened.get("ended_reason") is None, reopened
+        assert reopened["metadata"].get("invocation") == 2, reopened
 
-        # Defence: row stays ENDED/cancelled (no flapping) regardless
-        # of which steer outcome
+        # The reopen wrote an INVOCATION_DIVIDER to the recorded log.
+        msgs = await client.get(f"/v1/sessions/{session_id}/messages")
+        assert msgs.status_code == 200, msgs.text
+        kinds = [it.get("kind") for it in msgs.json()["items"]]
+        assert "invocation_divider" in kinds, kinds
+
+        # Durable: the bumped invocation persists even if the fresh turn
+        # re-ends; it never flaps back to the pre-reopen cancelled no-op.
         after = await client.get(f"/v1/sessions/{session_id}")
         assert after.status_code == 200, after.text
-        assert after.json()["status"] == "ended", after.json()
-        assert after.json()["ended_reason"] == "cancelled", after.json()
+        after_body = after.json()
+        assert after_body["metadata"].get("invocation") == 2, after_body
+        assert not (
+            after_body["status"] == "ended"
+            and after_body["ended_reason"] == "cancelled"
+        ), after_body
     finally:
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
@@ -4177,19 +4186,20 @@ async def test_t0593_steer_on_graph_session_before_fatal_turn(
 async def test_t0610_cancel_then_steer_then_pause_on_ended_session(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0610 — Extends T0399 (cancel→steer) with a trailing pause.
-    The full sequence stresses the post-terminal stale-cache window:
+    """T0610 — Extends T0399 (cancel→steer reopens) with a trailing
+    pause on the *reopened* session. The steer reopens the ENDED
+    session as a fresh invocation (running); the following pause then
+    acts on that live session, not on a terminal one:
 
         1. cancel from CREATED → ENDED/cancelled (200)
-        2. steer on ENDED → 200 (stale-cache let it through) OR 409
-           (refreshed view rejected); never /errors/internal.
-        3. pause on ENDED → 204 (idempotent for terminal) OR 4xx;
-           never /errors/internal, never flap session back to PAUSED.
+        2. steer on ENDED → 200, reopened (running, invocation bumped,
+           INVOCATION_DIVIDER appended); never /errors/internal.
+        3. pause on the reopened session → clean documented envelope
+           (204 queued / 200 / documented 4xx); never /errors/internal.
 
-    Hard pin: at every step, no 5xx, no /errors/internal, and the
-    session row stays in ENDED/cancelled for the duration. Catches a
-    regression where the second signal after the steer (the pause)
-    re-introduces the stale-cache divergence T0399 / T0555 documented.
+    Hard pin: at every step, no 5xx, no /errors/internal. The reopen is
+    durable — the bumped invocation survives the trailing pause and any
+    re-ending of the fresh turn.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     workspace_id: str | None = None
@@ -4206,7 +4216,7 @@ async def test_t0610_cancel_then_steer_then_pause_on_ended_session(
         assert cancel.json()["status"] == "ended", cancel.json()
         assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
 
-        # 2. Steer on the now-ended session
+        # 2. Steer on the now-ended session REOPENS it
         steer = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
             json={"instruction": "post-terminal-steer-then-pause"},
@@ -4215,43 +4225,47 @@ async def test_t0610_cancel_then_steer_then_pause_on_ended_session(
         assert envelope.get("type") != "/errors/internal", (
             f"steer on ENDED leaked /errors/internal: {steer.text}"
         )
-        assert steer.status_code < 500, (
-            f"steer on ENDED returned 5xx: "
-            f"{steer.status_code}: {steer.text}"
-        )
+        assert steer.status_code == 200, steer.text
+        reopened = steer.json()
+        assert reopened["status"] == "running", reopened
+        assert reopened["metadata"].get("invocation") == 2, reopened
 
-        # Session row still ENDED after the steer
+        # The reopen wrote an INVOCATION_DIVIDER to the recorded log.
+        msgs = await client.get(f"/v1/sessions/{session_id}/messages")
+        assert msgs.status_code == 200, msgs.text
+        kinds = [it.get("kind") for it in msgs.json()["items"]]
+        assert "invocation_divider" in kinds, kinds
+
+        # Session reopened (not the ENDED no-op) after the steer.
         mid = await client.get(f"/v1/sessions/{session_id}")
         assert mid.status_code == 200, mid.text
-        assert mid.json()["status"] == "ended", mid.json()
-        assert mid.json()["ended_reason"] == "cancelled", mid.json()
+        assert mid.json()["metadata"].get("invocation") == 2, mid.json()
 
-        # 3. Pause on the ENDED session — the new addition vs T0399
+        # 3. Pause on the reopened session — the new addition vs T0399
         pause = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/pause",
         )
         pause_env = pause.json() if pause.content else {}
         assert pause_env.get("type") != "/errors/internal", (
-            f"pause on ENDED leaked /errors/internal: {pause.text}"
+            f"pause on reopened session leaked /errors/internal: {pause.text}"
         )
         assert pause.status_code < 500, (
-            f"pause on ENDED returned 5xx: "
+            f"pause on reopened session returned 5xx: "
             f"{pause.status_code}: {pause.text}"
         )
-        # Documented behaviour: 204 (idempotent) or 4xx (rejected
-        # because terminal). Never 200 with status flapping.
+        # Documented behaviour on the reopened (live or re-ended) session:
+        # 204 (queued/paused) or a clean documented code.
         assert pause.status_code in (200, 204, 400, 404, 409, 422), (
-            f"pause on ENDED unexpected status: "
+            f"pause on reopened session unexpected status: "
             f"{pause.status_code}: {pause.text}"
         )
 
-        # Final defence: row STILL ENDED/cancelled. No flapping back
-        # to PAUSED, no ended_reason mutation, no clearing of ended_at.
+        # Final defence: the reopen is durable — the bumped invocation
+        # survives the trailing pause (never flaps back to the pre-reopen
+        # cancelled no-op).
         after = await client.get(f"/v1/sessions/{session_id}")
         assert after.status_code == 200, after.text
-        assert after.json()["status"] == "ended", after.json()
-        assert after.json()["ended_reason"] == "cancelled", after.json()
-        assert after.json().get("ended_at") is not None, after.json()
+        assert after.json()["metadata"].get("invocation") == 2, after.json()
     finally:
         if workspace_id is not None:
             await client.delete(f"/v1/workspaces/{workspace_id}")
@@ -4572,21 +4586,23 @@ async def test_t0634_predicate_eq_bool_on_cancel_requested(
 async def test_t0611_nested_vs_toplevel_get_after_steer_then_cancel(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0611 — Sister of T0555 for the steer-then-cancel sequence
-    (T0555 covers cancel-then-steer-then-cancel). Spec §12 documents
-    the nested handler reads in-memory `AgentSession` while top-level
-    reads storage; the two can diverge on cancel.
+    """T0611 — Sister of T0555 for the steer-then-cancel sequence.
+    A steer on a CREATED session now INVOKES it (studio-agents-interact
+    §5.1: a message to a created session starts its turn → RUNNING), so
+    the following cancel is a hard-cancel of a live turn that converges
+    to ENDED asynchronously. Spec §12: the nested handler reads the
+    in-memory `AgentSession` while top-level reads storage; the two can
+    diverge on cancel.
 
     Sequence:
         1. Create CREATED agent-bound session
-        2. Steer (queue an instruction)
-        3. Cancel → ENDED/cancelled
+        2. Steer → invoke (RUNNING)
+        3. Cancel → 200; converges to ENDED (poll if async)
         4. Compare nested GET vs top-level GET
 
-    Hard pin: both responses must be 200, neither leaks
-    /errors/internal, and top-level shows ended/cancelled. Nested
-    may be stale (created/running/ended) but never a contradictory
-    non-status value.
+    Hard pin: both GETs 200, neither leaks /errors/internal, top-level
+    converges to ended. Nested may be stale (created/running/ended) but
+    never a contradictory non-status value.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     workspace_id: str | None = None
@@ -4595,7 +4611,7 @@ async def test_t0611_nested_vs_toplevel_get_after_steer_then_cancel(
             client, tpl_id=env["tpl_id"], agent_id=env["agent_id"],
         )
 
-        # 1+2. Steer first (CREATED state)
+        # 1+2. Steer on CREATED invokes the session (→ running)
         steer = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/steer",
             json={"instruction": "T0611 steer-before-cancel"},
@@ -4604,13 +4620,21 @@ async def test_t0611_nested_vs_toplevel_get_after_steer_then_cancel(
         envelope = steer.json() if steer.content else {}
         assert envelope.get("type") != "/errors/internal", steer.text
 
-        # 3. Cancel
+        # 3. Cancel — the steer left the session RUNNING, so cancel is a
+        # hard-cancel signal that may converge asynchronously.
         cancel = await client.post(
             f"/v1/workspaces/{workspace_id}/sessions/{session_id}/cancel",
         )
+        cancel_env = cancel.json() if cancel.content else {}
+        assert cancel_env.get("type") != "/errors/internal", cancel.text
         assert cancel.status_code == 200, cancel.text
-        assert cancel.json()["status"] == "ended", cancel.json()
-        assert cancel.json()["ended_reason"] == "cancelled", cancel.json()
+        if cancel.json().get("status") != "ended":
+            # Async cancel: poll until ended (30s budget)
+            for _ in range(60):
+                r = await client.get(f"/v1/sessions/{session_id}")
+                if r.status_code == 200 and r.json().get("status") == "ended":
+                    break
+                await asyncio.sleep(0.5)
 
         # 4. Top-level GET reads storage — authoritative
         top = await client.get(f"/v1/sessions/{session_id}")
@@ -4619,7 +4643,10 @@ async def test_t0611_nested_vs_toplevel_get_after_steer_then_cancel(
         assert top.status_code == 200, top.text
         top_body = top.json()
         assert top_body["status"] == "ended", top_body
-        assert top_body["ended_reason"] == "cancelled", top_body
+        # ended_reason may be 'cancelled' (cancel landed) OR 'failed'
+        # (the invoked turn failed against placeholder creds before the
+        # cancel converged) — both are clean terminal ends.
+        assert top_body["ended_reason"] in ("cancelled", "failed"), top_body
         assert top_body.get("ended_at") is not None, top_body
 
         # Nested GET reads in-memory AgentSession — may be stale
