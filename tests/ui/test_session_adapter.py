@@ -54,11 +54,14 @@ def test_kind_mapping_table_matches_the_locked_contract() -> None:
         "tool_result": "tool_result",
         "graph_transition": "divider",
         "invocation_divider": "divider",
-        "yielded": "interaction",
-        "resumed": "interaction",
-        "done": "lifecycle",
-        "cancelled": "lifecycle",
-        "error": "lifecycle",
+        # Lifecycle rows map to the same-named kinds Message() styles directly
+        # (not a collapsed "lifecycle"/"interaction" bucket, which has no
+        # Message() branch and renders as a generic agent bubble).
+        "yielded": "yielded",
+        "resumed": "resumed",
+        "done": "done",
+        "cancelled": "cancelled",
+        "error": "error",
     }
     for kind, transcript_kind in expected.items():
         assert f'{kind}: "{transcript_kind}"' in src, (
@@ -150,4 +153,6 @@ def test_sa_to_transcript_maps_records_via_mini_racer() -> None:
     assert ctx.eval("out[1].nodeId") == "n1"
     assert ctx.eval("out[2].kind") == "divider"
     assert ctx.eval("out[2].label") == "— invocation 3 —"
-    assert ctx.eval("out[3].kind") == "lifecycle"
+    # A DONE record maps to Message()'s own "done" kind (muted "· done" row),
+    # not a generic "lifecycle" bucket.
+    assert ctx.eval("out[3].kind") == "done"
