@@ -203,9 +203,14 @@ async def test_chat_agent_switch_changes_responder(
         items = await _messages(client, cid)
         markers = [it for it in items if it.get("kind") == "agent_marker"]
         assert len(markers) == 1, f"expected exactly one agent_marker; got {items}"
-        assert markers[0]["marker"] == "switch", markers[0]
-        assert markers[0]["agent_id"] == agent_b["agent_id"], markers[0]
-        assert markers[0]["from_agent_id"] == agent_a["agent_id"], markers[0]
+        # ChatMessage rows serialize the kind-specific fields under the
+        # nested `payload` blob (same shape as assistant_token deltas,
+        # read via _delta_texts). append_agent_marker writes
+        # payload={"marker", "agent_id", "from_agent_id"}.
+        marker_payload = markers[0]["payload"]
+        assert marker_payload["marker"] == "switch", markers[0]
+        assert marker_payload["agent_id"] == agent_b["agent_id"], markers[0]
+        assert marker_payload["from_agent_id"] == agent_a["agent_id"], markers[0]
 
         # ----- 4. Next turn: agent-B now answers ---------------------
         await _send_user_message(client, cid, "And now who are you?")
