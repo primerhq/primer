@@ -170,8 +170,10 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
     ST_SessionControls cluster is defined but never mounted by
     SessionAgentPanel). Per session-adapter.jsx, resuming a CREATED
     session is now "send a message via the Composer" — the SAME
-    POST .../steer call auto-wakes a CREATED/PAUSED/WAITING session
-    (session/enqueue.py's wake_session, "one input, three behaviours").
+    POST .../steer call auto-wakes a CREATED/PAUSED/WAITING/ENDED session
+    (session/enqueue.py's wake_session, "one input, four behaviours" —
+    every clean turn now ends the session, and a follow-up message
+    restarts an ENDED one in place instead of erroring).
 
     We tolerate the session reaching terminal (ended/failed) at any
     point — the LLM provider points at a closed port so the worker's

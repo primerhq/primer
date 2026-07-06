@@ -346,13 +346,16 @@ def test_u0067_resume_re_toasts_on_repeat_click(
     Resume control anymore (studio-center.jsx's retired
     ST_SessionControls cluster is defined but never mounted by
     SessionAgentPanel). Per session-adapter.jsx's SA_useSessionConversation
-    comment, "one input, three behaviours": a Composer send to a CREATED
-    session invokes it, to RUNNING/WAITING it steers, and to PAUSED it
-    resumes — always the SAME idempotent POST .../steer call
+    comment, "one input, four behaviours": a Composer send to a CREATED
+    session invokes it, to RUNNING/WAITING it steers, to PAUSED it
+    resumes, and to an ENDED session it restarts it in place (every clean
+    turn now ends the session, so this is the common follow-up case, not
+    an edge case) — always the SAME idempotent POST .../steer call
     (session/enqueue.py's wake_session). Sending a message now covers
     what a Resume click used to gate: repeating the (idempotent) send
     must never surface an error toast even as the session's status moves
-    out from under it.
+    out from under it (including all the way to ENDED, since the Composer
+    stays enabled there too now).
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:

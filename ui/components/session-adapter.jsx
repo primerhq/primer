@@ -281,12 +281,19 @@ function SA_useSessionConversation(opts) {
     return function () { try { es.close(); } catch (_e) { /* no-op */ } };
   }, [wid, sid, historyLoaded, status]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // sendMessage/stop/end/restart — one input, three behaviours (§5.1): a
+  // sendMessage/stop/end/restart — one input, four behaviours (§5.1): a
   // message to a CREATED session invokes it, to RUNNING/WAITING it steers,
-  // to PAUSED it resumes (all auto-wake, server-side). Stop preempts the
-  // turn but keeps the session alive; End hard-cancels it. Restart (Task
-  // 12 addition — not part of Task 11's original interface) re-opens an
-  // ENDED session and invokes it (studio-agents-interact §5.3).
+  // to PAUSED it resumes, and to an ENDED session it restarts it in place
+  // (reopen + invocation divider, then run) — all the SAME idempotent
+  // POST .../steer call, all auto-wake, server-side (primer/session/
+  // enqueue.py's wake_session). Every clean turn now ends the session, so
+  // sending a follow-up to an ENDED session is the common case, not an
+  // edge case — this is why the Composer must stay enabled when ended
+  // (studio-center.jsx). Stop preempts the turn but keeps the session
+  // alive; End hard-cancels it. The explicit Restart control (Task 12
+  // addition — not part of Task 11's original interface) is a separate,
+  // no-message re-open+invoke via POST .../restart (studio-agents-interact
+  // §5.3).
   var sendMessage = React.useCallback(function (text) {
     if (!wid || !sid) return Promise.reject(new Error("sendMessage: wid and sid are required"));
     return apiFetch(
