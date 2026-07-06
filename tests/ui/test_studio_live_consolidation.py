@@ -144,8 +144,16 @@ def test_interrupt_button_removed_from_embedded_stream() -> None:
 
 
 def test_session_controls_still_owned_by_panel_header() -> None:
+    # The session-panel redesign (Task 13) replaced the single
+    # ST_SessionControls cluster with per-panel header controls: the
+    # interactive agent panel owns End/Restart (Stop lives in <Composer>),
+    # the autonomous graph panel owns Pause/Cancel/Restart. There is no
+    # Resume or Steer control in either — steering/resuming a session is
+    # done by sending it a message. Either way, the embedded
+    # SessionLiveStream stays pure content (checked above) and every
+    # control lives in one of these two panel headers, never inline.
     src = _read(CENTER)
-    for testid in ("ctrl-pause", "ctrl-resume", "ctrl-steer", "ctrl-cancel"):
+    for testid in ("ctrl-end", "ctrl-restart", "ctrl-pause", "ctrl-cancel"):
         assert f'data-testid="{testid}"' in src
 
 
