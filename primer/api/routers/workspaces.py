@@ -848,10 +848,11 @@ async def steer_session(
 ) -> WorkspaceSession:
     """Send a user message to a session and auto-wake it.
 
-    One input, three behaviours (studio-agents-interact §5.1): a message to
+    One input, four behaviours (studio-agents-interact §5.1): a message to
     a CREATED session invokes it; to a RUNNING/WAITING session it queues as
-    the next turn (steer); to a PAUSED session it resumes. 409 when the
-    session has ENDED — restart it first.
+    the next turn (steer); to a PAUSED session it resumes; to an ENDED
+    session it reopens it as a fresh invocation (divider + run). 409 only
+    when an ENDED session is non-restartable (workspace_lost/force_deleted).
     """
     from primer.session.enqueue import SessionWakeDeps, wake_session
 
