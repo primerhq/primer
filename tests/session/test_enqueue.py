@@ -35,9 +35,13 @@ class _FakeSP:
 class _FakeSlot:
     def __init__(self):
         self.appended = []
+        self.reopened = False
 
     async def append_instruction(self, content):
         self.appended.append(content)
+
+    async def reopen(self):
+        self.reopened = True
 
 
 class _FakeWorkspace:
@@ -146,15 +150,65 @@ async def test_paused_session_resumes_and_clears_pause():
     assert sched.enqueued == ["sess-1"]
 
 
+def _decode_records(ws):
+    """Decode the messages.jsonl records the writer appended to the fake ws."""
+    import json
+
+    records = []
+    for blob in ws.message_lines:
+        for line in blob.decode().splitlines():
+            if line.strip():
+                records.append(json.loads(line))
+    return records
+
+
 @pytest.mark.asyncio
-async def test_ended_session_raises_conflict():
+async def test_ended_restartable_session_reopens_and_runs():
+    """A NEW message to an ENDED (restartable) session reopens it: reopen the
+    slot, write an INVOCATION_DIVIDER (bumped invocation), then the normal
+    wake flow appends the USER_INPUT (after the divider) and runs the turn."""
     row = _row(SessionStatus.ENDED)
-    deps, *_ = _deps(row)
+    row.ended_reason = "completed"
+    deps, slot, sched, eng = _deps(row)
+    ws = deps.workspace_registry._ws
+
+    out = await wake_session(
+        workspace_id="ws-1", session_id="sess-1",
+        instruction="again", deps=deps,
+    )
+
+    assert out.status == SessionStatus.RUNNING
+    assert out.turn_status == "claimable"
+    assert out.ended_reason is None
+    assert out.metadata["invocation"] == 2
+    assert slot.reopened is True
+    assert slot.appended == ["again"]
+    assert sched.enqueued == ["sess-1"]
+    assert (ClaimKind.SESSION, "sess-1") in eng.upserts
+
+    records = _decode_records(ws)
+    kinds = [r["kind"] for r in records]
+    assert "invocation_divider" in kinds
+    assert "user_input" in kinds
+    # Divider is written BEFORE the USER_INPUT message.
+    assert kinds.index("invocation_divider") < kinds.index("user_input")
+    divider = next(r for r in records if r["kind"] == "invocation_divider")
+    assert divider["payload"]["invocation"] == 2
+
+
+@pytest.mark.asyncio
+async def test_ended_non_restartable_raises_conflict():
+    """An ENDED session with a non-restartable ended_reason (workspace_lost /
+    force_deleted) still cannot be reopened — wake_session raises."""
+    row = _row(SessionStatus.ENDED)
+    row.ended_reason = "workspace_lost"
+    deps, slot, *_ = _deps(row)
     with pytest.raises(ConflictError):
         await wake_session(
             workspace_id="ws-1", session_id="sess-1",
             instruction="x", deps=deps,
         )
+    assert slot.reopened is False
 
 
 @pytest.mark.asyncio

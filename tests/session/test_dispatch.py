@@ -534,11 +534,11 @@ async def test_clean_completion_transitions_to_ended_completed(
     fake_event_bus: InMemoryEventBus,
     fake_storage_provider,
 ) -> None:
-    """After a clean turn (Done with stop_reason='stop'), an AUTONOMOUS
-    session's row MUST transition to ENDED/completed. Pre-fix the row
-    stayed at RUNNING forever — a one-shot session would never end.
-    (Seeded ``autonomous=True`` — an interactive agent session now stays
-    WAITING instead; see test_dispatch_interactive_alive.py.)"""
+    """After a clean turn (Done with stop_reason='stop'), the session's row
+    MUST transition to ENDED/completed. Pre-fix the row stayed at RUNNING
+    forever — a one-shot session would never end. Every clean turn now ends
+    regardless of autonomy (see test_dispatch_interactive_alive.py and
+    test_clean_completion_ends_for_interactive_session)."""
     session = await _seed_session(fake_storage_provider, autonomous=True)
     fake_executor = FakeExecutor([
         TextDelta(text="4", index=0),
@@ -564,6 +564,41 @@ async def test_clean_completion_transitions_to_ended_completed(
     assert row.status == SessionStatus.ENDED
     assert row.ended_reason == "completed"
     assert row.ended_at is not None
+
+
+@pytest.mark.asyncio
+async def test_clean_completion_ends_for_interactive_session(
+    fake_workspace_io: FakeWorkspaceIO,
+    fake_event_bus: InMemoryEventBus,
+    fake_storage_provider,
+) -> None:
+    """Regression: an INTERACTIVE (non-autonomous) agent session must ALSO
+    transition to ENDED/completed after a clean turn. The old
+    interactive-stays-WAITING downgrade hung every one-shot caller
+    (triggers/webhooks/API/e2e) forever. A new message reopens the ended
+    session via ``wake_session``."""
+    session = await _seed_session(fake_storage_provider, autonomous=False)
+    fake_executor = FakeExecutor([
+        TextDelta(text="done", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+
+    async def _build_executor(session: WorkspaceSession):
+        return fake_executor
+
+    deps = SessionDispatchDeps(
+        storage_provider=fake_storage_provider,
+        workspace_io=fake_workspace_io,
+        event_bus=fake_event_bus,
+        build_executor=_build_executor,
+    )
+    outcome = await run_one_session_turn(_make_lease(session.id), deps)
+    assert outcome.success is True
+
+    storage = fake_storage_provider.get_storage(WorkspaceSession)
+    row = await storage.get(session.id)
+    assert row.status == SessionStatus.ENDED
+    assert row.ended_reason == "completed"
 
 
 class _RecordingSlotSession:
@@ -599,8 +634,6 @@ async def test_clean_completion_mirrors_ended_onto_agent_session_slot(
     worker-run session as still ``running``. The executor leaves its
     AgentSession at RUNNING after a clean ``stop`` (dispatch decides ENDED),
     so without the mirror the slot would stay RUNNING forever.
-    (Seeded ``autonomous=True`` so this AUTONOMOUS-session case is unaffected
-    by the interactive-stays-WAITING behaviour.)
     """
     session = await _seed_session(fake_storage_provider, autonomous=True)
     slot = _RecordingSlotSession()
@@ -1023,9 +1056,13 @@ class _SeqFakeSlot:
 
     def __init__(self) -> None:
         self.appended: list[str] = []
+        self.reopened = 0
 
     async def append_instruction(self, content: str) -> None:
         self.appended.append(content)
+
+    async def reopen(self) -> None:
+        self.reopened += 1
 
 
 class _BridgingWorkspaceIO:
@@ -1094,14 +1131,19 @@ class _SeqFakeEngine:
 
 
 @pytest.mark.asyncio
-async def test_seq_strictly_increases_across_invoke_and_steer(
+async def test_seq_strictly_increases_across_invoke_and_restart(
     fake_storage_provider,
     fake_event_bus: InMemoryEventBus,
 ) -> None:
-    """Two turns on ONE interactive session (first invoke + follow-up steer)
-    must persist strictly-increasing unique seqs, and a seq-filtered tap
-    reader that already consumed turn 1 must surface ALL of turn 2 (none
-    dropped).
+    """Two turns on ONE session (first invoke + follow-up message after the
+    first turn ends) must persist strictly-increasing unique seqs, and a
+    seq-filtered tap reader that already consumed turn 1 must surface ALL of
+    turn 2 (none dropped).
+
+    Every clean turn now ENDS the session, so the follow-up message is a
+    restart (``wake_session``'s ENDED branch reopens: it writes an
+    INVOCATION_DIVIDER before the turn-2 USER_INPUT) rather than a live
+    steer — the seq-monotonicity invariant must hold across that boundary too.
 
     FAILS before the dispatch seed+persist fix (turn writers restart at
     seq=1, colliding with the USER_INPUT rows and each other, so the
@@ -1124,8 +1166,8 @@ async def test_seq_strictly_increases_across_invoke_and_steer(
             workspace_id="w1",
             binding=AgentSessionBinding(agent_id="ag1"),
             status=SessionStatus.CREATED,
-            # Interactive: stays WAITING after a clean turn so a follow-up
-            # steer (turn 2) can re-arm it instead of dead-ending at ENDED.
+            # Every clean turn ends the session; the follow-up message (turn 2)
+            # restarts it via wake_session's ENDED reopen branch.
             autonomous=False,
             created_at=_now(),
             turn_status="idle",
@@ -1164,12 +1206,12 @@ async def test_seq_strictly_increases_across_invoke_and_steer(
         ]),
     )
     row = await storage.get(session_id)
-    assert row.status == SessionStatus.WAITING, (
-        "interactive session must stay alive after a clean turn so it can "
-        "be steered"
+    assert row.status == SessionStatus.ENDED, (
+        "every clean turn ends the session; a follow-up message restarts it"
     )
+    assert row.ended_reason == "completed"
 
-    # --- Turn 2: follow-up steer on the same session ---
+    # --- Turn 2: follow-up message restarts the ended session ---
     await wake_session(
         workspace_id="w1", session_id=session_id,
         instruction="second", deps=wake_deps,
@@ -1187,13 +1229,18 @@ async def test_seq_strictly_increases_across_invoke_and_steer(
     seqs = [r["seq"] for r in recs]
     assert seqs == sorted(seqs), f"seqs not strictly increasing in file order: {seqs}"
     assert len(seqs) == len(set(seqs)), f"duplicate seqs across turns: {seqs}"
-    # USER_INPUT(first), ASSISTANT_TOKEN, DONE, USER_INPUT(second), ASSISTANT_TOKEN, DONE
-    assert len(recs) == 6, f"expected 6 records, got {len(recs)}: {[r['kind'] for r in recs]}"
+    # turn 1: USER_INPUT(first), ASSISTANT_TOKEN, DONE
+    # turn 2 (restart): INVOCATION_DIVIDER, USER_INPUT(second), ASSISTANT_TOKEN, DONE
+    assert len(recs) == 7, f"expected 7 records, got {len(recs)}: {[r['kind'] for r in recs]}"
     assert [r["kind"] for r in recs].count(SessionMessageKind.USER_INPUT) == 2
+    assert (
+        [r["kind"] for r in recs].count(SessionMessageKind.INVOCATION_DIVIDER) == 1
+    )
 
     # --- Seq-filtered tap: a client that consumed turn 1 sees ALL of turn 2 ---
     row = await storage.get(session_id)
     turn1 = recs[:3]
+    turn2 = recs[3:]
     high_water = max(r["seq"] for r in turn1)
     events, _ = await read_session_since(
         io,
@@ -1204,7 +1251,7 @@ async def test_seq_strictly_increases_across_invoke_and_steer(
         from_offset=0,
     )
     surfaced = sorted(e.seq for e in events)
-    assert len(events) == 3, (
+    assert len(events) == len(turn2), (
         "seq-filtered tap dropped physically-later turn-2 records: "
         f"surfaced {surfaced} after after_seq={high_water}"
     )
