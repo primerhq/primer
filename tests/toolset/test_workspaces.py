@@ -154,6 +154,10 @@ class _LiveWorkspace:
             token=SecretStr("t"),
         )
 
+    async def append_message_line(self, session_id: str, line: bytes) -> None:
+        path = f"sessions/{session_id}/messages.jsonl"
+        self._files[path] = self._files.get(path, b"") + line
+
     async def list_files(self, path=".", *, recursive=False):
         from datetime import datetime, timezone
         from primer.model.workspace import FileEntry
