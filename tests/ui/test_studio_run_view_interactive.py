@@ -186,7 +186,12 @@ def test_adapter_restart_extension() -> None:
 def test_adapter_wsstate_extension_for_transcript_connection_pill() -> None:
     src = _adapter_src()
     assert "wsState: wsState," in src
-    assert 'es.onopen = function () { setWsState("open"); };' in src
+    # Scoped to the onopen source region (not an exact one-liner match) since
+    # a later fix taught onopen to also trigger a catch-up re-fetch
+    # (fix/studio-live-stream) alongside setting wsState to "open".
+    onopen_start = src.index("es.onopen = function")
+    onopen_body = src[onopen_start:src.index("es.onmessage = function")]
+    assert 'setWsState("open");' in onopen_body
 
 
 # ---------------------------------------------------------------------------
