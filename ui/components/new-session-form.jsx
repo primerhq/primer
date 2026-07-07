@@ -102,7 +102,14 @@ function SharedNewSessionSchemaField({ propKey, schema, value, onChange }) {
       />
     );
   } else {
-    var long = schema && typeof schema.maxLength === "number" && schema.maxLength >= 200;
+    // Plain string fields default to a resizable multi-line textarea — an
+    // uncapped (or generously capped) string schema property (e.g. a
+    // graph's freeform "question" field, which typically has NO maxLength
+    // at all) is often long, and a single-line <input> for unbounded text
+    // is a poor fit regardless of the property's name. Only an EXPLICIT
+    // short maxLength signals a genuinely short field (e.g. a "name"/"id"
+    // property capped well under this threshold).
+    var long = !schema || typeof schema.maxLength !== "number" || schema.maxLength >= 120;
     control = long ? (
       <textarea
         className="textarea"
