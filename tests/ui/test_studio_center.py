@@ -106,10 +106,12 @@ def test_reuses_sd_graph_run_view() -> None:
 def test_graph_panel_converges_node_turn_log_into_transcript() -> None:
     # fix #9: the studio graph panel opts SD_GraphRunView into convergence —
     # selecting a node filters the shared transcript (ST_filterRecordsByNode)
-    # instead of opening a separate per-node turn-log panel (hidden here).
+    # instead of opening a separate per-node panel. R1 extends this: the whole
+    # 360px node-event-stream inspector is dropped (hideInspector), so the graph
+    # canvas fills the run view and its content lives in the converged transcript.
     src = _center_src()
     assert "onNodeSelect={setSelectedNode}" in src
-    assert "hideNodeTurnLog={true}" in src
+    assert "hideInspector={true}" in src
     assert "function ST_filterRecordsByNode(" in src
     assert "ST_filterRecordsByNode(conv.messages, selectedNode)" in src
 

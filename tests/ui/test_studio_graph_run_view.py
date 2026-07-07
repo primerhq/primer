@@ -321,9 +321,10 @@ def test_graph_panel_filters_transcript_by_selected_node() -> None:
 
 def test_graph_panel_hides_separate_node_turn_log() -> None:
     panel = _session_graph_panel_src()
-    # The studio panel opts SD_GraphRunView into hiding the per-node turn-log
-    # (it lives in the converged transcript now) …
-    assert "hideNodeTurnLog={true}" in panel
+    # R1: the studio panel opts SD_GraphRunView into dropping the whole 360px
+    # node-event-stream inspector (hideInspector) — the per-node turn-log AND
+    # the event stream both live in the converged transcript now …
+    assert "hideInspector={true}" in panel
     # … and never renders a second per-node turn-log panel of its own.
     assert "SD_NodeTurnLog" not in panel
     assert "run-node-turnlog" not in panel
@@ -366,7 +367,7 @@ def test_sd_graph_run_view_opt_in_prop_keeps_old_page_turn_log() -> None:
     # callback), so a caller that omits them renders SD_NodeTurnLog as before.
     detail = _detail_src()
     assert (
-        "function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hideNodeTurnLog })"
+        "function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hideNodeTurnLog, hideInspector })"
         in detail
     )
     # onNodeSelect only fires when supplied (typeof guard) — omitting it keeps
@@ -378,6 +379,11 @@ def test_sd_graph_run_view_opt_in_prop_keeps_old_page_turn_log() -> None:
         "<SD_NodeTurnLog gid={gid} rid={rid} nodeId={node.node_id} nodeStatus={node.status} />"
         in detail
     )
+    # R1: the whole inspector is gated on !hideInspector (default falsy -> still
+    # shown), so the standalone /sessions run view keeps the node inspector while
+    # the Studio panel (hideInspector={true}) renders the canvas alone.
+    assert "{!hideInspector && (" in detail
+    assert 'gridTemplateColumns: hideInspector ? "minmax(0, 1fr)" : "minmax(0, 1fr) 360px"' in detail
 
 
 # ---------------------------------------------------------------------------
