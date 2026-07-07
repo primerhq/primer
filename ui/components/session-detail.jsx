@@ -436,10 +436,22 @@ function SD_StatusCanvas({ graph, statusByNode, metaByNode, selectedNodeId, onSe
   );
 }
 
-function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
+function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hideNodeTurnLog }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = session && window.SESSION_TERMINAL.has(session.status);
   const [selectedNodeId, setSelectedNodeId] = React.useState(null);
+
+  // Node selection keeps its own state (drives the canvas highlight + the
+  // inspector) AND, when the OPT-IN onNodeSelect callback is supplied,
+  // notifies the caller so it can react to the selection — the Studio graph
+  // panel uses this to filter its converged session <Transcript> to the
+  // selected node (fix #9). Defaults to today's behavior: no callback ->
+  // local-only selection, so the shared export is unaffected when mounted
+  // without the opt-in prop.
+  const selectNode = React.useCallback((id) => {
+    setSelectedNodeId(id);
+    if (typeof onNodeSelect === "function") onNodeSelect(id);
+  }, [onNodeSelect]);
 
   const graph = useResource(
     `run-graph-def:${gid}`,
@@ -513,7 +525,7 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
           statusByNode={statusByNode}
           metaByNode={metaByNode}
           selectedNodeId={selectedNodeId}
-          onSelectNode={setSelectedNodeId}
+          onSelectNode={selectNode}
         />
         <SD_NodeInspector
           gid={gid}
@@ -523,6 +535,7 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast }) {
           node={selectedItem}
           graph={graph.data}
           pushToast={pushToast}
+          hideNodeTurnLog={hideNodeTurnLog}
         />
       </div>
     </div>
@@ -571,7 +584,7 @@ function SD_NodeTurnLog({ gid, rid, nodeId, nodeStatus }) {
   );
 }
 
-function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast }) {
+function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast, hideNodeTurnLog }) {
   const { useRouter } = window.primerApi;
   const { navigate } = useRouter();
   const nodeId = node && node.node_id;
@@ -739,13 +752,19 @@ function SD_NodeInspector({ gid, rid, wid, session, node, graph, pushToast }) {
             ))}
           </div>
         )}
-        {/* Per-node turn-log below the stream. */}
-        <div style={{ borderTop: "1px solid var(--border)" }}>
-          <div className="muted text-sm" style={{ padding: "8px 12px 0", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10.5 }}>
-            Turn log
+        {/* Per-node turn-log below the stream. Suppressed when the caller
+            opts into hideNodeTurnLog (the Studio graph panel, which converges
+            per-node detail into its filtered session <Transcript> instead —
+            fix #9). Defaults to shown, so the standalone run-view export is
+            unaffected. */}
+        {!hideNodeTurnLog && (
+          <div style={{ borderTop: "1px solid var(--border)" }}>
+            <div className="muted text-sm" style={{ padding: "8px 12px 0", textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10.5 }}>
+              Turn log
+            </div>
+            <SD_NodeTurnLog gid={gid} rid={rid} nodeId={node.node_id} nodeStatus={node.status} />
           </div>
-          <SD_NodeTurnLog gid={gid} rid={rid} nodeId={node.node_id} nodeStatus={node.status} />
-        </div>
+        )}
       </div>
     </div>
   );

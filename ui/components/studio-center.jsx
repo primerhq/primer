@@ -310,6 +310,78 @@ function ST_sessionTranscriptRows(records, session) {
   return ST_coalesceAssistantRows(mapped);
 }
 
+// ---------------------------------------------------------------------------
+// ST_filterRecordsByNode — narrow the raw session record stream to a single
+// node's records (record.node_id === nodeId). A null/empty nodeId means
+// "all nodes" (no filter, the full transcript). Used by SessionGraphPanel to
+// converge the per-node SD_NodeTurnLog into the shared session <Transcript>
+// (fix #9): selecting a node in the run-view filters the transcript instead
+// of opening a second per-node panel.
+// ---------------------------------------------------------------------------
+
+function ST_filterRecordsByNode(records, nodeId) {
+  if (!nodeId) return records || [];
+  var out = [];
+  var list = records || [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].node_id === nodeId) out.push(list[i]);
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Optimistic "queued" send rows (fix #8). Steering a RUNNING/WAITING graph
+// session queues the message as the next turn server-side; the persisted
+// USER_INPUT record only surfaces via the adapter tap once the running turn
+// yields. Until then nothing renders and it looks like nothing happened, so
+// the panel appends a LOCAL placeholder row immediately on send and drops it
+// once the real record lands.
+//
+// ST_queuedTranscriptRow — shape one local pending send as a user_message
+// transcript row, clearly marked "(queued)" and carrying `clientId` so
+// <Transcript> keys it off `pending-${clientId}` (no collision with a real
+// seq'd row) and `queued`/`pending` flags for any styling.
+// ---------------------------------------------------------------------------
+
+function ST_queuedTranscriptRow(pendingSend) {
+  return {
+    kind: "user_message",
+    text: pendingSend.text + " (queued)",
+    clientId: pendingSend.id,
+    queued: true,
+    pending: true,
+    nodeId: null,
+  };
+}
+
+// ST_reconcileQueued — drop any local pending send whose text now appears as
+// a persisted USER_INPUT record in the real stream (the running turn yielded
+// and the steer landed via the adapter tap). Matches one-to-one on the
+// trimmed text so two identical queued sends reconcile against two real
+// records, not one. Returns the SAME array reference when nothing reconciles
+// so a caller's setState no-ops (no render churn / effect loop).
+function ST_reconcileQueued(pendingSends, records) {
+  var prev = pendingSends || [];
+  if (!prev.length) return prev;
+  var realTexts = [];
+  var list = records || [];
+  for (var i = 0; i < list.length; i++) {
+    var m = list[i];
+    if (!m || m.kind !== "user_input") continue;
+    var pl = m.payload || {};
+    var t = pl.text != null ? pl.text : (pl.message != null ? pl.message : (pl.instruction != null ? pl.instruction : ""));
+    realTexts.push(String(t).trim());
+  }
+  if (!realTexts.length) return prev;
+  var next = [];
+  for (var k = 0; k < prev.length; k++) {
+    var idx = realTexts.indexOf(prev[k].text);
+    if (idx >= 0) { realTexts.splice(idx, 1); continue; }
+    next.push(prev[k]);
+  }
+  return next.length === prev.length ? prev : next;
+}
+
 
 // ---------------------------------------------------------------------------
 // SessionAgentPanel — agent run view = a session-backed <Conversation>.
@@ -552,6 +624,23 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
   var [composerText, setComposerText] = React.useState("");
   var scrollRef = React.useRef(null);
 
+  // fix #9: selected node from the run-view. null = all nodes (full
+  // transcript). Driven by SD_GraphRunView's opt-in onNodeSelect below;
+  // filters the shared <Transcript> to that node's records.
+  var [selectedNode, setSelectedNode] = React.useState(null);
+
+  // fix #8: local optimistic "queued" sends — [{ id, text }] — appended to
+  // the transcript the instant the operator steers a busy (non-idle) session,
+  // reconciled away once the real USER_INPUT record arrives via the adapter.
+  var [pendingSends, setPendingSends] = React.useState([]);
+
+  // Non-idle = a turn is in flight or the session is actively running/waiting,
+  // so a steer queues behind it rather than surfacing immediately. Reads both
+  // the polled session row and the adapter's live turn_status.
+  var turnInFlight = conv.turnStatus === "claimable" || conv.turnStatus === "running";
+  var liveStatus = conv.status || status;
+  var isBusy = liveStatus === "running" || liveStatus === "waiting" || turnInFlight;
+
   function toastErr(t) {
     return function (err) {
       if (typeof pushToast !== "function") return;
@@ -587,10 +676,24 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
     { invalidates: invalidates, onSuccess: function () { pushToast && pushToast({ kind: "success", title: "Session restarted" }); }, onError: toastErr("Restart failed") }
   );
 
+  // fix #9: when a node is selected, filter the record stream to that node's
+  // records (node_id === selectedNode) BEFORE mapping — coalescing then runs
+  // scoped to the node. fix #8: append the local optimistic queued rows after
+  // the real rows so a just-steered message shows immediately.
   var rows = React.useMemo(
-    function () { return ST_sessionTranscriptRows(conv.messages, session); },
-    [conv.messages, session]
+    function () {
+      var base = ST_sessionTranscriptRows(ST_filterRecordsByNode(conv.messages, selectedNode), session);
+      if (!pendingSends.length) return base;
+      return base.concat(pendingSends.map(ST_queuedTranscriptRow));
+    },
+    [conv.messages, session, selectedNode, pendingSends]
   );
+
+  // fix #8: reconcile — drop any optimistic queued send once its persisted
+  // USER_INPUT record lands in the real stream (via the adapter tap).
+  React.useEffect(function () {
+    setPendingSends(function (prev) { return ST_reconcileQueued(prev, conv.messages); });
+  }, [conv.messages]);
 
   // Stick-to-bottom — same rationale as the agent panel.
   React.useEffect(function () {
@@ -605,7 +708,22 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
     if (!text) return;
     var p = conv.sendMessage(text);
     setComposerText("");
-    if (p && typeof p.catch === "function") p.catch(toastErr("Send failed"));
+    // fix #8: on a non-idle session the steer queues behind the running turn,
+    // so show a local "(queued)" placeholder immediately. Reconciled by the
+    // effect above when the real record arrives; removed here if the send
+    // itself fails so a rejected steer doesn't leave a stuck placeholder.
+    if (isBusy) {
+      var localId = "queued-" + Date.now() + "-" + Math.random().toString(36).slice(2, 8);
+      setPendingSends(function (prev) { return prev.concat([{ id: localId, text: text }]); });
+      if (p && typeof p.catch === "function") {
+        p.catch(function (err) {
+          setPendingSends(function (prev) { return prev.filter(function (x) { return x.id !== localId; }); });
+          toastErr("Send failed")(err);
+        });
+      }
+    } else if (p && typeof p.catch === "function") {
+      p.catch(toastErr("Send failed"));
+    }
   }
 
   return (
@@ -673,7 +791,18 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
           style={{ flex: "0 0 auto", height: 360, minHeight: 0, overflow: "auto", borderBottom: "1px solid var(--border)" }}
         >
           {wid && gid && window.SD_GraphRunView
-            ? <window.SD_GraphRunView gid={gid} rid={sid} wid={wid} session={session} pushToast={pushToast} />
+            ? <window.SD_GraphRunView
+                gid={gid}
+                rid={sid}
+                wid={wid}
+                session={session}
+                pushToast={pushToast}
+                // fix #9: opt into convergence — selecting a node filters the
+                // shared transcript (below) instead of opening a per-node
+                // turn-log panel, which we hide here.
+                onNodeSelect={setSelectedNode}
+                hideNodeTurnLog={true}
+              />
             : (
               <div className="muted text-sm" style={{ padding: 20, textAlign: "center", color: "var(--text-4)" }}>
                 Run view unavailable — graph binding or workspace missing.
@@ -682,6 +811,33 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
         </div>
       )}
 
+      {/* fix #9: active node filter banner — shown only when a node is
+          selected. Names the node the transcript is scoped to and offers a
+          one-click return to the full (all-nodes) transcript. */}
+      {selectedNode && (
+        <div
+          data-testid="graph-node-filter"
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "6px 14px",
+            borderBottom: "1px solid var(--border)", background: "var(--bg-2)",
+            flex: "0 0 auto", fontSize: 11.5, color: "var(--text-3)",
+          }}
+        >
+          <span style={{ color: "var(--violet)", flexShrink: 0 }}>◈</span>
+          <span>
+            Showing <span className="mono" style={{ color: "var(--text)", fontWeight: 600 }}>{selectedNode}</span> only
+          </span>
+          <div style={{ flex: 1 }} />
+          <Btn
+            size="sm"
+            kind="ghost"
+            icon="x"
+            data-testid="graph-node-filter-clear"
+            title="Show the full transcript (all nodes)"
+            onClick={function () { setSelectedNode(null); }}
+          >All nodes</Btn>
+        </div>
+      )}
       <window.Transcript
         messages={rows}
         chatId={sid}

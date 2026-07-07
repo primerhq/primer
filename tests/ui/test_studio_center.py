@@ -103,6 +103,26 @@ def test_reuses_sd_graph_run_view() -> None:
     assert "rid={sid}" in src
 
 
+def test_graph_panel_converges_node_turn_log_into_transcript() -> None:
+    # fix #9: the studio graph panel opts SD_GraphRunView into convergence —
+    # selecting a node filters the shared transcript (ST_filterRecordsByNode)
+    # instead of opening a separate per-node turn-log panel (hidden here).
+    src = _center_src()
+    assert "onNodeSelect={setSelectedNode}" in src
+    assert "hideNodeTurnLog={true}" in src
+    assert "function ST_filterRecordsByNode(" in src
+    assert "ST_filterRecordsByNode(conv.messages, selectedNode)" in src
+
+
+def test_graph_panel_optimistic_queued_send_helpers_present() -> None:
+    # fix #8: pure, JSX-free helpers back the optimistic "(queued)" row so the
+    # send/reconcile logic is unit-testable via MiniRacer.
+    src = _center_src()
+    assert "function ST_queuedTranscriptRow(" in src
+    assert "function ST_reconcileQueued(" in src
+    assert "(queued)" in src
+
+
 def test_reuses_markdown_and_highlighter() -> None:
     src = _center_src()
     assert "window.renderMarkdown" in src, "markdown preview must reuse vendor renderMarkdown"
