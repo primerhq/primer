@@ -137,6 +137,12 @@ function SA_useSessionConversation(opts) {
   var sessionRow = detail.data;
   var status = sessionRow ? sessionRow.status : null;
   var turnStatus = sessionRow ? sessionRow.turn_status : "idle";
+  // Polled high-water seq (the row's authoritative last_seq) — compared
+  // below against the adapter's own max known record seq to detect when
+  // the live tap missed persisted events (e.g. a fresh/slow-starting
+  // workspace where events land just before the tap subscribes) so the
+  // gap can be closed with a catch-up re-fetch instead of a page refresh.
+  var polledLastSeq = sessionRow && typeof sessionRow.last_seq === "number" ? sessionRow.last_seq : null;
 
   // Pending yield(s) for this session — inline interaction affordances
   // (studio-agents-interact §5.4 / §4.5's session-scoped read).
@@ -174,6 +180,47 @@ function SA_useSessionConversation(opts) {
   var wsStateState = React.useState("connecting");
   var wsState = wsStateState[0];
   var setWsState = wsStateState[1];
+
+  // Guards the catch-up re-fetch below from overlapping itself — the poll
+  // tick and a tap (re)connect can fire close together, and this keeps
+  // either trigger from double-fetching or thrashing the endpoint.
+  var catchUpInFlightRef = React.useRef(false);
+
+  // Catch-up re-fetch — re-reads GET /messages for rows after the
+  // adapter's current max known seq (historyCursorRef, which both the
+  // history seed below and every tap-delivered record keep advanced) and
+  // merges in anything the live tap missed. Triggered when the polled
+  // session row's last_seq outruns historyCursorRef (effect further down)
+  // and on every tap (re)connect (es.onopen below), since a tap that
+  // attaches even a moment late — the common case on a freshly-created or
+  // still-spinning-up k8s workspace — would otherwise never backfill the
+  // gap short of a full page refresh.
+  var catchUp = React.useCallback(function () {
+    if (!sid || catchUpInFlightRef.current) return;
+    catchUpInFlightRef.current = true;
+    var afterSeq = historyCursorRef.current || 0;
+    apiFetch(
+      "GET",
+      "/sessions/" + encodeURIComponent(sid) + "/messages?after_seq=" + afterSeq + "&limit=1000"
+    )
+      .then(function (res) {
+        var items = (res && res.items) || [];
+        if (items.length === 0) return;
+        setRecords(function (prev) {
+          var seen = {};
+          for (var j = 0; j < prev.length; j++) seen[prev[j].seq] = true;
+          var fresh = items.filter(function (it) { return !seen[it.seq]; });
+          if (fresh.length === 0) return prev;
+          var merged = prev.concat(fresh);
+          merged.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+          var maxSeq = merged.length > 0 ? merged[merged.length - 1].seq : 0;
+          if (maxSeq > historyCursorRef.current) historyCursorRef.current = maxSeq;
+          return merged;
+        });
+      })
+      .catch(function () { /* best-effort; next poll tick or tap reconnect retries */ })
+      .then(function () { catchUpInFlightRef.current = false; });
+  }, [apiFetch, sid]);
 
   // History load — GET /sessions/{sid}/messages (paginated; the server
   // caps a single page at 1000, comfortably above one session's log in
@@ -243,7 +290,14 @@ function SA_useSessionConversation(opts) {
       return undefined;
     }
 
-    es.onopen = function () { setWsState("open"); };
+    es.onopen = function () {
+      setWsState("open");
+      // Re-sync on every (re)connect: a tap that attaches even a moment
+      // late — or reconnects after a drop — can otherwise miss events that
+      // were already persisted, leaving the transcript stuck until a page
+      // refresh. This costs one extra no-op request when already caught up.
+      catchUp();
+    };
 
     es.onmessage = function (ev) {
       var tev;
@@ -258,6 +312,7 @@ function SA_useSessionConversation(opts) {
         created_at: tev.ts,
         node_id: tev.node_id != null ? tev.node_id : null,
       };
+      if (rec.seq > historyCursorRef.current) historyCursorRef.current = rec.seq;
       setRecords(function (prev) {
         for (var i = 0; i < prev.length; i++) {
           if (prev[i].seq === rec.seq) return prev;
@@ -279,7 +334,24 @@ function SA_useSessionConversation(opts) {
     };
 
     return function () { try { es.close(); } catch (_e) { /* no-op */ } };
-  }, [wid, sid, historyLoaded, status]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [wid, sid, historyLoaded, status, catchUp]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Poll-triggered catch-up — the session row above is light-polled every
+  // 3s and carries the authoritative high-water last_seq. If it has moved
+  // past the adapter's own max known record seq (historyCursorRef), the
+  // persisted log has rows the live tap never delivered — the "stuck
+  // waiting for events" symptom on a session whose tap subscribed a beat
+  // late (e.g. a freshly-created/slow k8s workspace). Re-fetch and merge
+  // them in. Gated on actually being behind, so once caught up this never
+  // issues an extra request on the 3s cadence.
+  React.useEffect(function () {
+    if (!sid || !historyLoaded) return undefined;
+    if (typeof polledLastSeq !== "number") return undefined;
+    if (polledLastSeq > (historyCursorRef.current || 0)) {
+      catchUp();
+    }
+    return undefined;
+  }, [sid, historyLoaded, polledLastSeq, catchUp]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // sendMessage/stop/end/restart — one input, four behaviours (§5.1): a
   // message to a CREATED session invokes it, to RUNNING/WAITING it steers,
