@@ -2037,7 +2037,10 @@ input, textarea, select { font: inherit; color: inherit; }
 .auth-submit:hover { background: var(--accent-2); border-color: var(--accent-2); }
 .auth-submit:active { transform: translateY(1px); }
 .auth-submit:disabled { opacity: 0.6; cursor: not-allowed; }
-.auth-submit .spinner {
+/* Shared beyond auth: the workspaces "New workspace" Create button (studio-ux
+   fix 5) reuses this same inline spinner + keyframe for its in-flight state. */
+.auth-submit .spinner,
+.btn .spinner {
   width: 12px;
   height: 12px;
   border: 1.5px solid currentColor;
