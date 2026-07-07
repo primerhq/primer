@@ -492,7 +492,7 @@ function useStudioState(wid, initialOpen) {
 // collapse to a single document there.
 // ---------------------------------------------------------------------------
 
-function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, debugOpen, onToggleDebug, onToggleLeftPanel, onToggleRightPanel }) {
+function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, onToggleLeftPanel, onToggleRightPanel }) {
   var { useResource, apiFetch } = window.primerApi;
   var [menuOpen, setMenuOpen] = React.useState(false);
   // Workspace Settings overlay — restores the orphaned WorkspaceDetail tabs
@@ -620,21 +620,6 @@ function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, term
         onClick={onToggleTerminal}
       >
         <Icon name="code" size={15} />
-      </button>
-
-      {/* Desktop Debug/Activity rail toggle. On desktop the rail is a static
-          column (collapsed to a thin strip by default), and its own edge handle
-          proved too easy to miss — this gives an obvious, always-visible control
-          next to the terminal toggle. Mobile uses the drawer bell below. */}
-      <button
-        className={"st-hbtn touch-target desktop-only" + (debugOpen ? " is-active" : "")}
-        data-testid="studio-debug-toggle"
-        title="Toggle workspace events (Action Required + Activity)"
-        aria-label="Toggle debug and activity panel"
-        aria-pressed={debugOpen ? "true" : "false"}
-        onClick={onToggleDebug}
-      >
-        <Icon name="bell" size={15} />
       </button>
 
       {/* Mobile-only panel-drawer toggle (right: Action Required + Activity). */}
@@ -812,8 +797,6 @@ function Studio({ wid, pushToast, initialOpen }) {
         onSelectWorkspace={selectWorkspace}
         terminalOpen={s.terminalOpen}
         onToggleTerminal={studio.toggleTerminal}
-        debugOpen={s.debugOpen}
-        onToggleDebug={studio.toggleDebug}
         onToggleLeftPanel={function () { setRightPanelOpen(false); setLeftPanelOpen(function (o) { return !o; }); }}
         onToggleRightPanel={function () { setLeftPanelOpen(false); setRightPanelOpen(function (o) { return !o; }); }}
       />

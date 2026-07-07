@@ -683,9 +683,12 @@ function WorkspaceActivity({ wid }) {
         </span>
       </div>
 
-      {/* WorkspaceTap owns its filter chips + SSE connection + auto-scroll */}
+      {/* WorkspaceTap owns its filter chips + SSE connection + auto-scroll.
+          fillHeight makes its event list grow to the bottom of the sidebar
+          (no 520px cap) so Workspace Activity fills the space below User
+          Interaction instead of leaving it empty. */}
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto" }}>
-        <window.WorkspaceTap wid={wid} />
+        <window.WorkspaceTap wid={wid} fillHeight />
       </div>
     </div>
   );
@@ -774,8 +777,7 @@ function StudioActivity({ wid, studio }) {
           font: "inherit",
         }}
       >
-        <Icon name={collapsed ? "chevron-left" : "chevron-right"} size={13} style={{ flexShrink: 0, color: "var(--text-3)" }} />
-        {expanded && <Icon name="bell" size={13} style={{ flexShrink: 0 }} />}
+        <Icon name={collapsed ? "chevrons-left" : "chevrons-right"} size={15} style={{ flexShrink: 0, color: "var(--text-2)" }} />
         {expanded && <span style={{ flex: 1, textAlign: "left" }}>Debug</span>}
         {/* Collapsed: a vertical "Debug" label so the thin rail is legibly the
             expand handle. The chevron alone was too subtle — operators couldn't

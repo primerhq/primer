@@ -23,6 +23,8 @@ const Icon = ({ name, size = 14, ...rest }) => {
     case "chevron-down": return <svg {...props}><path d="M6 9l6 6 6-6" /></svg>;
     case "chevron-up": return <svg {...props}><path d="M6 15l6-6 6 6" /></svg>;
     case "chevron-left": return <svg {...props}><path d="M15 6l-6 6 6 6" /></svg>;
+    case "chevrons-left": return <svg {...props}><path d="M11 6l-6 6 6 6" /><path d="M18 6l-6 6 6 6" /></svg>;
+    case "chevrons-right": return <svg {...props}><path d="M13 6l6 6-6 6" /><path d="M6 6l6 6-6 6" /></svg>;
     case "plus": return <svg {...props}><path d="M12 5v14M5 12h14" /></svg>;
     case "minus": return <svg {...props}><path d="M5 12h14" /></svg>;
     case "x": return <svg {...props}><path d="M6 6l12 12M18 6l-12 12" /></svg>;

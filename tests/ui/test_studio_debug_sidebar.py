@@ -381,10 +381,13 @@ def test_collapsed_rail_hides_bell_and_label_but_keeps_chevron_and_badge() -> No
     # icon + the HORIZONTAL "Debug" text retract when collapsed (the collapsed
     # rail instead shows a compact VERTICAL Debug label — see the rail-label
     # test below).
-    assert '{expanded && <Icon name="bell" size={13} style={{ flexShrink: 0 }} />}' in fn
     assert '{expanded && <span style={{ flex: 1, textAlign: "left" }}>Debug</span>}' in fn
-    assert 'Icon name={collapsed ? "chevron-left" : "chevron-right"}' in fn
+    # The toggle indicator is a double chevron: << to expand the collapsed rail,
+    # >> to collapse the open panel (per user request — replaces the single ‹/›).
+    assert 'Icon name={collapsed ? "chevrons-left" : "chevrons-right"}' in fn
     assert '{pendingCount > 0 && (' in fn
+    # The decorative bell was removed from the rail (user disliked it).
+    assert 'name="bell"' not in fn
 
 
 def test_collapsed_toggle_button_restyles_into_a_narrow_column() -> None:
