@@ -894,7 +894,7 @@ function CompactionMarker({ m }) {
 // ... as a real indicator alongside the WS badge" per the plan — so
 // connection + turn legibility travels with the component wherever it's
 // embedded, not just the /chats page's own header.
-function CT_ConnectionStatus({ wsState, turnStatus }) {
+function CT_ConnectionStatus({ wsState, turnStatus, chatStatus }) {
   const wsPillClass = wsState === "open"
     ? "pill pill-running"
     : wsState === "connecting"
@@ -902,11 +902,19 @@ function CT_ConnectionStatus({ wsState, turnStatus }) {
       : "pill pill-ended";
   const wsLabel = wsState === "open" ? "live" : wsState === "connecting" ? "connecting" : "offline";
   const turn = turnStatus || "idle";
-  const turnPillClass = turn === "running"
-    ? "pill pill-running"
-    : turn === "claimable"
-      ? "pill pill-claimed"
-      : "pill pill-created";
+  // Fix 1 (fix/studio-debug-rail-polish): all chat status lives on this left
+  // indicator now. The state pill folds the chat lifecycle into the turn
+  // pill's slot — "ended" when ended, else the live turn status as before.
+  // `chatStatus` is optional (a bare Studio embed passes none → turn status).
+  const ended = chatStatus === "ended";
+  const stateLabel = ended ? "ended" : turn;
+  const statePillClass = ended
+    ? "pill pill-ended"
+    : turn === "running"
+      ? "pill pill-running"
+      : turn === "claimable"
+        ? "pill pill-claimed"
+        : "pill pill-created";
   return (
     <div
       className="chat-connection-status"
@@ -920,8 +928,12 @@ function CT_ConnectionStatus({ wsState, turnStatus }) {
       <span className={wsPillClass} title={`WebSocket ${wsState}`}>
         <span className="dot"></span>{wsLabel}
       </span>
-      <span className={turnPillClass} data-testid="chat-turn-status" title={`Turn status: ${turn}`}>
-        <span className="dot"></span>{turn}
+      <span
+        className={statePillClass}
+        data-testid="chat-turn-status"
+        title={ended ? "Chat ended" : `Turn status: ${turn}`}
+      >
+        <span className="dot"></span>{stateLabel}
       </span>
     </div>
   );
@@ -950,7 +962,7 @@ const _QUIET_LAST_KINDS = new Set([
 ]);
 
 function Transcript({
-  messages, chatId, agentId, wsState, waitingForReply, turnStatus,
+  messages, chatId, agentId, wsState, waitingForReply, turnStatus, chatStatus,
   pendingToolCall, sendMessage, onRewind, compactionBoundarySeq,
   scrollRef, onScroll, loadingOlder, hasMoreOlder,
 }) {
@@ -994,7 +1006,7 @@ function Transcript({
       {/* Task G1 (§4.5): connection + turn-status legibility that travels
           with the component wherever it's embedded — see
           CT_ConnectionStatus above. */}
-      <CT_ConnectionStatus wsState={wsState} turnStatus={turnStatus} />
+      <CT_ConnectionStatus wsState={wsState} turnStatus={turnStatus} chatStatus={chatStatus} />
       <div
         ref={scrollRef}
         onScroll={onScroll}

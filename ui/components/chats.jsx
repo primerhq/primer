@@ -409,7 +409,7 @@ function CT_NewChatModal({ onClose, pushToast }) {
 // single source of truth shared by the trigger button and the shortcut.
 // ============================================================================
 
-function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, disabled = false, triggerStyle = null }) {
+function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, disabled = false }) {
   const { useResource, useMutation, apiFetch } = window.primerApi;
   const [open, setOpen] = React.useState(false);
   const [q, setQ] = React.useState("");
@@ -503,14 +503,15 @@ function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, disabled = false,
   return (
     <>
       <button
-        className="chip"
+        type="button"
+        className="chat-cbtn"
         onClick={openOverlay}
-        title="Switch agent  (⌘/Ctrl + Shift + A)"
+        title={`Agent: ${currentAgentId} — switch  (⌘/Ctrl + Shift + A)`}
         disabled={disabled}
-        style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", ...(triggerStyle || {}) }}
+        data-testid="chat-agent-trigger"
+        aria-label={`Switch agent (current: ${currentAgentId})`}
       >
-        agent <span className="mono">{currentAgentId}</span>
-        <Icon name="chevron-down" size={11} />
+        <Icon name="agent" size={15} />
       </button>
       {open && (
         <div className="agent-overlay-backdrop" data-testid="agent-overlay" onClick={closeOverlay}>
@@ -634,6 +635,26 @@ function ChatDetail({ chatId, onBack, pushToast }) {
   const chatAgent = chatRow?.agent_id || "—";
   const chatTitle = chatRow?.title || null;
 
+  // Fix 2 (fix/studio-debug-rail-polish): the desktop cluster's compact
+  // control is a green pill that carries the live token count on the button
+  // itself. Same disable/tooltip logic the shared <TokenMeter> used (ended
+  // chat, compaction in flight, or socket not open) — but rendered inline in
+  // the cluster below as a purpose-built button so the count reads inline.
+  // The shared <TokenMeter> (mobile kebab below + Studio) is left untouched.
+  const compactUsage = convStatus.usage || {};
+  const compactInput = compactUsage.input_tokens || 0;
+  const compactCtx = compactUsage.context_length || 0;
+  const compactPct = compactCtx > 0 ? Math.round((compactInput / compactCtx) * 100) : 0;
+  const compactDisabled =
+    chatStatus === "ended" || convStatus.compactInFlight || convStatus.wsState !== "open";
+  const compactTooltip = chatStatus === "ended"
+    ? "Chat ended"
+    : convStatus.compactInFlight
+      ? "Compaction in progress…"
+      : convStatus.wsState !== "open"
+        ? "WebSocket offline"
+        : "Compact conversation now";
+
   return (
     <div
       className="col"
@@ -693,12 +714,12 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             <span className="mono">{cid}</span>
           )}
           <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            {/* C1/C2: one consolidated header row. The agent selector +
-                schema toggle + TokenMeter (token pill + compact) are grouped
-                into a single subtle cluster; the connection badge + chat
-                status pill trail it. This is what pulls the compact button
-                "down with the agent selector and schema" — they used to sit
-                in <Conversation>'s own second chrome row (now null). */}
+            {/* Fix 1/Fix 2 (fix/studio-debug-rail-polish): the right side is
+                BUTTONS ONLY now — all status (connection + turn/lifecycle)
+                lives on the left CT_ConnectionStatus inside the transcript.
+                The three controls are green: circular icon buttons for agent
+                + schema and a green pill carrying the live token count for
+                compact. */}
             <span className="chat-header-cluster" data-testid="chat-header-cluster">
               <CT_AgentSwitcher
                 chatId={cid}
@@ -708,32 +729,26 @@ function ChatDetail({ chatId, onBack, pushToast }) {
               />
               <button
                 type="button"
-                className={"chip" + (showSchemaPanel ? " active" : "")}
+                className={"chat-cbtn" + (showSchemaPanel ? " active" : "")}
                 onClick={() => setShowSchemaPanel((v) => !v)}
                 title={showSchemaPanel ? "Hide structured output schema panel" : "Show structured output schema panel"}
                 data-testid="chat-schema-panel-toggle"
-                style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap" }}
+                aria-pressed={showSchemaPanel}
+                aria-label="Toggle structured output schema panel"
               >
-                <Icon name="settings" size={12} />
-                schema
+                <Icon name="settings" size={14} />
               </button>
-              <window.TokenMeter
-                inputTokens={convStatus.usage.input_tokens}
-                contextLength={convStatus.usage.context_length}
-                onCompact={chatStatus === "ended" ? null : convStatus.requestCompact}
-                compactDisabled={convStatus.compactInFlight || convStatus.wsState !== "open"}
-                compactTooltip={
-                  convStatus.compactInFlight
-                    ? "Compaction in progress…"
-                    : convStatus.wsState !== "open"
-                      ? "WebSocket offline"
-                      : ""
-                }
-              />
-            </span>
-            {wsBadge}
-            <span className={chatStatus === "active" ? "pill pill-running" : "pill pill-ended"}>
-              <span className="dot"></span>{chatStatus}
+              <button
+                type="button"
+                className="chat-cbtn chat-cbtn-compact"
+                onClick={() => { if (!compactDisabled && convStatus.requestCompact) convStatus.requestCompact(); }}
+                disabled={compactDisabled}
+                title={compactTooltip}
+                data-testid="chat-compact-btn"
+              >
+                <Icon name="compress" size={13} />
+                <span className="mono">{compactInput.toLocaleString()} / {compactCtx.toLocaleString()} ({compactPct}%)</span>
+              </button>
             </span>
           </div>
         </div>

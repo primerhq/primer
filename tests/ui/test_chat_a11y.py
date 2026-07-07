@@ -64,9 +64,30 @@ def test_tool_rows_and_media_chips_are_keyboard_operable() -> None:
 def test_connection_status_indicator_exists_and_is_wired() -> None:
     src = _src(TRANSCRIPT)
     assert "function CT_ConnectionStatus(" in src
-    assert "<CT_ConnectionStatus wsState={wsState} turnStatus={turnStatus} />" in src
+    # Fix 1: the state pill also folds in the chat lifecycle, so <Transcript>
+    # forwards `chatStatus` alongside wsState/turnStatus.
+    assert (
+        "<CT_ConnectionStatus wsState={wsState} turnStatus={turnStatus} chatStatus={chatStatus} />"
+        in src
+    )
     assert 'data-testid="chat-connection-status"' in src
     assert 'data-testid="chat-turn-status"' in src
+
+
+def test_connection_status_state_pill_shows_ended_when_chat_ended() -> None:
+    # Fix 1: the single state pill reads "ended" (pill-ended) when the chat
+    # lifecycle is ended, otherwise the live turn status. `chatStatus` is an
+    # optional prop so a bare Studio embed (no chatStatus) still shows turn.
+    src = _src(TRANSCRIPT)
+    assert "function CT_ConnectionStatus({ wsState, turnStatus, chatStatus })" in src
+    assert 'const ended = chatStatus === "ended";' in src
+    assert 'const stateLabel = ended ? "ended" : turn;' in src
+    assert '"pill pill-ended"' in src
+
+
+def test_conversation_forwards_chat_status_to_transcript() -> None:
+    src = _src(CONVERSATION)
+    assert "chatStatus={chatStatus}" in src
 
 
 def test_connection_status_covers_every_turn_status_value() -> None:

@@ -130,9 +130,13 @@ def test_chat_detail_passes_null_chrome_slots_for_one_row_header() -> None:
 
 
 def test_chat_detail_agent_switcher_lives_in_the_one_row_header_cluster() -> None:
-    # C1/C2: <CT_AgentSwitcher> is grouped with the schema toggle + TokenMeter
-    # inside ChatDetail's `chat-header-cluster`, ABOVE the <Conversation>
-    # mount — no longer inside <Conversation>'s `rightChromeSlot`.
+    # C1/C2 + Fix 2: <CT_AgentSwitcher> is grouped with the schema toggle +
+    # the compact button inside ChatDetail's `chat-header-cluster`, ABOVE the
+    # <Conversation> mount — no longer inside <Conversation>'s
+    # `rightChromeSlot`. Fix 2 replaced the in-cluster <TokenMeter> with a
+    # purpose-built compact button (`chat-compact-btn`) that carries the token
+    # count; the shared <TokenMeter> now only appears in the mobile kebab
+    # sheet further down the file.
     src = _chats_src()
     conv_start = src.index("<Conversation\n")
     conv_end = src.index("/>", conv_start)
@@ -144,12 +148,13 @@ def test_chat_detail_agent_switcher_lives_in_the_one_row_header_cluster() -> Non
     cluster = src.index('data-testid="chat-header-cluster"')
     switcher = src.index("<CT_AgentSwitcher")
     schema = src.index('data-testid="chat-schema-panel-toggle"')
-    token = src.index("<window.TokenMeter")
+    compact = src.index('data-testid="chat-compact-btn"')
     # The cluster opens first, then the three grouped controls, all before
     # the <Conversation> mount further down the file.
-    assert cluster < switcher < schema < token < conv_start, (
-        "C1/C2: agent selector + schema toggle + TokenMeter must be grouped "
-        "in that order inside the `chat-header-cluster`, above <Conversation>"
+    assert cluster < switcher < schema < compact < conv_start, (
+        "C1/C2 + Fix 2: agent selector + schema toggle + compact button must "
+        "be grouped in that order inside the `chat-header-cluster`, above "
+        "<Conversation>"
     )
 
 
