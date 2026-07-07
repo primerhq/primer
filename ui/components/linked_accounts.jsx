@@ -114,19 +114,15 @@ function LA_LinkedAccountsPage() {
       )}
 
       {items.length > 0 && (
-        <div
-          data-testid="linked-accounts-table"
-          className="panel"
-          style={{ padding: 0, overflow: "hidden" }}
-        >
-          <table className="table" style={{ width: "100%", fontSize: 12 }}>
+        <div data-testid="linked-accounts-table" className="tbl-wrap">
+          <table className="tbl">
             <thead>
               <tr>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Provider</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Subject</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Email</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Linked</th>
-                <th style={{ textAlign: "right", padding: "8px 12px" }}>Actions</th>
+                <th>Provider</th>
+                <th>Subject</th>
+                <th>Email</th>
+                <th>Linked</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -186,21 +182,14 @@ function LA_LinkedAccountsPage() {
 
 function LA_IdentityRow({ identity, onUnlink }) {
   return (
-    <tr
-      data-testid={`linked-account-row-${identity.id}`}
-      style={{ borderTop: "1px solid var(--border)" }}
-    >
-      <td style={{ padding: "8px 12px", fontWeight: 600 }}>{identity.provider_name}</td>
-      <td style={{ padding: "8px 12px" }}>
-        <span className="mono" style={{ fontSize: 11 }}>{identity.subject}</span>
-      </td>
-      <td style={{ padding: "8px 12px" }}>
+    <tr data-testid={`linked-account-row-${identity.id}`}>
+      <td>{identity.provider_name}</td>
+      <td className="mono">{identity.subject}</td>
+      <td>
         {identity.email ? identity.email : <span className="muted text-sm">—</span>}
       </td>
-      <td style={{ padding: "8px 12px" }} title={identity.created_at || ""}>
-        <span className="mono">{LA_fmtDate(identity.created_at)}</span>
-      </td>
-      <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+      <td className="mono" title={identity.created_at || ""}>{LA_fmtDate(identity.created_at)}</td>
+      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
         <Btn
           size="sm"
           kind="danger"
