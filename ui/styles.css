@@ -2561,3 +2561,56 @@ input, textarea, select { font: inherit; color: inherit; }
   text-transform: uppercase;
   letter-spacing: 0.4px;
 }
+
+/* ==========================================================================
+   Chat header cluster controls — green icon/compact buttons (Fix 2,
+   fix/studio-debug-rail-polish)
+   --------------------------------------------------------------------------
+   The /chats desktop header cluster's three controls (agent / schema /
+   compact) are green-accented: `.chat-cbtn` is a ~30px green-tinted circular
+   icon button (agent trigger + schema toggle); `.chat-cbtn-compact` extends
+   it into a rounded pill that carries the live token count. Green matches the
+   app accent (var(--green) / var(--green-dim), same as .pill-ended / the
+   composer Send accent). Height + baseline line up with the cluster's other
+   controls and the panel title.
+   ========================================================================== */
+.chat-cbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--green-dim);
+  background: var(--green-dim);
+  color: var(--green);
+  cursor: pointer;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+.chat-cbtn:hover:not(:disabled) {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.chat-cbtn.active,
+.chat-cbtn[aria-pressed="true"] {
+  background: var(--green);
+  border-color: var(--green);
+  color: #fff;
+}
+.chat-cbtn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* Compact carries text (the token count), so it's a rounded pill, not a
+   circle. */
+.chat-cbtn-compact {
+  width: auto;
+  border-radius: 999px;
+  gap: 5px;
+  padding: 0 11px;
+  font-size: 11px;
+  font-weight: 500;
+  white-space: nowrap;
+}

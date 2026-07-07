@@ -1039,6 +1039,7 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
           wsState={wsState}
           waitingForReply={waitingForReply}
           turnStatus={chatRow?.turn_status}
+          chatStatus={chatStatus}
           pendingToolCall={chatRow?.pending_tool_call}
           sendMessage={sendMessage}
           onRewind={handleRewind}
