@@ -125,11 +125,14 @@ def test_graph_run_view_journey(base_url, console_url, page, tmp_path) -> None:
     # the chain lands at the canvas center once layout finishes.
     page.wait_for_timeout(2000)
     # The agent node sits at the center of a begin->agent->end chain (dagre
-    # LR + autoFit). Click center -> inspector shows the Turn log section.
+    # LR + autoFit). Click center -> node-select filters the transcript to that
+    # node. Converged (#9): the separate per-node "Turn log" panel was removed
+    # in favour of a node-filtered transcript; the graph-node-filter banner
+    # (with its "All nodes" clear affordance) surfaces the active node filter.
     box = canvas.bounding_box()
     assert box is not None
     page.mouse.click(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
-    expect(page.get_by_text("Turn log", exact=False)).to_be_visible()
+    expect(page.locator("[data-testid='graph-node-filter']")).to_be_visible()
 
 
 # test_graph_health_issue_journey REMOVED (no Studio equivalent) — it asserted
