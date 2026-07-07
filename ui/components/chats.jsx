@@ -660,6 +660,7 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             </>
           }
           showSchemaPanel={showSchemaPanel}
+          onCloseSchemaPanel={() => setShowSchemaPanel(false)}
         />
       </div>
 

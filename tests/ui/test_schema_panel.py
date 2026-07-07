@@ -185,6 +185,94 @@ def test_schema_panel_still_pure_no_data_fetching_or_ws() -> None:
     assert "apiFetch" not in src
 
 
+# ---------------------------------------------------------------------------
+# studio-ux fix 2: the "⚙ schema" chip (chats.jsx) toggles the panel OPEN in
+# ONE click — no more internal collapsed-rail intermediate step between the
+# chip mounting <SchemaPanel> and the operator seeing the Builder/JSON tabs.
+# ---------------------------------------------------------------------------
+
+
+def test_conversation_always_mounts_schema_panel_fully_open() -> None:
+    src = _conv_src()
+    assert "collapsed={false}" in src
+    # The old double-gating internal state is gone — mounting IS visible now.
+    assert "schemaCollapsed" not in src
+
+
+def test_conversation_wires_its_own_toggle_chevron_to_fully_close_the_panel() -> None:
+    src = _conv_src()
+    assert "onToggle={onCloseSchemaPanel}" in src
+    assert "onCloseSchemaPanel" in src
+
+
+def test_chats_jsx_closes_the_panel_via_the_same_state_the_chip_toggles() -> None:
+    chats_src = (CHAT_DIR.parent / "chats.jsx").read_text(encoding="utf-8")
+    assert "onCloseSchemaPanel={() => setShowSchemaPanel(false)}" in chats_src
+
+
+# ---------------------------------------------------------------------------
+# studio-ux fix 3: a chat with no response_format override of its own still
+# shows the EFFECTIVE (agent build-time) schema, labeled as inherited and
+# read-only until the operator explicitly starts an override.
+# ---------------------------------------------------------------------------
+
+
+def test_schema_panel_accepts_inherited_schema_prop() -> None:
+    src = _panel_src()
+    assert "inheritedSchema = null," in src
+
+
+def test_conversation_fetches_the_bound_agents_response_format() -> None:
+    src = _conv_src()
+    assert "const agentIdForSchema = chatRow?.agent_id || null;" in src
+    assert "apiFetch(\"GET\", `/agents/${encodeURIComponent(agentIdForSchema)}`" in src
+    assert "inheritedSchema={agentResponseFormat}" in src
+
+
+def test_conversation_only_fetches_agent_detail_while_schema_panel_is_open() -> None:
+    # Guarded exactly like agents.jsx's AG_ReferencesPanel (cache key AND
+    # fetcher both gate on the condition) so a hidden panel never fires an
+    # extra GET on every chat.
+    src = _conv_src()
+    assert 'showSchemaPanel && agentIdForSchema ? `agent-detail:${agentIdForSchema}` : "agent-detail:none"' in src
+    assert "deps: [showSchemaPanel, agentIdForSchema]" in src
+
+
+def test_schema_panel_shows_inherited_only_without_a_chat_override() -> None:
+    src = _panel_src()
+    assert "const hasOwnValue = value !== null && value !== undefined;" in src
+    assert "const showingInherited = !hasOwnValue && inheritedSchema != null && !overriding;" in src
+
+
+def test_schema_panel_inherited_view_is_labeled_and_read_only() -> None:
+    src = _panel_src()
+    assert 'data-testid="schema-inherited-banner"' in src
+    assert "Inherited from agent" in src
+    assert 'data-testid="schema-inherited-preview"' in src
+    assert "readOnly" in src
+    assert 'data-testid="schema-inherited-edit"' in src
+
+
+def test_schema_panel_inherited_seed_effect_never_emits_before_an_edit() -> None:
+    # The seeding effect's CODE (not its explanatory comment, which
+    # discusses emit()/onChange by name) must only set local display state
+    # (setJsonText/setBuilderFields) — never actually call emit() or
+    # onChange — so opening the panel on an agent with a default schema
+    # can't silently create a per-chat override.
+    src = _panel_src()
+    start = src.index("React.useEffect(() => {\n    if (hasOwnValue || overriding || inheritedSchema == null) return;")
+    end = src.index("const emit = (schema) => {")
+    seed_effect = src[start:end]
+    assert "emit(" not in seed_effect
+    assert "onChange(" not in seed_effect
+    assert "setJsonText(JSON.stringify(inheritedSchema, null, 2));" in seed_effect
+
+
+def test_schema_panel_edit_override_button_unlocks_editing() -> None:
+    src = _panel_src()
+    assert "onClick={() => setOverriding(true)}" in src
+
+
 def test_bundle_transpiles_with_schema_panel_f2_changes() -> None:
     from primer.api._jsx_bundle import build_jsx_bundle
 

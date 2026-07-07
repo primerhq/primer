@@ -414,12 +414,24 @@ function SchemaPanel({
   onValidityChange,
   collapsed = true,
   onToggle,
+  inheritedSchema = null,
 }) {
   const [tab, setTab] = React.useState("builder"); // "builder" | "json"
   const [builderFields, setBuilderFields] = React.useState(() => (SP_isRepresentableSchema(value) ? SP_schemaToFields(value) : []));
   const [builderEscape, setBuilderEscape] = React.useState(() => !SP_isRepresentableSchema(value));
   const [jsonText, setJsonText] = React.useState(() => (value ? JSON.stringify(value, null, 2) : ""));
   const [jsonError, setJsonError] = React.useState(null);
+
+  // studio-ux fix 3: the chat has no `response_format` override of its own
+  // (`value` is null/undefined) but the agent it's bound to may have a
+  // build-time one — `inheritedSchema` carries that down from <Conversation>.
+  // Shown read-only + labeled "inherited from agent" until the operator
+  // explicitly starts an override; nothing is emitted upward (no onChange
+  // call) while merely displaying it, so opening the panel never silently
+  // creates a per-chat override.
+  const hasOwnValue = value !== null && value !== undefined;
+  const [overriding, setOverriding] = React.useState(false);
+  const showingInherited = !hasOwnValue && inheritedSchema != null && !overriding;
 
   // Tracks the last schema THIS component pushed via onChange (as its
   // JSON string) so the hydration effect below can tell "the parent
@@ -442,6 +454,28 @@ function SchemaPanel({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
+
+  // studio-ux fix 3: while showing the inherited (read-only) schema, seed
+  // the SAME jsonText/builderFields display state from it — DISPLAY only,
+  // via setState directly rather than emit(), so `value`/onChange never
+  // fire from merely looking at what the agent would apply. The moment the
+  // operator clicks "Edit override" (setOverriding(true) below), this
+  // pre-seeded state becomes the starting point for a real edit — the very
+  // next keystroke/field change runs through handleJsonTextChange /
+  // handleBuilderFieldsChange as normal, which DO emit(), promoting it to a
+  // genuine per-chat override.
+  React.useEffect(() => {
+    if (hasOwnValue || overriding || inheritedSchema == null) return;
+    setJsonText(JSON.stringify(inheritedSchema, null, 2));
+    if (SP_isRepresentableSchema(inheritedSchema)) {
+      setBuilderFields(SP_schemaToFields(inheritedSchema));
+      setBuilderEscape(false);
+    } else {
+      setBuilderFields([]);
+      setBuilderEscape(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inheritedSchema, hasOwnValue, overriding]);
 
   const emit = (schema) => {
     lastEmittedRef.current = JSON.stringify(schema === undefined ? null : schema);
@@ -583,30 +617,57 @@ function SchemaPanel({
         </button>
       </div>
 
-      <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
-        <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)" }}>
-          <input
-            type="checkbox"
-            data-testid="schema-persistent-toggle"
-            checked={!!persistent}
-            onChange={(e) => typeof onPersistentChange === "function" && onPersistentChange(e.target.checked)}
-          />
-          Persistent
-        </label>
-        <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-3)" }}>
-          {persistent
-            ? "Applies to every message in this chat."
-            : "Applies to the next message only."}
-        </div>
-        {valid === false && (
-          <div data-testid="schema-invalid-banner" style={{ marginTop: 6, fontSize: 11, color: "var(--red, #c33)" }}>
-            <Icon name="warn-circle" size={11} /> {jsonError || "schema invalid"} — send disabled
+      {showingInherited ? (
+        <div data-testid="schema-inherited-banner" style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)" }}>
+            <Icon name="info" size={12} />
+            Inherited from agent
           </div>
-        )}
-      </div>
+          <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-3)" }}>
+            This chat has no schema override of its own — every turn already runs under the agent's own response_format below.
+          </div>
+          <button
+            type="button"
+            data-testid="schema-inherited-edit"
+            className="btn btn-sm"
+            style={{ marginTop: 6 }}
+            onClick={() => setOverriding(true)}
+          >Edit override for this chat</button>
+        </div>
+      ) : (
+        <div style={{ padding: "8px 10px", borderBottom: "1px solid var(--border)" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "var(--text-2)" }}>
+            <input
+              type="checkbox"
+              data-testid="schema-persistent-toggle"
+              checked={!!persistent}
+              onChange={(e) => typeof onPersistentChange === "function" && onPersistentChange(e.target.checked)}
+            />
+            Persistent
+          </label>
+          <div style={{ marginTop: 2, fontSize: 10, color: "var(--text-3)" }}>
+            {persistent
+              ? "Applies to every message in this chat."
+              : "Applies to the next message only."}
+          </div>
+          {valid === false && (
+            <div data-testid="schema-invalid-banner" style={{ marginTop: 6, fontSize: 11, color: "var(--red, #c33)" }}>
+              <Icon name="warn-circle" size={11} /> {jsonError || "schema invalid"} — send disabled
+            </div>
+          )}
+        </div>
+      )}
 
       <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: 10, color: "var(--text-3)", fontSize: 12 }}>
-        {tab === "builder" ? (
+        {showingInherited ? (
+          <textarea
+            data-testid="schema-inherited-preview"
+            className="textarea mono"
+            value={jsonText}
+            readOnly
+            style={{ width: "100%", height: "100%", minHeight: 160, resize: "none", background: "var(--bg-2)", color: "var(--text-2)" }}
+          />
+        ) : tab === "builder" ? (
           <div data-testid="schema-builder-body">
             {builderEscape ? (
               <div data-testid="schema-builder-escape" style={{ display: "flex", flexDirection: "column", gap: 6 }}>
