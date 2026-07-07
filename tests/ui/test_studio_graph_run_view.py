@@ -30,6 +30,7 @@ ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CENTER = UI / "components" / "studio-center.jsx"
 ADAPTER = UI / "components" / "session-adapter.jsx"
+DETAIL = UI / "components" / "session-detail.jsx"
 INDEX = UI / "index.html"
 
 
@@ -39,6 +40,17 @@ def _center_src() -> str:
 
 def _adapter_src() -> str:
     return ADAPTER.read_text(encoding="utf-8")
+
+
+def _detail_src() -> str:
+    return DETAIL.read_text(encoding="utf-8")
+
+
+def _center_helpers_src() -> str:
+    """The JSX-free ST_ pure-helper slice (ST_isAutonomous .. just before
+    SessionAgentPanel) — MiniRacer-evaluable, mirrors the slice the existing
+    divider test evals."""
+    return _fn_block(_center_src(), "function ST_isAutonomous(", "function SessionAgentPanel(")
 
 
 def _fn_block(src: str, start_marker: str, end_marker: str) -> str:
@@ -226,6 +238,146 @@ def test_mutations_only_fire_from_onclick_never_on_mount() -> None:
     ):
         assert panel.count(call) == 1, f"{call} should be wired exactly once (via its onClick)"
         assert onclick in panel
+
+
+# ---------------------------------------------------------------------------
+# fix #8 — optimistic "queued" row when steering a busy (non-idle) session.
+# Sending to a RUNNING/WAITING session queues the steer as the next turn; the
+# persisted USER_INPUT only surfaces via the tap once the running turn yields.
+# The panel appends a local "(queued)" placeholder immediately and drops it
+# when the real record lands.
+# ---------------------------------------------------------------------------
+
+
+def test_optimistic_queued_row_is_wired_into_the_graph_panel() -> None:
+    panel = _session_graph_panel_src()
+    # Local optimistic-send state + a busy gate (only non-idle sessions queue).
+    assert "[pendingSends, setPendingSends]" in panel
+    assert "if (isBusy) {" in panel
+    # busy = running/waiting/turn-in-flight (mirrors the brief's non-idle set).
+    assert 'liveStatus === "running"' in panel
+    assert 'liveStatus === "waiting"' in panel
+    assert "turnInFlight" in panel
+    # The queued placeholder is appended to the transcript rows and reconciled
+    # against the real record stream.
+    assert "ST_queuedTranscriptRow" in panel
+    assert "ST_reconcileQueued(prev, conv.messages)" in panel
+
+
+def test_optimistic_queued_row_reconciles_via_mini_racer() -> None:
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(_adapter_src())  # window.SA_toTranscript (for the shared slice)
+    ctx.eval(_center_helpers_src())  # ST_queuedTranscriptRow / ST_reconcileQueued / ...
+
+    # A queued send renders as a user_message row, clearly marked "(queued)",
+    # keyed off clientId so it can't collide with a real seq'd row.
+    ctx.eval('var qr = ST_queuedTranscriptRow({ id: "c1", text: "retry the build" });')
+    assert ctx.eval("qr.kind") == "user_message"
+    assert ctx.eval("qr.text") == "retry the build (queued)"
+    assert ctx.eval("qr.clientId") == "c1"
+    assert ctx.eval("qr.queued") is True
+
+    # Before the real USER_INPUT lands, the pending send survives (an unrelated
+    # assistant token must NOT reconcile it) — same array reference back.
+    ctx.eval('var pend = [{ id: "c1", text: "retry the build" }];')
+    ctx.eval('var kept = ST_reconcileQueued(pend, [{seq:1, kind:"assistant_token", payload:{text:"..."}}]);')
+    assert ctx.eval("kept.length") == 1
+    assert ctx.eval("kept === pend") is True
+
+    # Once the persisted USER_INPUT record (same text) arrives, it drops.
+    ctx.eval('var gone = ST_reconcileQueued(pend, [{seq:5, kind:"user_input", payload:{text:"retry the build"}}]);')
+    assert ctx.eval("gone.length") == 0
+
+    # Two identical queued sends reconcile ONE-TO-ONE against one real record,
+    # not both at once.
+    ctx.eval('var two = [{id:"a",text:"go"},{id:"b",text:"go"}];')
+    ctx.eval('var one = ST_reconcileQueued(two, [{seq:9, kind:"user_input", payload:{text:"go"}}]);')
+    assert ctx.eval("one.length") == 1
+
+
+# ---------------------------------------------------------------------------
+# fix #9 — converge the per-node SD_NodeTurnLog into the shared transcript.
+# Selecting a node in the run-view filters the session <Transcript> to that
+# node's records (node_id === selectedNode); the separate turn-log panel is
+# suppressed via SD_GraphRunView's opt-in hideNodeTurnLog flag.
+# ---------------------------------------------------------------------------
+
+
+def test_graph_panel_filters_transcript_by_selected_node() -> None:
+    panel = _session_graph_panel_src()
+    # Node-selection state driven by the run-view's opt-in callback.
+    assert "[selectedNode, setSelectedNode]" in panel
+    assert "onNodeSelect={setSelectedNode}" in panel
+    # The transcript is fed the node-filtered record set (node_id === selection).
+    assert "ST_filterRecordsByNode(conv.messages, selectedNode)" in panel
+    # A clear-filter affordance returns to the full (all-nodes) transcript.
+    assert 'data-testid="graph-node-filter"' in panel
+    assert 'data-testid="graph-node-filter-clear"' in panel
+    assert "setSelectedNode(null)" in panel
+
+
+def test_graph_panel_hides_separate_node_turn_log() -> None:
+    panel = _session_graph_panel_src()
+    # The studio panel opts SD_GraphRunView into hiding the per-node turn-log
+    # (it lives in the converged transcript now) …
+    assert "hideNodeTurnLog={true}" in panel
+    # … and never renders a second per-node turn-log panel of its own.
+    assert "SD_NodeTurnLog" not in panel
+    assert "run-node-turnlog" not in panel
+    assert "/turn_log" not in panel
+
+
+def test_node_filter_narrows_records_via_mini_racer() -> None:
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(_adapter_src())
+    ctx.eval(_center_helpers_src())
+    ctx.eval(
+        """
+        var recs = [
+          {seq:1, kind:"user_input", payload:{text:"hi"}, node_id: null},
+          {seq:2, kind:"assistant_token", payload:{text:"a"}, node_id:"drafter"},
+          {seq:3, kind:"assistant_token", payload:{text:"b"}, node_id:"reviewer"},
+          {seq:4, kind:"tool_call", payload:{name:"run"}, node_id:"drafter"},
+        ];
+        """
+    )
+    # No node selected -> the full stream (unfiltered).
+    assert ctx.eval("ST_filterRecordsByNode(recs, null).length") == 4
+    # A node selected -> only that node's records, in order.
+    ctx.eval('var dr = ST_filterRecordsByNode(recs, "drafter");')
+    assert ctx.eval("dr.length") == 2
+    assert ctx.eval("dr[0].seq") == 2
+    assert ctx.eval("dr[1].seq") == 4
+    # The filtered set still flows through the SAME transcript pipeline (one
+    # coalesced assistant bubble + the tool_call row).
+    ctx.eval('var out = ST_sessionTranscriptRows(dr, {id:"s1", binding:{kind:"graph"}});')
+    assert ctx.eval("out.length") == 2
+
+
+def test_sd_graph_run_view_opt_in_prop_keeps_old_page_turn_log() -> None:
+    # fix #9 must NOT regress the shared SD_GraphRunView export: the opt-in
+    # props default to today's behavior (turn-log shown, no selection
+    # callback), so a caller that omits them renders SD_NodeTurnLog as before.
+    detail = _detail_src()
+    assert (
+        "function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hideNodeTurnLog })"
+        in detail
+    )
+    # onNodeSelect only fires when supplied (typeof guard) — omitting it keeps
+    # local-only node selection.
+    assert 'typeof onNodeSelect === "function"' in detail
+    # The turn-log is gated on !hideNodeTurnLog (default falsy -> still shown).
+    assert "{!hideNodeTurnLog && (" in detail
+    assert (
+        "<SD_NodeTurnLog gid={gid} rid={rid} nodeId={node.node_id} nodeStatus={node.status} />"
+        in detail
+    )
 
 
 # ---------------------------------------------------------------------------
