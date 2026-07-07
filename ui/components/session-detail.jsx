@@ -436,7 +436,7 @@ function SD_StatusCanvas({ graph, statusByNode, metaByNode, selectedNodeId, onSe
   );
 }
 
-function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hideNodeTurnLog }) {
+function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hideNodeTurnLog, hideInspector }) {
   const { useResource, apiFetch } = window.primerApi;
   const isTerminal = session && window.SESSION_TERMINAL.has(session.status);
   const [selectedNodeId, setSelectedNodeId] = React.useState(null);
@@ -519,7 +519,13 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hide
           </span>
         </div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 360px" }}>
+      {/* fix #9 (studio): when hideInspector is set, the run view is the graph
+          canvas alone at full width — the 360px node-event-stream inspector is
+          dropped entirely (its content is redundant with the converged session
+          transcript the Studio renders below, which filters to the selected
+          node via onNodeSelect). The standalone /sessions run view omits the
+          prop and keeps the inspector. */}
+      <div style={{ display: "grid", gridTemplateColumns: hideInspector ? "minmax(0, 1fr)" : "minmax(0, 1fr) 360px" }}>
         <SD_StatusCanvas
           graph={graph.data}
           statusByNode={statusByNode}
@@ -527,16 +533,18 @@ function SD_GraphRunView({ gid, rid, wid, session, pushToast, onNodeSelect, hide
           selectedNodeId={selectedNodeId}
           onSelectNode={selectNode}
         />
-        <SD_NodeInspector
-          gid={gid}
-          rid={rid}
-          wid={wid}
-          session={session}
-          node={selectedItem}
-          graph={graph.data}
-          pushToast={pushToast}
-          hideNodeTurnLog={hideNodeTurnLog}
-        />
+        {!hideInspector && (
+          <SD_NodeInspector
+            gid={gid}
+            rid={rid}
+            wid={wid}
+            session={session}
+            node={selectedItem}
+            graph={graph.data}
+            pushToast={pushToast}
+            hideNodeTurnLog={hideNodeTurnLog}
+          />
+        )}
       </div>
     </div>
   );

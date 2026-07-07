@@ -799,9 +799,11 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
                 pushToast={pushToast}
                 // fix #9: opt into convergence — selecting a node filters the
                 // shared transcript (below) instead of opening a per-node
-                // turn-log panel, which we hide here.
+                // panel. hideInspector drops the 360px node-event-stream
+                // inspector entirely so the graph canvas fills the run view;
+                // its content is redundant with the converged transcript below.
                 onNodeSelect={setSelectedNode}
-                hideNodeTurnLog={true}
+                hideInspector={true}
               />
             : (
               <div className="muted text-sm" style={{ padding: 20, textAlign: "center", color: "var(--text-4)" }}>
