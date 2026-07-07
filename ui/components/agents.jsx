@@ -355,6 +355,11 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const [fieldErrors, setFieldErrors] = React.useState({});
   const [activeTab, setActiveTab] = React.useState("basic");
   const [toolFilter, setToolFilter] = React.useState("");
+  // "Selected" filter chip (studio-ux fix 4): the Tools tab's search had no
+  // way to see WHICH tools are ticked across all toolsets/pages — this ANDs
+  // with the text filter, reusing the same selectedScopedIds set the
+  // "N of 172 selected" counter already tracks.
+  const [showSelectedOnly, setShowSelectedOnly] = React.useState(false);
   const [toolPage, setToolPage] = React.useState(1);
 
   React.useEffect(() => {
@@ -377,20 +382,31 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
 
   const filteredToolsetEntries = React.useMemo(() => {
     const q = toolFilter.trim().toLowerCase();
-    if (!q) return toolsetEntries;
-    return toolsetEntries
-      .map((ts) => ({
-        ...ts,
-        tools: ts.tools.filter(
-          (t) =>
-            t.id.toLowerCase().includes(q) ||
-            t.scoped_id.toLowerCase().includes(q) ||
-            (t.description || "").toLowerCase().includes(q) ||
-            ts.id.toLowerCase().includes(q),
-        ),
-      }))
-      .filter((ts) => ts.tools.length > 0 || ts.id.toLowerCase().includes(q));
-  }, [toolsetEntries, toolFilter]);
+    let entries = toolsetEntries;
+    if (q) {
+      entries = entries
+        .map((ts) => ({
+          ...ts,
+          tools: ts.tools.filter(
+            (t) =>
+              t.id.toLowerCase().includes(q) ||
+              t.scoped_id.toLowerCase().includes(q) ||
+              (t.description || "").toLowerCase().includes(q) ||
+              ts.id.toLowerCase().includes(q),
+          ),
+        }))
+        .filter((ts) => ts.tools.length > 0 || ts.id.toLowerCase().includes(q));
+    }
+    // "Selected" filter chip: restrict to tools currently in
+    // selectedScopedIds, across every toolset/page (not just the visible
+    // slice), so it composes cleanly with the text filter above.
+    if (showSelectedOnly) {
+      entries = entries
+        .map((ts) => ({ ...ts, tools: ts.tools.filter((t) => selectedScopedIds.has(t.scoped_id)) }))
+        .filter((ts) => ts.tools.length > 0);
+    }
+    return entries;
+  }, [toolsetEntries, toolFilter, showSelectedOnly, selectedScopedIds]);
 
   const totalAvailable = React.useMemo(
     () => toolsetEntries.reduce((acc, ts) => acc + ts.tools.length, 0),
@@ -423,7 +439,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const toolTotalPages = Math.max(1, Math.ceil(flatTools.length / AGENT_TOOL_PAGE_SIZE));
   // Snap to first page whenever the filter narrows the result set,
   // and clamp the current page if the page count shrinks below it.
-  React.useEffect(() => { setToolPage(1); }, [toolFilter]);
+  React.useEffect(() => { setToolPage(1); }, [toolFilter, showSelectedOnly]);
   React.useEffect(() => {
     if (toolPage > toolTotalPages) setToolPage(toolTotalPages);
   }, [toolPage, toolTotalPages]);
@@ -651,6 +667,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
                 style={{ width: "100%" }}
               />
             </div>
+            <button
+              type="button"
+              data-testid="agent-tool-filter-selected"
+              className={"chip" + (showSelectedOnly ? " active" : "")}
+              aria-pressed={showSelectedOnly}
+              onClick={() => setShowSelectedOnly((v) => !v)}
+              title={showSelectedOnly ? "Show all tools" : "Show only selected tools"}
+              style={{ whiteSpace: "nowrap" }}
+            >
+              Selected
+            </button>
             <span className="muted text-sm" style={{ whiteSpace: "nowrap" }}>
               {selectedCount} of {totalAvailable} selected
             </span>
@@ -661,8 +688,10 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             </div>
           )}
           {!toolsCatalogue.loading && filteredToolsetEntries.length === 0 && (
-            <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }}>
-              {toolFilter ? "No tools match the filter." : "No toolsets available."}
+            <div className="muted text-sm" style={{ padding: 16, textAlign: "center" }} data-testid="agent-tool-empty">
+              {showSelectedOnly
+                ? `No selected tools${toolFilter ? " match the filter." : "."}`
+                : toolFilter ? "No tools match the filter." : "No toolsets available."}
             </div>
           )}
           {/* Unavailable toolsets stay visible outside the paginated
