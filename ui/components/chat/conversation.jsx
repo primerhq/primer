@@ -42,7 +42,7 @@
 // component fills its flex parent (height:100%/flex:1); the host owns
 // viewport-relative sizing.
 
-function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, onStatus, pushToast }) {
+function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, onCloseSchemaPanel, onStatus, pushToast }) {
   const { useResource, useViewport, apiFetch, useRouter } = window.primerApi;
   const { isMobile } = useViewport();
   const { navigate } = useRouter();
@@ -65,6 +65,27 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   // <Transcript>'s own turnInFlight calc (turn_status claimable/running)
   // since both need the same "a turn is in flight" signal.
   const turnInFlight = chatRow?.turn_status === "claimable" || chatRow?.turn_status === "running";
+
+  // studio-ux fix 3: a chat with no `response_format` of its own still
+  // effectively runs under the AGENT's build-time response_format (per-turn
+  // precedence is agent default -> chat override -> ephemeral send-frame).
+  // Fetched only while the schema panel is open and the chat is bound to a
+  // real agent id, mirroring the guarded-useResource convention in
+  // agents.jsx's AG_ReferencesPanel (cache key/fetcher both fall back to a
+  // no-op "none" entry rather than skipping the hook). SchemaPanel decides
+  // whether to actually SHOW this — it only applies while the chat has no
+  // override of its own (`schemaValue == null`).
+  const agentIdForSchema = chatRow?.agent_id || null;
+  const agentDetail = useResource(
+    showSchemaPanel && agentIdForSchema ? `agent-detail:${agentIdForSchema}` : "agent-detail:none",
+    (s) =>
+      showSchemaPanel && agentIdForSchema
+        ? apiFetch("GET", `/agents/${encodeURIComponent(agentIdForSchema)}`, null, { signal: s })
+        : Promise.resolve(null),
+    { deps: [showSchemaPanel, agentIdForSchema] }
+  );
+  const agentResponseFormat =
+    agentDetail.data && agentDetail.data.response_format != null ? agentDetail.data.response_format : null;
 
   const [messages, setMessages] = React.useState([]);
   const [lastSeq, setLastSeq] = React.useState(0);
@@ -112,7 +133,12 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
   const [schemaValue, setSchemaValue] = React.useState(null);
   const [schemaPersistent, setSchemaPersistent] = React.useState(false);
   const [schemaValid, setSchemaValid] = React.useState(true);
-  const [schemaCollapsed, setSchemaCollapsed] = React.useState(true);
+  // studio-ux fix 2: the panel used to ALSO start collapsed internally
+  // (a second, redundant expand step behind the "⚙ schema" chip's own
+  // mount/unmount toggle — see showSchemaPanel above). <SchemaPanel> is now
+  // always rendered fully open the moment it's mounted; its own header
+  // chevron (still useful as a quick "hide" control) closes the panel
+  // outright via onCloseSchemaPanel instead of re-collapsing in place.
 
   // One-time hydration: once the chat row's own fetch resolves, seed
   // the panel from any existing per-chat persistent schema (A1's
@@ -1092,12 +1118,19 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
         </div>
       </div>
 
-      {/* <SchemaPanel> (R3) — collapsible right-hand sibling of the
-          timeline + composer column, per §3's layout. Builder/JSON
-          bodies + persistent/ephemeral application (Task F2) are wired
-          above (handleSchemaPersistentChange, the debounced persist
-          effect, sendMessage's ephemeral frame.response_format, and the
-          one-time chatRow.response_format hydration). */}
+      {/* <SchemaPanel> (R3) — right-hand sibling of the timeline + composer
+          column, per §3's layout. Builder/JSON bodies + persistent/ephemeral
+          application (Task F2) are wired above (handleSchemaPersistentChange,
+          the debounced persist effect, sendMessage's ephemeral
+          frame.response_format, and the one-time chatRow.response_format
+          hydration). studio-ux fix 2: always mounted fully OPEN (never the
+          internal collapsed-rail state) — the "⚙ schema" chip is now the
+          single toggle for the whole panel (mount === visible); its own
+          header chevron closes it outright via onCloseSchemaPanel instead of
+          re-collapsing in place. studio-ux fix 3: inheritedSchema hands it
+          the agent's build-time response_format so a chat with no override
+          of its own still shows the EFFECTIVE schema instead of looking
+          schema-less. */}
       {showSchemaPanel && (
         <SchemaPanel
           value={schemaValue}
@@ -1106,8 +1139,9 @@ function Conversation({ chatId, headerSlot, rightChromeSlot, showSchemaPanel, on
           onPersistentChange={handleSchemaPersistentChange}
           valid={schemaValid}
           onValidityChange={setSchemaValid}
-          collapsed={schemaCollapsed}
-          onToggle={() => setSchemaCollapsed((c) => !c)}
+          collapsed={false}
+          onToggle={onCloseSchemaPanel}
+          inheritedSchema={agentResponseFormat}
         />
       )}
     </div>
