@@ -2429,3 +2429,135 @@ input, textarea, select { font: inherit; color: inherit; }
   .mobile-only { display: none !important; }
   .desktop-only { display: revert; }
 }
+
+/* ============================================================================
+   Chat header control cluster + agent-switch overlay (fix/studio-ux, PR #114)
+   ----------------------------------------------------------------------------
+   C1/C2: the /chats desktop ChatDetail header is one row now. The agent
+   selector, the schema toggle, and the TokenMeter (token pill + compact
+   button) are grouped into a single subtle bordered cluster inside
+   `.panel-h .right`; the connection badge + status pill trail it.
+
+   C3: the agent selector's old cramped inline `.popover` is replaced by a
+   centered, command-palette-style modal (mirrors StudioCommandPalette /
+   QuickOpen in studio-palette.jsx) — dimmed backdrop, ~520px card, large
+   autofocused search, a scrollable id+description results list with a
+   "current" marker and ↑/↓/Enter/Esc keyboard nav. Opened by the trigger
+   button or the ⌘/Ctrl+Shift+A shortcut (C4).
+   ========================================================================== */
+
+.chat-header-cluster {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-1);
+}
+.chat-header-cluster:hover { border-color: var(--border-strong); }
+/* Keep every grouped control the same visual height + baseline. */
+.chat-header-cluster > * { flex: 0 0 auto; }
+.chat-header-cluster .chip { padding: 3px 8px; }
+
+/* --- centered agent-switch overlay (command-palette style) --- */
+.agent-overlay-backdrop {
+  position: fixed;
+  inset: 0;
+  background: oklch(0 0 0 / 0.5);
+  z-index: 60;
+  display: flex;
+  justify-content: center;
+  padding-top: 12vh;
+}
+.agent-overlay-card {
+  width: 520px;
+  max-width: calc(100vw - 32px);
+  height: max-content;
+  max-height: 64vh;
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.agent-overlay-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.agent-overlay-search-icon { color: var(--text-3); flex: 0 0 auto; }
+.agent-overlay-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  outline: none;
+  color: var(--text);
+  font-size: 14px;
+}
+.agent-overlay-input::placeholder { color: var(--text-4); }
+.agent-overlay-close {
+  flex: 0 0 auto;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+}
+.agent-overlay-close:hover { color: var(--text); border-color: var(--border-strong); }
+.agent-overlay-list {
+  overflow: auto;
+  padding: 6px;
+  min-height: 0;
+}
+.agent-overlay-empty {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-4);
+  font-size: 12px;
+}
+.agent-overlay-item {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+}
+.agent-overlay-item.active { background: var(--bg-active); }
+.agent-overlay-item[aria-disabled="true"] { cursor: default; opacity: 0.75; }
+.agent-overlay-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.agent-overlay-item-id { color: var(--text); font-size: 13px; }
+.agent-overlay-item-desc {
+  color: var(--text-3);
+  font-size: 11.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-overlay-current {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--accent);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
