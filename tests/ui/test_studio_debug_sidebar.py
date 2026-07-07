@@ -371,8 +371,10 @@ def _styles_src() -> str:
 def test_collapsed_rail_hides_bell_and_label_but_keeps_chevron_and_badge() -> None:
     fn = _studio_activity_fn_src()
     assert "var expanded = !collapsed;" in fn
-    # Chevron (the toggle indicator) and the badge are unconditional; only
-    # the bell icon + "Debug" text retract into the collapsed rail.
+    # Chevron (the toggle indicator) and the badge are unconditional; the bell
+    # icon + the HORIZONTAL "Debug" text retract when collapsed (the collapsed
+    # rail instead shows a compact VERTICAL Debug label — see the rail-label
+    # test below).
     assert '{expanded && <Icon name="bell" size={13} style={{ flexShrink: 0 }} />}' in fn
     assert '{expanded && <span style={{ flex: 1, textAlign: "left" }}>Debug</span>}' in fn
     assert 'Icon name={collapsed ? "chevron-left" : "chevron-right"}' in fn
@@ -384,6 +386,16 @@ def test_collapsed_toggle_button_restyles_into_a_narrow_column() -> None:
     assert 'flexDirection: collapsed ? "column" : "row"' in fn
     assert 'height: collapsed ? "auto" : 34' in fn
     assert 'padding: collapsed ? "10px 4px" : "0 12px"' in fn
+
+
+def test_collapsed_rail_shows_a_vertical_debug_label_as_the_expand_handle() -> None:
+    # Discoverability: collapsed, the rail is a thin strip. A vertical "Debug"
+    # label (writing-mode) makes it legibly the expand handle instead of a bare,
+    # easily-missed chevron — operators kept asking how to re-open the panel.
+    fn = _studio_activity_fn_src()
+    assert "{collapsed && (" in fn
+    assert 'data-testid="debug-sidebar-rail-label"' in fn
+    assert 'writingMode: "vertical-rl"' in fn
 
 
 def test_st_body_grid_shrinks_the_right_track_when_the_rail_is_collapsed() -> None:
