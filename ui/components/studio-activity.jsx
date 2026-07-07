@@ -773,6 +773,17 @@ function StudioActivity({ wid, studio }) {
         <Icon name={collapsed ? "chevron-left" : "chevron-right"} size={13} style={{ flexShrink: 0, color: "var(--text-3)" }} />
         {expanded && <Icon name="bell" size={13} style={{ flexShrink: 0 }} />}
         {expanded && <span style={{ flex: 1, textAlign: "left" }}>Debug</span>}
+        {/* Collapsed: a vertical "Debug" label so the thin rail is legibly the
+            expand handle. The chevron alone was too subtle — operators couldn't
+            tell the strip was clickable (or that it was the debug panel). */}
+        {collapsed && (
+          <span
+            data-testid="debug-sidebar-rail-label"
+            style={{ writingMode: "vertical-rl", letterSpacing: "0.12em", color: "var(--text-3)" }}
+          >
+            Debug
+          </span>
+        )}
         {pendingCount > 0 && (
           <span
             data-testid="debug-sidebar-badge"
