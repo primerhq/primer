@@ -397,14 +397,24 @@ function CT_NewChatModal({ onClose, pushToast }) {
 }
 
 // ============================================================================
-// CT_AgentSwitcher - clickable header dropdown to switch a chat's agent
-// (POST /v1/chats/{id}/agent), paginated + searchable picker.
+// CT_AgentSwitcher - header trigger button + centered command-palette-style
+// modal overlay to switch a chat's agent (POST /v1/chats/{id}/agent).
+//
+// C3: the old cramped inline `.popover` is replaced by a dimmed-backdrop
+// centered card modelled on StudioCommandPalette/QuickOpen (studio-palette.jsx)
+// — large autofocused search, scrollable id+description list with a "current"
+// marker, ↑/↓/Enter/Esc keyboard nav, click-backdrop-to-close.
+// C4: a ⌘/Ctrl+Shift+A shortcut (⌘K is the global search — no collision) opens
+// the same overlay with the search focused while a chat is open. `open` is the
+// single source of truth shared by the trigger button and the shortcut.
 // ============================================================================
 
-function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, placement = "down", disabled = false, triggerStyle = null }) {
+function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, disabled = false, triggerStyle = null }) {
   const { useResource, useMutation, apiFetch } = window.primerApi;
   const [open, setOpen] = React.useState(false);
   const [q, setQ] = React.useState("");
+  const [cursor, setCursor] = React.useState(0);
+  const inputRef = React.useRef(null);
   const agents = useResource(
     "agent-switcher:agents",
     (s) => apiFetch("GET", "/agents?limit=200", null, { signal: s }),
@@ -415,11 +425,6 @@ function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, placement = "down
     ? items.filter((a) =>
         (a.id + " " + (a.description || "")).toLowerCase().includes(q.toLowerCase()))
     : items;
-  const PAGE = 8;
-  const [page, setPage] = React.useState(0);
-  React.useEffect(() => setPage(0), [q]);
-  const shown = filtered.slice(page * PAGE, page * PAGE + PAGE);
-  const pages = Math.max(1, Math.ceil(filtered.length / PAGE));
 
   const switchAgent = useMutation(
     (agentId) => apiFetch("POST", `/chats/${chatId}/agent`, { agent_id: agentId }),
@@ -438,48 +443,130 @@ function CT_AgentSwitcher({ chatId, currentAgentId, pushToast, placement = "down
     }
   );
 
+  const openOverlay = () => { if (!disabled) setOpen(true); };
+  const closeOverlay = () => { setOpen(false); setQ(""); };
+
+  // C4 — global keydown shortcut, added on mount / removed on unmount. Refs
+  // hold the latest open+disabled so the listener stays registered once. When
+  // the overlay is already open we let ⇧A type into the search (no
+  // preventDefault); when the chat is ended (disabled) the shortcut is a no-op.
+  const stateRef = React.useRef({ open, disabled });
+  stateRef.current = { open, disabled };
+  React.useEffect(() => {
+    function onKey(e) {
+      const combo = (e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey &&
+        (e.code === "KeyA" || (e.key || "").toLowerCase() === "a");
+      if (!combo) return;
+      if (stateRef.current.open || stateRef.current.disabled) return;
+      e.preventDefault();
+      setOpen(true);
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // Autofocus the search + reset query/cursor whenever the overlay opens.
+  React.useEffect(() => {
+    if (!open) return undefined;
+    setQ(""); setCursor(0);
+    const t = setTimeout(() => { if (inputRef.current) inputRef.current.focus(); }, 30);
+    return () => clearTimeout(t);
+  }, [open]);
+
+  React.useEffect(() => setCursor(0), [q]);
+  // Clamp the highlight when the filtered list shrinks.
+  React.useEffect(() => {
+    setCursor((c) => Math.min(c, Math.max(0, filtered.length - 1)));
+  }, [filtered.length]);
+
+  const choose = (a) => {
+    if (!a || a.id === currentAgentId || switchAgent.loading) return;
+    switchAgent.mutate(a.id);
+  };
+
+  function onKeyDown(e) {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setCursor((c) => Math.min(c + 1, filtered.length - 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setCursor((c) => Math.max(c - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      if (filtered[cursor]) choose(filtered[cursor]);
+    } else if (e.key === "Escape") {
+      e.stopPropagation();
+      closeOverlay();
+    }
+  }
+
   return (
-    <span className="agent-switcher" style={{ position: "relative", display: "inline-flex", alignItems: "stretch" }}>
+    <>
       <button
         className="chip"
-        onClick={() => !disabled && setOpen((v) => !v)}
-        title="Switch agent"
+        onClick={openOverlay}
+        title="Switch agent  (⌘/Ctrl + Shift + A)"
         disabled={disabled}
         style={{ display: "inline-flex", alignItems: "center", gap: 4, whiteSpace: "nowrap", ...(triggerStyle || {}) }}
       >
         agent <span className="mono">{currentAgentId}</span>
-        <Icon name={placement === "up" ? "chevron-up" : "chevron-down"} size={11} />
+        <Icon name="chevron-down" size={11} />
       </button>
       {open && (
-        <div className="popover" style={{ position: "absolute",
-              ...(placement === "up" ? { bottom: "100%", marginBottom: 6 } : { top: "100%", marginTop: 6 }),
-              left: 0, zIndex: 50,
-              width: 300, background: "var(--bg-1)", border: "1px solid var(--border)",
-              borderRadius: 8, padding: 8, boxShadow: "0 6px 24px rgba(0,0,0,.3)" }}>
-          <input className="input" placeholder="Search agents…" value={q}
-                 onChange={(e) => setQ(e.target.value)} style={{ width: "100%", marginBottom: 6 }} />
-          <div style={{ display: "flex", flexDirection: "column", gap: 2, maxHeight: 260, overflow: "auto" }}>
-            {shown.map((a) => (
-              <button key={a.id} className="menu-item"
-                      disabled={a.id === currentAgentId || switchAgent.loading}
-                      onClick={() => switchAgent.mutate(a.id)}
-                      style={{ textAlign: "left", padding: "6px 8px", borderRadius: 6 }}>
-                <div className="mono">{a.id}{a.id === currentAgentId ? " (current)" : ""}</div>
-                {a.description ? <div className="muted text-sm">{a.description}</div> : null}
+        <div className="agent-overlay-backdrop" data-testid="agent-overlay" onClick={closeOverlay}>
+          <div className="agent-overlay-card" onClick={(e) => e.stopPropagation()}>
+            <div className="agent-overlay-head">
+              <Icon name="search" size={14} className="agent-overlay-search-icon" />
+              <input
+                ref={inputRef}
+                className="agent-overlay-input"
+                data-testid="agent-overlay-search"
+                placeholder="Switch agent…"
+                value={q}
+                onChange={(e) => { setQ(e.target.value); setCursor(0); }}
+                onKeyDown={onKeyDown}
+              />
+              <button
+                type="button"
+                className="agent-overlay-close"
+                data-testid="agent-overlay-close"
+                onClick={closeOverlay}
+                title="Close (Esc)"
+                aria-label="Close"
+              >
+                <kbd>esc</kbd>
               </button>
-            ))}
-            {shown.length === 0 ? <div className="muted text-sm">No agents match.</div> : null}
-          </div>
-          {pages > 1 && (
-            <div style={{ display: "flex", justifyContent: "space-between", marginTop: 6 }}>
-              <button className="chip" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>Prev</button>
-              <span className="muted text-sm">{page + 1}/{pages}</span>
-              <button className="chip" disabled={page >= pages - 1} onClick={() => setPage((p) => p + 1)}>Next</button>
             </div>
-          )}
+            <div className="agent-overlay-list">
+              {filtered.length === 0 ? (
+                <div className="agent-overlay-empty">No agents match.</div>
+              ) : filtered.map((a, idx) => {
+                const active = idx === cursor;
+                const isCurrent = a.id === currentAgentId;
+                return (
+                  <div
+                    key={a.id}
+                    data-testid="agent-overlay-item"
+                    className={"agent-overlay-item" + (active ? " active" : "")}
+                    aria-disabled={isCurrent || switchAgent.loading}
+                    onMouseEnter={() => setCursor(idx)}
+                    onClick={() => choose(a)}
+                  >
+                    <span className="agent-overlay-item-main">
+                      <span className="mono agent-overlay-item-id">{a.id}</span>
+                      {a.description ? <span className="agent-overlay-item-desc">{a.description}</span> : null}
+                    </span>
+                    {isCurrent ? (
+                      <span className="agent-overlay-current"><Icon name="check" size={12} />current</span>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
       )}
-    </span>
+    </>
   );
 }
 
@@ -606,44 +693,17 @@ function ChatDetail({ chatId, onBack, pushToast }) {
             <span className="mono">{cid}</span>
           )}
           <div className="right" style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <window.TokenMeter
-              inputTokens={convStatus.usage.input_tokens}
-              contextLength={convStatus.usage.context_length}
-              onCompact={chatStatus === "ended" ? null : convStatus.requestCompact}
-              compactDisabled={convStatus.compactInFlight || convStatus.wsState !== "open"}
-              compactTooltip={
-                convStatus.compactInFlight
-                  ? "Compaction in progress…"
-                  : convStatus.wsState !== "open"
-                    ? "WebSocket offline"
-                    : ""
-              }
-            />
-            {wsBadge}
-            <span className={chatStatus === "active" ? "pill pill-running" : "pill pill-ended"}>
-              <span className="dot"></span>{chatStatus}
-            </span>
-          </div>
-        </div>
-        )}
-        <Conversation
-          chatId={cid}
-          pushToast={pushToast}
-          onStatus={setConvStatus}
-          headerSlot={null}
-          // R1: the agent selector lives in the host's top-right chrome
-          // slot now, next to the back/title chrome above, instead of
-          // the composer row — <Conversation> just renders whatever
-          // node this host hands it (see conversation.jsx). `placement`
-          // flips to "down" (was "up" in the old bottom-composer spot)
-          // since the popover now opens below the trigger.
-          rightChromeSlot={
-            <>
+            {/* C1/C2: one consolidated header row. The agent selector +
+                schema toggle + TokenMeter (token pill + compact) are grouped
+                into a single subtle cluster; the connection badge + chat
+                status pill trail it. This is what pulls the compact button
+                "down with the agent selector and schema" — they used to sit
+                in <Conversation>'s own second chrome row (now null). */}
+            <span className="chat-header-cluster" data-testid="chat-header-cluster">
               <CT_AgentSwitcher
                 chatId={cid}
                 currentAgentId={chatAgent}
                 pushToast={pushToast}
-                placement="down"
                 disabled={chatStatus === "ended"}
               />
               <button
@@ -657,8 +717,37 @@ function ChatDetail({ chatId, onBack, pushToast }) {
                 <Icon name="settings" size={12} />
                 schema
               </button>
-            </>
-          }
+              <window.TokenMeter
+                inputTokens={convStatus.usage.input_tokens}
+                contextLength={convStatus.usage.context_length}
+                onCompact={chatStatus === "ended" ? null : convStatus.requestCompact}
+                compactDisabled={convStatus.compactInFlight || convStatus.wsState !== "open"}
+                compactTooltip={
+                  convStatus.compactInFlight
+                    ? "Compaction in progress…"
+                    : convStatus.wsState !== "open"
+                      ? "WebSocket offline"
+                      : ""
+                }
+              />
+            </span>
+            {wsBadge}
+            <span className={chatStatus === "active" ? "pill pill-running" : "pill pill-ended"}>
+              <span className="dot"></span>{chatStatus}
+            </span>
+          </div>
+        </div>
+        )}
+        <Conversation
+          chatId={cid}
+          pushToast={pushToast}
+          onStatus={setConvStatus}
+          // C1: the whole desktop control cluster (agent selector, schema
+          // toggle, TokenMeter + compact) now lives in this host's single
+          // `panel-h .right` row above — so both of <Conversation>'s opaque
+          // chrome slots are null and its second header row no longer renders.
+          headerSlot={null}
+          rightChromeSlot={null}
           showSchemaPanel={showSchemaPanel}
           onCloseSchemaPanel={() => setShowSchemaPanel(false)}
         />

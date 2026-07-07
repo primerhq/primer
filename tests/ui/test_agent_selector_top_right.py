@@ -3,17 +3,19 @@ relocate the agent selector (<CT_AgentSwitcher>, ui/components/chats.jsx)
 out of the bottom-left composer row to the top-right, next to the
 back/title chrome.
 
-Architecture (R1/§3/§5 of docs/superpowers/reqs/chat-refactor.md):
-ChatDetail (chats.jsx) — the host — builds the <CT_AgentSwitcher> node
-and hands it to <Conversation> (chat/conversation.jsx) via the
-`rightChromeSlot` prop that Task B2 already exposed. <Conversation>
-renders it in a top-of-panel chrome row (alongside `headerSlot`) rather
-than inline in the composer's flex row, so:
-  * conversation.jsx no longer references <CT_AgentSwitcher> at all —
-    it only knows about the opaque `rightChromeSlot` node.
-  * chats.jsx now wires a real node into `rightChromeSlot` (no longer
-    `null`), with `placement="down"` (was "up" for the old
-    bottom-composer popover).
+conversation.jsx side (still current): <Conversation> owns nothing about
+the agent selector — it only knows about the opaque `headerSlot` /
+`rightChromeSlot` nodes and renders them in a top-of-panel chrome row
+(never inline in the composer's flex row). Those slot tests below still
+hold.
+
+SUPERSEDED for ChatDetail by C1 (fix/studio-ux, PR #114): the desktop
+ChatDetail header is now a SINGLE row. The agent selector + schema toggle
++ TokenMeter moved OUT of <Conversation>'s `rightChromeSlot` and INTO
+ChatDetail's own `panel-h .right` cluster, so ChatDetail now passes BOTH
+slots as `null` and <Conversation>'s second chrome row no longer renders.
+The overlay + ⌘/Ctrl+Shift+A shortcut behavior lives in
+test_agent_switch_overlay.py.
 
 Static-source + transpile-build checks only (the ui/ suite convention,
 e.g. test_conversation_extracted.py / test_composer_schema_shells.py) —
@@ -102,35 +104,52 @@ def test_composer_row_no_longer_has_agent_switcher_placement_up() -> None:
 
 
 # ---------------------------------------------------------------------------
-# chats.jsx (ChatDetail, the host) — wires a real <CT_AgentSwitcher> into
-# `rightChromeSlot`, "down" now that it's in a top chrome row.
+# chats.jsx (ChatDetail, the host) — C1: the desktop header is ONE row now.
+# The agent selector lives in ChatDetail's own `panel-h .right` cluster, so
+# BOTH of <Conversation>'s opaque chrome slots are `null` (its second header
+# row no longer renders).
 # ---------------------------------------------------------------------------
 
 
-def test_chat_detail_no_longer_passes_a_null_right_chrome_slot() -> None:
+def test_chat_detail_passes_null_chrome_slots_for_one_row_header() -> None:
+    # C1: with the switcher moved into ChatDetail's own header row, both
+    # opaque slots must be null so <Conversation> renders no second row.
     src = _chats_src()
-    assert "rightChromeSlot={null}" not in src, (
-        "ChatDetail must fill `rightChromeSlot` with the agent switcher now"
-    )
-
-
-def test_chat_detail_wires_agent_switcher_into_right_chrome_slot() -> None:
-    src = _chats_src()
-    # `<Conversation` (no trailing `>`) also appears in prose comments
-    # earlier in the file — anchor on the real JSX mount, which has a
-    # newline immediately after the tag name.
     assert "<Conversation\n" in src
     start = src.index("<Conversation\n")
     end = src.index("/>", start)
     block = src[start:end]
-    assert "rightChromeSlot=" in block
-    assert "<CT_AgentSwitcher" in block, (
-        "the <CT_AgentSwitcher> node passed to <Conversation> must live "
-        "inside the `rightChromeSlot` prop wiring"
+    assert "rightChromeSlot={null}" in block, (
+        "C1: ChatDetail must pass `rightChromeSlot={null}` — the agent "
+        "selector moved into its own one-row header cluster"
     )
-    assert 'placement="down"' in block, (
-        'the relocated switcher opens downward now that it sits in a '
-        'top chrome row (was placement="up" in the old bottom composer)'
+    assert "headerSlot={null}" in block, (
+        "C1: ChatDetail must pass `headerSlot={null}` so <Conversation>'s "
+        "second chrome row no longer renders"
+    )
+
+
+def test_chat_detail_agent_switcher_lives_in_the_one_row_header_cluster() -> None:
+    # C1/C2: <CT_AgentSwitcher> is grouped with the schema toggle + TokenMeter
+    # inside ChatDetail's `chat-header-cluster`, ABOVE the <Conversation>
+    # mount — no longer inside <Conversation>'s `rightChromeSlot`.
+    src = _chats_src()
+    conv_start = src.index("<Conversation\n")
+    conv_end = src.index("/>", conv_start)
+    conv_block = src[conv_start:conv_end]
+    assert "<CT_AgentSwitcher" not in conv_block, (
+        "C1: the agent switcher must NOT be wired into <Conversation> "
+        "anymore — it lives in ChatDetail's own header cluster"
+    )
+    cluster = src.index('data-testid="chat-header-cluster"')
+    switcher = src.index("<CT_AgentSwitcher")
+    schema = src.index('data-testid="chat-schema-panel-toggle"')
+    token = src.index("<window.TokenMeter")
+    # The cluster opens first, then the three grouped controls, all before
+    # the <Conversation> mount further down the file.
+    assert cluster < switcher < schema < token < conv_start, (
+        "C1/C2: agent selector + schema toggle + TokenMeter must be grouped "
+        "in that order inside the `chat-header-cluster`, above <Conversation>"
     )
 
 
