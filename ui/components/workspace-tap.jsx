@@ -222,7 +222,7 @@ function WTP_eventKey(ev) {
 // server-selectored EventSource).
 // ---------------------------------------------------------------------------
 
-function WorkspaceTap({ wid, sessionId }) {
+function WorkspaceTap({ wid, sessionId, fillHeight }) {
   var tap = window.useWorkspaceTap(wid);
   var liveEvents = tap.events;
   var connState = tap.connState;
@@ -351,7 +351,13 @@ function WorkspaceTap({ wid, sessionId }) {
   var activeClasses = selectedClasses === null ? WTP_ALL_CLASSES : selectedClasses;
 
   return (
-    <div className="col" style={{ gap: 0 }} data-testid="workspace-tap-root">
+    <div
+      className="col"
+      style={fillHeight
+        ? { gap: 0, display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }
+        : { gap: 0 }}
+      data-testid="workspace-tap-root"
+    >
       {/* Filter bar */}
       <div
         style={{
@@ -416,7 +422,12 @@ function WorkspaceTap({ wid, sessionId }) {
       <div
         ref={scrollRef}
         onScroll={onScroll}
-        style={{ overflowY: "auto", maxHeight: 520, minHeight: 120, padding: "6px 0" }}
+        // fillHeight (Studio Workspace Activity panel): grow to fill the column
+        // down to the bottom instead of the fixed 520px cap that left dead
+        // space below a short event list. Standalone/page usages keep the cap.
+        style={fillHeight
+          ? { overflowY: "auto", flex: 1, minHeight: 0, padding: "6px 0" }
+          : { overflowY: "auto", maxHeight: 520, minHeight: 120, padding: "6px 0" }}
         data-testid="tap-event-list"
       >
         {events.length === 0 && (

@@ -30,6 +30,35 @@ def _studio_src() -> str:
     return STUDIO.read_text(encoding="utf-8")
 
 
+TAP = UI / "components" / "workspace-tap.jsx"
+
+
+def _tap_src() -> str:
+    return TAP.read_text(encoding="utf-8")
+
+
+def test_workspace_activity_fills_height_via_tap_fillheight() -> None:
+    # Request: Workspace Activity should fill from its start to the bottom of the
+    # sidebar instead of leaving dead space below a short event list. It passes
+    # fillHeight to WorkspaceTap, which then drops the 520px cap and lets the
+    # event list grow (flex:1) to the bottom.
+    act = _activity_src()
+    assert "<window.WorkspaceTap wid={wid} fillHeight />" in act
+    tap = _tap_src()
+    assert "function WorkspaceTap({ wid, sessionId, fillHeight })" in tap
+    assert '{ overflowY: "auto", flex: 1, minHeight: 0, padding: "6px 0" }' in tap
+    # Standalone/page usages (e.g. the /workspaces events panel) keep the cap.
+    assert "maxHeight: 520" in tap
+
+
+def test_collapsed_rail_uses_double_chevron_handle() -> None:
+    # Per user request the rail's expand/collapse affordance is a << / >> double
+    # chevron (replaces the single chevron), flipping the shared store state.
+    act = _activity_src()
+    assert 'Icon name={collapsed ? "chevrons-left" : "chevrons-right"}' in act
+    assert "studio.toggleDebug()" in act
+
+
 def _index_order() -> list[str]:
     out: list[str] = []
     for line in INDEX.read_text(encoding="utf-8").splitlines():
