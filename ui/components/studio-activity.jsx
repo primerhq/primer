@@ -709,6 +709,14 @@ function WorkspaceActivity({ wid }) {
 function StudioActivity({ wid, studio }) {
   var [collapsed, setCollapsed] = React.useState(true);
   var [pendingCount, setPendingCount] = React.useState(0);
+  // Task (studio-ux fix 1): only the bell+"Debug" label retract into the
+  // thin rail — the chevron (the toggle affordance itself) and the pending
+  // badge stay visible in both states. A separate, positively-named flag
+  // (rather than negating `collapsed` inline at each call site) keeps this
+  // JSX visibly distinct from the ActionRequired/WorkspaceActivity
+  // conditional-mount anti-pattern the sibling mount-guard test forbids
+  // (see test_action_required_and_workspace_activity_stay_mounted_when_collapsed).
+  var expanded = !collapsed;
 
   function toggle() {
     setCollapsed(function(c) { return !c; });
@@ -737,10 +745,13 @@ function StudioActivity({ wid, studio }) {
         style={{
           flexShrink: 0,
           display: "flex",
+          flexDirection: collapsed ? "column" : "row",
           alignItems: "center",
-          gap: 8,
-          height: 34,
-          padding: "0 12px",
+          justifyContent: "center",
+          gap: collapsed ? 6 : 8,
+          height: collapsed ? "auto" : 34,
+          minHeight: collapsed ? 64 : "auto",
+          padding: collapsed ? "10px 4px" : "0 12px",
           border: "none",
           borderBottom: collapsed ? "none" : "1px solid var(--border)",
           background: "transparent",
@@ -754,8 +765,8 @@ function StudioActivity({ wid, studio }) {
         }}
       >
         <Icon name={collapsed ? "chevron-left" : "chevron-right"} size={13} style={{ flexShrink: 0, color: "var(--text-3)" }} />
-        <Icon name="bell" size={13} style={{ flexShrink: 0 }} />
-        <span style={{ flex: 1, textAlign: "left" }}>Debug</span>
+        {expanded && <Icon name="bell" size={13} style={{ flexShrink: 0 }} />}
+        {expanded && <span style={{ flex: 1, textAlign: "left" }}>Debug</span>}
         {pendingCount > 0 && (
           <span
             data-testid="debug-sidebar-badge"
