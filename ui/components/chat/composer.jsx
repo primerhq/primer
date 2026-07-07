@@ -363,7 +363,7 @@ function Composer({
             }}
             placeholder={disabled ? "This chat has ended." : "Send a message…"}
             rows={2}
-            style={{ flex: 1, resize: "none", paddingRight: 34 }}
+            style={{ flex: 1, resize: "none", paddingRight: 44 }}
             disabled={disabled}
             onKeyDown={handleComposerKeyDown}
             onKeyUp={updateCursorFromEvent}
@@ -379,22 +379,27 @@ function Composer({
             data-testid="chat-attach-btn"
             onClick={() => fileInputRef.current && fileInputRef.current.click()}
             disabled={disabled}
+            // Full-height attach affordance: spans the textarea box top-to-bottom
+            // (anchored right) with the icon vertically centered, so it reads as
+            // proportional to the chat box instead of a tiny bottom-corner glyph.
             style={{
               position: "absolute",
-              right: 6,
-              bottom: 6,
+              right: 4,
+              top: 0,
+              bottom: 0,
               background: "transparent",
               border: "none",
               borderRadius: 6,
-              padding: 4,
+              padding: "0 8px",
               color: "var(--text-2)",
               cursor: disabled ? "not-allowed" : "pointer",
               display: "flex",
               alignItems: "center",
+              justifyContent: "center",
               opacity: disabled ? 0.5 : 1,
             }}
           >
-            <Icon name="paperclip" size={14} />
+            <Icon name="paperclip" size={18} />
           </button>
           <input
             ref={fileInputRef}
