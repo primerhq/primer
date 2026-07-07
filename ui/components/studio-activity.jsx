@@ -707,7 +707,11 @@ function WorkspaceActivity({ wid }) {
 // ---------------------------------------------------------------------------
 
 function StudioActivity({ wid, studio }) {
-  var [collapsed, setCollapsed] = React.useState(true);
+  // Collapsed state is owned by the studio store (studio.state.debugOpen) so the
+  // header Debug toggle and this rail's own handle share ONE source of truth —
+  // the internal-only useState meant the header could never reach it. Default is
+  // collapsed (debugOpen:false in ST_defaultState).
+  var collapsed = !(studio && studio.state && studio.state.debugOpen);
   var [pendingCount, setPendingCount] = React.useState(0);
   // Task (studio-ux fix 1): only the bell+"Debug" label retract into the
   // thin rail — the chevron (the toggle affordance itself) and the pending
@@ -719,7 +723,7 @@ function StudioActivity({ wid, studio }) {
   var expanded = !collapsed;
 
   function toggle() {
-    setCollapsed(function(c) { return !c; });
+    if (studio && typeof studio.toggleDebug === "function") studio.toggleDebug();
   }
 
   return (
