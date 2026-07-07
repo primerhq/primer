@@ -139,21 +139,17 @@ function AT_ApiTokensPage() {
       )}
 
       {items.length > 0 && (
-        <div
-          data-testid="api-tokens-table"
-          className="panel"
-          style={{ padding: 0, overflow: "hidden" }}
-        >
-          <table className="table" style={{ width: "100%", fontSize: 12 }}>
+        <div data-testid="api-tokens-table" className="tbl-wrap">
+          <table className="tbl">
             <thead>
               <tr>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Name</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Prefix</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Scopes</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Last used</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Expires</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
-                <th style={{ textAlign: "right", padding: "8px 12px" }}>Actions</th>
+                <th>Name</th>
+                <th>Prefix</th>
+                <th>Scopes</th>
+                <th>Last used</th>
+                <th>Expires</th>
+                <th>Status</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -215,23 +211,14 @@ function AT_TokenRow({ token, onRevoke }) {
       : "pill-ended";
   const isRevoked = status === "revoked";
   return (
-    <tr
-      data-testid={`api-token-row-${token.id}`}
-      style={{ borderTop: "1px solid var(--border)" }}
-    >
-      <td style={{ padding: "8px 12px", fontWeight: 600 }}>{token.name}</td>
-      <td style={{ padding: "8px 12px" }}>
-        <span className="mono" style={{ fontSize: 11 }}>{token.prefix}…</span>
-      </td>
-      <td style={{ padding: "8px 12px" }}>
+    <tr data-testid={`api-token-row-${token.id}`}>
+      <td>{token.name}</td>
+      <td className="mono">{token.prefix}…</td>
+      <td>
         {Array.isArray(token.scopes) && token.scopes.length > 0 ? (
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             {token.scopes.map((s) => (
-              <span
-                key={s}
-                className="pill pill-paused"
-                style={{ fontSize: 10.5 }}
-              >
+              <span key={s} className="pill pill-paused">
                 {s}
               </span>
             ))}
@@ -240,20 +227,20 @@ function AT_TokenRow({ token, onRevoke }) {
           <span className="muted text-sm">—</span>
         )}
       </td>
-      <td style={{ padding: "8px 12px" }} title={token.last_used_at || ""}>
+      <td title={token.last_used_at || ""}>
         <span className="mono">{AT_relTime(token.last_used_at)}</span>
       </td>
-      <td style={{ padding: "8px 12px" }} title={token.expires_at || ""}>
+      <td title={token.expires_at || ""}>
         {token.expires_at
           ? <span className="mono">{AT_relTime(token.expires_at)}</span>
           : <span className="muted">never</span>}
       </td>
-      <td style={{ padding: "8px 12px" }}>
-        <span className={`pill ${statusClass}`} style={{ fontSize: 10.5 }}>
+      <td>
+        <span className={`pill ${statusClass}`}>
           {status}
         </span>
       </td>
-      <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
         <Btn
           size="sm"
           kind="danger"

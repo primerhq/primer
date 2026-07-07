@@ -34,6 +34,17 @@ def test_table_testid():
     assert "api-tokens-table" in _src()
 
 
+def test_table_uses_shared_tbl_class():
+    # Consistency sweep: the tokens table uses the console-wide shared .tbl /
+    # .tbl-wrap styling (like agents/channels/…), not the old hand-rolled
+    # className="table" + inline per-cell padding.
+    src = _src()
+    assert 'className="tbl-wrap"' in src
+    assert 'className="tbl"' in src
+    assert 'className="table"' not in src
+    assert '"8px 12px"' not in src
+
+
 def test_sidebar_has_tokens_entry():
     src = CHROME.read_text()
     assert "tokens" in src.lower() or "API tokens" in src or "api_tokens" in src.lower()
