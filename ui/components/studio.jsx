@@ -29,6 +29,7 @@ var ST_PERSIST_KEYS = [
   "expanded",
   "fileModes",
   "terminalOpen",
+  "debugOpen",
   "activeTermId",
   "termTabs",
   "density",
@@ -175,6 +176,10 @@ function ST_defaultState() {
     fileModes: {},
     // Terminal placeholders (P7)
     terminalOpen: false,
+    // Right debug/activity rail — open state (persisted). Default collapsed
+    // so an operator who isn't debugging keeps the screen width; the header
+    // Debug toggle + the rail's own handle both flip this.
+    debugOpen: false,
     terminalHeight: 240,
     termTabs: [{ id: "bash", title: "bash" }],
     activeTermId: "bash",
@@ -395,6 +400,11 @@ function useStudioState(wid, initialOpen) {
     setState(function (s) { return Object.assign({}, s, { terminalOpen: !s.terminalOpen }); });
   }, []);
 
+  // ---- right debug/activity rail (StudioActivity) open/collapsed ----
+  var toggleDebug = React.useCallback(function () {
+    setState(function (s) { return Object.assign({}, s, { debugOpen: !s.debugOpen }); });
+  }, []);
+
   // ---- command palette / quick-open (B5) ----
   var openPalette = React.useCallback(function (mode) {
     setState(function (s) { return Object.assign({}, s, { paletteOpen: true, paletteMode: mode || "command", paletteQuery: "" }); });
@@ -454,6 +464,7 @@ function useStudioState(wid, initialOpen) {
     toggleTheme: toggleTheme,
     toggleDensity: toggleDensity,
     toggleTerminal: toggleTerminal,
+    toggleDebug: toggleDebug,
     toggleChip: toggleChip,
     setLeftWidth: setLeftWidth,
     setRightWidth: setRightWidth,
@@ -481,7 +492,7 @@ function useStudioState(wid, initialOpen) {
 // collapse to a single document there.
 // ---------------------------------------------------------------------------
 
-function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, onToggleLeftPanel, onToggleRightPanel }) {
+function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, debugOpen, onToggleDebug, onToggleLeftPanel, onToggleRightPanel }) {
   var { useResource, apiFetch } = window.primerApi;
   var [menuOpen, setMenuOpen] = React.useState(false);
   // Workspace Settings overlay — restores the orphaned WorkspaceDetail tabs
@@ -609,6 +620,21 @@ function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, term
         onClick={onToggleTerminal}
       >
         <Icon name="code" size={15} />
+      </button>
+
+      {/* Desktop Debug/Activity rail toggle. On desktop the rail is a static
+          column (collapsed to a thin strip by default), and its own edge handle
+          proved too easy to miss — this gives an obvious, always-visible control
+          next to the terminal toggle. Mobile uses the drawer bell below. */}
+      <button
+        className={"st-hbtn touch-target desktop-only" + (debugOpen ? " is-active" : "")}
+        data-testid="studio-debug-toggle"
+        title="Toggle workspace events (Action Required + Activity)"
+        aria-label="Toggle debug and activity panel"
+        aria-pressed={debugOpen ? "true" : "false"}
+        onClick={onToggleDebug}
+      >
+        <Icon name="bell" size={15} />
       </button>
 
       {/* Mobile-only panel-drawer toggle (right: Action Required + Activity). */}
@@ -774,7 +800,10 @@ function Studio({ wid, pushToast, initialOpen }) {
       data-theme={s.theme}
       data-density={s.density}
       data-testid="studio-root"
-      style={{ "--st-left-w": s.leftWidth + "px", "--st-right-w": s.rightWidth + "px", "--st-term-h": s.terminalHeight + "px" }}
+      // --st-right-w collapses to the 40px rail directly from state (not only
+      // via the :has(.is-collapsed) CSS) so the debug rail width is bulletproof
+      // regardless of :has() support, and the header Debug toggle controls it.
+      style={{ "--st-left-w": s.leftWidth + "px", "--st-right-w": (s.debugOpen ? s.rightWidth : 40) + "px", "--st-term-h": s.terminalHeight + "px" }}
     >
       <StudioHeader
         wid={wid}
@@ -783,6 +812,8 @@ function Studio({ wid, pushToast, initialOpen }) {
         onSelectWorkspace={selectWorkspace}
         terminalOpen={s.terminalOpen}
         onToggleTerminal={studio.toggleTerminal}
+        debugOpen={s.debugOpen}
+        onToggleDebug={studio.toggleDebug}
         onToggleLeftPanel={function () { setRightPanelOpen(false); setLeftPanelOpen(function (o) { return !o; }); }}
         onToggleRightPanel={function () { setLeftPanelOpen(false); setRightPanelOpen(function (o) { return !o; }); }}
       />

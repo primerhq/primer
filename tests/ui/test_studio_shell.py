@@ -48,6 +48,34 @@ def test_studio_file_exists_and_exports() -> None:
     assert "window.useStudioState = useStudioState;" in src
 
 
+def test_debug_rail_open_state_lives_in_the_studio_store() -> None:
+    # The right debug/activity rail's open state is store-owned (persisted) so
+    # the header toggle and the rail's own handle share ONE source of truth —
+    # StudioActivity's old internal useState could never be reached from the
+    # header, which is why operators couldn't open the panel.
+    src = _studio_src()
+    assert '"debugOpen",' in src                     # persisted across reloads
+    assert "debugOpen: false," in src                # default collapsed
+    assert "debugOpen: !s.debugOpen" in src          # toggleDebug callback
+    assert "toggleDebug: toggleDebug," in src        # exposed on the store
+    # Column width is driven directly from state (bulletproof — not solely via
+    # the :has(.is-collapsed) CSS): 40px rail when closed, rightWidth when open.
+    assert '"--st-right-w": (s.debugOpen ? s.rightWidth : 40) + "px"' in src
+
+
+def test_studio_header_has_a_desktop_debug_toggle() -> None:
+    # A discoverable desktop control to open the events panel (the 40px edge
+    # rail was too easy to miss). Bell icon, active when open, desktop-only
+    # (mobile uses the drawer bell), wired from the store through header props.
+    src = _studio_src()
+    assert 'data-testid="studio-debug-toggle"' in src
+    assert "onClick={onToggleDebug}" in src
+    assert 'debugOpen ? " is-active"' in src
+    assert "desktop-only" in src
+    assert "onToggleDebug={studio.toggleDebug}" in src
+    assert "debugOpen={s.debugOpen}" in src
+
+
 def test_studio_shell_root_and_header_testids() -> None:
     src = _studio_src()
     assert 'data-testid="studio-root"' in src

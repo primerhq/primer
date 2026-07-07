@@ -75,15 +75,21 @@ def _inline_yields_fn_src() -> str:
 
 
 def test_debug_sidebar_starts_collapsed_by_default() -> None:
+    # Collapsed state now lives in the studio store (studio.state.debugOpen);
+    # StudioActivity derives `collapsed` from it and the store default is
+    # collapsed (ST_defaultState sets debugOpen:false — asserted in the studio
+    # store test). Deriving from the store is what lets the header toggle reach
+    # the rail.
     fn = _studio_activity_fn_src()
-    assert "var [collapsed, setCollapsed] = React.useState(true);" in fn
+    assert "var collapsed = !(studio && studio.state && studio.state.debugOpen);" in fn
 
 
 def test_debug_sidebar_toggle_flips_collapsed_state() -> None:
     fn = _studio_activity_fn_src()
     assert 'data-testid="debug-sidebar-toggle"' in fn
     assert "onClick={toggle}" in fn
-    assert "setCollapsed(function(c) { return !c; });" in fn
+    # The rail's own handle flips the SHARED store state, not local state.
+    assert "studio.toggleDebug()" in fn
     # a11y: expanded state reflected for assistive tech.
     assert 'aria-expanded={collapsed ? "false" : "true"}' in fn
 
