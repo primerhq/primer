@@ -98,6 +98,40 @@ def test_controls_hit_the_documented_endpoints() -> None:
     assert "/cancel" in src
 
 
+def test_catch_up_refetches_messages_after_known_seq() -> None:
+    # Bug fix: a fresh/slow-starting session's live tap can miss events
+    # emitted right before it subscribes (highWater 0 -> live-only tail),
+    # leaving the transcript stuck "waiting for events" until a full page
+    # refresh. The adapter must self-heal by re-fetching /messages after
+    # its current max known seq and merging the result in (deduped by seq,
+    # never resetting `records`).
+    src = ADAPTER.read_text(encoding="utf-8")
+    assert "function" in src and "catchUp" in src
+    assert "/messages?after_seq=" in src
+    assert "catchUpInFlightRef" in src, "catch-up must guard against overlapping fetches"
+
+
+def test_catch_up_triggered_by_polled_last_seq_outrunning_known_seq() -> None:
+    # The session row is already light-polled every 3s and carries the
+    # authoritative high-water `last_seq` (WorkspaceSession.last_seq) — the
+    # adapter must compare that against its own max known record seq
+    # (historyCursorRef) and only re-fetch when actually behind, so it
+    # never issues a superfluous request once caught up.
+    src = ADAPTER.read_text(encoding="utf-8")
+    assert "polledLastSeq" in src
+    assert "sessionRow.last_seq" in src
+    assert "polledLastSeq > (historyCursorRef.current || 0)" in src
+
+
+def test_catch_up_also_triggered_on_tap_reconnect() -> None:
+    # A tap that attaches even a moment late — or reconnects after a drop —
+    # must also re-sync, not rely solely on the next poll tick.
+    src = ADAPTER.read_text(encoding="utf-8")
+    onopen_start = src.index("es.onopen = function")
+    onopen_body = src[onopen_start:src.index("es.onmessage = function")]
+    assert "catchUp()" in onopen_body
+
+
 def test_session_scoped_tap_reuses_wtp_build_selector() -> None:
     # Reuse components/workspace-tap.jsx's selector builder to scope the
     # live tail to this one session, rather than re-deriving the
