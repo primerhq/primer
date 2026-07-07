@@ -367,10 +367,13 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
           <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
           <Btn
             kind="primary"
-            icon="plus"
+            icon={create.loading ? undefined : "plus"}
             disabled={!templateId || create.loading}
             onClick={onCreate}
-          >Create</Btn>
+            data-testid="workspace-create-submit"
+          >
+            {create.loading ? (<><span className="spinner" /><span>Creating…</span></>) : "Create"}
+          </Btn>
         </>
       }
     >
