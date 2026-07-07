@@ -725,7 +725,13 @@ function StudioActivity({ wid, studio }) {
   return (
     <div
       data-testid="studio-activity-root"
-      className={collapsed ? "is-collapsed" : ""}
+      // The collapse CSS keys off the `studio-activity-root` CLASS
+      // (`.st-body:has(.studio-activity-root.is-collapsed)` shrinks the grid
+      // track; `.studio-activity-root.is-collapsed { width: 40px }` shrinks the
+      // rail). `studio-activity-root` was previously ONLY a data-testid, so
+      // neither selector ever matched and the rail never actually collapsed —
+      // it MUST be a real className for the rules to engage.
+      className={"studio-activity-root" + (collapsed ? " is-collapsed" : "")}
       style={{
         display: "flex",
         flexDirection: "column",

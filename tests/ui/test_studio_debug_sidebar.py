@@ -396,6 +396,21 @@ def test_st_body_grid_shrinks_the_right_track_when_the_rail_is_collapsed() -> No
     assert '.studio-activity-root.is-collapsed { width: 40px; min-width: 40px; }' in css
 
 
+def test_activity_root_actually_carries_the_class_the_collapse_css_targets() -> None:
+    # THE linchpin (regression that shipped): the collapse CSS above keys off the
+    # `studio-activity-root` CLASS. For a long time `studio-activity-root` was
+    # ONLY a data-testid and the root's className was `{collapsed ? "is-collapsed"
+    # : ""}` — so `.studio-activity-root.is-collapsed` matched NO element and the
+    # rail silently never collapsed even though the CSS strings above all existed.
+    # The root MUST apply the class as a real className (and still toggle
+    # is-collapsed) so the :has() + width selectors engage.
+    fn = _studio_activity_fn_src()
+    assert (
+        'className={"studio-activity-root" + (collapsed ? " is-collapsed" : "")}'
+        in fn
+    )
+
+
 def test_collapsed_rail_grid_override_hides_the_right_resize_handle() -> None:
     css = _styles_src()
     assert '[data-testid="studio-resize-right"]' in css
