@@ -26,6 +26,7 @@ UI = ROOT / "ui"
 ACTIVITY = UI / "components" / "studio-activity.jsx"
 CENTER = UI / "components" / "studio-center.jsx"
 INDEX = UI / "index.html"
+STYLES = UI / "styles.css"
 
 
 def _activity_src() -> str:
@@ -351,6 +352,79 @@ def test_st_yield_invalidates_pure_helper_via_mini_racer() -> None:
     assert ctx.eval("out.length") == 2
     assert ctx.eval("out[0]") == "session-adapter:pending:sess1"
     assert ctx.eval("out[1]") == "studio-yields-pending:ws1"
+
+
+# ---------------------------------------------------------------------------
+# studio-ux fix 1: collapsed = an actual thin rail (~40px), not just an
+# internal display:none — the OUTER .st-col-right grid TRACK must shrink too
+# so the center column reflows wider. See ui/styles.css's :has() rule next to
+# .st-col-right and the collapsed-branching inline style on the toggle
+# button below (both scoped desktop-only; the mobile off-canvas drawer is
+# untouched — see test_studio_mobile_panel_toggles_and_drawers).
+# ---------------------------------------------------------------------------
+
+
+def _styles_src() -> str:
+    return STYLES.read_text(encoding="utf-8")
+
+
+def test_collapsed_rail_hides_bell_and_label_but_keeps_chevron_and_badge() -> None:
+    fn = _studio_activity_fn_src()
+    assert "var expanded = !collapsed;" in fn
+    # Chevron (the toggle indicator) and the badge are unconditional; only
+    # the bell icon + "Debug" text retract into the collapsed rail.
+    assert '{expanded && <Icon name="bell" size={13} style={{ flexShrink: 0 }} />}' in fn
+    assert '{expanded && <span style={{ flex: 1, textAlign: "left" }}>Debug</span>}' in fn
+    assert 'Icon name={collapsed ? "chevron-left" : "chevron-right"}' in fn
+    assert '{pendingCount > 0 && (' in fn
+
+
+def test_collapsed_toggle_button_restyles_into_a_narrow_column() -> None:
+    fn = _studio_activity_fn_src()
+    assert 'flexDirection: collapsed ? "column" : "row"' in fn
+    assert 'height: collapsed ? "auto" : 34' in fn
+    assert 'padding: collapsed ? "10px 4px" : "0 12px"' in fn
+
+
+def test_st_body_grid_shrinks_the_right_track_when_the_rail_is_collapsed() -> None:
+    css = _styles_src()
+    assert ".st-body:has(.studio-activity-root.is-collapsed)" in css
+    assert (
+        "grid-template-columns: var(--st-left-w, 248px) 5px minmax(0, 1fr) 5px 40px;"
+        in css
+    )
+    assert '.studio-activity-root.is-collapsed { width: 40px; min-width: 40px; }' in css
+
+
+def test_collapsed_rail_grid_override_hides_the_right_resize_handle() -> None:
+    css = _styles_src()
+    assert '[data-testid="studio-resize-right"]' in css
+
+
+def test_collapsed_rail_grid_override_is_desktop_only() -> None:
+    # The mobile breakpoint renders .st-col-right as an off-canvas fixed
+    # drawer (see the max-width:639px block) — this override's higher
+    # specificity must not leak into that layout, so it's gated behind a
+    # min-width media query rather than left unscoped.
+    css = _styles_src()
+    idx = css.index(".st-body:has(.studio-activity-root.is-collapsed)")
+    preceding = css[:idx]
+    media_idx = preceding.rfind("@media (min-width: 640px)")
+    assert media_idx != -1, "the collapsed-rail grid override must sit inside a min-width media query"
+    # No closing brace for that media block between its opening and our rule
+    # (i.e. the rule is actually INSIDE it, not just preceded by it earlier
+    # in the file).
+    between = css[media_idx:idx]
+    assert between.count("{") > between.count("}")
+
+
+def test_action_required_and_workspace_activity_still_stay_mounted_when_collapsed() -> None:
+    # Regression guard alongside the existing mount-guard test above: the
+    # new `expanded` flag must not have been used to sneak a conditional
+    # mount back in for the two subscription-owning children.
+    fn = _studio_activity_fn_src()
+    assert "{expanded && <ActionRequired" not in fn
+    assert "{expanded && <WorkspaceActivity" not in fn
 
 
 # ---------------------------------------------------------------------------

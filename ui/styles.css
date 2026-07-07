@@ -265,6 +265,28 @@
 .st-col-center { background: var(--bg); }
 .st-col-right { background: var(--bg-1); border-left: 1px solid var(--border); }
 
+/* Task (studio-ux fix 1): the debug sidebar's "collapsed" state used to
+   only hide the inner debug-sidebar-body — the OUTER .st-col-right grid
+   TRACK stayed at the full --st-right-w, so the center column never
+   reclaimed the space. Collapsed now renders as a thin ~40px rail (icon +
+   badge only — see studio-activity.jsx); the grid container's own
+   template must shrink the right track to match. The collapsed class
+   lives on the CHILD (.studio-activity-root), not on .st-body itself,
+   hence :has(). Desktop-only: below 640px .st-col-right is an off-canvas
+   fixed drawer (see the max-width:639px block) where this override's
+   higher specificity would otherwise squeeze the mobile single-column
+   body's grid-template-columns even though the drawer itself is
+   invisible there. */
+@media (min-width: 640px) {
+  .st-body:has(.studio-activity-root.is-collapsed) {
+    grid-template-columns: var(--st-left-w, 248px) 5px minmax(0, 1fr) 5px 40px;
+  }
+  .st-body:has(.studio-activity-root.is-collapsed) [data-testid="studio-resize-right"] {
+    display: none;
+  }
+  .studio-activity-root.is-collapsed { width: 40px; min-width: 40px; }
+}
+
 /* Column resize handles (left/right). 5px hit area straddling the border. */
 .st-resize {
   position: relative;
