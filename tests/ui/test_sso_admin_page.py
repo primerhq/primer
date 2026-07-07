@@ -48,6 +48,17 @@ def test_table_testid() -> None:
     assert "sso-providers-table" in _src()
 
 
+def test_table_uses_shared_tbl_class() -> None:
+    """The OIDC-providers table renders with the shared console table
+    styling (`.tbl` inside `.tbl-wrap`, as agents.jsx and peers do), not
+    the old hand-rolled `className="table"` with per-cell inline padding."""
+    src = _src()
+    assert 'className="tbl-wrap"' in src
+    assert 'className="tbl"' in src
+    assert 'className="table"' not in src
+    assert 'padding: "8px 12px"' not in src
+
+
 def test_create_edit_delete_present() -> None:
     src = _src()
     assert "create-sso-provider-submit" in src

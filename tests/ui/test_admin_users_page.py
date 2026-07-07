@@ -40,6 +40,18 @@ def test_table_testid() -> None:
     assert "admin-users-table" in _src()
 
 
+def test_tables_use_shared_tbl_class() -> None:
+    """The Users list + per-user keys tables render with the shared console
+    table styling (`.tbl` inside `.tbl-wrap`, as agents.jsx and peers do),
+    not the old hand-rolled `className="table"` with per-cell inline
+    padding."""
+    src = _src()
+    assert 'className="tbl-wrap"' in src
+    assert 'className="tbl"' in src
+    assert 'className="table"' not in src
+    assert 'padding: "8px 12px"' not in src
+
+
 def test_create_and_delete_present() -> None:
     src = _src()
     assert "create-user-submit" in src

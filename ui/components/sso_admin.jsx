@@ -154,20 +154,16 @@ function SSO_ProvidersPage() {
       )}
 
       {items.length > 0 && (
-        <div
-          data-testid="sso-providers-table"
-          className="panel"
-          style={{ padding: 0, overflow: "hidden" }}
-        >
-          <table className="table" style={{ width: "100%", fontSize: 12 }}>
+        <div data-testid="sso-providers-table" className="tbl-wrap">
+          <table className="tbl">
             <thead>
               <tr>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Name</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Client ID</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Secret</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Scopes</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
-                <th style={{ textAlign: "right", padding: "8px 12px" }}>Actions</th>
+                <th>Name</th>
+                <th>Client ID</th>
+                <th>Secret</th>
+                <th>Scopes</th>
+                <th>Status</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -215,28 +211,23 @@ function SSO_ProvidersPage() {
 function SSO_ProviderRow({ provider, onEdit, onDelete }) {
   const hasSecret = !!provider.client_secret;
   return (
-    <tr
-      data-testid={`sso-provider-row-${provider.id}`}
-      style={{ borderTop: "1px solid var(--border)" }}
-    >
-      <td style={{ padding: "8px 12px", fontWeight: 600 }}>{provider.name}</td>
-      <td style={{ padding: "8px 12px" }}>
-        <span className="mono">{provider.client_id}</span>
-      </td>
-      <td style={{ padding: "8px 12px" }}>
+    <tr data-testid={`sso-provider-row-${provider.id}`}>
+      <td>{provider.name}</td>
+      <td className="mono">{provider.client_id}</td>
+      <td>
         {hasSecret
-          ? <span className="pill pill-claimed" style={{ fontSize: 10.5 }}>configured</span>
+          ? <span className="pill pill-claimed">configured</span>
           : <span className="muted text-sm">not set</span>}
       </td>
-      <td style={{ padding: "8px 12px" }}>
+      <td>
         <span className="mono muted text-sm">{(provider.scopes || []).join(", ")}</span>
       </td>
-      <td style={{ padding: "8px 12px" }}>
+      <td>
         {provider.enabled
-          ? <span className="pill pill-claimed" style={{ fontSize: 10.5 }}>enabled</span>
-          : <span className="pill pill-failed" style={{ fontSize: 10.5 }}>disabled</span>}
+          ? <span className="pill pill-claimed">enabled</span>
+          : <span className="pill pill-failed">disabled</span>}
       </td>
-      <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
         <Btn
           size="sm"
           kind="ghost"
