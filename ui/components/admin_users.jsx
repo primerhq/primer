@@ -116,19 +116,15 @@ function ADM_AdminUsersPage() {
       )}
 
       {items.length > 0 && (
-        <div
-          data-testid="admin-users-table"
-          className="panel"
-          style={{ padding: 0, overflow: "hidden" }}
-        >
-          <table className="table" style={{ width: "100%", fontSize: 12 }}>
+        <div data-testid="admin-users-table" className="tbl-wrap">
+          <table className="tbl">
             <thead>
               <tr>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Username</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Email</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Role</th>
-                <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
-                <th style={{ textAlign: "right", padding: "8px 12px" }}>Actions</th>
+                <th>Username</th>
+                <th>Email</th>
+                <th>Role</th>
+                <th>Status</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -182,30 +178,25 @@ function ADM_AdminUsersPage() {
 
 function ADM_UserRow({ user, onEdit, onDelete, onKeys }) {
   return (
-    <tr
-      data-testid={`admin-user-row-${user.id}`}
-      style={{ borderTop: "1px solid var(--border)" }}
-    >
-      <td style={{ padding: "8px 12px", fontWeight: 600 }}>
-        <span className="mono">{user.username}</span>
-      </td>
-      <td style={{ padding: "8px 12px" }}>
+    <tr data-testid={`admin-user-row-${user.id}`}>
+      <td className="mono">{user.username}</td>
+      <td>
         {user.email ? user.email : <span className="muted">—</span>}
       </td>
-      <td style={{ padding: "8px 12px" }}>
-        <span className={`pill ${ADM_roleClass(user.role)}`} style={{ fontSize: 10.5 }}>
+      <td>
+        <span className={`pill ${ADM_roleClass(user.role)}`}>
           {user.role}
         </span>
       </td>
-      <td style={{ padding: "8px 12px" }}>
+      <td>
         {user.disabled
-          ? <span className="pill pill-failed" style={{ fontSize: 10.5 }}>disabled</span>
-          : <span className="pill pill-claimed" style={{ fontSize: 10.5 }}>enabled</span>}
+          ? <span className="pill pill-failed">disabled</span>
+          : <span className="pill pill-claimed">enabled</span>}
         {user.must_change_password && (
-          <span className="pill pill-paused" style={{ fontSize: 10.5, marginLeft: 4 }}>must change pw</span>
+          <span className="pill pill-paused" style={{ marginLeft: 4 }}>must change pw</span>
         )}
       </td>
-      <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
         <Btn
           size="sm"
           kind="ghost"
@@ -638,21 +629,17 @@ function ADM_UserKeysDialog({ user, onClose }) {
           <div className="muted text-sm" style={{ padding: "20px 0" }}>No API keys for this user.</div>
         )}
         {items.length > 0 && (
-          <div
-            data-testid="adm-user-keys-table"
-            className="panel"
-            style={{ padding: 0, overflow: "hidden" }}
-          >
-            <table className="table" style={{ width: "100%", fontSize: 12 }}>
+          <div data-testid="adm-user-keys-table" className="tbl-wrap">
+            <table className="tbl">
               <thead>
                 <tr>
-                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Name</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Prefix</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Scopes</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Created</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Last used</th>
-                  <th style={{ textAlign: "left", padding: "8px 12px" }}>Status</th>
-                  <th style={{ textAlign: "right", padding: "8px 12px" }}>Actions</th>
+                  <th>Name</th>
+                  <th>Prefix</th>
+                  <th>Scopes</th>
+                  <th>Created</th>
+                  <th>Last used</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: "right" }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -714,37 +701,28 @@ function ADM_UserKeyRow({ user, token, onRevoked, onConfirmStart, onConfirmEnd }
 
   return (
     <React.Fragment>
-      <tr
-        data-testid={`adm-user-key-row-${token.id}`}
-        style={{ borderTop: "1px solid var(--border)" }}
-      >
-        <td style={{ padding: "8px 12px", fontWeight: 600 }}>{token.name}</td>
-        <td style={{ padding: "8px 12px" }}>
-          <span className="mono" style={{ fontSize: 11 }}>{token.prefix}…</span>
-        </td>
-        <td style={{ padding: "8px 12px" }}>
+      <tr data-testid={`adm-user-key-row-${token.id}`}>
+        <td>{token.name}</td>
+        <td className="mono">{token.prefix}…</td>
+        <td>
           {Array.isArray(token.scopes) && token.scopes.length > 0 ? (
             <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
               {token.scopes.map((s) => (
-                <span key={s} className="pill pill-paused" style={{ fontSize: 10.5 }}>{s}</span>
+                <span key={s} className="pill pill-paused">{s}</span>
               ))}
             </div>
           ) : (
             <span className="muted text-sm">—</span>
           )}
         </td>
-        <td style={{ padding: "8px 12px" }} title={token.created_at || ""}>
-          <span className="mono">{token.created_at || "—"}</span>
-        </td>
-        <td style={{ padding: "8px 12px" }} title={token.last_used_at || ""}>
-          <span className="mono">{token.last_used_at || "—"}</span>
-        </td>
-        <td style={{ padding: "8px 12px" }}>
+        <td className="mono" title={token.created_at || ""}>{token.created_at || "—"}</td>
+        <td className="mono" title={token.last_used_at || ""}>{token.last_used_at || "—"}</td>
+        <td>
           {isRevoked
-            ? <span className="pill pill-failed" style={{ fontSize: 10.5 }}>revoked</span>
+            ? <span className="pill pill-failed">revoked</span>
             : <span className="muted text-sm">—</span>}
         </td>
-        <td style={{ padding: "8px 12px", textAlign: "right", whiteSpace: "nowrap" }}>
+        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
           <Btn
             size="sm"
             kind="danger"
