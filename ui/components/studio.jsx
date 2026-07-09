@@ -32,8 +32,6 @@ var ST_PERSIST_KEYS = [
   "debugOpen",
   "activeTermId",
   "termTabs",
-  "density",
-  "theme",
   "activeChips",
   "leftWidth",
   "rightWidth",
@@ -160,9 +158,11 @@ function ST_syncUrl(activeTabId) {
 
 function ST_defaultState() {
   return {
-    // Layout / appearance
-    theme: "dark",
-    density: "comfortable",
+    // Layout / appearance. NOTE: theme + density are NOT owned here — they are
+    // GLOBAL tweaks (foundation/tweaks.js) applied to <html> by app.jsx. The
+    // Studio used to keep its own theme/density (and stamp <html data-theme>),
+    // which desynced the graph canvas' <html data-theme> observer and reverted
+    // the app theme on navigate; the toggles now route through setTweak instead.
     leftWidth: 248,
     rightWidth: 332,
     // Left sidebar
@@ -211,6 +211,12 @@ function useStudioState(wid, initialOpen) {
   var [state, setState] = React.useState(function () {
     return ST_applyUrlTab(Object.assign(ST_defaultState(), ST_loadPersisted(wid)), initialOpen);
   });
+
+  // Theme + density are owned GLOBALLY by tweaks (foundation/tweaks.js) and
+  // applied to <html data-theme>/<html data-density> by app.jsx. A custom hook
+  // may call hooks, so we subscribe here to drive the appearance toggles below
+  // (⌘K palette + the app topbar ThemeToggle share this one setTweak path).
+  var [tweaks, setTweak] = window.useTweaks();
 
   // New-session form visibility, lifted out of the sidebar so BOTH the sidebar
   // "+" button and the ⌘K palette's "New session" action can open it. Kept as
@@ -270,22 +276,6 @@ function useStudioState(wid, initialOpen) {
       window.removeEventListener("popstate", onUrlChange);
     };
   }, []);
-
-  // Apply theme/density attrs to <html> so the design tokens resolve. The
-  // Studio root <div> also carries them (see render) for scoped reads.
-  React.useEffect(function () {
-    var html = document.documentElement;
-    var prevTheme = html.getAttribute("data-theme");
-    var prevDensity = html.getAttribute("data-density");
-    html.setAttribute("data-theme", state.theme);
-    html.setAttribute("data-density", state.density);
-    return function () {
-      // Restore prior attrs on unmount so leaving the Studio doesn't strand
-      // the rest of the console in Studio's density.
-      if (prevTheme) html.setAttribute("data-theme", prevTheme);
-      if (prevDensity) html.setAttribute("data-density", prevDensity);
-    };
-  }, [state.theme, state.density]);
 
   // ---- tab management (consumed by B2/B3) ----
   var openTab = React.useCallback(function (tab) {
@@ -385,15 +375,17 @@ function useStudioState(wid, initialOpen) {
     });
   }, []);
 
-  // ---- appearance ----
+  // ---- appearance (global tweaks — see the useTweaks subscription above) ----
+  // These flip the GLOBAL tweak; app.jsx then stamps <html data-theme>/
+  // data-density once, and the graph canvas' <html data-theme> MutationObserver
+  // (graph-canvas.jsx) restyles for free. The Studio no longer stamps <html>
+  // itself, so there is no second owner to desync or revert on navigate.
   var toggleTheme = React.useCallback(function () {
-    setState(function (s) { return Object.assign({}, s, { theme: s.theme === "dark" ? "light" : "dark" }); });
-  }, []);
+    setTweak("theme", tweaks.theme === "dark" ? "light" : "dark");
+  }, [tweaks.theme, setTweak]);
   var toggleDensity = React.useCallback(function () {
-    setState(function (s) {
-      return Object.assign({}, s, { density: s.density === "comfortable" ? "compact" : "comfortable" });
-    });
-  }, []);
+    setTweak("density", tweaks.density === "comfortable" ? "compact" : "comfortable");
+  }, [tweaks.density, setTweak]);
 
   // ---- terminal (TerminalPanel mounts in the center column when open) ----
   var toggleTerminal = React.useCallback(function () {
@@ -782,8 +774,6 @@ function Studio({ wid, pushToast, initialOpen }) {
   return (
     <div
       className="st-root"
-      data-theme={s.theme}
-      data-density={s.density}
       data-testid="studio-root"
       // --st-right-w collapses to the 40px rail directly from state (not only
       // via the :has(.is-collapsed) CSS) so the debug rail width is bulletproof
