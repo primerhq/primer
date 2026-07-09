@@ -409,14 +409,16 @@ def test_collapsed_rail_shows_a_vertical_debug_label_as_the_expand_handle() -> N
     assert 'writingMode: "vertical-rl"' in fn
 
 
-def test_st_body_grid_shrinks_the_right_track_when_the_rail_is_collapsed() -> None:
+def test_closed_rail_collapses_to_zero_width() -> None:
+    # The closed rail is 0-width — width is driven by --st-right-w on .st-root
+    # (studio.jsx sets it to 0 when s.debugOpen is false), NOT a 40px edge rail.
+    # The :has(.is-collapsed) block also hides the resize handle + column border
+    # and zeroes the rail so nothing lingers at the screen edge (the panel is
+    # opened from the header events toggle).
     css = _styles_src()
     assert ".st-body:has(.studio-activity-root.is-collapsed)" in css
-    assert (
-        "grid-template-columns: var(--st-left-w, 248px) 5px minmax(0, 1fr) 5px 40px;"
-        in css
-    )
-    assert '.studio-activity-root.is-collapsed { width: 40px; min-width: 40px; }' in css
+    assert '.studio-activity-root.is-collapsed { width: 0; min-width: 0; overflow: hidden; }' in css
+    assert ".st-body:has(.studio-activity-root.is-collapsed) .st-col-right" in css
 
 
 def test_activity_root_actually_carries_the_class_the_collapse_css_targets() -> None:

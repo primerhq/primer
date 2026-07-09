@@ -484,7 +484,7 @@ function useStudioState(wid, initialOpen) {
 // collapse to a single document there.
 // ---------------------------------------------------------------------------
 
-function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, onToggleLeftPanel, onToggleRightPanel }) {
+function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, debugOpen, onToggleDebug, onToggleLeftPanel, onToggleRightPanel }) {
   var { useResource, apiFetch } = window.primerApi;
   var [menuOpen, setMenuOpen] = React.useState(false);
   // Workspace Settings overlay — restores the orphaned WorkspaceDetail tabs
@@ -612,6 +612,24 @@ function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, term
         onClick={onToggleTerminal}
       >
         <Icon name="code" size={15} />
+      </button>
+
+      {/* Desktop Workspace-events toggle. The right rail (Action Required +
+          Workspace Activity) is opened/closed from HERE — a prominent, always-
+          visible header control, the same proven pattern as the terminal toggle
+          beside it. Earlier attempts put the only affordance on the collapsed
+          rail itself (a thin strip at the screen edge); operators repeatedly
+          could not open it, so the primary control lives in the header. Uses a
+          panel icon (not a bell — per earlier feedback). */}
+      <button
+        className={"st-hbtn touch-target desktop-only" + (debugOpen ? " is-active" : "")}
+        data-testid="studio-debug-toggle"
+        title="Workspace events (Action Required + Activity)"
+        aria-label="Toggle workspace events panel"
+        aria-pressed={debugOpen ? "true" : "false"}
+        onClick={onToggleDebug}
+      >
+        <Icon name="panel-right" size={15} />
       </button>
 
       {/* Mobile-only panel-drawer toggle (right: Action Required + Activity). */}
@@ -778,7 +796,9 @@ function Studio({ wid, pushToast, initialOpen }) {
       // --st-right-w collapses to the 40px rail directly from state (not only
       // via the :has(.is-collapsed) CSS) so the debug rail width is bulletproof
       // regardless of :has() support, and the header Debug toggle controls it.
-      style={{ "--st-left-w": s.leftWidth + "px", "--st-right-w": (s.debugOpen ? s.rightWidth : 40) + "px", "--st-term-h": s.terminalHeight + "px" }}
+      // Right rail is a clean binary: full width when open, 0 (fully hidden)
+      // when closed — opened from the header toggle, not a thin edge rail.
+      style={{ "--st-left-w": s.leftWidth + "px", "--st-right-w": (s.debugOpen ? s.rightWidth : 0) + "px", "--st-term-h": s.terminalHeight + "px" }}
     >
       <StudioHeader
         wid={wid}
@@ -787,6 +807,8 @@ function Studio({ wid, pushToast, initialOpen }) {
         onSelectWorkspace={selectWorkspace}
         terminalOpen={s.terminalOpen}
         onToggleTerminal={studio.toggleTerminal}
+        debugOpen={s.debugOpen}
+        onToggleDebug={studio.toggleDebug}
         onToggleLeftPanel={function () { setRightPanelOpen(false); setLeftPanelOpen(function (o) { return !o; }); }}
         onToggleRightPanel={function () { setLeftPanelOpen(false); setRightPanelOpen(function (o) { return !o; }); }}
       />

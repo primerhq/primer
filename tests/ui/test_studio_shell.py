@@ -49,27 +49,33 @@ def test_studio_file_exists_and_exports() -> None:
 
 
 def test_debug_rail_open_state_lives_in_the_studio_store() -> None:
-    # The right debug/activity rail's open state is store-owned (persisted) so
-    # the rail's own << handle and the state-driven column width share ONE
-    # source of truth (StudioActivity's old internal useState left the width and
-    # the toggle out of sync, and nothing outside the rail could reach it).
+    # The right events/debug rail's open state is store-owned (persisted) so the
+    # header toggle and the state-driven column width share ONE source of truth.
     src = _studio_src()
     assert '"debugOpen",' in src                     # persisted across reloads
-    assert "debugOpen: false," in src                # default collapsed
+    assert "debugOpen: false," in src                # default closed
     assert "debugOpen: !s.debugOpen" in src          # toggleDebug callback
     assert "toggleDebug: toggleDebug," in src        # exposed on the store
-    # Column width is driven directly from state (bulletproof — not solely via
-    # the :has(.is-collapsed) CSS): 40px rail when closed, rightWidth when open.
-    assert '"--st-right-w": (s.debugOpen ? s.rightWidth : 40) + "px"' in src
+    # Column width is a clean binary driven from state: 0 (fully hidden) when
+    # closed, rightWidth when open — opened from the header events toggle.
+    assert '"--st-right-w": (s.debugOpen ? s.rightWidth : 0) + "px"' in src
 
 
-def test_no_header_debug_toggle_the_rail_owns_it() -> None:
-    # Per user preference the events panel is opened from the rail's own << handle
-    # (studio-activity.jsx), NOT a header button — the earlier header bell was
-    # removed. Guard against re-introducing header debug wiring.
+def test_events_panel_opened_from_a_prominent_header_toggle() -> None:
+    # The rail-edge affordance failed operators repeatedly (a thin strip at the
+    # extreme screen edge — three iterations, none openable). The events panel is
+    # now opened/closed from a prominent, always-visible HEADER control — the same
+    # proven pattern as the terminal toggle beside it — using a panel icon (not a
+    # bell, per earlier feedback). This is the primary control.
     src = _studio_src()
-    assert 'data-testid="studio-debug-toggle"' not in src
-    assert "onToggleDebug" not in src
+    assert 'data-testid="studio-debug-toggle"' in src
+    assert "onClick={onToggleDebug}" in src
+    assert 'debugOpen ? " is-active"' in src
+    assert "desktop-only" in src
+    assert 'name="panel-right"' in src
+    # Wired from the store through the header props.
+    assert "onToggleDebug={studio.toggleDebug}" in src
+    assert "debugOpen={s.debugOpen}" in src
 
 
 def test_studio_shell_root_and_header_testids() -> None:
