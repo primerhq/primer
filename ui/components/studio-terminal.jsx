@@ -272,6 +272,11 @@ function ST_TerminalInstance({ wid, tab, active, theme, onState }) {
 
 function TerminalPanel({ wid, studio }) {
   var s = studio.state;
+  // Theme is a GLOBAL tweak (foundation/tweaks.js), not studio state — read it
+  // reactively so a dark/light toggle re-triggers each open terminal's repaint
+  // effect (ST_xtermTheme reads the live <html> tokens; this prop is just the
+  // change signal).
+  var theme = window.useTweaks()[0].theme;
   var termTabs = s.termTabs && s.termTabs.length ? s.termTabs : [];
   var activeTermId = s.activeTermId;
   var [connStates, setConnStates] = React.useState({});
@@ -391,7 +396,7 @@ function TerminalPanel({ wid, studio }) {
               wid={wid}
               tab={tab}
               active={tab.id === activeTermId}
-              theme={s.theme}
+              theme={theme}
               onState={handleState}
             />
           );
