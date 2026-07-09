@@ -174,22 +174,23 @@ def open_workspace_settings(
 
 
 def expand_debug_sidebar(page: Page, *, timeout: int = 10_000) -> None:
-    """Expand the Studio's right-sidebar debug panel.
+    """Expand the Studio's right-sidebar workspace-events panel.
 
-    ``StudioActivity`` (studio-activity.jsx) starts COLLAPSED by default
-    (``collapsed = React.useState(true)``) so an operator who isn't
-    actively debugging doesn't lose screen real estate — the
-    ``ActionRequired`` list (``action-item`` / ``action-required-count`` /
-    approval + ask_user controls) and ``WorkspaceActivity`` feed only
-    become VISIBLE once ``debug-sidebar-toggle`` is clicked (it flips the
-    ``debug-sidebar-body`` wrapper's ``display``; both stay mounted so
-    their poll timers never reset). Any test that asserts on content
-    inside that body must call this first — right after ``open_studio`` /
+    The panel (``ActionRequired`` list — ``action-item`` /
+    ``action-required-count`` / approval + ask_user controls — and the
+    ``WorkspaceActivity`` feed) starts CLOSED by default (``debugOpen: false``);
+    the right column is 0-width until opened. It is opened from the prominent
+    ``studio-debug-toggle`` button in the studio HEADER (the same show/hide
+    pattern as the terminal toggle — the earlier edge-rail affordance proved
+    unclickable). Opening flips ``debugOpen`` so the column expands and the
+    ``debug-sidebar-body`` becomes visible (both children stay mounted so their
+    poll timers never reset). Any test that asserts on content inside that body
+    must call this first — right after ``open_studio`` /
     ``open_session_in_studio`` / ``open_session_via_sidebar``.
     """
-    toggle = page.locator("[data-testid='debug-sidebar-toggle']")
+    toggle = page.locator("[data-testid='studio-debug-toggle']")
     expect(toggle).to_be_visible(timeout=timeout)
-    if toggle.get_attribute("aria-expanded") != "true":
+    if toggle.get_attribute("aria-pressed") != "true":
         toggle.click()
     expect(page.locator("[data-testid='debug-sidebar-body']")).to_be_visible(timeout=timeout)
 
