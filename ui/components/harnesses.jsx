@@ -911,7 +911,7 @@ function HR_ManagedObjects({ harnessId, slug }) {
             {filtered.length > 0 && (
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                 {filtered.map((row) => (
-                  <span key={row.id} className="mono" style={{ fontSize: 11, color: "var(--text-2)", background: "var(--bg-0)", border: "1px solid var(--border)", borderRadius: 4, padding: "2px 6px" }}>
+                  <span key={row.id} className="mono" style={{ fontSize: 11, color: "var(--text-2)", background: "var(--bg)", border: "1px solid var(--border)", borderRadius: 4, padding: "2px 6px" }}>
                     {row.id}
                   </span>
                 ))}

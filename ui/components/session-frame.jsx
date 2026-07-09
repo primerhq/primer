@@ -300,7 +300,7 @@ function _SLS_ExpandableRow({ icon, iconColor, borderColor, name, separator, pre
       {open && (
         <pre style={{
           marginTop: 6, padding: "10px 12px",
-          background: "var(--bg-0)", border: "1px solid var(--border)",
+          background: "var(--bg)", border: "1px solid var(--border)",
           borderRadius: 6, fontSize: 11.5, lineHeight: 1.5,
           fontFamily: "IBM Plex Mono, monospace", color: "var(--text-2)",
           whiteSpace: "pre-wrap", wordBreak: "break-all",

@@ -845,7 +845,7 @@ function HOB_TemplatizeModal({ target, onClose, onAdd }) {
       </div>
       <div className="field">
         <label className="field-label">Default value</label>
-        <div className="mono text-sm" style={{ background: "var(--bg-0)", padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, fontSize: 11 }}>
+        <div className="mono text-sm" style={{ background: "var(--bg)", padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, fontSize: 11 }}>
           {JSON.stringify(target.default)}
         </div>
       </div>

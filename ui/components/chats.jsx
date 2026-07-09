@@ -832,7 +832,7 @@ function CT_AttachmentChip({ attachment, onRemove }) {
         padding: "4px 6px 4px 4px",
         border: "1px solid var(--border)",
         borderRadius: 6,
-        background: "var(--bg-0)",
+        background: "var(--bg)",
       }}
     >
       {attachment.kind === "image" && attachment.preview ? (

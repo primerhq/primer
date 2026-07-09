@@ -275,7 +275,7 @@ function CT_ExpandableToolRow({
         <pre style={{
           marginTop: 6,
           padding: "10px 12px",
-          background: "var(--bg-0)",
+          background: "var(--bg)",
           border: "1px solid var(--border)",
           borderRadius: 6,
           fontSize: 11.5,
@@ -776,7 +776,7 @@ function CT_FileChip({ part, mime, src }) {
     <div style={{
       display: "inline-flex", alignItems: "center", gap: 6,
       padding: "4px 8px", border: "1px solid var(--border)",
-      borderRadius: 4, background: "var(--bg-0)",
+      borderRadius: 4, background: "var(--bg)",
     }}>
       <Icon name="file" size={12} className="muted" />
       <span className="mono text-sm">{filename}</span>
