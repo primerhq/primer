@@ -515,7 +515,7 @@ function OpenRouterModelPicker({ discovered, selected, onSelect, onDeselect }) {
             >
               <input type="checkbox" checked={isSel} readOnly />
               <div>
-                <div style={{ fontFamily: "var(--mono)" }}>{row.id}</div>
+                <div className="mono">{row.id}</div>
                 <div className="muted text-sm">{row.name}</div>
               </div>
               <div className="muted text-sm">{row.context_length ?? "?"} ctx</div>

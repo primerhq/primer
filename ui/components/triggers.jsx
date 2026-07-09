@@ -711,7 +711,7 @@ function TR_CreateTriggerDialog({ onClose, onCreated }) {
           <div className="field">
             <div
               className="panel"
-              style={{ background: "var(--surface-1)", padding: "10px 14px", borderRadius: 4 }}
+              style={{ background: "var(--bg-1)", padding: "10px 14px", borderRadius: 4 }}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
                 <Icon name="info" size={13} />
@@ -1851,7 +1851,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
             {isEdit && <span className="hint"> locked — config is immutable</span>}
           </label>
           {isEdit ? (
-            <div className="mono" style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--surface-1)" }}>
+            <div className="mono" style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-1)" }}>
               {kind}
             </div>
           ) : (
@@ -1992,7 +1992,7 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
         {isEdit && (
           <div className="field">
             <label className="field-label">Target <span className="hint">locked</span></label>
-            <div className="mono" style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--surface-1)" }}>
+            <div className="mono" style={{ padding: "6px 8px", border: "1px solid var(--border)", borderRadius: 4, background: "var(--bg-1)" }}>
               <TR_SubTargetLabel sub={initial} />
             </div>
           </div>

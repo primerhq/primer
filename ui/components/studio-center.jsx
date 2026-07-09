@@ -1090,7 +1090,7 @@ function ST_InlineYields({ wid, sid, pending, messages, pushToast }) {
                     setDraft(item.tool_call_id || String(idx), "");
                   }}
                   style={{
-                    flex: 1, background: "var(--bg-0)", border: "1px solid var(--border)",
+                    flex: 1, background: "var(--bg)", border: "1px solid var(--border)",
                     borderRadius: 6, padding: "5px 10px", fontSize: 12.5, color: "var(--text)",
                     fontFamily: "inherit", outline: "none",
                   }}

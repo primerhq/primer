@@ -735,7 +735,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
                         key={`h-${entry.id}-p${toolPage}`}
                         style={{
                           display: "flex", alignItems: "center", gap: 8,
-                          padding: "8px 10px", background: "var(--bg-0)",
+                          padding: "8px 10px", background: "var(--bg-2)",
                           borderTop: lastToolsetId === null ? "none" : "1px solid var(--border)",
                           borderBottom: "1px solid var(--border)",
                           position: "sticky", top: 0, zIndex: 1,
@@ -769,7 +769,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
                         display: "flex", alignItems: "flex-start", gap: 8,
                         padding: "6px 10px 6px 28px", cursor: "pointer",
                         borderTop: "1px solid var(--bg-1)",
-                        background: checked ? "var(--bg-0)" : "transparent",
+                        background: checked ? "var(--bg-2)" : "transparent",
                       }}
                       data-testid={`agent-tool-${t.scoped_id}`}
                     >

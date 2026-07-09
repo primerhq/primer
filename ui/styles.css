@@ -5,6 +5,11 @@
   --accent-c: 0.18;
   --accent-l: 0.85;
 
+  /* Monospace stack — theme-independent. Consumers use var(--font-mono,
+     monospace); defining it here upgrades them from the generic fallback to
+     IBM Plex Mono (matching the .mono class). */
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
   /* Studio type / spacing / radius scale (FC2). Theme-independent, so declared
      once on the base :root. Names the recurring magic numbers the FE port-map
      flagged (≈10.5/11.5/12.5px type; 4/8/12/14px spacing; 6/9/12px radii) as
@@ -1582,7 +1587,7 @@ input, textarea, select { font: inherit; color: inherit; }
   padding: 4px 10px;
   border-left: 3px solid var(--border-strong);
   color: var(--text-2);
-  background: var(--bg-0);
+  background: var(--bg);
   border-radius: 0 4px 4px 0;
 }
 .md-body .md-hr {
@@ -1593,7 +1598,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .md-body .md-code {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 12px;
-  background: var(--bg-0);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 1px 5px;
@@ -1606,7 +1611,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .md-body .md-pre {
   margin: 0 0 8px;
   padding: 10px 12px;
-  background: var(--bg-0);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 6px;
   overflow-x: auto;

@@ -508,7 +508,7 @@ function AT_PlaintextOneTimeDialog({ token, onClose }) {
               padding: "10px 12px",
               border: "1px solid var(--border)",
               borderRadius: 4,
-              background: "var(--surface-1)",
+              background: "var(--bg-1)",
               fontSize: 12,
               userSelect: "text",
               whiteSpace: "pre-wrap",
