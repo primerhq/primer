@@ -2614,3 +2614,16 @@ input, textarea, select { font: inherit; color: inherit; }
   font-weight: 500;
   white-space: nowrap;
 }
+
+/* Studio debug-rail expand handle (studio-activity.jsx). The base background
+   lives here (not inline) so the :hover highlight can win — an inline
+   `background` would out-specify a stylesheet :hover. Collapsed (`is-rail`) the
+   whole 40px strip is the button, so it needs an unmistakable hover fill; the
+   pointer cursor is set inline. Tokens (--bg-hover / --bg-2) are theme-aware,
+   so the affordance is legible in both light and dark. */
+.st-debug-toggle {
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.st-debug-toggle:hover { background: var(--bg-hover); }
+.st-debug-toggle.is-rail:hover { background: var(--bg-2); }

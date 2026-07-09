@@ -393,7 +393,9 @@ def test_collapsed_rail_hides_bell_and_label_but_keeps_chevron_and_badge() -> No
 def test_collapsed_toggle_button_restyles_into_a_narrow_column() -> None:
     fn = _studio_activity_fn_src()
     assert 'flexDirection: collapsed ? "column" : "row"' in fn
-    assert 'height: collapsed ? "auto" : 34' in fn
+    # Collapsed the button fills the FULL 40px rail height so the entire strip is
+    # the click target (discoverability fix), not just a 64px cap at the top.
+    assert 'height: collapsed ? "100%" : 34' in fn
     assert 'padding: collapsed ? "10px 4px" : "0 12px"' in fn
 
 

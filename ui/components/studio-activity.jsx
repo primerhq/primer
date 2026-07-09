@@ -750,24 +750,31 @@ function StudioActivity({ wid, studio }) {
       <button
         type="button"
         data-testid="debug-sidebar-toggle"
+        // st-debug-toggle carries the base (transparent) background + the hover
+        // highlight in CSS (styles.css) so the WHOLE collapsed strip reads as an
+        // obviously-clickable button — an inline background would out-specify the
+        // :hover rule. `is-rail` scopes the stronger collapsed-rail hover fill.
+        className={"st-debug-toggle" + (collapsed ? " is-rail" : "")}
         aria-expanded={collapsed ? "false" : "true"}
         aria-controls="debug-sidebar-body"
         aria-label={collapsed ? "Expand debug panel" : "Collapse debug panel"}
         title={collapsed ? "Expand debug panel (Action Required + Activity)" : "Collapse debug panel"}
         onClick={toggle}
         style={{
-          flexShrink: 0,
+          // Collapsed: fill the full 40px rail height so the ENTIRE strip is the
+          // click target (not just a 64px cap at the top), with the chevron +
+          // vertical label pinned to the top.
+          flex: collapsed ? "1 1 auto" : "0 0 auto",
           display: "flex",
           flexDirection: collapsed ? "column" : "row",
           alignItems: "center",
-          justifyContent: "center",
+          justifyContent: collapsed ? "flex-start" : "center",
           gap: collapsed ? 6 : 8,
-          height: collapsed ? "auto" : 34,
+          height: collapsed ? "100%" : 34,
           minHeight: collapsed ? 64 : "auto",
           padding: collapsed ? "10px 4px" : "0 12px",
           border: "none",
           borderBottom: collapsed ? "none" : "1px solid var(--border)",
-          background: "transparent",
           color: "var(--text-2)",
           cursor: "pointer",
           fontSize: 10.5,
@@ -781,11 +788,12 @@ function StudioActivity({ wid, studio }) {
         {expanded && <span style={{ flex: 1, textAlign: "left" }}>Debug</span>}
         {/* Collapsed: a vertical "Debug" label so the thin rail is legibly the
             expand handle. The chevron alone was too subtle — operators couldn't
-            tell the strip was clickable (or that it was the debug panel). */}
+            tell the strip was clickable (or that it was the debug panel). Uses
+            --text-2 (not a near-background token) so it's legible in both themes. */}
         {collapsed && (
           <span
             data-testid="debug-sidebar-rail-label"
-            style={{ writingMode: "vertical-rl", letterSpacing: "0.12em", color: "var(--text-3)" }}
+            style={{ writingMode: "vertical-rl", letterSpacing: "0.12em", color: "var(--text-2)" }}
           >
             Debug
           </span>
