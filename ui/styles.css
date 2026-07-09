@@ -283,13 +283,17 @@
    body's grid-template-columns even though the drawer itself is
    invisible there. */
 @media (min-width: 640px) {
-  .st-body:has(.studio-activity-root.is-collapsed) {
-    grid-template-columns: var(--st-left-w, 248px) 5px minmax(0, 1fr) 5px 40px;
-  }
+  /* Closed rail is 0-width (driven by --st-right-w on .st-root — set to 0 when
+     s.debugOpen is false). Also hide the resize handle and the column's left
+     border so nothing lingers at the screen edge; the panel is opened from the
+     header "Workspace events" toggle, not a thin edge rail. */
   .st-body:has(.studio-activity-root.is-collapsed) [data-testid="studio-resize-right"] {
     display: none;
   }
-  .studio-activity-root.is-collapsed { width: 40px; min-width: 40px; }
+  .st-body:has(.studio-activity-root.is-collapsed) .st-col-right {
+    border-left: none;
+  }
+  .studio-activity-root.is-collapsed { width: 0; min-width: 0; overflow: hidden; }
 }
 
 /* Column resize handles (left/right). 5px hit area straddling the border. */
