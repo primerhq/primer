@@ -379,7 +379,7 @@ function UserMenu() {
         <div
           style={{
             position: "absolute", right: 0, top: "calc(100% + 6px)",
-            background: "var(--surface)", border: "1px solid var(--border)",
+            background: "var(--bg-1)", border: "1px solid var(--border)",
             borderRadius: 6, padding: 8, minWidth: 160, zIndex: 100,
             boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
           }}
