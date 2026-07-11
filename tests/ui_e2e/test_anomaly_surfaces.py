@@ -47,7 +47,9 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
         # Create MCP-HTTP toolset pointing at a deliberately
         # unreachable URL - port 9999 on localhost is unlikely to
         # have anything listening.
-        r = c.post("/v1/toolsets", json={
+        # allow_unreachable: this suite deliberately seeds an unreachable
+        # MCP-HTTP toolset; opt out of the create-time connectivity probe.
+        r = c.post("/v1/toolsets?allow_unreachable=true", json={
             "id": toolset_id,
             "provider": "mcp",
             "config": {
@@ -352,7 +354,9 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
         assert r.status_code == 201, f"seed LLM failed: {r.text}"
 
         # Seed the broken MCP-HTTP toolset (T0711 trigger).
-        r = c.post("/v1/toolsets", json={
+        # allow_unreachable: this suite deliberately seeds an unreachable
+        # MCP-HTTP toolset; opt out of the create-time connectivity probe.
+        r = c.post("/v1/toolsets?allow_unreachable=true", json={
             "id": bad_toolset_id,
             "provider": "mcp",
             "config": {
