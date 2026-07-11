@@ -49,6 +49,18 @@ async def test_unreachable_http_mcp_is_rejected_and_not_persisted(client):
 
 
 @pytest.mark.asyncio
+async def test_allow_unreachable_false_does_not_bypass(client):
+    # Only a truthy flag bypasses; allow_unreachable=false still probes and
+    # rejects the dead-port create.
+    r = await client.post(
+        "/v1/toolsets?allow_unreachable=false",
+        json=_http_mcp_body("ts-dead-false"),
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["type"] == "/errors/toolset-unreachable"
+
+
+@pytest.mark.asyncio
 async def test_allow_unreachable_bypasses_the_probe_and_creates(client):
     r = await client.post(
         "/v1/toolsets?allow_unreachable=true",
@@ -92,3 +104,66 @@ async def test_non_mcp_toolset_is_created_without_probing(client):
     assert r.status_code == 201, r.text
     g = await client.get("/v1/toolsets/ts-internal")
     assert g.status_code == 200, g.text
+
+
+# ----------------------------------------------------------------------------
+# Pure classification helper: "unreachable" == genuine connection failure only.
+# Non-flaky unit test of the decision that gates the reject (no real server).
+# ----------------------------------------------------------------------------
+
+
+def test_is_connection_failure_only_for_network_and_timeout():
+    from primer.api.routers.providers import _is_connection_failure
+    from primer.model.except_ import (
+        AuthenticationError,
+        AuthRequiredError,
+        ConfigError,
+        NetworkError,
+        ProviderError,
+        ServerError,
+    )
+
+    # Genuine connection failures -> reject the create.
+    assert _is_connection_failure(NetworkError("connection refused")) is True
+    assert _is_connection_failure(TimeoutError()) is True
+
+    # The server responded (or config is the caller's) -> reachable -> allow.
+    assert _is_connection_failure(AuthenticationError("401")) is False
+    assert _is_connection_failure(
+        AuthRequiredError("consent", auth_url="https://a/authorize", state="s")
+    ) is False
+    assert _is_connection_failure(ProviderError("weird 4xx")) is False
+    assert _is_connection_failure(ServerError("500")) is False
+    assert _is_connection_failure(ConfigError("bad config")) is False
+    assert _is_connection_failure(ValueError("other")) is False
+
+
+def test_informative_leaf_unwraps_group_to_network_error():
+    from primer.api.routers.providers import (
+        _informative_leaf,
+        _is_connection_failure,
+    )
+    from primer.model.except_ import NetworkError
+
+    # anyio wraps transport failures in a BaseExceptionGroup; the classified
+    # NetworkError leaf must be found and judged a connection failure.
+    net = NetworkError("could not connect to the MCP server")
+    group = BaseExceptionGroup("unhandled", [net])
+    leaf = _informative_leaf(group)
+    assert leaf is net
+    assert _is_connection_failure(leaf) is True
+
+
+def test_informative_leaf_prefers_responded_primer_error_over_reject():
+    from primer.api.routers.providers import (
+        _informative_leaf,
+        _is_connection_failure,
+    )
+    from primer.model.except_ import AuthenticationError
+
+    # A responded-with-401 leaf inside a group is reachable -> allow.
+    auth = AuthenticationError("MCP server rejected credentials (401)")
+    group = BaseExceptionGroup("unhandled", [auth])
+    leaf = _informative_leaf(group)
+    assert leaf is auth
+    assert _is_connection_failure(leaf) is False
