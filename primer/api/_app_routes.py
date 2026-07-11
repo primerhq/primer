@@ -143,6 +143,10 @@ def _mount_routers(
     app.include_router(workspaces_router.workspace_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.sessions_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.files_router, prefix=prefix, dependencies=user_dep)
+    # Collection<->Workspace mounts — import/list/detach a collection into a
+    # running workspace; a workspace sub-resource like files => require_user.
+    from primer.api.routers.workspace_mounts import mounts_router
+    app.include_router(mounts_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.log_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.yields_pending_router, prefix=prefix, dependencies=user_dep)
     # Workspace events history — bounded backfill for the Studio activity
