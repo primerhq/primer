@@ -137,9 +137,19 @@ def test_mount_open_state_declared() -> None:
 
 
 def test_mount_modal_rendered_with_refresh_wiring() -> None:
+    # onMounted must refresh BOTH the file tree (handleRefresh -> rootRes)
+    # AND the shared studio-mounts resource (mountsRes.refetch) — otherwise
+    # a collection mounted in the current session is missing from
+    # mountsByDest, so its right-click "Detach collection" no-ops
+    # (handleDetach's `if (!mount) return;`) and its dirty-dot can't show
+    # until a page reload. Anchor the assertion to the modal's render.
     src = _src()
     assert "<ST_MountCollectionModal" in src
-    assert "onMounted={handleRefresh}" in src
+    modal_render = _fn(src, "<ST_MountCollectionModal", "/>")
+    assert "handleRefresh();" in modal_render
+    assert "mountsRes.refetch" in modal_render
+    # The bare `onMounted={handleRefresh}` (tree-only) form must be gone.
+    assert "onMounted={handleRefresh}" not in src
 
 
 def test_mount_collection_picker_and_dest_input_present() -> None:
