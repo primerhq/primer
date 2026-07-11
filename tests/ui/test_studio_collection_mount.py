@@ -253,13 +253,102 @@ def test_collection_dirty_dot_rendered() -> None:
     )
 
 
-def test_apply_collection_not_yet_added() -> None:
-    # Task 12 adds the "apply to collection" menu entry + handler; asserting
-    # their absence here catches an accidental dangling reference if Task 11
-    # ever wires the dispatch/menu ahead of the handler landing.
+
+# ---------------------------------------------------------------------------
+# Task 12 — "Apply to collection" diff-preview modal.
+#
+# Adds the "apply-collection" context-menu entry (before "detach", both
+# gated on origin==="collection"), the `applyMount` state + `handleCtxAction`
+# dispatch that resolves it via `mountsByDest`, and the `ST_ApplyPreviewModal`
+# component itself (GET .../diff, POST .../apply). Source-string asserts, like
+# the file's other dialogs (ST_MountCollectionModal etc.), plus the whole-
+# bundle transpile gate.
+# ---------------------------------------------------------------------------
+
+
+def _apply_modal_fn_src() -> str:
+    return _fn(
+        _src(),
+        "function ST_ApplyPreviewModal(",
+        "// ---------------------------------------------------------------------------\n// FilesTree",
+    )
+
+
+def test_apply_menu_entry_gated_on_collection_origin_before_detach() -> None:
     src = _src()
-    assert "apply-collection" not in src
-    assert "handleApplyToCollection" not in src
+    assert '{ key: "apply-collection", label: "Apply to collection", icon: "upload", danger: false }' in src
+    # Both entries are appended in the same `origin === "collection"` block;
+    # apply must come before detach in that block.
+    origin_block = _fn(src, 'menu.item && menu.item.origin === "collection"', '{ key: "detach"')
+    assert "apply-collection" in origin_block
+
+
+def test_apply_state_declared() -> None:
+    assert "var [applyMount, setApplyMount] = React.useState(null);" in _src()
+
+
+def test_apply_dispatch_wired() -> None:
+    src = _src()
+    assert (
+        'else if (action === "apply-collection") { var m = mountsByDest[item.path]; if (m) setApplyMount(m); }'
+        in src
+    )
+
+
+def test_apply_modal_rendered_with_refresh_wiring() -> None:
+    src = _src()
+    assert "<ST_ApplyPreviewModal" in src
+    render = _fn(src, "<ST_ApplyPreviewModal", "/>")
+    assert "handleRefresh();" in render
+    assert "mountsRes.refetch" in render
+    assert "onClose={function () { setApplyMount(null); }}" in render
+
+
+def test_apply_modal_fetches_diff_and_posts_apply() -> None:
+    fn = _apply_modal_fn_src()
+    assert '"/mounts/" + encodeURIComponent(mount.mount_id) + "/diff"' in fn
+    assert '"/mounts/" + encodeURIComponent(mount.mount_id) + "/apply"' in fn
+    assert "api.useResource(" in fn
+    assert "api.useMutation(" in fn
+
+
+def test_apply_modal_groups_and_conflicts() -> None:
+    # The Added/Modified/Deleted lists share one `group(label, arr, testid)`
+    # helper, so their testids are passed as call args, not literal
+    # `data-testid="..."` JSX attrs (that literal form is only used for the
+    # dynamic-free conflicts/orphaned/submit testids).
+    fn = _apply_modal_fn_src()
+    assert '"apply-added"' in fn
+    assert '"apply-modified"' in fn
+    assert '"apply-deleted"' in fn
+    assert 'data-testid="apply-conflicts"' in fn
+    assert "var(--warn, #d9822b)" in fn
+    assert 'data-testid="apply-orphaned"' in fn
+
+
+def test_apply_modal_submit_disabled_guard_and_testid() -> None:
+    fn = _apply_modal_fn_src()
+    assert 'data-testid="apply-collection-submit"' in fn
+    assert "disabled={diffRes.loading || apply.loading || d.orphaned || total === 0}" in fn
+
+
+def test_apply_modal_success_toasts_applied_count_and_refreshes() -> None:
+    fn = _apply_modal_fn_src()
+    onsuccess = _fn(fn, "onSuccess: function () {", "onError: function (err) {")
+    assert "onClose();" in onsuccess
+    assert '"Applied " + total' in onsuccess
+    assert "onApplied && onApplied();" in onsuccess
+
+
+def test_apply_modal_error_surfaces_toast() -> None:
+    fn = _apply_modal_fn_src()
+    onerror = _fn(fn, "onError: function (err) {", "});")
+    assert "pushToast &&" in onerror
+    assert "Apply failed" in onerror
+
+
+def test_apply_modal_exported_on_window() -> None:
+    assert "window.ST_ApplyPreviewModal = ST_ApplyPreviewModal;" in _src()
 
 
 # ---------------------------------------------------------------------------

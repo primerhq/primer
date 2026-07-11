@@ -302,10 +302,12 @@ function ST_FileContextMenu({ menu, onAction, onClose }) {
         { key: "rename", label: "Rename", icon: "edit" },
         { key: "delete", label: "Delete", icon: "trash", danger: true },
       ];
-  // Mounted-collection roots get an extra Detach entry (Task 11). The
-  // "apply to collection" entry (Task 12) is deliberately NOT added here yet.
+  // Mounted-collection roots get two extra entries: Apply (push local
+  // changes back to the upstream collection, via a diff-preview modal) and
+  // Detach (Task 11).
   if (menu.item && menu.item.origin === "collection") {
     actions = actions.concat([
+      { key: "apply-collection", label: "Apply to collection", icon: "upload", danger: false },
       { key: "detach", label: "Detach collection", icon: "trash", danger: true },
     ]);
   }
@@ -907,6 +909,123 @@ function ST_MountCollectionModal({ wid, onClose, onMounted, pushToast }) {
 }
 
 // ---------------------------------------------------------------------------
+// ST_ApplyPreviewModal — diff preview + apply for a mounted collection.
+//   GET  /v1/workspaces/{wid}/mounts/{mount_id}/diff  -> { added, modified,
+//        deleted, conflicts, orphaned }. `conflicts` are paths also changed
+//        upstream since the mount — the local (workspace) copy wins on apply,
+//        so they're called out but don't block the action.
+//   POST /v1/workspaces/{wid}/mounts/{mount_id}/apply -> pushes the
+//        added/modified/deleted set back into the collection.
+//   On success: toast "Applied N changes", close, and refresh both the tree
+//   (onApplied -> handleRefresh) and the shared mounts resource so the
+//   dirty-dot clears immediately.
+// ---------------------------------------------------------------------------
+
+function ST_ApplyPreviewModal({ wid, mount, onClose, onApplied, pushToast }) {
+  var api = window.primerApi;
+  var diffRes = api.useResource(
+    "studio-mount-diff:" + wid + ":" + mount.mount_id,
+    function (s) {
+      return api.apiFetch(
+        "GET",
+        "/workspaces/" + encodeURIComponent(wid) + "/mounts/" + encodeURIComponent(mount.mount_id) + "/diff",
+        null,
+        { signal: s }
+      );
+    },
+    {}
+  );
+  var d = diffRes.data || { added: [], modified: [], deleted: [], conflicts: [], orphaned: false };
+  var total = (d.added || []).length + (d.modified || []).length + (d.deleted || []).length;
+  var apply = api.useMutation(
+    function () {
+      return api.apiFetch(
+        "POST",
+        "/workspaces/" + encodeURIComponent(wid) + "/mounts/" + encodeURIComponent(mount.mount_id) + "/apply",
+        {}
+      );
+    },
+    {
+      onSuccess: function () {
+        onClose();
+        pushToast && pushToast({
+          kind: "success",
+          title: "Applied " + total + " change" + (total === 1 ? "" : "s"),
+          detail: mount.dest,
+        });
+        onApplied && onApplied();
+      },
+      onError: function (err) {
+        pushToast && pushToast({
+          kind: "error",
+          title: "Apply failed",
+          detail: (err && (err.detail || err.title)) || "Apply failed",
+          requestId: err && err.requestId,
+        });
+      },
+    }
+  );
+
+  function group(label, arr, testid) {
+    if (!arr || !arr.length) return null;
+    return (
+      <div data-testid={testid} style={{ marginTop: 8 }}>
+        <div className="field-label">{label} ({arr.length})</div>
+        <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+          {arr.map(function (p) { return <li key={p} className="mono" style={{ fontSize: 12 }}>{p}</li>; })}
+        </ul>
+      </div>
+    );
+  }
+
+  return (
+    <Modal
+      title={"Apply to " + mount.dest}
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn
+            kind="primary"
+            disabled={diffRes.loading || apply.loading || d.orphaned || total === 0}
+            onClick={function () { apply.mutate(); }}
+            data-testid="apply-collection-submit"
+          >
+            {apply.loading ? "Applying…" : ("Apply " + total + " change" + (total === 1 ? "" : "s"))}
+          </Btn>
+        </>
+      }
+    >
+      {diffRes.loading ? (
+        <div className="hint">Computing changes…</div>
+      ) : d.orphaned ? (
+        <div className="hint" data-testid="apply-orphaned">
+          The upstream collection no longer exists; changes cannot be applied.
+        </div>
+      ) : total === 0 ? (
+        <div className="hint">No local changes to apply.</div>
+      ) : (
+        <div>
+          {group("Added", d.added, "apply-added")}
+          {group("Modified", d.modified, "apply-modified")}
+          {group("Deleted", d.deleted, "apply-deleted")}
+          {d.conflicts && d.conflicts.length ? (
+            <div data-testid="apply-conflicts" style={{ marginTop: 8, color: "var(--warn, #d9822b)" }}>
+              <div className="field-label">
+                Also changed upstream since you mounted — your version will win ({d.conflicts.length})
+              </div>
+              <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                {d.conflicts.map(function (p) { return <li key={p} className="mono" style={{ fontSize: 12 }}>{p}</li>; })}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // FilesTree
 // ---------------------------------------------------------------------------
 
@@ -1047,6 +1166,9 @@ function FilesTree({ wid, studio }) {
   var [dropTarget, setDropTarget] = React.useState(null);
   // "Mount collection" modal — see ST_MountCollectionModal below.
   var [mountOpen, setMountOpen] = React.useState(false);
+  // "Apply to collection" diff-preview modal — the mount being applied, or
+  // null when closed. See ST_ApplyPreviewModal above.
+  var [applyMount, setApplyMount] = React.useState(null);
   var pushToast = studio.pushToast || (window.primerApi && window.primerApi.toastPush) || null;
   // promptDialog is published as a bare window global by shared.jsx; keep a
   // primerApi fallback so it resolves regardless of how it was exposed.
@@ -1501,6 +1623,7 @@ function FilesTree({ wid, studio }) {
     else if (action === "download") ST_triggerDownload(wid, item.path);
     else if (action === "rename") handleRename(item);
     else if (action === "delete") handleDelete(item);
+    else if (action === "apply-collection") { var m = mountsByDest[item.path]; if (m) setApplyMount(m); }
     else if (action === "detach") handleDetach(item);
     else if (action === "new-file") handleNewFileIn(item.path);
     else if (action === "new-folder") handleNewFolderIn(item.path);
@@ -1914,6 +2037,18 @@ function FilesTree({ wid, studio }) {
           onMounted={function () { handleRefresh(); mountsRes.refetch && mountsRes.refetch(); }}
         />
       )}
+
+      {/* "Apply to collection" diff-preview modal, opened from a mounted
+          collection's right-click menu. */}
+      {applyMount && (
+        <ST_ApplyPreviewModal
+          wid={wid}
+          mount={applyMount}
+          pushToast={pushToast}
+          onClose={function () { setApplyMount(null); }}
+          onApplied={function () { handleRefresh(); mountsRes.refetch && mountsRes.refetch(); }}
+        />
+      )}
     </div>
   );
 }
@@ -1945,6 +2080,7 @@ window.ST_FileContextMenu = ST_FileContextMenu;
 window.ST_SessionDeleteDialog = ST_SessionDeleteDialog;
 window.ST_SessionRenameDialog = ST_SessionRenameDialog;
 window.ST_MountCollectionModal = ST_MountCollectionModal;
+window.ST_ApplyPreviewModal = ST_ApplyPreviewModal;
 window.ST_sessionStatus = ST_sessionStatus;
 window.ST_sessionKind = ST_sessionKind;
 window.ST_sessionGlyph = ST_sessionGlyph;
