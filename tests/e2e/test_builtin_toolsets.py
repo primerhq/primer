@@ -547,7 +547,9 @@ async def test_t0711_mcp_http_transport_tools_unreachable_url_clean(
             },
         },
     }
-    create = await client.post(base, json=body)
+    # allow_unreachable: T0711 intentionally seeds an unreachable HTTP MCP
+    # toolset to exercise the /tools anomaly path; opt out of the create probe.
+    create = await client.post(base + "?allow_unreachable=true", json=body)
     assert create.status_code == 201, create.text
 
     try:
