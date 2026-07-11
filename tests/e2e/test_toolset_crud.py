@@ -156,7 +156,9 @@ async def test_t0451_toolset_mcp_http_url_variations_round_trip(
                     "config": {"url": url},
                 },
             }
-            resp = await client.post("/v1/toolsets", json=body)
+            # allow_unreachable: this round-trip test seeds unreachable HTTP MCP
+            # toolsets on purpose (it checks URL storage, not connectivity).
+            resp = await client.post("/v1/toolsets?allow_unreachable=true", json=body)
             envelope = resp.json() if resp.content else {}
             assert envelope.get("type") != "/errors/internal", (
                 f"url={url!r} leaked /errors/internal: {resp.text}"
