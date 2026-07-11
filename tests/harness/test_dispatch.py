@@ -360,6 +360,7 @@ async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
     installed = await harness_storage.get("h6")
     installed = installed.model_copy(update={
         "pending_operation": HarnessOperation.UNINSTALL,
+        "uninstall_cascade": True,  # inbound uninstall removes installed objects
     })
     await harness_storage.update(installed)
 
@@ -376,6 +377,39 @@ async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
     # Harness row must be gone
     harness_after = await harness_storage.get("h6")
     assert harness_after is None
+
+
+@pytest.mark.asyncio
+async def test_uninstall_no_cascade_keeps_entities(fake_storage_provider, bare_repo):
+    """Default (non-cascade) uninstall removes ONLY the harness + rendering
+    rows; the installed entities survive. This is the data-loss fix — deleting
+    a harness must not wipe the objects it tracks unless cascade is set."""
+    deps = _make_deps(fake_storage_provider)
+    harness_storage = fake_storage_provider.get_storage(Harness)
+
+    harness = _make_harness(
+        "h7", git_url=bare_repo, slug="acme7", status=HarnessStatus.DRAFT,
+        overrides={"model_name": "gpt-4"},
+    )
+    await harness_storage.create(harness)
+    await run_one_harness_operation(deps, harness_id="h7", worker_id="w1")
+    fetched = await harness_storage.get("h7")
+    fetched = fetched.model_copy(update={"pending_operation": HarnessOperation.INSTALL})
+    await harness_storage.update(fetched)
+    await run_one_harness_operation(deps, harness_id="h7", worker_id="w1")
+
+    assert await fake_storage_provider.get_storage(Agent).get("acme7__assistant") is not None
+
+    # Uninstall with NO cascade flag (uninstall_cascade defaults False).
+    installed = await harness_storage.get("h7")
+    installed = installed.model_copy(update={"pending_operation": HarnessOperation.UNINSTALL})
+    await harness_storage.update(installed)
+    await run_one_harness_operation(deps, harness_id="h7", worker_id="w1")
+
+    # The installed entity SURVIVES; only the harness + rendering rows are gone.
+    assert await fake_storage_provider.get_storage(Agent).get("acme7__assistant") is not None
+    assert await fake_storage_provider.get_storage(HarnessRendering).get("h7") is None
+    assert await harness_storage.get("h7") is None
 
 
 # ---------------------------------------------------------------------------

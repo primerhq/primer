@@ -18,7 +18,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from primer.harness.hashes import hash_overrides
-from primer.model.harness import Harness, HarnessOperation, HarnessStatus
+from primer.model.harness import (
+    Harness,
+    HarnessDirection,
+    HarnessOperation,
+    HarnessStatus,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -217,10 +222,13 @@ async def test_install_rejects_pending_op(client, app, fake_storage_provider):
 
 @pytest.mark.asyncio
 async def test_delete_enqueues_uninstall(client, app, fake_storage_provider):
+    """DELETE enqueues UNINSTALL (202). An inbound harness with no ?cascade
+    defaults to cascade — uninstall removes the installed objects."""
     harness = _make_harness(
         id="hns_todelete",
         slug="to-delete",
         status=HarnessStatus.INSTALLED,
+        direction=HarnessDirection.INBOUND,
     )
     storage = fake_storage_provider.get_storage(Harness)
     await storage.create(harness)
@@ -229,6 +237,49 @@ async def test_delete_enqueues_uninstall(client, app, fake_storage_provider):
     assert r.status_code == 202
     body = r.json()
     assert body["pending_operation"] == "uninstall"
+    assert body["uninstall_cascade"] is True  # inbound default: cascade
+    assert (await storage.get("hns_todelete")).uninstall_cascade is True
+
+
+@pytest.mark.asyncio
+async def test_delete_outbound_default_keeps_entities(client, app, fake_storage_provider):
+    """An OUTBOUND harness deleted with no ?cascade defaults to non-cascade —
+    only the harness is removed; the objects it tracks are kept."""
+    harness = _make_harness(
+        id="hns_outdel",
+        slug="out-del",
+        status=HarnessStatus.INSTALLED,
+        direction=HarnessDirection.OUTBOUND,
+    )
+    storage = fake_storage_provider.get_storage(Harness)
+    await storage.create(harness)
+
+    r = await client.delete("/v1/harnesses/hns_outdel")
+    assert r.status_code == 202
+    assert r.json()["uninstall_cascade"] is False
+    assert (await storage.get("hns_outdel")).uninstall_cascade is False
+
+
+@pytest.mark.asyncio
+async def test_delete_explicit_cascade_overrides_direction(client, app, fake_storage_provider):
+    """An explicit ?cascade= overrides the direction default either way."""
+    storage = fake_storage_provider.get_storage(Harness)
+    # Outbound + ?cascade=true -> cascade despite the safe default.
+    await storage.create(_make_harness(
+        id="hns_ovr1", slug="ovr1", status=HarnessStatus.INSTALLED,
+        direction=HarnessDirection.OUTBOUND,
+    ))
+    r = await client.delete("/v1/harnesses/hns_ovr1?cascade=true")
+    assert r.status_code == 202
+    assert (await storage.get("hns_ovr1")).uninstall_cascade is True
+    # Inbound + ?cascade=false -> keep the installed objects.
+    await storage.create(_make_harness(
+        id="hns_ovr2", slug="ovr2", status=HarnessStatus.INSTALLED,
+        direction=HarnessDirection.INBOUND,
+    ))
+    r = await client.delete("/v1/harnesses/hns_ovr2?cascade=false")
+    assert r.status_code == 202
+    assert (await storage.get("hns_ovr2")).uninstall_cascade is False
 
 
 # ---------------------------------------------------------------------------

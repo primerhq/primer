@@ -175,16 +175,17 @@ async def run_one_harness_operation(
         )
         return
 
-    # Direction guard: outbound rows can only run BUILD/PUSH; inbound
-    # rows can only run FETCH/INSTALL/SYNC/UNINSTALL. Mismatches release
-    # with a clear error so the user sees what went wrong rather than a
-    # cryptic stack from a downstream helper.
+    # Direction guard: outbound rows run BUILD/PUSH; inbound rows run
+    # FETCH/INSTALL/SYNC. UNINSTALL (delete the harness) is allowed on BOTH
+    # directions — a harness can always be deleted, and for an outbound
+    # harness a non-cascade uninstall simply removes the harness itself.
+    # Mismatches release with a clear error so the user sees what went wrong
+    # rather than a cryptic stack from a downstream helper.
     _outbound_ops = {HarnessOperation.BUILD, HarnessOperation.PUSH}
     _inbound_ops = {
         HarnessOperation.FETCH,
         HarnessOperation.INSTALL,
         HarnessOperation.SYNC,
-        HarnessOperation.UNINSTALL,
     }
     if (
         harness.direction == HarnessDirection.INBOUND
@@ -1113,6 +1114,7 @@ async def _do_uninstall(
         await apply_uninstall(
             storage_provider=deps.storage_provider,
             harness=harness,
+            cascade=harness.uninstall_cascade,
         )
     except Exception:
         logger.exception("_do_uninstall error for harness %s", harness.id)

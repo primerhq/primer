@@ -863,40 +863,50 @@ async def apply_uninstall(
     *,
     storage_provider: Any,
     harness: Harness,
+    cascade: bool = True,
 ) -> None:
-    """Delete every managed entity, then the rendering, then the harness row.
+    """Remove the harness. When ``cascade`` is True (default), also delete
+    every managed entity in reverse-DAG order (graph → agent → document →
+    collection → toolset); when False, delete ONLY the harness row and its
+    rendering, leaving the tracked entities intact.
 
-    Order: graph → agent → document → collection → toolset.
+    ``cascade`` rides in on the harness row (``harness.uninstall_cascade``,
+    chosen at delete time). It defaults to True here so a direct call keeps
+    the classic "uninstall removes the installed objects" behaviour; the API
+    delete path defaults it to False so deleting a harness never unexpectedly
+    wipes the user's own tracked objects.
+
     Tolerates "not found" for already-removed entities.
     """
     rendering_storage = storage_provider.get_storage(HarnessRendering)
     rendering = await rendering_storage.get(harness.id)
 
     if rendering is not None:
-        # Sort entries in reverse-DAG order for deletion
-        entries_by_kind: dict[str, list[RenderedEntry]] = {}
-        for entry in rendering.entries:
-            entries_by_kind.setdefault(entry.kind, []).append(entry)
+        if cascade:
+            # Sort entries in reverse-DAG order for deletion
+            entries_by_kind: dict[str, list[RenderedEntry]] = {}
+            for entry in rendering.entries:
+                entries_by_kind.setdefault(entry.kind, []).append(entry)
 
-        for kind in _UNINSTALL_ORDER:
-            for entry in entries_by_kind.get(kind, []):
-                storage = _storage_for_kind(storage_provider, kind)
-                try:
-                    await storage.delete(entry.resolved_id)
-                except Exception:
-                    pass  # tolerate "not found"
-                # Documents also own a content-store row keyed by the same
-                # stable id; delete it so no orphan body leaks (which would
-                # trip the content store's UNIQUE(collection_id, path) on a
-                # later reinstall at the same path). No-op if absent.
-                if kind == "document":
+            for kind in _UNINSTALL_ORDER:
+                for entry in entries_by_kind.get(kind, []):
+                    storage = _storage_for_kind(storage_provider, kind)
                     try:
-                        await _delete_document_content(
-                            storage_provider=storage_provider,
-                            document_id=entry.resolved_id,
-                        )
+                        await storage.delete(entry.resolved_id)
                     except Exception:
-                        pass
+                        pass  # tolerate "not found"
+                    # Documents also own a content-store row keyed by the same
+                    # stable id; delete it so no orphan body leaks (which would
+                    # trip the content store's UNIQUE(collection_id, path) on a
+                    # later reinstall at the same path). No-op if absent.
+                    if kind == "document":
+                        try:
+                            await _delete_document_content(
+                                storage_provider=storage_provider,
+                                document_id=entry.resolved_id,
+                            )
+                        except Exception:
+                            pass
 
         # Delete the rendering row
         try:
