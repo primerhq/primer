@@ -47,7 +47,13 @@ from primer.api.deps import (
     get_toolset_storage,
 )
 from primer.api.errors import common_responses
-from primer.model.except_ import BadRequestError
+from primer.model.except_ import (
+    AuthRequiredError,
+    BadRequestError,
+    ConfigError,
+    PrimerError,
+    ToolsetUnreachableError,
+)
 from primer.api.registries import ProviderRegistry
 from primer.api.registries.provider_registry import (
     RESERVED_CROSS_ENCODER_IDS,
@@ -64,6 +70,8 @@ from primer.model.provider import (
     LLMProvider,
     OpenRouterConfig,
     Toolset,
+    ToolsetProviderType,
+    TransportType,
 )
 from primer.api.routers._references import ReferenceCheck
 from primer.model.storage import OffsetPage
@@ -535,6 +543,118 @@ def _get_tool_approval_policy_storage(request: Request):
     return request.app.state.storage_provider.get_storage(ToolApprovalPolicy)
 
 
+# ---- Toolset create connectivity probe -------------------------------------
+#
+# Before persisting an MCP toolset that talks to a remote endpoint over the
+# network (transport=http), we drain a live tools/list to confirm the endpoint
+# is reachable. An unreachable endpoint is rejected BEFORE storage.create so
+# the operator gets an immediate, actionable error instead of a blind save that
+# only surfaces when an agent later fails to open a session.
+#
+# Error contract (shared verbatim with ui/components/toolsets.jsx): the reject
+# is a ToolsetUnreachableError -> HTTP 400 + problem type
+# "/errors/toolset-unreachable". The Console matches on that `type` to render
+# the inline error plus a "Create anyway" button that re-POSTs with
+# ?allow_unreachable=true (which skips this probe).
+
+
+def _toolset_probe_bypassed(request: Request) -> bool:
+    """Whether the caller opted out of the probe via ``?allow_unreachable``.
+
+    This is the "Create anyway" escape hatch: create the row regardless of
+    reachability. Accepts ``1`` / ``true`` / ``yes`` (case-insensitive).
+    """
+    raw = request.query_params.get("allow_unreachable")
+    return str(raw).strip().lower() in ("1", "true", "yes")
+
+
+def _toolset_unreachable(
+    entity: Toolset, cause: BaseException, *, timed_out: bool = False
+) -> ToolsetUnreachableError:
+    """Build the single reject error for a failed connectivity probe."""
+    if timed_out:
+        why = "connection timed out after 8s"
+    elif isinstance(cause, PrimerError):
+        why = cause.message
+    else:
+        why = f"{type(cause).__name__}: {cause}"
+    return ToolsetUnreachableError(
+        f"Could not connect to the MCP endpoint for toolset {entity.id!r}: "
+        f"{why}. Fix the URL/headers, or create it anyway to save it despite "
+        "being unreachable.",
+        cause=cause if isinstance(cause, Exception) else None,
+    )
+
+
+async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
+    """Fully drain ``list_tools`` to confirm the http MCP endpoint is reachable.
+
+    Builds a transient :class:`McpToolsetProvider` (no persistence, no
+    registry) and consumes the whole ``tools/list`` under an 8s cap. Reachable-
+    but-needs-OAuth (:class:`AuthRequiredError`) and invalid-config
+    (:class:`ConfigError`) bubble as their own envelopes; every other failure
+    becomes the single :class:`ToolsetUnreachableError` reject.
+
+    The ``BaseExceptionGroup`` / ``PrimerError`` unwrapping mirrors
+    :func:`list_toolset_tools` above: HTTP MCP runs inside anyio task groups
+    that wrap any sub-exception in a ``BaseExceptionGroup``.
+    """
+    import asyncio
+
+    from primer.toolset.mcp import McpToolsetProvider
+
+    principal = getattr(request.state, "principal", None)
+    # Transient provider: this path is only reached for http transport, so the
+    # stdio allowlist is irrelevant (None). McpToolsetProvider.list_tools opens
+    # and closes its own short-lived session per call, so nothing leaks.
+    provider = McpToolsetProvider(
+        toolset_id=entity.id,
+        config=entity.config,  # type: ignore[arg-type]  # http => McpConfig set
+        allowed_stdio_commands=None,
+    )
+    try:
+        async with asyncio.timeout(8):
+            async for _tool in provider.list_tools(principal=principal):
+                pass  # drain fully: connect + handshake + tools/list happen here
+    except (ConfigError, AuthRequiredError):
+        # Reachable-but-needs-OAuth / caller-input config error: bubble as-is.
+        raise
+    except BaseExceptionGroup as group:
+        # Surface a documented PrimerError sub-exception if present; a
+        # Config/Auth leaf still bubbles as-is, everything else is a reject.
+        for sub in group.exceptions:
+            if isinstance(sub, (ConfigError, AuthRequiredError)):
+                raise sub from group
+        for sub in group.exceptions:
+            if isinstance(sub, PrimerError):
+                raise _toolset_unreachable(entity, sub) from group
+        first = group.exceptions[0] if group.exceptions else group
+        raise _toolset_unreachable(entity, first) from group
+    except TimeoutError as exc:
+        raise _toolset_unreachable(entity, exc, timed_out=True) from exc
+    except Exception as exc:
+        # NetworkError / ProviderError / third-party leaks -> single reject.
+        raise _toolset_unreachable(entity, exc) from exc
+
+
+async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
+    """Reject creating an MCP-http toolset whose endpoint is unreachable.
+
+    Runs before ``storage.create`` (raising aborts the create, persisting
+    nothing). Only network MCP transports are probed; the ``allow_unreachable``
+    bypass, non-MCP toolsets, and stdio MCP (no remote endpoint -- probing it
+    would launch a subprocess) all skip the probe.
+    """
+    if _toolset_probe_bypassed(request):
+        return
+    if entity.provider != ToolsetProviderType.MCP:
+        return
+    config = entity.config
+    if config is None or config.transport != TransportType.HTTP:
+        return
+    await _probe_mcp_reachable(entity, request)
+
+
 # ---- Toolset router --------------------------------------------------------
 
 toolset_router = make_crud_router(
@@ -544,6 +664,7 @@ toolset_router = make_crud_router(
     tag="toolsets",
     on_update=_invalidate_toolset,
     on_delete=_invalidate_toolset,
+    on_pre_create=_toolset_on_pre_create,
     managed_by_field="harness_id",
     references=[
         ReferenceCheck(

@@ -28,6 +28,7 @@ from primer.model.except_ import (
     ProviderError,
     RateLimitError,
     ServerError,
+    ToolsetUnreachableError,
     UnsupportedContentError,
     ValidationError,
 )
@@ -45,6 +46,13 @@ PROBLEM_JSON_MEDIA_TYPE = "application/problem+json"
 # falls through to the most specific match.
 _PRIMER_ERROR_MAP: list[tuple[type[PrimerError], int, str, str]] = [
     (BadRequestError, 400, "/errors/bad-request", "Bad Request"),
+    # ToolsetUnreachableError subclasses BadRequestError but carries its own
+    # type URI so the Console can detect it precisely and offer "Create
+    # anyway". Dispatch is by exception class + MRO (not list order), so it
+    # still gets its own handler; it is placed AFTER BadRequestError so the
+    # shared 400 response description in _RESPONSES_BY_CODE stays the generic
+    # "Bad Request" that every other 400 route documents.
+    (ToolsetUnreachableError, 400, "/errors/toolset-unreachable", "Toolset Unreachable"),
     (AuthenticationError, 401, "/errors/authentication-failed", "Authentication Failed"),
     (AuthRequiredError, 401, "/errors/auth-required", "Authentication Required"),
     (ModelNotFoundError, 404, "/errors/model-not-found", "Model Not Found"),
