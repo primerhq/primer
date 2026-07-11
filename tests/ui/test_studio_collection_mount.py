@@ -180,6 +180,79 @@ def test_mount_error_surfaces_toast() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Task 11 — Detach a mounted collection + dirty-dot indicator.
+#
+# SCOPE (Controller note, binding): Detach + dirty-dot + the shared
+# `studio-mounts` resource ONLY. The "apply to collection" menu entry and
+# `handleApplyToCollection` are Task 12 and must NOT appear yet — see
+# test_apply_collection_not_yet_added below, which guards against a
+# dangling reference to a not-yet-implemented handler.
+# ---------------------------------------------------------------------------
+
+
+def _detach_fn_src() -> str:
+    return _fn(_src(), "async function handleDetach(", "function ST_readAsBase64(")
+
+
+def test_detach_menu_entry_gated_on_collection_origin() -> None:
+    src = _src()
+    assert 'menu.item && menu.item.origin === "collection"' in src
+    assert '{ key: "detach"' in src or 'key:"detach"' in src
+
+
+def test_detach_dispatch_wired() -> None:
+    src = _src()
+    assert 'else if (action === "detach") handleDetach(item);' in src
+
+
+def test_handle_detach_looks_up_mount_and_calls_endpoint() -> None:
+    fn = _detach_fn_src()
+    assert "mountsByDest[item.path]" in fn
+    assert '"/mounts/"' in fn
+    assert "mount.mount_id" in fn
+
+
+def test_handle_detach_409_confirms_then_retries_with_force() -> None:
+    fn = _detach_fn_src()
+    assert "err.status === 409" in fn
+    assert "confirmDialog(" in fn
+    assert "force=true" in fn
+
+
+def test_handle_detach_success_refreshes_tree_and_mounts() -> None:
+    fn = _detach_fn_src()
+    assert "handleRefresh();" in fn
+    assert "mountsRes.refetch" in fn
+    assert "pushToast &&" in fn
+
+
+def test_shared_mounts_resource_declared() -> None:
+    src = _src()
+    assert '"studio-mounts:" + wid' in src
+    assert "mountsByDest" in src
+    assert "/mounts\"" in src or '"/mounts"' in src
+
+
+def test_collection_dirty_dot_rendered() -> None:
+    src = _src()
+    assert 'data-testid="collection-dirty-dot"' in src
+    assert "var(--warn, #d9822b)" in src
+    assert (
+        'item.origin === "collection" && mountsByDest[item.path] && '
+        "mountsByDest[item.path].dirty" in src
+    )
+
+
+def test_apply_collection_not_yet_added() -> None:
+    # Task 12 adds the "apply to collection" menu entry + handler; asserting
+    # their absence here catches an accidental dangling reference if Task 11
+    # ever wires the dispatch/menu ahead of the handler landing.
+    src = _src()
+    assert "apply-collection" not in src
+    assert "handleApplyToCollection" not in src
+
+
+# ---------------------------------------------------------------------------
 # Bundle transpile gate (whole bundle must still parse cleanly).
 # ---------------------------------------------------------------------------
 
