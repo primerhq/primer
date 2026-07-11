@@ -61,7 +61,7 @@ harness_router = APIRouter(prefix="/v1/harnesses", tags=["harnesses"])
 class HarnessCreateBody(BaseModel):
     name: str = Field(..., min_length=1, max_length=200)
     slug: str = Field(..., min_length=2, max_length=64)
-    git_url: str = Field(..., min_length=1)
+    git_url: str | None = Field(default=None, min_length=1)
     ref: str | None = Field(default=None, min_length=1)
     subpath: str | None = None
     git_token: str | None = None
@@ -75,6 +75,7 @@ class HarnessUpdateBody(BaseModel):
     description: str | None = Field(default=None, max_length=2000)
     ref: str | None = Field(default=None, min_length=1)
     subpath: str | None = None
+    git_url: str | None = Field(default=None, min_length=1)
     git_token: str | None = None
 
 
@@ -139,6 +140,22 @@ async def create_harness(
                     },
                 )
             seen.add(te.template_name)
+
+    # Inbound harnesses install FROM a git repo, so a remote is mandatory.
+    # Outbound harnesses render from the live DB and can be consumed via the
+    # bundle tarball, so git is optional — a push target only if the user wants
+    # one.
+    if body.direction == HarnessDirection.INBOUND and not body.git_url:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": "git_url_required_inbound",
+                "detail": (
+                    "inbound harnesses install from a git repo, so git_url "
+                    "is required"
+                ),
+            },
+        )
 
     # Enforce slug uniqueness
     slug_pred = Q(Harness).where("slug", body.slug).build()
@@ -270,6 +287,25 @@ async def update_harness(
         overrides_dirty = True
     if body.git_token is not None:
         harness.git_token = SecretStr(body.git_token)
+    if "git_url" in body.model_fields_set:
+        # Explicitly provided (possibly null). Outbound harnesses may clear
+        # their remote (git is optional); inbound must always keep one to
+        # install from.
+        if (
+            body.git_url is None
+            and harness.direction == HarnessDirection.INBOUND
+        ):
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "code": "git_url_required_inbound",
+                    "detail": (
+                        "inbound harnesses require a git_url; it cannot be "
+                        "cleared"
+                    ),
+                },
+            )
+        harness.git_url = body.git_url
 
     harness.overrides_dirty = overrides_dirty
     return await storage.update(harness)
@@ -825,6 +861,18 @@ async def push_harness(
             content={
                 "code": "outbound_no_entities",
                 "detail": "No tracked entities; nothing to push",
+            },
+        )
+
+    if not harness.git_url:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "code": "git_remote_not_configured",
+                "detail": (
+                    "This harness has no git_url configured; set one before "
+                    "pushing, or download the bundle via /bundle.tar.gz"
+                ),
             },
         )
 

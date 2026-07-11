@@ -544,3 +544,101 @@ async def test_download_bundle_inbound_rejected(client, app, fake_storage_provid
 async def test_download_bundle_not_found(client):
     r = await client.get("/v1/harnesses/hns_nope/bundle.tar.gz")
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# git is optional for outbound harnesses
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_outbound_without_git_url_ok(client):
+    """An outbound harness renders from the DB, so git_url is optional."""
+    r = await client.post(
+        "/v1/harnesses",
+        json={
+            "name": "No Git Outbound",
+            "slug": "no-git-outbound",
+            "direction": "outbound",
+            "tracked_entities": [
+                {"kind": "agent", "source_id": "ag-1", "template_name": "assistant"},
+            ],
+        },
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["direction"] == "outbound"
+    assert body["git_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_inbound_without_git_url_rejected(client):
+    """Inbound harnesses install FROM a repo, so git_url stays required."""
+    r = await client.post(
+        "/v1/harnesses",
+        json={
+            "name": "No Git Inbound",
+            "slug": "no-git-inbound",
+            "direction": "inbound",
+        },
+    )
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == "git_url_required_inbound"
+
+
+@pytest.mark.asyncio
+async def test_push_without_git_url_rejected(client, app, fake_storage_provider):
+    """Pushing a git-less harness is rejected up front (never enters ERROR)."""
+    harness = _make_outbound_harness(
+        id="hns_push_nogit", slug="push-nogit", git_url=None,
+    )
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    r = await client.post("/v1/harnesses/hns_push_nogit/push")
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == "git_remote_not_configured"
+
+
+@pytest.mark.asyncio
+async def test_bundle_download_without_git_url(client, app, fake_storage_provider):
+    """A git-less outbound harness is still consumable via the tarball."""
+    await fake_storage_provider.get_storage(Agent).create(_make_agent(id="ag-bot"))
+    harness = _make_outbound_harness(
+        id="hns_bundle_nogit", slug="bundle-nogit", git_url=None,
+    )
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    r = await client.get("/v1/harnesses/hns_bundle_nogit/bundle.tar.gz")
+    assert r.status_code == 200, r.text
+    assert r.headers["content-type"] == "application/gzip"
+    tf = tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz")
+    names = tf.getnames()
+    assert "harness.yaml" in names
+    assert "templates/assistant.yaml" in names
+
+
+@pytest.mark.asyncio
+async def test_update_clear_git_url_outbound(client, app, fake_storage_provider):
+    """An outbound harness can drop its remote via PUT git_url=null."""
+    harness = _make_outbound_harness(
+        id="hns_clr_git", slug="clr-git",
+        git_url="https://github.com/example/x",
+    )
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    r = await client.put("/v1/harnesses/hns_clr_git", json={"git_url": None})
+    assert r.status_code == 200, r.text
+    assert r.json()["git_url"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_clear_git_url_inbound_rejected(
+    client, app, fake_storage_provider,
+):
+    """Inbound harnesses cannot clear their git_url."""
+    harness = _make_inbound_harness(id="hns_clr_in", slug="clr-in")
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    r = await client.put("/v1/harnesses/hns_clr_in", json={"git_url": None})
+    assert r.status_code == 422, r.text
+    assert r.json()["code"] == "git_url_required_inbound"

@@ -455,3 +455,63 @@ async def test_outbound_uninstall_deletes_harness(fake_storage_provider, tmp_pat
 
     # Deleted — not released as a direction_mismatch ERROR.
     assert await harness_storage.get("h-out-del") is None
+
+
+# ---------------------------------------------------------------------------
+# git is optional for outbound: BUILD without a remote is healthy, PUSH is not
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_build_git_less_outbound_not_error(fake_storage_provider, tmp_path):
+    """A git-less outbound harness builds fine and rests at DRAFT, not ERROR."""
+    deps = _make_deps(fake_storage_provider)
+    harness_storage = fake_storage_provider.get_storage(Harness)
+    agent_storage = fake_storage_provider.get_storage(Agent)
+
+    await agent_storage.create(_make_agent())
+    harness = _make_outbound_harness(
+        "h-build-nogit",
+        git_url=None,
+        pending=HarnessOperation.BUILD,
+    )
+    await harness_storage.create(harness)
+
+    await run_one_harness_operation(
+        deps, harness_id="h-build-nogit", worker_id="w1",
+    )
+
+    updated = await harness_storage.get("h-build-nogit")
+    assert updated is not None
+    assert updated.status == HarnessStatus.DRAFT
+    assert updated.pending_operation is None
+    assert updated.bundle_hash is not None
+
+
+@pytest.mark.asyncio
+async def test_push_git_less_outbound_errors(fake_storage_provider, tmp_path):
+    """Defence in depth: a PUSH with no remote fails cleanly, not with a stack."""
+    deps = _make_deps(fake_storage_provider)
+    harness_storage = fake_storage_provider.get_storage(Harness)
+    agent_storage = fake_storage_provider.get_storage(Agent)
+
+    await agent_storage.create(_make_agent())
+    harness = _make_outbound_harness(
+        "h-push-nogit",
+        git_url=None,
+        pending=HarnessOperation.PUSH,
+    )
+    await harness_storage.create(harness)
+
+    await run_one_harness_operation(
+        deps, harness_id="h-push-nogit", worker_id="w1",
+    )
+
+    updated = await harness_storage.get("h-push-nogit")
+    assert updated is not None
+    assert updated.status == HarnessStatus.ERROR
+    assert updated.last_operation_error is not None
+    assert (
+        json.loads(updated.last_operation_error)["code"]
+        == "git_remote_not_configured"
+    )
