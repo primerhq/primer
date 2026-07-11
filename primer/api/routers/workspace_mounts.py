@@ -57,14 +57,18 @@ async def create_mount(
     dest = sanitize_dest(body.dest or coll.description or coll.id)
     if mm.find_by_dest(manifest, dest) is not None:
         raise ConflictError(f"A mount already uses dest {dest!r}")
-    # dest must not already exist as real files: list_files may raise
-    # FileNotFoundError (dest free) or return [] (dest free); only a
-    # non-empty list means the path is taken.
+    # dest must not already exist as real files. A missing dest surfaces as
+    # a not-found: the real backends (local/sandbox) raise primer's
+    # NotFoundError (a PrimerError, NOT builtin FileNotFoundError) when the
+    # path doesn't exist, so BOTH must be caught here or a fresh mount 404s
+    # on every real backend. A returned non-empty list means the path is
+    # taken -> 409; the ConflictError raised inside the try is NOT a
+    # NotFoundError, so it propagates rather than being swallowed.
     try:
         existing = await ws.list_files(dest)
         if existing:
             raise ConflictError(f"Path {dest!r} already exists in the workspace")
-    except FileNotFoundError:
+    except (FileNotFoundError, NotFoundError):
         pass
 
     entries = await service.list(collection_id=body.collection_id)

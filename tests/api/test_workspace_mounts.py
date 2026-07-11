@@ -30,14 +30,39 @@ from tests.conftest import _FakeStorageProvider
 
 
 class _MountFakeWorkspace(_FakeWorkspace):
-    """``_FakeWorkspace`` + recursive directory delete.
+    """``_FakeWorkspace`` + two fidelity fixes the mounts path needs.
 
-    The shared fake (test_workspace_files_studio.py) only ever needed to
-    delete a single file key. The mounts detach path removes a whole
-    mount-root directory via ``delete_file(dest, recursive=True)``, which
-    the shared fake doesn't implement — extend it here rather than mutate
-    the shared fixture other test modules depend on.
+    The shared fake (test_workspace_files_studio.py) is intentionally
+    minimal; the mounts router exercises two contracts it doesn't model,
+    so extend it here rather than mutate the shared fixture other test
+    modules depend on:
+
+    * ``delete_file(dest, recursive=True)`` — detach removes a whole
+      mount-root directory; the shared fake only ever deleted a single
+      file key.
+    * ``list_files(missing_path)`` — the REAL backends (local/sandbox) raise
+      primer's :class:`NotFoundError` for a path that does not exist, NOT an
+      empty list. The dest-exists check and the post-detach "gone" assertions
+      only test the real not-found contract if the fake matches it.
     """
+
+    async def list_files(self, path=".", *, recursive=False):
+        # Preserve the parent's traversal validation (it raises
+        # BadRequestError) by delegating invalid paths straight through.
+        if ".." in path.split("/") or path.startswith("/"):
+            return await super().list_files(path, recursive=recursive)
+        # Root always exists; any other path must exist as a dir or have at
+        # least one entry under it, else it's a not-found (real-backend parity).
+        if path not in (".", ""):
+            prefix = path.rstrip("/") + "/"
+            exists = (
+                path in self._dirs
+                or any(p == path or p.startswith(prefix) for p in self._files)
+                or any(d == path or d.startswith(prefix) for d in self._dirs)
+            )
+            if not exists:
+                raise NotFoundError(f"{path!r} not found")
+        return await super().list_files(path, recursive=recursive)
 
     async def delete_file(self, path, *, recursive=False):
         if path in self._files:
@@ -152,8 +177,8 @@ async def _setup_workspace(client, wsr) -> str:
     return post.json()["id"]
 
 
-async def _setup_collection(client, collection_id: str = "kb-1") -> str:
-    """Create a search provider + collection with two documents."""
+async def _make_collection(client, collection_id: str) -> str:
+    """Create the search provider (idempotent) + an empty collection."""
     await client.post("/v1/ssp", json=_SSP_BODY)
     body = Collection(
         id=collection_id,
@@ -163,6 +188,12 @@ async def _setup_collection(client, collection_id: str = "kb-1") -> str:
     ).model_dump(mode="json")
     created = await client.post("/v1/collections", json=body)
     assert created.status_code == 201, created.text
+    return collection_id
+
+
+async def _setup_collection(client, collection_id: str = "kb-1") -> str:
+    """Create a search provider + collection with two documents."""
+    await _make_collection(client, collection_id)
     for path, content in (("a.md", "alpha"), ("b.md", "beta")):
         r = await client.put(
             f"/v1/collections/{collection_id}/documents",
@@ -305,18 +336,26 @@ async def test_detach_clean(client, wsr) -> None:
         )
     ).json()
 
+    # Sanity: before detach the dest dir shows on the root tree.
+    before = await client.get(f"/v1/workspaces/{wid}/files/tree")
+    assert "docs-mount" in {i["name"] for i in before.json()["items"]}
+
     r = await client.delete(f"/v1/workspaces/{wid}/mounts/{m['mount_id']}")
     assert r.status_code == 204, r.text
 
     listed = await client.get(f"/v1/workspaces/{wid}/mounts")
     assert listed.json()["mounts"] == []
 
-    # The imported files are gone too.
-    tree = await client.get(
+    # The imported files are gone too. On a real backend the deleted dest
+    # is a not-found (404), so assert its absence the real way: it no longer
+    # appears in the root tree, and a direct tree GET on it 404s.
+    root_tree = await client.get(f"/v1/workspaces/{wid}/files/tree")
+    assert root_tree.status_code == 200
+    assert "docs-mount" not in {i["name"] for i in root_tree.json()["items"]}
+    gone = await client.get(
         f"/v1/workspaces/{wid}/files/tree", params={"path": "docs-mount"}
     )
-    assert tree.status_code == 200
-    assert tree.json()["items"] == []
+    assert gone.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -357,3 +396,46 @@ async def test_detach_modified_requires_force(client, wsr) -> None:
     )
     assert r2.status_code == 204, r2.text
     assert (await client.get(f"/v1/workspaces/{wid}/mounts")).json()["mounts"] == []
+
+
+@pytest.mark.asyncio
+async def test_import_empty_collection_seeds_gitkeep(client, wsr) -> None:
+    """Mounting a collection with ZERO documents still materialises the dest
+    as a real, decorated directory holding a ``.gitkeep`` placeholder, and
+    detaches cleanly."""
+    wid = await _setup_workspace(client, wsr)
+    coll_id = await _make_collection(client, "kb-empty")  # no documents
+
+    r = await client.post(
+        f"/v1/workspaces/{wid}/mounts",
+        json={"collection_id": coll_id, "dest": "empty-mount"},
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["collection_id"] == coll_id
+    assert body["dest"] == "empty-mount"
+    assert body["base"] == []  # no documents -> empty base snapshot
+
+    # Root tree: the dest exists as a collection-origin dir.
+    root_tree = await client.get(f"/v1/workspaces/{wid}/files/tree")
+    assert root_tree.status_code == 200, root_tree.text
+    dest_items = [i for i in root_tree.json()["items"] if i["name"] == "empty-mount"]
+    assert len(dest_items) == 1
+    assert dest_items[0]["is_dir"] is True
+    assert dest_items[0]["origin"] == "collection"
+
+    # The dest dir holds the .gitkeep placeholder.
+    tree = await client.get(
+        f"/v1/workspaces/{wid}/files/tree", params={"path": "empty-mount"}
+    )
+    assert tree.status_code == 200, tree.text
+    assert {i["name"] for i in tree.json()["items"]} == {".gitkeep"}
+
+    # Detach clean: 204, dest gone.
+    d = await client.delete(f"/v1/workspaces/{wid}/mounts/{body['mount_id']}")
+    assert d.status_code == 204, d.text
+    assert (await client.get(f"/v1/workspaces/{wid}/mounts")).json()["mounts"] == []
+    gone = await client.get(
+        f"/v1/workspaces/{wid}/files/tree", params={"path": "empty-mount"}
+    )
+    assert gone.status_code == 404
