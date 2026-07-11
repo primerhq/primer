@@ -110,7 +110,18 @@ async def list_mounts(
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
     manifest = await mm.load_manifest(ws)
-    return {"mounts": [e.model_dump(mode="json") for e in manifest.mounts]}
+    # Each entry gets a `dirty` flag (local copy diverged from its base
+    # snapshot) so the Studio sidebar can render an unsynced-changes dot
+    # without a second round-trip. Cheap enough for the small collections
+    # this feature targets; a manifest with many mounts would want this
+    # batched, but that's not this feature's scale.
+    out = []
+    for e in manifest.mounts:
+        local = await mount_sync.gather_local(ws, e.dest)
+        d = e.model_dump(mode="json")
+        d["dirty"] = mount_sync.is_modified(e, local)
+        out.append(d)
+    return {"mounts": out}
 
 
 @mounts_router.delete(

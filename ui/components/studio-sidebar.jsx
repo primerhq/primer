@@ -302,6 +302,13 @@ function ST_FileContextMenu({ menu, onAction, onClose }) {
         { key: "rename", label: "Rename", icon: "edit" },
         { key: "delete", label: "Delete", icon: "trash", danger: true },
       ];
+  // Mounted-collection roots get an extra Detach entry (Task 11). The
+  // "apply to collection" entry (Task 12) is deliberately NOT added here yet.
+  if (menu.item && menu.item.origin === "collection") {
+    actions = actions.concat([
+      { key: "detach", label: "Detach collection", icon: "trash", danger: true },
+    ]);
+  }
 
   // Keep the menu inside the viewport: nudge left/up when it would overflow.
   var MENU_W = 176;
@@ -921,6 +928,27 @@ function FilesTree({ wid, studio }) {
     { pollMs: 0 }
   );
 
+  // Shared mounted-collections resource: one GET /mounts backs both the
+  // dirty-dot (Task 11, below) and the "apply to collection" action
+  // (Task 12) — both need to resolve a tree item's dest path to its
+  // mount_id / dirty flag. `dirty` is computed server-side (list_mounts).
+  var mountsRes = useResource(
+    "studio-mounts:" + wid,
+    function (signal) {
+      return apiFetch(
+        "GET",
+        "/workspaces/" + encodeURIComponent(wid) + "/mounts",
+        null,
+        { signal: signal }
+      );
+    },
+    {}
+  );
+  var mountsByDest = {};
+  ((mountsRes.data && mountsRes.data.mounts) || []).forEach(function (m) {
+    mountsByDest[m.dest] = m;
+  });
+
   // Per-folder lazy-fetch cache keyed by path. Map: path → { loading, items, loaded }.
   var [folderCache, setFolderCache] = React.useState({});
 
@@ -1172,6 +1200,59 @@ function FilesTree({ wid, studio }) {
     }
   }
 
+  // -- Detach a mounted collection ------------------------------------------
+  // DELETE /workspaces/{wid}/mounts/{mount_id}[?force=true]. A clean copy
+  // (no local edits since mount/last apply) 204s straight away. A diverged
+  // copy 409s with {modified, changed} — that's caught below and turned into
+  // a confirm dialog, then retried with force=true. Either way the upstream
+  // collection itself is never touched, only the workspace's local copy.
+  async function handleDetach(item) {
+    var mount = mountsByDest[item.path];
+    if (!mount) return;
+    function doDetach(force) {
+      return apiFetch(
+        "DELETE",
+        "/workspaces/" + encodeURIComponent(wid) +
+          "/mounts/" + encodeURIComponent(mount.mount_id) + (force ? "?force=true" : "")
+      );
+    }
+    try {
+      await doDetach(false);
+    } catch (err) {
+      if (err && err.status === 409) {
+        var ok = await confirmDialog({
+          title: "Detach collection",
+          message: "\"" + item.path + "\" has local changes that haven't been applied to the collection. Detach anyway? The upstream collection is unchanged.",
+          danger: true,
+          confirmLabel: "Detach",
+        });
+        if (!ok) return;
+        try {
+          await doDetach(true);
+        } catch (err2) {
+          pushToast && pushToast({
+            kind: "error",
+            title: "Detach failed",
+            detail: ST_errDetail(err2, "Detach failed"),
+            requestId: err2 && err2.requestId,
+          });
+          return;
+        }
+      } else {
+        pushToast && pushToast({
+          kind: "error",
+          title: "Detach failed",
+          detail: ST_errDetail(err, "Detach failed"),
+          requestId: err && err.requestId,
+        });
+        return;
+      }
+    }
+    handleRefresh();
+    mountsRes.refetch && mountsRes.refetch();
+    pushToast && pushToast({ kind: "success", title: "Collection detached", detail: item.path });
+  }
+
   function ST_readAsBase64(file) {
     // Resolve the raw base64 payload (the data: URL minus its "data:...;base64,"
     // prefix) so it can be PUT with encoding:"base64".
@@ -1420,6 +1501,7 @@ function FilesTree({ wid, studio }) {
     else if (action === "download") ST_triggerDownload(wid, item.path);
     else if (action === "rename") handleRename(item);
     else if (action === "delete") handleDelete(item);
+    else if (action === "detach") handleDetach(item);
     else if (action === "new-file") handleNewFileIn(item.path);
     else if (action === "new-folder") handleNewFolderIn(item.path);
     else if (action === "upload") handleUploadIn(item.path);
@@ -1768,6 +1850,17 @@ function FilesTree({ wid, studio }) {
                 {/* Dirty dot */}
                 {isDirty && (
                   <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--blue)", marginLeft: 4, flexShrink: 0 }} />
+                )}
+                {/* Collection dirty-dot: distinct testid/color from the edit
+                    dirty-dot above — flags a mount whose local copy has
+                    diverged from its base snapshot (dirty flag comes from
+                    GET /mounts, looked up here via mountsByDest). */}
+                {item.origin === "collection" && mountsByDest[item.path] && mountsByDest[item.path].dirty && (
+                  <span
+                    data-testid="collection-dirty-dot"
+                    title="Unsynced local changes"
+                    style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--warn, #d9822b)", marginLeft: 4, flexShrink: 0 }}
+                  />
                 )}
                 {/* Hover/focus-revealed row action (delete). stopPropagation keeps
                     the row's open-file / toggle-folder click from firing. Folders

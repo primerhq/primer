@@ -320,6 +320,39 @@ async def test_list_mounts(client, wsr) -> None:
     assert mounts[0]["dest"] == "docs-mount"
 
 
+@pytest.mark.asyncio
+async def test_list_mounts_dirty_flag(client, wsr) -> None:
+    """`dirty` (Task 11) is False right after import, then True once a file
+    under the mount's dest diverges from the base snapshot — mirrors the
+    modified-detection `test_detach_modified_requires_force` already
+    exercises, but observed through GET /mounts instead of the 409 path."""
+    wid = await _setup_workspace(client, wsr)
+    coll_id = await _setup_collection(client)
+    m = (
+        await client.post(
+            f"/v1/workspaces/{wid}/mounts",
+            json={"collection_id": coll_id, "dest": "docs-mount"},
+        )
+    ).json()
+
+    clean = await client.get(f"/v1/workspaces/{wid}/mounts")
+    assert clean.status_code == 200, clean.text
+    assert clean.json()["mounts"][0]["dirty"] is False
+
+    dest = m["dest"]
+    doc_path = m["base"][0]["path"]
+    edit = await client.put(
+        f"/v1/workspaces/{wid}/files",
+        params={"path": f"{dest}/{doc_path}"},
+        json={"content": "CHANGED", "encoding": "text"},
+    )
+    assert edit.status_code == 204, edit.text
+
+    dirty = await client.get(f"/v1/workspaces/{wid}/mounts")
+    assert dirty.status_code == 200, dirty.text
+    assert dirty.json()["mounts"][0]["dirty"] is True
+
+
 # ===========================================================================
 # DELETE /v1/workspaces/{id}/mounts/{mount_id} — detach
 # ===========================================================================
