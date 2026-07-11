@@ -241,3 +241,80 @@ async def test_create_workspace_mount_missing_collection_is_404(client, template
         },
     )
     assert r.status_code == 404, r.text
+
+
+async def _make_empty_collection(client, collection_id: str, description: str) -> str:
+    await client.post("/v1/ssp", json=_SSP_BODY)
+    body = Collection(
+        id=collection_id,
+        description=description,
+        embedder=CollectionEmbedder(provider_id="hf-1", model="all-MiniLM-L6-v2"),
+        search_provider_id="ssp-test",
+    ).model_dump(mode="json")
+    created = await client.post("/v1/collections", json=body)
+    assert created.status_code == 201, created.text
+    return collection_id
+
+
+@pytest.mark.asyncio
+async def test_create_workspace_with_empty_collection_mount_creates_dir(
+    client, template_id
+):
+    """Fix 2 regression guard: create-time mount of a ZERO-document
+    collection must materialise dest on disk (mirrors the runtime
+    create_mount path) -- otherwise GET /mounts 500s (pre Fix-1) / the dir
+    is phantom (post Fix-1)."""
+    coll_id = await _make_empty_collection(client, "kb-empty-create", "empty coll")
+
+    r = await client.post(
+        "/v1/workspaces",
+        json={
+            "template_id": template_id,
+            "mounts": [{"collection_id": coll_id, "dest": "empty-mount"}],
+        },
+    )
+    assert r.status_code == 201, r.text
+    ws_id = r.json()["id"]
+
+    mounts_resp = await client.get(f"/v1/workspaces/{ws_id}/mounts")
+    assert mounts_resp.status_code == 200, mounts_resp.text
+    mounts = mounts_resp.json()["mounts"]
+    assert len(mounts) == 1
+    assert mounts[0]["base"] == []
+
+    tree = await client.get(
+        f"/v1/workspaces/{ws_id}/files/tree", params={"path": "empty-mount"}
+    )
+    assert tree.status_code == 200, tree.text
+    assert {i["name"] for i in tree.json()["items"]} == {".gitkeep"}
+
+
+@pytest.mark.asyncio
+async def test_create_workspace_duplicate_collection_id_in_mounts_is_409(
+    client, template_id, coll_id
+):
+    r = await client.post(
+        "/v1/workspaces",
+        json={
+            "template_id": template_id,
+            "mounts": [{"collection_id": coll_id}, {"collection_id": coll_id}],
+        },
+    )
+    assert r.status_code == 409, r.text
+
+
+@pytest.mark.asyncio
+async def test_create_workspace_duplicate_dest_in_mounts_is_409(client, template_id):
+    """Two collections whose (default) sanitized dest collide -- descriptions
+    'Docs' and 'docs' both sanitize to 'docs'."""
+    a = await _make_empty_collection(client, "kb-dup-a", "Docs")
+    b = await _make_empty_collection(client, "kb-dup-b", "docs")
+
+    r = await client.post(
+        "/v1/workspaces",
+        json={
+            "template_id": template_id,
+            "mounts": [{"collection_id": a}, {"collection_id": b}],
+        },
+    )
+    assert r.status_code == 409, r.text

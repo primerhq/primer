@@ -522,13 +522,25 @@ async def create_workspace(
         service = get_document_service(request)
         collections = get_collection_storage(get_storage_provider(request))
         extra_files = list(overrides.files)
+        seen_collection_ids: set[str] = set()
+        seen_dests: set[str] = set()
         for req in body.mounts:
+            if req.collection_id in seen_collection_ids:
+                raise ConflictError(
+                    f"Collection {req.collection_id!r} listed more than once in mounts"
+                )
+            seen_collection_ids.add(req.collection_id)
             coll = await collections.get(req.collection_id)
             if coll is None:
                 raise NotFoundError(
                     f"Collection {req.collection_id!r} does not exist"
                 )
             dest = sanitize_dest(req.dest or coll.description or coll.id)
+            if dest in seen_dests:
+                raise ConflictError(
+                    f"Multiple mounts resolve to the same directory {dest!r}"
+                )
+            seen_dests.add(dest)
             extra_files += await expand_collection(service, req.collection_id, dest)
             base = await build_base_snapshot(service, req.collection_id)
             mount_records.append(
@@ -541,6 +553,17 @@ async def create_workspace(
     if mount_records:
         manifest = await mm.load_manifest(live)
         for cid, cname, dest, base in mount_records:
+            if not base:
+                # Zero-document collection: expand_collection produced no
+                # FileMounts, so materialise() never created dest on disk.
+                # Create it explicitly (mirrors the runtime create_mount
+                # path in workspace_mounts.py) so GET /mounts doesn't 500 /
+                # show a phantom dir with no backing directory. Only do
+                # this when base is empty -- for non-empty collections the
+                # dir already exists from materialise, and make_dir on an
+                # existing dir raises.
+                await live.make_dir(dest)
+                await live.write_file(f"{dest}/.gitkeep", b"")
             manifest = mm.add_mount(
                 manifest,
                 mm.MountEntry(

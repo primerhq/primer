@@ -1,6 +1,7 @@
 import hashlib
 import pytest
-from primer.workspace.mount_sync import classify, is_modified, apply_changes, DiffResult
+from primer.model.except_ import NotFoundError
+from primer.workspace.mount_sync import classify, is_modified, apply_changes, gather_local, DiffResult
 from primer.workspace.mount_manifest import MountEntry, BaseFile
 from datetime import datetime, timezone
 
@@ -62,6 +63,26 @@ class FakeDoc:
 class FakeWS:
     def __init__(self, files): self.files = files  # {abs_path: bytes}
     async def read_file(self, path): return self.files[path]
+
+
+class _RaisingListWS:
+    """A fake workspace whose list_files raises for a missing dest."""
+    def __init__(self, exc): self._exc = exc
+    async def list_files(self, path, *, recursive=False): raise self._exc
+
+
+@pytest.mark.asyncio
+async def test_gather_local_tolerates_not_found_error():
+    ws = _RaisingListWS(NotFoundError("nope"))
+    out = await gather_local(ws, "dest")
+    assert out == {}
+
+
+@pytest.mark.asyncio
+async def test_gather_local_tolerates_file_not_found_error():
+    ws = _RaisingListWS(FileNotFoundError("nope"))
+    out = await gather_local(ws, "dest")
+    assert out == {}
 
 
 @pytest.mark.asyncio

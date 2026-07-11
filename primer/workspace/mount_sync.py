@@ -10,6 +10,7 @@ import hashlib
 
 from pydantic import BaseModel, Field
 
+from primer.model.except_ import NotFoundError
 from primer.workspace.mount_manifest import MountEntry
 
 
@@ -58,7 +59,13 @@ def is_modified(entry: MountEntry, local) -> bool:
 
 async def gather_local(ws, dest) -> dict[str, str]:
     out: dict[str, str] = {}
-    entries = await ws.list_files(dest, recursive=True)
+    try:
+        entries = await ws.list_files(dest, recursive=True)
+    except (FileNotFoundError, NotFoundError):
+        # dest was removed out-of-band (e.g. Studio "Delete folder" or an
+        # agent DELETE /files) -- read as fully-deleted-locally rather than
+        # 500ing every mounts endpoint that touches this mount.
+        return out
     for e in entries:
         if getattr(e, "kind", None) != "file":  # skip dir / symlink / anything non-regular
             continue

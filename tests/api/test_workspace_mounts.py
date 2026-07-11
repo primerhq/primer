@@ -472,3 +472,42 @@ async def test_import_empty_collection_seeds_gitkeep(client, wsr) -> None:
         f"/v1/workspaces/{wid}/files/tree", params={"path": "empty-mount"}
     )
     assert gone.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_mount_survives_dest_deleted_out_of_band(client, wsr) -> None:
+    """A mounted dir is an ordinary workspace directory -- the Studio
+    "Delete folder" action or an agent DELETE /files can remove it out from
+    under the mount, leaving a stale manifest entry. GET /mounts must
+    tolerate the missing dest (not 500), and force-delete must still clean
+    up the manifest."""
+    wid = await _setup_workspace(client, wsr)
+    coll_id = await _setup_collection(client)
+    m = (
+        await client.post(
+            f"/v1/workspaces/{wid}/mounts",
+            json={"collection_id": coll_id, "dest": "docs-mount"},
+        )
+    ).json()
+
+    # Remove the mounted dir out-of-band via the plain files API.
+    rm = await client.delete(
+        f"/v1/workspaces/{wid}/files",
+        params={"path": "docs-mount", "recursive": "true"},
+    )
+    assert rm.status_code == 204, rm.text
+
+    # GET /mounts must not 500 -- the stale entry reads as fully deleted.
+    listed = await client.get(f"/v1/workspaces/{wid}/mounts")
+    assert listed.status_code == 200, listed.text
+    mounts = listed.json()["mounts"]
+    assert len(mounts) == 1
+    assert mounts[0]["mount_id"] == m["mount_id"]
+    assert mounts[0]["dirty"] is True  # base has files, local is empty
+
+    # Force-delete cleans up the now-orphaned manifest entry.
+    d = await client.delete(
+        f"/v1/workspaces/{wid}/mounts/{m['mount_id']}", params={"force": "true"}
+    )
+    assert d.status_code == 204, d.text
+    assert (await client.get(f"/v1/workspaces/{wid}/mounts")).json()["mounts"] == []
