@@ -238,6 +238,57 @@ function _tsTarget(t) {
   return null;
 }
 
+// Post-registration connection result shown inside the New/Edit modal: a
+// loading state while we probe, then "connected · N tools" or the classified
+// connection error (so a bad URL / unreachable server is obvious immediately
+// instead of a silent save).
+function TS_ConnectResult({ row, isEdit, probing, probe }) {
+  const spinner = (
+    <span
+      aria-hidden="true"
+      style={{
+        width: 16, height: 16, flexShrink: 0, borderRadius: "50%",
+        border: "2px solid var(--border)", borderTopColor: "var(--accent)",
+        animation: "spin 0.8s linear infinite",
+      }}
+    />
+  );
+  return (
+    <div style={{ padding: "4px 2px" }} data-testid="toolset-connect-result">
+      <div className="field-help" style={{ marginBottom: 12 }}>
+        {isEdit ? "Saved" : "Registered"} <span className="mono">{row.id}</span> — checking the connection.
+      </div>
+      {probing && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 12px", background: "var(--bg-2)", borderRadius: 8 }}>
+          {spinner}
+          <span className="muted text-sm">Connecting to the MCP server and importing tools…</span>
+        </div>
+      )}
+      {!probing && probe && probe.ok && (
+        <div
+          data-testid="toolset-connect-ok"
+          style={{ display: "flex", alignItems: "center", gap: 10, padding: "14px 12px", background: "var(--green-dim)", borderRadius: 8, color: "var(--green)" }}
+        >
+          <Icon name="check" size={16} />
+          <span><strong>Connected.</strong> {probe.count} tool{probe.count === 1 ? "" : "s"} imported.</span>
+        </div>
+      )}
+      {!probing && probe && !probe.ok && (
+        <div data-testid="toolset-connect-error" style={{ padding: "14px 12px", background: "var(--red-dim)", borderRadius: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--red)" }}>
+            <Icon name="alert" size={16} />
+            <strong>Could not connect.</strong>
+          </div>
+          <div className="text-sm" style={{ marginTop: 6, color: "var(--text-2)", wordBreak: "break-word" }}>{probe.message}</div>
+          <div className="field-help" style={{ marginTop: 8 }}>
+            The toolset is saved, but its tools stay unavailable until it connects. Double-check the URL/command — if Primer runs in a container, <span className="mono">localhost</span> is the container, not your host (try the host IP or <span className="mono">host.docker.internal</span>).
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ============================================================================
 // New toolset modal — MCP-stdio + MCP-http variants
 // ============================================================================
@@ -272,6 +323,34 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
   );
   const [fieldErrors, setFieldErrors] = React.useState({});
 
+  // After the row is saved we probe it (reusing the now-graceful
+  // GET /toolsets/{id}/tools) so the operator sees whether it actually
+  // connected and how many tools were imported -- instead of a blind save
+  // with no signal. `createdRow` flips the modal from the form to the result.
+  const [createdRow, setCreatedRow] = React.useState(null);
+  const [probing, setProbing] = React.useState(false);
+  const [probe, setProbe] = React.useState(null); // {ok:true,count} | {ok:false,message}
+
+  React.useEffect(() => {
+    if (!createdRow) return undefined;
+    let alive = true;
+    setProbing(true);
+    setProbe(null);
+    apiFetch("GET", "/toolsets/" + encodeURIComponent(createdRow.id) + "/tools")
+      .then((res) => {
+        if (alive) {
+          setProbe({ ok: true, count: Array.isArray(res && res.tools) ? res.tools.length : 0 });
+        }
+      })
+      .catch((err) => {
+        if (alive) {
+          setProbe({ ok: false, message: (err && (err.detail || err.message || err.title)) || "Could not connect" });
+        }
+      })
+      .finally(() => { if (alive) setProbing(false); });
+    return () => { alive = false; };
+  }, [createdRow, apiFetch]);
+
   const create = useMutation(
     (body) => isEdit
       ? apiFetch("PUT", "/toolsets/" + encodeURIComponent(existing.id), body)
@@ -280,7 +359,9 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
       invalidates: isEdit
         ? ["toolsets:list", "toolset-detail:" + (existing?.id || "")]
         : ["toolsets:list"],
-      onSuccess: (row) => onCreate(row),
+      // Don't close yet -- show the connection result first (see the effect
+      // above). `onCreate` fires from the "Done" button.
+      onSuccess: (row) => setCreatedRow(row),
       onError: (err) => {
         if (err && err.status === 422 && Array.isArray(err.fieldErrors)) {
           const next = {};
@@ -341,14 +422,24 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
       title={isEdit ? `Edit toolset · ${existing.id}` : "New toolset"}
       onClose={onClose}
       footer={
-        <>
-          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-          <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit || create.loading}>
-            {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
+        createdRow ? (
+          <Btn kind="primary" icon="check" onClick={() => onCreate(createdRow)} disabled={probing} data-testid="toolset-connect-done">
+            {probing ? "Connecting…" : "Done"}
           </Btn>
-        </>
+        ) : (
+          <>
+            <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+            <Btn kind="primary" icon={isEdit ? "check" : "plus"} onClick={submit} disabled={!canSubmit || create.loading}>
+              {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
+            </Btn>
+          </>
+        )
       }
     >
+      {createdRow ? (
+        <TS_ConnectResult row={createdRow} isEdit={isEdit} probing={probing} probe={probe} />
+      ) : (
+      <>
       <div className="field">
         <label className="field-label">ID {isEdit
           ? <span className="hint">locked — id cannot change after create</span>
@@ -456,6 +547,8 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
             </>
           )}
         </>
+      )}
+      </>
       )}
     </Modal>
   );
