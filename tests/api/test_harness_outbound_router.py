@@ -642,3 +642,23 @@ async def test_update_clear_git_url_inbound_rejected(
     r = await client.put("/v1/harnesses/hns_clr_in", json={"git_url": None})
     assert r.status_code == 422, r.text
     assert r.json()["code"] == "git_url_required_inbound"
+
+
+@pytest.mark.asyncio
+async def test_clear_git_url_resets_push_history(client, app, fake_storage_provider):
+    """Clearing an outbound remote forgets the now-irrelevant push history,
+    so a later build reads DRAFT rather than OUTDATED."""
+    harness = _make_outbound_harness(
+        id="hns_clr_hist", slug="clr-hist",
+        git_url="https://github.com/example/x",
+        last_pushed_commit="deadbeefcafe",
+        last_pushed_bundle_hash="84add0f16ad5",
+    )
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    r = await client.put("/v1/harnesses/hns_clr_hist", json={"git_url": None})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["git_url"] is None
+    assert body["last_pushed_commit"] is None
+    assert body["last_pushed_bundle_hash"] is None
