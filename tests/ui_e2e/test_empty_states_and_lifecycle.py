@@ -48,7 +48,9 @@ def test_u0045_toolset_tools_tab_deep_link_survives_reload(
     """
     toolset_id = f"ts-u0045-{unique_suffix}"
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/toolsets", json={
+        # allow_unreachable: this lifecycle test seeds an unreachable MCP-HTTP
+        # toolset on purpose; opt out of the create-time connectivity probe.
+        r = c.post("/v1/toolsets?allow_unreachable=true", json={
             "id": toolset_id,
             "provider": "mcp",
             "config": {
