@@ -151,4 +151,65 @@ async def delete_mount(
     return Response(status_code=204)
 
 
+@mounts_router.get(
+    "/workspaces/{workspace_id}/mounts/{mount_id}/diff",
+    response_model=mount_sync.DiffResult,
+    responses=common_responses(404, 500),
+    summary="Preview local vs collection changes",
+)
+async def diff_mount(
+    workspace_id: str,
+    mount_id: str,
+    registry=Depends(get_workspace_registry),
+    service=Depends(get_document_service),
+    collections=Depends(get_collection_storage),
+) -> mount_sync.DiffResult:
+    ws = await registry.get_workspace(workspace_id)
+    manifest = await mm.load_manifest(ws)
+    entry = mm.find_mount(manifest, mount_id)
+    if entry is None:
+        raise NotFoundError(f"Mount {mount_id!r} does not exist")
+    base = {b.path: b.sha256 for b in entry.base}
+    local = await mount_sync.gather_local(ws, entry.dest)
+    if await collections.get(entry.collection_id) is None:
+        d = mount_sync.classify(base, local, {})
+        d.orphaned = True
+        return d
+    upstream = await mount_sync.gather_upstream(service, entry.collection_id)
+    return mount_sync.classify(base, local, upstream)
+
+
+@mounts_router.post(
+    "/workspaces/{workspace_id}/mounts/{mount_id}/apply",
+    response_model=mount_sync.ApplyResult,
+    responses=common_responses(404, 409, 500),
+    summary="Apply local changes back to the collection",
+)
+async def apply_mount(
+    workspace_id: str,
+    mount_id: str,
+    registry=Depends(get_workspace_registry),
+    service=Depends(get_document_service),
+    collections=Depends(get_collection_storage),
+) -> mount_sync.ApplyResult:
+    ws = await registry.get_workspace(workspace_id)
+    manifest = await mm.load_manifest(ws)
+    entry = mm.find_mount(manifest, mount_id)
+    if entry is None:
+        raise NotFoundError(f"Mount {mount_id!r} does not exist")
+    if await collections.get(entry.collection_id) is None:
+        raise ConflictError("Upstream collection no longer exists")
+    base = {b.path: b.sha256 for b in entry.base}
+    local = await mount_sync.gather_local(ws, entry.dest)
+    upstream = await mount_sync.gather_upstream(service, entry.collection_id)
+    diff = mount_sync.classify(base, local, upstream)
+    result = await mount_sync.apply_changes(service, entry.collection_id, ws, entry.dest, diff)
+    # refresh base to the applied local snapshot (only paths that succeeded)
+    new_base = await build_base_snapshot(service, entry.collection_id)
+    updated = entry.model_copy(update={"base": new_base})
+    manifest.mounts = [updated if e.mount_id == mount_id else e for e in manifest.mounts]
+    await mm.save_manifest(ws, manifest)
+    return result
+
+
 __all__ = ["mounts_router"]
