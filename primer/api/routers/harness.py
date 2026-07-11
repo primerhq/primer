@@ -306,6 +306,14 @@ async def update_harness(
                 },
             )
         harness.git_url = body.git_url
+        if body.git_url is None:
+            # Clearing the remote forgets the push history: those stamps point
+            # at a repo we're no longer publishing to, so a later build reads
+            # DRAFT (never-pushed) rather than OUTDATED (drifted-from-remote).
+            # (Inbound already returned 422 above, so this is outbound-only.)
+            harness.last_pushed_commit = None
+            harness.last_pushed_bundle_hash = None
+            harness.last_pushed_at = None
 
     harness.overrides_dirty = overrides_dirty
     return await storage.update(harness)

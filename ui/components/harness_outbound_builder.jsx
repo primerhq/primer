@@ -139,7 +139,9 @@ function HarnessOutboundBuilder({ onClose, onCreated, initialStep, initialHarnes
     return () => { if (debouncedSlugRef.current) clearTimeout(debouncedSlugRef.current); };
   }, [slug]);
 
-  const step1Valid = name && slug && gitUrl && !slugError;
+  // git_url is optional for outbound harnesses — the bundle is downloadable
+  // and the DB is the source of truth; a remote is only needed to push.
+  const step1Valid = name && slug && !slugError;
 
   // Step 2 — unique template_names
   const templateNameSet = new Set();
@@ -174,7 +176,7 @@ function HarnessOutboundBuilder({ onClose, onCreated, initialStep, initialHarnes
           name: name || slug,
           slug,
           direction: "outbound",
-          git_url: gitUrl,
+          git_url: gitUrl || null,
           ref: ref || "main",
           tracked_entities: tracked,
         };
@@ -202,7 +204,7 @@ function HarnessOutboundBuilder({ onClose, onCreated, initialStep, initialHarnes
         return;
       }
 
-      if (pushNow) {
+      if (pushNow && gitUrl) {
         await apiFetch("POST", "/harnesses/" + encodeURIComponent(created.id) + "/push", {});
         if (!mountedRef.current) return;
         polled = await HOB_pollUntilDone(apiFetch, created.id, (row) => row.pending_operation == null);
@@ -371,7 +373,7 @@ function HOB_Step1Metadata({
         />
       </div>
       <div className="field">
-        <label className="field-label" htmlFor="hob-git-url">Git URL <span className="hint">HTTPS</span></label>
+        <label className="field-label" htmlFor="hob-git-url">Git URL <span className="hint">optional · HTTPS · leave blank to keep it local</span></label>
         <input
           id="hob-git-url"
           className="input mono"
@@ -894,10 +896,12 @@ function HOB_Step4Link({ name, slug, description, ref_, subpath, gitUrl, tracked
       <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5 }}>
         <input
           type="checkbox"
-          checked={pushNow}
+          checked={pushNow && !!gitUrl}
+          disabled={!gitUrl}
           onChange={(e) => onPushNowChange(e.target.checked)}
         />
         Push now after build
+        {!gitUrl && <span className="hint" style={{ marginLeft: 4 }}>needs a Git URL</span>}
       </label>
 
       {createError && <Banner kind="error" title="Operation failed" detail={createError} />}
