@@ -44,7 +44,7 @@ def classify(base, local, upstream) -> DiffResult:
             d.modified.append(p)
         else:                              # unchanged locally -> never pushed
             continue
-        if u is not None and u != b:       # upstream also moved since mount
+        if u != b:                         # upstream also moved (or deleted) since mount
             d.conflicts.append(p)
     return d
 
@@ -60,7 +60,7 @@ async def gather_local(ws, dest) -> dict[str, str]:
     out: dict[str, str] = {}
     entries = await ws.list_files(dest, recursive=True)
     for e in entries:
-        if getattr(e, "kind", None) == "dir":
+        if getattr(e, "kind", None) != "file":  # skip dir / symlink / anything non-regular
             continue
         rel = e.path[len(dest) + 1:] if e.path.startswith(dest + "/") else e.path
         if rel == ".gitkeep":
