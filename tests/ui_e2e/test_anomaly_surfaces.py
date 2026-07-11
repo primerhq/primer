@@ -6,7 +6,8 @@ its own test here. Setup creates the backend precondition via API
 
 Covers:
 * U0008 - T0711 anomaly banner on toolset detail Tools tab when an
-  MCP-HTTP toolset points at an unreachable URL (server returns 500).
+  MCP-HTTP toolset points at an unreachable URL (server returns a 5xx --
+  an unreachable upstream is a NetworkError -> 504).
 
 UI spec §5 documents this surface as required.
 """
@@ -36,9 +37,9 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
     blank-page crash).
 
     Priority 3 - anomaly surface. The Tools tab calls
-    GET /v1/toolsets/{id}/tools which leaks 500 /errors/internal
-    when the MCP-HTTP transport's upstream is unreachable. The UI
-    detects (tools.error.status === 500 && config.transport === "http")
+    GET /v1/toolsets/{id}/tools which returns a 5xx (an unreachable
+    MCP-HTTP upstream classifies as NetworkError -> 504). The UI
+    detects (tools.error.status >= 500 && config.transport === "http")
     and renders a dedicated Banner with retry + invalidate actions.
     """
     toolset_id = f"ts-u0008-{unique_suffix}"

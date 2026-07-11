@@ -1335,7 +1335,9 @@ function AG_ToolsetRefRow({ tsId, registeredCount, navigate }) {
     { pollMs: null, deps: [tsId] }
   );
   const exposedCount = tools.data?.tools?.length;
-  const t711 = tools.error?.status === 500;
+  // Any 5xx on an MCP-HTTP toolset's /tools (unreachable -> 504, etc.) is the
+  // T0711 "tools unavailable" surface, not just the old leaked 500.
+  const t711 = tools.error?.status >= 500;
   return (
     <div className="ref-row">
       <Icon name="tools" size={13} className="ico" />
@@ -1355,7 +1357,7 @@ function AG_ToolsetRefRow({ tsId, registeredCount, navigate }) {
       {tools.loading ? (
         <span className="muted text-sm">…</span>
       ) : t711 ? (
-        <span className="pill pill-failed" title="T0711 — MCP-HTTP 500 leak"><span className="dot"></span>T0711</span>
+        <span className="pill pill-failed" title="T0711 — MCP-HTTP server unreachable"><span className="dot"></span>T0711</span>
       ) : tools.error ? (
         <span className="pill pill-failed"><span className="dot"></span>err</span>
       ) : (
@@ -1428,9 +1430,10 @@ function AG_ToolsetSection({ tsId, registeredBareIds }) {
     [registeredBareIds],
   );
 
-  // T0711 MCP-HTTP leak — for any toolset returning 500, surface the
-  // anomaly block instead of crashing the rest of the page (U0009).
-  if (tools.error?.status === 500) {
+  // T0711 — for any toolset whose /tools returns a 5xx (unreachable MCP-HTTP
+  // upstream -> 504, etc.), surface the anomaly block instead of crashing the
+  // rest of the page (U0009).
+  if (tools.error?.status >= 500) {
     return (
       <div className="panel" style={{ marginBottom: 14 }}>
         <div className="panel-h">
@@ -1442,7 +1445,7 @@ function AG_ToolsetSection({ tsId, registeredBareIds }) {
           <Banner
             kind="error"
             title="Tools list unavailable"
-            detail="The documented bug pinned by T0711 — MCP-HTTP transport leaks 500/errors/internal when the remote server is unreachable. Visit the toolset detail to Invalidate the cached provider and retry."
+            detail="The MCP-HTTP server for this toolset is unreachable (T0711), so its tools can't be listed. Visit the toolset detail to Invalidate the cached provider and retry."
             actions={<Btn size="sm" icon="refresh" onClick={tools.refetch}>Retry</Btn>}
           />
         </div>
