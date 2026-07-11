@@ -1911,7 +1911,7 @@ function FilesTree({ wid, studio }) {
           wid={wid}
           pushToast={pushToast}
           onClose={function() { setMountOpen(false); }}
-          onMounted={handleRefresh}
+          onMounted={function () { handleRefresh(); mountsRes.refetch && mountsRes.refetch(); }}
         />
       )}
     </div>
