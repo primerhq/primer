@@ -216,6 +216,55 @@ async def test_apply_pushes_local_changes_to_collection(client, wsr) -> None:
     assert body2["conflicts"] == []
 
 
+@pytest.mark.asyncio
+async def test_apply_refreshes_base_from_local_not_upstream(client, wsr) -> None:
+    """Regression guard for the base-refresh data-loss bug: apply_mount must
+    snapshot ``base`` from LOCAL disk after applying, not from upstream.
+
+    Scenario: b.md is untouched locally but edited UPSTREAM after mount;
+    the user applies some other file (a.md). If the base refresh snapshots
+    upstream (the bug), base[b.md] becomes the new upstream hash while
+    local disk still holds the old content -- so the NEXT diff wrongly
+    reports b.md as locally modified, and a later apply would overwrite the
+    upstream edit with stale local content. With the fix, base reflects
+    local (unchanged) content for b.md, so the upstream edit survives and
+    b.md reads as unmodified.
+    """
+    wid, coll_id, mount_id = await _setup_mount(client, wsr, dest="coll")
+
+    # Local edit to a.md (this is the file actually being applied).
+    edit = await client.put(
+        f"/v1/workspaces/{wid}/files",
+        params={"path": "coll/a.md"},
+        json={"content": "A2", "encoding": "text"},
+    )
+    assert edit.status_code == 204, edit.text
+
+    # Upstream edit to b.md -- untouched locally.
+    up = await client.put(
+        f"/v1/collections/{coll_id}/documents",
+        params={"path": "b.md"},
+        json={"content": "B_up"},
+    )
+    assert up.status_code in (200, 201), up.text
+
+    apply_r = await client.post(f"/v1/workspaces/{wid}/mounts/{mount_id}/apply")
+    assert apply_r.status_code == 200, apply_r.text
+
+    # The upstream edit to b.md must NOT be reverted by the apply/refresh.
+    b = await client.get(
+        f"/v1/collections/{coll_id}/documents", params={"path": "b.md"}
+    )
+    assert b.status_code == 200, b.text
+    assert b.json()["content"] == "B_up"
+
+    # base now reflects local (unchanged) content for b.md, so it must not
+    # show up as locally-modified in the next diff.
+    diff = await client.get(f"/v1/workspaces/{wid}/mounts/{mount_id}/diff")
+    assert diff.status_code == 200, diff.text
+    assert "b.md" not in diff.json()["modified"]
+
+
 # ===========================================================================
 # Orphaned mount (upstream collection deleted)
 # ===========================================================================

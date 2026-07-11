@@ -157,7 +157,13 @@ async def delete_mount(
                 status_code=409,
                 detail={"modified": True, "changed": changed},
             )
-    await ws.delete_file(entry.dest, recursive=True)
+    try:
+        await ws.delete_file(entry.dest, recursive=True)
+    except (FileNotFoundError, NotFoundError):
+        # dest was already removed out-of-band (Studio "Delete folder" / an
+        # agent DELETE /files) -- the manifest entry is now stale; still
+        # clean it up rather than leaving an orphaned record behind.
+        pass
     await mm.save_manifest(ws, mm.remove_mount(manifest, mount_id))
     return Response(status_code=204)
 
@@ -215,8 +221,25 @@ async def apply_mount(
     upstream = await mount_sync.gather_upstream(service, entry.collection_id)
     diff = mount_sync.classify(base, local, upstream)
     result = await mount_sync.apply_changes(service, entry.collection_id, ws, entry.dest, diff)
-    # refresh base to the applied local snapshot (only paths that succeeded)
-    new_base = await build_base_snapshot(service, entry.collection_id)
+    # Refresh base from the LOCAL disk snapshot (NOT upstream) so that a
+    # file untouched locally but edited upstream since mount doesn't get its
+    # base silently rewritten to the new upstream hash -- that would make a
+    # later diff report it as "modified" and a later apply overwrite the
+    # upstream edit with stale local content (data loss). Paths that failed
+    # to apply keep their OLD base entry so they stay retryable.
+    local_after = await mount_sync.gather_local(ws, entry.dest)
+    old_base = {b.path: b.sha256 for b in entry.base}
+    failed = set(result.failures)
+    new_base = []
+    seen = set()
+    for path, sha in local_after.items():
+        if path in failed:
+            continue  # keep old base for failed paths (handled below)
+        new_base.append(mm.BaseFile(path=path, sha256=sha))
+        seen.add(path)
+    for path, sha in old_base.items():
+        if path in failed and path not in seen:
+            new_base.append(mm.BaseFile(path=path, sha256=sha))
     updated = entry.model_copy(update={"base": new_base})
     manifest.mounts = [updated if e.mount_id == mount_id else e for e in manifest.mounts]
     await mm.save_manifest(ws, manifest)
