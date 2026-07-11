@@ -806,6 +806,100 @@ function SessionsSection({ wid, studio }) {
 }
 
 // ---------------------------------------------------------------------------
+// ST_MountCollectionModal — mount an existing collection into this workspace.
+//   POST /v1/workspaces/{wid}/mounts { collection_id, dest? } -> MountEntry.
+//   The collection picker is a <select> sourced from GET /collections?limit=200
+//   (mirrors WS_NewWorkspaceModal's template picker in workspaces.jsx). `dest`
+//   is optional — the backend defaults it from the collection when omitted.
+//   On success: toast, close, and onMounted() so the caller (FilesTree's
+//   handleRefresh) reloads the tree and shows the new mounted directory.
+// ---------------------------------------------------------------------------
+
+function ST_MountCollectionModal({ wid, onClose, onMounted, pushToast }) {
+  var api = window.primerApi;
+  var collections = api.useResource(
+    "collections:list",
+    function (signal) { return api.apiFetch("GET", "/collections?limit=200", null, { signal: signal }); },
+    {}
+  );
+  var items = (collections.data && collections.data.items) || [];
+  var [collectionId, setCollectionId] = React.useState("");
+  var [dest, setDest] = React.useState("");
+
+  var create = api.useMutation(
+    function (body) { return api.apiFetch("POST", "/workspaces/" + encodeURIComponent(wid) + "/mounts", body); },
+    {
+      onSuccess: function (row) {
+        onClose();
+        pushToast && pushToast({ kind: "success", title: "Collection mounted", detail: row && row.dest });
+        onMounted && onMounted();
+      },
+      onError: function (err) {
+        pushToast && pushToast({
+          kind: "error",
+          title: "Mount failed",
+          detail: err && (err.detail || err.title),
+          requestId: err && err.requestId,
+        });
+      },
+    }
+  );
+
+  function onMount() {
+    if (!collectionId) return;
+    var body = { collection_id: collectionId };
+    if (dest.trim()) body.dest = dest.trim();
+    create.mutate(body);
+  }
+
+  return (
+    <Modal
+      title="Mount collection"
+      onClose={onClose}
+      footer={
+        <>
+          <Btn kind="ghost" onClick={onClose} disabled={create.loading}>Cancel</Btn>
+          <Btn
+            kind="primary"
+            disabled={!collectionId || create.loading}
+            onClick={onMount}
+            data-testid="mount-collection-submit"
+          >
+            {create.loading ? "Mounting…" : "Mount"}
+          </Btn>
+        </>
+      }
+    >
+      <div className="field">
+        <label className="field-label">Collection</label>
+        <select
+          className="select mono"
+          style={{ width: "100%" }}
+          data-testid="mount-collection-select"
+          value={collectionId}
+          onChange={function (e) { setCollectionId(e.target.value); }}
+        >
+          <option value="">Select a collection…</option>
+          {items.map(function (c) {
+            return <option key={c.id} value={c.id}>{c.description || c.id}</option>;
+          })}
+        </select>
+      </div>
+      <div className="field">
+        <label className="field-label">Directory name <span className="hint">optional — defaults to the collection name</span></label>
+        <input
+          className="input mono"
+          style={{ width: "100%" }}
+          value={dest}
+          onChange={function (e) { setDest(e.target.value); }}
+          placeholder="e.g. research-notes"
+        />
+      </div>
+    </Modal>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // FilesTree
 // ---------------------------------------------------------------------------
 
@@ -923,6 +1017,8 @@ function FilesTree({ wid, studio }) {
   // the folder path (or "." for the tree root) currently under a drag, or null.
   var [ctxMenu, setCtxMenu] = React.useState(null);
   var [dropTarget, setDropTarget] = React.useState(null);
+  // "Mount collection" modal — see ST_MountCollectionModal below.
+  var [mountOpen, setMountOpen] = React.useState(false);
   var pushToast = studio.pushToast || (window.primerApi && window.primerApi.toastPush) || null;
   // promptDialog is published as a bare window global by shared.jsx; keep a
   // primerApi fallback so it resolves regardless of how it was exposed.
@@ -1490,6 +1586,17 @@ function FilesTree({ wid, studio }) {
           }}
         ><Icon name="box" size={13} /></button>
         <button
+          type="button"
+          style={ST_HDR_BTN}
+          title="Mount collection"
+          aria-label="Mount collection"
+          data-testid="files-mount-collection"
+          onClick={function(e) {
+            e.stopPropagation();
+            setMountOpen(true);
+          }}
+        ><Icon name="collection" size={13} /></button>
+        <button
           style={{
             width: 20,
             height: 20,
@@ -1704,6 +1811,16 @@ function FilesTree({ wid, studio }) {
           onClose={function() { setCtxMenu(null); }}
         />
       )}
+
+      {/* "Mount collection" modal, opened from the header action button. */}
+      {mountOpen && (
+        <ST_MountCollectionModal
+          wid={wid}
+          pushToast={pushToast}
+          onClose={function() { setMountOpen(false); }}
+          onMounted={handleRefresh}
+        />
+      )}
     </div>
   );
 }
@@ -1734,6 +1851,7 @@ window.FilesTree = FilesTree;
 window.ST_FileContextMenu = ST_FileContextMenu;
 window.ST_SessionDeleteDialog = ST_SessionDeleteDialog;
 window.ST_SessionRenameDialog = ST_SessionRenameDialog;
+window.ST_MountCollectionModal = ST_MountCollectionModal;
 window.ST_sessionStatus = ST_sessionStatus;
 window.ST_sessionKind = ST_sessionKind;
 window.ST_sessionGlyph = ST_sessionGlyph;
