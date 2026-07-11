@@ -26,6 +26,7 @@ import base64
 import email.utils
 import hashlib
 import logging
+import uuid
 from datetime import datetime, timezone
 from typing import Any, Literal
 
@@ -35,6 +36,8 @@ from pydantic import BaseModel, Field
 
 from primer.api.deps import (
     get_claim_engine,
+    get_collection_storage,
+    get_document_service,
     get_event_bus,
     get_scheduler,
     get_session_storage,
@@ -73,6 +76,12 @@ from primer.model.workspace import (
 )
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.workspace import mount_manifest as mm
+from primer.workspace.collection_expand import (
+    build_base_snapshot,
+    expand_collection,
+    sanitize_dest,
+)
 from primer.workspace.mount_manifest import MountManifest, load_manifest
 
 
@@ -82,6 +91,22 @@ logger = logging.getLogger(__name__)
 # ===========================================================================
 # Request / response bodies
 # ===========================================================================
+
+
+class MountRequest(BaseModel):
+    """Body of ``POST /v1/workspaces/{id}/mounts``.
+
+    Also reused as an item of ``WorkspaceCreateBody.mounts`` (Task 6) to
+    mount collections at workspace-creation time — defined here (ahead of
+    ``WorkspaceCreateBody``) so the create-time field can reference it
+    directly.
+    """
+
+    collection_id: str = Field(..., min_length=1)
+    dest: str | None = Field(
+        default=None,
+        description="Dir name under the workspace root; defaults to a sanitized collection name.",
+    )
 
 
 class WorkspaceCreateBody(BaseModel):
@@ -120,6 +145,10 @@ class WorkspaceCreateBody(BaseModel):
             "When set, the workspace row is created with this "
             "reply_binding already populated."
         ),
+    )
+    mounts: list[MountRequest] = Field(
+        default_factory=list,
+        description="Collections to mount at creation time.",
     )
 
 
@@ -436,6 +465,7 @@ async def get_workspace(
 )
 async def create_workspace(
     body: WorkspaceCreateBody,
+    request: Request,
     workspace_storage=Depends(get_workspace_storage),
     template_storage=Depends(get_workspace_template_storage),
     provider_storage=Depends(get_workspace_provider_storage),
@@ -478,7 +508,51 @@ async def create_workspace(
             },
         )
 
-    live = await registry.materialise(template=template, overrides=body.overrides)
+    overrides = body.overrides or WorkspaceTemplateOverrides()
+    mount_records = []  # (collection_id, collection_name, dest, base: list[BaseFile])
+    if body.mounts:
+        # Built lazily (only when mounts are actually requested) rather than
+        # as FastAPI Depends() parameters: get_document_service() eagerly
+        # constructs a DocumentService that calls
+        # storage_provider.get_content_store(), which not every
+        # StorageProvider stand-in implements (e.g. lightweight in-memory
+        # fakes used elsewhere in the test suite for workspace-only tests).
+        # Resolving these only inside the mounts branch keeps the no-mounts
+        # create path byte-for-byte unchanged.
+        service = get_document_service(request)
+        collections = get_collection_storage(get_storage_provider(request))
+        extra_files = list(overrides.files)
+        for req in body.mounts:
+            coll = await collections.get(req.collection_id)
+            if coll is None:
+                raise NotFoundError(
+                    f"Collection {req.collection_id!r} does not exist"
+                )
+            dest = sanitize_dest(req.dest or coll.description or coll.id)
+            extra_files += await expand_collection(service, req.collection_id, dest)
+            base = await build_base_snapshot(service, req.collection_id)
+            mount_records.append(
+                (req.collection_id, coll.description or coll.id, dest, base)
+            )
+        overrides = overrides.model_copy(update={"files": extra_files})
+
+    live = await registry.materialise(template=template, overrides=overrides)
+
+    if mount_records:
+        manifest = await mm.load_manifest(live)
+        for cid, cname, dest, base in mount_records:
+            manifest = mm.add_mount(
+                manifest,
+                mm.MountEntry(
+                    mount_id=f"wsmnt-{uuid.uuid4().hex[:12]}",
+                    collection_id=cid,
+                    collection_name=cname,
+                    dest=dest,
+                    mounted_at=datetime.now(timezone.utc),
+                    base=base,
+                ),
+            )
+        await mm.save_manifest(live, manifest)
 
     row_id = body.id if body.id is not None else live.id
     # Mark the row "running" immediately — materialise() returned a live
@@ -973,16 +1047,6 @@ async def interrupt_session(
 # ===========================================================================
 
 files_router = APIRouter(tags=["workspace-files"])
-
-
-class MountRequest(BaseModel):
-    """Body of ``POST /v1/workspaces/{id}/mounts``."""
-
-    collection_id: str = Field(..., min_length=1)
-    dest: str | None = Field(
-        default=None,
-        description="Dir name under the workspace root; defaults to a sanitized collection name.",
-    )
 
 
 def _decorate_origins(
