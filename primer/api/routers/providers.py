@@ -26,6 +26,7 @@ Models" button. They build a transient adapter, call its
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from uuid import uuid4
 
@@ -48,9 +49,8 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.model.except_ import (
-    AuthRequiredError,
     BadRequestError,
-    ConfigError,
+    NetworkError,
     PrimerError,
     ToolsetUnreachableError,
 )
@@ -76,6 +76,9 @@ from primer.model.provider import (
 from primer.api.routers._references import ReferenceCheck
 from primer.model.storage import OffsetPage
 from primer.model.tool_approval import ToolApprovalPolicy
+
+
+logger = logging.getLogger(__name__)
 
 
 # ---- Reserved-id protection helpers ---------------------------------------
@@ -547,9 +550,18 @@ def _get_tool_approval_policy_storage(request: Request):
 #
 # Before persisting an MCP toolset that talks to a remote endpoint over the
 # network (transport=http), we drain a live tools/list to confirm the endpoint
-# is reachable. An unreachable endpoint is rejected BEFORE storage.create so
-# the operator gets an immediate, actionable error instead of a blind save that
-# only surfaces when an agent later fails to open a session.
+# can be REACHED. The reject means strictly "the backend could not connect" --
+# a connection refusal / DNS failure / network error, or the probe timing out.
+# It is rejected BEFORE storage.create so the operator gets an immediate,
+# actionable error instead of a blind save.
+#
+# A server that RESPONDS at all is reachable and is allowed through, even if it
+# responds with an error: OAuth-protected servers (401 -> AuthenticationError),
+# needs-consent (AuthRequiredError), 5xx (ProviderError/ServerError), or a
+# ConfigError are all "reachable" -- an OAuth toolset in particular MUST be
+# creatable so the user can then consent. The post-create TS_ConnectResult
+# probe + the T0711 banner surface those reachable-but-erroring toolsets after
+# creation, so nothing is lost by allowing them.
 #
 # Error contract (shared verbatim with ui/components/toolsets.jsx): the reject
 # is a ToolsetUnreachableError -> HTTP 400 + problem type
@@ -586,18 +598,58 @@ def _toolset_unreachable(
     )
 
 
+def _informative_leaf(exc: BaseException) -> BaseException:
+    """Unwrap anyio ``BaseExceptionGroup`` wrappers to the informative leaf.
+
+    HTTP MCP runs inside anyio task groups, which wrap any sub-exception in a
+    ``BaseExceptionGroup``. Prefer an already-classified :class:`PrimerError`
+    leaf (what :class:`McpToolsetProvider` raises for connection failures via
+    ``classify_mcp_exception``), exactly like :func:`list_toolset_tools` above;
+    otherwise fall back to the first leaf.
+    """
+    if not isinstance(exc, BaseExceptionGroup):
+        return exc
+    leaves: list[BaseException] = []
+    pending: list[BaseException] = [exc]
+    while pending:
+        cur = pending.pop()
+        if isinstance(cur, BaseExceptionGroup):
+            pending.extend(cur.exceptions)
+        else:
+            leaves.append(cur)
+    for leaf in leaves:
+        if isinstance(leaf, PrimerError):
+            return leaf
+    return leaves[0] if leaves else exc
+
+
+def _is_connection_failure(leaf: BaseException) -> bool:
+    """Pure decision: does this probe outcome mean "could not connect"?
+
+    Only a genuine transport-level failure counts as unreachable -> reject:
+
+    * :class:`NetworkError` -- connection refused / DNS failure / network error
+      (no response received), and
+    * :class:`TimeoutError` -- the 8s probe cap fired before the handshake
+      completed.
+
+    Every "the server responded" outcome is REACHABLE -> allow the create:
+    :class:`AuthenticationError` (401/403), :class:`AuthRequiredError`
+    (needs OAuth consent), :class:`ProviderError` / :class:`ServerError`
+    (5xx from a responding server), :class:`ConfigError`, or anything else.
+    """
+    return isinstance(leaf, (NetworkError, TimeoutError))
+
+
 async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
     """Fully drain ``list_tools`` to confirm the http MCP endpoint is reachable.
 
     Builds a transient :class:`McpToolsetProvider` (no persistence, no
-    registry) and consumes the whole ``tools/list`` under an 8s cap. Reachable-
-    but-needs-OAuth (:class:`AuthRequiredError`) and invalid-config
-    (:class:`ConfigError`) bubble as their own envelopes; every other failure
-    becomes the single :class:`ToolsetUnreachableError` reject.
-
-    The ``BaseExceptionGroup`` / ``PrimerError`` unwrapping mirrors
-    :func:`list_toolset_tools` above: HTTP MCP runs inside anyio task groups
-    that wrap any sub-exception in a ``BaseExceptionGroup``.
+    registry) and consumes the whole ``tools/list`` under an 8s cap. Rejects
+    the create with :class:`ToolsetUnreachableError` ONLY when the endpoint
+    could not be connected to (:func:`_is_connection_failure`); any outcome
+    where the server responded (auth / provider / config / other) is allowed
+    through -- the post-create probe surfaces those errors.
     """
     import asyncio
 
@@ -616,25 +668,23 @@ async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
         async with asyncio.timeout(8):
             async for _tool in provider.list_tools(principal=principal):
                 pass  # drain fully: connect + handshake + tools/list happen here
-    except (ConfigError, AuthRequiredError):
-        # Reachable-but-needs-OAuth / caller-input config error: bubble as-is.
-        raise
-    except BaseExceptionGroup as group:
-        # Surface a documented PrimerError sub-exception if present; a
-        # Config/Auth leaf still bubbles as-is, everything else is a reject.
-        for sub in group.exceptions:
-            if isinstance(sub, (ConfigError, AuthRequiredError)):
-                raise sub from group
-        for sub in group.exceptions:
-            if isinstance(sub, PrimerError):
-                raise _toolset_unreachable(entity, sub) from group
-        first = group.exceptions[0] if group.exceptions else group
-        raise _toolset_unreachable(entity, first) from group
-    except TimeoutError as exc:
-        raise _toolset_unreachable(entity, exc, timed_out=True) from exc
     except Exception as exc:
-        # NetworkError / ProviderError / third-party leaks -> single reject.
-        raise _toolset_unreachable(entity, exc) from exc
+        # asyncio.timeout raises TimeoutError; the mcp transport raises a
+        # classified PrimerError (often wrapped in a BaseExceptionGroup).
+        leaf = _informative_leaf(exc)
+        if _is_connection_failure(leaf):
+            raise _toolset_unreachable(
+                entity, leaf, timed_out=isinstance(leaf, TimeoutError)
+            ) from exc
+        # Reachable but errored (auth / provider / config / other): allow the
+        # create. The post-create TS_ConnectResult probe surfaces the error.
+        logger.debug(
+            "toolset %r create probe: endpoint reachable but errored (%s); "
+            "allowing create",
+            entity.id,
+            type(leaf).__name__,
+        )
+        return
 
 
 async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
