@@ -1,0 +1,150 @@
+"""Mount / import a Collection into a Workspace and detach it again.
+
+Import uses the SIMPLE direct approach (``service.list`` + ``service.read``
++ ``ws.write_file(join_dest(...))``) rather than ``resolve_file_sources`` —
+that resolver-based path is for create-time expansion (Task 6), not this
+running-workspace import path.
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
+
+from primer.api.deps import (
+    get_collection_storage,
+    get_document_service,
+    get_workspace_registry,
+)
+from primer.api.errors import common_responses
+from primer.api.routers.workspaces import MountRequest
+from primer.model.collection import Collection
+from primer.model.except_ import ConflictError, NotFoundError
+from primer.workspace import mount_manifest as mm
+from primer.workspace import mount_sync
+from primer.workspace.collection_expand import build_base_snapshot, join_dest, sanitize_dest
+
+mounts_router = APIRouter(tags=["workspace-mounts"])
+
+
+async def _collection_or_404(collections, collection_id: str) -> Collection:
+    c = await collections.get(collection_id)
+    if c is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    return c
+
+
+@mounts_router.post(
+    "/workspaces/{workspace_id}/mounts",
+    response_model=mm.MountEntry,
+    status_code=201,
+    responses=common_responses(404, 409, 422, 500),
+    summary="Mount a collection into a running workspace",
+)
+async def create_mount(
+    workspace_id: str,
+    body: MountRequest,
+    registry=Depends(get_workspace_registry),
+    service=Depends(get_document_service),
+    collections=Depends(get_collection_storage),
+) -> mm.MountEntry:
+    ws = await registry.get_workspace(workspace_id)
+    coll = await _collection_or_404(collections, body.collection_id)
+    manifest = await mm.load_manifest(ws)
+    if mm.find_by_collection(manifest, body.collection_id) is not None:
+        raise ConflictError(f"Collection {body.collection_id!r} is already mounted")
+    dest = sanitize_dest(body.dest or coll.description or coll.id)
+    if mm.find_by_dest(manifest, dest) is not None:
+        raise ConflictError(f"A mount already uses dest {dest!r}")
+    # dest must not already exist as real files: list_files may raise
+    # FileNotFoundError (dest free) or return [] (dest free); only a
+    # non-empty list means the path is taken.
+    try:
+        existing = await ws.list_files(dest)
+        if existing:
+            raise ConflictError(f"Path {dest!r} already exists in the workspace")
+    except FileNotFoundError:
+        pass
+
+    entries = await service.list(collection_id=body.collection_id)
+    # Always create the dest dir explicitly (rather than relying on
+    # write_file to imply it) so it registers as a real directory entry —
+    # the root-level GET /files/tree decorates a mount root by matching
+    # each dir entry's path against the manifest, which requires dest to
+    # actually show up as a "dir" kind entry even when it's populated with
+    # files in the same call.
+    await ws.make_dir(dest)
+    if not entries:
+        await ws.write_file(f"{dest}/.gitkeep", b"")
+    else:
+        for e in entries:
+            res = await service.read(collection_id=body.collection_id, path=e.path)
+            await ws.write_file(join_dest(dest, e.path), res.content.encode("utf-8"))
+
+    base = await build_base_snapshot(service, body.collection_id)
+    entry = mm.MountEntry(
+        mount_id=f"wsmnt-{uuid.uuid4().hex[:12]}",
+        collection_id=body.collection_id,
+        collection_name=coll.description or coll.id,
+        dest=dest,
+        mounted_at=datetime.now(timezone.utc),
+        base=base,
+    )
+    await mm.save_manifest(ws, mm.add_mount(manifest, entry))
+    return entry
+
+
+@mounts_router.get(
+    "/workspaces/{workspace_id}/mounts",
+    responses=common_responses(404, 500),
+    summary="List mounted collections",
+)
+async def list_mounts(
+    workspace_id: str,
+    registry=Depends(get_workspace_registry),
+) -> dict:
+    ws = await registry.get_workspace(workspace_id)
+    manifest = await mm.load_manifest(ws)
+    return {"mounts": [e.model_dump(mode="json") for e in manifest.mounts]}
+
+
+@mounts_router.delete(
+    "/workspaces/{workspace_id}/mounts/{mount_id}",
+    status_code=204,
+    responses=common_responses(404, 409, 500),
+    summary="Detach a mounted collection (upstream untouched)",
+)
+async def delete_mount(
+    workspace_id: str,
+    mount_id: str,
+    force: bool = Query(False),
+    registry=Depends(get_workspace_registry),
+) -> Response:
+    ws = await registry.get_workspace(workspace_id)
+    manifest = await mm.load_manifest(ws)
+    entry = mm.find_mount(manifest, mount_id)
+    if entry is None:
+        raise NotFoundError(f"Mount {mount_id!r} does not exist")
+    if not force:
+        local = await mount_sync.gather_local(ws, entry.dest)
+        if mount_sync.is_modified(entry, local):
+            base = {b.path: b.sha256 for b in entry.base}
+            changed = sorted(
+                set(base) ^ set(local)
+                | {p for p in local if local.get(p) != base.get(p)}
+            )
+            # ConflictError carries only a message string; the UI needs the
+            # structured {modified, changed} payload, so raise HTTPException
+            # directly here (matches the codebase's existing convention for
+            # structured 4xx bodies, e.g. HTTPException(403, detail={...})).
+            raise HTTPException(
+                status_code=409,
+                detail={"modified": True, "changed": changed},
+            )
+    await ws.delete_file(entry.dest, recursive=True)
+    await mm.save_manifest(ws, mm.remove_mount(manifest, mount_id))
+    return Response(status_code=204)
+
+
+__all__ = ["mounts_router"]
