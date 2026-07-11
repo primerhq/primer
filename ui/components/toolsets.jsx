@@ -845,10 +845,12 @@ function TS_ToolsTab({ id, ts, onInvalidate }) {
     return <div className="muted text-sm" style={{ padding: 24, textAlign: "center" }}>Loading tools…</div>;
   }
   if (tools.error) {
-    // T0711 — GET /v1/toolsets/{id}/tools leaks 500/errors/internal for
-    // the MCP-HTTP transport when the remote server is unreachable.
+    // T0711 — an unreachable / erroring MCP-HTTP upstream. It now surfaces as
+    // a proper 5xx (NetworkError -> 504, ProviderError -> 502, ...) rather than
+    // the old leaked 500, so treat any server-side failure on an HTTP toolset
+    // as the "tools unavailable" anomaly surface.
     const transport = _tsTransport(ts);
-    const t711 = tools.error.status === 500 && transport === "http";
+    const t711 = transport === "http" && tools.error.status >= 500;
     if (t711) {
       return (
         <div style={{ padding: 14 }}>
@@ -856,10 +858,9 @@ function TS_ToolsTab({ id, ts, onInvalidate }) {
             kind="error"
             title="Tools list unavailable"
             detail={
-              "This is the documented bug pinned by T0711 — the MCP-HTTP " +
-              "transport leaks 500 /errors/internal when the remote server " +
-              "is unreachable. Confirm the URL is reachable, then Invalidate " +
-              "to drop the cached provider and retry."
+              "The MCP-HTTP server for this toolset is unreachable (T0711), " +
+              "so its tools can't be listed. Confirm the URL is reachable, " +
+              "then Invalidate to drop the cached provider and retry."
             }
             actions={
               <>

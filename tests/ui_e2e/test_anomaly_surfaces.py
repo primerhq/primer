@@ -6,7 +6,8 @@ its own test here. Setup creates the backend precondition via API
 
 Covers:
 * U0008 - T0711 anomaly banner on toolset detail Tools tab when an
-  MCP-HTTP toolset points at an unreachable URL (server returns 500).
+  MCP-HTTP toolset points at an unreachable URL (server returns a 5xx --
+  an unreachable upstream is a NetworkError -> 504).
 
 UI spec §5 documents this surface as required.
 """
@@ -23,14 +24,6 @@ from tests.ui_e2e._studio_helpers import open_session_in_studio
 from tests._support.smk import smk  # noqa: E402
 pytestmark = smk("SMK-UI-02", "SMK-UI-05", status="partial")
 
-# The T0711 "Tools list unavailable" banner only renders after the backend's
-# GET /tools returns a 500 for an unreachable MCP-HTTP upstream. A refused
-# connection to a dead localhost port is fast, but on a loaded CI runner
-# (Postgres + server + chromium + ~130 sibling journeys) the click -> fetch ->
-# 500 -> render round-trip can exceed the old 15s budget and time out. Give the
-# banner waits generous headroom -- this absorbs runner load, not a real hang.
-_ANOMALY_TIMEOUT_MS = 30_000
-
 
 def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
     page,
@@ -44,9 +37,9 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
     blank-page crash).
 
     Priority 3 - anomaly surface. The Tools tab calls
-    GET /v1/toolsets/{id}/tools which leaks 500 /errors/internal
-    when the MCP-HTTP transport's upstream is unreachable. The UI
-    detects (tools.error.status === 500 && config.transport === "http")
+    GET /v1/toolsets/{id}/tools which returns a 5xx (an unreachable
+    MCP-HTTP upstream classifies as NetworkError -> 504). The UI
+    detects (tools.error.status >= 500 && config.transport === "http")
     and renders a dedicated Banner with retry + invalidate actions.
     """
     toolset_id = f"ts-u0008-{unique_suffix}"
@@ -86,7 +79,7 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
         # detail mentioning T0711. Wait for the banner - the fetch
         # has to actually hit the backend + 500 first.
         page.get_by_text("Tools list unavailable", exact=False).first.wait_for(
-            state="visible", timeout=_ANOMALY_TIMEOUT_MS,
+            state="visible", timeout=15_000,
         )
 
         # Defence: the documented T0711 reference must appear in the
@@ -414,10 +407,10 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
         # both the title ("Tools list unavailable") and the T0711
         # reference are required (same contract as U0008).
         page.get_by_text("Tools list unavailable", exact=False).first.wait_for(
-            state="visible", timeout=_ANOMALY_TIMEOUT_MS,
+            state="visible", timeout=15_000,
         )
         page.get_by_text("T0711", exact=False).first.wait_for(
-            state="visible", timeout=15_000,
+            state="visible", timeout=5_000,
         )
 
         # Defence: the page-title is still rendered (no blank crash).
