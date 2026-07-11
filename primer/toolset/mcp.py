@@ -118,6 +118,26 @@ class McpToolsetProvider(ToolsetProvider):
         *,
         principal: str | None = None,
     ) -> AsyncIterator[Tool]:
+        # Materialise the MCP round-trip in a PLAIN coroutine, then yield from
+        # the finished list. list_tools must not hold the MCP session open
+        # across `yield`s: the session runs an anyio task group, and driving it
+        # from inside an async generator lets the generator's finalisation tear
+        # the task group down in a different task on error (see _open_session's
+        # note) -- which surfaced as a hung request / generic 500.
+        for mcp_tool in await self._fetch_mcp_tools(principal=principal):
+            yield self._mcp_tool_to_primer(mcp_tool)
+
+    async def _fetch_mcp_tools(
+        self,
+        *,
+        principal: str | None = None,
+    ) -> list[mcp_types.Tool]:
+        """One MCP ``tools/list`` round-trip, fully contained in this coroutine.
+
+        Connection / handshake / listing failures are mapped onto the primer
+        error hierarchy so a broken toolset degrades (502 / ``available:false``)
+        instead of escaping as an unhandled 500.
+        """
         async with self._open_session(principal=principal) as session:
             try:
                 result = await session.list_tools()
@@ -131,8 +151,7 @@ class McpToolsetProvider(ToolsetProvider):
         self._task_tools = {
             t.name for t in result.tools if is_mcp_task_tool(t)
         }
-        for mcp_tool in result.tools:
-            yield self._mcp_tool_to_primer(mcp_tool)
+        return result.tools
 
     async def call(
         self,
@@ -355,36 +374,38 @@ class McpToolsetProvider(ToolsetProvider):
                 auth_headers = await self._oauth.authorize(principal=principal)
                 base_headers.update(auth_headers)
 
-            stack = AsyncExitStack()
+            # Structured, lexically-nested `async with` -- NOT AsyncExitStack.
+            # streamablehttp_client runs an anyio task group whose cancel scope
+            # must be entered AND exited in the same task. AsyncExitStack defers
+            # its __aexit__ callbacks, so on any failure (a refused connection is
+            # the common case -- e.g. a containerised Primer reaching a host
+            # `localhost:PORT` MCP URL) the task group got torn down in a
+            # different task -> "Attempted to exit cancel scope in a different
+            # task than it was entered in". That RuntimeError escaped the
+            # caller's error handling as a generic 500 and took the whole
+            # /v1/tools catalogue down with it. Lexical nesting keeps enter+exit
+            # in one task; the try/except maps connection/handshake failures
+            # onto the documented ProviderError/NetworkError envelope.
             try:
-                streams = await stack.enter_async_context(
-                    streamablehttp_client(
-                        url=http_cfg.url,
-                        headers=base_headers if base_headers else None,
-                    )
-                )
-                # mcp >= 1.16 yields (read, write, get_session_id);
-                # older releases yield (read, write).
-                if len(streams) >= 2:
+                async with streamablehttp_client(
+                    url=http_cfg.url,
+                    headers=base_headers if base_headers else None,
+                ) as streams:
+                    # mcp >= 1.16 yields (read, write, get_session_id);
+                    # older releases yield (read, write).
+                    if len(streams) < 2:  # pragma: no cover - older mcp
+                        raise ConfigError(
+                            "streamablehttp_client returned an unexpected "
+                            "stream tuple"
+                        )
                     read, write = streams[0], streams[1]
-                else:  # pragma: no cover - defensive for older mcp
-                    raise ConfigError(
-                        "streamablehttp_client returned an unexpected stream tuple"
-                    )
-
-                session = await stack.enter_async_context(ClientSession(read, write))
-                await session.initialize()
-            except (ConfigError, AuthRequiredError):
-                await stack.aclose()
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        yield session
+            except (ConfigError, AuthRequiredError, GeneratorExit):
                 raise
             except Exception as exc:
-                await stack.aclose()
                 raise classify_mcp_exception(exc) from exc
-
-            try:
-                yield session
-            finally:
-                await stack.aclose()
             return
 
         raise ConfigError(f"unknown transport {self._config.transport!r}")

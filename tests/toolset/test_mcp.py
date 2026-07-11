@@ -16,7 +16,11 @@ from mcp.server.lowlevel import Server
 from mcp.shared.memory import create_connected_server_and_client_session
 
 from primer.model.chat import Tool, ToolCallResult
-from primer.model.except_ import ConfigError, UnsupportedContentError
+from primer.model.except_ import (
+    ConfigError,
+    PrimerError,
+    UnsupportedContentError,
+)
 from primer.model.provider import HttpConfig, McpConfig, StdioConfig, TransportType
 from primer.toolset.mcp import McpToolsetProvider
 
@@ -241,12 +245,16 @@ class TestHttpTransportRouting:
     surfaces as the right primer exception.
     """
 
-    @pytest.mark.skip(
-        reason="MCP SDK swallows transport exceptions in task groups; needs follow-up"
-    )
     async def test_unreachable_endpoint_raises_primer_error(self) -> None:
-        from primer.model.except_ import PrimerError
-
+        # Regression (was @skip: "MCP SDK swallows transport exceptions in task
+        # groups; needs follow-up"). A refused/unreachable HTTP MCP connection
+        # must surface as a clean PrimerError -- NOT the raw RuntimeError the
+        # SDK's anyio task group leaked when torn down via AsyncExitStack in a
+        # different task ("Attempted to exit cancel scope in a different task
+        # than it was entered in"). That RuntimeError escaped as a generic 500
+        # and took the whole /v1/tools catalogue down. Fixed by structured
+        # nested `async with` in _open_session + materialising list_tools in a
+        # plain coroutine (no task group held across generator yields).
         provider = McpToolsetProvider(
             toolset_id="ts1",
             config=McpConfig(
