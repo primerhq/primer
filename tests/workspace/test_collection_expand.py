@@ -34,6 +34,10 @@ def test_join_dest_rejects_traversal():
         join_dest("a", "../escape.md")
     with pytest.raises(ValueError):
         join_dest("a", "/abs.md")
+    with pytest.raises(ValueError):
+        join_dest("../evil", "x.md")
+    with pytest.raises(ValueError):
+        join_dest("/abs", "x.md")
 
 
 @pytest.mark.asyncio
