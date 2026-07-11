@@ -21,6 +21,12 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Backstop against a wedged test: the sweep normally finishes in ~12 min,
+    # but a test blocked in a native/uninterruptible call (a socket, a
+    # subprocess, or a Docker-backend op) is NOT killed by the pytest
+    # --timeout-method=thread, so without this the job runs to GitHub's 6-hour
+    # default. 25 min fails a hang fast (with the hung test's traceback) instead.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v7
