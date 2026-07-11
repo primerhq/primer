@@ -1,3 +1,4 @@
+import logging
 import pytest
 from datetime import datetime, timezone
 from primer.workspace.mount_manifest import (
@@ -36,9 +37,11 @@ async def test_load_missing_manifest_returns_empty():
 
 @pytest.mark.asyncio
 async def test_load_malformed_manifest_returns_empty(caplog):
+    caplog.set_level(logging.WARNING)
     ws = FakeWS({MANIFEST_PATH: b"{not json"})
     m = await load_manifest(ws)
     assert m.mounts == []
+    assert "malformed" in caplog.text
 
 
 @pytest.mark.asyncio
