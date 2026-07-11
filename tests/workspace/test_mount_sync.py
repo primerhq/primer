@@ -35,6 +35,14 @@ def test_classify_upstream_only_change_is_not_a_conflict_and_not_pushed():
     assert d.modified == [] and d.conflicts == []
 
 
+def test_classify_local_modified_upstream_deleted_is_conflict():
+    base = {"f.md": h("b")}
+    local = {"f.md": h("local")}          # user changed
+    upstream = {}                         # upstream deleted since mount
+    d = classify(base, local, upstream)
+    assert d.modified == ["f.md"] and d.conflicts == ["f.md"]
+
+
 def test_is_modified():
     e = MountEntry(mount_id="m", collection_id="c", collection_name="C", dest="d",
                    mounted_at=datetime.now(timezone.utc), base=[BaseFile(path="f.md", sha256=h("b"))])
@@ -65,3 +73,32 @@ async def test_apply_pushes_local_and_deletes():
     assert sorted(svc.upserts) == [("mod.md", "M"), ("new.md", "N")]
     assert svc.deletes == ["gone.md"]
     assert res.applied == {"added": 1, "modified": 1, "deleted": 1}
+
+
+@pytest.mark.asyncio
+async def test_apply_counts_conflicts_overwritten():
+    ws = FakeWS({"d/mod.md": b"M"})
+    diff = DiffResult(modified=["mod.md"], conflicts=["mod.md"])
+    svc = FakeDoc()
+    res = await apply_changes(svc, "c", ws, "d", diff)
+    assert svc.upserts == [("mod.md", "M")]
+    assert res.applied == {"added": 0, "modified": 1, "deleted": 0}
+    assert res.conflicts_overwritten == 1
+
+
+class FailingDoc(FakeDoc):
+    async def upsert(self, *, collection_id, path, content, title=None, meta=None):
+        if path == "bad.md":
+            raise RuntimeError("boom")
+        await super().upsert(collection_id=collection_id, path=path, content=content)
+
+
+@pytest.mark.asyncio
+async def test_apply_per_path_failure_is_recorded_not_fatal():
+    ws = FakeWS({"d/bad.md": b"B", "d/good.md": b"G"})
+    diff = DiffResult(added=["bad.md", "good.md"])
+    svc = FailingDoc()
+    res = await apply_changes(svc, "c", ws, "d", diff)
+    assert svc.upserts == [("good.md", "G")]  # good still applied
+    assert res.applied == {"added": 1, "modified": 0, "deleted": 0}  # counts only successes
+    assert res.failures == ["bad.md"]
