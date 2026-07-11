@@ -73,6 +73,7 @@ from primer.model.workspace import (
 )
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.workspace.mount_manifest import MountManifest, load_manifest
 
 
 logger = logging.getLogger(__name__)
@@ -974,6 +975,27 @@ async def interrupt_session(
 files_router = APIRouter(tags=["workspace-files"])
 
 
+class MountRequest(BaseModel):
+    """Body of ``POST /v1/workspaces/{id}/mounts``."""
+
+    collection_id: str = Field(..., min_length=1)
+    dest: str | None = Field(
+        default=None,
+        description="Dir name under the workspace root; defaults to a sanitized collection name.",
+    )
+
+
+def _decorate_origins(
+    entries: list[FileEntry], manifest: MountManifest
+) -> list[FileEntry]:
+    """Mark each entry whose path is a mount root's ``dest`` with origin='collection'."""
+    dests = {m.dest for m in manifest.mounts}
+    for e in entries:
+        if e.kind == "dir" and e.path in dests:
+            e.origin = "collection"
+    return entries
+
+
 @files_router.get(
     "/workspaces/{workspace_id}/files/tree",
     summary="Return a one-level directory tree",
@@ -988,6 +1010,7 @@ async def file_tree(
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
     entries = await ws.list_files(path, recursive=False)
+    entries = _decorate_origins(entries, await load_manifest(ws))
     items = []
     for entry in entries:
         name = entry.path.rsplit("/", 1)[-1] if "/" in entry.path else entry.path
@@ -1001,6 +1024,7 @@ async def file_tree(
                 "size_bytes": entry.size_bytes,
                 "mtime": entry.modified_at.timestamp(),
                 "mtime_iso": entry.modified_at.isoformat(),
+                "origin": entry.origin,
             }
         )
     items.sort(key=lambda x: (0 if x["is_dir"] else 1, x["name"]))
@@ -1022,6 +1046,7 @@ async def list_files(
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
     entries = await ws.list_files(path, recursive=recursive)
+    entries = _decorate_origins(entries, await load_manifest(ws))
     sliced = entries[offset : offset + limit]
     return {
         "items": [e.model_dump(mode="json") for e in sliced],

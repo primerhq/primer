@@ -593,6 +593,10 @@ class FileEntry(BaseModel):
         ...,
         description="UTC instant of the last modification.",
     )
+    origin: Literal["collection"] | None = Field(
+        default=None,
+        description="Set to 'collection' on a directory that is a mounted collection root.",
+    )
 
 
 # ===========================================================================
