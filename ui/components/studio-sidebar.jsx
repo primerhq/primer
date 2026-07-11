@@ -161,6 +161,7 @@ function ST_sessionSort(sessions) {
 // ---------------------------------------------------------------------------
 
 function ST_fileIconName(item) {
+  if (item.origin === "collection") return "collection";
   if (item.is_dir) return "box";
   var ext = (item.name || "").split(".").pop().toLowerCase();
   if (ext === "py" || ext === "js" || ext === "jsx" || ext === "ts" || ext === "tsx") return "code";
@@ -176,6 +177,7 @@ function ST_fileIconName(item) {
 // ---------------------------------------------------------------------------
 
 function ST_fileIconColor(item) {
+  if (item.origin === "collection") return "var(--accent)";
   if (item.is_dir) return "var(--text-3)";
   var ext = (item.name || "").split(".").pop().toLowerCase();
   if (ext === "py") return "var(--blue)";
