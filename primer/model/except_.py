@@ -134,6 +134,19 @@ class BadRequestError(ProviderError):
     """Provider rejected the request as malformed or invalid (400-style)."""
 
 
+class ToolsetUnreachableError(BadRequestError):
+    """Create of an MCP toolset was blocked because its endpoint is unreachable.
+
+    Raised by the ``POST /v1/toolsets`` pre-create connectivity probe when a
+    network (http) MCP endpoint cannot be reached. Serialised as HTTP 400 with
+    problem ``type == "/errors/toolset-unreachable"`` so the Console can offer
+    a "Create anyway" action (re-POST with ``?allow_unreachable=true``, which
+    skips the probe). Distinct from :class:`AuthRequiredError` (endpoint is
+    reachable but needs OAuth) and :class:`ConfigError` (caller supplied an
+    invalid config) -- both of those bubble as their own envelopes.
+    """
+
+
 class ServerError(ProviderError):
     """Provider encountered an internal error (5xx)."""
 

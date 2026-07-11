@@ -322,6 +322,12 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
     () => _dictToPairs(existing?.config?.config?.headers)
   );
   const [fieldErrors, setFieldErrors] = React.useState({});
+  // "Create anyway" escape hatch. When the backend rejects the create because
+  // the MCP endpoint is unreachable (400 + type "/errors/toolset-unreachable"),
+  // we hold the connection message + the exact body so the operator can
+  // re-submit with ?allow_unreachable=true to save it despite being down.
+  const [unreachable, setUnreachable] = React.useState(null); // {message} | null
+  const [lastBody, setLastBody] = React.useState(null);
 
   // After the row is saved we probe it (reusing the now-graceful
   // GET /toolsets/{id}/tools) so the operator sees whether it actually
@@ -352,9 +358,12 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
   }, [createdRow, apiFetch]);
 
   const create = useMutation(
-    (body) => isEdit
+    // mutate({ body, allowUnreachable }): allowUnreachable appends
+    // ?allow_unreachable=true so the create skips the backend connectivity
+    // probe ("Create anyway"). Edit (PUT) never probes.
+    ({ body, allowUnreachable }) => isEdit
       ? apiFetch("PUT", "/toolsets/" + encodeURIComponent(existing.id), body)
-      : apiFetch("POST", "/toolsets", body),
+      : apiFetch("POST", "/toolsets" + (allowUnreachable ? "?allow_unreachable=true" : ""), body),
     {
       invalidates: isEdit
         ? ["toolsets:list", "toolset-detail:" + (existing?.id || "")]
@@ -369,6 +378,11 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
             next[(fe.loc || []).join(".")] = fe.msg;
           }
           setFieldErrors(next);
+        } else if (err && err.type === "/errors/toolset-unreachable") {
+          // Endpoint unreachable — surface inline with a "Create anyway"
+          // button instead of a toast. Contract mirrors the backend reject in
+          // primer/api/routers/providers.py (_toolset_on_pre_create).
+          setUnreachable({ message: err.detail || err.message || "Could not connect to the MCP endpoint." });
         } else if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
@@ -387,6 +401,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
 
   const submit = async () => {
     setFieldErrors({});
+    setUnreachable(null);
     let config = null;
     if (provider === "mcp") {
       config = transport === "stdio"
@@ -410,7 +425,9 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
       provider,
       ...(config ? { config } : {}),
     };
-    try { await create.mutate(body); } catch (_e) { /* surfaced via onError */ }
+    // Remember the exact body so "Create anyway" can re-submit it unchanged.
+    setLastBody(body);
+    try { await create.mutate({ body, allowUnreachable: false }); } catch (_e) { /* surfaced via onError */ }
   };
 
   const canSubmit = provider === "mcp"
@@ -440,6 +457,40 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
         <TS_ConnectResult row={createdRow} isEdit={isEdit} probing={probing} probe={probe} />
       ) : (
       <>
+      {unreachable && (
+        <div
+          data-testid="toolset-unreachable"
+          style={{ padding: "12px", marginBottom: 12, background: "var(--red-dim)", borderRadius: 8 }}
+        >
+          <div style={{ display: "flex", alignItems: "center", gap: 10, color: "var(--red)" }}>
+            <Icon name="alert" size={16} />
+            <strong>Endpoint unreachable.</strong>
+          </div>
+          <div className="text-sm" style={{ marginTop: 6, color: "var(--text-2)", wordBreak: "break-word" }}>
+            {unreachable.message}
+          </div>
+          <div className="field-help" style={{ marginTop: 8 }}>
+            The create was blocked because the MCP endpoint could not be reached. Fix the URL/headers and try again — or create it anyway and its tools will stay unavailable until it connects.
+          </div>
+          <div style={{ marginTop: 10 }}>
+            <Btn
+              size="sm"
+              kind="secondary"
+              icon="plus"
+              data-testid="toolset-create-anyway"
+              disabled={create.loading || !lastBody}
+              onClick={async () => {
+                setUnreachable(null);
+                // Re-submit the SAME body with ?allow_unreachable=true.
+                try { await create.mutate({ body: lastBody, allowUnreachable: true }); }
+                catch (_e) { /* surfaced via onError */ }
+              }}
+            >
+              {create.loading ? "Creating…" : "Create anyway"}
+            </Btn>
+          </div>
+        </div>
+      )}
       <div className="field">
         <label className="field-label">ID {isEdit
           ? <span className="hint">locked — id cannot change after create</span>
