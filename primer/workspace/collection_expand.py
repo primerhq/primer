@@ -22,11 +22,12 @@ def sanitize_dest(raw: str) -> str:
 
 
 def join_dest(dest: str, doc_path: str) -> str:
-    if doc_path.startswith("/") or "\\" in doc_path:
-        raise ValueError(f"unsafe document path {doc_path!r}")
-    if any(part == ".." for part in doc_path.split("/")):
-        raise ValueError(f"unsafe document path {doc_path!r}")
-    return f"{dest}/{doc_path}"
+    if dest.startswith("/") or doc_path.startswith("/") or "\\" in dest or "\\" in doc_path:
+        raise ValueError(f"unsafe path {dest!r}/{doc_path!r}")
+    joined = f"{dest}/{doc_path}"
+    if any(part == ".." for part in joined.split("/")):
+        raise ValueError(f"path {joined!r} escapes the mount dest")
+    return joined
 
 
 async def expand_collection(service, collection_id: str, dest: str) -> list[FileMount]:
