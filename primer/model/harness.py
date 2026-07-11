@@ -112,7 +112,7 @@ class Harness(Identifiable):
     slug: str = Field(..., min_length=2, max_length=64)
     name: str = Field(..., min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
-    git_url: str = Field(..., min_length=1)
+    git_url: str | None = Field(default=None, min_length=1)
     git_token: SecretStr | None = None
     subpath: str | None = None
     ref: str = Field(default="main", min_length=1)

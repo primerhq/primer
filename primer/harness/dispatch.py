@@ -1243,6 +1243,14 @@ async def _do_push(
             "message": "no tracked entities; cannot push",
         })
 
+    if not harness.git_url:
+        # Defence in depth — the push route already rejects this (422). A
+        # git-less outbound harness is consumed via build/download, not push.
+        return HarnessStatus.ERROR, json.dumps({
+            "code": "git_remote_not_configured",
+            "message": "no git_url configured; cannot push (build/download instead)",
+        })
+
     try:
         result = await build_outbound(
             harness, storage_provider=deps.storage_provider,
