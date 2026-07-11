@@ -428,3 +428,30 @@ async def test_direction_mismatch_blocks_outbound_op_on_inbound(
     err = json.loads(updated.last_operation_error)
     assert err["code"] == "direction_mismatch"
     assert err["operation"] == "build"
+
+
+# ---------------------------------------------------------------------------
+# 7. UNINSTALL is allowed on an OUTBOUND harness (a harness is always deletable)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_outbound_uninstall_deletes_harness(fake_storage_provider, tmp_path):
+    """UNINSTALL runs on an OUTBOUND harness rather than being blocked as a
+    direction_mismatch. With the default non-cascade, only the harness row is
+    removed (the objects it tracks are left intact)."""
+    bare = _init_bare(tmp_path)
+    deps = _make_deps(fake_storage_provider)
+    harness_storage = fake_storage_provider.get_storage(Harness)
+
+    harness = _make_outbound_harness(
+        "h-out-del",
+        git_url=f"file://{bare}",
+        pending=HarnessOperation.UNINSTALL,
+    )
+    await harness_storage.create(harness)
+
+    await run_one_harness_operation(deps, harness_id="h-out-del", worker_id="w1")
+
+    # Deleted — not released as a direction_mismatch ERROR.
+    assert await harness_storage.get("h-out-del") is None

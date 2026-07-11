@@ -359,6 +359,7 @@ function HarnessDetail({ id }) {
   const { navigate } = useRouter();
 
   const [confirmUninstall, setConfirmUninstall] = React.useState(false);
+  const [cascadeDelete, setCascadeDelete] = React.useState(false);
   const [editTrackedOpen, setEditTrackedOpen] = React.useState(false);
 
   const detail = useResource(
@@ -396,7 +397,10 @@ function HarnessDetail({ id }) {
     }
   );
   const uninstallMut = useMutation(
-    () => apiFetch("DELETE", "/harnesses/" + encodeURIComponent(id)),
+    () => apiFetch(
+      "DELETE",
+      "/harnesses/" + encodeURIComponent(id) + (cascadeDelete ? "?cascade=true" : "")
+    ),
     {
       onSuccess: () => navigate("/harnesses"),
       onError: () => detail.refetch(),
@@ -626,12 +630,12 @@ function HarnessDetail({ id }) {
       {/* Confirm uninstall */}
       {confirmUninstall && (
         <Modal
-          title={`Uninstall ${h.name || h.slug}?`}
+          title={`${isOutbound ? "Delete" : "Uninstall"} ${h.name || h.slug}?`}
           danger
-          onClose={() => setConfirmUninstall(false)}
+          onClose={() => { setConfirmUninstall(false); setCascadeDelete(false); }}
           footer={
             <>
-              <Btn kind="ghost" onClick={() => setConfirmUninstall(false)}>Cancel</Btn>
+              <Btn kind="ghost" onClick={() => { setConfirmUninstall(false); setCascadeDelete(false); }}>Cancel</Btn>
               <Btn
                 kind="danger"
                 icon="trash"
@@ -639,18 +643,36 @@ function HarnessDetail({ id }) {
                 onClick={async () => {
                   setConfirmUninstall(false);
                   try { await uninstallMut.mutate(); } catch (_e) {}
+                  setCascadeDelete(false);
                 }}
               >
-                {uninstallMut.loading ? "Uninstalling…" : "Uninstall"}
+                {uninstallMut.loading
+                  ? "Deleting…"
+                  : (cascadeDelete ? "Delete harness + entities" : "Delete harness only")}
               </Btn>
             </>
           }
         >
           <ul>
-            <li>Enqueues UNINSTALL — the worker cascades-deletes all managed entities.</li>
             <li>The harness row is removed once the worker finishes.</li>
+            <li>
+              {cascadeDelete
+                ? "It will ALSO permanently delete every agent, graph, collection, and document this harness tracks."
+                : "The agents, graphs, collections, and documents this harness tracks are kept — only the harness itself is removed."}
+            </li>
             <li>This action cannot be undone.</li>
           </ul>
+          <label
+            style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 12, cursor: "pointer" }}
+          >
+            <input
+              type="checkbox"
+              checked={cascadeDelete}
+              onChange={(e) => setCascadeDelete(e.target.checked)}
+              style={{ marginTop: 3 }}
+            />
+            <span>Also delete the entities this harness tracks (cascade). Leave off to remove only the harness.</span>
+          </label>
         </Modal>
       )}
     </div>

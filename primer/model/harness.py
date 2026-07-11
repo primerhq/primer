@@ -129,6 +129,19 @@ class Harness(Identifiable):
     overrides_dirty: bool = False
     schema_missing_input: bool = False
     pending_operation: HarnessOperation | None = None
+    uninstall_cascade: bool = Field(
+        default=False,
+        description=(
+            "For an enqueued UNINSTALL (harness delete): also delete the "
+            "harness's tracked/managed entities (agents, graphs, collections, "
+            "documents, toolsets). When False, removes ONLY the harness row "
+            "and its rendering, leaving every tracked entity intact. The "
+            "delete endpoint resolves this per request: an explicit "
+            "``?cascade=`` wins, otherwise it defaults by direction (inbound "
+            "cascades so uninstall removes the installed objects; outbound "
+            "does not, keeping the user's own tracked objects)."
+        ),
+    )
     last_operation_at: datetime | None = None
     last_operation_error: str | None = None
     dependencies_resolved: list[ResolvedDependency] = Field(default_factory=list)

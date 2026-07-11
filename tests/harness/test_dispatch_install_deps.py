@@ -283,6 +283,7 @@ async def test_install_uninstall_removes_all_including_sub_entities(
     ) is not None
 
     installed = await harness_storage.get("h-uninstall")
+    installed = installed.model_copy(update={"uninstall_cascade": True})
     await _do_uninstall(deps, installed)
 
     # Both entity rows AND the rendering AND the harness row are gone.

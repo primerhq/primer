@@ -287,6 +287,17 @@ async def update_harness(
 )
 async def delete_harness(
     harness_id: str = Path(...),
+    cascade: bool | None = Query(
+        None,
+        description=(
+            "Also delete the harness's tracked/managed entities (agents, "
+            "graphs, collections, documents, toolsets). Omitted: defaults by "
+            "direction — inbound (installed) harnesses cascade so uninstall "
+            "removes the installed objects; outbound harnesses do NOT, so "
+            "deleting one keeps the objects it merely tracks. Pass true/false "
+            "to override."
+        ),
+    ),
     sp=Depends(get_storage_provider),
     event_bus=Depends(get_event_bus),
     engine=Depends(get_claim_engine),
@@ -303,6 +314,13 @@ async def delete_harness(
         )
 
     harness.pending_operation = HarnessOperation.UNINSTALL
+    # Explicit toggle wins; when omitted, default by direction — inbound
+    # (installed) harnesses cascade, outbound harnesses keep their tracked
+    # objects.
+    harness.uninstall_cascade = (
+        cascade if cascade is not None
+        else harness.direction == HarnessDirection.INBOUND
+    )
     updated = await storage.update(harness)
     await event_bus.publish("harness-claimable", {"harness_id": harness_id})
     # Also notify the ClaimEngine (forward-compat; no-op when not wired).

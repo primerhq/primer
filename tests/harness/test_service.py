@@ -1078,6 +1078,57 @@ async def test_apply_uninstall_deletes_in_reverse_order(fake_storage_provider):
     assert h is None
 
 
+@pytest.mark.asyncio
+async def test_apply_uninstall_no_cascade_keeps_entities(fake_storage_provider):
+    """cascade=False removes ONLY the harness + its rendering rows; every
+    tracked/managed entity survives. This is the safe default for the
+    harness-delete toggle — deleting an outbound harness must not wipe the
+    user's own agents/graphs it merely tracks."""
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.graph import Graph
+
+    harness = _make_harness("keep")
+    await fake_storage_provider.get_storage(Agent).create(
+        Agent(
+            id="keep__asst", description="asst",
+            model=AgentModel(provider_id="p", model_name="m"),
+            harness_id=harness.id,
+        )
+    )
+    await fake_storage_provider.get_storage(Graph).create(
+        Graph(
+            id="keep__wf", description="wf",
+            nodes=[{"kind": "begin", "id": "begin"}, {"kind": "end", "id": "t"}],
+            edges=[{"kind": "static", "from_node": "begin", "to_node": "t"}],
+            harness_id=harness.id,
+        )
+    )
+    rendering = HarnessRendering(
+        id=harness.id, harness_id=harness.id,
+        bundle_hash="bh", overrides_hash="oh", schema_hash=None,
+        entries=[
+            RenderedEntry(kind="agent", template_name="asst", resolved_id="keep__asst",
+                          template_source_hash="h", rendered_hash="h1", rendered_payload={}),
+            RenderedEntry(kind="graph", template_name="wf", resolved_id="keep__wf",
+                          template_source_hash="h", rendered_hash="h2", rendered_payload={}),
+        ],
+        rendered_at=datetime.now(timezone.utc),
+    )
+    await fake_storage_provider.get_storage(HarnessRendering).create(rendering)
+    await fake_storage_provider.get_storage(Harness).create(harness)
+
+    await apply_uninstall(
+        storage_provider=fake_storage_provider, harness=harness, cascade=False,
+    )
+
+    # Tracked entities SURVIVE.
+    assert await fake_storage_provider.get_storage(Agent).get("keep__asst") is not None
+    assert await fake_storage_provider.get_storage(Graph).get("keep__wf") is not None
+    # The harness + its rendering rows are gone.
+    assert await fake_storage_provider.get_storage(HarnessRendering).get(harness.id) is None
+    assert await fake_storage_provider.get_storage(Harness).get(harness.id) is None
+
+
 # ---------------------------------------------------------------------------
 # 9. apply_sync — fast path when hashes match
 # ---------------------------------------------------------------------------
