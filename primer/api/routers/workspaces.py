@@ -105,7 +105,7 @@ class MountRequest(BaseModel):
     collection_id: str = Field(..., min_length=1)
     dest: str | None = Field(
         default=None,
-        description="Dir name under the workspace root; defaults to a sanitized collection name.",
+        description="Dir name under the workspace root; defaults to a sanitized collection id.",
     )
 
 
@@ -535,7 +535,10 @@ async def create_workspace(
                 raise NotFoundError(
                     f"Collection {req.collection_id!r} does not exist"
                 )
-            dest = sanitize_dest(req.dest or coll.description or coll.id)
+            # Use the collection id, never its (long) description, for the
+            # dir name / manifest collection_name -- a Collection has no name
+            # field. Mirrors the runtime create_mount path.
+            dest = sanitize_dest(req.dest or coll.id)
             if dest in seen_dests:
                 raise ConflictError(
                     f"Multiple mounts resolve to the same directory {dest!r}"
@@ -544,7 +547,7 @@ async def create_workspace(
             extra_files += await expand_collection(service, req.collection_id, dest)
             base = await build_base_snapshot(service, req.collection_id)
             mount_records.append(
-                (req.collection_id, coll.description or coll.id, dest, base)
+                (req.collection_id, coll.id, dest, base)
             )
         overrides = overrides.model_copy(update={"files": extra_files})
 

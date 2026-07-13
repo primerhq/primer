@@ -120,6 +120,16 @@ def test_mount_action_present_and_posts() -> None:
     assert "/collections?limit=200" in src
 
 
+def test_mount_select_labels_use_collection_id_not_description() -> None:
+    # Regression: the dropdown rendered `{c.description || c.id}`, dumping each
+    # collection's long description into the <option>. Collections have no name
+    # field, so the option label must be the id.
+    src = _src()
+    assert "{c.description || c.id}" not in src
+    assert ">{c.id}</option>" in src
+    assert "defaults to the collection id" in src
+
+
 def test_mount_header_button_in_files_header_group() -> None:
     # The button must live inside the Files-header action group (alongside
     # New file / Upload / New folder / Refresh), not just anywhere in the

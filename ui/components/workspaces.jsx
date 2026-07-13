@@ -433,10 +433,11 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
             <label
               key={c.id}
               data-testid="create-mount-collection"
+              title={c.description || undefined}
               style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0" }}
             >
               <input type="checkbox" checked={mountSel.has(c.id)} onChange={() => toggleMount(c.id)} />
-              <span className="mono">{c.description || c.id}</span>
+              <span className="mono">{c.id}</span>
             </label>
           ))}
         </div>

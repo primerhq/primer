@@ -243,6 +243,24 @@ async def test_import_mounts_collection(client, wsr) -> None:
 
 
 @pytest.mark.asyncio
+async def test_import_defaults_name_and_dest_to_collection_id(client, wsr) -> None:
+    # Regression: a Collection has no name field. The manifest collection_name
+    # and the default dest must be the id, NEVER the (long) description
+    # ("test collection") -- that conflation polluted the Studio UI + manifest.
+    wid = await _setup_workspace(client, wsr)
+    coll_id = await _setup_collection(client)  # description="test collection"
+    r = await client.post(
+        f"/v1/workspaces/{wid}/mounts",
+        json={"collection_id": coll_id},  # no dest -> should default to the id
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["collection_name"] == coll_id
+    assert body["collection_name"] != "test collection"
+    assert body["dest"] == coll_id
+
+
+@pytest.mark.asyncio
 async def test_import_missing_collection_404(client, wsr) -> None:
     wid = await _setup_workspace(client, wsr)
     r = await client.post(

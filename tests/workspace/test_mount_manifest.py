@@ -19,6 +19,11 @@ class FakeWS:
     async def write_file(self, path, content):
         assert isinstance(content, bytes)
         self.files[path] = content
+    async def write_state_file(self, path, content):
+        # Privileged .state write used by save_manifest (real backends bypass
+        # the reserved-tree guard here; the fake just stores it like any file).
+        assert isinstance(content, bytes)
+        self.files[path] = content
 
 
 def _entry(cid="collection-a", dest="a", mid="wsmnt-1"):

@@ -238,6 +238,14 @@ class _FakeWorkspace:
             raise BadRequestError("null byte in path")
         self._files[path] = content
 
+    async def write_state_file(self, relative_path, content):
+        # Privileged .state overwrite (real backends bypass the reserved-tree
+        # guard here). The in-memory fake stores it like any other file so
+        # read_file / load_manifest can round-trip the mount manifest.
+        if "\x00" in relative_path:
+            raise BadRequestError("null byte in path")
+        self._files[relative_path] = content
+
     async def append_message_line(self, session_id, line):
         # WorkspaceIO write surface used by WorkspaceMessageWriter: wake_session
         # persists a USER_INPUT record to messages.jsonl on steer/invoke.

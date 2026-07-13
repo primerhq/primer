@@ -890,12 +890,12 @@ function ST_MountCollectionModal({ wid, onClose, onMounted, pushToast }) {
         >
           <option value="">Select a collection…</option>
           {items.map(function (c) {
-            return <option key={c.id} value={c.id}>{c.description || c.id}</option>;
+            return <option key={c.id} value={c.id} title={c.description || undefined}>{c.id}</option>;
           })}
         </select>
       </div>
       <div className="field">
-        <label className="field-label">Directory name <span className="hint">optional — defaults to the collection name</span></label>
+        <label className="field-label">Directory name <span className="hint">optional — defaults to the collection id</span></label>
         <input
           className="input mono"
           style={{ width: "100%" }}
