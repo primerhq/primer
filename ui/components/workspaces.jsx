@@ -340,6 +340,22 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   });
+  // Mounting is opt-in: the picker only renders once this toggle is on, so the
+  // create form stays uncluttered for the common no-mount case. Search +
+  // pagination keep the list usable when there are many collections.
+  const [mountEnabled, setMountEnabled] = React.useState(false);
+  const [collSearch, setCollSearch] = React.useState("");
+  const [collPage, setCollPage] = React.useState(0);
+  const COLL_PAGE_SIZE = 8;
+  const collFiltered = collItems.filter(
+    (c) => c.id.toLowerCase().indexOf(collSearch.trim().toLowerCase()) !== -1
+  );
+  const collPageCount = Math.max(1, Math.ceil(collFiltered.length / COLL_PAGE_SIZE));
+  const collSafePage = Math.min(collPage, collPageCount - 1);
+  const collPageItems = collFiltered.slice(
+    collSafePage * COLL_PAGE_SIZE,
+    collSafePage * COLL_PAGE_SIZE + COLL_PAGE_SIZE,
+  );
 
   // Auto-pick the first template once it lands so a happy-path submission
   // doesn't need a manual selection if the server only has one template.
@@ -368,7 +384,7 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
     if (!templateId) return;
     const body = { template_id: templateId };
     if (name.trim()) body.name = name.trim();
-    if (mountSel.size) body.mounts = Array.from(mountSel).map((id) => ({ collection_id: id }));
+    if (mountEnabled && mountSel.size) body.mounts = Array.from(mountSel).map((id) => ({ collection_id: id }));
     create.mutate(body);
   };
 
@@ -428,18 +444,59 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
       </div>
       {collItems.length > 0 && (
         <div className="field">
-          <div className="field-label">Mount collections <span className="hint">optional</span></div>
-          {collItems.map((c) => (
-            <label
-              key={c.id}
-              data-testid="create-mount-collection"
-              title={c.description || undefined}
-              style={{ display: "flex", gap: 8, alignItems: "center", padding: "2px 0" }}
-            >
-              <input type="checkbox" checked={mountSel.has(c.id)} onChange={() => toggleMount(c.id)} />
-              <span className="mono">{c.id}</span>
-            </label>
-          ))}
+          <label
+            data-testid="create-mount-toggle"
+            style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}
+          >
+            <input
+              type="checkbox"
+              checked={mountEnabled}
+              onChange={(e) => setMountEnabled(e.target.checked)}
+            />
+            <span className="field-label" style={{ margin: 0 }}>Mount collections <span className="hint">optional</span></span>
+          </label>
+          {mountEnabled && (
+            <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden", marginTop: 8 }}>
+              <div style={{ position: "relative", borderBottom: "1px solid var(--border)" }}>
+                <Icon name="search" size={13} className="icon" style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", opacity: 0.6 }} />
+                <input
+                  className="input mono"
+                  placeholder="Search collections…"
+                  value={collSearch}
+                  onChange={(e) => { setCollSearch(e.target.value); setCollPage(0); }}
+                  data-testid="create-mount-search"
+                  style={{ width: "100%", border: "none", borderRadius: 0, paddingLeft: 28 }}
+                />
+              </div>
+              <div style={{ maxHeight: 200, overflowY: "auto" }}>
+                {collPageItems.length === 0 ? (
+                  <div className="muted text-sm" style={{ padding: "10px 12px" }}>No matching collections.</div>
+                ) : collPageItems.map((c) => (
+                  <label
+                    key={c.id}
+                    data-testid="create-mount-collection"
+                    title={c.description || undefined}
+                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12.5 }}
+                  >
+                    <input type="checkbox" checked={mountSel.has(c.id)} onChange={() => toggleMount(c.id)} />
+                    <span className="mono">{c.id}</span>
+                  </label>
+                ))}
+              </div>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderTop: "1px solid var(--border)", background: "var(--bg-2)" }}>
+                <span className="muted text-sm" data-testid="create-mount-selected-count">
+                  {mountSel.size} selected{collFiltered.length !== collItems.length ? ` · ${collFiltered.length} match` : ""}
+                </span>
+                {collPageCount > 1 && (
+                  <span data-testid="create-mount-pager" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                    <Btn kind="ghost" disabled={collSafePage <= 0} onClick={() => setCollPage(collSafePage - 1)}>‹</Btn>
+                    <span className="muted text-sm">{collSafePage + 1}/{collPageCount}</span>
+                    <Btn kind="ghost" disabled={collSafePage >= collPageCount - 1} onClick={() => setCollPage(collSafePage + 1)}>›</Btn>
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
       <div className="banner banner-info" style={{ margin: 0, fontSize: 11.5 }}>

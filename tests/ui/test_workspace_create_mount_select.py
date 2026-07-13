@@ -61,6 +61,37 @@ def test_mount_checkbox_labels_use_collection_id_not_description() -> None:
     assert '<span className="mono">{c.id}</span>' in modal
 
 
+def test_mount_picker_gated_behind_opt_in_toggle() -> None:
+    # The picker must only render after the "Mount collections" toggle is on,
+    # so the create form isn't cluttered by the full collection list by default.
+    modal = _modal_src()
+    assert 'data-testid="create-mount-toggle"' in modal
+    assert "mountEnabled" in modal
+    assert "setMountEnabled" in modal
+    assert "{mountEnabled && (" in modal
+    # ...and mounts are only submitted when the toggle is on.
+    assert "mountEnabled && mountSel.size" in modal
+
+
+def test_mount_picker_has_search_filter() -> None:
+    modal = _modal_src()
+    assert 'data-testid="create-mount-search"' in modal
+    assert "collSearch" in modal
+    assert "setCollSearch" in modal
+    assert "collFiltered" in modal
+    assert ".toLowerCase()" in modal  # case-insensitive filter by id
+
+
+def test_mount_picker_is_paginated() -> None:
+    modal = _modal_src()
+    assert 'data-testid="create-mount-pager"' in modal
+    assert "COLL_PAGE_SIZE" in modal
+    assert "collPage" in modal
+    assert "collSafePage" in modal
+    assert "collPageItems" in modal
+    assert "setCollPage(0)" in modal  # search resets to the first page
+
+
 def test_bundle_transpiles_with_workspace_create_mount_select() -> None:
     from primer.api._jsx_bundle import build_jsx_bundle
 
