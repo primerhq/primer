@@ -145,6 +145,18 @@ def test_workspace_selector_uses_workspaces_resource() -> None:
     assert "useResource" in src
 
 
+def test_workspace_selector_trigger_shows_name_with_id() -> None:
+    src = _studio_src()
+    # The trigger prefers the user-defined name with the id in brackets,
+    # e.g. "main (ws-abc123)", falling back to the bare id.
+    assert "var curWs = items.find(" in src
+    assert 'curWs && curWs.name ? curWs.name + " (" + wid + ")" : wid' in src
+    # ...and the label (not the bare {wid}) is what the trigger renders, with a
+    # matching title for the full value on hover.
+    assert "title={wsLabel}" in src
+    assert ">{wsLabel}</span>" in src
+
+
 def test_studio_registered_in_index_after_workspace_tap() -> None:
     order = _index_order()
     assert "components/studio.jsx" in order
