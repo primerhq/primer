@@ -449,15 +449,36 @@ class SandboxWorkspace(Workspace):
         info = await self._sandbox.stat(target)
         if info is None:
             raise NotFoundError(f"{path!r} not found")
-        # The sandbox delete is recursive; guard non-empty directories
-        # behind the recursive flag to match the local backend's contract.
-        if info.kind == "dir" and not recursive:
+        if info.kind == "dir":
             children = await self._sandbox.list_dir(target)
-            if children:
+            if children and not recursive:
                 raise BadRequestError(
                     f"directory {path!r} is not empty; pass recursive=true "
                     f"to delete it and its contents"
                 )
+            # The runtime ``delete`` op removes a single file or an EMPTY
+            # directory only -- it is NOT recursive, so a non-empty dir 500s.
+            # Empty the tree child-first so every delete lands on a leaf file
+            # or an already-emptied directory.
+            await self._delete_tree(target)
+        else:
+            await self._sandbox.delete(target)
+
+    async def _delete_tree(self, target: str) -> None:
+        """Depth-first delete of everything under ``target`` then ``target``.
+
+        Compensates for the non-recursive runtime ``delete`` op. ``target`` is
+        an absolute sandbox path; children are re-anchored from each entry's
+        basename (``list_dir`` returns absolute paths on the real runtime and
+        basenames on the fake -- taking the leaf handles both).
+        """
+        for fs in await self._sandbox.list_dir(target):
+            name = fs.path.rsplit("/", 1)[-1]
+            child = f"{target}/{name}"
+            if fs.kind == "dir":
+                await self._delete_tree(child)
+            else:
+                await self._sandbox.delete(child)
         await self._sandbox.delete(target)
 
     async def file_info(self, path: str) -> FileEntry:
@@ -582,6 +603,19 @@ class SandboxWorkspace(Workspace):
             line = line + b"\n"
         path = f"{self._workspace_root}/{relative_path}"
         await self._sandbox.append_file(path, line)
+
+    async def write_state_file(self, relative_path: str, content: bytes) -> None:
+        """Overwrite ``<workspace_root>/<relative_path>`` via the sandbox.
+
+        Privileged, guard-free sibling of :meth:`append_state_line`: the mount
+        sidecar (``.state/mounts.json``) lives under the reserved ``.state``
+        tree that the public :meth:`write_file` refuses to mutate, so it is
+        written straight through the sandbox rather than the guarded facade.
+        ``_resolve_path`` still rejects ``..``/absolute escapes (keeping the
+        write inside the workspace root); only ``_refuse_reserved`` is skipped.
+        """
+        target = self._resolve_path(relative_path)
+        await self._sandbox.write_file(target, content)
 
     async def aclose(self) -> None:
         """Tear down every live session. Errors from any one session must

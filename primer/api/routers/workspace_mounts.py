@@ -54,7 +54,10 @@ async def create_mount(
     manifest = await mm.load_manifest(ws)
     if mm.find_by_collection(manifest, body.collection_id) is not None:
         raise ConflictError(f"Collection {body.collection_id!r} is already mounted")
-    dest = sanitize_dest(body.dest or coll.description or coll.id)
+    # A Collection has no human name field -- only ``id`` (short, e.g.
+    # "agent-engineering") and a long ``description``. Use the id, never the
+    # description, for the dir name and the manifest's collection_name.
+    dest = sanitize_dest(body.dest or coll.id)
     if mm.find_by_dest(manifest, dest) is not None:
         raise ConflictError(f"A mount already uses dest {dest!r}")
     # dest must not already exist as real files. A missing dest surfaces as
@@ -79,23 +82,36 @@ async def create_mount(
     # actually show up as a "dir" kind entry even when it's populated with
     # files in the same call.
     await ws.make_dir(dest)
-    if not entries:
-        await ws.write_file(f"{dest}/.gitkeep", b"")
-    else:
-        for e in entries:
-            res = await service.read(collection_id=body.collection_id, path=e.path)
-            await ws.write_file(join_dest(dest, e.path), res.content.encode("utf-8"))
+    # From here on the dest dir exists on disk. If anything below fails
+    # (a document read, a file write, or the manifest save), roll the dir
+    # back so a retry doesn't trip the "dest already exists" guard above and
+    # so we never leave an orphan directory with no manifest entry behind.
+    try:
+        if not entries:
+            await ws.write_file(f"{dest}/.gitkeep", b"")
+        else:
+            for e in entries:
+                res = await service.read(collection_id=body.collection_id, path=e.path)
+                await ws.write_file(join_dest(dest, e.path), res.content.encode("utf-8"))
 
-    base = await build_base_snapshot(service, body.collection_id)
-    entry = mm.MountEntry(
-        mount_id=f"wsmnt-{uuid.uuid4().hex[:12]}",
-        collection_id=body.collection_id,
-        collection_name=coll.description or coll.id,
-        dest=dest,
-        mounted_at=datetime.now(timezone.utc),
-        base=base,
-    )
-    await mm.save_manifest(ws, mm.add_mount(manifest, entry))
+        base = await build_base_snapshot(service, body.collection_id)
+        entry = mm.MountEntry(
+            mount_id=f"wsmnt-{uuid.uuid4().hex[:12]}",
+            collection_id=body.collection_id,
+            collection_name=coll.id,
+            dest=dest,
+            mounted_at=datetime.now(timezone.utc),
+            base=base,
+        )
+        await mm.save_manifest(ws, mm.add_mount(manifest, entry))
+    except Exception:
+        # Best-effort rollback: never let a cleanup failure mask the real
+        # mount error (that original exception must be what the client sees).
+        try:
+            await ws.delete_file(dest, recursive=True)
+        except Exception:
+            pass
+        raise
     return entry
 
 

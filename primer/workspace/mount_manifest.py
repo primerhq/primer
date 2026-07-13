@@ -53,7 +53,12 @@ async def load_manifest(ws) -> MountManifest:
 
 async def save_manifest(ws, manifest: MountManifest) -> None:
     payload = manifest.model_dump_json(indent=2).encode("utf-8")
-    await ws.write_file(MANIFEST_PATH, payload)
+    # MANIFEST_PATH lives under the reserved ``.state`` tree, which the public
+    # ``write_file`` refuses to mutate. Persist through the privileged
+    # ``write_state_file`` (sibling of ``append_state_line``) so the sidecar
+    # can actually be written on the real local/sandbox backends -- the public
+    # path only ever worked against permissive in-memory test fakes.
+    await ws.write_state_file(MANIFEST_PATH, payload)
 
 
 def find_by_collection(m: MountManifest, collection_id: str) -> MountEntry | None:

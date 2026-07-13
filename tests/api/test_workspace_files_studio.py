@@ -163,6 +163,15 @@ class _FakeWorkspace:
         self._files[path] = content
         self._mtimes[path] = datetime.now(timezone.utc)
 
+    async def write_state_file(self, relative_path, content):
+        # Privileged .state overwrite (the real backends bypass the
+        # reserved-tree guard here). The in-memory fake stores it alongside
+        # normal files so read_file / load_manifest can round-trip it.
+        if "\x00" in relative_path:
+            raise BadRequestError("null byte in path")
+        self._files[relative_path] = content
+        self._mtimes[relative_path] = datetime.now(timezone.utc)
+
     async def make_dir(self, path):
         if "\x00" in path:
             raise BadRequestError("null byte in path")

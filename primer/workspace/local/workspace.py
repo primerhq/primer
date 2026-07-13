@@ -652,6 +652,30 @@ class LocalWorkspace(Workspace):
 
         await asyncio.to_thread(_append)
 
+    async def write_state_file(self, relative_path: str, content: bytes) -> None:
+        """Overwrite ``<root>/<relative_path>`` (root-contained).
+
+        The privileged, guard-free sibling of :meth:`append_state_line`: mount
+        bookkeeping (``.state/mounts.json``) lives inside the reserved ``.state``
+        tree that the public :meth:`write_file` refuses to mutate, so it needs
+        an overwrite that bypasses ``_refuse_reserved`` while still staying
+        within the workspace root.
+        """
+        root_resolved = self._root.resolve()
+        candidate = (root_resolved / relative_path).resolve()
+        try:
+            candidate.relative_to(root_resolved)
+        except ValueError as exc:
+            raise BadRequestError(
+                f"state path resolves outside workspace: {relative_path!r}"
+            ) from exc
+
+        def _write() -> None:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_bytes(content)
+
+        await asyncio.to_thread(_write)
+
     async def aclose(self) -> None:
         """End any non-ENDED sessions, then release backend resources."""
         async with self._lock:

@@ -305,16 +305,22 @@ async def test_create_workspace_duplicate_collection_id_in_mounts_is_409(
 
 @pytest.mark.asyncio
 async def test_create_workspace_duplicate_dest_in_mounts_is_409(client, template_id):
-    """Two collections whose (default) sanitized dest collide -- descriptions
-    'Docs' and 'docs' both sanitize to 'docs'."""
-    a = await _make_empty_collection(client, "kb-dup-a", "Docs")
-    b = await _make_empty_collection(client, "kb-dup-b", "docs")
+    """Two mounts targeting the same dest dir collide -> 409.
+
+    (Previously this relied on two descriptions both sanitizing to 'docs';
+    dest now derives from the collection id, not the description, so the
+    collision is exercised explicitly via a shared ``dest``.)"""
+    a = await _make_empty_collection(client, "kb-dup-a", "Collection A")
+    b = await _make_empty_collection(client, "kb-dup-b", "Collection B")
 
     r = await client.post(
         "/v1/workspaces",
         json={
             "template_id": template_id,
-            "mounts": [{"collection_id": a}, {"collection_id": b}],
+            "mounts": [
+                {"collection_id": a, "dest": "shared"},
+                {"collection_id": b, "dest": "shared"},
+            ],
         },
     )
     assert r.status_code == 409, r.text

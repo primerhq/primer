@@ -53,6 +53,14 @@ def test_checkbox_row_has_test_id() -> None:
     assert 'data-testid="create-mount-collection"' in modal
 
 
+def test_mount_checkbox_labels_use_collection_id_not_description() -> None:
+    # Regression: the multi-select rendered `{c.description || c.id}`, blowing
+    # the modal open with full collection descriptions. Render the id instead.
+    modal = _modal_src()
+    assert "{c.description || c.id}" not in modal
+    assert '<span className="mono">{c.id}</span>' in modal
+
+
 def test_bundle_transpiles_with_workspace_create_mount_select() -> None:
     from primer.api._jsx_bundle import build_jsx_bundle
 
