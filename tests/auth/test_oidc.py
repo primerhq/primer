@@ -165,8 +165,18 @@ class TestState:
     def test_tampered_token_rejects(self):
         secret = "s" * 32
         token = oidc.sign_state({"a": 1}, secret)
-        # Flip the last character (part of the HMAC signature suffix).
-        tampered = token[:-1] + ("a" if token[-1] != "a" else "b")
+        # Corrupt the signature. NB: flipping the *last* base64 char is flaky
+        # (~6%) -- base64's final char carries "don't-care" low bits, so the
+        # flip can decode to the SAME signature bytes and the HMAC still
+        # verifies. Flip the FIRST char of the signature segment instead: a
+        # leading base64 char's 6 bits are all significant, so the decoded
+        # bytes always change and the tamper is always rejected.
+        sig_start = token.rindex(".") + 1
+        tampered = (
+            token[:sig_start]
+            + ("a" if token[sig_start] != "a" else "b")
+            + token[sig_start + 1:]
+        )
         assert oidc.verify_state(tampered, secret, 60) is None
 
     def test_expired_token_rejects(self):
