@@ -499,6 +499,12 @@ function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, term
     { pollMs: 5000 }
   );
   var items = Array.isArray(workspaces.data && workspaces.data.items) ? workspaces.data.items : [];
+  // Selector label: prefer the workspace's user-defined name with the id in
+  // brackets, e.g. "main (ws-abc123)". Falls back to the bare id when the
+  // workspace has no name, or before the list has loaded / for a deep-linked
+  // wid not (yet) in the list.
+  var curWs = items.find(function (w) { return w.id === wid; });
+  var wsLabel = curWs && curWs.name ? curWs.name + " (" + wid + ")" : wid;
 
   // Close the dropdown on Escape or outside click.
   React.useEffect(function () {
@@ -539,7 +545,7 @@ function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, term
         onClick={function (e) { e.stopPropagation(); setMenuOpen(function (o) { return !o; }); }}
       >
         <span style={{ width: 14, height: 14, borderRadius: 4, background: "var(--accent-dim)", border: "1px solid var(--accent-border)" }} />
-        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>{wid}</span>
+        <span title={wsLabel} style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 180 }}>{wsLabel}</span>
         <span style={{ color: "var(--text-3)" }}>▾</span>
         {menuOpen && (
           <div className="st-ws-menu" data-testid="workspace-menu" onClick={function (e) { e.stopPropagation(); }}>
