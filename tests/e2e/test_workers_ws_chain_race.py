@@ -201,6 +201,28 @@ async def _ensure_lease(session_id: str) -> None:
         await conn.close()
 
 
+async def _expire_park(session_id: str) -> None:
+    """Flip an injected park's ``parked_until`` into the past.
+
+    Lets a test inject a park with a FUTURE deadline (so the observed
+    ``parked_status='parked'`` can't be raced to 'resumable' by the
+    TimerScheduler), then arm the resume chain deterministically by
+    expiring the deadline once the 'parked' state has been asserted.
+    """
+    past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    conn = await _pg()
+    try:
+        await conn.execute(
+            "UPDATE sessions SET data = "
+            "jsonb_set(data, '{parked_until}', to_jsonb($2::text)), "
+            "updated_at = now() WHERE id = $1",
+            session_id,
+            past,
+        )
+    finally:
+        await conn.close()
+
+
 async def _read_park_status(session_id: str) -> str | None:
     conn = await _pg()
     try:
@@ -412,27 +434,35 @@ async def test_t0812_park_resume_worker_claim_chain(
     sid, cleanup_urls = await _seed_ladder(client, unique_suffix, tmp_path)
     tcid = f"tc-chain-{unique_suffix}"
     try:
-        past = datetime.now(timezone.utc) - timedelta(seconds=5)
         # session_factory always upserts a lease at create time (even
         # with auto_start=False). Delete it first so the worker cannot
         # claim the session before we inject the park state.
         await _delete_lease(sid)
 
+        # Inject the park with a FUTURE parked_until. A past deadline (the
+        # previous approach) let the TimerScheduler flip parked->resumable
+        # before we could read the injected state, making the assert below
+        # racy/flaky. With a future deadline the timer leaves it 'parked', so
+        # the observation is deterministic; we arm the resume chain right
+        # after by expiring the deadline.
+        future = datetime.now(timezone.utc) + timedelta(seconds=600)
         await _inject_park(
             sid,
             tool_name="sleep",
             tool_call_id=tcid,
             event_key=f"timer:{tcid}",
-            parked_until=past,
+            parked_until=future,
         )
-        # Confirm the park was injected.
+        # Confirm the park was injected (deterministic: no lease, future
+        # deadline -> nothing can move the row off 'parked' yet).
         initial_status = await _read_park_status(sid)
         assert initial_status == "parked", (
             f"inject_park did not set parked_status='parked'; got {initial_status!r}"
         )
-        # Upsert a leases row so the claim query can find this session.
-        # This simulates the timer scheduler re-arming the lease after
-        # parked_until has passed.
+        # Arm the chain: expire the deadline so the TimerScheduler marks the
+        # row resumable on its next tick, and upsert a leases row so the claim
+        # query can find this session.
+        await _expire_park(sid)
         await _ensure_lease(sid)
 
         # Skip-soft if there's no active worker (T0810 may have drained
