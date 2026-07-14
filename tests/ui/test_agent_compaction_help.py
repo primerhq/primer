@@ -16,11 +16,14 @@ def test_help_text_present() -> None:
 
 def test_compaction_tool_access_toggle_present() -> None:
     src = JSX.read_text(encoding="utf-8")
-    # State, request body, and the checkbox control are all wired.
+    # State + request body are wired.
     assert "compactionToolAccess" in src
     assert "setCompactionToolAccess" in src
     assert "compaction_tool_access: compactionToolAccess" in src
-    assert 'data-testid="na-compaction-tool-access"' in src
+    # Rendered as a sliding toggle switch (role="switch"), not a checkbox.
+    assert "function AG_Toggle(" in src
+    assert 'role="switch"' in src
+    assert 'testid="na-compaction-tool-access"' in src
     assert "Tool access during compaction" in src
 
 
