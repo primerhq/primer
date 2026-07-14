@@ -294,6 +294,51 @@ function AgentsPage({ onOpen, pushToast }) {
 }
 
 // ============================================================================
+// AG_Toggle — sliding switch, mirrors CH_Toggle (channels.jsx) / SSO_Toggle.
+// ============================================================================
+
+function AG_Toggle({ checked, onChange, label, help, disabled, testid }) {
+  return (
+    <label
+      style={{
+        display: "flex", alignItems: "flex-start", gap: 10,
+        cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={disabled}
+        data-testid={testid}
+        onClick={() => !disabled && onChange(!checked)}
+        style={{
+          flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
+          border: "1px solid var(--border)", padding: 0, marginTop: 1,
+          background: checked ? "var(--accent)" : "var(--bg-2)",
+          position: "relative", cursor: disabled ? "default" : "pointer",
+          transition: "background 0.12s ease",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute", top: 1, left: checked ? 15 : 1,
+            width: 16, height: 16, borderRadius: "50%",
+            background: checked ? "var(--accent-fg)" : "var(--text-3)",
+            transition: "left 0.12s ease",
+          }}
+        />
+      </button>
+      <span style={{ fontSize: 12.5, lineHeight: 1.4 }}>
+        {label}
+        {help && <span className="muted"> — {help}</span>}
+      </span>
+    </label>
+  );
+}
+
+
+// ============================================================================
 // New agent modal
 // ============================================================================
 
@@ -335,6 +380,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const [modelName, setModelName] = React.useState(existing?.model?.model_name || "");
   const [systemPrompt, setSystemPrompt] = React.useState(_joinPrompt(existing?.system_prompt));
   const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
+  const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
   // selectedScopedIds is a Set so toggles are O(1); persisted as a
   // sorted list at submit time for stable JSON.
   const [selectedScopedIds, setSelectedScopedIds] = React.useState(_initialTools);
@@ -520,6 +566,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
       tools,
       system_prompt: systemPrompt ? [systemPrompt] : [],
       compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
+      compaction_tool_access: compactionToolAccess,
     };
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
@@ -872,6 +919,15 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               Leave blank to use the default prompt (recommended unless your agent has a domain-specific compaction need).
               The default is designed to preserve system context, recent turns, and pending tool calls.
             </p>
+          </div>
+          <div className="field">
+            <AG_Toggle
+              checked={compactionToolAccess}
+              onChange={setCompactionToolAccess}
+              testid="na-compaction-tool-access"
+              label="Tool access during compaction"
+              help="let the compaction prompt call this agent's tools while summarising — e.g. dump the compacted content to workspace files. Runs in a bounded, ephemeral loop; the tool calls don't enter conversation history. Leave off for plain text-only compaction."
+            />
           </div>
           <div className="field">
             <label className="field-label" htmlFor="na-temperature">
