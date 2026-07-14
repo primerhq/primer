@@ -171,6 +171,25 @@ class Agent(Describeable):
             "the runtime falls back to its default compaction prompt."
         ),
     )
+    compaction_tool_access: bool = Field(
+        default=False,
+        description=(
+            "When true, the agent's tools are registered on the LLM call "
+            "that performs history compaction, so a ``compaction_prompt`` can "
+            "instruct the model to call them -- e.g. dump the compacted "
+            "content to workspace files via the workspace tools (on a "
+            "workspace session the tool set already includes those). The tool "
+            "calls run in a bounded, ephemeral loop capped by "
+            ":attr:`max_tool_turns`; they surface as debug/activity events but "
+            "do NOT enter the agent's conversation history. The prompt should "
+            "make the model's FINAL message carry the summary text (a trailing "
+            "tool-only round yields a generic marker instead). Auth/approval/"
+            "yielding tools (ask_user, sleep, watch_files) do not function "
+            "during compaction -- they surface an error result and the model "
+            "moves on. Default false keeps compaction a plain text-only "
+            "summarisation."
+        ),
+    )
     response_format: dict[str, Any] | None = Field(
         default=None,
         description=(
