@@ -335,6 +335,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const [modelName, setModelName] = React.useState(existing?.model?.model_name || "");
   const [systemPrompt, setSystemPrompt] = React.useState(_joinPrompt(existing?.system_prompt));
   const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
+  const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
   // selectedScopedIds is a Set so toggles are O(1); persisted as a
   // sorted list at submit time for stable JSON.
   const [selectedScopedIds, setSelectedScopedIds] = React.useState(_initialTools);
@@ -520,6 +521,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
       tools,
       system_prompt: systemPrompt ? [systemPrompt] : [],
       compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
+      compaction_tool_access: compactionToolAccess,
     };
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
@@ -871,6 +873,24 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             <p className="help-text">
               Leave blank to use the default prompt (recommended unless your agent has a domain-specific compaction need).
               The default is designed to preserve system context, recent turns, and pending tool calls.
+            </p>
+          </div>
+          <div className="field">
+            <label style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                data-testid="na-compaction-tool-access"
+                checked={compactionToolAccess}
+                onChange={(e) => setCompactionToolAccess(e.target.checked)}
+              />
+              <span className="field-label" style={{ margin: 0 }}>
+                Tool access during compaction <span className="hint">optional</span>
+              </span>
+            </label>
+            <p className="help-text">
+              Let the compaction prompt call this agent's tools while summarising — e.g. dump the compacted
+              content to workspace files. Runs in a bounded, ephemeral loop; the tool calls don't enter
+              conversation history. Leave off for plain text-only compaction.
             </p>
           </div>
           <div className="field">
