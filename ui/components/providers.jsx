@@ -981,12 +981,9 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
           placeholder="300"
         />
         <div className="field-help">
-          Maximum seconds to wait for the next streamed event from the provider.
-          If no event arrives within this window the stream is aborted and the
-          turn fails cleanly (slot released). This is a per-event stall timeout,
-          not a total-generation cap -- long but progressing responses are not
-          killed. Default 300 s. LM Studio / local models: lower to 60 s for
-          faster failure detection if your hardware is fast enough.
+          Abort the stream if no event arrives for this many seconds — a
+          per-event stall guard, not a total cap. Default 300; try ~60 for fast
+          local models.
         </div>
         {fieldErrors["body.limits.request_timeout_seconds"] && (
           <div className="field-help" style={{ color: "var(--red)" }}>
@@ -1009,12 +1006,8 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
           placeholder="unbounded"
         />
         <div className="field-help">
-          Maximum seconds to wait for the provider to BEGIN responding after a
-          concurrency slot is acquired -- opening the stream, which on a
-          just-in-time backend (e.g. LM Studio) includes a cold model load.
-          Blank (the default) means unbounded: a slow cold load is never
-          aborted. Set a value to fail fast when a held slot's upstream never
-          responds. Distinct from the stream inactivity timeout above.
+          Seconds to wait for the provider to start responding (a cold model
+          load on a JIT backend like LM Studio counts). Blank = unbounded.
         </div>
         {fieldErrors["body.limits.connect_timeout_seconds"] && (
           <div className="field-help" style={{ color: "var(--red)" }}>
@@ -1037,11 +1030,8 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
           placeholder="unbounded"
         />
         <div className="field-help">
-          Wall-clock ceiling for one full streamed generation. Catches RUNAWAY
-          generations: a model that keeps emitting tokens forever never trips
-          the inactivity timeout above, because events keep arriving. Blank
-          (the default) means unbounded. Set it comfortably above your slowest
-          legitimate generation (e.g. 900 for slow local models).
+          Wall-clock cap on one full generation — catches runaway models that
+          never stall. Blank = unbounded; set above your slowest real run.
         </div>
         {fieldErrors["body.limits.total_timeout_seconds"] && (
           <div className="field-help" style={{ color: "var(--red)" }}>
