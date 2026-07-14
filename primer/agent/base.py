@@ -177,6 +177,7 @@ class _BaseAgentExecutor(ABC):
             history=history,
             new_messages=messages,
             last_known_input_tokens=self._last_input_tokens,
+            **self._compaction_tool_kwargs(),
         )
         if compacted is not None:
             await self._replace_compacted_head(compacted.new_messages)
@@ -211,6 +212,7 @@ class _BaseAgentExecutor(ABC):
                 llm=self._llm,
                 model=self._model,
                 history=history,
+                **self._compaction_tool_kwargs(),
             )
             await self._replace_compacted_head(forced.new_messages)
             history = forced.new_messages
@@ -364,6 +366,24 @@ class _BaseAgentExecutor(ABC):
                 )
 
         await asyncio.gather(*[_safe(s) for s in subs], return_exceptions=False)
+
+    def _compaction_tool_kwargs(self) -> dict[str, Any]:
+        """Extra kwargs for the compaction call when the agent opts into tool
+        access during compaction (``compaction_tool_access``); empty otherwise
+        so compaction stays a plain text-only summarisation.
+
+        ``event_sink=self._emit`` streams the compaction's tool-call/result
+        events to the live tap (the Studio activity rail) without persisting
+        them into the agent's history -- only the summary message the strategy
+        returns is persisted, via ``_replace_compacted_head``."""
+        if not getattr(self._agent, "compaction_tool_access", False):
+            return {}
+        return {
+            "tool_manager": self._tool_manager,
+            "event_sink": self._emit,
+            "max_tool_turns": self._agent.max_tool_turns,
+            "principal": self._principal,
+        }
 
 
 __all__ = ["_BaseAgentExecutor"]

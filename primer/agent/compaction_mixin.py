@@ -22,8 +22,11 @@ from primer.model.chat import Message, Tool
 
 
 if TYPE_CHECKING:
-    from primer.agent.compaction import CompactionStrategy
+    from collections.abc import Awaitable, Callable
+
+    from primer.agent.compaction import CompactionStrategy, CompactionToolExecutor
     from primer.int.llm import LLM
+    from primer.model.chat import StreamEvent
 
 
 logger = logging.getLogger(__name__)
@@ -116,6 +119,10 @@ async def apply_compaction(
     compaction_prompt: str,
     model_name: str,
     context_length: int,
+    tool_manager: "CompactionToolExecutor | None" = None,
+    event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
+    max_tool_turns: int | None = None,
+    principal: str | None = None,
 ) -> CompactionResult:
     """Run the :class:`CompactionStrategy` and assemble a :class:`CompactionResult`.
 
@@ -145,6 +152,10 @@ async def apply_compaction(
         agent=_AgentShim(),
         llm=llm,
         model=_ModelShim(),
+        tool_manager=tool_manager,
+        event_sink=event_sink,
+        max_tool_turns=max_tool_turns,
+        principal=principal,
     )
     summary_msg = compacted.summary_message
     summary_text = (
@@ -174,6 +185,10 @@ async def force_compact(
     compaction_prompt: str,
     model_name: str,
     context_length: int,
+    tool_manager: "CompactionToolExecutor | None" = None,
+    event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
+    max_tool_turns: int | None = None,
+    principal: str | None = None,
 ) -> CompactionResult:
     """On-demand compaction -- bypasses the trigger check."""
     return await apply_compaction(
@@ -183,6 +198,10 @@ async def force_compact(
         compaction_prompt=compaction_prompt,
         model_name=model_name,
         context_length=context_length,
+        tool_manager=tool_manager,
+        event_sink=event_sink,
+        max_tool_turns=max_tool_turns,
+        principal=principal,
     )
 
 

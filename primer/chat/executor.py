@@ -1182,6 +1182,17 @@ class ChatTurnRunner:
         else:
             compaction_prompt = DEFAULT_COMPACTION_PROMPT
             prompt_source = "default"
+        # Opt-in tool access during compaction (Agent.compaction_tool_access).
+        # event_sink is intentionally omitted for the chat path: a chat has no
+        # separate activity rail, and persisting compaction tool calls as chat
+        # rows would re-enter them into the next turn's history (defeating
+        # compaction). The tools still execute; their side effects persist.
+        tool_kwargs: dict = {}
+        if getattr(self._agent, "compaction_tool_access", False):
+            tool_kwargs = {
+                "tool_manager": self._tools,
+                "max_tool_turns": self._agent.max_tool_turns,
+            }
         result = await _mixin_apply_compaction(
             llm=self._llm,
             strategy=strategy,
@@ -1189,6 +1200,7 @@ class ChatTurnRunner:
             compaction_prompt=compaction_prompt,
             model_name=self._model.name,
             context_length=self._model.context_length,
+            **tool_kwargs,
         )
         next_seq = await self._next_seq_for_marker(chat)
         chat_msg = ChatMessage(

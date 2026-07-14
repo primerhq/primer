@@ -31,7 +31,7 @@ import json
 import logging
 from collections.abc import Sequence
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,23 +41,52 @@ from primer.model.chat import (
     AudioPart,
     DocumentPart,
     Error,
+    ExtendedEvent,
     ExtendedPart,
     ImagePart,
     Message,
     Part,
+    StreamEvent,
     TextDelta,
     TextPart,
+    Tool,
+    ToolCallEnd,
     ToolCallPart,
+    ToolCallStart,
     ToolResultPart,
     VideoPart,
+    _ExecutorToolResult,
+    output_to_message,
 )
 from primer.model.except_ import ServerError
 
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from primer.int.llm import LLM
     from primer.model.agent import Agent
     from primer.model.provider import LLMModel
+
+
+class CompactionToolExecutor(Protocol):
+    """The slice of ``ToolExecutionManager`` the compaction loop needs.
+
+    Duck-typed so the strategy stays decoupled from the executor layer and
+    is trivially fakeable in tests.
+    """
+
+    async def list_tools(self, *, principal: str | None = ...) -> list[Tool]: ...
+
+    async def execute(
+        self, call: ToolCallPart, *, principal: str | None = ...
+    ) -> ToolResultPart: ...
+
+
+# Fallback cap on the compaction tool loop when the agent sets no
+# ``max_tool_turns`` -- keeps an ill-behaved compaction prompt from looping
+# unbounded during an automatic, unattended step.
+DEFAULT_COMPACTION_TOOL_TURNS = 8
 
 
 logger = logging.getLogger(__name__)
@@ -225,8 +254,19 @@ class CompactionStrategy:
         history: list[Message],
         new_messages: list[Message],
         last_known_input_tokens: int | None = None,
+        tool_manager: "CompactionToolExecutor | None" = None,
+        event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
+        max_tool_turns: int | None = None,
+        principal: str | None = None,
     ) -> CompactedTurn | None:
-        """Decide whether to compact; if so, do it. Returns ``None`` if not."""
+        """Decide whether to compact; if so, do it. Returns ``None`` if not.
+
+        When ``tool_manager`` is supplied (the agent has
+        ``compaction_tool_access`` on), the tier-2 summarisation call carries
+        the agent's tools and runs a bounded, ephemeral tool-use loop; tool
+        activity is streamed to ``event_sink`` but never enters the compacted
+        history. When it is ``None`` the call is plain text-only summarisation.
+        """
         before = max(
             self._estimate_tokens([*history, *new_messages]),
             last_known_input_tokens or 0,
@@ -263,6 +303,8 @@ class CompactionStrategy:
             pruned_count=pruned_count,
             before=before,
             agent=agent, llm=llm, model=model,
+            tool_manager=tool_manager, event_sink=event_sink,
+            max_tool_turns=max_tool_turns, principal=principal,
         )
 
     async def force_compact(
@@ -272,6 +314,10 @@ class CompactionStrategy:
         llm: "LLM",
         model: "LLMModel",
         history: list[Message],
+        tool_manager: "CompactionToolExecutor | None" = None,
+        event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
+        max_tool_turns: int | None = None,
+        principal: str | None = None,
     ) -> CompactedTurn:
         """Mandatory compaction (used by hard-overflow recovery)."""
         before = self._estimate_tokens(history)
@@ -285,6 +331,8 @@ class CompactionStrategy:
             pruned_count=pruned_count,
             before=before,
             agent=agent, llm=llm, model=model,
+            tool_manager=tool_manager, event_sink=event_sink,
+            max_tool_turns=max_tool_turns, principal=principal,
         )
 
     async def _tier2(
@@ -296,6 +344,10 @@ class CompactionStrategy:
         agent: "Agent",
         llm: "LLM",
         model: "LLMModel",
+        tool_manager: "CompactionToolExecutor | None" = None,
+        event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
+        max_tool_turns: int | None = None,
+        principal: str | None = None,
     ) -> CompactedTurn:
         """Run the full LLM-driven compaction pass and assemble the
         :class:`CompactedTurn` result. Shared by :meth:`maybe_compact`
@@ -306,6 +358,10 @@ class CompactionStrategy:
             agent=agent,
             llm=llm,
             model=model,
+            tool_manager=tool_manager,
+            event_sink=event_sink,
+            max_tool_turns=max_tool_turns,
+            principal=principal,
         )
         after = self._estimate_tokens(compacted_messages)
         return CompactedTurn(
@@ -445,6 +501,10 @@ class CompactionStrategy:
         agent: "Agent",
         llm: "LLM",
         model: "LLMModel",
+        tool_manager: "CompactionToolExecutor | None" = None,
+        event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
+        max_tool_turns: int | None = None,
+        principal: str | None = None,
     ) -> tuple[list[Message], Message | None, int]:
         head, tail = tail_split(history, tail_turns=self.tail_turns)
         if not head:
@@ -473,6 +533,43 @@ class CompactionStrategy:
             ),
         ]
 
+        if tool_manager is None:
+            summary_text = await self._summarise_text_only(
+                summary_request, llm=llm, model=model,
+            )
+        else:
+            summary_text = await self._summarise_with_tools(
+                summary_request,
+                llm=llm,
+                model=model,
+                tool_manager=tool_manager,
+                event_sink=event_sink,
+                max_tool_turns=max_tool_turns,
+                principal=principal,
+            )
+
+        marker_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        summary_msg = Message(
+            role="assistant",
+            parts=[
+                TextPart(
+                    text=(
+                        f"[earlier conversation compacted on {marker_ts}]\n\n"
+                        f"{summary_text}"
+                    )
+                )
+            ],
+        )
+        return [summary_msg, *tail], summary_msg, len(head)
+
+    async def _summarise_text_only(
+        self,
+        summary_request: list[Message],
+        *,
+        llm: "LLM",
+        model: "LLMModel",
+    ) -> str:
+        """Plain, tool-free summarisation (unchanged legacy path)."""
         text_buffers: list[str] = []
         async for event in llm.stream(
             model=model.name,
@@ -492,25 +589,144 @@ class CompactionStrategy:
         summary_text = "".join(text_buffers).strip()
         if not summary_text:
             raise ServerError("compaction produced empty summary text")
+        return summary_text
 
-        marker_ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        summary_msg = Message(
-            role="assistant",
-            parts=[
-                TextPart(
-                    text=(
-                        f"[earlier conversation compacted on {marker_ts}]\n\n"
-                        f"{summary_text}"
-                    )
-                )
-            ],
+    async def _summarise_with_tools(
+        self,
+        summary_request: list[Message],
+        *,
+        llm: "LLM",
+        model: "LLMModel",
+        tool_manager: "CompactionToolExecutor",
+        event_sink: "Callable[[StreamEvent], Awaitable[None]] | None",
+        max_tool_turns: int | None,
+        principal: str | None,
+    ) -> str:
+        """Tool-enabled summarisation: a bounded, ephemeral tool-use loop.
+
+        The compaction prompt may instruct the model to call the agent's tools
+        (e.g. dump the compacted content to workspace files). Tool calls are
+        executed via ``tool_manager`` and their lifecycle events forwarded to
+        ``event_sink`` (surfaced as debug/activity events); the intermediate
+        assistant/tool messages are DISCARDED -- only the model's final text is
+        returned as the summary. An empty final text (e.g. the model spent its
+        turn writing files) falls back to a marker rather than erroring.
+        """
+        cap = (
+            max_tool_turns
+            if max_tool_turns is not None and max_tool_turns > 0
+            else DEFAULT_COMPACTION_TOOL_TURNS
         )
-        return [summary_msg, *tail], summary_msg, len(head)
+        tools = await tool_manager.list_tools(principal=principal)
+        messages = list(summary_request)
+        summary_text = ""
+        tool_round = 0
+        while True:
+            buffered: list[StreamEvent] = []
+            async for event in llm.stream(
+                model=model.name,
+                messages=messages,
+                temperature=0.0,
+                max_output_tokens=self.summary_max_tokens,
+                tools=tools,
+                tool_choice="auto",
+            ):
+                buffered.append(event)
+                if isinstance(event, (ToolCallStart, ToolCallEnd)):
+                    await self._sink(event_sink, event)
+                elif isinstance(event, Error) and event.fatal:
+                    raise ServerError(
+                        f"compaction LLM failed: {event.message}",
+                        code=event.code,
+                    )
+            try:
+                assistant_msg = output_to_message(buffered)
+            except ValueError:
+                # Empty / error-only stream -- nothing more to do.
+                break
+
+            tool_calls = [
+                p for p in assistant_msg.parts if isinstance(p, ToolCallPart)
+            ]
+            # Keep the last NON-EMPTY assistant text as the summary. A prompt
+            # that emits the summary first and only then dumps to files ends on
+            # tool-only (empty-text) rounds; without this guard that trailing
+            # empty round would clobber the real summary with the fallback.
+            round_text = "".join(
+                p.text for p in assistant_msg.parts if isinstance(p, TextPart)
+            ).strip()
+            if round_text:
+                summary_text = round_text
+            if not tool_calls:
+                break
+
+            tool_round += 1
+            if tool_round >= cap:
+                logger.warning(
+                    "compaction: reached tool-turn cap (%d); force-stopping "
+                    "the compaction tool loop", cap,
+                )
+                break
+
+            result_parts: list[ToolResultPart] = []
+            for call in tool_calls:
+                try:
+                    rp = await tool_manager.execute(call, principal=principal)
+                except Exception as exc:  # noqa: BLE001
+                    # INTENTIONAL divergence from the turn loop's contract
+                    # (loop.py / base.py re-raise AuthRequiredError + let
+                    # YieldToWorker propagate): compaction runs OUTSIDE the
+                    # turn's park/auth machinery, so propagating either would
+                    # corrupt park/resume state. Swallowing is safe -- the
+                    # approval gate raises YieldToWorker *before* dispatch, so
+                    # this fails closed (no un-approved side effect). Net effect:
+                    # auth/approval/yielding tools (ask_user, sleep, watch_files)
+                    # simply produce an error result during compaction and the
+                    # model moves on. Do NOT "harmonize" this to re-raise.
+                    # (CancelledError is a BaseException and still propagates.)
+                    rp = ToolResultPart(id=call.id, output=str(exc), error=True)
+                result_parts.append(rp)
+                await self._sink(
+                    event_sink,
+                    ExtendedEvent(
+                        extended=_ExecutorToolResult(
+                            call_id=rp.id, output=rp.output, error=rp.error,
+                        )
+                    ),
+                )
+            messages = messages + [
+                assistant_msg,
+                Message(role="tool", parts=result_parts),
+            ]
+
+        if not summary_text:
+            summary_text = (
+                "(compaction delegated the detail to tools -- the earlier "
+                "conversation was written out via the compaction tool calls; "
+                "see the compaction activity for what was produced.)"
+            )
+        return summary_text
+
+    @staticmethod
+    async def _sink(
+        event_sink: "Callable[[StreamEvent], Awaitable[None]] | None",
+        event: StreamEvent,
+    ) -> None:
+        """Forward a compaction tool event to the sink, swallowing sink errors
+        (observability must never break compaction)."""
+        if event_sink is None:
+            return
+        try:
+            await event_sink(event)
+        except Exception:  # noqa: BLE001
+            logger.debug("compaction: event_sink raised; ignoring", exc_info=True)
 
 
 __all__ = [
     "CompactedTurn",
     "CompactionStrategy",
+    "CompactionToolExecutor",
+    "DEFAULT_COMPACTION_TOOL_TURNS",
     "DEFAULT_CONTEXT_LIMIT",
     "MODEL_CONTEXT_FALLBACK",
     "lookup_context_length",
