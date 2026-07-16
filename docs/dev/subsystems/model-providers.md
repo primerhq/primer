@@ -112,6 +112,75 @@ stateDiagram-v2
     Error --> [*]
 ```
 
+### Aggregated LLM provider
+
+`LLMProviderType.AGGREGATED` ("aggregated") is a config-only provider that
+wraps a pool of other LLM providers behind one chat interface. Its
+`AggregatedLLMConfig` carries:
+
+- `members`: an ordered list of `(provider_id, model_name)` pairs, deduped
+  on the pair preserving first-seen order (min length 1). Each member must
+  reference an existing NON-aggregated provider; existence is checked at
+  resolve time, not at write time.
+- `strategy`: `sequential` (always start at members[0]) or `round_robin`
+  (rotate the starting member once per call; per-process, load-spreading).
+- `failover_point`: `before_first_token` (default; never re-emits tokens)
+  or `mid_stream` (opt-in; may duplicate already-shown tokens).
+- `failover_on`: `transient` (rate-limit / 5xx / timeout / network) or
+  `transient_and_config` (default; also auth / bad-request).
+
+The aggregated provider still carries `models` - the virtual model name(s)
+an agent selects. `stream(model=<virtual>)` dispatches to each member using
+that member's own `model_name`; the virtual name is not forwarded
+downstream.
+
+**Two failover channels.** A member surfaces a failure two ways, and the
+aggregated adapter handles each:
+
+- Connect phase (before the first event): the member RAISES a typed
+  exception. Matched by class - the reliable channel.
+- Mid-stream (after at least one event): the member usually YIELDS a
+  terminal `Error(fatal=True)`, but a mid-stream timeout is RAISED instead.
+  The adapter inspects the FIRST event before forwarding anything, so a
+  first-event fatal error fails over without emitting tokens. Yielded errors
+  carry a `code` that is often null for transient failures, so yielded-error
+  eligibility is best-effort by code (known timeout codes and null are
+  always eligible; other codes are eligible only under
+  `transient_and_config`).
+
+**The commit point is the first event of any kind.** The failover window
+closes at the first event the member yields, including a `StreamStart`. In
+practice rate-limit and auth failures RAISE at connect, before any event,
+so they fail over cleanly; a fatal error that arrives only after the first
+event is surfaced (default mode) rather than retried.
+
+**Class coarsening on the yielded channel.** Because the classify_*
+functions erase the exception class to `code=null` for rate-limit, server,
+auth, and network failures, the yielded channel cannot honor the
+`transient` policy's "exclude auth" guarantee: a null-code fatal error is
+treated as eligible under either policy. This is safe because the
+yielded-error failover window ends before any token is emitted, and auth
+failures also RAISE at connect (where the class is preserved and `transient`
+correctly excludes them). The all-members-failed error is an aggregated
+`RateLimitError` whose message lists each member and its failure class;
+that per-member class summary is the coarsened record of what went wrong.
+
+**Safety constraint.** Clean failover is only possible before the first
+non-terminal event reaches the subscriber; retrying after partial output
+was streamed would re-emit shown tokens. That is why `before_first_token`
+is the default. Under `mid_stream`, both a yielded fatal eligible Error and
+a raised eligible exception (e.g. a mid-stream timeout) after tokens were
+shown restart on the next member, and the already-streamed tokens may be
+duplicated in the output; this is the documented trade-off of the mode.
+
+**No nesting.** A member that resolves to another aggregated provider (or
+to itself) is rejected at resolve time with `BadRequestError`.
+
+**Ownership.** Downstream adapters are owned and cached by the
+`ProviderRegistry`; `AggregatedLLM.aclose()` is a no-op. Members resolve
+lazily per `stream` call through the registry, so editing a member is
+picked up transparently on the next call.
+
 ## 6. Lifecycle
 
 An adapter is built lazily by `ProviderRegistry` on first lookup of a provider row, cached under the row id, and dropped (with `aclose()`) when the row is invalidated. A single `stream()` call walks the validate, translate, acquire, iterate, classify sequence below. Pre-stream exceptions are classified and re-raised; once the iterator has opened, mid-stream exceptions are classified and yielded as a terminal `Error(fatal=True)` so the consumer's `async for` always closes cleanly.
@@ -149,6 +218,11 @@ sequenceDiagram
 ```
 
 Embedders follow the mirror flow: validate model, map every `EmbeddingPart` to its input type before acquiring the lease (so unsupported parts fast-fail without holding a slot), acquire, call the SDK, classify exceptions, and translate the response into `EmbedResponse`. The local `HuggingFaceEmbedder` and `HuggingFaceCrossEncoder` differ only in that the SDK call is a synchronous `SentenceTransformer.encode` / `.predict` wrapped in `asyncio.to_thread` so the event loop is never blocked by weight loading.
+
+- Aggregated providers resolve members lazily per call via
+  `ProviderRegistry.get_llm`, so a member edit (which invalidates that
+  member's own cache entry) is picked up on the next aggregated call with
+  no cross-invalidation wiring.
 
 ## 7. Persistence
 
