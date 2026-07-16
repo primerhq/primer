@@ -22,7 +22,8 @@ from aiohttp import web
 from aiohttp import WSMsgType
 
 from primer_runtime.exec import ExecRegistry, start_exec
-from primer_runtime.ops import HANDLERS, OpError
+from primer_runtime.locks import WorkspaceLockTable
+from primer_runtime.ops import HANDLERS, OpError, start_mutating_op, MutatingOpRegistry
 from primer_runtime.protocol import ErrorCode, OpName, Response, serialize
 from primer_runtime.pty_op import PtyRegistry, start_pty
 from primer_runtime.watch import WatchRegistry, cancel_watch, start_watch
@@ -35,6 +36,18 @@ log = logging.getLogger(__name__)
 
 _KEY_TOKEN: web.AppKey[str] = web.AppKey("runtime_token", str)
 _KEY_WORKSPACE_ROOT: web.AppKey[str] = web.AppKey("workspace_root", str)
+_KEY_LOCKS: web.AppKey[WorkspaceLockTable] = web.AppKey("workspace_locks", WorkspaceLockTable)
+
+# Mutating single-shot ops that acquire a Tier-A write lock and therefore may
+# park on a busy scope/path lock. These are offloaded off the message loop as
+# tracked tasks so a parked writer never blocks unrelated reads/list/stat/state
+# on the same connection - only other writers to the same target wait. All the
+# other single-shot ops (reads/list/stat + the git-backed state ops) stay inline.
+_MUTATING_OPS: frozenset[str] = frozenset({
+    OpName.WRITE_FILE,
+    OpName.APPEND_LINE,
+    OpName.DELETE,
+})
 
 # ---------------------------------------------------------------------------
 # Version constants
@@ -140,6 +153,7 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
 
     # --- Post-handshake message loop -----------------------------------------
     workspace_root: str = request.app[_KEY_WORKSPACE_ROOT]
+    locks: WorkspaceLockTable = request.app[_KEY_LOCKS]
 
     # Per-connection watch registry — tracks active subscription tasks.
     watch_registry = WatchRegistry()
@@ -148,6 +162,10 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     # Per-connection exec registry — tracks in-flight streaming exec tasks so
     # a long exec never blocks the message loop below.
     exec_registry = ExecRegistry()
+    # Per-connection mutating-op registry - tracks in-flight write_file/
+    # append_line/delete tasks so a writer parked on a busy Tier-A lock never
+    # blocks the message loop below (reads/list/stat/state stay inline).
+    op_registry = MutatingOpRegistry()
 
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
@@ -277,8 +295,26 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                 await ws.send_str(serialize(err_resp))
                 continue
 
+            # Mutating ops take a Tier-A write lock and may PARK on a busy
+            # scope/path lock; offload them as tracked tasks (mirrors EXEC/
+            # PTY_OPEN) so a parked writer never blocks unrelated reads/list/
+            # stat/state on this connection. The task owns its own single
+            # Response, keyed by frame_req_id, so multiplexing is unchanged.
+            if op_name in _MUTATING_OPS:
+                start_mutating_op(
+                    handler,  # type: ignore[arg-type]
+                    op_name,
+                    frame_req_id,
+                    args,
+                    workspace_root,
+                    locks,
+                    ws.send_str,
+                    op_registry,
+                )
+                continue
+
             try:
-                result = await handler(args, workspace_root)  # type: ignore[operator]
+                result = await handler(args, workspace_root, locks)  # type: ignore[operator]
                 ok_resp = Response(req_id=frame_req_id, ok=True, result=result)
                 await ws.send_str(serialize(ok_resp))
             except OpError as exc:
@@ -299,11 +335,12 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
         elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
             break
 
-    # Cancel any lingering watch subscriptions / PTY sessions / exec streams
-    # on disconnect.
+    # Cancel any lingering watch subscriptions / PTY sessions / exec streams /
+    # mutating-op tasks on disconnect.
     watch_registry.cancel_all()
     pty_registry.cancel_all()
     exec_registry.cancel_all()
+    op_registry.cancel_all()
 
     return ws
 
@@ -332,6 +369,9 @@ def build_app(*, token: str | None = None, workspace_root: str | None = None) ->
     app = web.Application()
     app[_KEY_TOKEN] = resolved_token
     app[_KEY_WORKSPACE_ROOT] = resolved_root
+    # One advisory write-lock table per app: shared across every WS connection
+    # to this workspace so concurrent writers to the same file/scope serialize.
+    app[_KEY_LOCKS] = WorkspaceLockTable()
 
     # Write the ready marker on startup (inside the event loop).
     async def _on_startup(application: web.Application) -> None:

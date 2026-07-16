@@ -18,6 +18,7 @@ import pytest_asyncio
 from aiohttp.test_utils import TestServer
 
 from primer_runtime.exec import run_exec
+from primer_runtime.locks import WorkspaceLockTable
 from primer_runtime.ops import OpError, append_line, delete, list_dir, read_file, stat, write_file
 from primer_runtime.protocol import ErrorCode
 from primer_runtime.server import build_app, PROTOCOL_VERSION
@@ -132,7 +133,7 @@ async def test_read_file_path_escape(tmp_path):
 async def test_write_file_creates_file(tmp_path):
     """write_file creates the file with the given content."""
     target = tmp_path / "output.txt"
-    result = await write_file({"path": str(target), "content_b64": b64(b"written!")}, str(tmp_path))
+    result = await write_file({"path": str(target), "content_b64": b64(b"written!")}, str(tmp_path), WorkspaceLockTable())
     assert result["ok"] is True
     assert target.read_bytes() == b"written!"
 
@@ -141,7 +142,7 @@ async def test_write_file_creates_file(tmp_path):
 async def test_write_file_creates_parent_dirs(tmp_path):
     """write_file creates missing parent directories."""
     target = tmp_path / "deep" / "nested" / "file.txt"
-    result = await write_file({"path": str(target), "content_b64": b64(b"data")}, str(tmp_path))
+    result = await write_file({"path": str(target), "content_b64": b64(b"data")}, str(tmp_path), WorkspaceLockTable())
     assert result["ok"] is True
     assert target.read_bytes() == b"data"
 
@@ -152,7 +153,7 @@ async def test_write_file_sets_mode(tmp_path):
     target = tmp_path / "exec.sh"
     result = await write_file(
         {"path": str(target), "content_b64": b64(b"#!/bin/sh"), "mode": 0o755},
-        str(tmp_path),
+        str(tmp_path), WorkspaceLockTable(),
     )
     assert result["ok"] is True
     assert target.stat().st_mode & 0o755 == 0o755
@@ -162,15 +163,72 @@ async def test_write_file_sets_mode(tmp_path):
 async def test_write_file_path_escape(tmp_path):
     """write_file raises EACCES for paths outside workspace."""
     with pytest.raises(OpError) as exc_info:
-        await write_file({"path": "/tmp/escape.txt", "content_b64": b64(b"x")}, str(tmp_path))
+        await write_file({"path": "/tmp/escape.txt", "content_b64": b64(b"x")}, str(tmp_path), WorkspaceLockTable())
     assert exc_info.value.code == ErrorCode.EACCES
+
+
+@pytest.mark.asyncio
+async def test_write_file_is_atomic_no_torn_read(tmp_path):
+    """A concurrent reader never sees a half-written file."""
+    import asyncio
+    target = tmp_path / "big.txt"
+    target.write_bytes(b"OLD")
+    locks = WorkspaceLockTable()
+    new = b"N" * 1_000_000
+
+    async def writer():
+        await write_file(
+            {"path": "big.txt", "content_b64": b64(new)},
+            str(tmp_path), locks,
+        )
+
+    async def reader():
+        seen = set()
+        for _ in range(50):
+            try:
+                seen.add(target.read_bytes())
+            except FileNotFoundError:
+                pass
+            await asyncio.sleep(0)
+        # Every observation is either the full old or full new content.
+        assert seen <= {b"OLD", new}
+
+    await asyncio.gather(writer(), reader())
+    assert target.read_bytes() == new
+
+
+@pytest.mark.asyncio
+async def test_same_path_writes_serialize(tmp_path):
+    import asyncio
+    locks = WorkspaceLockTable()
+    order: list[str] = []
+
+    async def w(tag: str, payload: bytes, delay: float):
+        # Monkeypatch-free: rely on lock ordering + a sleep inside.
+        async with locks.hold_write(str(tmp_path), str(tmp_path / "f.txt")):
+            order.append(f"{tag}-in")
+            await asyncio.sleep(delay)
+            order.append(f"{tag}-out")
+
+    await asyncio.gather(w("A", b"a", 0.03), w("B", b"b", 0.0))
+    assert order[0].endswith("-in") and order[1].endswith("-out")
+
+
+@pytest.mark.asyncio
+async def test_write_file_preserves_mode(tmp_path):
+    locks = WorkspaceLockTable()
+    await write_file(
+        {"path": "x.sh", "content_b64": b64("hi"), "mode": 0o755},
+        str(tmp_path), locks,
+    )
+    assert (tmp_path / "x.sh").stat().st_mode & 0o777 == 0o755
 
 
 @pytest.mark.asyncio
 async def test_append_line_creates_and_appends(tmp_path):
     """append_line creates the file and appends a newline-terminated line."""
     target = tmp_path / "log.txt"
-    result = await append_line({"path": str(target), "line_b64": b64(b"first")}, str(tmp_path))
+    result = await append_line({"path": str(target), "line_b64": b64(b"first")}, str(tmp_path), WorkspaceLockTable())
     assert result["ok"] is True
     assert result["byte_offset"] > 0
     assert target.read_bytes() == b"first\n"
@@ -180,8 +238,9 @@ async def test_append_line_creates_and_appends(tmp_path):
 async def test_append_line_multiple_appends(tmp_path):
     """Multiple append_line calls accumulate lines."""
     target = tmp_path / "log.txt"
-    await append_line({"path": str(target), "line_b64": b64(b"line1")}, str(tmp_path))
-    await append_line({"path": str(target), "line_b64": b64(b"line2")}, str(tmp_path))
+    locks = WorkspaceLockTable()
+    await append_line({"path": str(target), "line_b64": b64(b"line1")}, str(tmp_path), locks)
+    await append_line({"path": str(target), "line_b64": b64(b"line2")}, str(tmp_path), locks)
     assert target.read_bytes() == b"line1\nline2\n"
 
 
@@ -189,8 +248,9 @@ async def test_append_line_multiple_appends(tmp_path):
 async def test_append_line_byte_offset_advances(tmp_path):
     """byte_offset increases with each append."""
     target = tmp_path / "log.txt"
-    r1 = await append_line({"path": str(target), "line_b64": b64(b"aaa")}, str(tmp_path))
-    r2 = await append_line({"path": str(target), "line_b64": b64(b"bbb")}, str(tmp_path))
+    locks = WorkspaceLockTable()
+    r1 = await append_line({"path": str(target), "line_b64": b64(b"aaa")}, str(tmp_path), locks)
+    r2 = await append_line({"path": str(target), "line_b64": b64(b"bbb")}, str(tmp_path), locks)
     assert r2["byte_offset"] > r1["byte_offset"]
 
 
@@ -198,7 +258,7 @@ async def test_append_line_byte_offset_advances(tmp_path):
 async def test_append_line_path_escape(tmp_path):
     """append_line raises EACCES for paths outside workspace."""
     with pytest.raises(OpError) as exc_info:
-        await append_line({"path": "../../etc/cron.d/evil", "line_b64": b64(b"x")}, str(tmp_path))
+        await append_line({"path": "../../etc/cron.d/evil", "line_b64": b64(b"x")}, str(tmp_path), WorkspaceLockTable())
     assert exc_info.value.code == ErrorCode.EACCES
 
 
@@ -288,7 +348,7 @@ async def test_delete_file(tmp_path):
     f = tmp_path / "todelete.txt"
     f.write_bytes(b"bye")
 
-    result = await delete({"path": str(f)}, str(tmp_path))
+    result = await delete({"path": str(f)}, str(tmp_path), WorkspaceLockTable())
     assert result["ok"] is True
     assert not f.exists()
 
@@ -299,7 +359,7 @@ async def test_delete_empty_dir(tmp_path):
     d = tmp_path / "emptydir"
     d.mkdir()
 
-    result = await delete({"path": str(d)}, str(tmp_path))
+    result = await delete({"path": str(d)}, str(tmp_path), WorkspaceLockTable())
     assert result["ok"] is True
     assert not d.exists()
 
@@ -308,7 +368,7 @@ async def test_delete_empty_dir(tmp_path):
 async def test_delete_enoent(tmp_path):
     """delete raises ENOENT when path doesn't exist."""
     with pytest.raises(OpError) as exc_info:
-        await delete({"path": str(tmp_path / "ghost.txt")}, str(tmp_path))
+        await delete({"path": str(tmp_path / "ghost.txt")}, str(tmp_path), WorkspaceLockTable())
     assert exc_info.value.code == ErrorCode.ENOENT
 
 
@@ -320,7 +380,7 @@ async def test_delete_nonempty_dir_raises(tmp_path):
     (d / "child.txt").write_bytes(b"x")
 
     with pytest.raises(OpError):
-        await delete({"path": str(d)}, str(tmp_path))
+        await delete({"path": str(d)}, str(tmp_path), WorkspaceLockTable())
 
 
 # ---------------------------------------------------------------------------
