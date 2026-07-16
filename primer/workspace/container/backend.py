@@ -139,6 +139,8 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         files = merged.files
         init_cmds = merged.init_commands
         env_str = merged.env_unwrapped()
+        if template.strict_write_locking:
+            env_str = {**env_str, "PRIMER_STRICT_WRITE_LOCKING": "1"}
 
         workspace_id = _generate_workspace_id()
         # ``workspace-<id>`` is also the docker container's hostname; the

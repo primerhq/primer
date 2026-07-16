@@ -243,6 +243,58 @@ async def test_get_evicts_gone_cached_handle_and_reattaches(
 
 
 @pytest.mark.asyncio
+async def test_create_injects_strict_write_locking_env_when_enabled(
+    tmp_path: Path,
+) -> None:
+    """When the template opts into strict write locking, the container env
+    passed to ``create_sandbox`` carries ``PRIMER_STRICT_WRITE_LOCKING=1``."""
+    adapter = _FakeAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+
+    captured_env: dict[str, str] = {}
+    orig_create_sandbox = adapter.create_sandbox
+
+    async def _spy_create_sandbox(*, env, **kwargs):
+        captured_env.update(env)
+        return await orig_create_sandbox(env=env, **kwargs)
+
+    adapter.create_sandbox = _spy_create_sandbox
+
+    template = WorkspaceTemplate(
+        id="t1", provider_id="c1", description="",
+        backend=ContainerTemplateConfig(image="alpine:latest"),
+        strict_write_locking=True,
+    )
+    await backend.create(template)
+    assert captured_env.get("PRIMER_STRICT_WRITE_LOCKING") == "1"
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
+async def test_create_omits_strict_write_locking_env_by_default(
+    tmp_path: Path,
+) -> None:
+    """When the template does not opt in, the env var is absent entirely."""
+    adapter = _FakeAdapter(tmp_path)
+    backend = ContainerWorkspaceBackend(_config(), adapter=adapter)
+    await backend.initialize()
+
+    captured_env: dict[str, str] = {}
+    orig_create_sandbox = adapter.create_sandbox
+
+    async def _spy_create_sandbox(*, env, **kwargs):
+        captured_env.update(env)
+        return await orig_create_sandbox(env=env, **kwargs)
+
+    adapter.create_sandbox = _spy_create_sandbox
+
+    await backend.create(_template())
+    assert "PRIMER_STRICT_WRITE_LOCKING" not in captured_env
+    await backend.aclose()
+
+
+@pytest.mark.asyncio
 async def test_get_returns_none_when_gone_handle_cannot_reattach(
     tmp_path: Path,
 ) -> None:

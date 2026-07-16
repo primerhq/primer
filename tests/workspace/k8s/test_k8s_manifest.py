@@ -145,6 +145,37 @@ def test_template_storage_class_lands_on_pvc() -> None:
     assert pvc["storageClassName"] == "fast-ssd"
 
 
+def test_statefulset_env_carries_strict_flag_when_enabled() -> None:
+    cfg = _provider_cfg()
+    template = WorkspaceTemplate(
+        id="t1", provider_id="k1", description="",
+        backend=KubernetesTemplateConfig(image="python:3.13"),
+        strict_write_locking=True,
+    )
+    m = _build_statefulset_manifest(
+        sts_name="primer-ws-abc",
+        namespace="default",
+        workspace_id="abc",
+        template=template,
+        provider_cfg=cfg,
+    )
+    env = m["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert {"name": "PRIMER_STRICT_WRITE_LOCKING", "value": "1"} in env
+
+
+def test_statefulset_env_omits_strict_flag_by_default() -> None:
+    cfg = _provider_cfg()
+    m = _build_statefulset_manifest(
+        sts_name="primer-ws-abc",
+        namespace="default",
+        workspace_id="abc",
+        template=_template(),
+        provider_cfg=cfg,
+    )
+    env = m["spec"]["template"]["spec"]["containers"][0]["env"]
+    assert all(e["name"] != "PRIMER_STRICT_WRITE_LOCKING" for e in env)
+
+
 def test_workspace_label_present() -> None:
     cfg = _provider_cfg()
     m = _build_statefulset_manifest(
