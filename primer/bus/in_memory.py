@@ -13,6 +13,7 @@ Not safe across processes. The production app uses
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -90,9 +91,17 @@ class InMemoryEventBus(EventBus):
         for sub in self._subscribers:
             await sub._queue.put(event)
 
-    def subscribe(self) -> _InMemorySubscription:
+    def subscribe(
+        self,
+        *,
+        on_reconnect: "Callable[[], None] | None" = None,
+    ) -> _InMemorySubscription:
         if self._closed:
             raise RuntimeError("subscribe on closed InMemoryEventBus")
+        # The in-memory bus has no droppable transport, so it never
+        # reconnects and never calls ``on_reconnect``. The parameter
+        # exists only to satisfy the EventBus contract.
+        del on_reconnect
         sub = _InMemorySubscription(self)
         self._subscribers.append(sub)
         return sub

@@ -621,6 +621,29 @@ class ProviderRegistry:
         self._embedder_factory = _build_default_embedder_factory(rate_limiter=rate_limiter)
         self._cross_encoder_factory = _build_default_cross_encoder_factory(rate_limiter=rate_limiter)
 
+    def _flush_caches_local(self) -> None:
+        """Drop every cached adapter WITHOUT closing it.
+
+        Invoked (synchronously) when an invalidation subscription
+        reconnects: a NOTIFY dropped during the LISTEN blip may have left
+        a stale adapter (e.g. a rotated API key) cached, so treat all
+        cached adapters as potentially stale and force reconstruction on
+        the next ``get_*``. This mirrors the cache-clearing half of
+        :meth:`aclose` (minus the ``aclose()`` calls).
+
+        No lock is taken: the reconnect hook runs synchronously in the
+        bus supervisor task, and clearing dicts has no ``await`` points,
+        so no coroutine can observe a half-cleared state. We deliberately
+        do NOT ``aclose()`` the dropped adapters -- one may still be in
+        use by an in-flight request, and closing its transport out from
+        under it would break that request; dropping the cache entry alone
+        is enough to force a fresh build next time.
+        """
+        self._llm_cache.clear()
+        self._embedder_cache.clear()
+        self._cross_encoder_cache.clear()
+        self._toolset_cache.clear()
+
     async def bind_invalidation_bus(self, bus: InvalidationBus) -> None:
         """Wire the registry's cache eviction to the bus. Idempotent."""
         if self._invalidation_bus is not None:
@@ -641,17 +664,34 @@ class ProviderRegistry:
         async def _tool(key: str) -> None:
             await self._invalidate_toolset_local(key)
 
+        # Every topic shares one broadcast channel, so a reconnect on any
+        # subscription means invalidations on ALL topics may have been
+        # dropped during the blip. Flush every cache on any reconnect --
+        # over-invalidation (an extra rebuild) is safe; a stale adapter
+        # (e.g. a rotated API key) cached until restart is not.
         self._invalidation_subs.append(
-            await bus.subscribe(InvalidationTopic.LLM_PROVIDER, _llm)
+            await bus.subscribe(
+                InvalidationTopic.LLM_PROVIDER, _llm,
+                on_reconnect=self._flush_caches_local,
+            )
         )
         self._invalidation_subs.append(
-            await bus.subscribe(InvalidationTopic.EMBEDDING_PROVIDER, _embed)
+            await bus.subscribe(
+                InvalidationTopic.EMBEDDING_PROVIDER, _embed,
+                on_reconnect=self._flush_caches_local,
+            )
         )
         self._invalidation_subs.append(
-            await bus.subscribe(InvalidationTopic.CROSS_ENCODER_PROVIDER, _cross)
+            await bus.subscribe(
+                InvalidationTopic.CROSS_ENCODER_PROVIDER, _cross,
+                on_reconnect=self._flush_caches_local,
+            )
         )
         self._invalidation_subs.append(
-            await bus.subscribe(InvalidationTopic.TOOLSET, _tool)
+            await bus.subscribe(
+                InvalidationTopic.TOOLSET, _tool,
+                on_reconnect=self._flush_caches_local,
+            )
         )
 
     # ---- Lifecycle --------------------------------------------------------
