@@ -99,6 +99,13 @@ class LocalStateRepo:
         self._workspace_id = workspace_id
         self._subprocess_timeout_seconds = subprocess_timeout_seconds
         self._commit_lock = asyncio.Lock()
+        # Serialises the messages.jsonl read->rewrite window (session
+        # instruction appends) against O_APPEND event-row writes
+        # (``Workspace.append_message_line``). Both paths acquire this so a
+        # streamed event row can never land in the read->rewrite gap and be
+        # truncated by the full-file rewrite. Distinct from ``_commit_lock``
+        # (which the rewrite still takes internally) to avoid re-entrancy.
+        self._messages_lock = asyncio.Lock()
         # session_id -> agent_id, populated on create_session and on
         # init scan. The commit-trailer assembler uses this so callers
         # don't have to thread agent_id through every commit call.
@@ -115,6 +122,16 @@ class LocalStateRepo:
     def workspace_id(self) -> str:
         """The workspace id stamped into every commit's trailer."""
         return self._workspace_id
+
+    @property
+    def messages_lock(self) -> asyncio.Lock:
+        """Mutual-exclusion lock for messages.jsonl append vs. rewrite.
+
+        Acquired by :meth:`Workspace.append_message_line` (the O_APPEND
+        event-row writer) and by the session's instruction append across
+        its read->rewrite window, so the two never interleave.
+        """
+        return self._messages_lock
 
     async def initialize(self) -> None:
         """Open / initialise the repo. Idempotent.

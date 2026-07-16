@@ -414,7 +414,6 @@ class AgentSession:
                 queued_at=now,
             )
             message = Message(role="user", parts=[TextPart(text=content)])
-            new_messages_jsonl = await self._appended_messages_jsonl(message)
 
             # Updated session metadata: last_activity_at moves forward.
             updated_info = self._info.model_copy(
@@ -424,15 +423,26 @@ class AgentSession:
             excerpt = " ".join(content.split())
             if len(excerpt) > 60:
                 excerpt = excerpt[:59].rstrip() + "…"
-            await self._state.commit(
-                self.session_id,
-                summary=f"user[{sid_short}]: {excerpt}" if excerpt else f"user[{sid_short}]: user_instruction",
-                op="user_instruction",
-                files={
-                    "messages.jsonl": new_messages_jsonl,
-                    "session.json": updated_info.model_dump_json(indent=2),
-                },
-            )
+            # Hold the state repo's messages lock across BOTH the read
+            # (_appended_messages_jsonl) and the full-file rewrite (commit),
+            # so a concurrent event-row append (Workspace.append_message_line,
+            # a different task) cannot slip into the read->rewrite gap and be
+            # truncated. The rewrite still takes the repo's _commit_lock
+            # internally; messages_lock is a distinct lock so there is no
+            # re-entrancy, and the acquisition order (messages_lock ->
+            # _commit_lock) is never inverted by the appender (which takes
+            # messages_lock alone).
+            async with self._state.messages_lock:
+                new_messages_jsonl = await self._appended_messages_jsonl(message)
+                await self._state.commit(
+                    self.session_id,
+                    summary=f"user[{sid_short}]: {excerpt}" if excerpt else f"user[{sid_short}]: user_instruction",
+                    op="user_instruction",
+                    files={
+                        "messages.jsonl": new_messages_jsonl,
+                        "session.json": updated_info.model_dump_json(indent=2),
+                    },
+                )
             self._info = updated_info
             return instruction
 
