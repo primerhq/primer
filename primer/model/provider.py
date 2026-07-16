@@ -72,7 +72,11 @@ from primer.model.providers.embedding import (  # noqa: F401
     OpenAIEmbeddingFlavor,
 )
 from primer.model.providers.llm import (  # noqa: F401
+    AggregatedLLMConfig,
+    AggregatedMember,
     AnthropicConfig,
+    FailoverClasses,
+    FailoverPoint,
     GoogleConfig,
     LLMModel,
     LLMProvider,
@@ -83,6 +87,7 @@ from primer.model.providers.llm import (  # noqa: F401
     OpenResponsesConfig,
     OpenResponsesFlavor,
     OpenRouterConfig,
+    RoutingStrategy,
 )
 from primer.model.providers.secret import (  # noqa: F401
     EnvSecretConfig,
@@ -120,6 +125,8 @@ from primer.model.providers.vector import (  # noqa: F401
 )
 
 __all__ = [
+    "AggregatedLLMConfig",
+    "AggregatedMember",
     "AnthropicConfig",
     "ArtifactStorageProvider",
     "ArtifactStorageProviderType",
@@ -131,6 +138,8 @@ __all__ = [
     "EmbeddingProvider",
     "EmbeddingProviderType",
     "EnvSecretConfig",
+    "FailoverClasses",
+    "FailoverPoint",
     "FilesystemArtifactConfig",
     "GoogleConfig",
     "HttpConfig",
@@ -156,6 +165,7 @@ __all__ = [
     "PgVectorScaleConfig",
     "PoolConfig",
     "PostgresConfig",
+    "RoutingStrategy",
     "S3ArtifactConfig",
     "SecretProviderConfig",
     "SecretProviderType",
