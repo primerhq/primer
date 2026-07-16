@@ -1,13 +1,32 @@
 """E2E: concurrent workspace writers never corrupt files (write-safety).
 
 Container-backed so the primer/workspace-runtime:1.1 image (runtime-side
-Tier-A/Tier-B locks + protocol 1.2 negotiation) is exercised end to end.
+Tier-A/Tier-B locks + protocol 1.2 negotiation) is exercised end to end
+through the real REST file surface.
+
+Scope note: this module drives everything through the reachable REST API
+(``PUT /files``, ``GET /files/read``, ``POST /diagnostic``). It does not
+attempt to prove exec write-intent scenarios such as per-workdir exec
+serialization or ``access=read`` parallelism, because the ``/diagnostic``
+endpoint is intentionally read-only: it whitelists only
+``{echo, pwd, whoami, uname, ls}``, hard-codes ``workdir=/workspace``, and
+has no ``access`` parameter. Those write-intent behaviors are exercised at
+the tool layer (agent sessions / MCP ``call_tool``), which is out of scope
+for a focused REST e2e, and are instead proven by unit tests: per-workdir
+exec serialization in ``tests/runtime/test_exec_task.py`` (Task 3),
+lock-parity for the sandbox backend in
+``tests/workspace/sandbox/test_fake_lock_parity.py`` (Task 5), and the
+local backend's write-lock behavior in ``tests/workspace/test_local.py``
+(Task 8). What IS reachable and meaningful here, and what this module
+proves instead, is that concurrent writers hitting the real container
+runtime through the file API never produce a torn or interleaved file
+(atomicity + Tier-A locking) and that writes to independent paths are not
+needlessly serialized against each other.
 """
 from __future__ import annotations
 
 import asyncio
 import os
-import time
 
 import pytest
 import pytest_asyncio
@@ -15,6 +34,8 @@ import pytest_asyncio
 pytestmark = pytest.mark.skipif(
     os.environ.get("PRIMER_RUN_E2E") != "1", reason="e2e gated (PRIMER_RUN_E2E)"
 )
+
+_K = 8
 
 
 @pytest_asyncio.fixture
@@ -72,82 +93,42 @@ async def _read(client, wid, path):
     return r.json()["content"]
 
 
-async def _exec(client, wid, command, *, timeout=30):
-    r = await client.post(f"/v1/workspaces/{wid}/diagnostic",
-                         json={"command": command, "timeout_seconds": timeout})
-    assert r.status_code in (200, 201), r.text
-    return r.json()
-
-
 @pytest.mark.asyncio
-async def test_two_writers_same_file_well_formed(container_ws, client):
-    # A tool write and a shell write race on the SAME file; the result is
-    # exactly one payload (no torn interleave). Atomic write + Tier-A lock.
-    big_a = "A" * 200_000
-    await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "d"})
-    await asyncio.gather(
-        _write(client, container_ws, "d/f.txt", big_a),
-        _exec(client, container_ws, "printf 'BBBB' > d/f.txt"),
-    )
+async def test_concurrent_same_path_writes_well_formed(container_ws, client):
+    # K concurrent writers race on the SAME path, each with a large, distinct
+    # body. After all settle, the file must contain exactly one writer's full
+    # payload, never a torn/interleaved mix. This is the core end-to-end proof
+    # of Tier-A locking + atomic write through the REAL container runtime.
+    bodies = [chr(ord("A") + i) * 100_000 for i in range(_K)]
+    d = await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "d"})
+    assert d.status_code == 204, d.text
+    await asyncio.gather(*(_write(client, container_ws, "d/f.txt", b) for b in bodies))
     out = await _read(client, container_ws, "d/f.txt")
-    assert set(out) in ({"A"}, {"B"}), "torn interleave detected"
+    assert len(out) == 100_000, f"non-atomic write: content length {len(out)} != 100000"
+    assert out in bodies, "content matched none of the writers' payloads (torn/interleaved write)"
 
 
 @pytest.mark.asyncio
-async def test_same_dir_execs_serialize_diff_dirs_overlap(container_ws, client):
-    # Same-dir probe: exit 42 if another exec is mid-flight in that dir.
-    await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "same"})
-    await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "d1"})
-    await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "d2"})
-    probe = ("cd same; if [ -e busy ]; then exit 42; fi; "
-             "touch busy; sleep 0.4; rm -f busy")
-    r1, r2 = await asyncio.gather(
-        _exec(client, container_ws, probe),
-        _exec(client, container_ws, probe),
-    )
-    assert r1["exit_code"] == 0 and r2["exit_code"] == 0, "same-dir execs overlapped"
-
-    # Different dirs must OVERLAP: two 0.4s sleeps in parallel finish well
-    # under the ~0.8s serialized floor.
-    t0 = time.monotonic()
-    await asyncio.gather(
-        _exec(client, container_ws, "cd d1; sleep 0.4; touch done"),
-        _exec(client, container_ws, "cd d2; sleep 0.4; touch done"),
-    )
-    elapsed = time.monotonic() - t0
-    assert elapsed < 0.75, f"different-dir execs serialized (elapsed={elapsed:.2f}s)"
+async def test_concurrent_different_path_writes_all_succeed(container_ws, client):
+    # K concurrent writers hit K DIFFERENT paths. Every path must read back
+    # its own full body: proves independent-path writes are not
+    # over-serialized and do not deadlock or clobber each other.
+    d = await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "d2"})
+    assert d.status_code == 204, d.text
+    paths = [f"d2/f{i}.txt" for i in range(_K)]
+    bodies = [str(i) * 100_000 for i in range(_K)]
+    await asyncio.gather(*(
+        _write(client, container_ws, p, b) for p, b in zip(paths, bodies)
+    ))
+    for p, b in zip(paths, bodies):
+        assert await _read(client, container_ws, p) == b
 
 
 @pytest.mark.asyncio
-async def test_tool_write_and_shell_write_same_dir_no_corrupt(container_ws, client):
-    # A tool write to dir D and a shell append to another file in D run
-    # concurrently; both complete intact (tool-vs-shell scope serialization).
-    await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "mix"})
-    payload = "X" * 100_000
-    await asyncio.gather(
-        _write(client, container_ws, "mix/tool.txt", payload),
-        _exec(client, container_ws, "printf 'SHELL' > mix/shell.txt"),
-    )
-    assert await _read(client, container_ws, "mix/tool.txt") == payload
-    assert await _read(client, container_ws, "mix/shell.txt") == "SHELL"
-
-
-@pytest.mark.asyncio
-async def test_protocol_negotiation_enforces_runtime_lock(container_ws, client):
-    # The container reached `running` => protocol 1.2 client negotiated with
-    # the 1.1 image (major match) and the runtime is enforcing locks. Prove
-    # the runtime-side Tier-B lock is live end-to-end: a default-writer exec
-    # holding a dir serializes a second same-dir writer, but a read-only
-    # command in that SAME dir is NOT blocked (undeclared writer vs reader).
-    await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "neg"})
-    # Long default-write exec holds neg's scope for ~0.6s.
-    hold = asyncio.create_task(_exec(client, container_ws, "cd neg; sleep 0.6; echo held"))
-    await asyncio.sleep(0.1)
-    # A plain read (ls) in the same dir must return promptly (reads unguarded).
-    t0 = time.monotonic()
-    ls = await _exec(client, container_ws, "ls neg")
-    read_elapsed = time.monotonic() - t0
-    assert ls["exit_code"] == 0
-    assert read_elapsed < 0.4, f"read blocked by writer (elapsed={read_elapsed:.2f}s)"
-    held = await hold
-    assert "held" in held["stdout"]
+async def test_diagnostic_liveness(container_ws, client):
+    # Light sanity check that the real container runtime is serving, via the
+    # one exec surface the REST API actually exposes (whitelisted, read-only).
+    r = await client.post(f"/v1/workspaces/{container_ws}/diagnostic",
+                          json={"command": "ls", "timeout_seconds": 10})
+    assert r.status_code in (200, 201), r.text
+    assert r.json()["exit_code"] == 0, r.json()
