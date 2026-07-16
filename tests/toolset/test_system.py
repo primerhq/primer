@@ -480,6 +480,45 @@ class TestLLMProviderTools:
         assert json.loads(result.output)["type"] == "validation-error"
 
 
+class TestAggregatedLLMProviderTool:
+    @pytest.mark.asyncio
+    async def test_create_aggregated_llm_provider_roundtrips(
+        self, system_toolset
+    ) -> None:
+        body = {
+            "id": "agg-tool-1",
+            "provider": "aggregated",
+            "config": {
+                "members": [
+                    {"provider_id": "p1", "model_name": "m1"},
+                    {"provider_id": "p2", "model_name": "m2"},
+                ],
+                "strategy": "round_robin",
+                "failover_point": "before_first_token",
+                "failover_on": "transient_and_config",
+            },
+            "models": [{"name": "virtual-1", "context_length": 200000}],
+            "limits": {"max_concurrency": 4},
+        }
+        result = await system_toolset.call(
+            tool_name="create_llm_provider", arguments={"entity": body}
+        )
+        assert not result.is_error, result.output
+        created = json.loads(result.output)
+        assert created["id"] == "agg-tool-1"
+        assert created["provider"] == "aggregated"
+        # The aggregated config survived model_validate untouched.
+        assert created["config"]["strategy"] == "round_robin"
+        assert created["config"]["members"] == body["config"]["members"]
+
+        # Read back through get_llm_provider.
+        got = await system_toolset.call(
+            tool_name="get_llm_provider", arguments={"id": "agg-tool-1"}
+        )
+        assert not got.is_error
+        assert json.loads(got.output)["config"]["failover_on"] == "transient_and_config"
+
+
 # ===========================================================================
 # Cascade invalidation
 # ===========================================================================
