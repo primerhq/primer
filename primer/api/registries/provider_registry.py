@@ -41,6 +41,7 @@ def _build_default_llm_factory(
     *,
     rate_limiter: "RateLimiter | None" = None,
     trace_llm_io: bool = False,
+    resolve_member: "Callable[[str], Any] | None" = None,
 ) -> Callable[[LLMProvider], LLM]:
     """Build the default ``llm_factory`` closure.
 
@@ -48,6 +49,8 @@ def _build_default_llm_factory(
     participate in the global concurrency limiter. ``None`` causes each
     adapter to fall back to a local :class:`~primer.coordinator.in_memory.InMemoryRateLimiter`.
     ``trace_llm_io`` controls whether prompt messages are included in spans.
+    ``resolve_member`` is threaded into the aggregated LLM provider so its
+    members resolve lazily through the caller's own ``get_llm``.
     """
     def _factory(provider: LLMProvider) -> LLM:  # pragma: no cover
         match provider.provider:
@@ -81,6 +84,15 @@ def _build_default_llm_factory(
                 return OpenRouterLLM(
                     provider, rate_limiter=rate_limiter, trace_llm_io=trace_llm_io,
                 )
+            case LLMProviderType.AGGREGATED:
+                from primer.llm.aggregated import AggregatedLLM
+                if resolve_member is None:
+                    raise ConfigError(
+                        "aggregated LLM provider requires a member resolver; "
+                        "the ProviderRegistry must build its llm_factory with "
+                        "resolve_member=self.get_llm",
+                    )
+                return AggregatedLLM(provider, resolve_member=resolve_member)
             case _:
                 raise ConfigError(
                     f"unknown LLM provider type {provider.provider!r}"
@@ -313,6 +325,7 @@ class ProviderRegistry:
         self._llm_factory = llm_factory or _build_default_llm_factory(
             rate_limiter=rate_limiter,
             trace_llm_io=trace_llm_io,
+            resolve_member=self.get_llm,
         )
         self._embedder_factory = embedder_factory or _build_default_embedder_factory(
             rate_limiter=rate_limiter,
@@ -603,6 +616,7 @@ class ProviderRegistry:
         self._rate_limiter = rate_limiter
         self._llm_factory = _build_default_llm_factory(
             rate_limiter=rate_limiter, trace_llm_io=self._trace_llm_io,
+            resolve_member=self.get_llm,
         )
         self._embedder_factory = _build_default_embedder_factory(rate_limiter=rate_limiter)
         self._cross_encoder_factory = _build_default_cross_encoder_factory(rate_limiter=rate_limiter)
