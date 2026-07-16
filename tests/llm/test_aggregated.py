@@ -447,3 +447,178 @@ async def test_round_robin_cursor_is_concurrency_safe():
     served = sorted(k for k, calls in records.items() if calls)
     assert served == sorted(str(i) for i in range(n))
     assert all(len(calls) == 1 for calls in records.values())
+
+
+# --- MID_STREAM failover mode (Task 4: regression-pin, expected to pass) ---
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_restarts_on_next_member_with_dup():
+    # Member[0] commits a token then yields a fatal eligible Error mid-stream.
+    # With MID_STREAM, the adapter restarts on member[1]; the "partial" token
+    # was already yielded (documented duplication).
+    bad = _FakeLLM(events=[
+        TextDelta(text="partial", index=0),
+        ChatError(fatal=True, code=None, message="mid-stream 429"),
+    ])
+    good = _FakeLLM(events=[
+        TextDelta(text="partial", index=0),
+        TextDelta(text=" full", index=0),
+        Done(stop_reason="stop", raw_reason="stop"),
+    ])
+    cfg = AggregatedLLMConfig(
+        failover_point=FailoverPoint.MID_STREAM,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    texts = [e.text for e in events if isinstance(e, TextDelta)]
+    # "partial" appears twice (member[0] then member[1] restart) -> duplication.
+    assert texts == ["partial", "partial", " full"]
+    assert isinstance(events[-1], Done)
+    # The failed member's Error never reached the subscriber.
+    assert not any(isinstance(e, ChatError) for e in events)
+
+
+@pytest.mark.asyncio
+async def test_before_first_token_does_not_restart_on_mid_stream_error():
+    # Same script, default BEFORE_FIRST_TOKEN: no restart, error surfaced.
+    bad = _FakeLLM(events=[
+        TextDelta(text="partial", index=0),
+        ChatError(fatal=True, code=None, message="mid-stream 429"),
+    ])
+    good = _FakeLLM(events=[TextDelta(text="unused", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(
+        failover_point=FailoverPoint.BEFORE_FIRST_TOKEN,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    texts = [e.text for e in events if isinstance(e, TextDelta)]
+    assert texts == ["partial"]
+    assert isinstance(events[-1], ChatError)
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_raised_timeout_restarts_under_mid_stream():
+    # Mid-stream timeouts are RAISED, not yielded (openchat.py:284,
+    # anthropic.py:760). Under MID_STREAM an eligible raised exception after
+    # commit restarts on the next member.
+    bad = _FakeLLM(
+        events=[StreamStart(model="m1"), TextDelta(text="partial", index=0)],
+        mid_exc=ProviderTimeoutError("stalled", code="stream_timeout"),
+    )
+    good = _FakeLLM(events=[TextDelta(text="served", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(
+        failover_point=FailoverPoint.MID_STREAM,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    texts = [e.text for e in events if isinstance(e, TextDelta)]
+    assert texts == ["partial", "served"]      # restarted after the raised timeout
+    assert isinstance(events[-1], Done)
+
+
+@pytest.mark.asyncio
+async def test_before_first_token_propagates_raised_mid_stream_timeout():
+    # In the default mode a post-commit RAISED failure cannot fail over
+    # (would re-emit) -> it propagates.
+    from primer.model.except_ import ProviderTimeoutError as _PTE
+    bad = _FakeLLM(
+        events=[StreamStart(model="m1"), TextDelta(text="partial", index=0)],
+        mid_exc=_PTE("stalled", code="stream_timeout"),
+    )
+    good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(
+        failover_point=FailoverPoint.BEFORE_FIRST_TOKEN,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    with pytest.raises(_PTE):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_failover_closes_abandoned_downstream():
+    # The failed-over member's generator must be aclosed (rate-limiter slot).
+    bad = _FakeLLM(events=[
+        TextDelta(text="partial", index=0),
+        ChatError(fatal=True, code=None, message="mid-stream 429"),
+        TextDelta(text="never", index=0),
+    ])
+    good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(
+        failover_point=FailoverPoint.MID_STREAM,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    assert bad.stream_closed is True
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_non_eligible_yielded_error_surfaces_no_restart():
+    # A non-null, non-timeout code (e.g. bad-request) is config-eligible only,
+    # so under FailoverClasses.TRANSIENT it is NOT eligible even in MID_STREAM
+    # mode -> the Error surfaces to the subscriber; member[1] never runs.
+    bad = _FakeLLM(events=[
+        TextDelta(text="partial", index=0),
+        ChatError(fatal=True, code="invalid_request_error", message="bad request mid-stream"),
+    ])
+    good = _FakeLLM(events=[TextDelta(text="SHOULD-NOT-APPEAR", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(
+        failover_point=FailoverPoint.MID_STREAM,
+        failover_on=FailoverClasses.TRANSIENT,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    texts = [e.text for e in events if isinstance(e, TextDelta)]
+    assert texts == ["partial"]                # no restart, no duplication
+    assert isinstance(events[-1], ChatError)    # the error surfaced, not raised
+
+
+@pytest.mark.asyncio
+async def test_mid_stream_non_eligible_raised_error_propagates_no_restart():
+    # AuthenticationError is config-eligible only; under FailoverClasses.
+    # TRANSIENT it is NOT eligible even in MID_STREAM mode -> the raised
+    # exception propagates instead of restarting on member[1].
+    bad = _FakeLLM(
+        events=[StreamStart(model="m1"), TextDelta(text="partial", index=0)],
+        mid_exc=AuthenticationError("401 mid-stream"),
+    )
+    good = _FakeLLM(events=[TextDelta(text="SHOULD-NOT-APPEAR", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(
+        failover_point=FailoverPoint.MID_STREAM,
+        failover_on=FailoverClasses.TRANSIENT,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    with pytest.raises(AuthenticationError):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
