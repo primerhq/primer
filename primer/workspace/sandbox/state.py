@@ -228,6 +228,12 @@ class SandboxStateRepo:
         self._state_path = state_path
         self._workspace_id = workspace_id
         self._commit_lock = asyncio.Lock()
+        # Serialises the messages.jsonl read->rewrite window (session
+        # instruction appends) against the append-file event-row writes
+        # (``Workspace.append_message_line``). Distinct from
+        # ``_commit_lock`` (which the rewrite still takes internally) to
+        # avoid re-entrancy. Mirrors LocalStateRepo._messages_lock.
+        self._messages_lock = asyncio.Lock()
         # session_id -> agent_id cache (populated by create_session /
         # initialize scan; used by commit() to resolve the agent trailer).
         self._agent_by_session: dict[str, str] = {}
@@ -239,6 +245,16 @@ class SandboxStateRepo:
     @property
     def state_path(self) -> str:
         return self._state_path
+
+    @property
+    def messages_lock(self) -> asyncio.Lock:
+        """Mutual-exclusion lock for messages.jsonl append vs. rewrite.
+
+        Acquired by :meth:`Workspace.append_message_line` and by the
+        session's instruction append across its read->rewrite window, so
+        the two never interleave. Mirrors ``LocalStateRepo.messages_lock``.
+        """
+        return self._messages_lock
 
     # ------------------------------------------------------------------
     # Version guard

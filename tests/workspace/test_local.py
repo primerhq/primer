@@ -975,6 +975,80 @@ class TestAppendMessageLine:
         assert path.read_bytes() == batch
 
 
+class TestMessagesJsonlAppendRewriteRace:
+    """Event-row O_APPEND must not be clobbered by an instruction rewrite.
+
+    ``AgentSession.append_instruction`` reads messages.jsonl, appends the
+    user message, and rewrites the whole file. ``append_message_line``
+    O_APPENDs a session event row. Without serialisation, an event row
+    appended into the read->rewrite gap is truncated by the rewrite. Both
+    paths acquire ``state_repo.messages_lock`` so the streamed row
+    survives (see arch-review batch 1, Fix 2).
+    """
+
+    async def test_event_append_survives_instruction_rewrite(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+        session = await ws.start_session(
+            _binding(), id="sess-race", instructions="hello"
+        )
+        sid = session.session_id
+        rel = f"sessions/{sid}/messages.jsonl"
+        event_line = b'{"seq":99,"kind":"assistant_token","text":"streamed-event"}\n'
+
+        real_read = ws.state_repo.read_state_file
+        append_started = asyncio.Event()
+        append_tasks: list[asyncio.Task] = []
+        fired = False
+
+        async def _do_append() -> None:
+            # Signal that the appender coroutine has begun, then perform the
+            # O_APPEND. Under the fix this call blocks on messages_lock until
+            # the rewrite releases it; without the fix it writes straight
+            # into the read->rewrite gap.
+            append_started.set()
+            await ws.append_message_line(sid, event_line)
+
+        async def hooked_read(path: str):
+            nonlocal fired
+            # Snapshot the file as the rewrite sees it FIRST (pre-append),
+            # then open the read->rewrite gap so a concurrent event append
+            # lands after this snapshot. The rewrite will write back this
+            # snapshot -- if the appender is not serialised, its row is lost.
+            result = await real_read(path)
+            if path == rel and not fired:
+                fired = True
+                append_tasks.append(asyncio.create_task(_do_append()))
+                await append_started.wait()
+                # Give the (broken) unserialised append time to reach disk,
+                # or the (fixed) serialised append time to block on the lock.
+                await asyncio.sleep(0.05)
+            return result
+
+        # Shadow the shared state repo's read with the interleaving hook.
+        ws.state_repo.read_state_file = hooked_read  # type: ignore[assignment]
+        try:
+            await session.append_instruction("steer me")
+        finally:
+            ws.state_repo.read_state_file = real_read  # type: ignore[assignment]
+        await asyncio.gather(*append_tasks)
+
+        content = (
+            ws.root / ws.template.state_path / "sessions" / sid / "messages.jsonl"
+        ).read_bytes()
+        # The streamed event row appended into the read->rewrite window must
+        # survive the full-file rewrite.
+        assert b"streamed-event" in content, content
+        # ...and the steering instruction rewrite must also be present.
+        assert b"steer me" in content, content
+        # ...along with the original instruction that seeded the file.
+        assert b"hello" in content, content
+        # The rewrite ran (interleave actually occurred).
+        assert fired is True
+
+
 class TestDiagnosticExec:
     """LocalWorkspace.diagnostic_exec runs a shell command rooted at the
     workspace path and returns stdout/stderr/exit_code/duration."""
