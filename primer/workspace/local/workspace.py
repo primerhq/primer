@@ -39,6 +39,7 @@ from primer.model.workspace import (
     WorkspaceStatus,
     WorkspaceTemplate,
 )
+from primer.workspace._locks import WorkspaceLockTable
 from primer.workspace.local.cache import LocalTruncationStore
 from primer.workspace.local.state import LocalStateRepo, _GitCommandError
 from primer.workspace.local.tools import Edit, Exec, Glob, Grep, Ls, Read, Write
@@ -47,6 +48,11 @@ from primer.workspace.tool import WorkspaceTool
 
 
 _TAR_CHUNK_BYTES = 64 * 1024
+
+# Emit a debug trace when a writer parks longer than this on a busy lock
+# (mirrors the runtime's ops.py:_LOCK_WAIT_TRACE_S). Kept at debug level so
+# it never adds user-facing noise.
+_LOCK_WAIT_TRACE_S = 0.25
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +78,7 @@ class LocalWorkspace(Workspace):
         state_repo: LocalStateRepo,
         truncation_store: LocalTruncationStore,
         tools: list[WorkspaceTool],
+        locks: WorkspaceLockTable | None = None,
     ) -> None:
         self._workspace_id = workspace_id
         self._root = root
@@ -82,6 +89,14 @@ class LocalWorkspace(Workspace):
         self._tools = tools
         self._sessions: dict[str, AgentSession] = {}
         self._lock = asyncio.Lock()
+        # ONE shared advisory write-lock table per workspace. The tools built
+        # in ``materialise`` are handed the SAME table so an API-side
+        # ``write_file``/``move_file`` and a tool ``write``/``exec`` to the
+        # same directory serialize. When constructed directly (tests / restore
+        # paths) a fresh table is created.
+        self._locks = locks if locks is not None else WorkspaceLockTable()
+        # Cross-process flock helper lands lock files here (spec section 7).
+        self._lock_dir = root / template.tmp_path / "locks"
 
     @classmethod
     async def materialise(
@@ -127,14 +142,20 @@ class LocalWorkspace(Workspace):
             ) from exc
         cache = LocalTruncationStore(tmp_path)
 
+        # One shared lock table for the whole workspace: the mutating tools
+        # (write/edit/exec) and the workspace's own file mutations
+        # (write_file/move_file/...) all take Tier-A/Tier-B locks from it, so
+        # a tool write and a same-dir exec / API write serialize.
+        locks = WorkspaceLockTable()
+        strict = template.strict_write_locking
         tools: list[WorkspaceTool] = [
             Ls(root),
             Read(root),
-            Write(root),
-            Edit(root),
+            Write(root, locks=locks, strict=strict),
+            Edit(root, locks=locks, strict=strict),
             Glob(root),
             Grep(root),
-            Exec(root, env=env if env else None),
+            Exec(root, env=env if env else None, locks=locks, strict=strict),
         ]
         return cls(
             workspace_id=workspace_id,
@@ -144,6 +165,7 @@ class LocalWorkspace(Workspace):
             state_repo=repo,
             truncation_store=cache,
             tools=tools,
+            locks=locks,
         )
 
     # ---- Workspace ABC --------------------------------------------------
@@ -386,9 +408,17 @@ class LocalWorkspace(Workspace):
         # API can't corrupt the backend's bookkeeping.
         self._refuse_reserved(target, path)
         parent = target.parent
+        _t0 = time.monotonic()
         try:
-            await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(_atomic_write_bytes, target, content)
+            async with self._locks.hold_write(self._scope_key(target), str(target)):
+                _waited = time.monotonic() - _t0
+                if _waited > _LOCK_WAIT_TRACE_S:
+                    logger.debug(
+                        "write_file waited %.3fs on busy lock for %r",
+                        _waited, path,
+                    )
+                await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(_atomic_write_bytes, target, content)
         except FileNotFoundError as exc:
             # The workspace tree was removed underneath us (e.g. a concurrent
             # destroy removed the root dir mid-write). Surface as 404
@@ -427,19 +457,26 @@ class LocalWorkspace(Workspace):
         if target == self._root.resolve():
             raise BadRequestError("refusing to delete workspace root")
         self._refuse_reserved(target, path)
-        if await asyncio.to_thread(target.is_dir):
-            if recursive:
-                await asyncio.to_thread(shutil.rmtree, target)
-                return
-            try:
-                await asyncio.to_thread(target.rmdir)  # rmdir => empty-only
-            except OSError as exc:
-                raise BadRequestError(
-                    f"directory {path!r} is not empty; pass recursive=true "
-                    f"to delete it and its contents"
-                ) from exc
-        else:
-            await asyncio.to_thread(target.unlink)
+        _t0 = time.monotonic()
+        async with self._locks.hold_write(self._scope_key(target), str(target)):
+            _waited = time.monotonic() - _t0
+            if _waited > _LOCK_WAIT_TRACE_S:
+                logger.debug(
+                    "delete_file waited %.3fs on busy lock for %r", _waited, path,
+                )
+            if await asyncio.to_thread(target.is_dir):
+                if recursive:
+                    await asyncio.to_thread(shutil.rmtree, target)
+                    return
+                try:
+                    await asyncio.to_thread(target.rmdir)  # rmdir => empty-only
+                except OSError as exc:
+                    raise BadRequestError(
+                        f"directory {path!r} is not empty; pass recursive=true "
+                        f"to delete it and its contents"
+                    ) from exc
+            else:
+                await asyncio.to_thread(target.unlink)
 
     async def move_file(self, src: str, dst: str) -> None:
         """Move / rename ``src`` to ``dst`` within the workspace.
@@ -477,9 +514,29 @@ class LocalWorkspace(Workspace):
                     f"descendant ({dst!r})"
                 )
         parent = dst_target.parent
+        # A move is a Tier-A writer across TWO directories, so it takes the
+        # scope locks for BOTH endpoints (via hold_multi), not just path
+        # locks -- otherwise a move into dir D would fail to serialize with a
+        # same-dir exec / write. hold_multi acquires sorted scope locks THEN
+        # sorted path locks (same global order as hold_write), so it is
+        # deadlock-free against every other holder. In strict mode both scope
+        # keys collapse to the root and the set de-dupes to one lock.
+        scopes = [self._scope_key(src_target), self._scope_key(dst_target)]
+        _t0 = time.monotonic()
         try:
-            await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
-            await asyncio.to_thread(shutil.move, str(src_target), str(dst_target))
+            async with self._locks.hold_multi(
+                scopes, [str(src_target), str(dst_target)]
+            ):
+                _waited = time.monotonic() - _t0
+                if _waited > _LOCK_WAIT_TRACE_S:
+                    logger.debug(
+                        "move_file waited %.3fs on busy lock for %r -> %r",
+                        _waited, src, dst,
+                    )
+                await asyncio.to_thread(parent.mkdir, parents=True, exist_ok=True)
+                await asyncio.to_thread(
+                    shutil.move, str(src_target), str(dst_target)
+                )
         except OSError as exc:
             raise BadRequestError(
                 f"cannot move {src!r} to {dst!r}: {exc.strerror or exc}"
@@ -650,7 +707,17 @@ class LocalWorkspace(Workspace):
             with candidate.open("ab") as fh:
                 fh.write(line)
 
-        await asyncio.to_thread(_append)
+        _t0 = time.monotonic()
+        async with self._locks.hold_write(
+            self._scope_key(candidate), str(candidate)
+        ):
+            _waited = time.monotonic() - _t0
+            if _waited > _LOCK_WAIT_TRACE_S:
+                logger.debug(
+                    "append_state_line waited %.3fs on busy lock for %r",
+                    _waited, relative_path,
+                )
+            await asyncio.to_thread(_append)
 
     async def write_state_file(self, relative_path: str, content: bytes) -> None:
         """Overwrite ``<root>/<relative_path>`` (root-contained).
@@ -702,6 +769,20 @@ class LocalWorkspace(Workspace):
             )
 
     # ---- internals ------------------------------------------------------
+
+    def _scope_key(self, target: Path) -> str:
+        """Tier-A/Tier-B scope key for a (resolved) target path.
+
+        The file's parent directory, or the workspace root when the template
+        opts into strict write-locking. MUST be derived IDENTICALLY here and
+        in the write / edit / exec tools (which use ``str(target.parent)`` /
+        ``str(cwd)`` resp.) so a tool write to ``<D>/x`` and an exec with
+        workdir ``<D>`` share the SAME scope-lock string and serialize.
+        ``target`` is expected to be an already-``resolve()``d path.
+        """
+        if self._template.strict_write_locking:
+            return str(self._root.resolve())
+        return str(target.parent)
 
     def _resolve_path(self, path: str) -> Path:
         if not path:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from pathlib import Path
 from typing import ClassVar
 
@@ -10,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, ConflictError
+from primer.workspace._locks import WorkspaceLockTable
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 from primer.workspace.local.tools._common import resolve_workspace_path
 
@@ -63,11 +65,39 @@ class Write(WorkspaceTool):
         ),
     ]
 
-    def __init__(self, workspace_root: Path) -> None:
+    def __init__(
+        self,
+        workspace_root: Path,
+        *,
+        locks: WorkspaceLockTable | None = None,
+        strict: bool = False,
+    ) -> None:
+        """Construct.
+
+        ``locks`` -- the shared per-workspace lock table. When supplied,
+        this tool acquires the Tier-A write lock (scope THEN path) around
+        the atomic write so concurrent writers / same-dir execs serialize.
+        ``strict`` collapses the scope key to the workspace root instead of
+        the file's parent dir (whole-root serialization).
+        """
         self._root = Path(workspace_root)
+        self._locks = locks
+        self._strict = strict
 
     def parameters(self) -> type[BaseModel]:
         return WriteArgs
+
+    def _scope_key(self, target: Path) -> str:
+        """Tier-A scope key: the file's parent dir, or the root when strict.
+
+        MUST match the exec tool's Tier-B derivation
+        (``primer/workspace/local/tools/exec_.py``) and the workspace's
+        ``_scope_key`` so a tool write and a same-dir exec share the same
+        scope lock and therefore serialize.
+        """
+        if self._strict:
+            return str(self._root.resolve())
+        return str(target.parent)
 
     async def execute(self, args: BaseModel, ctx: ToolCallContext) -> ToolResult:
         assert isinstance(args, WriteArgs)
@@ -82,8 +112,21 @@ class Write(WorkspaceTool):
                     "or pass force=True"
                 )
 
-        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_text, args.content, encoding="utf-8")
+        # Reuse the backend's atomic write primitive (temp file + os.replace)
+        # so a concurrent reader never sees a torn / truncated file. Imported
+        # lazily to avoid a circular import (workspace.py imports this module).
+        from primer.workspace.local.workspace import _atomic_write_bytes
+
+        content_bytes = args.content.encode("utf-8")
+        if self._locks is not None:
+            lock_ctx = self._locks.hold_write(self._scope_key(target), str(target))
+        else:
+            lock_ctx = contextlib.nullcontext()
+        async with lock_ctx:
+            await asyncio.to_thread(
+                target.parent.mkdir, parents=True, exist_ok=True
+            )
+            await asyncio.to_thread(_atomic_write_bytes, target, content_bytes)
         if args.mode is not None:
             try:
                 octal = int(args.mode, 8)
@@ -99,7 +142,7 @@ class Write(WorkspaceTool):
         # Mark as read so a later overwrite of OUR content doesn't trip
         # the read-before-write rule.
         ctx.session.mark_read(args.path)
-        size = len(args.content.encode("utf-8"))
+        size = len(content_bytes)
         return ToolResult(output=f"wrote {size} bytes to {args.path}")
 
 

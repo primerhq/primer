@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import shutil
 import sys
@@ -19,6 +20,7 @@ from primer.model.workspace import (
     WorkspaceTemplateOverrides,
 )
 from primer.workspace import LocalWorkspace, LocalWorkspaceBackend
+from primer.workspace.tool import ToolCallContext
 
 
 pytestmark = pytest.mark.skipif(
@@ -55,6 +57,47 @@ def _binding(
     *, agent_id: str = "agent-foo", name: str = "Agent Foo"
 ) -> AgentBinding:
     return AgentBinding(agent_id=agent_id, agent_name=name)
+
+
+async def _materialise_local(
+    tmp_path: Path, *, strict: bool = False
+) -> LocalWorkspace:
+    """Build a LocalWorkspace directly (no provider) with the lock table wired.
+
+    ``strict`` opts the template into whole-root scope locking so the
+    write/exec Tier-A/Tier-B scope keys collapse to the workspace root.
+    """
+    root = tmp_path / "ws-locks-root"
+    root.mkdir(exist_ok=True)
+    tpl = _template().model_copy(update={"strict_write_locking": strict})
+    return await LocalWorkspace.materialise(
+        workspace_id="ws-locks-1", root=root, template=tpl, env={},
+    )
+
+
+def tmp_path_root(ws: LocalWorkspace) -> Path:
+    """The on-disk root a materialised local workspace writes under."""
+    return ws.root
+
+
+async def _call_tool(session, tool_id: str, args: dict):
+    """Validate ``args`` and run one workspace tool through a session context.
+
+    Mirrors how the runtime dispatches a tool call: it looks the tool up
+    on the session, validates the raw args against the tool's Pydantic
+    schema, then executes it with a minimal :class:`ToolCallContext`.
+    """
+    tool = next(t for t in session.workspace_tools if t.id == tool_id)
+    validated = tool.parameters().model_validate(args)
+    ctx = ToolCallContext(
+        workspace_id=session.workspace_id,
+        session_id=session.session_id,
+        agent_id=session.agent_id,
+        call_id="call-test",
+        abort=asyncio.Event(),
+        session=session,
+    )
+    return await tool.execute(validated, ctx)
 
 
 @pytest.fixture
@@ -1094,3 +1137,198 @@ class TestCrossProcessRehydration:
             workspace_id="ws-xproc2", root=root, template=_template(), env={},
         )
         assert await ws.get_session("sess-does-not-exist") is None
+
+
+# ===========================================================================
+# LocalWorkspace - Tier-A/Tier-B write-lock wiring (workspace-file-safety)
+# ===========================================================================
+
+
+class TestLocalWriteLocking:
+    """The local backend + its tools acquire the write-lock table and the
+    write/edit tools become atomic (temp file + os.replace)."""
+
+    async def test_two_writes_same_file_do_not_corrupt(
+        self, tmp_path: Path
+    ) -> None:
+        """Two concurrent write tool calls at the same path must leave the
+        file as exactly one of the two full payloads, never a torn
+        interleave of both."""
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        big_a, big_b = "A" * 200_000, "B" * 200_000
+        await asyncio.gather(
+            _call_tool(sess, "write", {"path": "f.txt", "content": big_a}),
+            _call_tool(
+                sess, "write", {"path": "f.txt", "content": big_b, "force": True}
+            ),
+        )
+        final = (tmp_path_root(ws) / "f.txt").read_text()
+        assert final in (big_a, big_b)
+        assert set(final) in ({"A"}, {"B"})  # no interleave
+
+    async def test_write_tool_is_atomic_against_reader(
+        self, tmp_path: Path
+    ) -> None:
+        """A concurrent reader of a path being overwritten by the write tool
+        must only ever observe the full old or full new content, never a
+        truncated / partially-written buffer."""
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        (root / "g.txt").write_text("OLD")
+        new = "N" * 500_000
+
+        async def writer() -> None:
+            await _call_tool(
+                sess, "write", {"path": "g.txt", "content": new, "force": True}
+            )
+
+        async def reader() -> None:
+            seen: set[str] = set()
+            for _ in range(60):
+                try:
+                    seen.add((root / "g.txt").read_text())
+                except FileNotFoundError:
+                    pass
+                await asyncio.sleep(0)
+            assert seen <= {"OLD", new}
+
+        await asyncio.gather(writer(), reader())
+
+    async def test_edit_tool_is_atomic_against_reader(
+        self, tmp_path: Path
+    ) -> None:
+        """The edit tool's read-modify-write is atomic under the Tier-A lock:
+        a racing reader never sees a torn buffer."""
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        old = "X" * 200_000
+        (root / "e.txt").write_text(old)
+        new = "Y" * 200_000
+
+        async def editor() -> None:
+            await _call_tool(
+                sess,
+                "edit",
+                {"path": "e.txt", "old_string": old, "new_string": new},
+            )
+
+        async def reader() -> None:
+            seen: set[str] = set()
+            for _ in range(60):
+                try:
+                    seen.add((root / "e.txt").read_text())
+                except FileNotFoundError:
+                    pass
+                await asyncio.sleep(0)
+            assert seen <= {old, new}
+
+        await asyncio.gather(editor(), reader())
+
+    async def test_move_into_dir_serializes_with_same_dir_write(
+        self, tmp_path: Path
+    ) -> None:
+        """A move whose DESTINATION dir is D serializes against a write to a
+        file in D (both are Tier-A writers on scope[D]) -- neither observes a
+        half-state: both complete, dst is present, the other file is intact,
+        and the source is gone."""
+        ws = await _materialise_local(tmp_path)
+        root = tmp_path_root(ws)
+        (root / "src.txt").write_text("MOVED")
+        (root / "sub").mkdir()
+        await asyncio.gather(
+            ws.move_file("src.txt", "sub/dst.txt"),
+            ws.write_file("sub/other.txt", b"OTHER"),
+        )
+        assert (root / "sub" / "dst.txt").read_text() == "MOVED"
+        assert (root / "sub" / "other.txt").read_bytes() == b"OTHER"
+        assert not (root / "src.txt").exists()
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX shell (sleep) required"
+    )
+    async def test_same_dir_write_and_write_exec_serialize(
+        self, tmp_path: Path
+    ) -> None:
+        """A write-exec (Tier-B scope lock on the workdir) and a tool write
+        (Tier-A scope+path lock) in the SAME directory MUST serialize on the
+        shared scope lock.
+
+        This is the load-bearing scope-key-consistency guarantee: the exec
+        holds the ``sub/`` scope for ~0.5s while a concurrent tool write to
+        ``sub/w.txt`` is fired after a short head start. If exec and write
+        derived the scope key the same way, the write parks on the busy scope
+        lock and only completes AFTER the exec releases -> order == [exec,
+        write]. If the derivations diverged, the fast write would slip in
+        during the exec's sleep and the order would flip.
+        """
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        (root / "sub").mkdir()
+
+        order: list[str] = []
+
+        async def exec_holder() -> None:
+            await _call_tool(
+                sess,
+                "exec",
+                {
+                    "command": "sleep 0.5",
+                    "workdir": "sub",
+                    "description": "hold the sub/ scope lock",
+                    "access": "write",
+                },
+            )
+            order.append("exec")
+
+        async def writer() -> None:
+            # Give the exec a head start to acquire the scope lock first.
+            await asyncio.sleep(0.15)
+            await _call_tool(sess, "write", {"path": "sub/w.txt", "content": "W"})
+            order.append("write")
+
+        await asyncio.gather(exec_holder(), writer())
+
+        assert order == ["exec", "write"]
+        assert (root / "sub" / "w.txt").read_text() == "W"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX shell (sleep) required"
+    )
+    async def test_read_access_exec_does_not_block_same_dir_write(
+        self, tmp_path: Path
+    ) -> None:
+        """An ``access="read"`` exec takes NO lock, so a same-dir tool write
+        stays fully parallel with it (completes before the read exec's sleep
+        finishes) -- the read declaration is never worse than the baseline."""
+        ws = await _materialise_local(tmp_path)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        (root / "sub").mkdir()
+
+        order: list[str] = []
+
+        async def exec_reader() -> None:
+            await _call_tool(
+                sess,
+                "exec",
+                {
+                    "command": "sleep 0.5",
+                    "workdir": "sub",
+                    "description": "read-only, takes no lock",
+                    "access": "read",
+                },
+            )
+            order.append("exec")
+
+        async def writer() -> None:
+            await asyncio.sleep(0.15)
+            await _call_tool(sess, "write", {"path": "sub/w.txt", "content": "W"})
+            order.append("write")
+
+        await asyncio.gather(exec_reader(), writer())
+
+        assert order == ["write", "exec"]

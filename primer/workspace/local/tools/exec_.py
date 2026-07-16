@@ -8,6 +8,7 @@ which is what the LLM sees.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 from pathlib import Path
 from typing import ClassVar, Literal
@@ -16,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError, NotFoundError
+from primer.workspace._locks import WorkspaceLockTable
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 from primer.workspace.local.tools._common import resolve_workspace_path
 
@@ -117,6 +119,8 @@ class Exec(WorkspaceTool):
         workspace_root: Path,
         *,
         env: dict[str, str] | None = None,
+        locks: WorkspaceLockTable | None = None,
+        strict: bool = False,
     ) -> None:
         """Construct.
 
@@ -125,12 +129,40 @@ class Exec(WorkspaceTool):
         ``None`` (the default) to inherit the current environment
         unchanged. Used by :class:`LocalWorkspace` to inject the
         ``WorkspaceTemplate.env`` overrides.
+
+        ``locks`` -- the shared per-workspace lock table. When supplied,
+        a writing exec acquires the Tier-B lock around the subprocess (the
+        workdir scope, or the sorted declared ``writes`` paths); a
+        ``access="read"`` exec takes nothing so read-only commands stay
+        fully parallel. ``strict`` collapses the workdir scope key to the
+        workspace root instead of the per-workdir subtree.
         """
         self._root = Path(workspace_root)
         self._env = env
+        self._locks = locks
+        self._strict = strict
 
     def parameters(self) -> type[BaseModel]:
         return ExecArgs
+
+    def _exec_lock_ctx(self, args: "ExecArgs", cwd: Path):
+        """Choose the Tier-B lock context for one exec call.
+
+        - ``access="read"`` (or no lock table): no lock -- fully parallel.
+        - declared ``writes``: sorted per-path locks (``hold_paths``).
+        - otherwise: the workdir scope lock (``hold_scope``), whose key is
+          derived IDENTICALLY to the write / edit tool's Tier-A scope key so
+          a same-directory write and exec serialize on the shared scope lock.
+        """
+        if self._locks is None or args.access == "read":
+            return contextlib.nullcontext()
+        if args.writes:
+            resolved = [
+                str(resolve_workspace_path(self._root, w)) for w in args.writes
+            ]
+            return self._locks.hold_paths(resolved)
+        scope = str(self._root.resolve()) if self._strict else str(cwd)
+        return self._locks.hold_scope(scope)
 
     async def execute(self, args: BaseModel, ctx: ToolCallContext) -> ToolResult:
         del ctx
@@ -155,27 +187,30 @@ class Exec(WorkspaceTool):
         proc_env: dict[str, str] = _curated_subprocess_env()
         if self._env is not None:
             proc_env.update(self._env)
-        proc = await asyncio.create_subprocess_shell(
-            args.command,
-            cwd=str(cwd),
-            env=proc_env,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=args.timeout_ms / 1000.0,
+        # Tier-B: hold the write lock for the whole subprocess lifetime so a
+        # writing command serializes against same-scope tool writes / execs.
+        async with self._exec_lock_ctx(args, cwd):
+            proc = await asyncio.create_subprocess_shell(
+                args.command,
+                cwd=str(cwd),
+                env=proc_env,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
-        except TimeoutError as exc:
             try:
-                proc.kill()
-            except ProcessLookupError:
-                pass
-            await proc.wait()
-            raise BadRequestError(
-                f"command timed out after {args.timeout_ms}ms: {args.command!r}"
-            ) from exc
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(),
+                    timeout=args.timeout_ms / 1000.0,
+                )
+            except TimeoutError as exc:
+                try:
+                    proc.kill()
+                except ProcessLookupError:
+                    pass
+                await proc.wait()
+                raise BadRequestError(
+                    f"command timed out after {args.timeout_ms}ms: {args.command!r}"
+                ) from exc
 
         rc = proc.returncode if proc.returncode is not None else -1
         out_text = stdout.decode("utf-8", errors="replace")
