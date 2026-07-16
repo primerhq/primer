@@ -150,7 +150,7 @@ def _container_config(suffix: str, kubeconfig: str) -> dict[str, Any]:
 def _container_backend() -> dict[str, Any]:
     return {
         "kind": "container",
-        "image": "primer/workspace-runtime:1.0",
+        "image": "primer/workspace-runtime:1.1",
         "entrypoint": ["python", "-m", "primer_runtime.server"],
     }
 

@@ -117,7 +117,7 @@ async def _make_container_workspace(client, suffix: str) -> tuple[str, str, str]
             "description": "cookbook code interpreter sandbox",
             "provider_id": wp,
             # ContainerTemplateConfig: the sandbox image the code runs in.
-            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.0"},
+            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.1"},
         },
     )
     assert rt.status_code in (200, 201), rt.text

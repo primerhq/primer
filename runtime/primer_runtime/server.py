@@ -53,7 +53,7 @@ _MUTATING_OPS: frozenset[str] = frozenset({
 # Version constants
 # ---------------------------------------------------------------------------
 
-PROTOCOL_VERSION: str = "1.1"
+PROTOCOL_VERSION: str = "1.2"
 RUNTIME_VERSION: str = "1.0.0"
 
 _PROTOCOL_MAJOR: int = int(PROTOCOL_VERSION.split(".")[0])
@@ -279,6 +279,7 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                     req_id=frame_req_id,
                     args=args,
                     workspace_root=workspace_root,
+                    locks=locks,
                     send=ws.send_str,
                     registry=exec_registry,
                 )

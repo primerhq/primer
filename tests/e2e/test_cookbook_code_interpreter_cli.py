@@ -120,7 +120,7 @@ def test_code_interpreter_cli(base_url, mock_llm, unique_suffix, tmp_path):
         pc.run("create", "-f", manifest(tmp_path, "tpl", "workspace_template", {
             "id": tpl, "description": "cookbook code interpreter sandbox (cli)",
             "provider_id": wp,
-            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.0"},
+            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.1"},
         }))
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": pid, "provider": "openchat",

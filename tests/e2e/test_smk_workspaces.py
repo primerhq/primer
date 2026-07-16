@@ -263,7 +263,7 @@ async def test_container_backend(authed_client, unique_suffix):
             "id": tpl,
             "description": "smk container backend",
             "provider_id": wp,
-            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.0"},
+            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.1"},
         },
     )
     assert rt.status_code in (200, 201), rt.text
@@ -363,7 +363,7 @@ async def _make_container_workspace(authed_client, unique_suffix):
             "id": tpl,
             "description": "smk container graph/agent session",
             "provider_id": wp,
-            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.0"},
+            "backend": {"kind": "container", "image": "primer/workspace-runtime:1.1"},
         },
     )
     assert rt.status_code in (200, 201), rt.text

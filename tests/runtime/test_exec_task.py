@@ -31,6 +31,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 from primer_runtime.exec import ExecRegistry, start_exec
+from primer_runtime.locks import WorkspaceLockTable
 
 
 def _events(frames: list[str]) -> list[dict]:
@@ -62,6 +63,7 @@ async def test_start_exec_streams_and_deregisters(tmp_path: Path) -> None:
         req_id=1,
         args={"cmd": ["/bin/sh", "-c", "echo hello"]},
         workspace_root=str(tmp_path),
+        locks=WorkspaceLockTable(),
         send=send,
         registry=registry,
     )
@@ -87,6 +89,7 @@ async def test_start_exec_bad_cmd_emits_error_response(tmp_path: Path) -> None:
         req_id=2,
         args={"cmd": []},  # empty cmd → OpError(EPROTOCOL)
         workspace_root=str(tmp_path),
+        locks=WorkspaceLockTable(),
         send=send,
         registry=registry,
     )
@@ -108,6 +111,7 @@ async def test_exec_cancel_all_terminates(tmp_path: Path) -> None:
         req_id=3,
         args={"cmd": ["/bin/sh", "-c", "sleep 30"]},
         workspace_root=str(tmp_path),
+        locks=WorkspaceLockTable(),
         send=send,
         registry=registry,
     )
@@ -118,6 +122,67 @@ async def test_exec_cancel_all_terminates(tmp_path: Path) -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert registry._tasks == set()
+
+
+# ---------------------------------------------------------------------------
+# Tier-B exec write-locking (run_exec directly)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_exec_read_access_takes_no_lock(tmp_path):
+    """access='read' runs even while the workdir scope lock is held."""
+    from primer_runtime.exec import run_exec
+
+    locks = WorkspaceLockTable()
+    frames: list = []
+
+    async def hold_scope():
+        async with locks.hold_scope(str(tmp_path)):
+            await asyncio.sleep(0.2)
+
+    async def read_exec():
+        async for evt in run_exec(
+            1, {"cmd": ["/bin/sh", "-c", "echo hi"], "workdir": str(tmp_path),
+                "access": "read"},
+            str(tmp_path), locks,
+        ):
+            frames.append(evt)
+
+    holder = asyncio.create_task(hold_scope())
+    await asyncio.sleep(0.01)
+    # Read exec must finish without waiting for the 0.2s scope hold.
+    await asyncio.wait_for(read_exec(), timeout=0.1)
+    holder.cancel()
+    assert any(f.event == "exit" for f in frames)
+
+
+@pytest.mark.asyncio
+async def test_write_exec_serializes_same_workdir(tmp_path):
+    from primer_runtime.exec import run_exec
+
+    locks = WorkspaceLockTable()
+    order: list[str] = []
+
+    async def slow_holder():
+        async with locks.hold_scope(str(tmp_path)):
+            order.append("holder-in")
+            await asyncio.sleep(0.1)
+            order.append("holder-out")
+
+    async def write_exec():
+        async for _ in run_exec(
+            2, {"cmd": ["/bin/sh", "-c", "true"], "workdir": str(tmp_path)},
+            str(tmp_path), locks,
+        ):
+            pass
+        order.append("exec-done")
+
+    h = asyncio.create_task(slow_holder())
+    await asyncio.sleep(0.01)
+    await write_exec()
+    await h
+    assert order == ["holder-in", "holder-out", "exec-done"]
 
 
 # ---------------------------------------------------------------------------
@@ -179,5 +244,57 @@ async def test_exec_does_not_block_message_loop(tmp_path: Path) -> None:
                     exec_exit_seen = True
 
             assert stat_seen and exec_exit_seen
+        finally:
+            await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_read_not_blocked_by_parked_write(tmp_path: Path) -> None:
+    """A read must be answered WHILE a write is parked behind an exec's scope lock.
+
+    A slow write-exec holds the (default) workdir==root scope for ~0.4s; a
+    ``write_file`` to the same dir then PARKS on that Tier-A scope lock, while a
+    ``read_file`` (which takes no lock and stays inline in the message loop) must
+    still be answered.  The read (12) must resolve BEFORE the parked write (11).
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from primer_runtime.server import build_app
+
+    (tmp_path / "seed.txt").write_bytes(b"seed")
+    token = secrets.token_urlsafe(16)
+    app = build_app(token=token, workspace_root=str(tmp_path))
+
+    async with TestClient(TestServer(app)) as client:
+        ws = await client.ws_connect("/", headers={"Authorization": f"Bearer {token}"})
+        try:
+            await _handshake(ws)
+            # 1) slow exec holding the (default) workdir==root scope for ~0.4s
+            await ws.send_str(json.dumps({
+                "op": "exec", "req_id": 10,
+                "args": {"cmd": ["/bin/sh", "-c", "sleep 0.4"]},
+            }))
+            await asyncio.sleep(0.05)
+            # 2) a write to the same dir -> parks on the scope lock
+            await ws.send_str(json.dumps({
+                "op": "write_file", "req_id": 11,
+                "args": {"path": "out.txt",
+                         "content_b64": base64.b64encode(b"x").decode()},
+            }))
+            # 3) a read -> must be answered while the write is still parked
+            await ws.send_str(json.dumps({
+                "op": "read_file", "req_id": 12, "args": {"path": "seed.txt"},
+            }))
+            # Collect responses; assert read (12) resolves before write (11).
+            seen_order: list[int] = []
+            deadline = asyncio.get_event_loop().time() + 5.0
+            while {11, 12} - set(seen_order):
+                remaining = deadline - asyncio.get_event_loop().time()
+                assert remaining > 0, "timed out waiting for write/read responses"
+                msg = await asyncio.wait_for(ws.receive(), timeout=remaining)
+                frame = json.loads(msg.data)
+                if "ok" in frame and frame.get("req_id") in (11, 12):
+                    seen_order.append(frame["req_id"])
+            assert seen_order.index(12) < seen_order.index(11)
         finally:
             await ws.close()

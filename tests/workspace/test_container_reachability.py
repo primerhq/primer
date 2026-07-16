@@ -59,7 +59,7 @@ def _template() -> WorkspaceTemplate:
         id="t1",
         provider_id="c1",
         description="",
-        backend=ContainerTemplateConfig(image="primer/workspace-runtime:1.0"),
+        backend=ContainerTemplateConfig(image="primer/workspace-runtime:1.1"),
     )
 
 
