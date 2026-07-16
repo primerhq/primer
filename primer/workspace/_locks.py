@@ -136,8 +136,14 @@ class WorkspaceLockTable:
 def _open_and_lock(lock_path: Path) -> int:
     import os
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
-    if fcntl is not None:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+    try:
+        if fcntl is not None:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+    except BaseException:
+        # flock can fail (EINTR, ENOLCK, ...) after the fd is open; close it
+        # so we do not leak a descriptor on the way out.
+        os.close(fd)
+        raise
     return fd
 
 
