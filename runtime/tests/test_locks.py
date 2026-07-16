@@ -31,19 +31,26 @@ async def test_same_path_serializes():
 async def test_different_paths_run_concurrently():
     table = WorkspaceLockTable()
     started = asyncio.Event()
+    order: list[str] = []
 
     async def a() -> None:
         async with table.hold_path("/workspace/a.txt"):
             started.set()
             await asyncio.sleep(0.1)
+            order.append("a")
 
     async def b() -> None:
         # Should NOT wait on a's lock (different path).
         await asyncio.wait_for(started.wait(), timeout=0.05)
         async with table.hold_path("/workspace/b.txt"):
-            pass
+            order.append("b")
 
     await asyncio.gather(a(), b())
+    # Load-bearing: b must fully acquire AND release its own path lock while
+    # a is still holding a's. With a single global lock (or any over-broad
+    # key) b would park until a's sleep finished and the order would flip to
+    # ["a", "b"]; merely awaiting b to completion would not catch that.
+    assert order == ["b", "a"]
 
 
 @pytest.mark.asyncio

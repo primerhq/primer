@@ -97,8 +97,12 @@ async def _read(client, wid, path):
 async def test_concurrent_same_path_writes_well_formed(container_ws, client):
     # K concurrent writers race on the SAME path, each with a large, distinct
     # body. After all settle, the file must contain exactly one writer's full
-    # payload, never a torn/interleaved mix. This is the core end-to-end proof
-    # of Tier-A locking + atomic write through the REAL container runtime.
+    # payload, never a torn/interleaved mix. This is an end-to-end ATOMICITY
+    # proof through the REAL container runtime: it shows the write path lands
+    # whole payloads (temp file + os.replace), not that the Tier-A lock is
+    # held. os.replace is atomic on its own, so this would still pass with
+    # hold_write removed; Tier-A serialization itself is unit-covered
+    # (runtime/tests/test_locks.py, tests/workspace/test_locks_local.py).
     bodies = [chr(ord("A") + i) * 100_000 for i in range(_K)]
     d = await client.post(f"/v1/workspaces/{container_ws}/files/dir", params={"path": "d"})
     assert d.status_code == 204, d.text

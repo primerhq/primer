@@ -1332,3 +1332,96 @@ class TestLocalWriteLocking:
         await asyncio.gather(exec_reader(), writer())
 
         assert order == ["write", "exec"]
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX shell (sleep) required"
+    )
+    async def test_strict_serializes_writes_in_different_dirs(
+        self, tmp_path: Path
+    ) -> None:
+        """Under ``strict_write_locking=True`` every scope key collapses to the
+        workspace ROOT, so two writes to DIFFERENT directories serialize.
+
+        The ordering probe is what makes this behavioral rather than a wiring
+        assertion: an exec holds ``a/`` for ~0.5s while a write to ``b/y.txt``
+        (a different directory) is fired after a head start. Under strict both
+        derive scope == <root>, so the write parks on the busy root scope lock
+        and lands only AFTER the exec releases -> order == [exec, write]. The
+        default-mode twin below proves the same pair overlaps when strict is
+        off, so this test fails if strict ever silently no-ops.
+        """
+        ws = await _materialise_local(tmp_path, strict=True)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        (root / "a").mkdir()
+        (root / "b").mkdir()
+
+        order: list[str] = []
+
+        async def exec_holder() -> None:
+            await _call_tool(
+                sess,
+                "exec",
+                {
+                    "command": "sleep 0.5",
+                    "workdir": "a",
+                    "description": "hold the whole-root scope lock",
+                    "access": "write",
+                },
+            )
+            order.append("exec")
+
+        async def writer() -> None:
+            # Head start so the exec owns the root scope lock first.
+            await asyncio.sleep(0.15)
+            await _call_tool(sess, "write", {"path": "b/y.txt", "content": "Y"})
+            order.append("write")
+
+        await asyncio.gather(exec_holder(), writer())
+
+        assert order == ["exec", "write"]
+        assert (root / "b" / "y.txt").read_text() == "Y"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX shell (sleep) required"
+    )
+    async def test_default_mode_writes_in_different_dirs_stay_concurrent(
+        self, tmp_path: Path
+    ) -> None:
+        """The negative twin of the strict test: with the DEFAULT
+        (``strict_write_locking=False``) workdir-scoped mode, an exec holding
+        ``a/`` and a write to ``b/y.txt`` hold DIFFERENT scope keys, so they
+        overlap and the fast write completes first -> order == [write, exec].
+
+        Together with the strict test this pins the exact behavior strict buys:
+        same inputs, opposite ordering, decided solely by the template flag.
+        """
+        ws = await _materialise_local(tmp_path, strict=False)
+        sess = await ws.start_session(_binding())
+        root = tmp_path_root(ws)
+        (root / "a").mkdir()
+        (root / "b").mkdir()
+
+        order: list[str] = []
+
+        async def exec_holder() -> None:
+            await _call_tool(
+                sess,
+                "exec",
+                {
+                    "command": "sleep 0.5",
+                    "workdir": "a",
+                    "description": "holds only the a/ scope lock",
+                    "access": "write",
+                },
+            )
+            order.append("exec")
+
+        async def writer() -> None:
+            await asyncio.sleep(0.15)
+            await _call_tool(sess, "write", {"path": "b/y.txt", "content": "Y"})
+            order.append("write")
+
+        await asyncio.gather(exec_holder(), writer())
+
+        assert order == ["write", "exec"]
