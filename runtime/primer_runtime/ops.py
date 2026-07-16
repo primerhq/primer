@@ -2,7 +2,12 @@
 
 Each handler is an async function with signature::
 
-    async def <op>(args: dict, workspace_root: str) -> dict
+    async def <op>(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> dict
+
+The ``locks`` arg is uniform so the server can dispatch every op the same
+way; read-only ops (``read_file``/``list_dir``/``stat``) and the state ops
+accept it with a ``None`` default and ignore it, while the mutating ops
+(``write_file``/``append_line``/``delete``) acquire a Tier-A write lock.
 
 On success  → return a dict that becomes ``response["result"]``.
 On expected errors → raise :class:`OpError` with an :class:`~protocol.ErrorCode`.
@@ -13,11 +18,74 @@ from __future__ import annotations
 import asyncio
 import base64
 import errno
+import logging
 import os
 import pathlib
 import stat as _stat_mod
+import tempfile
+import time as _time
 
-from primer_runtime.protocol import ErrorCode
+from collections.abc import Callable, Coroutine
+from typing import Any
+
+from primer_runtime.locks import WorkspaceLockTable
+from primer_runtime.protocol import ErrorCode, Response, serialize
+
+log = logging.getLogger(__name__)
+
+# Emit a debug trace when a writer parks longer than this on a busy lock.
+_LOCK_WAIT_TRACE_S: float = 0.25
+
+
+def _strict_write_locking() -> bool:
+    """Whether exec/tool scope locks collapse to the workspace root.
+
+    Read from ``PRIMER_STRICT_WRITE_LOCKING`` (injected by the backend
+    when the template opts in). Mirrors ``_subprocess_timeout`` (:23).
+    """
+    raw = os.environ.get("PRIMER_STRICT_WRITE_LOCKING", "").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _scope_key(resolved: pathlib.Path, workspace_root: str) -> str:
+    """Tier-B/A scope key: the parent dir, or the workspace root if strict."""
+    if _strict_write_locking():
+        return str(pathlib.Path(workspace_root).resolve())
+    return str(resolved.parent)
+
+
+def _atomic_write_bytes(target: pathlib.Path, content: bytes, mode: int | None) -> None:
+    """Temp-file + os.replace atomic write.
+
+    Same pattern as the local backend's 2-arg helper at
+    primer/workspace/local/workspace.py:736, plus a ``mode`` param (this
+    runtime copy is a superset, not byte-identical)."""
+    directory = target.parent
+    existing_mode: int | None = None
+    try:
+        existing_mode = os.stat(target).st_mode
+    except OSError:
+        existing_mode = None
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(directory)
+    )
+    tmp_path = pathlib.Path(tmp_name)
+    try:
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if mode is not None:
+            os.chmod(tmp_path, mode)
+        elif existing_mode is not None:
+            os.chmod(tmp_path, existing_mode)
+        os.replace(tmp_path, target)
+    except BaseException:
+        try:
+            tmp_path.unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _subprocess_timeout() -> float:
@@ -226,8 +294,10 @@ def _stat_to_dict(st: os.stat_result, full_path: str, name: str) -> dict:
 # ---------------------------------------------------------------------------
 
 
-async def read_file(args: dict, workspace_root: str) -> dict:
-    """``read_file`` op → ``{content_b64}``."""
+async def read_file(
+    args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
+) -> dict:
+    """``read_file`` op → ``{content_b64}``; read-only, takes no lock."""
     raw_path: str = args.get("path", "")
     resolved = _resolve_safe(raw_path, workspace_root)
 
@@ -248,14 +318,12 @@ async def read_file(args: dict, workspace_root: str) -> dict:
     return {"content_b64": base64.b64encode(content).decode()}
 
 
-async def write_file(args: dict, workspace_root: str) -> dict:
-    """``write_file`` op → ``{ok}``; creates parent directories."""
+async def write_file(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> dict:
+    """``write_file`` op → ``{ok}``; atomic; Tier-A locked; creates parents."""
     raw_path: str = args.get("path", "")
     content_b64: str = args.get("content_b64", "")
     mode: int | None = args.get("mode")
-
     resolved = _resolve_safe(raw_path, workspace_root)
-
     try:
         content = base64.b64decode(content_b64)
     except Exception as exc:
@@ -264,22 +332,21 @@ async def write_file(args: dict, workspace_root: str) -> dict:
     def _write() -> None:
         try:
             resolved.parent.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            raise _os_err_to_op_error(exc, raw_path)
-        try:
-            with open(resolved, "wb") as fh:
-                fh.write(content)
-            if mode is not None:
-                os.chmod(resolved, mode)
+            _atomic_write_bytes(resolved, content, mode)
         except OSError as exc:
             raise _os_err_to_op_error(exc, raw_path)
 
-    await asyncio.to_thread(_write)
+    _t0 = _time.monotonic()
+    async with locks.hold_write(_scope_key(resolved, workspace_root), str(resolved)):
+        waited = _time.monotonic() - _t0
+        if waited > _LOCK_WAIT_TRACE_S:
+            log.debug("write_file waited %.3fs on busy lock for %r", waited, raw_path)
+        await asyncio.to_thread(_write)
     return {"ok": True}
 
 
-async def append_line(args: dict, workspace_root: str) -> dict:
-    """``append_line`` op → ``{ok, byte_offset}``; atomic O_APPEND single-line append."""
+async def append_line(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> dict:
+    """``append_line`` op → ``{ok, byte_offset}``; atomic O_APPEND, Tier-A locked."""
     raw_path: str = args.get("path", "")
     line_b64: str = args.get("line_b64", "")
 
@@ -311,12 +378,19 @@ async def append_line(args: dict, workspace_root: str) -> dict:
         except OSError as exc:
             raise _os_err_to_op_error(exc, raw_path)
 
-    byte_offset = await asyncio.to_thread(_append)
+    _t0 = _time.monotonic()
+    async with locks.hold_write(_scope_key(resolved, workspace_root), str(resolved)):
+        waited = _time.monotonic() - _t0
+        if waited > _LOCK_WAIT_TRACE_S:
+            log.debug("append_line waited %.3fs on busy lock for %r", waited, raw_path)
+        byte_offset = await asyncio.to_thread(_append)
     return {"ok": True, "byte_offset": byte_offset}
 
 
-async def list_dir(args: dict, workspace_root: str) -> dict:
-    """``list_dir`` op → ``{entries: [FileStat]}``."""
+async def list_dir(
+    args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
+) -> dict:
+    """``list_dir`` op → ``{entries: [FileStat]}``; read-only, takes no lock."""
     raw_path: str = args.get("path", "")
     resolved = _resolve_safe(raw_path, workspace_root)
 
@@ -343,8 +417,10 @@ async def list_dir(args: dict, workspace_root: str) -> dict:
     return {"entries": entries}
 
 
-async def stat(args: dict, workspace_root: str) -> dict:
-    """``stat`` op → ``{stat: FileStat | null}`` (null if path doesn't exist)."""
+async def stat(
+    args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
+) -> dict:
+    """``stat`` op → ``{stat: FileStat | null}``; read-only, takes no lock."""
     raw_path: str = args.get("path", "")
     resolved = _resolve_safe(raw_path, workspace_root)
 
@@ -362,8 +438,8 @@ async def stat(args: dict, workspace_root: str) -> dict:
     return {"stat": file_stat}
 
 
-async def delete(args: dict, workspace_root: str) -> dict:
-    """``delete`` op → ``{ok}`` (file or empty directory)."""
+async def delete(args: dict, workspace_root: str, locks: WorkspaceLockTable) -> dict:
+    """``delete`` op → ``{ok}`` (file or empty directory); Tier-A locked."""
     raw_path: str = args.get("path", "")
     resolved = _resolve_safe(raw_path, workspace_root)
 
@@ -383,7 +459,12 @@ async def delete(args: dict, workspace_root: str) -> dict:
             except OSError as exc:
                 raise _os_err_to_op_error(exc, raw_path)
 
-    await asyncio.to_thread(_delete)
+    _t0 = _time.monotonic()
+    async with locks.hold_write(_scope_key(resolved, workspace_root), str(resolved)):
+        waited = _time.monotonic() - _t0
+        if waited > _LOCK_WAIT_TRACE_S:
+            log.debug("delete waited %.3fs on busy lock for %r", waited, raw_path)
+        await asyncio.to_thread(_delete)
     return {"ok": True}
 
 
@@ -455,7 +536,9 @@ async def _ensure_state_repo(state_dir: str) -> None:
             )
 
 
-async def state_commit(args: dict, workspace_root: str) -> dict:
+async def state_commit(
+    args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
+) -> dict:
     """``state_commit`` op: write files, git-rm deletes, commit, return sha.
 
     args:
@@ -505,7 +588,9 @@ async def state_commit(args: dict, workspace_root: str) -> dict:
     return {"sha": sha_raw.strip()}
 
 
-async def state_read(args: dict, workspace_root: str) -> dict:
+async def state_read(
+    args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
+) -> dict:
     """``state_read`` op: read files from <workspace_root>/.state by path.
 
     args:
@@ -529,7 +614,9 @@ async def state_read(args: dict, workspace_root: str) -> dict:
     return {"files": result}
 
 
-async def state_history(args: dict, workspace_root: str) -> dict:
+async def state_history(
+    args: dict, workspace_root: str, locks: WorkspaceLockTable | None = None
+) -> dict:
     """``state_history`` op: return git log of <workspace_root>/.state.
 
     args:
@@ -580,3 +667,97 @@ HANDLERS: dict[str, object] = {
     "state_read": state_read,
     "state_history": state_history,
 }
+
+
+# ---------------------------------------------------------------------------
+# Mutating-op-as-task: keep the runtime message loop free while a writer parks
+# on a busy Tier-A lock (mirrors exec.start_exec).
+# ---------------------------------------------------------------------------
+
+
+class MutatingOpRegistry:
+    """Per-connection set of in-flight mutating-op tasks.
+
+    ``write_file``/``append_line``/``delete`` acquire a Tier-A write lock and
+    may PARK on a busy scope/path lock. The server spawns each as a tracked
+    task (mirrors :class:`~primer_runtime.exec.ExecRegistry`) so a parked
+    writer never blocks the single runtime message loop - reads/list/stat/state
+    on the same connection stay serviceable. ``cancel_all`` is invoked on WS
+    close to tear down any op still waiting on a lock.
+    """
+
+    def __init__(self) -> None:
+        self._tasks: set[asyncio.Task[None]] = set()
+
+    def add(self, task: asyncio.Task[None]) -> None:
+        self._tasks.add(task)
+
+    def discard(self, task: asyncio.Task[None]) -> None:
+        self._tasks.discard(task)
+
+    def cancel_all(self) -> None:
+        """Cancel every in-flight mutating-op task (called on WS close)."""
+        for task in list(self._tasks):
+            task.cancel()
+        self._tasks.clear()
+
+
+async def _run_mutating_op(
+    handler: Callable[..., Coroutine[Any, Any, dict]],
+    op_name: str,
+    req_id: int,
+    args: dict,
+    workspace_root: str,
+    locks: WorkspaceLockTable,
+    send: Callable[[str], Coroutine[Any, Any, None]],
+) -> None:
+    """Task body: await a mutating handler off the loop, send ONE Response.
+
+    Preserves the inline single-shot framing exactly - an ``ok=true`` Response
+    with the handler result, an ``OpError`` mapped to ``ok=false`` with its
+    code, and any other exception mapped to ``EINTERNAL`` - keyed by *req_id*
+    so response multiplexing is unchanged. The only difference is that this
+    runs as its own task, so awaiting a busy Tier-A lock never parks the
+    message loop.
+    """
+    try:
+        result = await handler(args, workspace_root, locks)
+        await send(serialize(Response(req_id=req_id, ok=True, result=result)))
+    except OpError as exc:
+        await send(serialize(Response(
+            req_id=req_id, ok=False,
+            error={"code": exc.code, "message": exc.message},
+        )))
+    except asyncio.CancelledError:
+        # WS close / cancel_all: propagate so the task ends promptly.
+        raise
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Unexpected error handling op %r", op_name)
+        await send(serialize(Response(
+            req_id=req_id, ok=False,
+            error={"code": ErrorCode.EINTERNAL, "message": str(exc)},
+        )))
+
+
+def start_mutating_op(
+    handler: Callable[..., Coroutine[Any, Any, dict]],
+    op_name: str,
+    req_id: int,
+    args: dict,
+    workspace_root: str,
+    locks: WorkspaceLockTable,
+    send: Callable[[str], Coroutine[Any, Any, None]],
+    registry: MutatingOpRegistry,
+) -> asyncio.Task[None]:
+    """Spawn a tracked mutating-op task; returns it (tests await it).
+
+    Registered in *registry* so ``cancel_all`` can reach it on WS close; a
+    done-callback deregisters it on completion.
+    """
+    task = asyncio.create_task(
+        _run_mutating_op(handler, op_name, req_id, args, workspace_root, locks, send),
+        name=f"{op_name}:{req_id}",
+    )
+    registry.add(task)
+    task.add_done_callback(registry.discard)
+    return task
