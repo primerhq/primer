@@ -33,6 +33,7 @@ from pydantic import SecretStr
 from primer.model.workspace import (
     FileEntry,
     LocalWorkspaceConfig,
+    Workspace,
     WorkspaceProvider,
     WorkspaceProviderType,
     WorkspaceRuntimeMeta,
@@ -804,6 +805,51 @@ class TestWorkspaceRouter:
         assert delete.status_code == 204
         get2 = await client.get(f"/v1/workspaces/{wid}")
         assert get2.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_create_rolls_back_live_workspace_when_row_write_fails(
+        self, client, wsr, sp
+    ) -> None:
+        """A failure AFTER materialise() (here: the durable row-write, the
+        last step) must tear the just-created live workspace back down rather
+        than orphan it, and the original error must still surface (arch review
+        D-I1)."""
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+
+        backend = await wsr.get_backend("local-1")
+        destroyed: list[str] = []
+        original_destroy = backend.destroy
+
+        async def _spy_destroy(workspace_id):
+            destroyed.append(workspace_id)
+            await original_destroy(workspace_id)
+
+        backend.destroy = _spy_destroy  # type: ignore[assignment]
+
+        # Force the LAST step (the durable row-write) to fail, after
+        # materialise() has already brought a live workspace up.
+        row_storage = sp.get_storage(Workspace)
+
+        async def _boom(_row):
+            raise RuntimeError("storage down")
+
+        row_storage.create = _boom  # type: ignore[assignment]
+
+        # The original error still surfaces exactly as before the rollback
+        # was added: create_workspace re-raises it unchanged, so it
+        # propagates out of the ASGI app just as it did with no try/except.
+        with pytest.raises(RuntimeError, match="storage down"):
+            await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+
+        # The orphaned live workspace was torn down...
+        assert destroyed, "backend.destroy was not called on rollback"
+        # ...and the backend holds no leaked instance.
+        assert await backend.list() == []
 
     @pytest.mark.asyncio
     async def test_name_on_create_and_rename(self, client) -> None:

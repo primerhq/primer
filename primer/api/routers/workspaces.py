@@ -553,50 +553,71 @@ async def create_workspace(
 
     live = await registry.materialise(template=template, overrides=overrides)
 
-    if mount_records:
-        manifest = await mm.load_manifest(live)
-        for cid, cname, dest, base in mount_records:
-            if not base:
-                # Zero-document collection: expand_collection produced no
-                # FileMounts, so materialise() never created dest on disk.
-                # Create it explicitly (mirrors the runtime create_mount
-                # path in workspace_mounts.py) so GET /mounts doesn't 500 /
-                # show a phantom dir with no backing directory. Only do
-                # this when base is empty -- for non-empty collections the
-                # dir already exists from materialise, and make_dir on an
-                # existing dir raises.
-                await live.make_dir(dest)
-                await live.write_file(f"{dest}/.gitkeep", b"")
-            manifest = mm.add_mount(
-                manifest,
-                mm.MountEntry(
-                    mount_id=f"wsmnt-{uuid.uuid4().hex[:12]}",
-                    collection_id=cid,
-                    collection_name=cname,
-                    dest=dest,
-                    mounted_at=datetime.now(timezone.utc),
-                    base=base,
-                ),
-            )
-        await mm.save_manifest(live, manifest)
+    # materialise() has now created a live container/volume, but the durable
+    # WorkspaceRow is written LAST. Any failure in the mount work or the
+    # row-write in between would orphan that live instance: the probe loop is
+    # row-driven and there is no orphan sweep, so it would leak silently
+    # (arch review D-I1). Wrap everything after materialise so a failure best-
+    # effort tears the live workspace back down before re-raising the original
+    # error unchanged.
+    try:
+        if mount_records:
+            manifest = await mm.load_manifest(live)
+            for cid, cname, dest, base in mount_records:
+                if not base:
+                    # Zero-document collection: expand_collection produced no
+                    # FileMounts, so materialise() never created dest on disk.
+                    # Create it explicitly (mirrors the runtime create_mount
+                    # path in workspace_mounts.py) so GET /mounts doesn't 500 /
+                    # show a phantom dir with no backing directory. Only do
+                    # this when base is empty -- for non-empty collections the
+                    # dir already exists from materialise, and make_dir on an
+                    # existing dir raises.
+                    await live.make_dir(dest)
+                    await live.write_file(f"{dest}/.gitkeep", b"")
+                manifest = mm.add_mount(
+                    manifest,
+                    mm.MountEntry(
+                        mount_id=f"wsmnt-{uuid.uuid4().hex[:12]}",
+                        collection_id=cid,
+                        collection_name=cname,
+                        dest=dest,
+                        mounted_at=datetime.now(timezone.utc),
+                        base=base,
+                    ),
+                )
+            await mm.save_manifest(live, manifest)
 
-    row_id = body.id if body.id is not None else live.id
-    # Mark the row "running" immediately — materialise() returned a live
-    # handle, so the workspace IS up. The probe loop transitions from
-    # running <-> failed thereafter; without this initial mark the row
-    # would sit at the default "pending" forever and the probe skips it.
-    row = WorkspaceRow(
-        id=row_id,
-        name=body.name,
-        template_id=body.template_id,
-        provider_id=template.provider_id,
-        overrides=body.overrides,
-        created_at=datetime.now(timezone.utc),
-        phase="running",
-        runtime_meta=live.runtime_meta,
-        reply_binding=body.reply_binding,
-    )
-    await workspace_storage.create(row)
+        row_id = body.id if body.id is not None else live.id
+        # Mark the row "running" immediately — materialise() returned a live
+        # handle, so the workspace IS up. The probe loop transitions from
+        # running <-> failed thereafter; without this initial mark the row
+        # would sit at the default "pending" forever and the probe skips it.
+        row = WorkspaceRow(
+            id=row_id,
+            name=body.name,
+            template_id=body.template_id,
+            provider_id=template.provider_id,
+            overrides=body.overrides,
+            created_at=datetime.now(timezone.utc),
+            phase="running",
+            runtime_meta=live.runtime_meta,
+            reply_binding=body.reply_binding,
+        )
+        await workspace_storage.create(row)
+    except Exception:
+        # registry.destroy() is row-driven and the row does not exist yet, so
+        # tear down the backend instance directly. Best-effort: never let a
+        # cleanup failure mask the original error.
+        try:
+            backend = await registry.get_backend(template.provider_id)
+            await backend.destroy(live.id)
+        except Exception:
+            logger.exception(
+                "create_workspace: failed to roll back orphaned live "
+                "workspace %s after a post-materialise error", live.id,
+            )
+        raise
     return row
 
 
