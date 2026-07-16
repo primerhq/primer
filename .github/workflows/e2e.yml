@@ -59,6 +59,13 @@ jobs:
           uv pip install --no-deps ./primectl ./runtime
       - name: Bring up Postgres + server
         run: bash scripts/e2e/bringup.sh
+      - name: Build workspace-runtime image (container-backed e2e)
+        # Container-backed e2e tests (test_smk_workspaces.py::test_container_backend,
+        # test_workspace_write_safety.py) provision workspaces from this
+        # locally-built tag - it is intentionally not published to a registry;
+        # the release workflow publishes ghcr.io/primerhq/primer-runtime:<version>
+        # under a different name.
+        run: docker build -t primer/workspace-runtime:1.1 runtime/
       - name: Run tests/e2e
         # -n0: the e2e suite shares one live server + DB and must run serially
         # (AGENTS.md — "saturates all cores and must run EXCLUSIVELY"); the

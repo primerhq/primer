@@ -31,9 +31,51 @@ import os
 import pytest
 import pytest_asyncio
 
-pytestmark = pytest.mark.skipif(
-    os.environ.get("PRIMER_RUN_E2E") != "1", reason="e2e gated (PRIMER_RUN_E2E)"
-)
+
+async def _docker_available() -> bool:
+    """Return True if Docker daemon is reachable."""
+    try:
+        import aiodocker as _aiodocker
+        docker = _aiodocker.Docker()
+        await docker.version()
+        await docker.close()
+        return True
+    except Exception:
+        return False
+
+
+async def _runtime_image_present() -> bool:
+    """Return True if primer/workspace-runtime:1.1 exists locally."""
+    try:
+        import aiodocker as _aiodocker
+        docker = _aiodocker.Docker()
+        await docker.images.inspect("primer/workspace-runtime:1.1")
+        await docker.close()
+        return True
+    except Exception:
+        return False
+
+
+# Run checks once at collection time (synchronously via asyncio.run).
+try:
+    _DOCKER_AVAILABLE = asyncio.run(_docker_available())
+    _IMAGE_PRESENT = asyncio.run(_runtime_image_present())
+except Exception:
+    _DOCKER_AVAILABLE = False
+    _IMAGE_PRESENT = False
+
+pytestmark = [
+    pytest.mark.skipif(
+        os.environ.get("PRIMER_RUN_E2E") != "1", reason="e2e gated (PRIMER_RUN_E2E)"
+    ),
+    pytest.mark.skipif(
+        not _DOCKER_AVAILABLE or not _IMAGE_PRESENT,
+        reason=(
+            "Docker not available or primer/workspace-runtime:1.1 not built. "
+            "Run `docker build -t primer/workspace-runtime:1.1 runtime/` first."
+        ),
+    ),
+]
 
 _K = 8
 
