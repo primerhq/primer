@@ -18,6 +18,7 @@ import shutil
 import tarfile
 import time
 from collections.abc import AsyncIterator
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,7 @@ from primer.int.sandbox import (
     Sandbox,
     SandboxInspectInfo,
 )
+from primer.workspace._locks import WorkspaceLockTable
 
 
 _TAR_CHUNK_BYTES = 64 * 1024
@@ -110,6 +112,9 @@ class FakeSandbox(Sandbox):
         self._id = sandbox_id
         self._stopped = False
         self._started_at = datetime.now(tz=timezone.utc)
+        # Mirrors the runtime's advisory write-lock table so unit tests can
+        # observe same-workdir write-exec serialization without a container.
+        self._locks = WorkspaceLockTable()
         # In-memory state store: path -> bytes.  Used by the stub state ops.
         self._state_files: dict[str, bytes] = {}
         self._state_commits: list[dict] = []
@@ -140,10 +145,40 @@ class FakeSandbox(Sandbox):
         timeout_seconds: float | None = None,
         stdin: bytes | None = None,
         abort: asyncio.Event | None = None,
+        access: str = "write",
+        writes: list[str] | None = None,
+    ) -> ExecResult:
+        cwd = self._host_path(workdir)
+        if access == "read":
+            lock_ctx = nullcontext()
+        elif writes:
+            lock_ctx = self._locks.hold_paths(
+                [str(self._host_path(w)) for w in writes]
+            )
+        else:
+            lock_ctx = self._locks.hold_scope(str(cwd))
+        async with lock_ctx:
+            return await self._exec_unlocked(
+                command,
+                cwd=cwd,
+                env=env,
+                timeout_seconds=timeout_seconds,
+                stdin=stdin,
+                abort=abort,
+            )
+
+    async def _exec_unlocked(
+        self,
+        command,
+        *,
+        cwd: Path,
+        env: dict[str, str] | None,
+        timeout_seconds: float | None,
+        stdin: bytes | None,
+        abort: asyncio.Event | None,
     ) -> ExecResult:
         if self._stopped:
             raise RuntimeError("sandbox is stopped")
-        cwd = self._host_path(workdir)
         await asyncio.to_thread(cwd.mkdir, parents=True, exist_ok=True)
         start = time.perf_counter()
 
@@ -211,24 +246,26 @@ class FakeSandbox(Sandbox):
         self, path: str, content: bytes, *, mode: int | None = None,
     ) -> None:
         target = self._host_path(path)
-        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
-        await asyncio.to_thread(target.write_bytes, content)
-        if mode is not None:
-            try:
-                await asyncio.to_thread(target.chmod, mode)
-            except (OSError, NotImplementedError):
-                pass
+        async with self._locks.hold_write(str(target.parent), str(target)):
+            await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(target.write_bytes, content)
+            if mode is not None:
+                try:
+                    await asyncio.to_thread(target.chmod, mode)
+                except (OSError, NotImplementedError):
+                    pass
 
     async def append_file(self, path: str, content: bytes) -> None:
         """Atomically append ``content`` to ``path`` (fast O_APPEND path)."""
         target = self._host_path(path)
-        await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
 
         def _append() -> None:
             with target.open("ab") as fh:
                 fh.write(content)
 
-        await asyncio.to_thread(_append)
+        async with self._locks.hold_write(str(target.parent), str(target)):
+            await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
+            await asyncio.to_thread(_append)
 
     async def make_dir(self, path: str) -> None:
         target = self._host_path(path)

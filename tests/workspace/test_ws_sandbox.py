@@ -129,6 +129,8 @@ async def test_exec_routes_to_client() -> None:
         timeout_s=10.0,
         stdin=None,
         abort=None,
+        access="write",
+        writes=None,
     )
     assert result.exit_code == 0
     assert result.stdout == "out"
@@ -151,6 +153,8 @@ async def test_exec_passes_env_and_stdin() -> None:
         timeout_s=None,
         stdin=b"input",
         abort=abort,
+        access="write",
+        writes=None,
     )
 
 
