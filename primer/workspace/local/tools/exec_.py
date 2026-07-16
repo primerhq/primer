@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +52,23 @@ class ExecArgs(BaseModel):
         ...,
         min_length=1,
         description="One-line description of what the command does.",
+    )
+    access: Literal["read", "write"] = Field(
+        default="write",
+        description=(
+            "Declared filesystem intent. 'write' (default) serializes this "
+            "command against other writers in the same workdir; 'read' skips "
+            "the write-lock so read-only commands stay fully parallel. "
+            "Declaring 'read' wrongly is never worse than today's baseline."
+        ),
+    )
+    writes: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional list of paths/globs this command writes. When given, "
+            "the lock narrows to those paths instead of the whole workdir "
+            "subtree, for maximum parallelism."
+        ),
     )
 
 
