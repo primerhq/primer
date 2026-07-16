@@ -100,6 +100,8 @@ class WSSandbox(Sandbox):
         timeout_seconds: float | None = None,
         stdin: bytes | None = None,
         abort: asyncio.Event | None = None,
+        access: str = "write",
+        writes: list[str] | None = None,
     ) -> ExecResult:
         return await self._client.exec(
             command,
@@ -108,6 +110,8 @@ class WSSandbox(Sandbox):
             timeout_s=timeout_seconds,
             stdin=stdin,
             abort=abort,
+            access=access,
+            writes=writes,
         )
 
     async def open_pty(

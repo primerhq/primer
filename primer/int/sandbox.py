@@ -73,10 +73,20 @@ class Sandbox(ABC):
         timeout_seconds: float | None = None,
         stdin: bytes | None = None,
         abort: asyncio.Event | None = None,
+        access: str = "write",
+        writes: list[str] | None = None,
     ) -> ExecResult:
         """Run a command. Shell-string runs through ``sh -c``; list runs
         directly. On timeout, kills the process and raises
-        :class:`TimeoutError`. ``abort`` is a cooperative cancel signal."""
+        :class:`TimeoutError`. ``abort`` is a cooperative cancel signal.
+
+        ``access`` declares filesystem intent: ``"write"`` (default)
+        serializes this command against other writers scoped to
+        ``workdir`` (or to ``writes``, if given); ``"read"`` skips the
+        write-lock so read-only commands stay fully parallel. ``writes``
+        optionally narrows the write lock to specific declared paths
+        instead of the whole ``workdir`` subtree.
+        """
 
     @abstractmethod
     async def read_file(self, path: str) -> bytes: ...

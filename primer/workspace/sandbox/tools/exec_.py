@@ -75,6 +75,8 @@ class SandboxExec(WorkspaceTool):
                 workdir=cwd_abs,
                 timeout_seconds=args.timeout_ms / 1000.0,
                 abort=ctx.abort,
+                access=args.access,
+                writes=args.writes,
             )
         except TimeoutError as exc:
             raise BadRequestError(
