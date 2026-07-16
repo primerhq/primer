@@ -263,3 +263,31 @@ async def test_engine_bus_loop_wakes_claim_loop_on_upsert():
     assert elapsed < 5.0, (
         f"dispatch took {elapsed:.2f}s — bus wakeup didn't work"
     )
+
+
+@pytest.mark.asyncio
+async def test_pool_pushes_lease_ttl_to_engine():
+    """The worker pool threads WorkerConfig.lease_ttl_seconds onto the claim
+    engine at start() so the lease_ttl >= 2*heartbeat validator actually
+    governs the engine, not a hardcoded 60s (A-I1)."""
+    engine = InMemoryClaimEngine(adapters={})
+    assert engine.lease_ttl_seconds == 60  # standalone default
+
+    pool = WorkerPool(
+        config=WorkerConfig(
+            concurrency=2,
+            heartbeat_interval_seconds=5,
+            lease_ttl_seconds=45,  # 45 >= 2 * 5, and != the 60s default
+            poll_interval_seconds=0.1,
+        ),
+        scheduler=_NullScheduler(),
+        storage=None,               # type: ignore[arg-type]
+        workspace_registry=None,    # type: ignore[arg-type]
+        provider_registry=None,     # type: ignore[arg-type]
+        engine=engine,
+    )
+    await pool.start()
+    try:
+        assert engine.lease_ttl_seconds == 45
+    finally:
+        await pool.drain_and_stop(timeout=2.0)

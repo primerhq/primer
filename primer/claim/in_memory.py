@@ -28,11 +28,22 @@ class _LeaseRow:
 
 
 class InMemoryClaimEngine(ClaimEngine):
-    def __init__(self, *, adapters: dict[ClaimKind, ClaimAdapter]) -> None:
+    def __init__(
+        self,
+        *,
+        adapters: dict[ClaimKind, ClaimAdapter],
+        lease_ttl_seconds: int = 60,
+    ) -> None:
         self._adapters = adapters
         self._leases: dict[tuple[ClaimKind, str], _LeaseRow] = {}
         self._wake = asyncio.Event()
         self._notify_queue: asyncio.Queue[tuple[ClaimKind, str]] = asyncio.Queue()
+        # How long a claimed lease is valid before it is considered expired
+        # and reclaimable. Defaults to 60s for a standalone engine; the worker
+        # pool overrides it from WorkerConfig.lease_ttl_seconds at start() so
+        # the lease_ttl >= 2*heartbeat validator actually governs the engine
+        # (arch review A-I1).
+        self.lease_ttl_seconds = lease_ttl_seconds
 
     async def upsert(
         self, kind: ClaimKind, entity_id: str, *, priority: int = 100,
@@ -55,8 +66,6 @@ class InMemoryClaimEngine(ClaimEngine):
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
         self._leases.pop((kind, entity_id), None)
 
-    LEASE_TTL = timedelta(seconds=60)
-
     async def claim_due(self, worker_id: str, *, max_count: int) -> list[Lease]:
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
@@ -75,7 +84,7 @@ class InMemoryClaimEngine(ClaimEngine):
                 row.claimed_by = worker_id
                 row.claimed_at = now
                 row.last_heartbeat_at = now
-                row.expires_at = now + self.LEASE_TTL
+                row.expires_at = now + timedelta(seconds=self.lease_ttl_seconds)
                 lease = Lease(
                     kind=row.kind, entity_id=row.entity_id, claimed_by=worker_id,
                     claimed_at=now, expires_at=row.expires_at,
@@ -98,7 +107,7 @@ class InMemoryClaimEngine(ClaimEngine):
             row = self._leases.get((kind, entity_id))
             if row is not None and row.claimed_by == worker_id:
                 row.last_heartbeat_at = now
-                row.expires_at = now + self.LEASE_TTL
+                row.expires_at = now + timedelta(seconds=self.lease_ttl_seconds)
                 confirmed.append((kind, entity_id))
         return confirmed
 
