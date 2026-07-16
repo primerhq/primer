@@ -125,7 +125,7 @@ class RuntimeClient:
         *,
         url: str,
         token: str,
-        protocol_version: str = "1.1",
+        protocol_version: str = "1.2",
     ) -> None:
         self._url = url
         self._token = token
@@ -358,6 +358,8 @@ class RuntimeClient:
         timeout_s: float | None = None,
         stdin: bytes | None = None,
         abort: asyncio.Event | None = None,
+        access: str = "write",
+        writes: list[str] | None = None,
     ) -> ExecResult:
         """Run *cmd* inside the container and return the aggregated result."""
         # The runtime spawns the command via ``create_subprocess_exec(*cmd)``,
@@ -375,6 +377,12 @@ class RuntimeClient:
             args["timeout_s"] = timeout_s
         if stdin is not None:
             args["stdin_b64"] = base64.b64encode(stdin).decode()
+        # Only send access/writes when non-default so a 1.1 runtime (which
+        # ignores unknown keys) sees an identical request to before.
+        if access != "write":
+            args["access"] = access
+        if writes:
+            args["writes"] = list(writes)
 
         req_id = self._alloc_req_id()
         q: asyncio.Queue[Any] = asyncio.Queue()

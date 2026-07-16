@@ -452,6 +452,53 @@ async def test_exec_returns_stdout(fake_runtime: tuple[_FakeRuntime, str]) -> No
     await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_exec_forwards_access_and_writes(monkeypatch):
+    client = RuntimeClient(url="ws://x/", token="t")
+    sent: list = []
+
+    async def fake_send_raw(msg):
+        sent.append(msg)
+
+    # Drive exec far enough to emit the EXEC Request, then stop the stream.
+    monkeypatch.setattr(client, "_send_raw", fake_send_raw)
+    client._connected.set()
+
+    # Feed an immediate exit event so exec() returns.
+    async def fake_iter(req_id, q, *, abort=None):
+        yield {"event": "exit", "data": {"code": 0}}
+
+    monkeypatch.setattr(client, "_iter_stream", fake_iter)
+
+    await client.exec("echo hi", workdir="/workspace/d",
+                       access="read", writes=["/workspace/d/out.txt"])
+    exec_req = [m for m in sent if m.op == OpName.EXEC][0]
+    assert exec_req.args["access"] == "read"
+    assert exec_req.args["writes"] == ["/workspace/d/out.txt"]
+
+
+@pytest.mark.asyncio
+async def test_exec_omits_defaults(monkeypatch):
+    client = RuntimeClient(url="ws://x/", token="t")
+    sent: list = []
+
+    async def fake_send_raw(msg):
+        sent.append(msg)
+
+    async def fake_iter(req_id, q, *, abort=None):
+        yield {"event": "exit", "data": {"code": 0}}
+
+    monkeypatch.setattr(client, "_send_raw", fake_send_raw)
+    monkeypatch.setattr(client, "_iter_stream", fake_iter)
+    client._connected.set()
+
+    await client.exec("echo hi")
+    exec_req = [m for m in sent if m.op == OpName.EXEC][0]
+    # Default access="write", writes=None are NOT sent (back-compat with 1.1 runtime).
+    assert "access" not in exec_req.args
+    assert "writes" not in exec_req.args
+
+
 # ---------------------------------------------------------------------------
 # Test: watch streaming
 # ---------------------------------------------------------------------------
