@@ -18,10 +18,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from primer.int.claim import ClaimEngine, ClaimKind
+from primer.int.claim import ClaimEngine
 from primer.int.event_bus import EventBus
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.session.yields import durably_mark_session_resumable
 
 
 logger = logging.getLogger(__name__)
@@ -83,42 +84,27 @@ class YieldEventListener:
         """Flip the given parked rows to resumable, stamping the payload +
         the specific key that fired, and re-arming the engine lease.
 
-        Multi-event parks (``parked_event_keys`` set) ACCUMULATE replies
-        into ``parked_state['resume_event_payloads']`` (keyed by the fired
-        tool_call_id) and may be advanced even from ``resumable`` - so a
-        second concurrent reply that arrives before the worker has drained
-        the first is preserved rather than dropped or overwriting it. The
-        worker drains the whole map. Single-event parks are unchanged
-        (singular ``resume_event_payload``, only advanced from ``parked``).
+        Delegates the per-row guarded flip to the shared
+        :func:`primer.session.yields.durably_mark_session_resumable` so the
+        listener and the REST reply handlers (which now perform the same
+        durable flip inline — arch review D-C2) can never diverge. Multi-event
+        parks (``parked_event_keys`` set) ACCUMULATE replies into
+        ``parked_state['resume_event_payloads']`` (keyed by the fired
+        tool_call_id) and may be advanced even from ``resumable``; single-event
+        parks stamp the singular ``resume_event_payload`` and only advance from
+        ``parked``.
         """
         flipped = 0
-        fired_tcid = event.event_key.rsplit(":", 1)[-1]
         for sess in rows:
-            is_multi = bool(sess.parked_event_keys)
-            allowed = ("parked", "resumable") if is_multi else ("parked",)
-            if sess.parked_status not in allowed:
-                continue
-            state = dict(sess.parked_state or {})
-            # Singular fields: kept for the single-event resume path + as a
-            # back-compat "last fired" hint.
-            state["resume_event_payload"] = dict(event.payload or {})
-            state["resume_event_key"] = event.event_key
-            if is_multi:
-                payloads = dict(state.get("resume_event_payloads") or {})
-                payloads[fired_tcid] = {
-                    "payload": dict(event.payload or {}),
-                    "event_key": event.event_key,
-                }
-                state["resume_event_payloads"] = payloads
-            updated = sess.model_copy(update={
-                "parked_status": "resumable",
-                "parked_state": state,
-            })
-            await self._storage.update(updated)
-            # Re-arm the engine lease (park dropped it). mark_resumable
-            # upserts a fresh claimable lease when none exists.
-            await self._engine.mark_resumable(ClaimKind.SESSION, sess.id)
-            flipped += 1
+            did = await durably_mark_session_resumable(
+                sess,
+                event_key=event.event_key,
+                payload=event.payload,
+                session_storage=self._storage,
+                engine=self._engine,
+            )
+            if did:
+                flipped += 1
         return flipped
 
     async def _handle_event(self, event) -> None:

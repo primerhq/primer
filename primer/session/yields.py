@@ -30,13 +30,81 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from primer.int.claim import ClaimKind
 from primer.model.except_ import NotFoundError
 from primer.model.workspace_session import WorkspaceSession
 
+if TYPE_CHECKING:
+    from primer.int.claim import ClaimEngine
+    from primer.int.storage import Storage
+
 
 logger = logging.getLogger(__name__)
+
+
+async def durably_mark_session_resumable(
+    session: WorkspaceSession,
+    *,
+    event_key: str,
+    payload: dict[str, Any] | None,
+    session_storage: "Storage[WorkspaceSession]",
+    engine: "ClaimEngine | None",
+) -> bool:
+    """Guarded, durable ``parked -> resumable`` flip for one session row.
+
+    This is the single source of truth for the park->resumable transition,
+    shared by the bus listener (``primer.bus.listener.YieldEventListener``,
+    which reacts to a bus NOTIFY) and the REST reply handlers (which now
+    perform it durably so a listener outage cannot silently drop an operator
+    reply — see arch review D-C2).
+
+    Steps, mirroring the listener's original ``_flip_rows`` write exactly:
+
+    * Stamp the singular ``resume_event_payload`` / ``resume_event_key`` (the
+      single-event resume path + a "last fired" hint).
+    * For a MULTI-event park (``parked_event_keys`` set) also accumulate
+      ``resume_event_payloads[fired_tcid]`` so a second concurrent reply is
+      preserved rather than overwritten.
+    * ``storage.update`` the flipped row.
+    * Re-arm the claim lease via ``engine.mark_resumable`` (park dropped it)
+      so the claim loop re-claims the row WITHOUT relying on any bus. When no
+      engine is wired (e.g. the lightweight test app) the durable storage
+      flip still lands; the lease re-arm is simply skipped.
+
+    Idempotency (the listener may also process the NOTIFY): a single-event
+    park only advances from ``parked``, so a second flip is a no-op; a
+    multi-event park may advance from ``resumable`` and re-accumulates the
+    same ``fired_tcid`` with identical data. Returns True when the row was
+    advanced/accumulated, False when the guard rejected it.
+    """
+    is_multi = bool(session.parked_event_keys)
+    allowed = ("parked", "resumable") if is_multi else ("parked",)
+    if session.parked_status not in allowed:
+        return False
+    state = dict(session.parked_state or {})
+    # Singular fields: the single-event resume path + a "last fired" hint.
+    state["resume_event_payload"] = dict(payload or {})
+    state["resume_event_key"] = event_key
+    if is_multi:
+        fired_tcid = event_key.rsplit(":", 1)[-1]
+        payloads = dict(state.get("resume_event_payloads") or {})
+        payloads[fired_tcid] = {
+            "payload": dict(payload or {}),
+            "event_key": event_key,
+        }
+        state["resume_event_payloads"] = payloads
+    updated = session.model_copy(update={
+        "parked_status": "resumable",
+        "parked_state": state,
+    })
+    await session_storage.update(updated)
+    # Re-arm the engine lease (park dropped it). mark_resumable upserts a
+    # fresh claimable lease when none exists.
+    if engine is not None:
+        await engine.mark_resumable(ClaimKind.SESSION, session.id)
+    return True
 
 
 @dataclass
@@ -138,4 +206,8 @@ async def respond_to_yield(
     await deps.event_bus.publish(event_key, payload)
 
 
-__all__ = ["RespondToYieldDeps", "respond_to_yield"]
+__all__ = [
+    "RespondToYieldDeps",
+    "durably_mark_session_resumable",
+    "respond_to_yield",
+]
