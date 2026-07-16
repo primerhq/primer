@@ -483,6 +483,15 @@ class WorkspaceTemplate(Describeable):
         min_length=1,
         description="Path inside the workspace root where the truncation cache lives.",
     )
+    strict_write_locking: bool = Field(
+        default=False,
+        description=(
+            "When true, exec and tool write-locks scope to the whole "
+            "workspace root instead of the per-workdir subtree, closing the "
+            "cross-workdir absolute-path overlap gap at the cost of "
+            "parallelism. Default false (workdir-scoped)."
+        ),
+    )
     resources: ResourceLimits = Field(
         default_factory=ResourceLimits,
         description="CPU / memory / network bounds the backend SHOULD enforce.",

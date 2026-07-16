@@ -180,6 +180,10 @@ def _build_statefulset_manifest(
             {"name": "runtime", "containerPort": 5959},
         ],
     }
+    if template.strict_write_locking:
+        base_container["env"].append(
+            {"name": "PRIMER_STRICT_WRITE_LOCKING", "value": "1"}
+        )
     if tcfg.entrypoint is not None:
         base_container["command"] = list(tcfg.entrypoint)
     else:
