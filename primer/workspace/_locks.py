@@ -111,14 +111,14 @@ class WorkspaceLockTable:
     async def hold_flock(self, lock_dir: Path, key: str) -> AsyncIterator[None]:
         """Cross-process exclusive lock on a file under <lock_dir>.
 
-        Runs flock(LOCK_EX) via asyncio.to_thread so it never blocks the
-        event loop. Degrades to a no-op (in-process asyncio.Lock only,
-        already held by the caller) with a WARNING if the lock file cannot
-        be created (spec section 7) - never hard-fail a write.
+        Creates the lock dir, opens the lock file and takes flock(LOCK_EX)
+        entirely inside one asyncio.to_thread call, so no blocking syscall
+        ever runs on the event loop. Degrades to a no-op (in-process
+        asyncio.Lock only, already held by the caller) with a WARNING if the
+        lock file cannot be created (spec section 7) - never hard-fail a write.
         """
         fd = None
         try:
-            lock_dir.mkdir(parents=True, exist_ok=True)
             digest = hashlib.sha1(key.encode()).hexdigest()
             lock_path = lock_dir / f"{digest}.lock"
             fd = await asyncio.to_thread(_open_and_lock, lock_path)
@@ -135,6 +135,9 @@ class WorkspaceLockTable:
 
 def _open_and_lock(lock_path: Path) -> int:
     import os
+    # mkdir runs here (not on the caller's loop) so every blocking syscall in
+    # hold_flock happens inside the one to_thread hop its docstring promises.
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         if fcntl is not None:

@@ -95,8 +95,9 @@ class LocalWorkspace(Workspace):
         # same directory serialize. When constructed directly (tests / restore
         # paths) a fresh table is created.
         self._locks = locks if locks is not None else WorkspaceLockTable()
-        # Cross-process flock helper lands lock files here (spec section 7).
-        self._lock_dir = root / template.tmp_path / "locks"
+        # No _lock_dir: hold_flock is deliberately not wired into the local
+        # write path. See the cross-process LOCAL residual in
+        # docs/dev/subsystems/workspaces.md section 11.
 
     @classmethod
     async def materialise(

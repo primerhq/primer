@@ -19,7 +19,17 @@ from aiohttp.test_utils import TestServer
 
 from primer_runtime.exec import run_exec
 from primer_runtime.locks import WorkspaceLockTable
-from primer_runtime.ops import OpError, append_line, delete, list_dir, read_file, stat, write_file
+from primer_runtime.ops import (
+    OpError,
+    _scope_key,
+    _strict_write_locking,
+    append_line,
+    delete,
+    list_dir,
+    read_file,
+    stat,
+    write_file,
+)
 from primer_runtime.protocol import ErrorCode
 from primer_runtime.server import build_app, PROTOCOL_VERSION
 
@@ -212,6 +222,29 @@ async def test_same_path_writes_serialize(tmp_path):
 
     await asyncio.gather(w("A", b"a", 0.03), w("B", b"b", 0.0))
     assert order[0].endswith("-in") and order[1].endswith("-out")
+
+
+def test_strict_write_locking_collapses_scope_to_root(monkeypatch):
+    # PRIMER_STRICT_WRITE_LOCKING=1 (injected by the container/k8s backend when
+    # the template opts in) collapses every scope key to the resolved workspace
+    # root, so writers in DIFFERENT dirs contend on ONE lock and serialize.
+    monkeypatch.setenv("PRIMER_STRICT_WRITE_LOCKING", "1")
+    assert _strict_write_locking() is True
+    root = str(pathlib.Path("/workspace").resolve())
+    a = _scope_key(pathlib.Path("/workspace/a/x"), "/workspace")
+    b = _scope_key(pathlib.Path("/workspace/b/y"), "/workspace")
+    assert a == b == root
+
+
+def test_default_scope_keys_differ_per_directory(monkeypatch):
+    # The negative case that gives the test above its meaning: without the env
+    # var, the same two paths keep per-parent-dir scope keys and stay parallel.
+    monkeypatch.delenv("PRIMER_STRICT_WRITE_LOCKING", raising=False)
+    assert _strict_write_locking() is False
+    a = _scope_key(pathlib.Path("/workspace/a/x"), "/workspace")
+    b = _scope_key(pathlib.Path("/workspace/b/y"), "/workspace")
+    assert a != b
+    assert (a, b) == (str(pathlib.Path("/workspace/a")), str(pathlib.Path("/workspace/b")))
 
 
 @pytest.mark.asyncio
