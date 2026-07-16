@@ -18,6 +18,7 @@ inject the right one via the app lifespan.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -89,7 +90,11 @@ class EventBus(ABC):
         """
 
     @abstractmethod
-    def subscribe(self) -> "EventSubscription":
+    def subscribe(
+        self,
+        *,
+        on_reconnect: "Callable[[], None] | None" = None,
+    ) -> "EventSubscription":
         """Subscribe to ALL events on the bus.
 
         Returns an :class:`EventSubscription` async-iterator the
@@ -103,6 +108,14 @@ class EventBus(ABC):
         for both shipped impls is broadcast — the worker pool's
         resumable-flip is idempotent (``mark_resumable``'s atomic
         UPDATE-WITH-WHERE means duplicate flips are no-ops).
+
+        ``on_reconnect`` is invoked (synchronously) each time the
+        subscription re-establishes a dropped transport. Because
+        LISTEN/NOTIFY is not durable across a reconnect, any events
+        emitted during the blip are lost; callers that cache
+        broadcast state use this hook to treat that state as
+        potentially stale. Impls without a droppable transport (the
+        in-memory bus) never call it.
         """
 
 

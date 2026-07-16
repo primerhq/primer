@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -325,18 +326,34 @@ class PostgresEventBus(EventBus):
                 body,
             )
 
-    def subscribe(self) -> _PostgresSubscription:
+    def subscribe(
+        self,
+        *,
+        on_reconnect: Callable[[], None] | None = None,
+    ) -> _PostgresSubscription:
         if self._closed:
             raise RuntimeError("subscribe on closed PostgresEventBus")
 
-        def _bump_reconnects() -> None:
+        def _on_reconnect() -> None:
+            # Always bump the bus's own reconnect metric, then fan out to
+            # the caller's hook (if any). The caller's callback must never
+            # break the supervisor's reconnect loop, so its exceptions are
+            # logged and swallowed.
             self._listen_reconnects_total += 1
+            if on_reconnect is not None:
+                try:
+                    on_reconnect()
+                except Exception:  # noqa: BLE001 -- never break the loop
+                    logger.exception(
+                        "PostgresEventBus: subscribe on_reconnect hook raised; "
+                        "continuing",
+                    )
 
         sub = _PostgresSubscription(
             acquire=self._storage.pool.acquire,
             release=self._storage.pool.release,
             reconnect_seconds=self._reconnect_seconds,
-            on_reconnect=_bump_reconnects,
+            on_reconnect=_on_reconnect,
             on_close=self._unsubscribe,
         )
         sub._start()

@@ -205,11 +205,16 @@ class _PostgresInvalidationSubscription(InvalidationSubscription):
         bus: "EventBus",
         topic: "InvalidationTopic",
         handler: Callable[[str], Awaitable[None]],
+        on_reconnect: Callable[[], None] | None = None,
     ) -> None:
         self._bus = bus
         self._topic = topic
         self._handler = handler
-        self._sub = bus.subscribe()
+        # Thread the caller's reconnect hook down to the EventBus
+        # subscription: LISTEN/NOTIFY drops events across a reconnect, so
+        # this fires when the transport comes back and the subscriber
+        # needs to treat its cached invalidation state as stale.
+        self._sub = bus.subscribe(on_reconnect=on_reconnect)
         self._task: asyncio.Task = asyncio.create_task(
             self._run(),
             name=f"invalidation-sub-{topic.value}",
@@ -273,8 +278,12 @@ class PostgresInvalidationBus(InvalidationBus):
         self,
         topic: "InvalidationTopic",
         handler: Callable[[str], Awaitable[None]],
+        *,
+        on_reconnect: Callable[[], None] | None = None,
     ) -> _PostgresInvalidationSubscription:
-        return _PostgresInvalidationSubscription(self._bus, topic, handler)
+        return _PostgresInvalidationSubscription(
+            self._bus, topic, handler, on_reconnect,
+        )
 
 
 # ---------------------------------------------------------------------------

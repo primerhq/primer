@@ -15,7 +15,10 @@ import json
 
 import pytest
 
+from primer.api.registries.provider_registry import ProviderRegistry
 from primer.bus.postgres import PostgresEventBus, YIELD_EVENTS_CHANNEL
+from primer.coordinator.postgres import PostgresInvalidationBus
+from primer.int.coordinator import InvalidationTopic
 
 pytestmark = pytest.mark.asyncio
 
@@ -124,6 +127,65 @@ async def test_reconnect_after_connection_drop():
         assert event.event_key == "ask_user:2"
     finally:
         await sub.aclose()
+        await bus.aclose()
+
+
+class _StubAdapter:
+    """Sentinel cache entry with an awaitable aclose (never expected to
+    run once the reconnect flush drops it)."""
+
+    async def aclose(self) -> None:  # pragma: no cover - defensive
+        return None
+
+
+async def test_invalidation_reconnect_flushes_registry_caches():
+    """A dropped-then-reconnected invalidation subscription must flush the
+    ProviderRegistry caches wholesale.
+
+    LISTEN/NOTIFY is not durable across a reconnect, so an invalidation
+    NOTIFY (e.g. a rotated API key) emitted during the blip is lost and
+    would otherwise leave a stale adapter cached until restart. The
+    ``on_reconnect`` hook threaded bus -> invalidation-sub -> registry
+    treats every cached adapter as potentially stale on reconnect.
+    """
+    pool = _FakePool()
+    bus = PostgresEventBus(_FakeStorage(pool), reconnect_seconds=0.01)
+    await bus.initialize()
+    inv_bus = PostgresInvalidationBus(bus)
+    registry = ProviderRegistry(storage_provider=object())
+    await registry.bind_invalidation_bus(inv_bus)
+    try:
+        # bind creates one EventBus subscription per topic (4), each on its
+        # own LISTEN connection. Wait until all are listening.
+        await _wait_for(
+            lambda: sum(1 for c in pool.conns if c.listened) >= 4
+        )
+
+        # Seed every cache so we can observe the wholesale flush.
+        registry._llm_cache["llm-1"] = _StubAdapter()
+        registry._embedder_cache["emb-1"] = _StubAdapter()
+        registry._cross_encoder_cache["ce-1"] = _StubAdapter()
+        registry._toolset_cache["ts-1"] = _StubAdapter()
+
+        # Drop one subscription's connection -> that supervisor reconnects
+        # on a fresh conn and fires on_reconnect -> registry cache flush.
+        first = pool.conns[0]
+        first.drop()
+
+        await _wait_for(
+            lambda: (
+                not registry._llm_cache
+                and not registry._embedder_cache
+                and not registry._cross_encoder_cache
+                and not registry._toolset_cache
+            )
+        )
+        # The bus also counted the reconnect (shared metric still bumps).
+        assert bus.metrics_snapshot()[
+            "primer_yield_bus_listen_reconnects_total"
+        ] >= 1
+    finally:
+        await registry.aclose()
         await bus.aclose()
 
 

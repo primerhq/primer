@@ -107,7 +107,20 @@ class InvalidationBus(ABC):
         self,
         topic: InvalidationTopic,
         handler: Callable[[str], Awaitable[None]],
-    ) -> InvalidationSubscription: ...
+        *,
+        on_reconnect: Callable[[], None] | None = None,
+    ) -> InvalidationSubscription:
+        """Subscribe ``handler`` to ``topic``.
+
+        ``on_reconnect`` is invoked (synchronously) whenever the
+        underlying transport re-establishes a dropped connection. Since
+        the broadcast is not durable across a reconnect, invalidations
+        emitted during the blip are lost; subscribers that cache the
+        invalidated state use this hook to flush it wholesale (treat
+        everything as potentially stale). Impls without a droppable
+        transport never call it.
+        """
+        ...
 
 
 @dataclass

@@ -148,7 +148,13 @@ class InMemoryInvalidationBus(InvalidationBus):
         self,
         topic: InvalidationTopic,
         handler: Callable[[str], Awaitable[None]],
+        *,
+        on_reconnect: Callable[[], None] | None = None,
     ) -> InvalidationSubscription:
+        # In-process pub/sub has no droppable transport, so it never
+        # reconnects and never fires ``on_reconnect``. Accepted only to
+        # satisfy the InvalidationBus contract.
+        del on_reconnect
         async with self._lock:
             self._handlers[topic].append(handler)
         return _InMemoryInvalidationSubscription(self, topic, handler)
