@@ -7,10 +7,19 @@ Gemini connection shape) and is also reused by the embedding family.
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import Enum, StrEnum
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, PositiveInt, SecretStr, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    PositiveInt,
+    SecretStr,
+    field_validator,
+    model_validator,
+)
 
 from primer.model.common import Identifiable
 from primer.model.providers._shared import Limits, _HttpApiKeyConfig
@@ -29,6 +38,7 @@ class LLMProviderType(str, Enum):
     ANTHROPIC = "anthropic"
     OLLAMA = "ollama"
     OPENROUTER = "openrouter"
+    AGGREGATED = "aggregated"
 
 
 class OpenResponsesFlavor(str, Enum):
@@ -226,6 +236,67 @@ class OpenRouterConfig(BaseModel):
     )
 
 
+class RoutingStrategy(StrEnum):
+    """How the aggregated adapter picks the member to try first."""
+
+    SEQUENTIAL = "sequential"      # fixed priority queue: always start at members[0]
+    ROUND_ROBIN = "round_robin"    # rotate the start position once per stream call
+
+
+class FailoverPoint(StrEnum):
+    """When the aggregated adapter is still allowed to fail over."""
+
+    BEFORE_FIRST_TOKEN = "before_first_token"  # default; never re-emits tokens
+    MID_STREAM = "mid_stream"                  # opt-in; may duplicate already-shown tokens
+
+
+class FailoverClasses(StrEnum):
+    """Which error classes are eligible to trigger failover."""
+
+    TRANSIENT = "transient"                        # rate-limit / 5xx / timeout / network
+    TRANSIENT_AND_CONFIG = "transient_and_config"  # + auth / bad-request (mirrors web-search)
+
+
+class AggregatedMember(BaseModel):
+    """One downstream chat model in an aggregated pool.
+
+    References an existing NON-aggregated LLMProvider by id and one of its
+    model names. Existence is NOT validated here (config-time cannot see
+    other rows); it is checked at resolve time in AggregatedLLM.
+    """
+
+    provider_id: str = Field(..., min_length=1)
+    model_name: str = Field(..., min_length=1)
+
+
+class AggregatedLLMConfig(BaseModel):
+    """Config for an ``aggregated`` LLMProvider: an ordered member pool
+    plus routing/failover policy. ``members`` is deduped on the
+    ``(provider_id, model_name)`` pair preserving first-seen order.
+    ``max_attempts`` is implicitly ``len(members)`` (each member tried once).
+    """
+
+    members: list[AggregatedMember] = Field(..., min_length=1)
+    strategy: RoutingStrategy = RoutingStrategy.SEQUENTIAL
+    failover_point: FailoverPoint = FailoverPoint.BEFORE_FIRST_TOKEN
+    failover_on: FailoverClasses = FailoverClasses.TRANSIENT_AND_CONFIG
+
+    @field_validator("members")
+    @classmethod
+    def _dedupe_preserve_order(
+        cls, v: list[AggregatedMember]
+    ) -> list[AggregatedMember]:
+        seen: set[tuple[str, str]] = set()
+        out: list[AggregatedMember] = []
+        for m in v:
+            key = (m.provider_id, m.model_name)
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(m)
+        return out
+
+
 class LLMModel(BaseModel):
     """A single LLM model exposed by a provider."""
 
@@ -269,6 +340,7 @@ class LLMProvider(Identifiable):
         | AnthropicConfig
         | OllamaConfig
         | OpenRouterConfig
+        | AggregatedLLMConfig
     ) = Field(
         ...,
         description="Backend-specific connection configuration; must match ``provider``.",
@@ -308,6 +380,7 @@ class LLMProvider(Identifiable):
             LLMProviderType.ANTHROPIC: AnthropicConfig,
             LLMProviderType.OLLAMA: OllamaConfig,
             LLMProviderType.OPENROUTER: OpenRouterConfig,
+            LLMProviderType.AGGREGATED: AggregatedLLMConfig,
         }.get(provider_enum)
         if config_cls is None:
             return data
