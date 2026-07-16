@@ -23,10 +23,13 @@ import asyncio
 import base64
 import logging
 import os
+import pathlib
 from collections.abc import AsyncIterator, Callable, Coroutine
+from contextlib import nullcontext
 from typing import Any
 
-from primer_runtime.ops import OpError, _resolve_safe
+from primer_runtime.locks import WorkspaceLockTable
+from primer_runtime.ops import OpError, _resolve_safe, _strict_write_locking
 from primer_runtime.protocol import ErrorCode, Event, Response, serialize
 
 log = logging.getLogger(__name__)
@@ -44,8 +47,17 @@ async def run_exec(
     req_id: int,
     args: dict[str, Any],
     workspace_root: str,
+    locks: WorkspaceLockTable,
 ) -> AsyncIterator[Event]:
     """Async generator that runs a subprocess and yields streaming events.
+
+    Tier-B write locking: unless ``access == "read"`` (which acquires nothing),
+    the chosen lock context is held around the ENTIRE subprocess lifetime - the
+    generator keeps it for as long as the process streams. A ``write`` exec that
+    declares ``writes`` globs holds the sorted per-path locks; otherwise it holds
+    the workdir SCOPE lock (the workspace root when strict-write-locking is on,
+    else the resolved workdir), so concurrent writers to the same directory
+    serialize while reads never wait.
 
     Yields
     ------
@@ -60,6 +72,8 @@ async def run_exec(
         If *workdir* escapes the workspace root, or *cmd* is empty.
     """
     cmd: list[str] = args.get("cmd", [])
+    access: str = (args.get("access") or "write").lower()
+    writes = args.get("writes")
     timeout_s: float = float(args.get("timeout_s") or _DEFAULT_TIMEOUT_S)
     stdin_b64: str = args.get("stdin_b64") or ""
     workdir_raw: str | None = args.get("workdir")
@@ -74,128 +88,146 @@ async def run_exec(
     else:
         workdir = workspace_root
 
-    # Decode optional stdin
-    stdin_bytes: bytes | None = None
-    if stdin_b64:
-        try:
-            stdin_bytes = base64.b64decode(stdin_b64)
-        except Exception as exc:
-            raise OpError(ErrorCode.EPROTOCOL, f"exec: invalid base64 for stdin_b64: {exc}")
+    # Choose the Tier-B lock context held around the ENTIRE subprocess lifetime.
+    #   read:            acquires nothing (nullcontext).
+    #   write + writes:  the sorted declared per-path locks.
+    #   write (default): the workdir scope lock (workspace root when strict, else
+    #                    the resolved workdir).
+    if access == "read":
+        lock_ctx: Any = nullcontext()
+    elif writes:
+        resolved_writes = [str(_resolve_safe(w, workspace_root)) for w in writes]
+        lock_ctx = locks.hold_paths(resolved_writes)
+    else:
+        if _strict_write_locking():
+            scope = str(pathlib.Path(workspace_root).resolve())
+        else:
+            scope = str(pathlib.Path(workdir).resolve())
+        lock_ctx = locks.hold_scope(scope)
 
-    # Build environment (inherit host env; overlay extras)
-    proc_env = None
-    if env_extra:
-        proc_env = dict(os.environ)
-        proc_env.update(env_extra)
-
-    stdin_pipe = asyncio.subprocess.PIPE if stdin_bytes is not None else asyncio.subprocess.DEVNULL
-
-    proc: asyncio.subprocess.Process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=stdin_pipe,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=workdir,
-        env=proc_env,
-    )
-
-    # Write stdin if provided, then close the pipe
-    if stdin_bytes is not None and proc.stdin is not None:
-        proc.stdin.write(stdin_bytes)
-        try:
-            await proc.stdin.drain()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        proc.stdin.close()
-
-    # Collect events in an async queue so stdout/stderr can be read concurrently
-    queue: asyncio.Queue[Event | None] = asyncio.Queue()
-
-    async def _reader(stream: asyncio.StreamReader, event_name: str) -> None:
-        while True:
+    async with lock_ctx:
+        # Decode optional stdin
+        stdin_bytes: bytes | None = None
+        if stdin_b64:
             try:
-                chunk = await stream.read(_CHUNK_SIZE)
-            except Exception:
-                break
-            if not chunk:
-                break
-            queue.put_nowait(
-                Event(
-                    req_id=req_id,
-                    event=event_name,
-                    data={"data_b64": base64.b64encode(chunk).decode()},
+                stdin_bytes = base64.b64decode(stdin_b64)
+            except Exception as exc:
+                raise OpError(ErrorCode.EPROTOCOL, f"exec: invalid base64 for stdin_b64: {exc}")
+
+        # Build environment (inherit host env; overlay extras)
+        proc_env = None
+        if env_extra:
+            proc_env = dict(os.environ)
+            proc_env.update(env_extra)
+
+        stdin_pipe = asyncio.subprocess.PIPE if stdin_bytes is not None else asyncio.subprocess.DEVNULL
+
+        proc: asyncio.subprocess.Process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=stdin_pipe,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workdir,
+            env=proc_env,
+        )
+
+        # Write stdin if provided, then close the pipe
+        if stdin_bytes is not None and proc.stdin is not None:
+            proc.stdin.write(stdin_bytes)
+            try:
+                await proc.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+            proc.stdin.close()
+
+        # Collect events in an async queue so stdout/stderr can be read concurrently
+        queue: asyncio.Queue[Event | None] = asyncio.Queue()
+
+        async def _reader(stream: asyncio.StreamReader, event_name: str) -> None:
+            while True:
+                try:
+                    chunk = await stream.read(_CHUNK_SIZE)
+                except Exception:
+                    break
+                if not chunk:
+                    break
+                queue.put_nowait(
+                    Event(
+                        req_id=req_id,
+                        event=event_name,
+                        data={"data_b64": base64.b64encode(chunk).decode()},
+                    )
                 )
-            )
-        queue.put_nowait(None)  # sentinel: this reader is done
+            queue.put_nowait(None)  # sentinel: this reader is done
 
-    assert proc.stdout is not None
-    assert proc.stderr is not None
+        assert proc.stdout is not None
+        assert proc.stderr is not None
 
-    stdout_task = asyncio.create_task(_reader(proc.stdout, "stdout"))
-    stderr_task = asyncio.create_task(_reader(proc.stderr, "stderr"))
+        stdout_task = asyncio.create_task(_reader(proc.stdout, "stdout"))
+        stderr_task = asyncio.create_task(_reader(proc.stderr, "stderr"))
 
-    # We expect exactly two sentinels (one per reader)
-    sentinels_remaining = 2
-    timed_out = False
+        # We expect exactly two sentinels (one per reader)
+        sentinels_remaining = 2
+        timed_out = False
 
-    try:
-        async with asyncio.timeout(timeout_s):
-            while sentinels_remaining > 0:
-                item = await queue.get()
-                if item is None:
-                    sentinels_remaining -= 1
-                else:
-                    yield item
-
-            # Wait for process to exit (readers already drained)
-            await proc.wait()
-
-    except TimeoutError:
-        timed_out = True
-        proc.terminate()
         try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
+            async with asyncio.timeout(timeout_s):
+                while sentinels_remaining > 0:
+                    item = await queue.get()
+                    if item is None:
+                        sentinels_remaining -= 1
+                    else:
+                        yield item
+
+                # Wait for process to exit (readers already drained)
+                await proc.wait()
+
         except TimeoutError:
-            proc.kill()
+            timed_out = True
+            proc.terminate()
             try:
                 await asyncio.wait_for(proc.wait(), timeout=5.0)
             except TimeoutError:
+                proc.kill()
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except TimeoutError:
+                    pass
+        except asyncio.CancelledError:
+            # WS disconnect: cancel the subprocess
+            proc.terminate()
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=5.0)
+            except TimeoutError:
+                proc.kill()
+            stdout_task.cancel()
+            stderr_task.cancel()
+            try:
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            except Exception:
                 pass
-    except asyncio.CancelledError:
-        # WS disconnect: cancel the subprocess
-        proc.terminate()
-        try:
-            await asyncio.wait_for(proc.wait(), timeout=5.0)
-        except TimeoutError:
-            proc.kill()
-        stdout_task.cancel()
-        stderr_task.cancel()
-        try:
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-        except Exception:
-            pass
-        raise
-    finally:
-        stdout_task.cancel()
-        stderr_task.cancel()
-        try:
-            await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
-        except Exception:
-            pass
+            raise
+        finally:
+            stdout_task.cancel()
+            stderr_task.cancel()
+            try:
+                await asyncio.gather(stdout_task, stderr_task, return_exceptions=True)
+            except Exception:
+                pass
 
-    if timed_out:
-        yield Event(
-            req_id=req_id,
-            event="exit",
-            data={"code": -1, "timed_out": True},
-        )
-    else:
-        returncode = proc.returncode if proc.returncode is not None else -1
-        yield Event(
-            req_id=req_id,
-            event="exit",
-            data={"code": returncode},
-        )
+        if timed_out:
+            yield Event(
+                req_id=req_id,
+                event="exit",
+                data={"code": -1, "timed_out": True},
+            )
+        else:
+            returncode = proc.returncode if proc.returncode is not None else -1
+            yield Event(
+                req_id=req_id,
+                event="exit",
+                data={"code": returncode},
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -233,6 +265,7 @@ async def _run_exec_stream(
     req_id: int,
     args: dict[str, Any],
     workspace_root: str,
+    locks: WorkspaceLockTable,
     send: Callable[[str], Coroutine[Any, Any, None]],
 ) -> None:
     """Task body: drive :func:`run_exec` and forward its frames via *send*.
@@ -244,7 +277,7 @@ async def _run_exec_stream(
     as its own task.  Per-req_id output ordering is unchanged (a single task
     awaits each ``send`` in turn).
     """
-    agen = run_exec(req_id, args, workspace_root)
+    agen = run_exec(req_id, args, workspace_root, locks)
     try:
         async for event in agen:
             await send(serialize(event))
@@ -276,6 +309,7 @@ def start_exec(
     req_id: int,
     args: dict[str, Any],
     workspace_root: str,
+    locks: WorkspaceLockTable,
     send: Callable[[str], Coroutine[Any, Any, None]],
     registry: ExecRegistry,
 ) -> asyncio.Task[None]:
@@ -285,7 +319,7 @@ def start_exec(
     close, and a done-callback deregisters it on normal completion.
     """
     task = asyncio.create_task(
-        _run_exec_stream(req_id, args, workspace_root, send),
+        _run_exec_stream(req_id, args, workspace_root, locks, send),
         name=f"exec:{req_id}",
     )
     registry.add(task)

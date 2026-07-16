@@ -2,7 +2,7 @@
 
 These tests require:
 - Docker to be running (checked via aiodocker import + availability)
-- The runtime image ``primer/workspace-runtime:1.0`` to be pre-built
+- The runtime image ``primer/workspace-runtime:1.1`` to be pre-built
   (Task 6 is responsible for building it; these tests assume it exists)
 
 Skip gracefully when either precondition is absent.
@@ -34,11 +34,11 @@ async def _docker_available() -> bool:
 
 
 async def _runtime_image_present() -> bool:
-    """Return True if primer/workspace-runtime:1.0 exists locally."""
+    """Return True if primer/workspace-runtime:1.1 exists locally."""
     try:
         import aiodocker as _aiodocker
         docker = _aiodocker.Docker()
-        await docker.images.inspect("primer/workspace-runtime:1.0")
+        await docker.images.inspect("primer/workspace-runtime:1.1")
         await docker.close()
         return True
     except Exception:
@@ -56,8 +56,8 @@ except Exception:
 pytestmark = pytest.mark.skipif(
     not _DOCKER_AVAILABLE or not _IMAGE_PRESENT,
     reason=(
-        "Docker not available or primer/workspace-runtime:1.0 not built. "
-        "Run `docker build -t primer/workspace-runtime:1.0 runtime/` first."
+        "Docker not available or primer/workspace-runtime:1.1 not built. "
+        "Run `docker build -t primer/workspace-runtime:1.1 runtime/` first."
     ),
 )
 
@@ -109,7 +109,7 @@ async def test_create_sandbox_returns_ws_sandbox() -> None:
     try:
         sandbox = await adapter.create_sandbox(
             name="test-ws-sandbox-create",
-            image="primer/workspace-runtime:1.0",
+            image="primer/workspace-runtime:1.1",
             command=[],
             env={},
             workdir="/workspace",
@@ -141,7 +141,7 @@ async def test_create_sandbox_injects_token() -> None:
     try:
         sandbox = await adapter.create_sandbox(
             name="test-ws-sandbox-token",
-            image="primer/workspace-runtime:1.0",
+            image="primer/workspace-runtime:1.1",
             command=[],
             env={},
             workdir="/workspace",
@@ -177,7 +177,7 @@ async def test_create_sandbox_port_mapped() -> None:
     try:
         sandbox = await adapter.create_sandbox(
             name="test-ws-sandbox-port",
-            image="primer/workspace-runtime:1.0",
+            image="primer/workspace-runtime:1.1",
             command=[],
             env={},
             workdir="/workspace",
@@ -217,7 +217,7 @@ async def test_read_write_via_ws_sandbox() -> None:
     try:
         sandbox = await adapter.create_sandbox(
             name="test-ws-sandbox-rw",
-            image="primer/workspace-runtime:1.0",
+            image="primer/workspace-runtime:1.1",
             command=[],
             env={},
             workdir="/workspace",
@@ -253,7 +253,7 @@ async def test_stop_and_remove_sandbox() -> None:
     try:
         sandbox = await adapter.create_sandbox(
             name="test-ws-sandbox-stop",
-            image="primer/workspace-runtime:1.0",
+            image="primer/workspace-runtime:1.1",
             command=[],
             env={},
             workdir="/workspace",
@@ -305,7 +305,7 @@ async def test_get_sandbox_reattaches_to_running_container() -> None:
     try:
         sandbox = await adapter.create_sandbox(
             name=name,
-            image="primer/workspace-runtime:1.0",
+            image="primer/workspace-runtime:1.1",
             command=[],
             env={},
             workdir="/workspace",

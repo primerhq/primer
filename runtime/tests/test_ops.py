@@ -515,7 +515,7 @@ async def _collect_exec(req_id: int, args: dict, workspace_root: str) -> tuple[l
     exit_code = -99
     timed_out = False
 
-    async for event in run_exec(req_id, args, workspace_root):
+    async for event in run_exec(req_id, args, workspace_root, WorkspaceLockTable()):
         if event.event == "exit":
             assert event.data is not None
             exit_code = event.data["code"]
@@ -632,7 +632,7 @@ async def test_exec_workdir_respected(tmp_path):
 async def test_exec_workdir_path_escape_raises(tmp_path):
     """exec raises OpError(EACCES) when workdir escapes workspace root."""
     with pytest.raises(OpError) as exc_info:
-        async for _ in run_exec(14, {"cmd": ["ls"], "workdir": "/etc"}, str(tmp_path)):
+        async for _ in run_exec(14, {"cmd": ["ls"], "workdir": "/etc"}, str(tmp_path), WorkspaceLockTable()):
             pass
     assert exc_info.value.code == ErrorCode.EACCES
 

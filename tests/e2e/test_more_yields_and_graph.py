@@ -337,7 +337,7 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
          /errors/internal in last_error.
 
     The test creates a container provider (image
-    ``primer/workspace-runtime:1.0``) + graph + session and polls to
+    ``primer/workspace-runtime:1.1``) + graph + session and polls to
     terminal within a generous window. If Docker is not available on
     the test runner the provider-create will return 4xx cleanly (not
     500) and the test returns early.
@@ -395,7 +395,7 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
                 "provider_id": wp_id,
                 "backend": {
                     "kind": "container",
-                    "image": "primer/workspace-runtime:1.0",
+                    "image": "primer/workspace-runtime:1.1",
                 },
             },
         )
@@ -409,7 +409,7 @@ async def test_t0736_graph_session_container_provider_clean_envelope(
         )
         if r.status_code not in (200, 201):
             # The container runtime can't provision the workspace (e.g. CI has
-            # no `primer/workspace-runtime:1.0` image). That must be a CLEAN
+            # no `primer/workspace-runtime:1.1` image). That must be a CLEAN
             # rejection (503/4xx), never an unhandled 500 — see the DockerError
             # -> ConfigError mapping in DockerRuntimeAdapter.create_sandbox.
             assert r.status_code in (400, 422, 503), r.text

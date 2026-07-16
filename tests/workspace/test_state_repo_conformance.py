@@ -84,7 +84,7 @@ async def state_repo(request, tmp_path: Path):
 
     * ``local``   -- :class:`LocalStateRepo` over a tmp_path git repo.
     * ``sandbox`` -- :class:`SandboxStateRepo` over a real Docker container
-                     running ``primer/workspace-runtime:1.0``.  Skipped when
+                     running ``primer/workspace-runtime:1.1``.  Skipped when
                      the ``workspace:container`` capability is absent.
     """
     impl = request.param
@@ -110,7 +110,7 @@ async def state_repo(request, tmp_path: Path):
         from primer.workspace.runtime.docker import DockerRuntimeAdapter
         from primer.workspace.sandbox.state import SandboxStateRepo
 
-        _RUNTIME_IMAGE = "primer/workspace-runtime:1.0"
+        _RUNTIME_IMAGE = "primer/workspace-runtime:1.1"
         # Use a unique id per fixture instance so parallel/sequential test
         # runs do not collide on container or volume names.
         _UNIQ = secrets.token_hex(8)

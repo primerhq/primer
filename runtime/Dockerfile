@@ -1,14 +1,14 @@
 # Workspace runtime base image.
 #
 # Build:
-#   docker build -t primer/workspace-runtime:1.0 runtime/
+#   docker build -t primer/workspace-runtime:1.1 runtime/
 #
 # Run (minimal):
 #   docker run --rm -e PRIMER_RUNTIME_TOKEN=<secret> \
-#              -p 5959:5959 primer/workspace-runtime:1.0
+#              -p 5959:5959 primer/workspace-runtime:1.1
 #
 # Workspace templates extend this image with:
-#   FROM primer/workspace-runtime:1.0
+#   FROM primer/workspace-runtime:1.1
 #   RUN ...operator-specific deps...
 # They must NOT override ENTRYPOINT; run custom init via init_commands after
 # .runtime.ready appears.
