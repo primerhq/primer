@@ -155,6 +155,50 @@ function WorkspaceTemplatesPage({ pushToast }) {
   );
 }
 
+// ---- WT_Toggle: sliding switch, mirrors CH_Toggle (channels.jsx) /
+// SSO_Toggle (sso_admin.jsx) / AG_Toggle (agents.jsx). Defined locally
+// rather than referenced via window.* since templates.jsx loads BEFORE
+// sso_admin.jsx per the <script> order in ui/index.html.
+function WT_Toggle({ checked, onChange, label, help, disabled, "data-testid": testid }) {
+  return (
+    <label
+      style={{
+        display: "flex", alignItems: "flex-start", gap: 10,
+        cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1,
+      }}
+    >
+      <button
+        type="button"
+        role="switch"
+        aria-checked={checked}
+        disabled={disabled}
+        data-testid={testid}
+        onClick={() => !disabled && onChange(!checked)}
+        style={{
+          flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
+          border: "1px solid var(--border)", padding: 0, marginTop: 1,
+          background: checked ? "var(--accent)" : "var(--bg-2)",
+          position: "relative", cursor: disabled ? "default" : "pointer",
+          transition: "background 0.12s ease",
+        }}
+      >
+        <span
+          style={{
+            position: "absolute", top: 1, left: checked ? 15 : 1,
+            width: 16, height: 16, borderRadius: "50%",
+            background: checked ? "var(--accent-fg)" : "var(--text-3)",
+            transition: "left 0.12s ease",
+          }}
+        />
+      </button>
+      <span style={{ fontSize: 12.5, lineHeight: 1.4 }}>
+        {label}
+        {help && <span className="muted"> - {help}</span>}
+      </span>
+    </label>
+  );
+}
+
 function _emptyForm(provider) {
   return {
     id: "",
@@ -196,6 +240,7 @@ function _emptyForm(provider) {
     init_commands: "",
     state_path: ".state",
     tmp_path: ".tmp",
+    strict_write_locking: false,
   };
 }
 
@@ -245,6 +290,7 @@ function _fromTemplate(t, providers) {
     init_commands: (t.init_commands || []).join("\n"),
     state_path: t.state_path || ".state",
     tmp_path: t.tmp_path || ".tmp",
+    strict_write_locking: !!t.strict_write_locking,
   };
 }
 
@@ -373,6 +419,7 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
       init_commands: initCmds,
       state_path: form.state_path || ".state",
       tmp_path: form.tmp_path || ".tmp",
+      strict_write_locking: !!form.strict_write_locking,
     };
     mutation.mutate(body).catch(() => { /* onError handled */ });
   };
@@ -542,6 +589,15 @@ function WorkspaceTemplateCreateModal({ onClose, pushToast, existing }) {
           <input className="input mono" value={form.tmp_path} onChange={(e) => update("tmp_path", e.target.value)} style={{ width: "100%" }} />
         </WS_FieldRow>
       </div>
+      <WS_FieldRow label="strict write locking" hint="workspace-wide lock domain instead of per-workdir">
+        <WT_Toggle
+          checked={!!form.strict_write_locking}
+          onChange={(v) => update("strict_write_locking", v)}
+          label="Serialize all writers workspace-wide"
+          help="closes the cross-workdir overlap gap; reduces parallelism"
+          data-testid="ws-template-strict-write-locking"
+        />
+      </WS_FieldRow>
     </Modal>
   );
 }
