@@ -812,3 +812,85 @@ async def test_claim_due_on_fresh_schema_ensures_entity_tables(pg_storage):
         for t in ("chat", "harness", "trigger", "sessions"):
             reg = await conn.fetchval("SELECT to_regclass($1)", f"{schema}.{t}")
             assert reg is not None, f"entity table {t!r} was not ensured"
+
+
+# ---------------------------------------------------------------------------
+# Lease-TTL threading — no live database (records the bound params)
+# ---------------------------------------------------------------------------
+
+
+class _RecordingConn:
+    """Minimal asyncpg-conn stand-in that records fetch() calls."""
+
+    def __init__(self) -> None:
+        self.fetch_calls: list[tuple[str, tuple]] = []
+
+    async def fetch(self, query, *args):
+        self.fetch_calls.append((query, args))
+        return []
+
+    async def execute(self, query, *args):
+        return "OK"
+
+
+class _RecordingPool:
+    def __init__(self, conn: _RecordingConn) -> None:
+        self._conn = conn
+
+    def acquire(self):
+        conn = self._conn
+
+        class _Ctx:
+            async def __aenter__(self_inner):
+                return conn
+
+            async def __aexit__(self_inner, *exc):
+                return False
+
+        return _Ctx()
+
+
+class _RecordingSP:
+    def __init__(self, conn: _RecordingConn) -> None:
+        self.pool = _RecordingPool(conn)
+        self.leases_table = '"primer"."leases"'
+        self.schema = "primer"
+
+
+@pytest.mark.asyncio
+async def test_claim_due_binds_configured_lease_ttl():
+    # A-I1: the configured lease TTL must be the $3 interval passed to the
+    # claim query, not a hardcoded "60".
+    conn = _RecordingConn()
+    engine = PostgresClaimEngine(
+        storage_provider=_RecordingSP(conn), adapters={}, lease_ttl_seconds=15,
+    )
+    await engine.claim_due("worker-A", max_count=5)
+    assert conn.fetch_calls, "claim_due did not run a fetch"
+    _query, args = conn.fetch_calls[-1]
+    assert args == (5, "worker-A", "15")
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_binds_configured_lease_ttl():
+    conn = _RecordingConn()
+    engine = PostgresClaimEngine(
+        storage_provider=_RecordingSP(conn), adapters={}, lease_ttl_seconds=15,
+    )
+    await engine.heartbeat("worker-A", [(ClaimKind.CHAT, "c1")])
+    assert conn.fetch_calls, "heartbeat did not run a fetch"
+    query, args = conn.fetch_calls[-1]
+    # TTL threaded as the last ($4) param; no hardcoded 60s literal remains.
+    assert args[-1] == "15"
+    assert "'60 seconds'" not in query
+    assert "$4" in query
+
+
+@pytest.mark.asyncio
+async def test_default_lease_ttl_is_60_seconds():
+    conn = _RecordingConn()
+    engine = PostgresClaimEngine(storage_provider=_RecordingSP(conn), adapters={})
+    assert engine.lease_ttl_seconds == 60
+    await engine.claim_due("worker-A", max_count=1)
+    _query, args = conn.fetch_calls[-1]
+    assert args[-1] == "60"

@@ -75,10 +75,17 @@ class PostgresClaimEngine(ClaimEngine):
         *,
         storage_provider: Any,
         adapters: dict[ClaimKind, ClaimAdapter],
+        lease_ttl_seconds: int = 60,
     ) -> None:
         self._storage = storage_provider
         self._adapters = adapters
         self._table = storage_provider.leases_table
+        # Lease TTL (seconds) fed into the claim_due + heartbeat SQL intervals.
+        # Defaults to 60s for a standalone engine; the worker pool overrides it
+        # from WorkerConfig.lease_ttl_seconds at start() so the
+        # lease_ttl >= 2*heartbeat validator actually governs the engine
+        # (arch review A-I1).
+        self.lease_ttl_seconds = lease_ttl_seconds
         # Build once; claim_due uses it on every call.
         self._claim_query = build_claim_query(
             adapters,
@@ -201,7 +208,9 @@ class PostgresClaimEngine(ClaimEngine):
                     self._claim_query,
                     max_count,
                     worker_id,
-                    "60",  # TTL in seconds (string cast to interval)
+                    # TTL in seconds (string cast to interval in the query,
+                    # $3). Configured via WorkerConfig.lease_ttl_seconds.
+                    str(self.lease_ttl_seconds),
                 )
             leases = [
                 Lease(
@@ -252,12 +261,14 @@ class PostgresClaimEngine(ClaimEngine):
             rows = await conn.fetch(
                 f"UPDATE {self._table}"
                 f"   SET last_heartbeat_at = now(),"
-                f"       expires_at = now() + interval '60 seconds'"
+                # TTL parameterised ($4) so the refreshed expiry uses the
+                # configured lease_ttl_seconds, not a hardcoded 60s.
+                f"       expires_at = now() + ($4 || ' seconds')::interval"
                 f" WHERE (kind, entity_id) IN"
                 f"       (SELECT * FROM UNNEST($1::text[], $2::text[]))"
                 f"   AND claimed_by = $3"
                 f" RETURNING kind, entity_id",
-                kinds, ids, worker_id,
+                kinds, ids, worker_id, str(self.lease_ttl_seconds),
             )
         return [(ClaimKind(r["kind"]), r["entity_id"]) for r in rows]
 

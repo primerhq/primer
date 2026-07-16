@@ -138,6 +138,43 @@ async def test_mark_resumable_lowers_priority_and_wakes():
 
 
 @pytest.mark.asyncio
+async def test_default_lease_ttl_is_60_seconds():
+    engine = InMemoryClaimEngine(adapters={})
+    assert engine.lease_ttl_seconds == 60
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    before = datetime.now(UTC)
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    assert lease.expires_at is not None
+    assert lease.expires_at >= before + timedelta(seconds=59)
+
+
+@pytest.mark.asyncio
+async def test_claim_due_honors_custom_lease_ttl():
+    # A custom lease_ttl_seconds must drive the claimed lease's expiry
+    # (A-I1: the configured TTL now actually reaches the engine).
+    engine = InMemoryClaimEngine(adapters={}, lease_ttl_seconds=5)
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    before = datetime.now(UTC)
+    [lease] = await engine.claim_due("worker-A", max_count=1)
+    after = datetime.now(UTC)
+    assert lease.expires_at is not None
+    assert before + timedelta(seconds=5) <= lease.expires_at <= after + timedelta(seconds=5)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_honors_custom_lease_ttl():
+    engine = InMemoryClaimEngine(adapters={}, lease_ttl_seconds=5)
+    await engine.upsert(ClaimKind.CHAT, "c1")
+    await engine.claim_due("worker-A", max_count=1)
+    before = datetime.now(UTC)
+    await engine.heartbeat("worker-A", [(ClaimKind.CHAT, "c1")])
+    after = datetime.now(UTC)
+    exp = engine._leases[(ClaimKind.CHAT, "c1")].expires_at
+    assert exp is not None
+    assert before + timedelta(seconds=5) <= exp <= after + timedelta(seconds=5)
+
+
+@pytest.mark.asyncio
 async def test_watch_ready_yields_on_upsert():
     engine = InMemoryClaimEngine(adapters={})
     gen = engine.watch_ready()

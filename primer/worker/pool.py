@@ -131,6 +131,16 @@ class WorkerPool:
             self._scheduler.lease_ttl_seconds = self.config.lease_ttl_seconds  # type: ignore[attr-defined]
         except AttributeError:
             pass
+        # Tell the claim engine our lease TTL too, so its claim/heartbeat SQL
+        # (postgres) and lease expiry (in-memory) use the configured interval
+        # rather than a hardcoded 60s -- this is what makes the
+        # lease_ttl >= 2*heartbeat validator actually govern the engine (arch
+        # review A-I1). The ClaimEngine ABC doesn't mandate the attribute, so
+        # guard it the same way as the scheduler push above.
+        try:
+            self._engine.lease_ttl_seconds = self.config.lease_ttl_seconds  # type: ignore[attr-defined]
+        except AttributeError:
+            pass
         await self._scheduler.register_worker(
             worker_id=self._worker_id,
             host=socket.gethostname(),
