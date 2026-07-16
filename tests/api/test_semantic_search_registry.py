@@ -105,6 +105,32 @@ async def test_registry_get_missing_row_raises_not_found():
         await reg.get_provider("missing")
 
 
+class _NoneReturningStorage:
+    """Storage stand-in that returns ``None`` for a missing id.
+
+    Mirrors the real ``Storage.get`` contract (a dangling/bogus id
+    resolves to ``None`` rather than raising), which the sibling
+    registries (artifact, web-search) all model. The other stub in this
+    file *raises* on a miss, which masked the registry's missing
+    None-guard -- so this stub is what exercises it.
+    """
+
+    async def get(self, entity_id: str, *, principal=None):
+        return None
+
+
+@pytest.mark.asyncio
+async def test_registry_get_none_row_raises_not_found_not_attribute_error():
+    """A None row from storage must surface NotFoundError, not the
+    AttributeError the factory would raise dereferencing ``None``."""
+    reg = SemanticSearchRegistry(
+        storage=_NoneReturningStorage(),
+        factory=lambda r: _StubProvider(r),
+    )
+    with pytest.raises(NotFoundError):
+        await reg.get_provider("ssp-dangling")
+
+
 @pytest.mark.asyncio
 async def test_registry_aclose_closes_all_cached():
     storage = _StubStorage({"a": _make_row("a"), "b": _make_row("b")})

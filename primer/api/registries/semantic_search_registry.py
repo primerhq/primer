@@ -86,6 +86,12 @@ class SemanticSearchRegistry:
 
         # Slow path: resolve + construct + initialize OUTSIDE the lock.
         row = await self._storage.get(ssp_id)
+        if row is None:
+            from primer.model.except_ import NotFoundError
+
+            raise NotFoundError(
+                f"semantic search provider {ssp_id!r} does not exist"
+            )
         provider = self._factory(row)
         await provider.initialize()
 
