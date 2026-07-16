@@ -135,6 +135,9 @@ LLM adapters (`primer/llm/`, re-exported from `primer.llm`):
 - `OpenRouterLLM` (`openrouter.py`) is a thin OpenRouter specialisation adding `HTTP-Referer` / `X-Title` attribution headers. Importable but not in `__all__`.
 - `AnthropicLLM` (`anthropic.py`) wraps `AsyncAnthropic`.
 - `GeminiLLM` (`gemini.py`) and `OllamaLLM` (`ollama.py`).
+- The `aggregated` LLM provider is a config-only variant: it holds no
+  connection config of its own and instead wraps peer providers by id,
+  resolving them lazily through the registry at call time.
 
 The three OpenAI-family adapters share `primer/llm/_openai_common.py` (sampling-param builder) and `primer/llm/_openai_compat.py` (Chat Completions streaming compat). `count_tokens` is backed by per-provider tokenizers under `primer/llm/_tokenizer/` (anthropic, gemini, hf, openai, char_fallback); `_trace.py` holds the `trace_llm_io` debug-dump helper.
 
