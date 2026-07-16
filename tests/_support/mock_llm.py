@@ -12,7 +12,7 @@ from typing import Any
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import JSONResponse, StreamingResponse
+from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 
 
@@ -33,6 +33,10 @@ class Rule:
     # gated one. Real providers always mint unique ids, so this only matters
     # for the scripted mock.
     emit_tool_call_id: str | None = None
+    # When >= 400, the chat handler returns a JSON error with this status
+    # instead of a streamed 200 (lets a scenario model force e.g. a 429).
+    emit_status: int = 200
+    emit_error_message: str | None = None
 
     def matches(self, req: dict[str, Any]) -> bool:
         msgs = req.get("messages", [])
@@ -121,10 +125,19 @@ def build_app(registry: ScriptRegistry) -> Starlette:
             }
         )
 
-    async def chat(req: Request) -> StreamingResponse:
+    async def chat(req: Request) -> Response:
         body = await req.json()
         model = body.get("model", "scripted:default")
         rule = registry.resolve(body)
+
+        if rule.emit_status >= 400:
+            return JSONResponse(
+                {"error": {
+                    "message": rule.emit_error_message or "scripted error",
+                    "type": "rate_limit_error" if rule.emit_status == 429 else "error",
+                }},
+                status_code=rule.emit_status,
+            )
 
         async def gen():
             yield _chunk(model, {"role": "assistant"})
