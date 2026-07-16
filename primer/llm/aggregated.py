@@ -300,6 +300,10 @@ class AggregatedLLM(LLM):
             except NotFoundError:
                 continue
             if isinstance(llm, AggregatedLLM):
+                # INTENTIONAL divergence from stream()'s hard BadRequestError
+                # on a nested/self-referential member: count_tokens is a
+                # best-effort hot-path estimate, so we skip and try the next
+                # member rather than raising strict validation here.
                 continue
             return await llm.count_tokens(
                 model=member.model_name, messages=messages, tools=tools,

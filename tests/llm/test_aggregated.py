@@ -309,3 +309,141 @@ async def test_failover_is_logged(caplog):
         await _drain(agg.stream(model="virtual-1", messages=_MSG))
     assert any("failing over" in r.message or "failing over" in r.getMessage()
                for r in caplog.records)
+
+
+@pytest.mark.asyncio
+async def test_empty_stream_member_is_treated_as_failure():
+    # Member[0]'s stream ends immediately (StopAsyncIteration on the first
+    # fetch) -> recorded as a member failure and failover proceeds to
+    # member[1] (aggregated.py:224-227).
+    empty = _FakeLLM(events=[])
+    good = _FakeLLM(events=[TextDelta(text="ok", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(members=[
+        AggregatedMember(provider_id="empty", model_name="m1"),
+        AggregatedMember(provider_id="good", model_name="m2"),
+    ])
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"empty": empty, "good": good}))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    assert any(isinstance(e, TextDelta) for e in events)
+    assert isinstance(events[-1], Done)
+
+
+@pytest.mark.asyncio
+async def test_sequential_always_starts_at_member_zero():
+    records = {"a": [], "b": []}
+    a = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")], record=records["a"], name="a")
+    b = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")], record=records["b"], name="b")
+    cfg = AggregatedLLMConfig(
+        strategy=RoutingStrategy.SEQUENTIAL,
+        members=[
+            AggregatedMember(provider_id="a", model_name="ma"),
+            AggregatedMember(provider_id="b", model_name="mb"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"a": a, "b": b}))
+    for _ in range(3):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    # Member[0] served every call; member[1] never reached.
+    assert len(records["a"]) == 3
+    assert len(records["b"]) == 0
+
+
+@pytest.mark.asyncio
+async def test_round_robin_rotates_starting_member():
+    records = {"a": [], "b": [], "c": []}
+
+    def mk(k):
+        return _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")],
+                        record=records[k], name=k)
+
+    a, b, c = mk("a"), mk("b"), mk("c")
+    cfg = AggregatedLLMConfig(
+        strategy=RoutingStrategy.ROUND_ROBIN,
+        members=[
+            AggregatedMember(provider_id="a", model_name="ma"),
+            AggregatedMember(provider_id="b", model_name="mb"),
+            AggregatedMember(provider_id="c", model_name="mc"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"a": a, "b": b, "c": c}))
+    for _ in range(3):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    # Each call commits to its start member, so each member served exactly once.
+    assert len(records["a"]) == 1
+    assert len(records["b"]) == 1
+    assert len(records["c"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_transient_only_propagates_auth_error():
+    # failover_on=TRANSIENT: an AuthenticationError is NOT eligible -> propagate.
+    bad = _FakeLLM(connect_exc=AuthenticationError("401"))
+    good = _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(
+        failover_on=FailoverClasses.TRANSIENT,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    with pytest.raises(AuthenticationError):
+        await _drain(agg.stream(model="virtual-1", messages=_MSG))
+
+
+@pytest.mark.asyncio
+async def test_transient_and_config_fails_over_auth_error():
+    bad = _FakeLLM(connect_exc=AuthenticationError("401"))
+    good = _FakeLLM(events=[TextDelta(text="ok", index=0),
+                            Done(stop_reason="stop", raw_reason="stop")])
+    cfg = AggregatedLLMConfig(
+        failover_on=FailoverClasses.TRANSIENT_AND_CONFIG,
+        members=[
+            AggregatedMember(provider_id="bad", model_name="m1"),
+            AggregatedMember(provider_id="good", model_name="m2"),
+        ],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({"bad": bad, "good": good}))
+    events = await _drain(agg.stream(model="virtual-1", messages=_MSG))
+    assert any(isinstance(e, TextDelta) for e in events)
+
+
+def test_yielded_eligibility_policy():
+    from primer.llm.aggregated import _yielded_eligible
+    # timeout code + None -> eligible under both policies.
+    for policy in (FailoverClasses.TRANSIENT, FailoverClasses.TRANSIENT_AND_CONFIG):
+        assert _yielded_eligible("stream_timeout", policy) is True
+        assert _yielded_eligible(None, policy) is True
+    # a non-null, non-timeout code (bad-request / OpenAI native) -> config only.
+    assert _yielded_eligible("invalid_request_error", FailoverClasses.TRANSIENT) is False
+    assert _yielded_eligible("invalid_request_error", FailoverClasses.TRANSIENT_AND_CONFIG) is True
+
+
+@pytest.mark.asyncio
+async def test_round_robin_cursor_is_concurrency_safe():
+    # N concurrent stream calls must each get a distinct start member (a clean
+    # rotation with no cursor races), exercising _cursor_lock for real.
+    import asyncio
+
+    n = 6
+    records = {str(i): [] for i in range(n)}
+
+    def mk(k):
+        return _FakeLLM(events=[Done(stop_reason="stop", raw_reason="stop")],
+                        record=records[k], name=k)
+
+    fakes = {str(i): mk(str(i)) for i in range(n)}
+    cfg = AggregatedLLMConfig(
+        strategy=RoutingStrategy.ROUND_ROBIN,
+        members=[AggregatedMember(provider_id=str(i), model_name=f"m{i}") for i in range(n)],
+    )
+    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver(fakes))
+    await asyncio.gather(*[
+        _drain(agg.stream(model="virtual-1", messages=_MSG)) for _ in range(n)
+    ])
+    # Each member was the committed start member exactly once (a full rotation
+    # with no duplicates), proving the cursor advanced atomically per call.
+    served = sorted(k for k, calls in records.items() if calls)
+    assert served == sorted(str(i) for i in range(n))
+    assert all(len(calls) == 1 for calls in records.values())
