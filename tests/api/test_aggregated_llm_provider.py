@@ -168,3 +168,72 @@ class AggregatedMemberStub:
 
     async def aclose(self) -> None:
         return
+
+
+class TestAggregatedRest:
+    def _body(self, **overrides):
+        body = {
+            "id": "agg-rest",
+            "provider": "aggregated",
+            "config": {
+                "members": [{"provider_id": "member-x", "model_name": "m"}],
+                "strategy": "sequential",
+                "failover_point": "before_first_token",
+                "failover_on": "transient_and_config",
+            },
+            "models": [{"name": "virtual-1", "context_length": 200000}],
+            "limits": {"max_concurrency": 4},
+        }
+        body.update(overrides)
+        return body
+
+    @pytest.mark.asyncio
+    async def test_create_with_nonexistent_member_is_accepted(self, client):
+        # Member existence is a deep check done at resolve, not at write.
+        r = await client.post("/v1/llm_providers", json=self._body())
+        assert r.status_code in (200, 201), r.text
+        await client.delete("/v1/llm_providers/agg-rest")
+
+    @pytest.mark.asyncio
+    async def test_create_with_empty_members_is_422(self, client):
+        body = self._body(id="agg-empty")
+        body["config"]["members"] = []
+        r = await client.post("/v1/llm_providers", json=body)
+        assert r.status_code == 422, r.text
+        # RFC7807 envelope.
+        assert r.headers["content-type"].startswith("application/problem+json") \
+            or "type" in r.json()
+
+    @pytest.mark.asyncio
+    async def test_get_models_returns_virtual_names(
+        self, client, fake_provider_registry
+    ):
+        r = await client.post("/v1/llm_providers", json=self._body(id="agg-models"))
+        assert r.status_code in (200, 201), r.text
+
+        # The client fixture's ProviderRegistry is built with a generic
+        # `object()` stub llm_factory (tests/api/conftest.py) so ordinary
+        # CRUD tests don't need real provider adapters. Swap in a real
+        # AggregatedLLM wired with the registry's own get_llm resolver --
+        # same as production's default factory -- to exercise the actual
+        # GET /{id}/models -> list_models() path.
+        def _factory(row):
+            return AggregatedLLM(row, resolve_member=fake_provider_registry.get_llm)
+        fake_provider_registry._llm_factory = _factory  # type: ignore[attr-defined]
+
+        rm = await client.get("/v1/llm_providers/agg-models/models")
+        assert rm.status_code == 200, rm.text
+        assert rm.json()["models"] == ["virtual-1"]
+        await client.delete("/v1/llm_providers/agg-models")
+
+    @pytest.mark.asyncio
+    async def test_discover_models_400_for_aggregated(self, client):
+        r = await client.post(
+            "/v1/llm_providers/_discover_models",
+            json={
+                "provider": "aggregated",
+                "config": {"members": [{"provider_id": "p", "model_name": "m"}]},
+            },
+        )
+        assert r.status_code == 400, r.text
+        assert "discovery is not supported" in r.text.lower()
