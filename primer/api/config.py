@@ -16,7 +16,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -24,12 +24,31 @@ from pydantic_settings import (
     TomlConfigSettingsSource,
 )
 
-from primer.model.provider import SecretProviderConfig, StorageProviderConfig
+from primer.model.except_ import ConfigError
+from primer.model.provider import (
+    SecretProviderConfig,
+    StorageProviderConfig,
+    StorageProviderType,
+)
 from primer.model.scheduler import (
     RuntimeMode,
     SchedulerProviderConfig,
+    SchedulerProviderType,
     WorkerConfig,
 )
+
+
+# Headroom (extra pool connections beyond worker.concurrency) the Postgres
+# worker lane needs. Each in-flight turn pins one dedicated LISTEN connection
+# from the shared storage pool, and a handful of persistent LISTEN
+# connections live for the whole process (scheduler session_ready +
+# session_cancel, claim engine claim_ready, the yield-event listener, the
+# session/chat tick forwarders, the mcp-task bridge, and workspace watchers),
+# all on top of per-turn storage + rate-limiter acquires. This fixed margin
+# keeps ``pool.max_size`` above ``concurrency`` by enough that raised
+# concurrency cannot starve those persistent connections and block per-turn
+# acquires until PoolTimeout.
+_WORKER_POOL_HEADROOM = 8
 
 
 class ObservabilityConfig(BaseModel):
@@ -227,6 +246,54 @@ class AppConfig(BaseSettings):
             "False uses a human-readable single-line formatter."
         ),
     )
+
+    @model_validator(mode="after")
+    def _validate_worker_pool_headroom(self) -> "AppConfig":
+        """Reject a Postgres worker lane whose pool can't cover its concurrency.
+
+        When this process runs the worker pool on the Postgres scheduler/bus
+        lane, the PostgresClaimEngine + PostgresEventBus pin a dedicated
+        LISTEN connection per in-flight turn from the SAME storage pool that
+        serves per-turn storage + rate-limiter acquires, plus a handful of
+        persistent listeners. If ``db.config.pool.max_size`` is below
+        ``worker.concurrency + _WORKER_POOL_HEADROOM`` a busy process exhausts
+        the pool: acquires block for ``acquire_timeout`` (30s) then raise
+        PoolTimeout, stalling turns (arch review A-I2). Fail fast at startup
+        with a clear message instead of degrading silently under load.
+
+        The guard only fires on the Postgres lane with a Postgres storage
+        pool; the in-memory scheduler/bus (single-process / SQLite) has no
+        such pool and is unaffected.
+        """
+        runs_worker = self.runtime_mode in (
+            RuntimeMode.WORKER, RuntimeMode.API_PLUS_WORKER,
+        )
+        postgres_lane = (
+            self.scheduler is not None
+            and self.scheduler.provider == SchedulerProviderType.POSTGRES
+        )
+        db_is_postgres = (
+            self.db is not None
+            and self.db.provider == StorageProviderType.POSTGRES
+        )
+        if not (runs_worker and postgres_lane and db_is_postgres):
+            return self
+        pool = getattr(self.db.config, "pool", None)
+        if pool is None:
+            return self
+        required = self.worker.concurrency + _WORKER_POOL_HEADROOM
+        if pool.max_size < required:
+            raise ConfigError(
+                f"db.config.pool.max_size ({pool.max_size}) is too small for "
+                f"worker.concurrency ({self.worker.concurrency}) on the "
+                f"Postgres worker lane: each in-flight turn pins one LISTEN "
+                f"connection from the same pool plus ~{_WORKER_POOL_HEADROOM} "
+                f"persistent listeners, so db.config.pool.max_size must be "
+                f">= worker.concurrency + {_WORKER_POOL_HEADROOM} "
+                f"(= {required}). Raise db.config.pool.max_size or lower "
+                f"worker.concurrency."
+            )
+        return self
 
     @classmethod
     def settings_customise_sources(

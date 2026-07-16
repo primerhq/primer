@@ -10,7 +10,9 @@ import yaml
 from pydantic import ValidationError
 
 from primer.api.config import AppConfig
+from primer.model.except_ import ConfigError
 from primer.model.provider import (
+    PoolConfig,
     PostgresConfig,
     SqliteConfig,
     StorageProviderConfig,
@@ -18,6 +20,7 @@ from primer.model.provider import (
 )
 from primer.model.scheduler import (
     InMemorySchedulerConfig,
+    PostgresSchedulerConfig,
     RuntimeMode,
     SchedulerProviderConfig,
     SchedulerProviderType,
@@ -205,3 +208,68 @@ class TestConfigExampleYaml:
             f"Expected db.provider='postgres', got {cfg.db.provider!r}. "
             "Update config.example.yaml to use the correct nested db block."
         )
+
+
+class TestWorkerPoolHeadroom:
+    """AppConfig rejects a Postgres worker lane whose pool can't cover
+    worker concurrency + the fixed LISTEN-connection headroom (A-I2)."""
+
+    @staticmethod
+    def _pg_config(
+        *,
+        concurrency: int,
+        max_size: int,
+        scheduler_provider: SchedulerProviderType = SchedulerProviderType.POSTGRES,
+        runtime_mode: RuntimeMode = RuntimeMode.API_PLUS_WORKER,
+    ) -> AppConfig:
+        sched_cfg = (
+            PostgresSchedulerConfig()
+            if scheduler_provider == SchedulerProviderType.POSTGRES
+            else InMemorySchedulerConfig()
+        )
+        return AppConfig(
+            runtime_mode=runtime_mode,
+            db=StorageProviderConfig(
+                provider=StorageProviderType.POSTGRES,
+                config=PostgresConfig(
+                    hostname="h", username="u", password="p", database="d",
+                    pool=PoolConfig(max_size=max_size),
+                ),
+            ),
+            scheduler=SchedulerProviderConfig(
+                provider=scheduler_provider, config=sched_cfg,
+            ),
+            worker=WorkerConfig(concurrency=concurrency),
+        )
+
+    def test_accepts_default_concurrency_and_pool(self) -> None:
+        # Default 8 concurrency, default 25 pool: 8 + 8 headroom = 16 <= 25.
+        cfg = self._pg_config(concurrency=8, max_size=25)
+        assert cfg.worker.concurrency == 8
+        assert cfg.db.config.pool.max_size == 25  # type: ignore[union-attr]
+
+    def test_rejects_high_concurrency_over_small_pool(self) -> None:
+        with pytest.raises(ConfigError) as exc:
+            self._pg_config(concurrency=64, max_size=25)
+        msg = str(exc.value)
+        # Names both fields, the offending values, and the required minimum.
+        assert "max_size" in msg
+        assert "concurrency" in msg
+        assert "25" in msg and "64" in msg
+        assert "72" in msg  # 64 + 8 headroom
+
+    def test_skips_when_scheduler_is_in_memory(self) -> None:
+        # A Postgres db but in-memory scheduler/bus pins no per-turn LISTEN
+        # connection, so the headroom guard does not apply.
+        cfg = self._pg_config(
+            concurrency=64, max_size=25,
+            scheduler_provider=SchedulerProviderType.IN_MEMORY,
+        )
+        assert cfg.worker.concurrency == 64
+
+    def test_skips_when_api_only(self) -> None:
+        # No worker pool runs in api-only mode, so no pool pressure.
+        cfg = self._pg_config(
+            concurrency=64, max_size=25, runtime_mode=RuntimeMode.API,
+        )
+        assert cfg.runtime_mode == RuntimeMode.API
