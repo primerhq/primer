@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from primer.api.deps import (
     get_approval_resolver,
     get_chat_storage,
+    get_claim_engine,
     get_event_bus,
     get_provider_registry,
     get_session_storage,
@@ -20,8 +21,10 @@ from primer.api.deps import (
 )
 from primer.api.errors import common_responses
 from primer.api.routers._crud import make_crud_router
+from primer.int.claim import ClaimEngine
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
+from primer.session.yields import durably_mark_session_resumable
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
 from primer.storage.q import Q
@@ -251,8 +254,18 @@ async def _publish_decision(
     id_str: str,
     body: ToolApprovalRespondBody,
     event_bus: EventBus,
+    session_storage,
+    engine: ClaimEngine | None,
 ) -> None:
-    """Validate and publish the operator decision onto the event bus."""
+    """Validate the decision, durably flip the row, then wake the bus.
+
+    D-C2 fix: the operator decision is stamped onto the session row
+    (``resume_event_payload`` + ``parked_status='resumable'`` + the claim
+    lease re-armed) BEFORE the bus publish, so a decision is never lost when
+    the bus listener is down/reconnecting — LISTEN/NOTIFY is not durable but
+    the row is, and the claim loop admits ``resumable`` rows without any bus.
+    The publish that follows is a best-effort immediate wake only.
+    """
     blob = _approval_blob_or_404(sess, id_str)
     yielded: dict = blob.get("yielded") or {}
     original: dict = (yielded.get("resume_metadata") or {}).get("original_call") or {}
@@ -265,10 +278,21 @@ async def _publish_decision(
     event_key: str | None = yielded.get("event_key")
     if not event_key:
         raise NotFoundError(f"{id_str!r} park is missing event_key")
-    await event_bus.publish(
-        event_key,
-        {"decision": body.decision, "reason": body.reason},
+    payload = {"decision": body.decision, "reason": body.reason}
+    await durably_mark_session_resumable(
+        sess,
+        event_key=event_key,
+        payload=payload,
+        session_storage=session_storage,
+        engine=engine,
     )
+    try:
+        await event_bus.publish(event_key, payload)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "tool_approval decision publish failed for event_key=%r; durable "
+            "flip already persisted, claim loop will recover", event_key,
+        )
 
 
 def make_tool_approval_router() -> APIRouter:
@@ -340,6 +364,7 @@ def make_tool_approval_router() -> APIRouter:
         body: Annotated[ToolApprovalRespondBody, Body()],
         session_storage=Depends(get_session_storage),
         event_bus: EventBus = Depends(get_event_bus),
+        engine: ClaimEngine | None = Depends(get_claim_engine),
     ) -> dict[str, str]:
         sess = await session_storage.get(session_id)
         await _publish_decision(
@@ -347,6 +372,8 @@ def make_tool_approval_router() -> APIRouter:
             id_str=session_id,
             body=body,
             event_bus=event_bus,
+            session_storage=session_storage,
+            engine=engine,
         )
         return {"status": "accepted"}
 

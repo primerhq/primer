@@ -31,8 +31,9 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel, Field
 
-from primer.api.deps import get_event_bus, get_session_storage
+from primer.api.deps import get_claim_engine, get_event_bus, get_session_storage
 from primer.api.errors import common_responses
+from primer.int.claim import ClaimEngine
 from primer.int.event_bus import EventBus
 from primer.model.except_ import (
     ConflictError,
@@ -40,6 +41,7 @@ from primer.model.except_ import (
     ValidationError,
 )
 from primer.model.workspace_session import WorkspaceSession
+from primer.session.yields import durably_mark_session_resumable
 from primer.worker.yield_runtime import make_cancelled_payload
 
 
@@ -120,6 +122,41 @@ def _graph_ask_user_dispatch(
             continue
         return entry
     return None
+
+
+async def _durable_wake(
+    *,
+    session: WorkspaceSession,
+    event_key: str,
+    payload: dict[str, Any],
+    session_storage,
+    engine: ClaimEngine | None,
+    event_bus: EventBus,
+) -> None:
+    """Durably flip the parked row to resumable, then wake the bus.
+
+    D-C2 fix: the durable flip (stamp ``resume_event_payload`` +
+    ``parked_status='resumable'`` + re-arm the claim lease) happens FIRST so a
+    reply is never lost when the bus listener is down/reconnecting — LISTEN/
+    NOTIFY is not durable, but the session row is, and the claim loop admits
+    ``resumable`` rows without any bus. The bus publish that follows is only a
+    best-effort immediate wake: durability is already guaranteed, so a bus
+    hiccup must not fail an otherwise-accepted reply.
+    """
+    await durably_mark_session_resumable(
+        session,
+        event_key=event_key,
+        payload=payload,
+        session_storage=session_storage,
+        engine=engine,  # type: ignore[arg-type]
+    )
+    try:
+        await event_bus.publish(event_key, payload)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "ask_user resume publish failed for event_key=%r; durable flip "
+            "already persisted, claim loop will recover", event_key,
+        )
 
 
 # ===========================================================================
@@ -259,6 +296,7 @@ async def post_ask_user_respond(
     body: AskUserRespondBody = Body(...),
     session_storage=Depends(get_session_storage),
     event_bus: EventBus = Depends(get_event_bus),
+    engine: ClaimEngine | None = Depends(get_claim_engine),
 ) -> dict[str, str]:
     sess = await _load_session_or_404(session_storage, session_id)
     blob = _parked_blob(sess)
@@ -290,7 +328,14 @@ async def post_ask_user_respond(
                 raise NotFoundError(
                     f"Session {session_id!r} agent yield is missing event_key"
                 )
-            await event_bus.publish(ay_event_key, {"response": body.response})
+            await _durable_wake(
+                session=sess,
+                event_key=ay_event_key,
+                payload={"response": body.response},
+                session_storage=session_storage,
+                engine=engine,
+                event_bus=event_bus,
+            )
             return {"status": "accepted"}
         # A graph tool_call ask_user node: its prompt + schema live in
         # pending_dispatch; the wake key is the matching pending_toolcalls
@@ -316,7 +361,14 @@ async def post_ask_user_respond(
             raise NotFoundError(
                 f"Session {session_id!r} tool_call yield is missing event_key"
             )
-        await event_bus.publish(tc_event_key, {"response": body.response})
+        await _durable_wake(
+            session=sess,
+            event_key=tc_event_key,
+            payload={"response": body.response},
+            session_storage=session_storage,
+            engine=engine,
+            event_bus=event_bus,
+        )
         return {"status": "accepted"}
     if yielded.get("tool_name") != "ask_user":
         raise NotFoundError(
@@ -338,7 +390,14 @@ async def post_ask_user_respond(
         raise NotFoundError(
             f"Session {session_id!r} park is missing event_key"
         )
-    await event_bus.publish(event_key, {"response": body.response})
+    await _durable_wake(
+        session=sess,
+        event_key=event_key,
+        payload={"response": body.response},
+        session_storage=session_storage,
+        engine=engine,
+        event_bus=event_bus,
+    )
     return {"status": "accepted"}
 
 
