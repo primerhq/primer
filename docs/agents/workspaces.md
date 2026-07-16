@@ -269,6 +269,35 @@ This commits to the workspace's `.state` repo. Session B
 (spawned later in the same workspace) can `read` the same path
 and pick up the handoff.
 
+## Concurrent writes and exec locking
+
+The workspace serializes concurrent mutations so two writers never tear
+each other's files. `write`, `edit`, and `exec` share one per-directory
+write lock: writers to the SAME directory serialize (each waits its
+turn), while writers to DIFFERENT directories run in parallel with no
+contention.
+
+`exec` takes two optional hints that tune this locking:
+
+- `access: "read" | "write"` (default `"write"`) - declare `"read"` for
+  a read-only command (`cat`, `grep`, `ls`, and similar) so it skips
+  the write-lock entirely and runs fully parallel, even against other
+  writers. Declaring `"read"` for a command that actually writes is
+  never worse than not having this hint at all, but it does forfeit
+  the protection; when unsure, leave the default `"write"`.
+- `writes: [path, ...]` - when a command's write targets are known
+  ahead of time, list them so the lock narrows to just those specific
+  paths instead of the whole working directory, for more parallelism
+  with other writers in the same directory.
+
+This is best-effort scoping, not a hard guarantee across arbitrary
+targets: a `write` to `a/f.txt` and an `exec` with `workdir="a"`
+serialize because they share the same directory scope, but a `write`
+to `a/f.txt` and an `exec` with `workdir="b"` do NOT serialize even if
+that command's actual target is `../a/f.txt`. Declare `writes`
+explicitly whenever a command's real write target lives outside its
+`workdir`.
+
 ## Gotchas
 
 - **The workspace tools an agent has depend on the session.**

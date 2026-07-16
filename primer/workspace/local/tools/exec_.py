@@ -93,7 +93,12 @@ class Exec(WorkspaceTool):
         "<exit code>\\n<stdout>\\n<stderr>. Use the optional "
         "timeout_ms to bound runtime.\n\n"
         "Use when you need to run a program or inspect the environment; "
-        "not for reading one file (use ``read``)."
+        "not for reading one file (use ``read``).\n\n"
+        "Optional access='read' skips write-locking for read-only commands "
+        "so they run fully parallel; optional writes=[path, ...] narrows "
+        "the write-lock to those specific paths instead of the whole "
+        "working directory. Writers to the same directory serialize; "
+        "writers to different directories run in parallel."
     )
     examples: ClassVar[list[ToolExample]] = [
         ToolExample(
