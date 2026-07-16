@@ -16,6 +16,7 @@ const VENDOR_COLORS = {
   huggingface: "var(--amber)",
   openresponses: "var(--green)",
   openchat: "var(--green)",
+  aggregated: "var(--blue)",
 };
 
 // kind prop ("llm" / "embedding" / "rerank") -> URL segment + REST plural +
@@ -162,6 +163,17 @@ const PROVIDER_KINDS_FIELDS = {
       // component in Task 5.2 to render the richer variant.
       pickerVariant: "openrouter",
     },
+    aggregated: {
+      label: "Aggregated",
+      variant: "aggregated",
+      config: [], // config is built by PR_AggregatedEditor, not ConfigField
+      discoverable: false,
+      suggestedModels: [],
+      modelFields: [
+        { key: "name", label: "Virtual model name", flex: 2 },
+        { key: "context_length", label: "Context length", type: "number", flex: 1, min: 1 },
+      ],
+    },
   },
   embedding: {
     openai: {
@@ -237,6 +249,17 @@ const OPENROUTER_SLUG_RE = /^[a-z0-9-]+\/[a-z0-9._-]+(:[a-z0-9-]+)?$/;
 // bound for almost every OpenRouter-routed model in 2026; the operator
 // can always tighten it in the per-row inputs below the picker.
 const OPENROUTER_DEFAULT_LLM_CONTEXT = 128000;
+
+// Default shape for the "aggregated" provider's config - mirrors the
+// backend's AggregatedLLMConfig field defaults exactly (primer/model/
+// providers/llm.py: RoutingStrategy.SEQUENTIAL, FailoverPoint.
+// BEFORE_FIRST_TOKEN, FailoverClasses.TRANSIENT_AND_CONFIG).
+const AGG_CONFIG_DEFAULT = {
+  members: [],
+  strategy: "sequential",
+  failover_point: "before_first_token",
+  failover_on: "transient_and_config",
+};
 
 // ============================================================================
 // Top-level page — list view vs detail view dispatched on the router's id.
@@ -578,11 +601,105 @@ function OpenRouterModelPicker({ discovered, selected, onSelect, onDeselect }) {
 }
 
 // ============================================================================
+// PR_Toggle - verbatim mirror of SSO_Toggle (ui/components/sso_admin.jsx:56-94).
+// ============================================================================
+
+function PR_Toggle({ checked, onChange, label, help, disabled, testid }) {
+  return (
+    <label style={{ display: "flex", alignItems: "flex-start", gap: 10,
+      cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1 }}>
+      <button type="button" role="switch" aria-checked={checked} disabled={disabled}
+        data-testid={testid} onClick={() => !disabled && onChange(!checked)}
+        style={{ flex: "0 0 auto", width: 34, height: 20, borderRadius: 999,
+          border: "1px solid var(--border)", padding: 0, marginTop: 1,
+          background: checked ? "var(--accent)" : "var(--bg-2)", position: "relative",
+          cursor: disabled ? "default" : "pointer", transition: "background 0.12s ease" }}>
+        <span style={{ position: "absolute", top: 1, left: checked ? 15 : 1, width: 16,
+          height: 16, borderRadius: "50%", background: checked ? "var(--accent-fg)" : "var(--text-3)",
+          transition: "left 0.12s ease" }} />
+      </button>
+      <span style={{ fontSize: 12.5, lineHeight: 1.4 }}>
+        {label}{help && <span className="muted"> - {help}</span>}
+      </span>
+    </label>
+  );
+}
+
+// ============================================================================
+// PR_AggregatedEditor - ordered member picker + strategy/failover toggles for
+// the "aggregated" LLM provider variant. Mirrors WSP_AggregatedEditor
+// (ui/components/web_search.jsx:704-765) but the member shape here is richer
+// ({provider_id, model_name} rather than a bare provider id) since aggregated
+// LLM members each pin a specific upstream model.
+// ============================================================================
+
+function PR_AggregatedEditor({ value, onChange, candidates }) {
+  // value: { members: [{provider_id, model_name}], strategy, failover_point, failover_on }
+  const v = value || {};
+  const members = v.members || [];
+  const set = (patch) => onChange({ ...v, ...patch });
+  const setMember = (i, patch) =>
+    set({ members: members.map((m, j) => (j === i ? { ...m, ...patch } : m)) });
+  const move = (i, d) => {
+    const j = i + d;
+    if (j < 0 || j >= members.length) return;
+    const next = members.slice();
+    [next[i], next[j]] = [next[j], next[i]];
+    set({ members: next });
+  };
+  const remove = (i) => set({ members: members.filter((_, j) => j !== i) });
+  const add = () => set({ members: [...members, { provider_id: "", model_name: "" }] });
+  const modelsFor = (pid) => (candidates.find((c) => c.id === pid)?.models || []).map((m) => m.name);
+  return (
+    <div className="field">
+      <label className="field-label">Members (ordered; failover walks top to bottom)</label>
+      {members.map((m, i) => (
+        <div key={i} style={{ display: "flex", gap: 6, marginTop: 4, alignItems: "center" }}>
+          <span className="mono muted">#{i + 1}</span>
+          <select className="select" value={m.provider_id}
+            onChange={(e) => setMember(i, { provider_id: e.target.value, model_name: "" })}>
+            <option value="">select provider…</option>
+            {candidates.map((c) => <option key={c.id} value={c.id}>{c.id}</option>)}
+          </select>
+          <select className="select" value={m.model_name}
+            onChange={(e) => setMember(i, { model_name: e.target.value })}>
+            <option value="">select model…</option>
+            {modelsFor(m.provider_id).map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <Btn size="sm" kind="ghost" onClick={() => move(i, -1)} title="Up">↑</Btn>
+          <Btn size="sm" kind="ghost" onClick={() => move(i, 1)} title="Down">↓</Btn>
+          <Btn size="sm" kind="ghost" onClick={() => remove(i)} title="Remove">×</Btn>
+        </div>
+      ))}
+      <div style={{ marginTop: 6 }}>
+        <Btn size="sm" onClick={add}>Add member</Btn>
+      </div>
+      <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
+        <PR_Toggle checked={(v.strategy || "sequential") === "round_robin"}
+          onChange={(on) => set({ strategy: on ? "round_robin" : "sequential" })}
+          label="Round-robin" help="rotate the starting member per call (off = sequential)" />
+        <PR_Toggle checked={(v.failover_point || "before_first_token") === "mid_stream"}
+          onChange={(on) => set({ failover_point: on ? "mid_stream" : "before_first_token" })}
+          label="Mid-stream failover" help="may duplicate already-shown tokens (off = before first token)" />
+        <div className="field">
+          <label className="field-label">Failover on</label>
+          <select className="select" value={v.failover_on || "transient_and_config"}
+            onChange={(e) => set({ failover_on: e.target.value })} style={{ width: "100%" }}>
+            <option value="transient">transient</option>
+            <option value="transient_and_config">transient_and_config</option>
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
 // Create modal — provider-pattern with rich per-provider controls.
 // ============================================================================
 
 function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToast, existing }) {
-  const { apiFetch, useMutation } = window.primerApi;
+  const { apiFetch, useMutation, useResource } = window.primerApi;
   const _push = pushToast || (() => {});
   const fieldKind = _normKind(kindProp);
   const providers = PROVIDER_KINDS_FIELDS[fieldKind] || {};
@@ -623,6 +740,26 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   // just "openrouter"). For other providers discovery still flows into
   // `models` directly via the legacy onSuccess branch below.
   const [discovered, setDiscovered] = React.useState([]);
+  // Config for the "aggregated" variant's dedicated sub-editor - not part
+  // of the generic ConfigField-driven configValues map (def.config is []
+  // for aggregated; see PROVIDER_KINDS_FIELDS.llm.aggregated above).
+  const [aggConfig, setAggConfig] = React.useState(() => {
+    if (isEdit && existing?.provider === "aggregated") {
+      return { ...AGG_CONFIG_DEFAULT, ...(existing?.config || {}) };
+    }
+    return { ...AGG_CONFIG_DEFAULT };
+  });
+  // Candidate members for the aggregated picker: existing NON-aggregated
+  // LLM providers (an aggregated member must resolve to a real upstream
+  // adapter - nesting is rejected server-side at resolve time).
+  const llmProvidersRes = useResource(
+    "providers:agg-member-candidates",
+    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+  const llmCandidates = (llmProvidersRes.data?.items ?? []).filter(
+    (p) => p.provider !== "aggregated"
+  );
   const [maxConcurrency, setMaxConcurrency] = React.useState(
     existing?.limits?.max_concurrency ?? 1
   );
@@ -667,6 +804,7 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
     setModels([]);
     setDiscovered([]);
     setFieldErrors({});
+    setAggConfig({ ...AGG_CONFIG_DEFAULT });
   }, [provider]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const def = providers[provider];
@@ -793,7 +931,7 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
       // can autogenerate.
       ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       provider,
-      config: cleanConfig(),
+      config: def?.variant === "aggregated" ? aggConfig : cleanConfig(),
       models: cleanModels(),
       limits: {
         max_concurrency: Number(maxConcurrency) || 1,
@@ -820,6 +958,9 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
     // `models: [{}]` and the API rejected it with a 422 on models.0.name.
     && models.every((m) => def?.modelFields.every((f) => f.optional || String(m[f.key] ?? "").trim() !== ""))
     && def?.config.every((f) => !f.required || (configValues[f.key] != null && configValues[f.key] !== ""))
+    && ((def?.variant !== "aggregated")
+      || (aggConfig.members.length >= 1
+        && aggConfig.members.every((m) => m.provider_id && m.model_name)))
     && !create.loading;
 
   return (
@@ -870,15 +1011,23 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
         {fieldErrors["body.provider"] && <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.provider"]}</div>}
       </div>
 
-      {def && def.config.map((f) => (
-        <ConfigField
-          key={f.key}
-          field={f}
-          value={configValues[f.key] ?? ""}
-          onChange={(v) => setConfigValues((cv) => ({ ...cv, [f.key]: v }))}
-          error={fieldErrors[`body.config.${f.key}`]}
+      {def && def.variant === "aggregated" ? (
+        <PR_AggregatedEditor
+          value={aggConfig}
+          onChange={setAggConfig}
+          candidates={llmCandidates}
         />
-      ))}
+      ) : (
+        def && def.config.map((f) => (
+          <ConfigField
+            key={f.key}
+            field={f}
+            value={configValues[f.key] ?? ""}
+            onChange={(v) => setConfigValues((cv) => ({ ...cv, [f.key]: v }))}
+            error={fieldErrors[`body.config.${f.key}`]}
+          />
+        ))
+      )}
 
       <div className="field">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
