@@ -63,7 +63,7 @@ class WebhookDelivery(Identifiable):
     )
     status: WebhookDeliveryStatus = Field(
         default="pending",
-        description="pending → done/failed. Recovery re-fires stale 'pending'.",
+        description="pending -> done/failed. Recovery re-fires stale 'pending'.",
     )
     created_at: datetime = Field(
         ...,
