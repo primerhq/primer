@@ -61,11 +61,13 @@ current_actor: ContextVar["Principal | None"] = ContextVar(
     "primer_mcp_actor", default=None,
 )
 # The auth gate also stashes the authenticated bearer token's scopes
-# here so the dispatch layer can enforce the ``mcp`` scope per call (see
-# Task 9 follow-up: the scope floor moved from connect-time to call-time
-# so any authenticated caller may connect). ``None`` is the sentinel for
-# a cookie session (``api_token is None``) -- full user authority, no
-# scope check. A concrete (possibly empty) list means a bearer token.
+# here so the dispatch layer can enforce the ``mcp`` scope when a tool
+# call is dispatched (the scope floor moved from connect-time into
+# dispatch so any authenticated caller may connect). The value is
+# captured for the credential that opened the session. ``None`` is the
+# sentinel for a cookie session (``api_token is None``) -- full user
+# authority, no scope check. A concrete (possibly empty) list means a
+# bearer token.
 current_api_token_scopes: ContextVar["list[str] | None"] = ContextVar(
     "primer_mcp_api_token_scopes", default=None,
 )

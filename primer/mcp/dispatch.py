@@ -212,16 +212,21 @@ async def invoke_exposed(
 
     Scope gate
     ----------
-    Every MCP tool call requires the ``mcp`` scope on bearer-token
-    callers -- this used to be enforced once at connect time (the
+    An MCP tool call requires the ``mcp`` scope on bearer-token callers
+    -- this used to reject the connection at connect time (the
     ``_mcp_auth_gate`` 403 ``scope_required`` response); it now runs
-    here, per call, so any authenticated principal may connect and the
-    scope is re-checked on every ``tools/call``. ``api_token_scopes`` is
-    ``None`` for a cookie session (``request.state.api_token is None``
-    -- full user authority) and bypasses the check, mirroring
-    :func:`primer.api.deps.require_scope`. A bearer token's scopes are a
-    concrete list; ``mcp`` must be a member. Denial is IN-BAND, same
-    shape as the RBAC floor below.
+    here in the dispatch path, so any authenticated principal may
+    connect and a disallowed call is denied in-band instead. The scopes
+    are those the auth gate captured for the connecting credential: the
+    MCP session is pinned to one credential for its lifetime (the
+    stateful streamable-HTTP handler runs in the task created at
+    ``initialize``), so this is that caller's scope set. A bearer token
+    whose scopes are edited mid-session keeps its connect-time set until
+    it reconnects. ``api_token_scopes`` is ``None`` for a cookie session
+    (``request.state.api_token is None`` -- full user authority) and
+    bypasses the check, mirroring :func:`primer.api.deps.require_scope`.
+    A bearer token's scopes are a concrete list; ``mcp`` must be a
+    member. Denial is IN-BAND, same shape as the RBAC floor below.
     """
     exposure = await get_exposure(deps)
     if not exposure.enabled or scoped_id not in set(exposure.allowed_tools):
@@ -256,9 +261,10 @@ async def invoke_exposed(
     # list) must carry the ``mcp`` scope to invoke ANY tool. A cookie
     # session (api_token_scopes is None, full user authority) bypasses,
     # mirroring ``require_scope`` in primer/api/deps.py. Moved here from
-    # connect-time so any authenticated principal may connect and every
-    # call is re-authorized. Denial is IN-BAND, same shape as the RBAC
-    # floor below; the handler is never reached in that case.
+    # connect-time so any authenticated principal may connect and a
+    # disallowed call is denied in the dispatch path instead. Denial is
+    # IN-BAND, same shape as the RBAC floor below; the handler is never
+    # reached in that case.
     if api_token_scopes is not None and SCOPE_MCP not in api_token_scopes:
         return ToolCallResult(
             output="access denied: the 'mcp' scope is required for this call",
