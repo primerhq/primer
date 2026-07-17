@@ -280,6 +280,110 @@ _WEBHOOK_RECOVERY_PAGE_SIZE = 200
 _WEBHOOK_DELIVERY_MAX_ATTEMPTS = 3
 
 
+async def _dispatch_recovered_deliveries(
+    _ids: list[str],
+    _storage,
+    _cutoff: float,
+    storage_provider,
+    event_bus,
+    claim_engine,
+    scheduler,
+    workspace_registry,
+) -> int:
+    """Re-read each collected id and dispatch the ones still eligible.
+
+    Takes ids rather than rows on purpose. The sweep that collects them can
+    span an unbounded number of pending rows, and each row carries its
+    ``extra_context.webhook_body`` (up to the endpoint's 1 MB cap), so
+    holding the whole collected set as rows is a boot-path OOM in exactly
+    the mass-crash case recovery exists for. Ids bound that to strings.
+
+    Re-reading also makes every check act on FRESH state: a live sibling may
+    have finalized a row between collection and dispatch, and the re-read
+    row's ``status`` / ``attempts`` reflect that, so the sweep skips it
+    instead of re-firing a delivery someone else already made.
+
+    Returns the number of deliveries actually re-dispatched.
+    """
+    from datetime import datetime, timezone as _tz
+
+    from primer.api.routers.webhooks import _dispatch_webhook
+
+    _refired = 0
+    for _id in _ids:
+        try:
+            _row = await _storage.get(_id)
+        except Exception:
+            logger.exception(
+                "webhook recovery: could not re-read delivery %s; "
+                "skipping it this sweep", _id,
+            )
+            continue
+        # Gone, or finalized by a live sibling between collection and now.
+        # Either way it is not ours to re-fire.
+        if _row is None or _row.status != "pending":
+            continue
+        # Re-check the grace window against the fresh row: a row that was
+        # stale at collection time is still stale now, but the re-check pass
+        # below reuses this helper with a recomputed cutoff.
+        if _row.created_at.timestamp() > _cutoff:
+            continue
+        # Poison-pill cap: a row that keeps coming back (its dispatch
+        # kills the process, or _finalize_delivery's update keeps failing
+        # and is swallowed) must not be re-fired forever. Give up loudly.
+        if _row.attempts >= _WEBHOOK_DELIVERY_MAX_ATTEMPTS:
+            logger.error(
+                "webhook recovery: delivery %s exhausted %d attempts; "
+                "marking failed and giving up",
+                _row.id, _row.attempts,
+            )
+            try:
+                await _storage.update(_row.model_copy(update={
+                    "status": "failed",
+                    "completed_at": datetime.now(_tz.utc),
+                }))
+            except Exception:
+                logger.exception(
+                    "webhook recovery: could not mark exhausted delivery "
+                    "%s failed", _row.id,
+                )
+            continue
+        # Record the attempt BEFORE dispatching. Counting it afterwards
+        # would never count the cases the cap exists for: a dispatch that
+        # hard-crashes the process, or a finalize that keeps failing,
+        # never reaches a post-hoc increment.
+        try:
+            _row = await _storage.update(
+                _row.model_copy(update={"attempts": _row.attempts + 1})
+            )
+        except Exception:
+            # Cannot account for this attempt, so do not take it: firing
+            # uncounted is exactly the unbounded re-fire the cap removes.
+            # The row stays pending and a later boot can retry it.
+            logger.exception(
+                "webhook recovery: could not record an attempt for %s; "
+                "skipping it this sweep", _row.id,
+            )
+            continue
+        try:
+            await _dispatch_webhook(
+                _row.trigger_id,
+                _row.extra_context,
+                storage_provider,
+                event_bus,
+                claim_engine,
+                scheduler,
+                workspace_registry,
+                delivery_id=_row.id,
+            )
+            _refired += 1
+        except Exception:
+            logger.exception(
+                "webhook recovery: re-dispatch failed for %s", _row.id,
+            )
+    return _refired
+
+
 async def recover_webhook_deliveries(
     storage_provider,
     event_bus,
@@ -315,7 +419,6 @@ async def recover_webhook_deliveries(
     try:
         from datetime import datetime, timezone as _tz
 
-        from primer.api.routers.webhooks import _dispatch_webhook
         from primer.model.storage import OffsetPage as _OffsetPage
         from primer.model.webhook_delivery import WebhookDelivery
         from primer.storage.q import Q as _Q
@@ -328,7 +431,7 @@ async def recover_webhook_deliveries(
         )
         _cutoff = datetime.now(_tz.utc).timestamp() - _WEBHOOK_DELIVERY_GRACE_SECS
 
-        # Collect the whole stale set BEFORE dispatching any of it.
+        # Collect the whole stale set BEFORE dispatching any of it, as IDS.
         # _dispatch_webhook flips its row 'pending' -> 'done'/'failed', which
         # MUTATES the very predicate this query pages over. Dispatching inside
         # the paging loop therefore shrinks the result set under the cursor and
@@ -340,7 +443,13 @@ async def recover_webhook_deliveries(
         # paging stable over an unchanging set, and is simpler to reason about
         # than re-querying offset=0 until drained while tracking grace-skipped
         # ids to keep a fresh row from looping forever.
-        _stale: list[WebhookDelivery] = []
+        #
+        # Ids, not rows: the pending set is unbounded (rows leave 'pending'
+        # only via dispatch and the table is never pruned) and every row
+        # carries its webhook_body, so holding the collected rows is a boot
+        # OOM in the mass-crash case. _dispatch_recovered_deliveries re-reads
+        # each id right before dispatching it.
+        _stale_ids: list[str] = []
         _offset = 0
         while True:
             _page = await _storage.find(
@@ -350,70 +459,29 @@ async def recover_webhook_deliveries(
             _items = list(_page.items)
             # Skip rows younger than the grace window - they may be an
             # in-flight dispatch from a live process.
-            _stale.extend(
-                _row for _row in _items
+            _stale_ids.extend(
+                _row.id for _row in _items
                 if _row.created_at.timestamp() <= _cutoff
             )
+            # Advance on the UNFILTERED page length: the grace filter above is
+            # applied in Python, so a page can be wholly grace-skipped while
+            # more pages remain. Terminating on the filtered count would end
+            # the sweep early; paging on len(_items) is also what makes this
+            # loop unable to run forever (a short page always ends it).
             if len(_items) < _WEBHOOK_RECOVERY_PAGE_SIZE:
                 break
             _offset += _WEBHOOK_RECOVERY_PAGE_SIZE
 
-        _refired = 0
-        for _row in _stale:
-            # Poison-pill cap: a row that keeps coming back (its dispatch
-            # kills the process, or _finalize_delivery's update keeps failing
-            # and is swallowed) must not be re-fired forever. Give up loudly.
-            if _row.attempts >= _WEBHOOK_DELIVERY_MAX_ATTEMPTS:
-                logger.error(
-                    "webhook recovery: delivery %s exhausted %d attempts; "
-                    "marking failed and giving up",
-                    _row.id, _row.attempts,
-                )
-                try:
-                    await _storage.update(_row.model_copy(update={
-                        "status": "failed",
-                        "completed_at": datetime.now(_tz.utc),
-                    }))
-                except Exception:
-                    logger.exception(
-                        "webhook recovery: could not mark exhausted delivery "
-                        "%s failed", _row.id,
-                    )
-                continue
-            # Record the attempt BEFORE dispatching. Counting it afterwards
-            # would never count the cases the cap exists for: a dispatch that
-            # hard-crashes the process, or a finalize that keeps failing,
-            # never reaches a post-hoc increment.
-            try:
-                _row = await _storage.update(
-                    _row.model_copy(update={"attempts": _row.attempts + 1})
-                )
-            except Exception:
-                # Cannot account for this attempt, so do not take it: firing
-                # uncounted is exactly the unbounded re-fire the cap removes.
-                # The row stays pending and a later boot can retry it.
-                logger.exception(
-                    "webhook recovery: could not record an attempt for %s; "
-                    "skipping it this sweep", _row.id,
-                )
-                continue
-            try:
-                await _dispatch_webhook(
-                    _row.trigger_id,
-                    _row.extra_context,
-                    storage_provider,
-                    event_bus,
-                    claim_engine,
-                    scheduler,
-                    workspace_registry,
-                    delivery_id=_row.id,
-                )
-                _refired += 1
-            except Exception:
-                logger.exception(
-                    "webhook recovery: re-dispatch failed for %s",
-                    _row.id,
-                )
+        _refired = await _dispatch_recovered_deliveries(
+            _stale_ids,
+            _storage,
+            _cutoff,
+            storage_provider,
+            event_bus,
+            claim_engine,
+            scheduler,
+            workspace_registry,
+        )
         if _refired:
             logger.info(
                 "lifespan: webhook recovery - re-dispatched %d stale "
