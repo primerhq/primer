@@ -107,6 +107,59 @@ async def durably_mark_session_resumable(
     return True
 
 
+async def durably_wake_session(
+    session: WorkspaceSession,
+    *,
+    event_key: str,
+    payload: dict[str, Any] | None,
+    session_storage: "Storage[WorkspaceSession]",
+    engine: "ClaimEngine | None",
+) -> bool:
+    """Durable flip for the REST reply handlers, repairing a missing lease.
+
+    :func:`durably_mark_session_resumable` writes twice and the two writes
+    CANNOT share a transaction (``mark_resumable`` acquires its own
+    connection). So a crash between them leaves the row ``resumable`` with
+    NO lease row - and ``claim_due`` JOINs the leases table, which makes the
+    session permanently unclaimable. The reply handlers must not report the
+    reply accepted in that state.
+
+    This wrapper ACTS on the helper's return value instead of discarding it:
+    a False return on a row whose ``parked_status`` is already ``resumable``
+    is exactly the fingerprint of that half-applied flip (the guard only
+    admits ``parked`` for a single-event park), so re-drive
+    ``mark_resumable`` - an idempotent upsert - to re-create the lease the
+    first attempt lost. When the lease is already healthy the upsert is a
+    harmless no-op, which is the common case for an ordinary double-reply.
+
+    A raising ``storage.update`` still propagates untouched: the caller must
+    NOT report a reply accepted when the durable stamp never landed.
+
+    Returns the underlying helper's bool (True when this call advanced the
+    row, False when the guard rejected it).
+    """
+    did = await durably_mark_session_resumable(
+        session,
+        event_key=event_key,
+        payload=payload,
+        session_storage=session_storage,
+        engine=engine,
+    )
+    if did or engine is None:
+        return did
+    if session.parked_status != "resumable":
+        # Guard rejected for some other reason (not a half-applied flip);
+        # there is no lease to repair.
+        return did
+    logger.info(
+        "Repairing claim lease for session %s: the row is already "
+        "'resumable' but the durable flip may not have re-armed its lease",
+        session.id,
+    )
+    await engine.mark_resumable(ClaimKind.SESSION, session.id)
+    return did
+
+
 @dataclass
 class RespondToYieldDeps:
     """Collaborators :func:`respond_to_yield` needs.
@@ -209,5 +262,6 @@ async def respond_to_yield(
 __all__ = [
     "RespondToYieldDeps",
     "durably_mark_session_resumable",
+    "durably_wake_session",
     "respond_to_yield",
 ]

@@ -41,7 +41,7 @@ from primer.model.except_ import (
     ValidationError,
 )
 from primer.model.workspace_session import WorkspaceSession
-from primer.session.yields import durably_mark_session_resumable
+from primer.session.yields import durably_wake_session
 from primer.worker.yield_runtime import make_cancelled_payload
 
 
@@ -132,18 +132,24 @@ async def _durable_wake(
     session_storage,
     engine: ClaimEngine | None,
     event_bus: EventBus,
-) -> None:
+) -> bool:
     """Durably flip the parked row to resumable, then wake the bus.
 
     D-C2 fix: the durable flip (stamp ``resume_event_payload`` +
     ``parked_status='resumable'`` + re-arm the claim lease) happens FIRST so a
-    reply is never lost when the bus listener is down/reconnecting — LISTEN/
+    reply is never lost when the bus listener is down/reconnecting - LISTEN/
     NOTIFY is not durable, but the session row is, and the claim loop admits
     ``resumable`` rows without any bus. The bus publish that follows is only a
     best-effort immediate wake: durability is already guaranteed, so a bus
     hiccup must not fail an otherwise-accepted reply.
+
+    Uses :func:`durably_wake_session`, which acts on the flip helper's bool:
+    a guard-rejected row that is already ``resumable`` gets its claim lease
+    re-armed, so a retry after a half-applied flip (row stamped, lease lost)
+    repairs the row instead of handing back a 202 for a session the claim
+    loop can never pick up. Returns True when this call advanced the row.
     """
-    await durably_mark_session_resumable(
+    did = await durably_wake_session(
         session,
         event_key=event_key,
         payload=payload,
@@ -157,6 +163,7 @@ async def _durable_wake(
             "ask_user resume publish failed for event_key=%r; durable flip "
             "already persisted, claim loop will recover", event_key,
         )
+    return did
 
 
 # ===========================================================================
