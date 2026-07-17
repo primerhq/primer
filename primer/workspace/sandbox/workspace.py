@@ -589,11 +589,13 @@ class SandboxWorkspace(Workspace):
             f"{self._workspace_root}/{self._template.state_path}"
             f"/sessions/{session_id}/messages.jsonl"
         )
-        # Serialise against the session's messages.jsonl read->rewrite
-        # window (AgentSession.append_instruction). The default sandbox
-        # ``append_file`` is itself read-modify-write, so without this the
-        # event row could be truncated by a concurrent instruction rewrite.
-        async with self._state_repo.messages_lock:
+        # Serialise against this session's messages.jsonl read->rewrite
+        # windows (AgentSession.append_instruction, the executor's turn
+        # persist). The default sandbox ``append_file`` is itself
+        # read-modify-write, so without this the event row could be
+        # truncated by a concurrent rewrite. Keyed by session id, so a
+        # flush for one session never waits on another session's commit.
+        async with self._state_repo.messages_lock(session_id):
             await self._sandbox.append_file(path, line)
 
     async def append_state_line(self, relative_path: str, line: bytes) -> None:

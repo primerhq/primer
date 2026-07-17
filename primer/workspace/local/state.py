@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from pathlib import Path
 
@@ -38,6 +39,7 @@ from primer.model.workspace_session import (
     WaitingState,
 )
 from primer.model.workspace import CommitInfo, Op
+from primer.session.mutation_lock import KeyedLock
 from primer.workspace.state_helpers import (
     TRAILER_AGENT as _TRAILER_AGENT,
     TRAILER_CALL as _TRAILER_CALL,
@@ -100,12 +102,19 @@ class LocalStateRepo:
         self._subprocess_timeout_seconds = subprocess_timeout_seconds
         self._commit_lock = asyncio.Lock()
         # Serialises the messages.jsonl read->rewrite window (session
-        # instruction appends) against O_APPEND event-row writes
-        # (``Workspace.append_message_line``). Both paths acquire this so a
-        # streamed event row can never land in the read->rewrite gap and be
+        # instruction appends, the executor's turn persist) against O_APPEND
+        # event-row writes (``Workspace.append_message_line``). Every writer
+        # acquires this so a row can never land in a read->rewrite gap and be
         # truncated by the full-file rewrite. Distinct from ``_commit_lock``
         # (which the rewrite still takes internally) to avoid re-entrancy.
-        self._messages_lock = asyncio.Lock()
+        #
+        # Keyed by session id: messages.jsonl is per-session
+        # (``sessions/<id>/messages.jsonl``), so two sessions never write the
+        # same file and must not contend. A single per-repo lock would make
+        # one session's event-row flush wait on another session's git commit,
+        # stalling an unrelated turn (the flush runs inline in the worker's
+        # turn task).
+        self._messages_locks = KeyedLock()
         # session_id -> agent_id, populated on create_session and on
         # init scan. The commit-trailer assembler uses this so callers
         # don't have to thread agent_id through every commit call.
@@ -123,15 +132,20 @@ class LocalStateRepo:
         """The workspace id stamped into every commit's trailer."""
         return self._workspace_id
 
-    @property
-    def messages_lock(self) -> asyncio.Lock:
-        """Mutual-exclusion lock for messages.jsonl append vs. rewrite.
+    def messages_lock(self, session_id: str) -> AbstractAsyncContextManager[None]:
+        """Mutual exclusion for one session's messages.jsonl writers.
 
         Acquired by :meth:`Workspace.append_message_line` (the O_APPEND
-        event-row writer) and by the session's instruction append across
-        its read->rewrite window, so the two never interleave.
+        event-row writer) and by every full-file rewriter across its
+        read->rewrite window (the session's instruction append, the
+        workspace executor's turn persist / compaction rewrite), so the
+        two never interleave.
+
+        Keyed by ``session_id`` so only writers to the SAME
+        ``sessions/<id>/messages.jsonl`` contend; unrelated sessions
+        proceed in parallel. Use as ``async with repo.messages_lock(sid):``.
         """
-        return self._messages_lock
+        return self._messages_locks.acquire(session_id)
 
     async def initialize(self) -> None:
         """Open / initialise the repo. Idempotent.

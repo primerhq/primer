@@ -1499,3 +1499,96 @@ class TestLocalWriteLocking:
         await asyncio.gather(exec_holder(), writer())
 
         assert order == ["write", "exec"]
+class TestMessagesLockIsPerSession:
+    """The messages lock must not couple unrelated sessions.
+
+    messages.jsonl is per-SESSION, so only writers to the same
+    ``sessions/<id>/messages.jsonl`` need to serialise. A per-repo
+    (per-workspace) lock would make session B's event-row flush wait on
+    session A's git commit -- and because the flush runs inline in the
+    worker's turn task, that stalls B's turn on unrelated work. The lock
+    is keyed by session id (see arch-review batch 1, MEDIUM-3).
+    """
+
+    async def test_distinct_sessions_do_not_block_each_other(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+        sess_a = await ws.start_session(
+            _binding(), id="sess-key-a", instructions="hello"
+        )
+        sess_b = await ws.start_session(
+            _binding(), id="sess-key-b", instructions="hello"
+        )
+
+        # Hold session A's messages lock, standing in for A's in-flight
+        # read->rewrite window (an append_instruction / turn commit).
+        async with ws.state_repo.messages_lock(sess_a.session_id):
+            # A DIFFERENT session's event-row flush must not wait on it.
+            await asyncio.wait_for(
+                ws.append_message_line(
+                    sess_b.session_id, b'{"seq":1,"kind":"done"}\n'
+                ),
+                timeout=2.0,
+            )
+
+            # ...while the SAME session's flush must still serialise: it
+            # blocks until A's window closes, so a bounded wait times out.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    ws.append_message_line(
+                        sess_a.session_id, b'{"seq":1,"kind":"done"}\n'
+                    ),
+                    timeout=0.2,
+                )
+
+        b_path = (
+            ws.root
+            / ws.template.state_path
+            / "sessions"
+            / sess_b.session_id
+            / "messages.jsonl"
+        )
+        assert b'{"seq":1,"kind":"done"}' in b_path.read_bytes()
+
+        # Once A's window closes, A's own append proceeds normally.
+        await asyncio.wait_for(
+            ws.append_message_line(
+                sess_a.session_id, b'{"seq":2,"kind":"done"}\n'
+            ),
+            timeout=2.0,
+        )
+        a_path = (
+            ws.root
+            / ws.template.state_path
+            / "sessions"
+            / sess_a.session_id
+            / "messages.jsonl"
+        )
+        assert b'{"seq":2,"kind":"done"}' in a_path.read_bytes()
+
+    async def test_same_session_key_shared_across_repo_and_session(
+        self, provider: LocalWorkspaceBackend
+    ) -> None:
+        """The session handle and the repo must resolve the SAME lock.
+
+        ``AgentSession.messages_lock`` keys the table by its own session
+        id; ``append_message_line`` keys it by the id it was handed. If the
+        two ever diverged the serialisation would silently do nothing.
+        """
+        ws = await provider.create(_template())
+        assert isinstance(ws, LocalWorkspace)
+        session = await ws.start_session(
+            _binding(), id="sess-key-same", instructions="hello"
+        )
+
+        async with session.messages_lock:
+            # The repo-keyed acquisition for the same session must block.
+            with pytest.raises(asyncio.TimeoutError):
+                await asyncio.wait_for(
+                    ws.append_message_line(
+                        session.session_id, b'{"seq":1,"kind":"done"}\n'
+                    ),
+                    timeout=0.2,
+                )
