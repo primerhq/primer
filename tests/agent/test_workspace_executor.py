@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 
+from primer.agent.compaction import CompactionStrategy
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.agent.workspace_executor import WorkspaceAgentExecutor
 from primer.model.agent import Agent, AgentModel
@@ -24,8 +25,11 @@ from primer.model.except_ import ConflictError
 from primer.model.provider import LLMModel
 from primer.model.workspace_session import (
     AgentBinding,
+    SessionMessageKind,
+    SessionMessageRecord,
     SessionStatus,
 )
+from primer.session.persistence import WorkspaceMessageWriter
 from primer.model.workspace import (
     FileMount,
     LocalWorkspaceConfig,
@@ -507,6 +511,303 @@ class TestPersistTurnInstructionRace:
             assert b"hello" in content, content
             # The interleave actually occurred (no vacuous pass).
             assert fired is True
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
+# ===========================================================================
+# Compaction preserves the event log + defers steers (PR-C)
+# ===========================================================================
+
+
+def _small_model() -> LLMModel:
+    """Tiny context so a modest seeded history trips the compaction trigger."""
+    return LLMModel(name="m", context_length=500)
+
+
+def _messages_path(workspace, session):
+    return (
+        workspace.root
+        / workspace.template.state_path
+        / "sessions"
+        / session.session_id
+        / "messages.jsonl"
+    )
+
+
+def _event_log_records(text: str) -> list[dict]:
+    """Parse the seq/kind SessionMessageRecord lines from messages.jsonl text."""
+    out: list[dict] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        import json as _json
+
+        try:
+            obj = _json.loads(line)
+        except _json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict) and "kind" in obj and isinstance(obj.get("seq"), int):
+            out.append(obj)
+    return out
+
+
+class TestCompactionPreservesEventLog:
+    """Decision 4: compaction appends a marker; it never wipes the log."""
+
+    @pytest.mark.asyncio
+    async def test_event_log_survives_compaction(self, tmp_path: Path) -> None:
+        backend, workspace, session = await _build_session(tmp_path)
+        try:
+            # Seed the append-only log with a MIX of event-log records
+            # (seq 1..3, via the same writer the dispatch path uses) and the
+            # initial "hello" Message line already written by start_session.
+            writer = WorkspaceMessageWriter(
+                workspace_io=workspace,
+                session_id=session.session_id,
+                start_seq=0,
+            )
+            from datetime import datetime, timezone
+
+            now = datetime.now(timezone.utc)
+            for kind, payload in (
+                (SessionMessageKind.USER_INPUT, {"text": "seed-user"}),
+                (SessionMessageKind.ASSISTANT_TOKEN, {"text": "seed-assistant"}),
+                (SessionMessageKind.DONE, {"stop_reason": "stop"}),
+            ):
+                await writer.append(
+                    SessionMessageRecord(
+                        seq=1, kind=kind, payload=payload, created_at=now,
+                    )
+                )
+            await writer.flush()
+
+            # Seed enough Message-line history (big user turns) to trip the
+            # compaction trigger for the tiny-context model below.
+            for i in range(3):
+                await session.append_instruction("PRE-COMPACTION-" + ("x" * 900))
+                del i
+
+            llm = _FakeLLM(
+                scripts=[
+                    # 1st stream call = the compaction summary.
+                    [
+                        TextDelta(text="COMPACTION-SUMMARY-TEXT", index=0),
+                        Done(stop_reason="stop", raw_reason="stop"),
+                    ],
+                    # 2nd stream call = the post-compaction turn.
+                    [
+                        TextDelta(text="post-compaction-turn", index=0),
+                        Done(stop_reason="stop", raw_reason="stop"),
+                    ],
+                ]
+            )
+            mgr = ToolExecutionManager.for_workspace(
+                toolset_providers={}, session=session
+            )
+            executor = WorkspaceAgentExecutor(
+                agent=_agent(),
+                llm=llm,  # type: ignore[arg-type]
+                llm_model=_small_model(),
+                tool_manager=mgr,
+                session=session,
+                compaction=CompactionStrategy(tail_turns=1),
+            )
+
+            await _drain(executor.invoke([]))
+
+            text = _messages_path(workspace, session).read_text(encoding="utf-8")
+            records = _event_log_records(text)
+            by_kind = {r["kind"]: r for r in records}
+
+            # (i) the pre-existing event-log records survive with original seqs.
+            assert by_kind["user_input"]["seq"] == 1
+            assert by_kind["assistant_token"]["seq"] == 2
+            assert by_kind["done"]["seq"] == 3
+
+            # (ii) exactly one compaction_marker, with a STRICTLY greater seq.
+            markers = [r for r in records if r["kind"] == "compaction_marker"]
+            assert len(markers) == 1, markers
+            assert markers[0]["seq"] > 3
+            # The stored summary is the strategy's full summary message text
+            # (it carries an "[earlier conversation compacted ...]" preamble).
+            assert "COMPACTION-SUMMARY-TEXT" in markers[0]["payload"]["summary"]
+            assert markers[0]["payload"]["replaced_to_seq"] == 3
+
+            # (iii) the reader returns the COMPACTED view (summary + tail), not
+            # the raw pre-compaction messages.
+            history = await executor._read_messages_jsonl()
+            assert history[0].role == "assistant"
+            assert "COMPACTION-SUMMARY-TEXT" in history[0].parts[0].text
+            joined = "\n".join(
+                p.text
+                for m in history
+                for p in m.parts
+                if getattr(p, "type", None) == "text"
+            )
+            assert "PRE-COMPACTION-" not in joined  # folded into the summary
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+
+class _BlockingCompactionLLM:
+    """First stream call (compaction) parks on ``release`` after signalling
+    ``entered``; the second call (the turn) streams immediately."""
+
+    def __init__(self, *, summary_text, turn_text, entered, release) -> None:
+        self._summary_text = summary_text
+        self._turn_text = turn_text
+        self._entered = entered
+        self._release = release
+        self._calls = 0
+
+    async def list_models(self):
+        return ["m"]
+
+    def stream(self, *, model, messages, **kwargs) -> AsyncIterator[StreamEvent]:
+        self._calls += 1
+        if self._calls == 1:
+            return self._compaction_stream()
+        return self._turn_stream()
+
+    async def _compaction_stream(self) -> AsyncIterator[StreamEvent]:
+        self._entered.set()
+        await self._release.wait()
+        yield TextDelta(text=self._summary_text, index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+    async def _turn_stream(self) -> AsyncIterator[StreamEvent]:
+        yield TextDelta(text=self._turn_text, index=0)
+        yield Done(stop_reason="stop", raw_reason="stop")
+
+
+async def _seed_compactable_history(session) -> None:
+    for _ in range(3):
+        await session.append_instruction("PRE-COMPACTION-" + ("x" * 900))
+
+
+class TestSteerDeferredDuringCompaction:
+    """Decision 5: a steer during compaction is deferred, never lost, and
+    applied AFTER compaction in submission order."""
+
+    @pytest.mark.asyncio
+    async def test_steer_during_compaction_is_deferred_not_lost_and_applied_after(
+        self, tmp_path: Path
+    ) -> None:
+        backend, workspace, session = await _build_session(tmp_path)
+        try:
+            await _seed_compactable_history(session)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            llm = _BlockingCompactionLLM(
+                summary_text="COMPACTION-SUMMARY",
+                turn_text="post-compaction-turn",
+                entered=entered,
+                release=release,
+            )
+            mgr = ToolExecutionManager.for_workspace(
+                toolset_providers={}, session=session
+            )
+            executor = WorkspaceAgentExecutor(
+                agent=_agent(),
+                llm=llm,  # type: ignore[arg-type]
+                llm_model=_small_model(),
+                tool_manager=mgr,
+                session=session,
+                compaction=CompactionStrategy(tail_turns=1),
+            )
+
+            invoke_task = asyncio.create_task(_drain(executor.invoke([])))
+            # Wait until the compaction LLM is parked mid-summarise.
+            await asyncio.wait_for(entered.wait(), timeout=5.0)
+
+            # The window is open: the flag is set...
+            assert session._state.is_compacting(session.session_id) is True
+
+            # ...so a steer arriving now is DEFERRED, not committed.
+            await session.append_instruction("STEER-DURING-COMPACTION")
+
+            during = _messages_path(workspace, session).read_text(encoding="utf-8")
+            assert "STEER-DURING-COMPACTION" not in during  # not yet on disk
+            pending = session._state._pending_steers.get(session.session_id, [])
+            assert any(
+                "STEER-DURING-COMPACTION" in p.parts[0].text for p in pending
+            )  # recorded PENDING
+
+            # Release the compaction LLM; let the turn finish.
+            release.set()
+            await asyncio.wait_for(invoke_task, timeout=5.0)
+
+            text = _messages_path(workspace, session).read_text(encoding="utf-8")
+            lines = text.splitlines()
+            marker_idx = next(
+                i for i, ln in enumerate(lines) if '"compaction_marker"' in ln
+            )
+            steer_idx = next(
+                i for i, ln in enumerate(lines) if "STEER-DURING-COMPACTION" in ln
+            )
+            # The summary is present AND the steer is present AND the steer was
+            # applied AFTER the marker (applied-after ordering).
+            assert "COMPACTION-SUMMARY" in text
+            assert steer_idx > marker_idx
+
+            # Non-vacuous: the interleave actually fired.
+            assert entered.is_set() is True
+            # And the flag has been cleared again.
+            assert session._state.is_compacting(session.session_id) is False
+        finally:
+            await session.aclose()
+            await backend.aclose()
+
+    @pytest.mark.asyncio
+    async def test_multiple_steers_during_compaction_survive_in_order(
+        self, tmp_path: Path
+    ) -> None:
+        backend, workspace, session = await _build_session(tmp_path)
+        try:
+            await _seed_compactable_history(session)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            llm = _BlockingCompactionLLM(
+                summary_text="COMPACTION-SUMMARY",
+                turn_text="post-compaction-turn",
+                entered=entered,
+                release=release,
+            )
+            mgr = ToolExecutionManager.for_workspace(
+                toolset_providers={}, session=session
+            )
+            executor = WorkspaceAgentExecutor(
+                agent=_agent(),
+                llm=llm,  # type: ignore[arg-type]
+                llm_model=_small_model(),
+                tool_manager=mgr,
+                session=session,
+                compaction=CompactionStrategy(tail_turns=1),
+            )
+
+            invoke_task = asyncio.create_task(_drain(executor.invoke([])))
+            await asyncio.wait_for(entered.wait(), timeout=5.0)
+
+            # Two steers during ONE compaction window, submitted in order.
+            await session.append_instruction("STEER-ONE")
+            await session.append_instruction("STEER-TWO")
+
+            release.set()
+            await asyncio.wait_for(invoke_task, timeout=5.0)
+
+            text = _messages_path(workspace, session).read_text(encoding="utf-8")
+            lines = text.splitlines()
+            marker_idx = next(
+                i for i, ln in enumerate(lines) if '"compaction_marker"' in ln
+            )
+            one_idx = next(i for i, ln in enumerate(lines) if "STEER-ONE" in ln)
+            two_idx = next(i for i, ln in enumerate(lines) if "STEER-TWO" in ln)
+            # Both survived, both after the marker, in submission order.
+            assert marker_idx < one_idx < two_idx
         finally:
             await session.aclose()
             await backend.aclose()

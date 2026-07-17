@@ -222,8 +222,17 @@ class AgentExecutor(_BaseAgentExecutor):
     async def _replace_compacted_head(
         self,
         compacted: list[Message],
+        *,
+        summary_message: Message | None = None,
+        tokens_before: int = 0,
+        tokens_after: int = 0,
     ) -> None:
         """Rewrite the thread's persisted history to the compacted form.
+
+        The ``summary_message`` / ``tokens_*`` kwargs are part of the shared
+        hook signature (the workspace surface records them in an append-only
+        marker); this in-place-rewrite surface derives its summary row from
+        ``compacted`` directly and ignores them.
 
         Strategy: load every existing :class:`ThreadMessage`, identify
         the rows that match the tail of ``compacted`` (by structural

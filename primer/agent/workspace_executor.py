@@ -27,6 +27,8 @@ from primer.model.chat import Message
 from primer.model.except_ import ConflictError
 from primer.model.graph import build_execution_context
 from primer.model.workspace_session import (
+    SessionMessageKind,
+    SessionMessageRecord,
     SessionStatus,
     _UserInputWaiting,
 )
@@ -171,39 +173,124 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
     async def _replace_compacted_head(
         self,
         compacted: list[Message],
+        *,
+        summary_message: "Message | None" = None,
+        tokens_before: int = 0,
+        tokens_after: int = 0,
     ) -> None:
-        """Rewrite ``messages.jsonl`` with the compacted history.
+        """Record a compaction by APPENDING one ``compaction_marker`` record.
 
-        Git history naturally preserves the pre-compaction snapshot --
-        anyone inspecting ``.state/sessions/<id>/`` can ``git show``
-        the previous commit to recover the original messages.
+        ``messages.jsonl`` is APPEND-ONLY: this NEVER whole-file-replaces the
+        file (the old behaviour, which wiped the event log and every
+        pre-compaction message from the live file). Instead it appends ONE
+        ``SessionMessageRecord`` of kind ``COMPACTION_MARKER`` whose payload
+        mirrors the chat surface (primer/chat/executor.py). On the NEXT load,
+        the two history readers (:meth:`_read_messages_jsonl` and
+        :meth:`AgentSession.take_pending_messages`, both via
+        :func:`reconstruct_compacted_history`) fold every Message line
+        physically before the LAST marker into one synthetic assistant
+        summary. The in-memory compacted history for THIS turn is already
+        applied by the base loop; this hook only records the marker for future
+        loads. Nothing is deleted.
 
-        The messages lock is held across the rewrite so it cannot interleave
-        with a concurrent O_APPEND event row or another full-file rewriter.
+        ``summary_message is None`` => pruning-only compaction (tier 1): there
+        is nothing to summarise, so NO marker is written -- the (unpruned)
+        Message lines stay live on disk and pruning is re-derived in-memory
+        each turn. Writing an empty-summary marker would instead drop the
+        pruned head entirely on the next load.
 
-        NOTE (arch-review batch 1, MEDIUM-1): unlike ``_persist_turn`` this
-        hook does NOT contain its own read -- ``compacted`` is derived from
-        the snapshot ``AgentExecutor.invoke`` took at ``_load_history``,
-        which is separated from this rewrite by the compaction LLM call.
-        Locking only the rewrite therefore does not make compaction atomic
-        against a steer that arrives mid-compaction: that steer is appended
-        after the snapshot and is dropped by this rewrite. Closing that
-        window would mean holding the lock across the summarisation call
-        (stalling every append for its duration) or reconciling the file's
-        tail against the snapshot, neither of which belongs in this fix --
-        it is called out in the review notes instead.
+        The messages lock is held across the read+append so it cannot
+        interleave with a concurrent O_APPEND event row or another full-file
+        rewriter. The lock is NOT held across the compaction LLM call (that
+        already completed before this hook runs).
         """
-        new_jsonl = (
-            "\n".join(m.model_dump_json() for m in compacted) + "\n"
-            if compacted
-            else ""
-        )
+        del compacted  # the marker carries the summary text, not the message list
+        if summary_message is None:
+            return
+        summary_text = "".join(
+            part.text
+            for part in summary_message.parts
+            if getattr(part, "type", None) == "text"
+        ).strip()
+        if not summary_text:
+            return
         async with self._session.messages_lock:
+            existing = await self._read_messages_jsonl_text()
+            boundary_seq = _max_event_log_seq(existing)
+            now = datetime.now(timezone.utc)
+            marker = SessionMessageRecord(
+                seq=boundary_seq + 1,
+                kind=SessionMessageKind.COMPACTION_MARKER,
+                payload={
+                    "summary": summary_text,
+                    "replaced_from_seq": 1,
+                    # Message lines are seqless, so physical position in the
+                    # append-only file IS the boundary; ``replaced_to_seq`` is
+                    # the last event-log seq at/before the marker, recorded so
+                    # tap/UI consumers know the seq-space boundary too.
+                    "replaced_to_seq": boundary_seq,
+                    "model": self._model.name,
+                    "tokens_before": tokens_before,
+                    "tokens_after": tokens_after,
+                    "created_at": now.isoformat(),
+                },
+                created_at=now,
+            )
+            if existing and not existing.endswith("\n"):
+                existing += "\n"
+            new_jsonl = existing + marker.model_dump_json() + "\n"
             await self._session.commit_state(
-                summary=f"{self._session.session_id}: compaction",
+                summary=f"{self._session.session_id}: compaction marker",
                 op="message",
                 files={"messages.jsonl": new_jsonl},
             )
+
+    async def _open_compaction_window(self) -> list["Message"]:
+        """Set the ``compacting`` flag AND snapshot history atomically.
+
+        Both happen under the SAME per-session messages lock so a steer can
+        never land between the snapshot and the flag: any steer either lands
+        BEFORE (included in the snapshot, correctly summarised) or AFTER (sees
+        the flag, is deferred and drained past the marker). The lock is
+        released here -- it is NEVER held across the compaction LLM await.
+        Returns the marker-aware history snapshot the base loop compacts.
+        """
+        async with self._session.messages_lock:
+            self._session._state.begin_compaction(self._session.session_id)
+            return await self._read_messages_jsonl()
+
+    async def _close_compaction_window(self) -> None:
+        """Clear the ``compacting`` flag AND drain deferred steers.
+
+        Held under the messages lock so the flag-clear + drain + append are
+        atomic vs a concurrent :meth:`AgentSession.append_instruction`. Drained
+        steers are appended (FIFO submission order) AFTER the compaction marker
+        that :meth:`_replace_compacted_head` wrote earlier this turn, so the
+        next load reads ``[summary(from marker), tail, steer...]``. The flag is
+        cleared BEFORE the append so a failure there cannot strand the session
+        in a permanently-compacting state.
+        """
+        async with self._session.messages_lock:
+            self._session._state.end_compaction(self._session.session_id)
+            pending = self._session._state.drain_pending_steers(
+                self._session.session_id
+            )
+            if not pending:
+                return
+            new_jsonl = await self._appended_jsonl(pending)
+            await self._session.commit_state(
+                summary=(
+                    f"{self._session.session_id}: apply "
+                    f"{len(pending)} deferred steer(s)"
+                ),
+                op="user_instruction",
+                files={"messages.jsonl": new_jsonl},
+            )
+            for _ in pending:
+                logger.info(
+                    "session %s: applied a steer deferred during compaction",
+                    self._session.session_id,
+                )
 
     async def _ensure_artifact_dir(self) -> None:
         """Best-effort create ``<workspace_root>/artifacts/<session_id>/``.
@@ -333,33 +420,31 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         return f"sessions/{self._session.session_id}/messages.jsonl"
 
     async def _read_messages_jsonl(self) -> list[Message]:
+        """Rebuild the LLM history, honoring the last compaction marker.
+
+        messages.jsonl is shared between the LLM conversation history
+        (role/parts Messages, written by AgentSession + ``_persist_turn``) and
+        the session event log (seq/kind/ts SessionMessageRecords, written by
+        the dispatch WorkspaceMessageWriter for WS replay). Only the
+        Message-shaped lines are LLM history; the event records are skipped
+        (see FINDINGS F10b). When a ``compaction_marker`` record is present,
+        every Message line physically at/before the LAST marker is folded into
+        one synthetic assistant summary (see
+        :func:`reconstruct_compacted_history`).
+        """
         raw = await self._session._state.read_state_file(self._messages_jsonl_rel())
         if not raw:
             return []
         text = raw.decode("utf-8")
 
         def _parse() -> list[Message]:
-            out: list[Message] = []
-            for line in text.splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                # messages.jsonl is shared between the LLM conversation
-                # history (role/parts Messages, written by AgentSession +
-                # _persist_turn) and the session event log
-                # (seq/kind/ts SessionMessageRecords, written by the
-                # dispatch WorkspaceMessageWriter for WS replay). Only the
-                # Message-shaped lines are LLM history; skip the event
-                # records so a resumed/multi-turn session can reload its
-                # history without choking on them (see FINDINGS F10b).
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not (isinstance(obj, dict) and "role" in obj and "parts" in obj):
-                    continue
-                out.append(Message.model_validate(obj))
-            return out
+            # Deferred import: reconstruct_compacted_history lives in
+            # primer.workspace.session; a module-top import would pull the
+            # primer.workspace package initialisation into primer.agent's
+            # import graph. Imported here (off the event loop, in the thread).
+            from primer.workspace.session import reconstruct_compacted_history
+
+            return reconstruct_compacted_history(text.splitlines())
 
         return await asyncio.to_thread(_parse)
 
@@ -386,6 +471,32 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                         texts.append(part.text)  # type: ignore[union-attr]
                 return "".join(texts) if texts else None
         return None
+
+
+def _max_event_log_seq(text: str) -> int:
+    """Return the highest ``seq`` among event-log records in ``text``, else 0.
+
+    Only :class:`SessionMessageRecord` lines carry a ``seq`` (the interleaved
+    role/parts Message lines are seqless). Used to give an appended compaction
+    marker a strictly-greater monotonic seq than every prior event-log record.
+    """
+    max_seq = 0
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(obj, dict)
+            and "kind" in obj
+            and isinstance(obj.get("seq"), int)
+            and obj["seq"] > max_seq
+        ):
+            max_seq = obj["seq"]
+    return max_seq
 
 
 def _ends_with_question(text: str) -> bool:

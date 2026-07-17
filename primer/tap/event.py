@@ -35,6 +35,12 @@ class TapEventClass(StrEnum):
     CANCELLED = "cancelled"
     ERROR = "error"
     INVOCATION_DIVIDER = "invocation_divider"
+    # Mirrors SessionMessageKind.COMPACTION_MARKER so record_to_tap_event maps
+    # it 1:1 rather than crashing on the new kind (keeps the enum invariant the
+    # tap tests assert). The marker is an INTERNAL history-management record,
+    # not activity: the tap reader skips it (see primer/tap/reader.py) so it is
+    # never surfaced on the activity rail.
+    COMPACTION_MARKER = "compaction_marker"
 
     # -- tap-layer extension -------------------------------------------------
     GRAPH_TRANSITION = "graph_transition"

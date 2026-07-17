@@ -47,7 +47,7 @@ from primer.workspace.state_helpers import (
 )
 
 if TYPE_CHECKING:
-    pass
+    from primer.model.chat import Message
 
 
 logger = logging.getLogger(__name__)
@@ -240,6 +240,36 @@ class SandboxStateRepo:
         # session_id -> agent_id cache (populated by create_session /
         # initialize scan; used by commit() to resolve the agent trailer).
         self._agent_by_session: dict[str, str] = {}
+        # Steer-deferral state, keyed by session id. Mirrors
+        # LocalStateRepo: while a session compacts, an arriving steer is
+        # recorded PENDING here and drained (FIFO) after the compaction marker.
+        # Always mutated under the caller's messages_lock (the accessors below
+        # take no lock of their own -- the non-reentrant messages_lock must not
+        # be re-taken).
+        self._compaction_flags: dict[str, bool] = {}
+        self._pending_steers: dict[str, list["Message"]] = {}
+
+    # ---- steer-deferral state (guarded by the caller's messages_lock) -----
+
+    def begin_compaction(self, session_id: str) -> None:
+        """Mark ``session_id`` as compacting. Caller MUST hold messages_lock."""
+        self._compaction_flags[session_id] = True
+
+    def end_compaction(self, session_id: str) -> None:
+        """Clear the compacting flag. Caller MUST hold messages_lock."""
+        self._compaction_flags[session_id] = False
+
+    def is_compacting(self, session_id: str) -> bool:
+        """Whether ``session_id`` is mid-compaction. Caller holds messages_lock."""
+        return self._compaction_flags.get(session_id, False)
+
+    def add_pending_steer(self, session_id: str, message: "Message") -> None:
+        """Record a steer deferred during compaction. Caller holds messages_lock."""
+        self._pending_steers.setdefault(session_id, []).append(message)
+
+    def drain_pending_steers(self, session_id: str) -> list["Message"]:
+        """Return + clear the pending steers (FIFO). Caller holds messages_lock."""
+        return self._pending_steers.pop(session_id, [])
 
     @property
     def workspace_id(self) -> str:

@@ -35,6 +35,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Protocol
 
 from primer.model.workspace_session import (
+    SessionMessageKind,
     SessionMessageRecord,
     WorkspaceSession,
 )
@@ -141,14 +142,25 @@ def _complete_lines(raw: bytes) -> tuple[list[bytes], int]:
 
 
 def _parse_record(line: bytes) -> SessionMessageRecord | None:
-    """Parse one jsonl line into a record; return ``None`` if unparseable."""
+    """Parse one jsonl line into a record; return ``None`` if unparseable.
+
+    COMPACTION_MARKER records are treated as unparseable (``None``) here so
+    they are skipped by both read paths: the marker is an internal
+    history-management record, not activity, and it shares a seq with the
+    turn's first streamed record (the executor assigns it max_event_seq+1 out
+    of band from the dispatch writer). Skipping it WITHOUT advancing the cursor
+    means that shared seq can never cause the real record to be dropped.
+    """
     text = line.strip()
     if not text:
         return None
     try:
-        return SessionMessageRecord.model_validate(json.loads(text))
+        record = SessionMessageRecord.model_validate(json.loads(text))
     except (json.JSONDecodeError, ValueError):
         return None
+    if record.kind == SessionMessageKind.COMPACTION_MARKER:
+        return None
+    return record
 
 
 # ---------------------------------------------------------------------------

@@ -144,8 +144,43 @@ class _BaseAgentExecutor(ABC):
     async def _replace_compacted_head(
         self,
         compacted: list[Message],
+        *,
+        summary_message: Message | None = None,
+        tokens_before: int = 0,
+        tokens_after: int = 0,
     ) -> None:
-        """Replace the persisted history with the compacted form."""
+        """Replace the persisted history with the compacted form.
+
+        ``summary_message`` is the assistant-role summary the strategy
+        produced (``None`` for pruning-only compaction, where nothing was
+        summarised); ``tokens_before`` / ``tokens_after`` are the strategy's
+        telemetry. Surfaces that record compaction as an append-only marker
+        (the workspace executor) use these to build the marker payload;
+        surfaces that rewrite in place (the chat/thread executor) ignore them.
+        """
+
+    # ---- Compaction-window hooks (steer-deferral; workspace override) -----
+
+    async def _open_compaction_window(self) -> list[Message] | None:
+        """Hook run just before the compaction region. Default: no-op.
+
+        Returns a history snapshot to use for compaction, or ``None`` to let
+        the caller fall back to :meth:`_load_history`. The workspace executor
+        overrides this to set a per-session ``compacting`` flag AND snapshot
+        history under the SAME messages lock, so a steer can never slip
+        between the snapshot and the flag (see PR-C). The lock is released
+        before the compaction LLM await -- it is NEVER held across it.
+        """
+        return None
+
+    async def _close_compaction_window(self) -> None:
+        """Hook run after the compaction region (in a ``finally``). No-op here.
+
+        The workspace executor overrides this to clear the ``compacting`` flag
+        and drain any steers deferred during the window, applying them AFTER
+        the compaction marker. Must not raise on the default no-op path.
+        """
+        return None
 
     # ---- Public surface --------------------------------------------------
 
@@ -168,30 +203,48 @@ class _BaseAgentExecutor(ABC):
         non-tool-use stop. Streaming chunks are NOT persisted -- only
         the materialised :class:`Message` is.
         """
-        history = await self._load_history()
-
-        compacted = await self._compaction.maybe_compact(
-            agent=self._agent,
-            llm=self._llm,
-            model=self._model,
-            history=history,
-            new_messages=messages,
-            last_known_input_tokens=self._last_input_tokens,
-            **self._compaction_tool_kwargs(),
-        )
-        if compacted is not None:
-            await self._replace_compacted_head(compacted.new_messages)
-            history = compacted.new_messages
-            logger.info(
-                "AgentExecutor: compaction fired",
-                extra={
-                    "agent_id": self._agent.id,
-                    "before_tokens": compacted.estimated_tokens_before,
-                    "after_tokens": compacted.estimated_tokens_after,
-                    "pruned": compacted.pruned_tool_outputs,
-                    "head_replaced": compacted.head_messages_replaced,
-                },
+        # Bracket the pre-turn compaction region with the window hooks so a
+        # steer arriving mid-compaction is deferred (workspace surface). The
+        # snapshot is taken inside _open_compaction_window under the messages
+        # lock (atomic with setting the compacting flag); the base no-op
+        # returns None and we fall back to _load_history unchanged. The flag is
+        # only live across an ACTUAL LLM await: maybe_compact returns None with
+        # no await when compaction does not fire, and pruning-only is
+        # synchronous, so steers on non-compaction turns are never deferred.
+        snapshot = await self._open_compaction_window()
+        try:
+            history = (
+                snapshot if snapshot is not None else await self._load_history()
             )
+            compacted = await self._compaction.maybe_compact(
+                agent=self._agent,
+                llm=self._llm,
+                model=self._model,
+                history=history,
+                new_messages=messages,
+                last_known_input_tokens=self._last_input_tokens,
+                **self._compaction_tool_kwargs(),
+            )
+            if compacted is not None:
+                await self._replace_compacted_head(
+                    compacted.new_messages,
+                    summary_message=compacted.summary_message,
+                    tokens_before=compacted.estimated_tokens_before,
+                    tokens_after=compacted.estimated_tokens_after,
+                )
+                history = compacted.new_messages
+                logger.info(
+                    "AgentExecutor: compaction fired",
+                    extra={
+                        "agent_id": self._agent.id,
+                        "before_tokens": compacted.estimated_tokens_before,
+                        "after_tokens": compacted.estimated_tokens_after,
+                        "pruned": compacted.pruned_tool_outputs,
+                        "head_replaced": compacted.head_messages_replaced,
+                    },
+                )
+        finally:
+            await self._close_compaction_window()
 
         try:
             async for ev in self._run_loop(
@@ -207,15 +260,27 @@ class _BaseAgentExecutor(ABC):
                 "AgentExecutor: hard-overflow detected; force-compacting and retrying",
                 extra={"agent_id": self._agent.id, "error": str(exc)},
             )
-            forced = await self._compaction.force_compact(
-                agent=self._agent,
-                llm=self._llm,
-                model=self._model,
-                history=history,
-                **self._compaction_tool_kwargs(),
-            )
-            await self._replace_compacted_head(forced.new_messages)
-            history = forced.new_messages
+            # Hard-overflow recovery also runs an LLM await (force_compact), so
+            # bracket it too; ``history`` is already in hand, so the snapshot
+            # from the hook is not needed here (the flag/drain is what matters).
+            await self._open_compaction_window()
+            try:
+                forced = await self._compaction.force_compact(
+                    agent=self._agent,
+                    llm=self._llm,
+                    model=self._model,
+                    history=history,
+                    **self._compaction_tool_kwargs(),
+                )
+                await self._replace_compacted_head(
+                    forced.new_messages,
+                    summary_message=forced.summary_message,
+                    tokens_before=forced.estimated_tokens_before,
+                    tokens_after=forced.estimated_tokens_after,
+                )
+                history = forced.new_messages
+            finally:
+                await self._close_compaction_window()
             async for ev in self._run_loop(
                 history=history,
                 new_messages=messages,
