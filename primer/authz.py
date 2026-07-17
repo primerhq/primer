@@ -40,6 +40,12 @@ def _role_allows(actor: "Principal | PrincipalRef | None", need: str) -> bool:
       is trusted internal automation and is allowed through the floor
       exactly like ``system``.
 
+    Note: the ``trigger`` always-allow branch is exercised only by the
+    agent tool path; the MCP consumer (``invoke_exposed``) never sees a
+    trigger-typed Principal -- ``AuthMiddleware`` mints only
+    ``system`` / ``api_token`` / ``user`` for HTTP/MCP -- so this shared
+    predicate does not widen the MCP floor in practice.
+
     We key on ``type`` (NOT ``source == "internal"``): an ``api_token``
     actor is also ``source == "internal"`` but must keep being ranked by
     the owning user's real ``role``, never waved through.

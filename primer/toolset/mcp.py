@@ -113,6 +113,28 @@ class McpToolsetProvider(ToolsetProvider):
 
     # ---------- public API ------------------------------------------------
 
+    def required_role(self, tool_name: str) -> str:
+        """RBAC floor for an external (operator-configured) MCP tool.
+
+        Override the base ABC default of ``"admin"`` (fail-closed) with
+        ``"user"``. External MCP tools are operator-exposed third-party
+        tools: the operator's decision to configure and expose this MCP
+        toolset IS the authorization decision, so the per-tool floor
+        should default them to ``"user"`` -- preserving the pre-floor
+        behaviour where any authenticated, non-restricted user could call
+        them. Fail-closing these to ``"admin"`` (the ABC default) would
+        instead lock every non-admin invoker out of every operator-exposed
+        external tool, which is a regression, not a safeguard.
+
+        This provider has no per-tool ``required_role`` registry of its
+        own, so the floor is uniform across the toolset's tools. An
+        operator who wants to gate a specific external tool higher can do
+        so separately (e.g. via a policy layer above this provider); this
+        method only sets the default floor.
+        """
+        del tool_name  # uniform floor across this toolset's tools
+        return "user"
+
     async def list_tools(
         self,
         *,

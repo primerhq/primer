@@ -16,7 +16,7 @@ session. When the same agent is invoked on a CHAT, the
 they never enter the chat's context window. This is the whole point:
 keep these high-token, session-bound tools out of chat context.
 
-Tool catalog (4 tools, all yielding)
+Tool catalog (5 tools, all yielding)
 ------------------------------------
 
 * ``sleep``                - pause the turn for a fixed duration
@@ -27,6 +27,8 @@ Tool catalog (4 tools, all yielding)
   (moved from ``workspaces``).
 * ``subscribe_to_trigger`` - park the session until a trigger fires
   (moved from ``trigger``).
+* ``subscribe_to_channel_event`` - park the session until a matching
+  channel event fires (moved from ``trigger``).
 
 The BARE tool ids are unchanged by the move - only the scoped id
 (``toolset_id__bare``) changes (e.g. ``misc__sleep`` ->
@@ -110,6 +112,7 @@ def build_workspace_ext_toolset(
                     ),
                 ],
                 yields=True,
+                required_role="user",
             ),
             _sleep_handler,
         ),
@@ -148,6 +151,7 @@ def build_workspace_ext_toolset(
                 ],
                 yields=True,
                 requires_session=True,
+                required_role="user",
             ),
             _watch_files_handler,
         ),
@@ -178,6 +182,7 @@ def build_workspace_ext_toolset(
                 ],
                 yields=True,
                 requires_session=True,
+                required_role="user",
             ),
             _invoke_graph_handler,
         ),
