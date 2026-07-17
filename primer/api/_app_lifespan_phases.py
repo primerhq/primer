@@ -195,22 +195,31 @@ async def recover_chats(claim_engine, storage_provider) -> None:
         from primer.int.claim import ClaimKind as _ClaimKind
         from primer.model.chats import Chat as _Chat
         from primer.model.storage import OffsetPage as _OffsetPage
+        from primer.storage.q import Q as _Q
 
         _chats_storage = storage_provider.get_storage(_Chat)
+        # Push the eligibility filter into the query (mirrors session
+        # recovery above) instead of list()-ing every chat and dropping
+        # non-matching rows in Python: at scale that loads the entire chat
+        # history into memory. ChatClaimAdapter only accepts rows with
+        # status='active' AND turn_status in {claimable, running}, so we
+        # re-arm exactly those. The new chat.(status,turn_status) B-tree
+        # index keeps the scan cheap.
+        _chat_predicate = (
+            _Q(_Chat)
+            .where("status", "active")
+            .where_in("turn_status", ["claimable", "running"])
+            .build()
+        )
         _recovered_chats = 0
         _chat_offset = 0
         while True:
-            _page = await _chats_storage.list(
-                _OffsetPage(offset=_chat_offset, length=200)
+            _page = await _chats_storage.find(
+                _chat_predicate,
+                _OffsetPage(offset=_chat_offset, length=200),
             )
             _items = list(_page.items)
             for _chat in _items:
-                # Skip anything the adapter wouldn't accept.
-                if getattr(_chat, "status", None) != "active":
-                    continue
-                _ts = getattr(_chat, "turn_status", None)
-                if _ts not in ("claimable", "running"):
-                    continue
                 try:
                     await claim_engine.upsert(_ClaimKind.CHAT, _chat.id)
                     _recovered_chats += 1
