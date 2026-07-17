@@ -366,9 +366,12 @@ class McpToolsetProvider(ToolsetProvider):
 
             from mcp.client.streamable_http import streamablehttp_client
 
-            base_headers: dict[str, str] = (
-                dict(http_cfg.headers) if http_cfg.headers else {}
-            )
+            # headers values are SecretStr (masked on every API read path);
+            # unwrap here, at the network boundary, where the real token is
+            # what has to go on the wire.
+            base_headers: dict[str, str] = {
+                k: v.get_secret_value() for k, v in http_cfg.headers.items()
+            }
             if self._oauth is not None:
                 # May raise AuthRequiredError -- intended bubble-out.
                 auth_headers = await self._oauth.authorize(principal=principal)
@@ -432,10 +435,17 @@ class McpToolsetProvider(ToolsetProvider):
                     "set `allowed_stdio_commands` on the registry / "
                     "AppConfig to permit it."
                 )
+        # env values are SecretStr (masked on every API read path); unwrap
+        # here, at the subprocess boundary, where the MCP server needs the
+        # real credential in its environment.
         params = StdioServerParameters(
             command=stdio_cfg.command[0],
             args=list(stdio_cfg.command[1:]),
-            env=dict(stdio_cfg.env) if stdio_cfg.env else None,
+            env=(
+                {k: v.get_secret_value() for k, v in stdio_cfg.env.items()}
+                if stdio_cfg.env
+                else None
+            ),
         )
 
         try:
