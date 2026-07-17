@@ -98,6 +98,55 @@ async def test_recover_webhook_redispatches_every_row_across_pages(
 
 
 @pytest.mark.asyncio
+async def test_recover_webhook_skips_a_row_finalized_after_collection(
+    fake_storage_provider,
+):
+    """A row finalized between collection and dispatch is NOT re-fired.
+
+    The sweep collects ids and re-reads each one immediately before
+    dispatching it, so a live sibling that finalizes a row mid-sweep is
+    observed rather than raced: the re-read row is no longer 'pending' and
+    the sweep skips it instead of duplicating the delivery.
+    """
+    from primer.api._app_lifespan_phases import recover_webhook_deliveries
+
+    stale = datetime.now(timezone.utc) - timedelta(hours=1)
+    storage = fake_storage_provider.get_storage(WebhookDelivery)
+    for _id in ("fire-a", "fire-sibling", "fire-b"):
+        await storage.create(WebhookDelivery(
+            id=_id, trigger_id=f"trig-{_id}", extra_context={},
+            status="pending", created_at=stale,
+        ))
+
+    dispatched: list[str] = []
+
+    async def _spy(*args, delivery_id=None, **kwargs):
+        dispatched.append(delivery_id)
+        # While dispatching the first row, a "live sibling" finalizes another
+        # row that this sweep already collected the id of.
+        if delivery_id == "fire-a":
+            row = await storage.get("fire-sibling")
+            await storage.update(row.model_copy(update={"status": "done"}))
+        row = await storage.get(delivery_id)
+        await storage.update(row.model_copy(update={"status": "done"}))
+
+    with patch("primer.api.routers.webhooks._dispatch_webhook", _spy):
+        await recover_webhook_deliveries(
+            fake_storage_provider, None, None, None, None
+        )
+
+    assert "fire-sibling" not in dispatched, (
+        "a row finalized after collection was re-fired"
+    )
+    assert sorted(dispatched) == ["fire-a", "fire-b"]
+    # The sibling keeps the status its finaliser set, and the sweep never
+    # charged it an attempt.
+    sibling = await storage.get("fire-sibling")
+    assert sibling.status == "done"
+    assert sibling.attempts == 0
+
+
+@pytest.mark.asyncio
 async def test_recover_webhook_gives_up_at_the_attempt_cap(fake_storage_provider):
     """A row at the attempt cap is marked failed and NOT re-fired.
 
