@@ -393,6 +393,72 @@ class TestHttpTransportSuccess:
                 pass
 
 
+class TestSseTransport:
+    """Legacy HTTP+SSE routes through mcp.client.sse.sse_client (not
+    streamablehttp_client) and copes with its 2-tuple stream yield."""
+
+    def test_sse_config_is_accepted(self) -> None:
+        provider = McpToolsetProvider(
+            toolset_id="ts1",
+            config=McpConfig(
+                transport=TransportType.SSE,
+                config=HttpConfig(url="http://localhost:9999/mcp/sse"),
+            ),
+        )
+        assert provider is not None
+
+    async def test_sse_session_path_uses_sse_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
+
+        fake_session = MagicMock()
+        fake_session.__aenter__ = AsyncMock(return_value=fake_session)
+        fake_session.__aexit__ = AsyncMock(return_value=None)
+        fake_session.initialize = AsyncMock()
+        fake_session.list_tools = AsyncMock(
+            return_value=mcp_types.ListToolsResult(tools=[])
+        )
+
+        used = {"sse": False, "streamable": False}
+
+        @asynccontextmanager
+        async def fake_sse(**kwargs):
+            used["sse"] = True
+            # sse_client yields a 2-tuple (read, write), NOT streamable's
+            # 3-tuple; the unified dispatch must handle the shorter arity.
+            yield (object(), object())
+
+        @asynccontextmanager
+        async def fake_streamablehttp(**kwargs):
+            used["streamable"] = True
+            yield (object(), object(), lambda: None)
+
+        monkeypatch.setattr("mcp.client.sse.sse_client", fake_sse)
+        monkeypatch.setattr(
+            "mcp.client.streamable_http.streamablehttp_client",
+            fake_streamablehttp,
+        )
+        monkeypatch.setattr(
+            "primer.toolset.mcp.ClientSession",
+            lambda *args, **kwargs: fake_session,
+        )
+
+        provider = McpToolsetProvider(
+            toolset_id="ts1",
+            config=McpConfig(
+                transport=TransportType.SSE,
+                config=HttpConfig(url="http://example.test/mcp/sse"),
+            ),
+        )
+        tools = [t async for t in provider.list_tools()]
+        assert tools == []
+        fake_session.initialize.assert_awaited_once()
+        assert used["sse"] is True
+        assert used["streamable"] is False
+
+
 class _StdioLifecycle:
     """Test double tracking per-dispatch stdio subprocess lifecycle.
 

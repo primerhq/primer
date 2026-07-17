@@ -150,8 +150,11 @@ class TestTransportType:
     def test_http_value(self):
         assert TransportType.HTTP.value == "http"
 
-    def test_only_two_members(self):
-        assert {t.value for t in TransportType} == {"stdio", "http"}
+    def test_sse_value(self):
+        assert TransportType.SSE.value == "sse"
+
+    def test_members(self):
+        assert {t.value for t in TransportType} == {"stdio", "http", "sse"}
 
     def test_string_inheritance(self):
         # Should be a str subclass for JSON-friendliness.
@@ -206,6 +209,26 @@ class TestMcpConfig:
         with pytest.raises(ValidationError, match="http.*HttpConfig"):
             McpConfig(
                 transport=TransportType.HTTP,
+                config=StdioConfig(command=["x"]),
+            )
+
+    def test_sse_construction(self):
+        # Legacy HTTP+SSE shares HttpConfig with streamable HTTP.
+        cfg = McpConfig(
+            transport=TransportType.SSE,
+            config=HttpConfig(url="https://mcp.example.com/sse"),
+        )
+        assert cfg.transport == TransportType.SSE
+        assert isinstance(cfg.config, HttpConfig)
+
+    def test_sse_with_string_enum_value(self):
+        cfg = McpConfig(transport="sse", config=HttpConfig(url="https://x/sse"))
+        assert cfg.transport == TransportType.SSE
+
+    def test_sse_transport_with_stdio_config_rejected(self):
+        with pytest.raises(ValidationError, match="sse.*HttpConfig"):
+            McpConfig(
+                transport=TransportType.SSE,
                 config=StdioConfig(command=["x"]),
             )
 

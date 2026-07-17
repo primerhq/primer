@@ -382,11 +382,20 @@ class McpToolsetProvider(ToolsetProvider):
                 await stack.aclose()
             return
 
-        if self._config.transport == TransportType.HTTP:
+        if self._config.transport in (TransportType.HTTP, TransportType.SSE):
             assert isinstance(self._config.config, HttpConfig)
             http_cfg: HttpConfig = self._config.config
 
-            from mcp.client.streamable_http import streamablehttp_client
+            # Two HTTP wire protocols share the same connection details: modern
+            # streamable HTTP (transport="http") and legacy HTTP+SSE
+            # (transport="sse", which opens with an SSE `endpoint` event). Both
+            # take url= / headers= and run an anyio task group under the hood.
+            if self._config.transport == TransportType.SSE:
+                from mcp.client.sse import sse_client as transport_client
+            else:
+                from mcp.client.streamable_http import (
+                    streamablehttp_client as transport_client,
+                )
 
             # headers values are SecretStr (masked on every API read path);
             # unwrap here, at the network boundary, where the real token is
@@ -400,8 +409,8 @@ class McpToolsetProvider(ToolsetProvider):
                 base_headers.update(auth_headers)
 
             # Structured, lexically-nested `async with` -- NOT AsyncExitStack.
-            # streamablehttp_client runs an anyio task group whose cancel scope
-            # must be entered AND exited in the same task. AsyncExitStack defers
+            # The HTTP/SSE transport client runs an anyio task group whose
+            # cancel scope must be entered AND exited in the same task. AsyncExitStack defers
             # its __aexit__ callbacks, so on any failure (a refused connection is
             # the common case -- e.g. a containerised Primer reaching a host
             # `localhost:PORT` MCP URL) the task group got torn down in a
@@ -412,15 +421,15 @@ class McpToolsetProvider(ToolsetProvider):
             # in one task; the try/except maps connection/handshake failures
             # onto the documented ProviderError/NetworkError envelope.
             try:
-                async with streamablehttp_client(
+                async with transport_client(
                     url=http_cfg.url,
                     headers=base_headers if base_headers else None,
                 ) as streams:
-                    # mcp >= 1.16 yields (read, write, get_session_id);
-                    # older releases yield (read, write).
+                    # streamable HTTP yields (read, write, get_session_id);
+                    # sse_client yields (read, write). Take the first two.
                     if len(streams) < 2:  # pragma: no cover - older mcp
                         raise ConfigError(
-                            "streamablehttp_client returned an unexpected "
+                            "MCP transport client returned an unexpected "
                             "stream tuple"
                         )
                     read, write = streams[0], streams[1]
