@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, BottomSheet, relativeTime, fmtDate */
+/* global React, Icon, Btn, Modal, Banner, BottomSheet, relativeTime, fmtDate, EntityPicker */
 //
 // Chats list + detail. Live updates via WebSocket (`/v1/chats/{id}/ws`)
 // and initial history via REST (`GET /v1/chats/{id}/messages`). Tool
@@ -364,16 +364,13 @@ function CT_NewChatModal({ onClose, pushToast }) {
             <div>No agents registered. Create one before starting a chat.</div>
           </div>
         ) : (
-          <select
-            className="select mono"
-            style={{ width: "100%" }}
+          <EntityPicker
+            path="/agents"
             value={agentId}
-            onChange={(e) => setAgentId(e.target.value)}
-          >
-            {agentItems.map((a) => (
-              <option key={a.id} value={a.id}>{a.id}</option>
-            ))}
-          </select>
+            onChange={setAgentId}
+            placeholder="Search agents…"
+            testid="new-chat-agent-picker"
+          />
         )}
         {fieldErrors["body.agent_id"] && (
           <div className="muted text-sm" style={{ color: "var(--red)", marginTop: 4 }}>{fieldErrors["body.agent_id"]}</div>
