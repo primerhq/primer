@@ -91,6 +91,34 @@ class TestEventMatchesIn:
         assert event_matches(sel, _make_event(class_=TapEventClass.TOOL_CALL)) is True
 
 
+class TestEventMatchesILike:
+    """ILIKE is case-insensitive LIKE. A tap ``?selector=`` predicate can carry
+    it (the op enum is user-reachable and not whitelisted), so the in-memory
+    evaluator must handle it rather than raise NotImplementedError."""
+
+    def _ilike(self, field: str, pattern: str) -> Predicate:
+        return Predicate(
+            left=FieldRef(name=field), op=Op.ILIKE, right=Value(value=pattern)
+        )
+
+    def test_ilike_matches_case_insensitively(self) -> None:
+        sel = TapSelector(events=self._ilike("session_id", "%ABC%"))
+        assert event_matches(sel, _make_event(session_id="sess-abc")) is True
+
+    def test_ilike_no_match(self) -> None:
+        sel = TapSelector(events=self._ilike("session_id", "%zzz%"))
+        assert event_matches(sel, _make_event(session_id="sess-abc")) is False
+
+    def test_like_stays_case_sensitive(self) -> None:
+        # Contrast: plain LIKE with an upper-case pattern must NOT match the
+        # lower-case value, proving ILIKE's IGNORECASE is what matched above.
+        pred = Predicate(
+            left=FieldRef(name="session_id"), op=Op.LIKE, right=Value(value="%ABC%")
+        )
+        sel = TapSelector(events=pred)
+        assert event_matches(sel, _make_event(session_id="sess-abc")) is False
+
+
 # ---------------------------------------------------------------------------
 # event_matches — EQ operator on session_id
 # ---------------------------------------------------------------------------

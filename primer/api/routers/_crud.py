@@ -638,7 +638,7 @@ def make_crud_router(
             # q present AND this entity is searchable -> ILIKE substring find,
             # preserving the same page/order_by handling and the identical
             # OffsetPageResponse {items, total} shape as the plain list.
-            if q and search_fields:
+            if q and q.strip() and search_fields:
                 predicate = _build_search_predicate(search_fields, q)
                 return await storage.find(predicate, page, order_by=order_by)
             return await storage.list(page, order_by=order_by)
