@@ -58,7 +58,7 @@ async def durably_mark_session_resumable(
     shared by the bus listener (``primer.bus.listener.YieldEventListener``,
     which reacts to a bus NOTIFY) and the REST reply handlers (which now
     perform it durably so a listener outage cannot silently drop an operator
-    reply — see arch review D-C2).
+    reply - see arch review D-C2).
 
     Steps, mirroring the listener's original ``_flip_rows`` write exactly:
 

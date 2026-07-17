@@ -87,7 +87,7 @@ class YieldEventListener:
         Delegates the per-row guarded flip to the shared
         :func:`primer.session.yields.durably_mark_session_resumable` so the
         listener and the REST reply handlers (which now perform the same
-        durable flip inline — arch review D-C2) can never diverge. Multi-event
+        durable flip inline - arch review D-C2) can never diverge. Multi-event
         parks (``parked_event_keys`` set) ACCUMULATE replies into
         ``parked_state['resume_event_payloads']`` (keyed by the fired
         tool_call_id) and may be advanced even from ``resumable``; single-event
