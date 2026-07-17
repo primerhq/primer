@@ -135,6 +135,13 @@ async def _finalize_delivery(
     Never raises: durability marking is advisory and must not turn a
     successful dispatch into a logged failure (or vice versa). A missing
     row (create failed earlier) is tolerated silently.
+
+    Deliberately does NOT touch ``attempts``: that counts attempts STARTED
+    and is written by whoever starts one (the endpoint on create, startup
+    recovery before each re-dispatch). Incrementing here would both
+    double-count every recovered attempt and, because this marking is
+    swallowed on failure, fail to count the very cases the attempt cap
+    guards against.
     """
     from primer.model.webhook_delivery import WebhookDelivery
 
@@ -146,7 +153,6 @@ async def _finalize_delivery(
         await storage.update(row.model_copy(update={
             "status": "done" if ok else "failed",
             "completed_at": datetime.now(timezone.utc),
-            "attempts": row.attempts + 1,
         }))
     except Exception:  # noqa: BLE001 -- advisory marking, never fatal
         logger.debug(
@@ -330,6 +336,10 @@ async def receive_webhook(
             extra_context=extra_context,
             status="pending",
             created_at=fired_at,
+            # The BackgroundTask queued below is attempt 1. Recording it here
+            # (before it runs) is what lets the recovery sweep's attempt cap
+            # bound a delivery whose dispatch keeps killing the process.
+            attempts=1,
         ))
         delivery_persisted = True
     except ConflictError:
