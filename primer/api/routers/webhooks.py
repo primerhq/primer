@@ -24,8 +24,12 @@ Payload delivery:
   which merges it into the fire_context. Dispatchers and payload
   templates can reference ``webhook_body``, ``webhook_headers``,
   ``webhook_query``, and ``webhook_method``.
-- Dispatch is fire-and-forget via a BackgroundTask; the 202 is returned
-  immediately.
+- A durable ``WebhookDelivery`` row (status ``pending``) is written
+  BEFORE the 202 is returned; the BackgroundTask dispatches immediately
+  and marks the row ``done``/``failed``. A crash between the 202 and
+  dispatch completion leaves the row ``pending``, and startup recovery
+  re-dispatches stale pending rows (senders never retry a 202). Delivery
+  is therefore at-least-once rather than fire-and-forget.
 """
 
 from __future__ import annotations
@@ -116,6 +120,34 @@ def _verify_hmac(secret: str, body: bytes, sig_header: str | None) -> bool:
     return hmac.compare_digest(candidate, expected)
 
 
+async def _finalize_delivery(
+    storage_provider: Any, delivery_id: str, *, ok: bool
+) -> None:
+    """Best-effort flip of a WebhookDelivery row to done/failed.
+
+    Never raises: durability marking is advisory and must not turn a
+    successful dispatch into a logged failure (or vice versa). A missing
+    row (create failed earlier) is tolerated silently.
+    """
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    try:
+        storage = storage_provider.get_storage(WebhookDelivery)
+        row = await storage.get(delivery_id)
+        if row is None:
+            return
+        await storage.update(row.model_copy(update={
+            "status": "done" if ok else "failed",
+            "completed_at": datetime.now(timezone.utc),
+            "attempts": row.attempts + 1,
+        }))
+    except Exception:  # noqa: BLE001 -- advisory marking, never fatal
+        logger.debug(
+            "webhook delivery finalize failed for %s", delivery_id,
+            exc_info=True,
+        )
+
+
 async def _dispatch_webhook(
     trigger_id: str,
     extra_context: dict,
@@ -124,6 +156,8 @@ async def _dispatch_webhook(
     claim_engine: Any = None,
     scheduler: Any = None,
     workspace_registry: Any = None,
+    *,
+    delivery_id: str | None = None,
 ) -> None:
     """Background task: fire subscriptions for a received webhook.
 
@@ -134,7 +168,14 @@ async def _dispatch_webhook(
     ``auto_start=True`` session: a ``claim_engine=None`` there flips the
     session to RUNNING but never claims it, hanging it forever (now a
     loud ConfigError at create time rather than a silent hang).
+
+    When ``delivery_id`` names a persisted :class:`WebhookDelivery` row,
+    the row is marked done/failed after the dispatch completes (best
+    effort). This is the same code path startup recovery re-runs for a
+    stale ``pending`` row, so both the live fire and the crash-recovery
+    fire share one dispatch implementation.
     """
+    ok = False
     try:
         dispatch_deps = DispatchDeps(
             storage_provider=storage_provider,
@@ -155,8 +196,11 @@ async def _dispatch_webhook(
             result.fire_id,
             len(result.results),
         )
+        ok = True
     except Exception:
         logger.exception("webhook dispatch failed for trigger %s", trigger_id)
+    if delivery_id is not None:
+        await _finalize_delivery(storage_provider, delivery_id, ok=ok)
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +290,42 @@ async def receive_webhook(
         "webhook_method": request.method,
     }
 
+    # Durability: persist a pending WebhookDelivery BEFORE returning 202
+    # and BEFORE the fire-and-forget BackgroundTask. A crash between the
+    # 202 and dispatch completion leaves this row 'pending'; startup
+    # recovery re-dispatches stale pending rows (senders never retry a
+    # 202). The row id IS the delivery/fire id, so a duplicate inbound
+    # for the same instant collides on the primary key and is deduped.
+    # Best effort: if the write fails we still dispatch (behaviour then
+    # matches the old fire-and-forget path — no worse than before).
+    from primer.model.except_ import ConflictError
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    delivery_persisted = False
+    try:
+        await sp.get_storage(WebhookDelivery).create(WebhookDelivery(
+            id=delivery_id,
+            trigger_id=trigger.id,
+            extra_context=extra_context,
+            status="pending",
+            created_at=fired_at,
+        ))
+        delivery_persisted = True
+    except ConflictError:
+        # Same fire_id already recorded (duplicate inbound in the same
+        # millisecond); the first request owns the dispatch. Do not
+        # re-dispatch — return the accepted 202 idempotently.
+        logger.info(
+            "webhook delivery %s already recorded; treating as duplicate",
+            delivery_id,
+        )
+        return {"delivery_id": delivery_id, "status": "accepted"}
+    except Exception:
+        logger.exception(
+            "webhook delivery persist failed for %s; dispatching without "
+            "durability", delivery_id,
+        )
+
     # Fire and forget. Resolve the live claim_engine / scheduler /
     # workspace_registry from app.state HERE (request scope, where app.state
     # is reachable) and thread them into the background task. The
@@ -268,6 +348,7 @@ async def receive_webhook(
         claim_engine,
         scheduler,
         workspace_registry,
+        delivery_id=delivery_id if delivery_persisted else None,
     )
 
     return {"delivery_id": delivery_id, "status": "accepted"}

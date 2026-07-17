@@ -264,6 +264,117 @@ async def test_webhook_payload_maps_headers_query(client, fake_storage_provider)
 
 
 @pytest.mark.asyncio
+async def test_webhook_persists_pending_delivery_before_dispatch(
+    client, fake_storage_provider
+):
+    """A durable WebhookDelivery row exists (status=pending) before the
+    fire-and-forget dispatch completes — stubbing the dispatcher out."""
+    from primer.model.storage import OffsetPage
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    trigger = await _create_webhook_trigger(
+        fake_storage_provider, slug="wh-durable-pending"
+    )
+
+    async def _noop_dispatch(*args, **kwargs):
+        return None  # never finalizes the row
+
+    with patch(
+        "primer.api.routers.webhooks._dispatch_webhook",
+        side_effect=_noop_dispatch,
+    ):
+        r = await client.post(
+            f"/v1/webhooks/{trigger.config.token}",
+            content=b'{"event": "test"}',
+            headers={"content-type": "application/json"},
+        )
+    assert r.status_code == 202, r.text
+    delivery_id = r.json()["delivery_id"]
+
+    storage = fake_storage_provider.get_storage(WebhookDelivery)
+    page = await storage.list(OffsetPage(offset=0, length=10))
+    rows = list(page.items)
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.id == delivery_id
+    assert row.trigger_id == trigger.id
+    assert row.status == "pending"
+    assert row.completed_at is None
+    assert row.extra_context["webhook_body"] == '{"event": "test"}'
+
+
+@pytest.mark.asyncio
+async def test_webhook_delivery_flips_to_done_after_dispatch(
+    client, fake_storage_provider
+):
+    """After a successful background dispatch the row is marked done."""
+    from types import SimpleNamespace
+
+    from primer.model.storage import OffsetPage
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    trigger = await _create_webhook_trigger(
+        fake_storage_provider, slug="wh-durable-done"
+    )
+    seen_pending: list[str] = []
+
+    async def _ok_fire(*args, **kwargs):
+        # Mid-dispatch the row must already be persisted as pending.
+        storage = fake_storage_provider.get_storage(WebhookDelivery)
+        page = await storage.list(OffsetPage(offset=0, length=10))
+        for row in list(page.items):
+            if row.status == "pending":
+                seen_pending.append(row.id)
+        return SimpleNamespace(fire_id="fire-x", results=[])
+
+    with patch("primer.api.routers.webhooks.fire_trigger", side_effect=_ok_fire):
+        r = await client.post(
+            f"/v1/webhooks/{trigger.config.token}",
+            content=b"{}",
+            headers={"content-type": "application/json"},
+        )
+    assert r.status_code == 202, r.text
+    delivery_id = r.json()["delivery_id"]
+    assert delivery_id in seen_pending  # pending mid-dispatch
+
+    storage = fake_storage_provider.get_storage(WebhookDelivery)
+    row = await storage.get(delivery_id)
+    assert row is not None
+    assert row.status == "done"
+    assert row.completed_at is not None
+    assert row.attempts == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_delivery_flips_to_failed_on_dispatch_error(
+    client, fake_storage_provider
+):
+    """A raising dispatch marks the row failed but still returns 202."""
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    trigger = await _create_webhook_trigger(
+        fake_storage_provider, slug="wh-durable-failed"
+    )
+
+    async def _boom(*args, **kwargs):
+        raise RuntimeError("dispatch blew up")
+
+    with patch("primer.api.routers.webhooks.fire_trigger", side_effect=_boom):
+        r = await client.post(
+            f"/v1/webhooks/{trigger.config.token}",
+            content=b"{}",
+        )
+    assert r.status_code == 202, r.text
+    delivery_id = r.json()["delivery_id"]
+
+    storage = fake_storage_provider.get_storage(WebhookDelivery)
+    row = await storage.get(delivery_id)
+    assert row is not None
+    assert row.status == "failed"
+    assert row.attempts == 1
+
+
+@pytest.mark.asyncio
 async def test_webhook_endpoint_does_not_require_auth(raw_client, fake_storage_provider):
     """The webhook endpoint is accessible without authentication."""
     trigger = await _create_webhook_trigger(fake_storage_provider, slug="wh-public")
