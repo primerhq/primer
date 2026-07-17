@@ -201,7 +201,7 @@ async def test_tool_approval_respond_flips_row_without_listener(app, client):
 @pytest.mark.asyncio
 async def test_second_listener_style_flip_is_idempotent(app, client):
     """After the handler's durable flip, a second (listener-style) flip of
-    the same single-event park is a guard-rejected no-op — it must not
+    the same single-event park is a guard-rejected no-op - it must not
     corrupt the already-stamped payload."""
     sess = _make_ask_user_parked_session(session_id="d-idem", tool_call_id="tcx")
     storage = app.state.storage_provider.get_storage(WorkspaceSession)

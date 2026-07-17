@@ -815,7 +815,7 @@ async def test_claim_due_on_fresh_schema_ensures_entity_tables(pg_storage):
 
 
 # ---------------------------------------------------------------------------
-# Lease-TTL threading — no live database (records the bound params)
+# Lease-TTL threading - no live database (records the bound params)
 # ---------------------------------------------------------------------------
 
 
