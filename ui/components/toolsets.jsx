@@ -908,7 +908,7 @@ function TS_ToolsTab({ id, ts, onInvalidate }) {
     // the old leaked 500, so treat any server-side failure on an HTTP toolset
     // as the "tools unavailable" anomaly surface.
     const transport = _tsTransport(ts);
-    const t711 = transport === "http" && tools.error.status >= 500;
+    const t711 = (transport === "http" || transport === "sse") && tools.error.status >= 500;
     if (t711) {
       return (
         <div style={{ padding: 14 }}>

@@ -688,19 +688,23 @@ async def _probe_mcp_reachable(entity: Toolset, request: Request) -> None:
 
 
 async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
-    """Reject creating an MCP-http toolset whose endpoint is unreachable.
+    """Reject creating a network MCP toolset whose endpoint is unreachable.
 
     Runs before ``storage.create`` (raising aborts the create, persisting
-    nothing). Only network MCP transports are probed; the ``allow_unreachable``
-    bypass, non-MCP toolsets, and stdio MCP (no remote endpoint -- probing it
-    would launch a subprocess) all skip the probe.
+    nothing). Only network MCP transports are probed -- both ``http``
+    (streamable) and ``sse`` (legacy); the ``allow_unreachable`` bypass,
+    non-MCP toolsets, and stdio MCP (no remote endpoint -- probing it would
+    launch a subprocess) all skip the probe.
     """
     if _toolset_probe_bypassed(request):
         return
     if entity.provider != ToolsetProviderType.MCP:
         return
     config = entity.config
-    if config is None or config.transport != TransportType.HTTP:
+    if config is None or config.transport not in (
+        TransportType.HTTP,
+        TransportType.SSE,
+    ):
         return
     await _probe_mcp_reachable(entity, request)
 
