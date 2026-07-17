@@ -295,3 +295,63 @@ async def test_like_is_case_sensitive(sqlite_provider: SqliteStorageProvider):
         OffsetPage(offset=0, length=10),
     )
     assert [d.id for d in hit.items] == ["h"]
+
+
+@pytest.mark.asyncio
+async def test_ilike_is_case_insensitive(sqlite_provider: SqliteStorageProvider):
+    """Op.ILIKE matches case-INSENSITIVELY where Op.LIKE (case-sensitive)
+    does not.
+
+    SQLite has no ILIKE and pins LIKE case-sensitive; the translator emits
+    ``LOWER(field) LIKE LOWER(pattern)`` so "Foo"/"FOO"/"fOo" all match a
+    "%foo%" query.
+    """
+    s = sqlite_provider.get_storage(_Doc)
+    await s.create(_Doc(id="a", title="Foo bar"))
+    await s.create(_Doc(id="b", title="a FOO stop"))
+    await s.create(_Doc(id="c", title="plain foo lower"))
+    await s.create(_Doc(id="d", title="unrelated"))
+    for pattern in ("%foo%", "%FOO%", "%FoO%"):
+        hit = await s.find(
+            Predicate(
+                left=FieldRef(name="title"), op=Op.ILIKE, right=Value(value=pattern)
+            ),
+            OffsetPage(offset=0, length=10),
+        )
+        assert sorted(d.id for d in hit.items) == ["a", "b", "c"], pattern
+    # LIKE (case-sensitive) with a lowercased pattern matches ONLY the row that
+    # literally contains lowercase "foo" -- the capitalised rows are missed.
+    like_hit = await s.find(
+        Predicate(left=FieldRef(name="title"), op=Op.LIKE, right=Value(value="%foo%")),
+        OffsetPage(offset=0, length=10),
+    )
+    assert sorted(d.id for d in like_hit.items) == ["c"]
+
+
+@pytest.mark.asyncio
+async def test_ilike_escapes_wildcards(sqlite_provider: SqliteStorageProvider):
+    """A literal ``%`` in an ILIKE pattern (escaped as ``\\%``) matches only a
+    literal ``%`` -- the ESCAPE '\\' clause must be honoured, not swallowed."""
+    s = sqlite_provider.get_storage(_Doc)
+    await s.create(_Doc(id="pct", title="50% off"))
+    await s.create(_Doc(id="plain", title="50 percent"))
+    # Escaped '%' -> literal '%': only the row containing a literal '%'.
+    hit = await s.find(
+        Predicate(
+            left=FieldRef(name="title"),
+            op=Op.ILIKE,
+            right=Value(value="%50\\%%"),
+        ),
+        OffsetPage(offset=0, length=10),
+    )
+    assert [d.id for d in hit.items] == ["pct"]
+    # Unescaped '%' would over-match: sanity-check the literal path really
+    # discriminates by confirming the plain row is only hit when we let '%'
+    # act as a wildcard.
+    wild = await s.find(
+        Predicate(
+            left=FieldRef(name="title"), op=Op.ILIKE, right=Value(value="%50%")
+        ),
+        OffsetPage(offset=0, length=10),
+    )
+    assert sorted(d.id for d in wild.items) == ["pct", "plain"]

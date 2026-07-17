@@ -73,11 +73,20 @@ class Op(str, Enum):
     ``PRAGMA case_sensitive_like = ON`` so the two agree. Backends
     SHOULD translate to their native pattern syntax but MUST preserve
     case sensitivity.
+
+    ``ILIKE`` is ``LIKE`` but case-INSENSITIVE; it inherits the identical
+    ``%`` / ``_`` wildcard and ``\\`` ESCAPE semantics, only the case
+    sensitivity differs. Postgres emits its native ``ILIKE``; SQLite (which
+    has no ``ILIKE`` and pins ``LIKE`` case-sensitive) emulates it as
+    ``LOWER(field) LIKE LOWER(pattern)``, giving ASCII case-insensitive
+    matching. Non-ASCII case folding MAY differ between the two backends,
+    consistent with the SQLite ``LIKE`` note above.
     """
 
     EQ = "="
     NE = "!="
     LIKE = "~="
+    ILIKE = "~=*"
     GT = ">"
     LT = "<"
     GE = ">="

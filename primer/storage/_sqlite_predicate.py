@@ -126,9 +126,36 @@ class _SqlitePredicateTranslator:
             return self._render_contains(p)
         if p.op in (Op.IS_NULL, Op.IS_NOT_NULL):
             return self._render_null_check(p)
+        if p.op == Op.ILIKE:
+            return self._render_ilike(p)
         if p.op in _COMPARISON_OPS:
             return self._render_comparison(p)
         raise BadRequestError(f"unsupported operator {p.op.value!r}")
+
+    def _render_ilike(self, p: Predicate) -> str:
+        """Render case-insensitive matching for SQLite.
+
+        SQLite has no ``ILIKE`` keyword, and its ``LIKE`` is pinned
+        case-SENSITIVE (``PRAGMA case_sensitive_like = ON``), so emulate ASCII
+        case-insensitivity by lower-casing both operands:
+        ``LOWER(<field>) LIKE LOWER(<pattern>) ESCAPE '\\'``. ``LOWER`` leaves
+        the ``%`` / ``_`` / ``\\`` metacharacters untouched, so the wildcard +
+        escape semantics match the ``LIKE`` path (and Postgres ``ILIKE`` for
+        ASCII).
+        """
+        if isinstance(p.left, FieldRef):
+            left_sql = _render_field_expr(self._model, p.left.name)
+        elif isinstance(p.left, Value):
+            left_sql = self.append_param(p.left.value)
+        else:
+            raise BadRequestError("ILIKE left side must be FieldRef or Value")
+        if isinstance(p.right, FieldRef):
+            right_sql = _render_field_expr(self._model, p.right.name)
+        elif isinstance(p.right, Value):
+            right_sql = self.append_param(p.right.value)
+        else:
+            raise BadRequestError("ILIKE right side must be FieldRef or Value")
+        return f"(LOWER({left_sql}) LIKE LOWER({right_sql}) ESCAPE '\\')"
 
     def _render_null_check(self, p: Predicate) -> str:
         # Shared boilerplate (see _predicate_common.render_null_check). Note:

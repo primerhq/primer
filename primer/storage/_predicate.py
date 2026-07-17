@@ -223,10 +223,29 @@ class _PredicateTranslator:
         if p.op in (Op.IS_NULL, Op.IS_NOT_NULL):
             return self._render_null_check(p)
 
+        if p.op == Op.ILIKE:
+            return self._render_ilike(p)
+
         if p.op in _COMPARISON_OPS:
             return self._render_comparison(p)
 
         raise BadRequestError(f"unsupported operator {p.op.value!r}")
+
+    def _render_ilike(self, p: Predicate) -> str:
+        """Render case-insensitive ``ILIKE`` (Postgres-native).
+
+        Parallels the bare ``LIKE`` comparison rendering but emits the native
+        ``ILIKE`` keyword plus an explicit ``ESCAPE '\\'`` so the ``?q=``
+        search layer can escape user ``%`` / ``_`` deterministically. Like
+        ``LIKE``, it compares on the text representation (no numeric cast); a
+        cast would be meaningless and would itself error.
+        """
+        if isinstance(p.left, FieldRef):
+            left_sql = _render_field_expr(self._model, p.left.name)
+        else:
+            left_sql = self._render(p.left)
+        right_sql = self._render(p.right)
+        return f"({left_sql} ILIKE {right_sql} ESCAPE '\\')"
 
     def _render_null_check(self, p: Predicate) -> str:
         # Shared boilerplate (see _predicate_common.render_null_check); the

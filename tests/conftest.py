@@ -145,12 +145,44 @@ def _resolve_field(entity: Any, path: str) -> Any:
     return cur
 
 
+def _like_match(value: str, pattern: str, *, case_insensitive: bool) -> bool:
+    """Emulate SQL ``LIKE`` / ``ILIKE`` (``ESCAPE '\\'``) for the fake store.
+
+    Translates the SQL pattern to a regex: ``%`` -> ``.*``, ``_`` -> ``.``, and
+    a backslash escapes the next metacharacter to a literal. Mirrors the
+    ``ESCAPE '\\'`` clause the SQL backends emit so the ``?q=`` escape test
+    behaves identically over the in-memory provider.
+    """
+    import re
+
+    out: list[str] = ["^"]
+    i = 0
+    while i < len(pattern):
+        ch = pattern[i]
+        if ch == "\\" and i + 1 < len(pattern):
+            out.append(re.escape(pattern[i + 1]))
+            i += 2
+            continue
+        if ch == "%":
+            out.append(".*")
+        elif ch == "_":
+            out.append(".")
+        else:
+            out.append(re.escape(ch))
+        i += 1
+    out.append("$")
+    flags = re.DOTALL | (re.IGNORECASE if case_insensitive else 0)
+    return re.match("".join(out), value, flags) is not None
+
+
 def _eval_predicate(entity: Any, node: Any) -> bool:
     """Tiny predicate evaluator for the in-memory test storage.
 
-    Supports EQ / NE / AND / OR -- the operators the API routers
-    actually emit when translating query params. Other operators fall
-    through to ``True`` (the test storage is intentionally minimal).
+    Supports EQ / NE / GT / LT / GE / LE / LIKE / ILIKE / IS_NULL /
+    IS_NOT_NULL / AND / OR -- the operators the API routers actually emit
+    when translating query params (LIKE/ILIKE back the ``?q=`` search).
+    Other operators fall through to ``True`` (the test storage is
+    intentionally minimal).
     """
     if isinstance(node, Predicate):
         if node.op in (Op.AND, Op.OR):
@@ -181,6 +213,14 @@ def _eval_predicate(entity: Any, node: Any) -> bool:
                 return actual is not None and actual >= expected
             if node.op == Op.LE:
                 return actual is not None and actual <= expected
+            if node.op in (Op.LIKE, Op.ILIKE):
+                if actual is None or not isinstance(expected, str):
+                    return False
+                return _like_match(
+                    str(actual),
+                    expected,
+                    case_insensitive=(node.op == Op.ILIKE),
+                )
         return True
     return True
 

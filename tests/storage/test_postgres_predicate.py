@@ -138,6 +138,33 @@ def test_like_renders_bare_case_sensitive_operator():
     assert params == ["Hello%"]
 
 
+def test_ilike_renders_native_ilike_with_escape():
+    # Postgres has a native ILIKE: the translator must emit it (not a
+    # LOWER()/LIKE emulation) with an explicit ESCAPE '\' clause, parallel
+    # to the bare LIKE rendering. Case-insensitivity is the ONLY difference
+    # from LIKE; like LIKE it compares on the text representation (no cast).
+    sql, params = _sql(
+        Predicate(left=FieldRef(name="name"), op=Op.ILIKE, right=Value(value="%foo%"))
+    )
+    assert sql == "(data->>'name' ILIKE $1 ESCAPE '\\')", sql
+    assert "ILIKE" in sql and "LOWER(" not in sql
+    assert params == ["%foo%"]
+
+
+def test_ilike_differs_from_like_only_by_operator():
+    # Same operands, LIKE vs ILIKE: identical field expression + param,
+    # the operator keyword is the sole difference (ILIKE adds ESCAPE).
+    like_sql, _ = _sql(
+        Predicate(left=FieldRef(name="name"), op=Op.LIKE, right=Value(value="Foo%"))
+    )
+    ilike_sql, _ = _sql(
+        Predicate(left=FieldRef(name="name"), op=Op.ILIKE, right=Value(value="Foo%"))
+    )
+    assert like_sql == "(data->>'name' LIKE $1)", like_sql
+    assert ilike_sql == "(data->>'name' ILIKE $1 ESCAPE '\\')", ilike_sql
+    assert like_sql != ilike_sql
+
+
 def test_order_by_nullable_field_is_nulls_last():
     # NULLs sort LAST so keyset pagination can page across the NULL
     # boundary; parity with SQLite's "(field IS NULL) ASC" sort term.
