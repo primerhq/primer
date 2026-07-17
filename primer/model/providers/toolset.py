@@ -116,9 +116,14 @@ class StdioConfig(BaseModel):
         min_length=1,
         description="Command (argv) to launch the MCP server subprocess.",
     )
-    env: dict[str, str] = Field(
+    env: dict[str, SecretStr] = Field(
         default_factory=dict,
-        description="Environment variables to set when launching the subprocess.",
+        description=(
+            "Environment variables to set when launching the subprocess. "
+            "Values are secrets (they routinely carry API keys for the MCP "
+            "server): they are masked on every API read path and only "
+            "unwrapped at the subprocess boundary."
+        ),
     )
 
 
@@ -132,9 +137,14 @@ class HttpConfig(BaseModel):
         min_length=1,
         description="Base URL of the remote MCP server endpoint.",
     )
-    headers: dict[str, str] = Field(
+    headers: dict[str, SecretStr] = Field(
         default_factory=dict,
-        description="HTTP headers to include on every request to the MCP server (e.g. Authorization).",
+        description=(
+            "HTTP headers to include on every request to the MCP server "
+            "(e.g. Authorization). Values are secrets (they routinely carry "
+            "bearer tokens): they are masked on every API read path and only "
+            "unwrapped when the request is issued."
+        ),
     )
     oauth: OAuthConfig | None = Field(
         default=None,

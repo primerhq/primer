@@ -12,12 +12,13 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import re
 
 import pytest
 from pydantic import HttpUrl, SecretStr, ValidationError
 
-from primer.model.common import Identifiable
+from primer.model.common import Identifiable, dump_for_storage
 from primer.model.provider import (
     GoogleConfig,
     HttpConfig,
@@ -34,6 +35,12 @@ from primer.model.provider import (
     ToolsetProviderType,
     TransportType,
 )
+
+
+def _reveal(mapping: dict[str, SecretStr]) -> dict[str, str]:
+    """Unwrap a ``dict[str, SecretStr]`` (StdioConfig.env /
+    HttpConfig.headers) so a test can compare against plaintext."""
+    return {k: v.get_secret_value() for k, v in mapping.items()}
 
 
 # ============================================================================
@@ -53,7 +60,7 @@ class TestStdioConfig:
             env={"LOG_LEVEL": "info", "TZ": "UTC"},
         )
         assert cfg.command == ["mcp-server", "--root", "/data"]
-        assert cfg.env == {"LOG_LEVEL": "info", "TZ": "UTC"}
+        assert _reveal(cfg.env) == {"LOG_LEVEL": "info", "TZ": "UTC"}
 
     def test_command_required(self):
         with pytest.raises(ValidationError):
@@ -75,11 +82,14 @@ class TestStdioConfig:
         cfg1.env["TEST"] = "1"
         assert "TEST" not in cfg2.env
 
-    def test_json_round_trip(self):
+    def test_storage_round_trip(self):
+        # env is SecretStr: model_dump_json() masks it (that is the point,
+        # see TestToolsetTransportSecrets), so the storage round-trip goes
+        # through dump_for_storage, which preserves the plaintext.
         cfg = StdioConfig(command=["a", "b"], env={"KEY": "value"})
-        restored = StdioConfig.model_validate_json(cfg.model_dump_json())
+        restored = StdioConfig.model_validate(dump_for_storage(cfg))
         assert restored.command == cfg.command
-        assert restored.env == cfg.env
+        assert _reveal(restored.env) == {"KEY": "value"}
 
 
 # ============================================================================
@@ -99,7 +109,10 @@ class TestHttpConfig:
             headers={"Authorization": "Bearer test-token", "X-Custom": "v"},
         )
         assert cfg.url == "https://mcp.example.com/v1"
-        assert cfg.headers == {"Authorization": "Bearer test-token", "X-Custom": "v"}
+        assert _reveal(cfg.headers) == {
+            "Authorization": "Bearer test-token",
+            "X-Custom": "v",
+        }
 
     def test_url_required(self):
         with pytest.raises(ValidationError):
@@ -116,11 +129,13 @@ class TestHttpConfig:
         cfg1.headers["X"] = "1"
         assert "X" not in cfg2.headers
 
-    def test_json_round_trip(self):
+    def test_storage_round_trip(self):
+        # headers is SecretStr (bearer tokens); see the note on
+        # TestStdioConfig.test_storage_round_trip.
         cfg = HttpConfig(url="https://x", headers={"Authorization": "Bearer y"})
-        restored = HttpConfig.model_validate_json(cfg.model_dump_json())
+        restored = HttpConfig.model_validate(dump_for_storage(cfg))
         assert restored.url == cfg.url
-        assert restored.headers == cfg.headers
+        assert _reveal(restored.headers) == {"Authorization": "Bearer y"}
 
 
 # ============================================================================
@@ -243,16 +258,16 @@ class TestMcpConfig:
                 }
             )
 
-    def test_json_round_trip_stdio(self):
+    def test_storage_round_trip_stdio(self):
         cfg = McpConfig(
             transport=TransportType.STDIO,
             config=StdioConfig(command=["a", "b"], env={"K": "v"}),
         )
-        restored = McpConfig.model_validate_json(cfg.model_dump_json())
+        restored = McpConfig.model_validate(dump_for_storage(cfg))
         assert restored.transport == TransportType.STDIO
         assert isinstance(restored.config, StdioConfig)
         assert restored.config.command == ["a", "b"]
-        assert restored.config.env == {"K": "v"}
+        assert _reveal(restored.config.env) == {"K": "v"}
 
     def test_json_round_trip_http(self):
         cfg = McpConfig(
@@ -426,7 +441,10 @@ class TestToolsetCommon:
         assert restored.provider == ToolsetProviderType.INTERNAL
         assert restored.config is None
 
-    def test_json_round_trip_mcp_stdio(self):
+    def test_storage_round_trip_mcp_stdio(self):
+        # env/headers are SecretStr, so the round-trip that must preserve
+        # plaintext is the storage one (dump_for_storage), not model_dump_json
+        # -- the latter masks by design. See TestToolsetTransportSecrets.
         ts = Toolset(
             id="fs",
             provider="mcp",
@@ -435,13 +453,13 @@ class TestToolsetCommon:
                 config=StdioConfig(command=["mcp-server-fs"], env={"LOG": "debug"}),
             ),
         )
-        restored = Toolset.model_validate_json(ts.model_dump_json())
+        restored = Toolset.model_validate(dump_for_storage(ts))
         assert restored.id == "fs"
         assert restored.config.transport == TransportType.STDIO
         assert restored.config.config.command == ["mcp-server-fs"]
-        assert restored.config.config.env == {"LOG": "debug"}
+        assert _reveal(restored.config.config.env) == {"LOG": "debug"}
 
-    def test_json_round_trip_mcp_http(self):
+    def test_storage_round_trip_mcp_http(self):
         ts = Toolset(
             id="remote",
             provider="mcp",
@@ -453,10 +471,82 @@ class TestToolsetCommon:
                 ),
             ),
         )
-        restored = Toolset.model_validate_json(ts.model_dump_json())
+        restored = Toolset.model_validate(dump_for_storage(ts))
         assert restored.config.transport == TransportType.HTTP
         assert restored.config.config.url == "https://mcp.example.com"
-        assert restored.config.config.headers == {"Authorization": "Bearer x"}
+        assert _reveal(restored.config.config.headers) == {"Authorization": "Bearer x"}
+
+
+# ============================================================================
+# Transport credential masking (StdioConfig.env / HttpConfig.headers)
+# ============================================================================
+
+
+class TestToolsetTransportSecrets:
+    """``StdioConfig.env`` and ``HttpConfig.headers`` routinely carry
+    credentials: env holds API keys handed to the MCP subprocess, headers
+    hold bearer tokens for the endpoint. The toolset router is only
+    ``require_user``-gated, so these must mask on every API read path and
+    still round-trip in plaintext through ``dump_for_storage`` (the
+    storage writer) or every MCP transport would break.
+    """
+
+    def _stdio_toolset(self) -> Toolset:
+        return Toolset(
+            id="fs",
+            provider="mcp",
+            config=McpConfig(
+                transport="stdio",
+                config=StdioConfig(
+                    command=["mcp-server-fs"],
+                    env={"API_KEY": "sk-live-123"},
+                ),
+            ),
+        )
+
+    def _http_toolset(self) -> Toolset:
+        return Toolset(
+            id="remote",
+            provider="mcp",
+            config=McpConfig(
+                transport="http",
+                config=HttpConfig(
+                    url="https://mcp.example.com",
+                    headers={"Authorization": "Bearer super-secret"},
+                ),
+            ),
+        )
+
+    def test_stdio_env_masked_on_api_read_path(self):
+        dumped = self._stdio_toolset().model_dump(mode="json")
+        assert dumped["config"]["config"]["env"]["API_KEY"] == "**********"
+        assert "sk-live-123" not in json.dumps(dumped)
+
+    def test_http_headers_masked_on_api_read_path(self):
+        dumped = self._http_toolset().model_dump(mode="json")
+        assert dumped["config"]["config"]["headers"]["Authorization"] == "**********"
+        assert "super-secret" not in json.dumps(dumped)
+
+    def test_stdio_env_unmasked_for_storage(self):
+        dumped = dump_for_storage(self._stdio_toolset())
+        assert dumped["config"]["config"]["env"]["API_KEY"] == "sk-live-123"
+
+    def test_http_headers_unmasked_for_storage(self):
+        dumped = dump_for_storage(self._http_toolset())
+        assert (
+            dumped["config"]["config"]["headers"]["Authorization"]
+            == "Bearer super-secret"
+        )
+
+    def test_storage_round_trip_preserves_stdio_plaintext(self):
+        restored = Toolset.model_validate(dump_for_storage(self._stdio_toolset()))
+        assert _reveal(restored.config.config.env) == {"API_KEY": "sk-live-123"}
+
+    def test_storage_round_trip_preserves_http_plaintext(self):
+        restored = Toolset.model_validate(dump_for_storage(self._http_toolset()))
+        assert _reveal(restored.config.config.headers) == {
+            "Authorization": "Bearer super-secret"
+        }
 
 
 # ============================================================================

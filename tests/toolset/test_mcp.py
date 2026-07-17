@@ -350,6 +350,8 @@ class TestHttpTransportSuccess:
             ),
         )
         _ = [t async for t in provider.list_tools()]
+        # headers is dict[str, SecretStr] on the model (masked on every API
+        # read path); the REAL token must reach the wire, never the mask.
         assert captured["headers"] == {"Authorization": "Bearer x"}
 
     async def test_http_session_path_initialise_failure_is_classified(
@@ -449,6 +451,50 @@ class _StdioLifecycle:
 
         monkeypatch.setattr("primer.toolset.mcp.stdio_client", fake_stdio_client)
         monkeypatch.setattr("primer.toolset.mcp.ClientSession", make_session)
+
+
+class TestStdioEnvSecrets:
+    """``StdioConfig.env`` is ``dict[str, SecretStr]`` so API reads mask it.
+    The launched subprocess must still get the real credential."""
+
+    async def test_subprocess_env_receives_plaintext_not_mask(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from contextlib import asynccontextmanager
+        from unittest.mock import AsyncMock, MagicMock
+
+        captured: dict[str, object] = {}
+
+        @asynccontextmanager
+        async def fake_stdio_client(params):
+            captured["env"] = params.env
+            yield (object(), object())
+
+        def make_session(*args, **kwargs):
+            session = MagicMock()
+            session.__aenter__ = AsyncMock(return_value=session)
+            session.__aexit__ = AsyncMock(return_value=None)
+            session.initialize = AsyncMock()
+            session.list_tools = AsyncMock(
+                return_value=mcp_types.ListToolsResult(tools=[])
+            )
+            return session
+
+        monkeypatch.setattr("primer.toolset.mcp.stdio_client", fake_stdio_client)
+        monkeypatch.setattr("primer.toolset.mcp.ClientSession", make_session)
+
+        provider = McpToolsetProvider(
+            toolset_id="ts1",
+            config=McpConfig(
+                transport=TransportType.STDIO,
+                config=StdioConfig(
+                    command=["fake-mcp"],
+                    env={"API_KEY": "sk-live-123"},
+                ),
+            ),
+        )
+        _ = [t async for t in provider.list_tools()]
+        assert captured["env"] == {"API_KEY": "sk-live-123"}
 
 
 class TestStdioSessionLifecycle:
