@@ -278,6 +278,24 @@ class AgentSession:
         """Markdown injected into the agent's system prompt at session start."""
         return _SYSTEM_PROMPT_TEMPLATE.format(session_id=self.session_id)
 
+    @property
+    def messages_lock(self) -> asyncio.Lock:
+        """Mutual-exclusion lock for this session's messages.jsonl writers.
+
+        Every writer that rewrites the WHOLE file from a snapshot it read
+        (this class's :meth:`append_instruction`, the workspace executor's
+        ``_persist_turn`` / ``_replace_compacted_head``) must hold this
+        across its read->rewrite window, and the O_APPEND event-row writer
+        (``Workspace.append_message_line``) must hold it across its append.
+        Otherwise a write landing in a rewriter's read->rewrite gap is
+        silently truncated by the rewrite.
+
+        Exposed on the session (rather than callers reaching into
+        ``_state``) so the keying of the underlying lock table stays an
+        implementation detail of the state repo.
+        """
+        return self._state.messages_lock
+
     # ---- Pause / end flag accessors (set by request_*; read by runtime) --
 
     @property
@@ -423,16 +441,16 @@ class AgentSession:
             excerpt = " ".join(content.split())
             if len(excerpt) > 60:
                 excerpt = excerpt[:59].rstrip() + "…"
-            # Hold the state repo's messages lock across BOTH the read
+            # Hold the session's messages lock across BOTH the read
             # (_appended_messages_jsonl) and the full-file rewrite (commit),
-            # so a concurrent event-row append (Workspace.append_message_line,
-            # a different task) cannot slip into the read->rewrite gap and be
-            # truncated. The rewrite still takes the repo's _commit_lock
-            # internally; messages_lock is a distinct lock so there is no
-            # re-entrancy, and the acquisition order (messages_lock ->
-            # _commit_lock) is never inverted by the appender (which takes
-            # messages_lock alone).
-            async with self._state.messages_lock:
+            # so a concurrent event-row append (Workspace.append_message_line)
+            # or a concurrent full-file rewriter (the executor's _persist_turn)
+            # cannot slip into the read->rewrite gap and be truncated. The
+            # rewrite still takes the repo's _commit_lock internally;
+            # messages_lock is a distinct lock so there is no re-entrancy, and
+            # the acquisition order (messages_lock -> _commit_lock) is never
+            # inverted by any other acquirer.
+            async with self.messages_lock:
                 new_messages_jsonl = await self._appended_messages_jsonl(message)
                 await self._state.commit(
                     self.session_id,
