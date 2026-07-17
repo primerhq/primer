@@ -94,6 +94,55 @@ def test_record_to_tap_event_maps_each_kind(kind: SessionMessageKind) -> None:
     assert event.cursor == "cursor-abc"
 
 
+def test_record_to_tap_event_tolerates_compaction_marker() -> None:
+    """record_to_tap_event must MAP the new COMPACTION_MARKER kind rather than
+    crash on it (the enum stays 1:1 with SessionMessageKind). The tap reader
+    then skips it from the activity stream (see primer/tap/reader.py)."""
+    record = _make_record(SessionMessageKind.COMPACTION_MARKER, seq=7)
+    event = record_to_tap_event(
+        record,
+        workspace_id="ws-1",
+        session_id="sess-1",
+        agent_id="agent-1",
+        graph_id=None,
+        cursor="cur-cm",
+    )
+    assert event.class_ == TapEventClass.COMPACTION_MARKER
+    assert event.class_.value == "compaction_marker"
+    assert event.seq == 7
+
+
+def test_compaction_marker_is_skipped_by_tap_reader_parse() -> None:
+    """The reader's line parser drops a compaction_marker line (returns None)
+    so it is never surfaced as activity and cannot advance the drain cursor
+    onto a colliding real-record seq."""
+    import json
+
+    from primer.tap.reader import _parse_record
+
+    marker_line = json.dumps(
+        {
+            "seq": 4,
+            "kind": "compaction_marker",
+            "payload": {"summary": "s", "replaced_to_seq": 3},
+            "created_at": FIXED_TS.isoformat(),
+        }
+    ).encode()
+    assert _parse_record(marker_line) is None
+
+    # A normal record still parses.
+    real_line = json.dumps(
+        {
+            "seq": 5,
+            "kind": "assistant_token",
+            "payload": {"text": "hi"},
+            "created_at": FIXED_TS.isoformat(),
+        }
+    ).encode()
+    parsed = _parse_record(real_line)
+    assert parsed is not None and parsed.seq == 5
+
+
 def test_record_to_tap_event_none_optional_ids() -> None:
     record = _make_record(SessionMessageKind.DONE)
     event = record_to_tap_event(

@@ -39,6 +39,7 @@ from primer.model.workspace_session import (
     AgentBinding,
     Instruction,
     SessionInfo,
+    SessionMessageKind,
     SessionStatus,
     WaitingState,
 )
@@ -107,6 +108,57 @@ def _normalise_path(path: str) -> str:
     are kept literal so ``a`` and ``./a`` collapse to the same key.
     """
     return PurePosixPath(path.replace("\\", "/")).as_posix()
+
+
+def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
+    """Rebuild the LLM history from ``messages.jsonl`` lines, honoring markers.
+
+    ``messages.jsonl`` is APPEND-ONLY and interleaves two record types:
+    role/parts :class:`Message` lines (LLM history) and seq/kind
+    :class:`~primer.model.workspace_session.SessionMessageRecord` event-log
+    lines (written by the dispatch writer). Only the Message lines are LLM
+    history; other event-log records are skipped.
+
+    When the session has been compacted, a ``compaction_marker`` event-log
+    record is appended. Every Message line PHYSICALLY BEFORE the LAST marker is
+    replaced by a single synthetic assistant summary carrying the marker's
+    ``summary`` payload (mirrors the chat surface's positional
+    ``rows[last_marker_idx + 1:]`` reassembly in primer/chat/executor.py).
+    Message lines are seqless, so physical position in the append-only file IS
+    the ``replaced_to_seq`` boundary. A later marker supersedes an earlier one
+    (its summary already subsumes the earlier head + tail).
+
+    Shared by both history readers -- ``WorkspaceAgentExecutor.
+    _read_messages_jsonl`` and :meth:`AgentSession.take_pending_messages` -- so
+    neither replays uncompacted history after a compaction.
+    """
+    summary_text: str | None = None
+    msgs: list[Message] = []
+    marker_kind = SessionMessageKind.COMPACTION_MARKER.value
+    for line in raw_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict):
+            continue
+        if obj.get("kind") == marker_kind:
+            # A marker replaces everything read so far (head AND tail).
+            summary_text = (obj.get("payload") or {}).get("summary") or None
+            msgs = []
+            continue
+        if "role" in obj and "parts" in obj:
+            msgs.append(Message.model_validate(obj))
+        # else: a non-marker event-log record -> not LLM history, skip.
+    if summary_text:
+        return [
+            Message(role="assistant", parts=[TextPart(text=summary_text)]),
+            *msgs,
+        ]
+    return msgs
 
 
 # ---------------------------------------------------------------------------
@@ -453,6 +505,25 @@ class AgentSession:
             # the acquisition order (messages_lock -> _commit_lock) is never
             # inverted by any other acquirer.
             async with self.messages_lock:
+                # Steer-during-compaction deferral (PR-C, Decision 5). The
+                # compacting flag + pending list live on the repo keyed by
+                # session id (same sharing model as messages_lock) and are only
+                # ever touched under THIS lock -- so the flag-check here is
+                # atomic vs the executor's window open/close. A steer that
+                # arrives while compacting must NOT be committed now: the
+                # compaction marker will be appended after the pre-compaction
+                # snapshot, and folding this steer into that drop-zone (without
+                # it being in the summary) would silently lose it. Record it
+                # PENDING; the executor drains it to messages.jsonl AFTER the
+                # marker once compaction completes, preserving submission order.
+                if self._state.is_compacting(self.session_id):
+                    self._state.add_pending_steer(self.session_id, message)
+                    logger.info(
+                        "session %s: steer recorded PENDING during compaction",
+                        self.session_id,
+                    )
+                    self._info = updated_info
+                    return instruction
                 new_messages_jsonl = await self._appended_messages_jsonl(message)
                 await self._state.commit(
                     self.session_id,
@@ -644,35 +715,24 @@ class AgentSession:
     async def take_pending_messages(self) -> list[Message]:
         """Return the messages added since the last assistant turn.
 
-        Reads ``messages.jsonl`` and returns every message after the
-        most recent ``role == "assistant"`` entry. If no assistant
-        message exists yet (fresh session), returns every message in
-        the log -- typically just the initial user instruction.
+        Reads ``messages.jsonl``, rebuilds the LLM history via
+        :func:`reconstruct_compacted_history` (so a compaction marker folds the
+        pre-compaction head into one synthetic assistant summary -- WITHOUT
+        this, a resumed turn would replay uncompacted history), then returns
+        every message after the most recent ``role == "assistant"`` entry
+        (the synthetic summary counts as an assistant message). If no assistant
+        message exists yet (fresh session), returns every message in the
+        rebuilt log -- typically just the initial user instruction.
 
-        Uses the :class:`StateRepo` protocol's ``read_state_file`` so
-        this works for both local and sandbox (container/k8s) backends.
+        Uses the :class:`StateRepo` protocol's ``read_state_file`` so this
+        works for both local and sandbox (container/k8s) backends, and shares
+        the marker reassembly with ``WorkspaceAgentExecutor._read_messages_jsonl``.
         """
         rel = f"sessions/{self.session_id}/messages.jsonl"
         raw: bytes | None = await self._state.read_state_file(rel)
 
         def _parse(data: bytes) -> list[Message]:
-            messages: list[Message] = []
-            for line in data.decode("utf-8").splitlines():
-                line = line.strip()
-                if not line:
-                    continue
-                # messages.jsonl interleaves LLM-history Messages
-                # (role/parts) with session event-log records
-                # (seq/kind/ts) written by the dispatch writer. Keep only
-                # the Message-shaped lines (see FINDINGS F10b).
-                try:
-                    obj = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if not (isinstance(obj, dict) and "role" in obj and "parts" in obj):
-                    continue
-                messages.append(Message.model_validate(obj))
-            return messages
+            return reconstruct_compacted_history(data.decode("utf-8").splitlines())
 
         all_messages = _parse(raw) if raw else []
         last_assistant_idx = -1
@@ -721,4 +781,5 @@ class AgentSession:
 
 __all__ = [
     "AgentSession",
+    "reconstruct_compacted_history",
 ]

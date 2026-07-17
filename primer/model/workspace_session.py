@@ -557,8 +557,19 @@ class SessionMessageKind(StrEnum):
     GRAPH_TRANSITION = "graph_transition"
     # Written by reset_session on ENDED->CREATED re-open. Payload:
     # ``{"invocation": int}``. Rendered by the UI session adapter as a
-    # "— invocation N —" divider row (studio-agents-interact §5.2 / §3).
+    # "- invocation N -" divider row (studio-agents-interact §5.2 / §3).
     INVOCATION_DIVIDER = "invocation_divider"
+    # Appended (append-only, never a whole-file replace) by the workspace
+    # executor's ``_replace_compacted_head`` when history compaction fires.
+    # Payload mirrors the chat surface's compaction marker
+    # (primer/chat/executor.py): ``{"summary": str, "replaced_from_seq": int,
+    # "replaced_to_seq": int, "model": str, "tokens_before": int,
+    # "tokens_after": int, "created_at": str}``. The two history readers
+    # (``WorkspaceAgentExecutor._read_messages_jsonl`` and
+    # ``AgentSession.take_pending_messages``) fold every Message line
+    # physically at/before the LAST marker into one synthetic assistant
+    # summary; the event log and pre-compaction messages are NEVER deleted.
+    COMPACTION_MARKER = "compaction_marker"
 
 
 class SessionMessageRecord(BaseModel):

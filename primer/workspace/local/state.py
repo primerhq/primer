@@ -29,6 +29,7 @@ import logging
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
@@ -52,6 +53,10 @@ from primer.workspace.state_helpers import (
     validate_relative_path as _validate_relative_path,
     validate_session_id as _validate_session_id,
 )
+
+
+if TYPE_CHECKING:
+    from primer.model.chat import Message
 
 
 logger = logging.getLogger(__name__)
@@ -119,6 +124,40 @@ class LocalStateRepo:
         # init scan. The commit-trailer assembler uses this so callers
         # don't have to thread agent_id through every commit call.
         self._agent_by_session: dict[str, str] = {}
+        # Steer-deferral state, keyed by session id (same sharing model as
+        # ``_messages_locks``): while a session is compacting, a steer arriving
+        # via ``AgentSession.append_instruction`` is recorded PENDING here
+        # instead of committed to messages.jsonl, then drained (FIFO) AFTER the
+        # compaction marker once the window closes. These plain dicts are
+        # ALWAYS mutated under the session's ``messages_lock`` by the caller
+        # (append_instruction already holds it; the executor's window hooks
+        # acquire it), so the flag-check + window open/close stay atomic; the
+        # accessors below take no lock of their own (the non-reentrant
+        # messages_lock must not be re-taken).
+        self._compaction_flags: dict[str, bool] = {}
+        self._pending_steers: dict[str, list["Message"]] = {}
+
+    # ---- steer-deferral state (guarded by the caller's messages_lock) -----
+
+    def begin_compaction(self, session_id: str) -> None:
+        """Mark ``session_id`` as compacting. Caller MUST hold messages_lock."""
+        self._compaction_flags[session_id] = True
+
+    def end_compaction(self, session_id: str) -> None:
+        """Clear the compacting flag. Caller MUST hold messages_lock."""
+        self._compaction_flags[session_id] = False
+
+    def is_compacting(self, session_id: str) -> bool:
+        """Whether ``session_id`` is mid-compaction. Caller holds messages_lock."""
+        return self._compaction_flags.get(session_id, False)
+
+    def add_pending_steer(self, session_id: str, message: "Message") -> None:
+        """Record a steer deferred during compaction. Caller holds messages_lock."""
+        self._pending_steers.setdefault(session_id, []).append(message)
+
+    def drain_pending_steers(self, session_id: str) -> list["Message"]:
+        """Return + clear the pending steers (FIFO). Caller holds messages_lock."""
+        return self._pending_steers.pop(session_id, [])
 
     # ---- public surface --------------------------------------------------
 
