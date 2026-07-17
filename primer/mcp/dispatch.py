@@ -20,6 +20,13 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from primer.agent.tool_manager import invoke_one
+
+# The RBAC role-floor predicate now lives in :mod:`primer.authz` so the
+# agent tool-execution path can share the very same rules. Re-imported
+# here (``_ROLE_RANK`` for backwards-compatible attribute access,
+# ``_role_allows`` used by :func:`invoke_exposed` below) so anything that
+# references ``primer.mcp.dispatch._role_allows`` keeps working unchanged.
+from primer.authz import _ROLE_RANK, _role_allows  # noqa: F401
 from primer.mcp.exposure import (
     ExposureDeps,
     _iter_catalogue,
@@ -32,26 +39,6 @@ from primer.model.chat import Tool, ToolCallResult
 
 if TYPE_CHECKING:
     from primer.model.principal import Principal
-
-
-_ROLE_RANK = {"restricted": 0, "user": 1, "admin": 2}
-
-
-def _role_allows(actor: "Principal | None", need: str) -> bool:
-    """True iff ``actor`` may invoke a tool requiring role ``need``.
-
-    A ``system``-type actor (the auth-disabled bypass) always passes.
-    A missing actor never does. Otherwise the actor's declared
-    ``role`` must rank at or above ``need`` in :data:`_ROLE_RANK`; an
-    unranked/unknown role loses the comparison (``-1``) and an
-    unranked/unknown ``need`` can never be satisfied (``99``) --
-    both fail closed.
-    """
-    if actor is None:
-        return False
-    if actor.type == "system":
-        return True
-    return _ROLE_RANK.get(actor.role, -1) >= _ROLE_RANK.get(need, 99)
 
 
 class NotExposed(Exception):
