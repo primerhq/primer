@@ -28,6 +28,7 @@ from primer.api._app_lifespan_phases import (
     recover_chats,
     recover_ic_bootstrap,
     recover_sessions,
+    recover_webhook_deliveries,
     run_first_boot_bootstrap,
     sample_claim_queue_depth,
     seed_default_artifact_provider,
@@ -615,6 +616,22 @@ def _make_lifespan(config: AppConfig):
         # that match.
         if claim_engine is not None:
             await recover_chats(claim_engine, storage_provider)
+
+        # --- Webhook delivery recovery on startup --------------------------
+        # The webhook endpoint persists a pending WebhookDelivery row before
+        # its fire-and-forget BackgroundTask dispatches. A crash between the
+        # 202 and dispatch completion leaves the row 'pending' and the
+        # delivery lost (senders never retry a 202). Re-dispatch stale
+        # pending rows via the same _dispatch_webhook path. Runs regardless
+        # of claim_engine (fresh-session subs need it, but plain webhook
+        # subs do not); the dispatcher tolerates a None claim_engine.
+        await recover_webhook_deliveries(
+            storage_provider,
+            event_bus,
+            claim_engine,
+            scheduler,
+            workspace_registry,
+        )
 
         # --- Observability: claim queue-depth sampler ----------------------
         # Runs every 10s when the claim engine is Postgres-backed and

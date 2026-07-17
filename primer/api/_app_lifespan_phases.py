@@ -240,6 +240,93 @@ async def recover_chats(claim_engine, storage_provider) -> None:
         logger.exception("lifespan: chat recovery failed")
 
 
+_WEBHOOK_DELIVERY_GRACE_SECS = 30.0
+
+
+async def recover_webhook_deliveries(
+    storage_provider,
+    event_bus,
+    claim_engine,
+    scheduler,
+    workspace_registry,
+) -> None:
+    """Re-dispatch inbound webhook deliveries the previous process dropped.
+
+    The webhook endpoint persists a ``WebhookDelivery`` row (status
+    ``pending``) BEFORE returning 202 and BEFORE its in-process
+    ``BackgroundTask`` dispatches the trigger. If the process died between
+    the 202 and dispatch completion the row stays ``pending`` forever and
+    the delivery is lost (senders never retry a 202). Scan for ``pending``
+    rows older than a small grace window and re-run the SAME
+    ``_dispatch_webhook`` path.
+
+    Idempotency: the ``fire_id`` gate in ``fire_trigger`` does NOT dedupe a
+    webhook re-fire — ``fire_trigger`` recomputes a fresh wall-clock
+    ``fired_at`` for every webhook call (``scheduled_for=None``), so each
+    dispatch derives a different ``fire_id`` and ``last_fired_id`` never
+    matches. The durable ``WebhookDelivery.status`` IS the dedupe: only
+    ``pending`` rows are re-fired and ``_dispatch_webhook`` flips the row to
+    ``done``/``failed``, so a ``done`` row is never re-dispatched. Delivery
+    is therefore at-least-once (a crash in the delivered-but-not-yet-marked
+    window can double-deliver), matching the endpoint's best-effort marking.
+    """
+    try:
+        from datetime import datetime, timezone as _tz
+
+        from primer.api.routers.webhooks import _dispatch_webhook
+        from primer.model.storage import OffsetPage as _OffsetPage
+        from primer.model.webhook_delivery import WebhookDelivery
+        from primer.storage.q import Q as _Q
+
+        _storage = storage_provider.get_storage(WebhookDelivery)
+        # status is filtered in SQL; the created_at grace is applied in
+        # Python because a datetime is not a JSON-scalar predicate value.
+        _pending_predicate = (
+            _Q(WebhookDelivery).where("status", "pending").build()
+        )
+        _cutoff = datetime.now(_tz.utc).timestamp() - _WEBHOOK_DELIVERY_GRACE_SECS
+        _refired = 0
+        _offset = 0
+        while True:
+            _page = await _storage.find(
+                _pending_predicate,
+                _OffsetPage(offset=_offset, length=200),
+            )
+            _items = list(_page.items)
+            for _row in _items:
+                # Skip rows younger than the grace window — they may be an
+                # in-flight dispatch from THIS process's early startup.
+                if _row.created_at.timestamp() > _cutoff:
+                    continue
+                try:
+                    await _dispatch_webhook(
+                        _row.trigger_id,
+                        _row.extra_context,
+                        storage_provider,
+                        event_bus,
+                        claim_engine,
+                        scheduler,
+                        workspace_registry,
+                        delivery_id=_row.id,
+                    )
+                    _refired += 1
+                except Exception:
+                    logger.exception(
+                        "webhook recovery: re-dispatch failed for %s",
+                        _row.id,
+                    )
+            if len(_items) < 200:
+                break
+            _offset += 200
+        if _refired:
+            logger.info(
+                "lifespan: webhook recovery — re-dispatched %d stale "
+                "pending delivery(ies) from persisted state", _refired,
+            )
+    except Exception:  # noqa: BLE001 -- never break startup
+        logger.exception("lifespan: webhook recovery failed")
+
+
 async def recover_ic_bootstrap(storage_provider) -> None:
     """Internal-collections bootstrap recovery.
 
