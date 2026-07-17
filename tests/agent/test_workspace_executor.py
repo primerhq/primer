@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import shutil
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -390,5 +391,122 @@ class TestSandboxStateRepoParity:
         finally:
             # Restore the real repo so aclose()'s status commit works.
             session._state = real_state  # type: ignore[assignment]
+            await session.aclose()
+            await backend.aclose()
+
+
+# ===========================================================================
+# messages.jsonl rewrite races (arch-review batch 1, MEDIUM-1)
+# ===========================================================================
+
+
+class TestPersistTurnInstructionRace:
+    """A steer must survive a concurrent ``_persist_turn``.
+
+    ``_persist_turn`` is itself read-modify-rewrite: ``_appended_jsonl``
+    snapshots messages.jsonl and ``commit_state`` rewrites the whole file
+    from that snapshot. ``AgentSession.append_instruction`` does the same.
+    Without serialisation an instruction committed inside the turn's
+    read->rewrite gap is silently truncated by the turn's rewrite -- the
+    user's steer is permanently lost. Both paths hold the session's
+    ``messages_lock`` across their window so the steer survives.
+    """
+
+    @pytest.mark.asyncio
+    async def test_instruction_survives_concurrent_persist_turn(
+        self, tmp_path: Path
+    ) -> None:
+        backend, workspace, session = await _build_session(tmp_path)
+        try:
+            llm = _FakeLLM(
+                scripts=[
+                    [
+                        TextDelta(text="assistant-turn-text", index=0),
+                        Done(stop_reason="stop", raw_reason="stop"),
+                    ]
+                ]
+            )
+            mgr = ToolExecutionManager.for_workspace(
+                toolset_providers={}, session=session
+            )
+            executor = WorkspaceAgentExecutor(
+                agent=_agent(),
+                llm=llm,  # type: ignore[arg-type]
+                llm_model=_model(),
+                tool_manager=mgr,
+                session=session,
+            )
+
+            rel = f"sessions/{session.session_id}/messages.jsonl"
+            real_read = workspace.state_repo.read_state_file
+            real_persist = executor._persist_turn
+            steer_started = asyncio.Event()
+            steer_tasks: list[asyncio.Task] = []
+            in_persist = False
+            fired = False
+
+            async def _do_steer() -> None:
+                # Signal that the steer coroutine has begun, then append.
+                # Under the fix this blocks on messages_lock until the turn's
+                # rewrite releases it; without the fix it commits straight
+                # into the read->rewrite gap and is then overwritten.
+                steer_started.set()
+                await session.append_instruction("steer me")
+
+            async def hooked_read(path: str):
+                nonlocal fired
+                # Let _persist_turn take its snapshot FIRST, then hold the gap
+                # open so the concurrent steer commits after that snapshot.
+                # If the turn is not serialised, its rewrite drops the steer.
+                result = await real_read(path)
+                if in_persist and path == rel and not fired:
+                    fired = True
+                    steer_tasks.append(asyncio.create_task(_do_steer()))
+                    await steer_started.wait()
+                    # Give the (broken) unserialised steer time to commit, or
+                    # the (fixed) serialised steer time to block on the lock.
+                    await asyncio.sleep(0.05)
+                return result
+
+            async def hooked_persist(turn_messages) -> None:
+                # Arm the read hook only for the reads _persist_turn itself
+                # makes, so the interleave lands in exactly the window under
+                # test (not _load_history's or _fetch_last_assistant_text's).
+                nonlocal in_persist
+                in_persist = True
+                try:
+                    await real_persist(turn_messages)
+                finally:
+                    in_persist = False
+
+            workspace.state_repo.read_state_file = hooked_read  # type: ignore[assignment]
+            executor._persist_turn = hooked_persist  # type: ignore[assignment]
+            try:
+                await _drain(
+                    executor.invoke(
+                        [Message(role="user", parts=[TextPart(text="hi")])]
+                    )
+                )
+            finally:
+                workspace.state_repo.read_state_file = real_read  # type: ignore[assignment]
+            await asyncio.gather(*steer_tasks)
+
+            content = (
+                workspace.root
+                / workspace.template.state_path
+                / "sessions"
+                / session.session_id
+                / "messages.jsonl"
+            ).read_bytes()
+            # The steer committed inside the turn's read->rewrite window must
+            # survive the rewrite.
+            assert b"steer me" in content, content
+            # ...and the turn the executor persisted must also be present.
+            assert b"assistant-turn-text" in content, content
+            # ...along with the original instruction that seeded the file.
+            assert b"hello" in content, content
+            # The interleave actually occurred (no vacuous pass).
+            assert fired is True
+        finally:
             await session.aclose()
             await backend.aclose()

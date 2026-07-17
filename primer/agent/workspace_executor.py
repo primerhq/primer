@@ -119,19 +119,33 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         return await self._read_messages_jsonl()
 
     async def _persist_turn(self, turn_messages: list[Message]) -> None:
-        """Append ``turn_messages`` to ``messages.jsonl`` via ``commit_state``."""
-        new_text = await self._appended_jsonl(turn_messages)
-        excerpt = _summary_excerpt_from_messages(turn_messages)
-        sid_short = self._session.session_id[-12:]
-        if excerpt:
-            subject = f"turn[{sid_short}]: {excerpt}"
-        else:
-            subject = f"turn[{sid_short}]: assistant turn"
-        await self._session.commit_state(
-            summary=subject,
-            op="message",
-            files={"messages.jsonl": new_text},
-        )
+        """Append ``turn_messages`` to ``messages.jsonl`` via ``commit_state``.
+
+        This is itself a read-modify-rewrite: ``_appended_jsonl`` reads the
+        current file and ``commit_state`` writes the whole thing back. The
+        session's messages lock is held across BOTH so a concurrent writer
+        (an ``append_instruction`` steer, or a streamed event row) cannot
+        land in the read->rewrite gap and be silently truncated by the
+        rewrite (see arch-review batch 1, MEDIUM-1).
+
+        Lock order is ``messages_lock -> _commit_lock`` (commit_state takes
+        the latter internally), matching every other acquirer, and nothing
+        inside this critical section appends to messages.jsonl, so the
+        non-reentrant lock cannot be re-taken by this task.
+        """
+        async with self._session.messages_lock:
+            new_text = await self._appended_jsonl(turn_messages)
+            excerpt = _summary_excerpt_from_messages(turn_messages)
+            sid_short = self._session.session_id[-12:]
+            if excerpt:
+                subject = f"turn[{sid_short}]: {excerpt}"
+            else:
+                subject = f"turn[{sid_short}]: assistant turn"
+            await self._session.commit_state(
+                summary=subject,
+                op="message",
+                files={"messages.jsonl": new_text},
+            )
 
     async def inject_resume_messages(
         self, messages: list[Message],
@@ -163,17 +177,33 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         Git history naturally preserves the pre-compaction snapshot --
         anyone inspecting ``.state/sessions/<id>/`` can ``git show``
         the previous commit to recover the original messages.
+
+        The messages lock is held across the rewrite so it cannot interleave
+        with a concurrent O_APPEND event row or another full-file rewriter.
+
+        NOTE (arch-review batch 1, MEDIUM-1): unlike ``_persist_turn`` this
+        hook does NOT contain its own read -- ``compacted`` is derived from
+        the snapshot ``AgentExecutor.invoke`` took at ``_load_history``,
+        which is separated from this rewrite by the compaction LLM call.
+        Locking only the rewrite therefore does not make compaction atomic
+        against a steer that arrives mid-compaction: that steer is appended
+        after the snapshot and is dropped by this rewrite. Closing that
+        window would mean holding the lock across the summarisation call
+        (stalling every append for its duration) or reconciling the file's
+        tail against the snapshot, neither of which belongs in this fix --
+        it is called out in the review notes instead.
         """
         new_jsonl = (
             "\n".join(m.model_dump_json() for m in compacted) + "\n"
             if compacted
             else ""
         )
-        await self._session.commit_state(
-            summary=f"{self._session.session_id}: compaction",
-            op="message",
-            files={"messages.jsonl": new_jsonl},
-        )
+        async with self._session.messages_lock:
+            await self._session.commit_state(
+                summary=f"{self._session.session_id}: compaction",
+                op="message",
+                files={"messages.jsonl": new_jsonl},
+            )
 
     async def _ensure_artifact_dir(self) -> None:
         """Best-effort create ``<workspace_root>/artifacts/<session_id>/``.
