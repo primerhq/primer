@@ -1406,7 +1406,7 @@ async def test_t0169_put_config_reconfigure_embedder_works(
         config_created = True
 
         # After activation, changing embedding_provider_id is frozen --
-        # the API must return 409 with frozen_fields in the detail.
+        # the API must return 409 with frozen_fields in the response.
         put_b = await client.put(
             "/v1/internal_collections/config",
             json=_ic_config_body(embedder_id=embedder_b, ssp_id=ssp_id),
@@ -1415,11 +1415,15 @@ async def test_t0169_put_config_reconfigure_embedder_works(
             f"reconfigure PUT after activation should return 409 "
             f"(frozen fields); got {put_b.status_code}: {put_b.text}"
         )
-        detail = put_b.json().get("detail", {})
-        frozen = detail.get("frozen_fields", []) if isinstance(detail, dict) else []
+        # The problem+json error contract renders an HTTPException dict detail
+        # as a string ``detail`` (the human message) with the machine keys
+        # (frozen_fields, error) carried verbatim in ``extensions``.
+        body_json = put_b.json()
+        extensions = body_json.get("extensions", {})
+        frozen = extensions.get("frozen_fields", [])
         assert "embedding_provider_id" in frozen, (
-            f"expected 'embedding_provider_id' in frozen_fields; "
-            f"got: {detail!r}"
+            f"expected 'embedding_provider_id' in extensions.frozen_fields; "
+            f"got: {body_json!r}"
         )
 
         # Search route still responds cleanly on the ORIGINAL embedder
