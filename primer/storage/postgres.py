@@ -516,6 +516,17 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "useridentity": [
         ("provider_subject_uniq", True, "((data->>'provider_id'), (data->>'subject'))"),
     ],
+    "webhookdelivery": [
+        # Startup webhook recovery filters status='pending' on every boot;
+        # without this the sweep seq-scans every delivery ever received (and
+        # OffsetPage adds a COUNT(*) per page over that scan). Table name is
+        # the lowercased class name -- see _table_name_for.
+        #
+        # NOTE: delivery rows are never pruned, so this table grows with
+        # lifetime webhook volume. The index keeps the boot sweep off a full
+        # scan, but a retention/prune policy is still owed as a follow-up.
+        ("status", False, "((data->>'status'))"),
+    ],
 }
 
 
