@@ -30,6 +30,12 @@ Payload delivery:
   dispatch completion leaves the row ``pending``, and startup recovery
   re-dispatches stale pending rows (senders never retry a 202). Delivery
   is therefore at-least-once rather than fire-and-forget.
+- At-least-once is NOT idempotent. Every inbound POST gets its own
+  delivery row and its own dispatch, so a sender that retries a POST
+  fires the trigger a second time, and a recovery re-fire can
+  double-deliver when the process died after dispatching but before
+  marking the row. Suppressing genuine duplicates would require a
+  sender-supplied idempotency key to dedupe on; that is out of scope.
 """
 
 from __future__ import annotations
@@ -41,6 +47,7 @@ import time
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 
@@ -281,7 +288,14 @@ async def receive_webhook(
         body_str = ""
 
     fired_at = datetime.now(timezone.utc)
-    delivery_id = make_fire_id(trigger.id, fired_at)
+    # The row id must be unique PER REQUEST. It used to be the bare fire_id
+    # (``fire-{trigger_id}-{ms}``), which keys on (trigger, arrival
+    # millisecond) and correlates with NEITHER the sender nor the payload:
+    # two DISTINCT events for one trigger in the same millisecond collided on
+    # the primary key, and the loser was silently accepted without dispatching
+    # (losing its body outright). Keep the fire_id as a readable correlation
+    # prefix and append a random suffix so distinct requests never collide.
+    delivery_id = f"{make_fire_id(trigger.id, fired_at)}-{uuid4().hex[:8]}"
 
     extra_context = {
         "webhook_body": body_str,
@@ -294,8 +308,15 @@ async def receive_webhook(
     # and BEFORE the fire-and-forget BackgroundTask. A crash between the
     # 202 and dispatch completion leaves this row 'pending'; startup
     # recovery re-dispatches stale pending rows (senders never retry a
-    # 202). The row id IS the delivery/fire id, so a duplicate inbound
-    # for the same instant collides on the primary key and is deduped.
+    # 202).
+    #
+    # This does NOT make the endpoint idempotent. Every inbound POST gets
+    # its own row and its own dispatch, so a genuine duplicate (a sender
+    # retrying seconds later) lands a different fire_id, hits no conflict,
+    # and fires the trigger again. Delivery is at-least-once; real
+    # duplicate suppression would need a sender-supplied idempotency key
+    # to dedupe on, which is out of scope.
+    #
     # Best effort: if the write fails we still dispatch (behaviour then
     # matches the old fire-and-forget path - no worse than before).
     from primer.model.except_ import ConflictError
@@ -312,14 +333,15 @@ async def receive_webhook(
         ))
         delivery_persisted = True
     except ConflictError:
-        # Same fire_id already recorded (duplicate inbound in the same
-        # millisecond); the first request owns the dispatch. Do not
-        # re-dispatch - return the accepted 202 idempotently.
-        logger.info(
-            "webhook delivery %s already recorded; treating as duplicate",
-            delivery_id,
+        # Not expected now that ids carry a random suffix. Treat it as the
+        # best-effort persist failure it is and dispatch anyway: returning
+        # an "accepted" 202 without dispatching would drop the delivery,
+        # which is the exact silent loss this durability path exists to
+        # eliminate.
+        logger.exception(
+            "webhook delivery %s conflicted on create; dispatching without "
+            "durability", delivery_id,
         )
-        return {"delivery_id": delivery_id, "status": "accepted"}
     except Exception:
         logger.exception(
             "webhook delivery persist failed for %s; dispatching without "

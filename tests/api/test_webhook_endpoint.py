@@ -375,6 +375,107 @@ async def test_webhook_delivery_flips_to_failed_on_dispatch_error(
 
 
 @pytest.mark.asyncio
+async def test_two_same_millisecond_webhooks_both_dispatch(
+    client, fake_storage_provider
+):
+    """Two DISTINCT webhooks landing in the same millisecond BOTH dispatch.
+
+    Regression: the delivery row id used to be the fire_id, which is keyed on
+    (trigger, arrival millisecond) and correlates with neither the sender nor
+    the payload. Two distinct events for one trigger in the same millisecond
+    therefore collided on the primary key, and the second was silently
+    'accepted' without ever dispatching - losing its body outright.
+    """
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    trigger = await _create_webhook_trigger(
+        fake_storage_provider, slug="wh-same-ms"
+    )
+    frozen = datetime(2024, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ARG003 -- signature parity
+            return frozen
+
+    bodies: list[str] = []
+
+    async def _spy(trigger_id, extra_context, *args, **kwargs):
+        bodies.append(extra_context["webhook_body"])
+
+    with patch("primer.api.routers.webhooks.datetime", _FrozenDatetime), \
+         patch("primer.api.routers.webhooks._dispatch_webhook", side_effect=_spy):
+        r1 = await client.post(
+            f"/v1/webhooks/{trigger.config.token}",
+            content=b'{"event": "first"}',
+            headers={"content-type": "application/json"},
+        )
+        r2 = await client.post(
+            f"/v1/webhooks/{trigger.config.token}",
+            content=b'{"event": "second"}',
+            headers={"content-type": "application/json"},
+        )
+
+    assert r1.status_code == 202, r1.text
+    assert r2.status_code == 202, r2.text
+    # Distinct requests never share a row id, even at the same instant.
+    assert r1.json()["delivery_id"] != r2.json()["delivery_id"]
+    # Both payloads reached the dispatcher; neither was dropped.
+    assert bodies == ['{"event": "first"}', '{"event": "second"}']
+    # Both were persisted durably, so a crash can recover either.
+    storage = fake_storage_provider.get_storage(WebhookDelivery)
+    assert await storage.get(r1.json()["delivery_id"]) is not None
+    assert await storage.get(r2.json()["delivery_id"]) is not None
+
+
+@pytest.mark.asyncio
+async def test_webhook_conflict_on_create_still_dispatches(
+    client, fake_storage_provider
+):
+    """A ConflictError persisting the row must NOT swallow the dispatch.
+
+    The persist is advisory (best effort): if it fails for any reason the
+    request still dispatches, matching the generic-failure branch. Silently
+    returning 202 without dispatching would drop the delivery outright.
+    """
+    from primer.model.except_ import ConflictError
+
+    trigger = await _create_webhook_trigger(
+        fake_storage_provider, slug="wh-conflict"
+    )
+    dispatched: list[str] = []
+
+    async def _spy(trigger_id, extra_context, *args, **kwargs):
+        dispatched.append(extra_context["webhook_body"])
+
+    async def _conflict(*args, **kwargs):
+        raise ConflictError("id already exists")
+
+    # Patch the live storage instance the endpoint resolves (get_storage
+    # memoises one storage per model), so only the WebhookDelivery create is
+    # forced to conflict. A module-path patch is NOT a reliable target here:
+    # tests/ has no __init__.py, so conftest is importable under two names
+    # ("conftest" and "tests.conftest") and a module patch can silently hit a
+    # different class object than the fixture actually uses.
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    delivery_storage = fake_storage_provider.get_storage(WebhookDelivery)
+    with patch.object(
+        delivery_storage, "create", side_effect=_conflict
+    ), patch(
+        "primer.api.routers.webhooks._dispatch_webhook", side_effect=_spy
+    ):
+        r = await client.post(
+            f"/v1/webhooks/{trigger.config.token}",
+            content=b'{"event": "conflicted"}',
+            headers={"content-type": "application/json"},
+        )
+
+    assert r.status_code == 202, r.text
+    assert dispatched == ['{"event": "conflicted"}']
+
+
+@pytest.mark.asyncio
 async def test_webhook_endpoint_does_not_require_auth(raw_client, fake_storage_provider):
     """The webhook endpoint is accessible without authentication."""
     trigger = await _create_webhook_trigger(fake_storage_provider, slug="wh-public")
