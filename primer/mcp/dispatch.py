@@ -27,6 +27,7 @@ from primer.mcp.exposure import (
     get_exposure,
 )
 from primer.mcp.safety import is_exposable, tool_scoped_id
+from primer.model.api_token import SCOPE_MCP
 from primer.model.chat import Tool, ToolCallResult
 
 if TYPE_CHECKING:
@@ -163,6 +164,7 @@ async def invoke_exposed(
     principal: str | None,
     deps: ExposureDeps,
     actor: "Principal | None" = None,
+    api_token_scopes: list[str] | None = None,
 ) -> ToolCallResult:
     """Dispatch a ``tools/call`` to the owning provider.
 
@@ -207,6 +209,19 @@ async def invoke_exposed(
     failure, not a "does not exist" signal. An ``is_error``
     :class:`ToolCallResult` is returned in-band instead, and the
     provider's handler is never invoked.
+
+    Scope gate
+    ----------
+    Every MCP tool call requires the ``mcp`` scope on bearer-token
+    callers -- this used to be enforced once at connect time (the
+    ``_mcp_auth_gate`` 403 ``scope_required`` response); it now runs
+    here, per call, so any authenticated principal may connect and the
+    scope is re-checked on every ``tools/call``. ``api_token_scopes`` is
+    ``None`` for a cookie session (``request.state.api_token is None``
+    -- full user authority) and bypasses the check, mirroring
+    :func:`primer.api.deps.require_scope`. A bearer token's scopes are a
+    concrete list; ``mcp`` must be a member. Denial is IN-BAND, same
+    shape as the RBAC floor below.
     """
     exposure = await get_exposure(deps)
     if not exposure.enabled or scoped_id not in set(exposure.allowed_tools):
@@ -237,6 +252,18 @@ async def invoke_exposed(
     ok, reason = is_exposable(tool, provider=provider)
     if not ok:
         raise NotExposed(scoped_id, reason=reason)
+    # Scope floor: a bearer-token caller (api_token_scopes is a concrete
+    # list) must carry the ``mcp`` scope to invoke ANY tool. A cookie
+    # session (api_token_scopes is None, full user authority) bypasses,
+    # mirroring ``require_scope`` in primer/api/deps.py. Moved here from
+    # connect-time so any authenticated principal may connect and every
+    # call is re-authorized. Denial is IN-BAND, same shape as the RBAC
+    # floor below; the handler is never reached in that case.
+    if api_token_scopes is not None and SCOPE_MCP not in api_token_scopes:
+        return ToolCallResult(
+            output="access denied: the 'mcp' scope is required for this call",
+            is_error=True,
+        )
     # RBAC floor: every exposed tool -- across every toolset, not just
     # ``system`` -- declares (or fails closed to ``admin`` for) a
     # required_role via the owning provider. The caller's Principal must

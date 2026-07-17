@@ -41,22 +41,28 @@ def _make_mcp_auth_gate(app: FastAPI):
     """Build the ASGI gate that fronts ``StreamableHTTPSessionManager``.
 
     Reads scope state populated by :class:`AuthMiddleware`
-    (``state.user`` / ``state.principal`` / ``state.api_token``),
-    rejects anonymous callers with 401 + ``WWW-Authenticate``, and
-    enforces the ``mcp`` scope on bearer tokens with 403. Cookie
-    sessions carry full user authority (``api_token is None``) and
-    pass through without a scope check.
+    (``state.user`` / ``state.principal`` / ``state.api_token``) and
+    rejects anonymous callers with 401 + ``WWW-Authenticate``. That is
+    the ONLY gate applied at connect time: any authenticated principal
+    -- bearer token regardless of scope, cookie session, or a
+    ``restricted``-role user -- may connect. The ``mcp`` scope and the
+    ``restricted``-role floor are enforced PER CALL instead, inside
+    :func:`primer.mcp.dispatch.invoke_exposed` (scope) and its existing
+    ``required_role`` check (role), so a denial surfaces as an in-band
+    ``isError`` tool result rather than a connection rejection.
 
-    On success the principal + api_token id are stashed in the
-    module-level :class:`ContextVar`s :data:`current_principal` and
-    :data:`current_api_token_id` (from :mod:`primer.mcp.server`) so
-    the MCP request handlers see the authenticated caller. The
-    ContextVars are reset in a ``finally`` so concurrent requests on
-    the same worker do not leak identities.
+    On success the principal, api_token id, actor, and the token's
+    scopes are stashed in the module-level :class:`ContextVar`s
+    :data:`current_principal`, :data:`current_api_token_id`,
+    :data:`current_actor`, and :data:`current_api_token_scopes` (from
+    :mod:`primer.mcp.server`) so the MCP request handlers see the
+    authenticated caller. The ContextVars are reset in a ``finally`` so
+    concurrent requests on the same worker do not leak identities.
     """
     from primer.mcp.server import (
         current_actor as _current_actor,
         current_api_token_id as _current_api_token_id,
+        current_api_token_scopes as _current_api_token_scopes,
         current_principal as _current_principal,
     )
     from starlette.datastructures import State
@@ -96,24 +102,6 @@ def _make_mcp_auth_gate(app: FastAPI):
             )
             return
 
-        if api_token is not None and "mcp" not in api_token.scopes:
-            await _mcp_send_simple_response(
-                send, 403,
-                {"detail": {"code": "scope_required", "scope": "mcp"}},
-            )
-            return
-
-        # RBAC: restricted callers may authenticate but never reach the
-        # MCP dispatch surface. Rejected here before the session manager
-        # is consulted, symmetric with the per-tool admin gate in
-        # :func:`primer.mcp.dispatch.invoke_exposed`.
-        if actor is not None and getattr(actor, "role", None) == "restricted":
-            await _mcp_send_simple_response(
-                send, 403,
-                {"detail": {"code": "forbidden_role"}},
-            )
-            return
-
         session_manager = getattr(app.state, "mcp_session_manager", None)
         if session_manager is None:
             # Should never happen in a well-configured app — surface a
@@ -129,12 +117,20 @@ def _make_mcp_auth_gate(app: FastAPI):
         api_token_id_tok = _current_api_token_id.set(
             api_token.id if api_token is not None else None
         )
+        # None is the sentinel for a cookie session (full user
+        # authority, no scope check); a bearer token stashes its
+        # concrete (possibly empty) scopes list for the per-call
+        # scope floor in primer.mcp.dispatch.invoke_exposed.
+        api_token_scopes_tok = _current_api_token_scopes.set(
+            api_token.scopes if api_token is not None else None
+        )
         try:
             await session_manager.handle_request(scope, receive, send)
         finally:
             _current_principal.reset(principal_tok)
             _current_api_token_id.reset(api_token_id_tok)
             _current_actor.reset(actor_tok)
+            _current_api_token_scopes.reset(api_token_scopes_tok)
 
     return _mcp_auth_gate
 

@@ -60,6 +60,15 @@ current_api_token_id: ContextVar[str | None] = ContextVar(
 current_actor: ContextVar["Principal | None"] = ContextVar(
     "primer_mcp_actor", default=None,
 )
+# The auth gate also stashes the authenticated bearer token's scopes
+# here so the dispatch layer can enforce the ``mcp`` scope per call (see
+# Task 9 follow-up: the scope floor moved from connect-time to call-time
+# so any authenticated caller may connect). ``None`` is the sentinel for
+# a cookie session (``api_token is None``) -- full user authority, no
+# scope check. A concrete (possibly empty) list means a bearer token.
+current_api_token_scopes: ContextVar["list[str] | None"] = ContextVar(
+    "primer_mcp_api_token_scopes", default=None,
+)
 
 
 def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
@@ -112,6 +121,7 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
         principal = current_principal.get()
         api_token_id = current_api_token_id.get()
         actor = current_actor.get()
+        api_token_scopes = current_api_token_scopes.get()
         t0 = time.monotonic()
         error_code: str | None = None
         ok = False
@@ -122,6 +132,7 @@ def build_mcp_server(deps_factory: Callable[[], ExposureDeps]) -> Server:
                     arguments=arguments or {},
                     principal=principal,
                     actor=actor,
+                    api_token_scopes=api_token_scopes,
                     deps=deps,
                 )
             except NotExposed as exc:
@@ -176,4 +187,5 @@ __all__ = [
     "current_principal",
     "current_api_token_id",
     "current_actor",
+    "current_api_token_scopes",
 ]

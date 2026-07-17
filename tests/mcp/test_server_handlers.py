@@ -18,6 +18,7 @@ from primer.mcp.exposure import ExposureDeps, update_exposure
 from primer.mcp.server import (
     build_mcp_server,
     current_api_token_id,
+    current_api_token_scopes,
     current_principal,
 )
 from primer.model.chat import ToolCallResult
@@ -241,6 +242,109 @@ async def test_invoke_allowed_returns_result(
     }]
 
 
+# ---- scope gate (the ``mcp`` scope, enforced per call) ---------------------
+#
+# This used to be a connect-time 403 in the ASGI auth gate
+# (_mcp_auth_gate); it now runs here, per call, so ANY authenticated
+# principal may connect and every tools/call re-checks the token's
+# scopes. ``api_token_scopes=None`` is the cookie-session sentinel (full
+# user authority, no scope check); a bearer token passes its concrete
+# (possibly empty) scopes list.
+
+
+@pytest.mark.asyncio
+async def test_invoke_bearer_without_mcp_scope_denied_in_band(
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
+) -> None:
+    """A bearer token whose scopes don't include ``mcp`` is denied
+    IN-BAND -- not raised, not a connection-level rejection. ``system_actor``
+    clears the (unrelated) RBAC floor so this isolates the scope check."""
+    deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+
+    result = await invoke_exposed(
+        scoped_id="misc__uuid_v4", arguments={},
+        principal=None, actor=system_actor,
+        api_token_scopes=["api"], deps=deps,
+    )
+
+    assert isinstance(result, ToolCallResult)
+    assert result.is_error is True
+    assert "mcp" in result.output
+    assert "scope" in result.output
+    provider = await fake_provider_registry_with_tools.get_toolset("misc")
+    assert provider.calls == []  # never dispatched
+
+
+@pytest.mark.asyncio
+async def test_invoke_bearer_empty_scopes_denied_in_band(
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
+) -> None:
+    """An empty (but concrete, not ``None``) scopes list is still a bearer
+    token -- it must be treated distinctly from the cookie-session
+    sentinel and denied for lacking ``mcp``."""
+    deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+
+    result = await invoke_exposed(
+        scoped_id="misc__uuid_v4", arguments={},
+        principal=None, actor=system_actor,
+        api_token_scopes=[], deps=deps,
+    )
+
+    assert result.is_error is True
+
+
+@pytest.mark.asyncio
+async def test_invoke_bearer_with_mcp_scope_allowed(
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
+) -> None:
+    """A bearer token carrying the ``mcp`` scope runs normally."""
+    deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+
+    result = await invoke_exposed(
+        scoped_id="misc__uuid_v4", arguments={},
+        principal=None, actor=system_actor,
+        api_token_scopes=["mcp"], deps=deps,
+    )
+
+    assert isinstance(result, ToolCallResult)
+    assert result.is_error is False
+
+
+@pytest.mark.asyncio
+async def test_invoke_cookie_session_bypasses_scope_check(
+    fake_storage_provider, fake_provider_registry_with_tools, system_actor,
+) -> None:
+    """``api_token_scopes=None`` is the cookie-session sentinel -- full
+    user authority, no scope check at all -- mirroring
+    :func:`primer.api.deps.require_scope`."""
+    deps = _deps(fake_storage_provider, fake_provider_registry_with_tools)
+    await update_exposure(
+        enabled=True, allowed_tools=["misc__uuid_v4"],
+        updated_by="alice", deps=deps,
+    )
+
+    result = await invoke_exposed(
+        scoped_id="misc__uuid_v4", arguments={},
+        principal=None, actor=system_actor,
+        api_token_scopes=None, deps=deps,
+    )
+
+    assert isinstance(result, ToolCallResult)
+    assert result.is_error is False
+
+
 # ---- approval-gate enforcement (security: MCP has no human-park) -----------
 
 
@@ -409,3 +513,4 @@ async def test_context_vars_default_to_none() -> None:
     """Defaults let unit tests + dev REPL call handlers without auth wiring."""
     assert current_principal.get() is None
     assert current_api_token_id.get() is None
+    assert current_api_token_scopes.get() is None
