@@ -274,9 +274,32 @@ async def recover_chats(claim_engine, storage_provider) -> None:
 # deployments with slow fresh-session dispatches or long rolling-deploy drains;
 # if the re-check task is lost (process exits before it fires) the row falls
 # back to the next boot's sweep.
-_WEBHOOK_DELIVERY_GRACE_SECS = float(
-    os.environ.get("PRIMER_WEBHOOK_RECOVERY_GRACE_SECS", "300")
-)
+_WEBHOOK_DELIVERY_GRACE_SECS_DEFAULT = 300.0
+
+
+def _read_webhook_grace_secs() -> float:
+    """Parse the grace override, falling back to the default.
+
+    This runs at IMPORT time, so an unparseable value must not raise: a
+    typo'd PRIMER_WEBHOOK_RECOVERY_GRACE_SECS would otherwise propagate out
+    of the import and take the whole API down at boot. A bad override is an
+    operator mistake worth shouting about, not a reason to refuse to start.
+    """
+    _raw = os.environ.get("PRIMER_WEBHOOK_RECOVERY_GRACE_SECS")
+    if _raw is None:
+        return _WEBHOOK_DELIVERY_GRACE_SECS_DEFAULT
+    try:
+        return float(_raw)
+    except (TypeError, ValueError):
+        logger.warning(
+            "PRIMER_WEBHOOK_RECOVERY_GRACE_SECS=%r is not a number; "
+            "falling back to the %.0fs default",
+            _raw, _WEBHOOK_DELIVERY_GRACE_SECS_DEFAULT,
+        )
+        return _WEBHOOK_DELIVERY_GRACE_SECS_DEFAULT
+
+
+_WEBHOOK_DELIVERY_GRACE_SECS = _read_webhook_grace_secs()
 
 # Page size for the recovery sweep's scan of pending rows. Bounded by the
 # OffsetPage contract (length is 1..200).

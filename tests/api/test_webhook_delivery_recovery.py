@@ -281,6 +281,28 @@ async def test_recover_webhook_gives_up_at_the_attempt_cap(fake_storage_provider
     )
 
 
+def test_a_bad_grace_override_does_not_break_the_import():
+    """A non-numeric override falls back to the default instead of raising.
+
+    The value is parsed at import time, so letting ValueError escape means a
+    typo'd env var takes the entire API down at boot.
+    """
+    import importlib
+
+    from primer.api import _app_lifespan_phases as phases
+
+    try:
+        with patch.dict(
+            "os.environ", {"PRIMER_WEBHOOK_RECOVERY_GRACE_SECS": "not-a-number"}
+        ):
+            reloaded = importlib.reload(phases)
+            assert reloaded._WEBHOOK_DELIVERY_GRACE_SECS == (
+                reloaded._WEBHOOK_DELIVERY_GRACE_SECS_DEFAULT
+            )
+    finally:
+        importlib.reload(phases)
+
+
 def test_grace_window_is_configurable_and_clears_a_slow_dispatch():
     """The grace window is the only guard against re-firing a live sibling's
     in-flight dispatch, so its default must clear a slow fresh-session
