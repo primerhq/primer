@@ -43,6 +43,7 @@ def _make_manager_with_fake_tool(tool_name: str, tool_result: str, *, raises=Non
     from primer.agent.tool_manager import ToolExecutionManager
     from primer.int.toolset import ToolsetProvider
     from primer.model.chat import Tool
+    from primer.model.principal import PrincipalRef
 
     class FakeToolsetProvider(ToolsetProvider):
         async def list_tools(self, *, principal=None):
@@ -63,6 +64,9 @@ def _make_manager_with_fake_tool(tool_name: str, tool_result: str, *, raises=Non
 
     mgr = ToolExecutionManager(
         toolset_providers={"fake": FakeToolsetProvider()},
+        # System invoker clears the RBAC tool floor added on the toolset
+        # dispatch path; without it a None invoker fails closed and denies.
+        initiated_by=PrincipalRef.system(),
     )
     return mgr
 

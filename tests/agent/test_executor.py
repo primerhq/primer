@@ -27,6 +27,7 @@ from primer.model.chat import (
     ToolCallStart,
 )
 from primer.model.common import Identifiable
+from primer.model.principal import PrincipalRef
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -179,6 +180,10 @@ class _FakeToolsetProvider:
         for t in self._tools:
             yield t
 
+    def required_role(self, tool_name: str) -> str:
+        del tool_name
+        return "admin"
+
     async def call(
         self, *, tool_name: str, arguments, principal=None, ctx=None
     ) -> ToolCallResult:
@@ -253,7 +258,10 @@ async def _build_executor(
         title="t",
     )
     provider = _FakeToolsetProvider(toolset_id="t1", tools=tools, handler=handler)
-    mgr = ToolExecutionManager(toolset_providers={"t1": provider})  # type: ignore[arg-type]
+    mgr = ToolExecutionManager(
+        toolset_providers={"t1": provider},  # type: ignore[arg-type]
+        initiated_by=PrincipalRef.system(),
+    )
     executor = AgentExecutor(
         agent=agent,
         llm=llm,  # type: ignore[arg-type]

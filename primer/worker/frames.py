@@ -36,6 +36,7 @@ from typing import Any
 
 from primer.graph.invoke_graph import resume_invoke_graph
 from primer.model.chat import ToolCallPart, ToolResultPart
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import YieldToWorker
 from primer.worker.yield_resume_registry import get_resume_hook
 from primer.worker.yield_runtime import classify_approval_payload
@@ -67,6 +68,12 @@ class AgentResumeContext:
         The acting principal (used for tool authorisation on resume).
     tools
         The agent's registered tool ids (e.g. ``"system__ask_user"``).
+    initiated_by
+        The run's persisted invoker (:class:`PrincipalRef`), threaded so a
+        resumed subagent turn re-runs under the SAME identity that started
+        it and its RBAC tool floor stays authorised across the park/resume
+        boundary. ``None`` on frames parked before this field existed ->
+        the manager builder falls back to the system principal.
     """
 
     session_id: str
@@ -74,6 +81,7 @@ class AgentResumeContext:
     chat_id: str | None
     principal: str
     tools: list[str]
+    initiated_by: "PrincipalRef | None" = None
 
     def to_jsonable(self) -> dict[str, Any]:
         """Render to a JSON-safe dict."""
@@ -83,16 +91,27 @@ class AgentResumeContext:
             "chat_id": self.chat_id,
             "principal": self.principal,
             "tools": list(self.tools),
+            "initiated_by": (
+                self.initiated_by.model_dump(mode="json")
+                if self.initiated_by is not None
+                else None
+            ),
         }
 
     @classmethod
     def from_jsonable(cls, data: dict[str, Any]) -> "AgentResumeContext":
+        raw_initiated_by = data.get("initiated_by")
         return cls(
             session_id=data["session_id"],
             workspace_id=data["workspace_id"],
             chat_id=data.get("chat_id"),
             principal=data["principal"],
             tools=list(data.get("tools") or []),
+            initiated_by=(
+                PrincipalRef.model_validate(raw_initiated_by)
+                if raw_initiated_by is not None
+                else None
+            ),
         )
 
 

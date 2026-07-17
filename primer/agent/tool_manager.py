@@ -39,6 +39,7 @@ from primer.agent.approval import (
     ApprovalResolver,
     evaluate_approval_gate,
 )
+from primer.authz import _role_allows
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart
 from primer.model.except_ import (
@@ -445,6 +446,28 @@ class ToolExecutionManager:
         principal: str | None,
     ) -> ToolResultPart:
         provider = self._toolsets[toolset_id]
+        # RBAC floor: enforce the tool's declared ``required_role`` against
+        # this run's invoker, mirroring the MCP dispatch path
+        # (primer.mcp.dispatch.invoke_exposed) so both surfaces gate on the
+        # single source of truth. Without it a non-admin who authors an
+        # agent whose ``tools`` list includes an admin-only system tool
+        # (e.g. system__create_llm_provider) could run it. Denial is
+        # returned IN-BAND (error=True) -- the same shape this method uses
+        # to surface a PrimerError below -- so the LLM can react and the
+        # provider handler never runs. ``self._initiated_by`` is the run's
+        # persisted PrincipalRef; a None invoker fails closed (deny), which
+        # is why every construction site threads a real ref or the system
+        # fallback.
+        need = provider.required_role(bare_name)
+        if not _role_allows(self._initiated_by, need):
+            return ToolResultPart(
+                id=call.id,
+                output=(
+                    f"access denied: tool {bare_name!r} requires the "
+                    f"{need!r} role"
+                ),
+                error=True,
+            )
         # Yielding tools (ask_user, sleep, watch_files, ...) declare a
         # ``ctx: ToolContext`` parameter so they can form session-scoped
         # event keys and raise YieldToWorker. Build that context from the

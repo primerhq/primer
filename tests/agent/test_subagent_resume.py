@@ -80,6 +80,10 @@ class _PlainToolsetProvider:
     def is_yielding(self, tool_name: str) -> bool:
         return False
 
+    def required_role(self, tool_name: str) -> str:
+        del tool_name
+        return "admin"
+
     async def call(
         self, *, tool_name, arguments, principal=None, ctx=None
     ) -> ToolCallResult:  # noqa: ANN001
@@ -105,6 +109,10 @@ class _YieldingToolsetProvider:
 
     def is_yielding(self, tool_name: str) -> bool:
         return tool_name == "wait"
+
+    def required_role(self, tool_name: str) -> str:
+        del tool_name
+        return "admin"
 
     async def call(
         self, *, tool_name, arguments, principal=None, ctx=None

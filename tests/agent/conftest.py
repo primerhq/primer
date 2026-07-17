@@ -9,6 +9,7 @@ import pytest
 
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import Tool, ToolCallResult
+from primer.model.principal import PrincipalRef
 
 
 class _EchoProvider:
@@ -26,6 +27,10 @@ class _EchoProvider:
             },
         )
 
+    def required_role(self, tool_name: str) -> str:
+        del tool_name
+        return "admin"
+
     async def call(
         self,
         *,
@@ -41,4 +46,9 @@ class _EchoProvider:
 def tool_manager_with_test_tools() -> ToolExecutionManager:
     """Return a ToolExecutionManager pre-populated with a '_test__echo' tool."""
     provider = _EchoProvider()
-    return ToolExecutionManager(toolset_providers={"_test": provider})  # type: ignore[arg-type]
+    return ToolExecutionManager(
+        toolset_providers={"_test": provider},  # type: ignore[arg-type]
+        # System invoker clears the RBAC tool floor on the toolset dispatch
+        # path (a None invoker fails closed and denies every call).
+        initiated_by=PrincipalRef.system(),
+    )

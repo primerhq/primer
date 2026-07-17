@@ -41,6 +41,7 @@ from primer.model.graph import (
     _JsonPathRouter,
     _StaticEdge,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.provider import LLMModel
 from primer.workspace.local.state import LocalStateRepo as StateRepo
 
@@ -94,6 +95,10 @@ class _FakeToolsetProvider:
             toolset_id="fake",
             args_schema={"type": "object", "properties": {}},
         )
+
+    def required_role(self, tool_name: str) -> str:
+        del tool_name
+        return "admin"
 
     async def call(
         self,
@@ -543,7 +548,10 @@ class TestToolDispatchInGraphNode:
         provider = _FakeToolsetProvider(tool_id="echo", output="echo-out")
 
         async def tool_mgr_resolver(agent: Agent) -> ToolExecutionManager:
-            return ToolExecutionManager(toolset_providers={"fake": provider})
+            return ToolExecutionManager(
+                toolset_providers={"fake": provider},
+                initiated_by=PrincipalRef.system(),
+            )
 
         repo = await _make_state_repo(tmp_path)
         executor = await _build_executor(
@@ -1129,7 +1137,10 @@ class TestStructuredNodeToolSuppression:
         provider = _FakeToolsetProvider(tool_id="echo", output="echo-out")
 
         async def tool_mgr_resolver(agent: Agent) -> ToolExecutionManager:
-            return ToolExecutionManager(toolset_providers={"fake": provider})
+            return ToolExecutionManager(
+                toolset_providers={"fake": provider},
+                initiated_by=PrincipalRef.system(),
+            )
 
         repo = await _make_state_repo(tmp_path)
         executor = await _build_executor(
@@ -1168,7 +1179,10 @@ class TestStructuredNodeToolSuppression:
         provider = _FakeToolsetProvider(tool_id="echo", output="echo-out")
 
         async def tool_mgr_resolver(agent: Agent) -> ToolExecutionManager:
-            return ToolExecutionManager(toolset_providers={"fake": provider})
+            return ToolExecutionManager(
+                toolset_providers={"fake": provider},
+                initiated_by=PrincipalRef.system(),
+            )
 
         repo = await _make_state_repo(tmp_path)
         executor = await _build_executor(
@@ -1304,7 +1318,8 @@ class TestToolCallApprovalWiring:
                 return ToolResultPart(id=getattr(call, "id", "x"), output="ok")
 
         def _fake_for_workspace(cls, *, toolset_providers, session,
-                                approval_resolver=None, provider_registry=None, tools=None):
+                                approval_resolver=None, provider_registry=None,
+                                tools=None, initiated_by=None, **_kw):
             captured["approval_resolver"] = approval_resolver
             return _FakeMgr()
 
