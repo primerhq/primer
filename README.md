@@ -7,7 +7,7 @@
 
 <br>
 
-**An unopinionated, batteries-included agent-orchestration platform built around one bet: a small model given a clean, purpose-built context can rival a much larger one.**
+**A self-hosted, open-source platform for orchestrating fleets of small, context-optimized AI agents - built on one bet: a small, local open-weight model, given a clean and purpose-built context, can do genuinely useful work. Runs on hardware you already own.**
 
 <br>
 
@@ -17,7 +17,7 @@
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-61d46a.svg)](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
 [![Stars](https://img.shields.io/github/stars/primerhq/primer?style=flat&color=61d46a)](https://github.com/primerhq/primer/stargazers)
 
-[Quickstart](#quickstart) · [Features](#what-you-can-build) · [How it works](#how-it-works) · [Docs](#documentation) · [Contributing](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
+[Quickstart](#quickstart) · [What makes it different](#what-makes-primer-different) · [Loop engineering](#built-for-loop-engineering) · [How it works](#how-it-works) · [Docs](#documentation) · [Contributing](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
 
 </div>
 
@@ -25,83 +25,37 @@
 
 ## Why Primer
 
-A language model spreads a fixed budget of attention across every token in its context at once. Keep the context tight and the few tokens that matter get most of that attention; bloat it with stale history, unused tool definitions, and irrelevant background and the signal thins out. Primer's core bet is that **you often do not need the biggest model if you give the model you have exactly what it needs and nothing more** - and that this is a lever on any model, large or small.
+A language model spreads a fixed budget of attention across every token in its context. Keep that context tight and the few tokens that matter get most of the attention; bloat it with stale history, unused tool definitions, and irrelevant background, and the signal thins out. Primer's bet is simple: **give a small, local model exactly what it needs - and nothing more - and it can do genuinely useful work.** Not replace a frontier model; just real work, on hardware you already own. It is a bet, not a benchmark, and it is still early - the best way to test it is to run it on your own workload and tell us where it falls apart.
 
-So instead of one giant agent with everything crammed into its prompt, Primer lets you orchestrate **fleets of small, focused agents**, each with a clean working context, wired together with the primitives a real deployment needs: LLM providers, workspaces, graphs, knowledge collections, channels, triggers, and semantic search - integrated from the start, runnable on your own hardware.
+So instead of one giant agent with everything crammed into its prompt, Primer lets you orchestrate **fleets of small, focused agents**, each with a clean working context, wired together with the primitives a real deployment needs: LLM providers, workspaces, agent graphs, knowledge collections, channels, triggers, and semantic search - self-hosted and integrated from the start.
 
-## What you can build
+## What makes Primer different
 
-<table>
-  <tr>
-    <td width="33%" valign="top">
+A lot of what Primer ships - knowledge bases, channels, triggers, approvals - you will find in other agent frameworks too. These are the parts that were missing everywhere else, and they are what Primer is really about.
 
-⏸️ **Yielding, event-driven agents**
+**🔁 Directed cyclic agent graphs.** Wire small agents into a graph that *loops*. Run a bunch of small agents in a feedback loop and you are trading compute for time: the loop keeps running until it reaches the state you want. The move that makes it click is putting an evaluator agent at the end that grades the output and feeds it back to the start - a producer makes a draft, a critic scores it, the graph revises, again and again, until the result is actually good. Instead of a one-shot prompt you hope lands, you get a loop that **converges on a target**.
 
-Agents park on a slow tool or a human decision and resume when the event fires - freeing compute while they wait.
+**📁 Shared workspaces.** Run multiple agents and graphs inside a single sandbox, all reading and writing the same filesystem. They work independently but share everything they find - one agent writes a file, another picks it up. It is the simplest possible way to let a fleet of agents collaborate on the same task.
 
-</td>
-    <td width="33%" valign="top">
+**⏸️ Yielding tools (event-driven, long-running agents).** Loops and graphs are meant to run in the background - you should not have to sit in front of a screen keeping a session open. So an agent can call a tool that **yields control and parks the agent** until an event fires: a file change, a schedule, a webhook, or a human reply. That is what makes long-running, event-driven agents possible - and combined with shared workspaces, one agent can wake the instant another writes to a file.
 
-🔀 **Directed graphs**
+**🔎 Semantic tool search.** Register tens of tools on an agent and the definitions alone bloat its context. Instead, Primer embeds every tool as a vector and hands each agent just two meta-tools: one to **search** for the capability it needs, and one to **call** any tool in the platform. Two tools in context, access to all of them. It generalizes - an agent can discover and invoke any other agent or graph the same way.
 
-Wire agents into cyclic graphs (producer-judge loops, fan-out/fan-in, conditional branches) that run as structured workflows.
+**🧩 First-class dogfooding.** The platform's own capabilities are exposed as internal tools, so you can build **agents that build other agents**, graphs, and collections - on Primer itself.
 
-</td>
-    <td width="33%" valign="top">
+**🔌 MCP over the whole platform.** Every capability is exposed over the **Model Context Protocol**. Point Claude, opencode, or any MCP client at Primer and **operate it by asking an agent** instead of clicking through a UI. You drive the platform with agents, not just point agents at tools.
 
-📁 **Workspaces & sessions**
+## Batteries included
 
-Materialised sandboxes (local, container, or Kubernetes) give each agent a persistent filesystem and git-backed state.
+Everything else a real deployment needs, integrated from day one and self-hostable:
 
-</td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
-
-🔎 **Semantic search**
-
-Ingest documents into vector collections; agents retrieve only the relevant chunks, not the whole corpus.
-
-</td>
-    <td width="33%" valign="top">
-
-💬 **Channels**
-
-Bridge agents to Slack, Telegram, and Discord - ask questions, request approvals, and trigger work from a message.
-
-</td>
-    <td width="33%" valign="top">
-
-🔌 **MCP server**
-
-Expose the full platform tool surface over the Model Context Protocol so external agents and MCP clients can use it.
-
-</td>
-  </tr>
-  <tr>
-    <td width="33%" valign="top">
-
-✅ **Human approvals**
-
-Gate sensitive tool calls behind an approval that a person grants from a channel or the console before the agent proceeds.
-
-</td>
-    <td width="33%" valign="top">
-
-📦 **Harnesses**
-
-Package a tuned set of agents, graphs, and collections into a git-backed, versioned bundle and deploy it anywhere in one step.
-
-</td>
-    <td width="33%" valign="top">
-
-🧭 **Dynamic discovery**
-
-Two meta-tools let an agent search for and invoke any tool or agent at runtime - without carrying the whole catalog in its context.
-
-</td>
-  </tr>
-</table>
+- **Knowledge collections** - ingest documents into vector collections; agents retrieve only the relevant chunks (semantic search / RAG).
+- **Channels** - bridge agents to **Slack, Telegram, and Discord**: ask questions, request approvals, and kick off work from a message.
+- **Triggers** - start a fresh session or graph run, or resume a parked one, on a **cron schedule, a delay, or a webhook**.
+- **Human approvals** - gate sensitive tool calls behind a person's approval from a channel or the console before the agent proceeds.
+- **Web search** - first-class web search built in.
+- **MCP-server toolsets** - connect external MCP servers and expose their tools to your agents.
+- **Harnesses** - package a tuned set of agents, graphs, and collections into a versioned, git-backed bundle you can share and deploy anywhere.
 
 <!-- DEMO GIF: drop the ask_user -> channel reply -> resume capture here once recorded, e.g.
 <div align="center"><img alt="Park on a question, reply from a channel, resume" src="docs/assets/demo-park-resume.gif" width="760"></div>
