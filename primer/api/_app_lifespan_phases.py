@@ -242,6 +242,10 @@ async def recover_chats(claim_engine, storage_provider) -> None:
 
 _WEBHOOK_DELIVERY_GRACE_SECS = 30.0
 
+# Page size for the recovery sweep's scan of pending rows. Bounded by the
+# OffsetPage contract (length is 1..200).
+_WEBHOOK_RECOVERY_PAGE_SIZE = 200
+
 
 async def recover_webhook_deliveries(
     storage_provider,
@@ -285,39 +289,56 @@ async def recover_webhook_deliveries(
             _Q(WebhookDelivery).where("status", "pending").build()
         )
         _cutoff = datetime.now(_tz.utc).timestamp() - _WEBHOOK_DELIVERY_GRACE_SECS
-        _refired = 0
+
+        # Collect the whole stale set BEFORE dispatching any of it.
+        # _dispatch_webhook flips its row 'pending' -> 'done'/'failed', which
+        # MUTATES the very predicate this query pages over. Dispatching inside
+        # the paging loop therefore shrinks the result set under the cursor and
+        # silently skips rows: with 500 stale rows, offset=0 drains 1-200 and
+        # marks them done, leaving 201-500 as the pending set, so the next read
+        # at offset=200 returns 401-500 and rows 201-400 are never dispatched
+        # (they stay pending until some future boot) - worst exactly in the
+        # mass-crash case this phase exists for. Collecting first keeps the
+        # paging stable over an unchanging set, and is simpler to reason about
+        # than re-querying offset=0 until drained while tracking grace-skipped
+        # ids to keep a fresh row from looping forever.
+        _stale: list[WebhookDelivery] = []
         _offset = 0
         while True:
             _page = await _storage.find(
                 _pending_predicate,
-                _OffsetPage(offset=_offset, length=200),
+                _OffsetPage(offset=_offset, length=_WEBHOOK_RECOVERY_PAGE_SIZE),
             )
             _items = list(_page.items)
-            for _row in _items:
-                # Skip rows younger than the grace window - they may be an
-                # in-flight dispatch from THIS process's early startup.
-                if _row.created_at.timestamp() > _cutoff:
-                    continue
-                try:
-                    await _dispatch_webhook(
-                        _row.trigger_id,
-                        _row.extra_context,
-                        storage_provider,
-                        event_bus,
-                        claim_engine,
-                        scheduler,
-                        workspace_registry,
-                        delivery_id=_row.id,
-                    )
-                    _refired += 1
-                except Exception:
-                    logger.exception(
-                        "webhook recovery: re-dispatch failed for %s",
-                        _row.id,
-                    )
-            if len(_items) < 200:
+            # Skip rows younger than the grace window - they may be an
+            # in-flight dispatch from a live process.
+            _stale.extend(
+                _row for _row in _items
+                if _row.created_at.timestamp() <= _cutoff
+            )
+            if len(_items) < _WEBHOOK_RECOVERY_PAGE_SIZE:
                 break
-            _offset += 200
+            _offset += _WEBHOOK_RECOVERY_PAGE_SIZE
+
+        _refired = 0
+        for _row in _stale:
+            try:
+                await _dispatch_webhook(
+                    _row.trigger_id,
+                    _row.extra_context,
+                    storage_provider,
+                    event_bus,
+                    claim_engine,
+                    scheduler,
+                    workspace_registry,
+                    delivery_id=_row.id,
+                )
+                _refired += 1
+            except Exception:
+                logger.exception(
+                    "webhook recovery: re-dispatch failed for %s",
+                    _row.id,
+                )
         if _refired:
             logger.info(
                 "lifespan: webhook recovery - re-dispatched %d stale "
