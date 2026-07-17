@@ -308,7 +308,9 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
     return Array.isArray(cmd) ? cmd.join(" ") : "";
   };
   const _initialTransport = () =>
-    existing?.config?.transport === "http" ? "http" : "stdio";
+    ["http", "sse"].includes(existing?.config?.transport)
+      ? existing.config.transport
+      : "stdio";
 
   const [id, setId] = React.useState(existing?.id || "");
   const [provider, setProvider] = React.useState(existing?.provider || "mcp");
@@ -413,7 +415,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
             },
           }
         : {
-            transport: "http",
+            transport: transport,
             config: {
               url: url.trim(),
               headers: kvToDict(httpHeaders),
@@ -536,9 +538,14 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
                 className={`chip ${transport === "http" ? "active" : ""}`}
                 onClick={() => setTransport("http")}
               >http</span>
+              <span
+                className={`chip ${transport === "sse" ? "active" : ""}`}
+                onClick={() => setTransport("sse")}
+              >sse</span>
             </div>
             <div className="field-help">
-              Per app spec, MCP TransportType only enumerates stdio + http (no sse).
+              http = streamable HTTP (modern); sse = legacy HTTP+SSE. Both use the
+              same URL / headers / OAuth below.
             </div>
           </div>
 

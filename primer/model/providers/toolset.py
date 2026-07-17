@@ -104,6 +104,7 @@ class TransportType(str, Enum):
 
     STDIO = "stdio"
     HTTP = "http"
+    SSE = "sse"
 
 
 class StdioConfig(BaseModel):
@@ -128,8 +129,11 @@ class StdioConfig(BaseModel):
 
 
 class HttpConfig(BaseModel):
-    """HTTP transport for an MCP server — connects to a remote endpoint
-    speaking MCP over HTTP (e.g. SSE / streamable HTTP).
+    """HTTP-based connection details for a remote MCP server endpoint.
+
+    Shared by two wire protocols, selected via ``McpConfig.transport``:
+    ``http`` (modern streamable HTTP) and ``sse`` (legacy HTTP+SSE). Both use
+    the same url / headers / oauth; only the client wire protocol differs.
     """
 
     url: str = Field(
@@ -180,9 +184,12 @@ class McpConfig(BaseModel):
             raise ValueError(
                 "transport='stdio' requires a StdioConfig in 'config'"
             )
-        if self.transport == TransportType.HTTP and not isinstance(self.config, HttpConfig):
+        if self.transport in (
+            TransportType.HTTP,
+            TransportType.SSE,
+        ) and not isinstance(self.config, HttpConfig):
             raise ValueError(
-                "transport='http' requires an HttpConfig in 'config'"
+                "transport='http'/'sse' requires an HttpConfig in 'config'"
             )
         return self
 
