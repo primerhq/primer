@@ -63,8 +63,14 @@ class _Registry:
 
 
 def _system_deps(storage):
-    """Two reserved tools: a ``user``-role one and an ``admin``-role one."""
+    """Three reserved tools: ``restricted``-, ``user``-, and ``admin``-role."""
     tools = [
+        Tool(
+            id="ping",
+            toolset_id="system",
+            description="Ungated liveness probe.",
+            args_schema={"type": "object", "properties": {}},
+        ),
         Tool(
             id="create_agent",
             toolset_id="system",
@@ -78,7 +84,11 @@ def _system_deps(storage):
             args_schema={"type": "object", "properties": {}},
         ),
     ]
-    roles = {"create_agent": "user", "create_llm_provider": "admin"}
+    roles = {
+        "ping": "restricted",
+        "create_agent": "user",
+        "create_llm_provider": "admin",
+    }
     provider = _SysProvider(tools, roles)
     registry = _Registry({"system": provider})
     deps = ExposureDeps(storage_provider=storage, provider_registry=registry)
@@ -127,6 +137,30 @@ async def test_role_matrix_for_user_type_actor(
         assert result.is_error is True
         assert "requires" in result.output
         assert provider.calls == []  # never dispatched
+
+
+@pytest.mark.asyncio
+async def test_restricted_actor_allowed_on_restricted_role_tool(
+    fake_storage_provider,
+) -> None:
+    """A ``restricted`` actor -- now free to CONNECT at all, per the
+    connect-time gate change (Task 9 follow-up) -- clears a tool whose
+    declared role is itself ``restricted`` (rank 0 meets rank 0), while a
+    ``user``-role tool in the SAME call session is still denied. Proves
+    the per-call ``required_role`` floor is the only gate now, and that
+    it is not a blanket "restricted can never call anything" rule."""
+    deps, provider = _system_deps(fake_storage_provider)
+    actor = Principal(
+        type="user", id="r", display="r", role="restricted", source="local",
+    )
+
+    ok_result = await _invoke(deps, tool_name="ping", actor=actor)
+    denied_result = await _invoke(deps, tool_name="create_agent", actor=actor)
+
+    assert ok_result.is_error is False
+    assert provider.calls == ["ping"]
+    assert denied_result.is_error is True
+    assert "requires" in denied_result.output
 
 
 @pytest.mark.asyncio

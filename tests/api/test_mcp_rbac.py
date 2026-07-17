@@ -1,13 +1,15 @@
-"""Task 9 — MCP request-entry RBAC gates.
+"""Task 9 -- MCP request-entry RBAC gates.
 
-* ``_make_mcp_auth_gate`` rejects a ``restricted`` caller (via
-  ``state.actor``) with 403 ``forbidden_role`` before any dispatch.
+* ``_make_mcp_auth_gate`` no longer rejects a ``restricted`` caller (via
+  ``state.actor``) at connect time -- only anonymous callers are refused
+  there (401). A restricted caller now reaches the session manager; the
+  ``restricted``-role floor is enforced PER CALL instead, by the existing
+  ``required_role`` check in :func:`primer.mcp.dispatch.invoke_exposed`.
 * ``PUT /v1/mcp_exposure`` is admin-only (``require_admin``).
 """
 
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 
 import pytest
@@ -21,13 +23,27 @@ from primer.model.user import User
 
 
 @pytest.mark.asyncio
-async def test_mcp_gate_rejects_restricted_actor() -> None:
-    """A restricted actor is refused at the gate before the session
-    manager is ever consulted."""
+async def test_mcp_gate_allows_restricted_actor_to_connect() -> None:
+    """A restricted actor now reaches the session manager -- the connect-
+    time ``forbidden_role`` 403 was removed; only the 401 anonymous gate
+    remains at connect. A stub session manager stands in for the real SDK
+    plumbing so this stays a unit test of the gate, not the SDK."""
     from fastapi import FastAPI
     from starlette.datastructures import State
 
-    gate = _make_mcp_auth_gate(FastAPI())
+    stub_app = FastAPI()
+    handled: list[dict] = []
+
+    class _StubSessionManager:
+        async def handle_request(self, scope, receive, send):
+            handled.append(scope)
+            await send({
+                "type": "http.response.start", "status": 200, "headers": [],
+            })
+            await send({"type": "http.response.body", "body": b""})
+
+    stub_app.state.mcp_session_manager = _StubSessionManager()
+    gate = _make_mcp_auth_gate(stub_app)
 
     st = State()
     st.user = User(
@@ -52,15 +68,9 @@ async def test_mcp_gate_rejects_restricted_actor() -> None:
 
     await gate(scope, _receive, _send)
 
+    assert handled, "restricted actor must reach the session manager"
     assert sent[0]["type"] == "http.response.start"
-    assert sent[0]["status"] == 403
-    body = json.loads(sent[1]["body"])
-    # The MCP gate is raw ASGI: it hand-rolls this body (see
-    # _mcp_send_simple_response) before FastAPI's exception machinery runs, so
-    # it does NOT go through the problem+json handler and keeps the bare
-    # {"detail": ...} shape. Contrast test_mcp_exposure_put_forbidden_for_non_admin
-    # below, which is a normal route and gets the RFC 7807 envelope.
-    assert body["detail"]["code"] == "forbidden_role"
+    assert sent[0]["status"] == 200
 
 
 @pytest.mark.asyncio
