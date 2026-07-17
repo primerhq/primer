@@ -330,7 +330,7 @@ def test_grace_window_is_configurable_and_clears_a_slow_dispatch():
 
 @pytest.mark.asyncio
 async def test_recover_webhook_noop_when_no_pending(fake_storage_provider):
-    """No pending rows → dispatcher never called."""
+    """No pending rows -> dispatcher never called."""
     from primer.api._app_lifespan_phases import recover_webhook_deliveries
 
     dispatch_spy = AsyncMock()
