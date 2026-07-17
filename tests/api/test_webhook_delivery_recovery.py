@@ -98,6 +98,53 @@ async def test_recover_webhook_redispatches_every_row_across_pages(
 
 
 @pytest.mark.asyncio
+async def test_recover_webhook_gives_up_at_the_attempt_cap(fake_storage_provider):
+    """A row at the attempt cap is marked failed and NOT re-fired.
+
+    Without the cap a poison-pill row (its dispatch hard-crashes the process,
+    or _finalize_delivery's swallowed update never marks it) stays pending and
+    is re-fired on EVERY subsequent boot forever, each time spawning duplicate
+    chats/sessions.
+    """
+    from primer.api._app_lifespan_phases import (
+        _WEBHOOK_DELIVERY_MAX_ATTEMPTS,
+        recover_webhook_deliveries,
+    )
+
+    stale = datetime.now(timezone.utc) - timedelta(minutes=5)
+    storage = fake_storage_provider.get_storage(WebhookDelivery)
+    await storage.create(WebhookDelivery(
+        id="fire-poison", trigger_id="trig-poison", extra_context={},
+        status="pending", created_at=stale,
+        attempts=_WEBHOOK_DELIVERY_MAX_ATTEMPTS,
+    ))
+    await storage.create(WebhookDelivery(
+        id="fire-under-cap", trigger_id="trig-ok", extra_context={},
+        status="pending", created_at=stale,
+        attempts=_WEBHOOK_DELIVERY_MAX_ATTEMPTS - 1,
+    ))
+
+    dispatch_spy = AsyncMock()
+    with patch("primer.api.routers.webhooks._dispatch_webhook", dispatch_spy):
+        await recover_webhook_deliveries(
+            fake_storage_provider, None, None, None, None
+        )
+
+    # The exhausted row is abandoned, not re-fired.
+    assert dispatch_spy.await_count == 1
+    assert dispatch_spy.await_args.kwargs["delivery_id"] == "fire-under-cap"
+    poisoned = await storage.get("fire-poison")
+    assert poisoned.status == "failed"
+    assert poisoned.completed_at is not None
+
+    # The under-cap row is re-fired, and its attempt is recorded BEFORE the
+    # dispatch so an attempt that kills the process still counts.
+    assert (await storage.get("fire-under-cap")).attempts == (
+        _WEBHOOK_DELIVERY_MAX_ATTEMPTS
+    )
+
+
+@pytest.mark.asyncio
 async def test_recover_webhook_noop_when_no_pending(fake_storage_provider):
     """No pending rows → dispatcher never called."""
     from primer.api._app_lifespan_phases import recover_webhook_deliveries

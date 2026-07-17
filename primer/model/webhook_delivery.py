@@ -76,7 +76,15 @@ class WebhookDelivery(Identifiable):
     attempts: int = Field(
         default=0,
         ge=0,
-        description="Number of dispatch attempts (incremented per dispatch).",
+        description=(
+            "Dispatch attempts STARTED for this delivery. Written by whoever "
+            "starts one: the endpoint creates the row with 1 (its "
+            "BackgroundTask) and startup recovery bumps it BEFORE each "
+            "re-dispatch, so an attempt that crashes the process is still "
+            "counted. Recovery abandons the row (marks it 'failed') once it "
+            "reaches the attempt cap, which stops a poison-pill delivery from "
+            "re-firing on every boot forever."
+        ),
     )
 
 

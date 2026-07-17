@@ -246,6 +246,15 @@ _WEBHOOK_DELIVERY_GRACE_SECS = 30.0
 # OffsetPage contract (length is 1..200).
 _WEBHOOK_RECOVERY_PAGE_SIZE = 200
 
+# Poison-pill cap: give up on a delivery after this many dispatch attempts.
+# WebhookDelivery.attempts counts attempts STARTED (the endpoint records its
+# own BackgroundTask as attempt 1; the sweep below bumps the count BEFORE
+# re-dispatching), so a row whose dispatch hard-crashes the process, or whose
+# done/failed marking keeps failing, still advances the counter. Without the
+# cap such a row is re-fired on EVERY subsequent boot forever, each time
+# spawning duplicate chats/sessions. 3 leaves room for two crash recoveries.
+_WEBHOOK_DELIVERY_MAX_ATTEMPTS = 3
+
 
 async def recover_webhook_deliveries(
     storage_provider,
@@ -273,6 +282,11 @@ async def recover_webhook_deliveries(
     ``done``/``failed``, so a ``done`` row is never re-dispatched. Delivery
     is therefore at-least-once (a crash in the delivered-but-not-yet-marked
     window can double-deliver), matching the endpoint's best-effort marking.
+
+    A row that survives repeated re-fires (its dispatch keeps killing the
+    process, or its done/failed marking keeps failing) is abandoned at
+    ``_WEBHOOK_DELIVERY_MAX_ATTEMPTS`` and marked ``failed`` rather than
+    re-fired on every boot forever.
     """
     try:
         from datetime import datetime, timezone as _tz
@@ -322,6 +336,43 @@ async def recover_webhook_deliveries(
 
         _refired = 0
         for _row in _stale:
+            # Poison-pill cap: a row that keeps coming back (its dispatch
+            # kills the process, or _finalize_delivery's update keeps failing
+            # and is swallowed) must not be re-fired forever. Give up loudly.
+            if _row.attempts >= _WEBHOOK_DELIVERY_MAX_ATTEMPTS:
+                logger.error(
+                    "webhook recovery: delivery %s exhausted %d attempts; "
+                    "marking failed and giving up",
+                    _row.id, _row.attempts,
+                )
+                try:
+                    await _storage.update(_row.model_copy(update={
+                        "status": "failed",
+                        "completed_at": datetime.now(_tz.utc),
+                    }))
+                except Exception:
+                    logger.exception(
+                        "webhook recovery: could not mark exhausted delivery "
+                        "%s failed", _row.id,
+                    )
+                continue
+            # Record the attempt BEFORE dispatching. Counting it afterwards
+            # would never count the cases the cap exists for: a dispatch that
+            # hard-crashes the process, or a finalize that keeps failing,
+            # never reaches a post-hoc increment.
+            try:
+                _row = await _storage.update(
+                    _row.model_copy(update={"attempts": _row.attempts + 1})
+                )
+            except Exception:
+                # Cannot account for this attempt, so do not take it: firing
+                # uncounted is exactly the unbounded re-fire the cap removes.
+                # The row stays pending and a later boot can retry it.
+                logger.exception(
+                    "webhook recovery: could not record an attempt for %s; "
+                    "skipping it this sweep", _row.id,
+                )
+                continue
             try:
                 await _dispatch_webhook(
                     _row.trigger_id,
