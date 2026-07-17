@@ -24,7 +24,7 @@ from primer.api.routers._crud import make_crud_router
 from primer.int.claim import ClaimEngine
 from primer.int.event_bus import EventBus
 from primer.model.except_ import ConflictError, NotFoundError
-from primer.session.yields import durably_mark_session_resumable
+from primer.session.yields import durably_wake_session
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.storage import OffsetPage, OffsetPageResponse, OrderBy
 from primer.storage.q import Q
@@ -256,15 +256,21 @@ async def _publish_decision(
     event_bus: EventBus,
     session_storage,
     engine: ClaimEngine | None,
-) -> None:
+) -> bool:
     """Validate the decision, durably flip the row, then wake the bus.
 
     D-C2 fix: the operator decision is stamped onto the session row
     (``resume_event_payload`` + ``parked_status='resumable'`` + the claim
     lease re-armed) BEFORE the bus publish, so a decision is never lost when
-    the bus listener is down/reconnecting — LISTEN/NOTIFY is not durable but
+    the bus listener is down/reconnecting - LISTEN/NOTIFY is not durable but
     the row is, and the claim loop admits ``resumable`` rows without any bus.
     The publish that follows is a best-effort immediate wake only.
+
+    Uses :func:`durably_wake_session`, which acts on the flip helper's bool:
+    a guard-rejected row that is already ``resumable`` gets its claim lease
+    re-armed, so a retry after a half-applied flip (row stamped, lease lost)
+    repairs the row rather than accepting a decision the claim loop can never
+    act on. Returns True when this call advanced the row.
     """
     blob = _approval_blob_or_404(sess, id_str)
     yielded: dict = blob.get("yielded") or {}
@@ -279,7 +285,7 @@ async def _publish_decision(
     if not event_key:
         raise NotFoundError(f"{id_str!r} park is missing event_key")
     payload = {"decision": body.decision, "reason": body.reason}
-    await durably_mark_session_resumable(
+    did = await durably_wake_session(
         sess,
         event_key=event_key,
         payload=payload,
@@ -293,6 +299,7 @@ async def _publish_decision(
             "tool_approval decision publish failed for event_key=%r; durable "
             "flip already persisted, claim loop will recover", event_key,
         )
+    return did
 
 
 def make_tool_approval_router() -> APIRouter:

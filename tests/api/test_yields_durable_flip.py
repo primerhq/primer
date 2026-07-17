@@ -20,12 +20,37 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from primer.int.claim import ClaimKind
 from primer.model.workspace_session import (
     AgentSessionBinding,
     SessionStatus,
     WorkspaceSession,
 )
 from primer.session.yields import durably_mark_session_resumable
+
+
+class _FlakyEngine:
+    """Minimal ClaimEngine stand-in that records the leases it upserts.
+
+    ``mark_resumable`` raises on its first ``fail_times`` calls, reproducing
+    the non-atomic flip: ``storage.update`` lands (row -> ``resumable``) but
+    the lease re-arm blows up, leaving NO lease row. ``claim_due`` JOINs the
+    leases table, so such a row is permanently unclaimable.
+    """
+
+    def __init__(self, *, fail_times: int = 1) -> None:
+        self.fail_times = fail_times
+        self.calls: list[tuple[ClaimKind, str]] = []
+        self.leases: set[tuple[ClaimKind, str]] = set()
+
+    async def mark_resumable(
+        self, kind: ClaimKind, entity_id: str, *, priority: int = 50,
+    ) -> None:
+        self.calls.append((kind, entity_id))
+        if self.fail_times > 0:
+            self.fail_times -= 1
+            raise RuntimeError("lease upsert down")
+        self.leases.add((kind, entity_id))
 
 
 def _make_ask_user_parked_session(
@@ -205,3 +230,111 @@ async def test_second_listener_style_flip_is_idempotent(app, client):
     after = await storage.get("d-idem")
     assert after.parked_status == "resumable"
     assert after.parked_state["resume_event_payload"] == {"response": "first"}
+
+
+@pytest.mark.asyncio
+async def test_ask_user_retry_repairs_lease_lost_by_a_half_applied_flip(
+    app, client,
+):
+    """The durable flip writes twice and cannot share a transaction: a
+    ``mark_resumable`` that raises after ``storage.update`` landed leaves the
+    row ``resumable`` with NO lease, which ``claim_due``'s JOIN makes
+    permanently unclaimable.
+
+    The first reply must NOT be reported accepted in that state, and a client
+    retry must REPAIR the missing lease rather than 202 a session that will
+    never resume.
+    """
+    sess = _make_ask_user_parked_session(session_id="d-rep", tool_call_id="tcr")
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+    engine = _FlakyEngine(fail_times=1)
+    app.state.claim_engine = engine
+
+    # 1st reply: storage.update lands, the lease re-arm raises. The error
+    # propagates -- the caller must NOT get a 202 for an unclaimable session.
+    with pytest.raises(RuntimeError, match="lease upsert down"):
+        await client.post(
+            "/v1/sessions/d-rep/ask_user/respond",
+            json={"tool_call_id": "tcr", "response": "Ada"},
+        )
+
+    # The row is stamped + resumable, but stranded: no lease exists.
+    row = await storage.get("d-rep")
+    assert row.parked_status == "resumable"
+    assert row.parked_state["resume_event_payload"] == {"response": "Ada"}
+    assert (ClaimKind.SESSION, "d-rep") not in engine.leases
+
+    # 2nd reply (client retry): the flip guard rejects the already-resumable
+    # row, but the handler now ACTS on that False and re-drives the
+    # idempotent mark_resumable, repairing the lease before returning 202.
+    resp = await client.post(
+        "/v1/sessions/d-rep/ask_user/respond",
+        json={"tool_call_id": "tcr", "response": "Ada"},
+    )
+    assert resp.status_code == 202
+    assert (ClaimKind.SESSION, "d-rep") in engine.leases
+
+    # The retry repaired the lease without corrupting the stamped reply.
+    after = await storage.get("d-rep")
+    assert after.parked_status == "resumable"
+    assert after.parked_state["resume_event_payload"] == {"response": "Ada"}
+
+
+@pytest.mark.asyncio
+async def test_tool_approval_retry_repairs_lease_lost_by_a_half_applied_flip(
+    app, client,
+):
+    """The tool_approval decision path shares the same non-atomic flip, so it
+    must repair a lost lease on retry too."""
+    sess = _make_approval_parked_session(
+        session_id="d-aprep", tool_call_id="call-r",
+    )
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+    engine = _FlakyEngine(fail_times=1)
+    app.state.claim_engine = engine
+
+    with pytest.raises(RuntimeError, match="lease upsert down"):
+        await client.post(
+            "/v1/sessions/d-aprep/tool_approval/respond",
+            json={"tool_call_id": "call-r", "decision": "approved"},
+        )
+
+    row = await storage.get("d-aprep")
+    assert row.parked_status == "resumable"
+    assert (ClaimKind.SESSION, "d-aprep") not in engine.leases
+
+    resp = await client.post(
+        "/v1/sessions/d-aprep/tool_approval/respond",
+        json={"tool_call_id": "call-r", "decision": "approved"},
+    )
+    assert resp.status_code == 202
+    assert (ClaimKind.SESSION, "d-aprep") in engine.leases
+
+
+@pytest.mark.asyncio
+async def test_healthy_double_reply_still_repairs_idempotently(app, client):
+    """The repair is an idempotent upsert, so an ordinary double-reply (lease
+    already healthy) stays a harmless no-op that still returns 202."""
+    sess = _make_ask_user_parked_session(session_id="d-2x", tool_call_id="tc2x")
+    storage = app.state.storage_provider.get_storage(WorkspaceSession)
+    await storage.create(sess)
+    engine = _FlakyEngine(fail_times=0)
+    app.state.claim_engine = engine
+
+    first = await client.post(
+        "/v1/sessions/d-2x/ask_user/respond",
+        json={"tool_call_id": "tc2x", "response": "one"},
+    )
+    assert first.status_code == 202
+    assert (ClaimKind.SESSION, "d-2x") in engine.leases
+
+    second = await client.post(
+        "/v1/sessions/d-2x/ask_user/respond",
+        json={"tool_call_id": "tc2x", "response": "two"},
+    )
+    assert second.status_code == 202
+    # The guard still protects the first reply's payload from being clobbered.
+    after = await storage.get("d-2x")
+    assert after.parked_state["resume_event_payload"] == {"response": "one"}
