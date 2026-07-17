@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -259,3 +260,83 @@ class TestAclose:
         await registry.aclose()
         llm_adapter.aclose.assert_awaited_once()
         emb_adapter.aclose.assert_awaited_once()
+
+
+class TestFlushDuringInFlightGet:
+    """A reconnect flush must not be undone by an in-flight ``get_*``.
+
+    ``get_*`` holds ``registry._lock`` across the storage await, but
+    ``_flush_caches_local`` (the subscription's ``on_reconnect`` hook) takes
+    no lock, so it lands while a get is suspended. The get then resumes and
+    inserts an adapter built from a PRE-flush row, re-caching the stale
+    adapter (e.g. a rotated API key) until restart -- the exact bug the
+    flush exists to fix. A generation counter makes the in-flight get skip
+    its cache insert (see arch-review batch 1, MEDIUM-2).
+    """
+
+    @pytest.mark.asyncio
+    async def test_flush_during_suspended_get_does_not_recache_stale(
+        self,
+    ) -> None:
+        sp = _FakeStorageProvider()
+        await sp.get_storage(LLMProvider).create(_make_llm_provider())
+
+        stale = MagicMock(name="stale")
+        stale.aclose = AsyncMock()
+        fresh = MagicMock(name="fresh")
+        fresh.aclose = AsyncMock()
+        built: list[Any] = []
+
+        def _factory(row: LLMProvider):
+            adapter = stale if not built else fresh
+            built.append(adapter)
+            return adapter
+
+        registry = ProviderRegistry(sp, llm_factory=_factory)
+
+        storage = sp.get_storage(LLMProvider)
+        real_get = storage.get
+        suspended = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _hooked_get(id: str):
+            row = await real_get(id)
+            # Suspend INSIDE get_llm's storage await, holding registry._lock.
+            suspended.set()
+            await release.wait()
+            return row
+
+        storage.get = _hooked_get  # type: ignore[assignment]
+        task = asyncio.create_task(registry.get_llm("anthropic-1"))
+        await suspended.wait()
+
+        # The subscription's reconnect hook fires while the get is suspended.
+        registry._flush_caches_local()
+
+        release.set()
+        adapter = await task
+
+        # The in-flight caller still gets a usable adapter back: its request
+        # must complete, not fail, just because a flush raced it.
+        assert adapter is stale
+        # ...but the pre-flush adapter must NOT be left in the cache.
+        assert registry._llm_cache == {}
+
+        # The next get rebuilds from a post-flush row and caches normally.
+        storage.get = real_get  # type: ignore[assignment]
+        assert await registry.get_llm("anthropic-1") is fresh
+        assert registry._llm_cache["anthropic-1"] is fresh
+
+    @pytest.mark.asyncio
+    async def test_get_without_racing_flush_still_caches(self) -> None:
+        """The generation guard must not break the ordinary caching path."""
+        sp = _FakeStorageProvider()
+        await sp.get_storage(LLMProvider).create(_make_llm_provider())
+        adapter = MagicMock()
+        adapter.aclose = AsyncMock()
+        registry = ProviderRegistry(sp, llm_factory=lambda p: adapter)
+
+        first = await registry.get_llm("anthropic-1")
+        assert registry._llm_cache["anthropic-1"] is adapter
+        # Second get is served from cache (no rebuild).
+        assert await registry.get_llm("anthropic-1") is first

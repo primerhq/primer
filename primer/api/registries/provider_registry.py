@@ -380,6 +380,13 @@ class ProviderRegistry:
         self._cross_encoder_cache: dict[str, CrossEncoder] = {}
         self._toolset_cache: dict[str, ToolsetProvider] = {}
         self._lock = asyncio.Lock()
+        # Bumped by every cache flush. Each ``get_*`` samples it before the
+        # storage await and refuses to cache the adapter it built if the
+        # value moved while it was suspended -- that adapter was built from
+        # a row read BEFORE the flush, so caching it would resurrect exactly
+        # the staleness the flush exists to clear (see arch-review batch 1,
+        # MEDIUM-2).
+        self._cache_generation = 0
         self._invalidation_bus: InvalidationBus | None = None
         self._invalidation_subs: list[InvalidationSubscription] = []
 
@@ -390,13 +397,15 @@ class ProviderRegistry:
             cached = self._llm_cache.get(provider_id)
             if cached is not None:
                 return cached
+            generation = self._cache_generation
             row = await self._sp.get_storage(LLMProvider).get(provider_id)
             if row is None:
                 raise NotFoundError(
                     f"LLMProvider {provider_id!r} does not exist"
                 )
             adapter = self._llm_factory(row)
-            self._llm_cache[provider_id] = adapter
+            if self._cache_generation == generation:
+                self._llm_cache[provider_id] = adapter
             return adapter
 
     async def get_embedder(self, provider_id: str) -> Embedder:
@@ -404,13 +413,15 @@ class ProviderRegistry:
             cached = self._embedder_cache.get(provider_id)
             if cached is not None:
                 return cached
+            generation = self._cache_generation
             row = await self._sp.get_storage(EmbeddingProvider).get(provider_id)
             if row is None:
                 raise NotFoundError(
                     f"EmbeddingProvider {provider_id!r} does not exist"
                 )
             adapter = self._embedder_factory(row)
-            self._embedder_cache[provider_id] = adapter
+            if self._cache_generation == generation:
+                self._embedder_cache[provider_id] = adapter
             return adapter
 
     async def get_cross_encoder(self, provider_id: str) -> CrossEncoder:
@@ -418,13 +429,15 @@ class ProviderRegistry:
             cached = self._cross_encoder_cache.get(provider_id)
             if cached is not None:
                 return cached
+            generation = self._cache_generation
             row = await self._sp.get_storage(CrossEncoderProvider).get(provider_id)
             if row is None:
                 raise NotFoundError(
                     f"CrossEncoderProvider {provider_id!r} does not exist"
                 )
             adapter = self._cross_encoder_factory(row)
-            self._cross_encoder_cache[provider_id] = adapter
+            if self._cache_generation == generation:
+                self._cross_encoder_cache[provider_id] = adapter
             return adapter
 
     async def get_toolset(self, toolset_id: str) -> ToolsetProvider:
@@ -491,13 +504,15 @@ class ProviderRegistry:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
                 return cached
+            generation = self._cache_generation
             row = await self._sp.get_storage(Toolset).get(toolset_id)
             if row is None:
                 raise NotFoundError(
                     f"Toolset {toolset_id!r} does not exist"
                 )
             adapter = self._toolset_factory(row)
-            self._toolset_cache[toolset_id] = adapter
+            if self._cache_generation == generation:
+                self._toolset_cache[toolset_id] = adapter
             return adapter
 
     # ---- Invalidation (private local helpers) ----------------------------
@@ -638,7 +653,18 @@ class ProviderRegistry:
         use by an in-flight request, and closing its transport out from
         under it would break that request; dropping the cache entry alone
         is enough to force a fresh build next time.
+
+        Because no lock is taken, this CAN land while a ``get_*`` is
+        suspended at its storage await (``get_*`` holds ``self._lock``
+        across that await, which does not exclude this hook). That get
+        would then re-populate the cache with an adapter built from a
+        pre-flush row, leaving the stale adapter cached until restart --
+        the exact bug the flush exists to fix. Bumping the generation
+        makes any such in-flight get skip its cache insert (it still
+        returns its adapter to its caller, whose request completes
+        normally); the next get rebuilds from a post-flush row.
         """
+        self._cache_generation += 1
         self._llm_cache.clear()
         self._embedder_cache.clear()
         self._cross_encoder_cache.clear()
