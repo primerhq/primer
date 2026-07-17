@@ -291,7 +291,8 @@ async def read_batch(
     than byte 0, so repeated drains skip already-consumed bytes.
 
     Correctness guarantee: the byte offset is a *performance hint only* — it is
-    valid because ``messages.jsonl`` is append-only (no rewrite or compaction).
+    valid because ``messages.jsonl`` only ever grows: turn writes and the
+    compaction marker are byte-appends, so already-consumed bytes never shift.
     The ``seq > cursor.resume_seq(session.id)`` filter remains the authoritative
     backstop: a stale or wrong offset causes at most a harmless re-read of some
     records from an earlier position, never a skip or duplicate.

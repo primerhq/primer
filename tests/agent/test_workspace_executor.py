@@ -811,3 +811,65 @@ class TestSteerDeferredDuringCompaction:
         finally:
             await session.aclose()
             await backend.aclose()
+
+    @pytest.mark.asyncio
+    async def test_deferred_steer_survives_a_drain_commit_failure(
+        self, tmp_path: Path
+    ) -> None:
+        """If persisting a drained steer fails, it stays queued (never lost)
+        and the compacting flag is still cleared (not stranded)."""
+        backend, workspace, session = await _build_session(tmp_path)
+        try:
+            await _seed_compactable_history(session)
+            entered = asyncio.Event()
+            release = asyncio.Event()
+            llm = _BlockingCompactionLLM(
+                summary_text="COMPACTION-SUMMARY",
+                turn_text="post-compaction-turn",
+                entered=entered,
+                release=release,
+            )
+            mgr = ToolExecutionManager.for_workspace(
+                toolset_providers={}, session=session
+            )
+            executor = WorkspaceAgentExecutor(
+                agent=_agent(),
+                llm=llm,  # type: ignore[arg-type]
+                llm_model=_small_model(),
+                tool_manager=mgr,
+                session=session,
+                compaction=CompactionStrategy(tail_turns=1),
+            )
+
+            # Fail ONLY the deferred-steer drain commit (op="user_instruction");
+            # the compaction-marker commit (op="message") still succeeds.
+            real_commit = session.commit_state
+
+            async def _flaky_commit(*args: object, **kwargs: object) -> str:
+                if kwargs.get("op") == "user_instruction":
+                    raise RuntimeError("simulated drain commit failure")
+                return await real_commit(*args, **kwargs)  # type: ignore[arg-type]
+
+            session.commit_state = _flaky_commit  # type: ignore[assignment]
+
+            invoke_task = asyncio.create_task(_drain(executor.invoke([])))
+            await asyncio.wait_for(entered.wait(), timeout=5.0)
+            await session.append_instruction("STEER-DROPPED-IF-BUGGY")
+            release.set()
+            # The turn still completes -- the drain failure is swallowed (logged),
+            # never re-raised, so it cannot mask the turn's own outcome.
+            await asyncio.wait_for(invoke_task, timeout=5.0)
+
+            # Flag cleared (not stranded) AND the steer is still queued (peeked,
+            # commit failed, never popped) -- the "never lost" guarantee holds.
+            assert session._state.is_compacting(session.session_id) is False
+            pending = session._state.peek_pending_steers(session.session_id)
+            assert any(
+                "STEER-DROPPED-IF-BUGGY" in p.parts[0].text for p in pending
+            )
+            # And it is NOT on disk, because the write failed.
+            text = _messages_path(workspace, session).read_text(encoding="utf-8")
+            assert "STEER-DROPPED-IF-BUGGY" not in text
+        finally:
+            await session.aclose()
+            await backend.aclose()

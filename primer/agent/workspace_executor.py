@@ -269,23 +269,43 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         next load reads ``[summary(from marker), tail, steer...]``. The flag is
         cleared BEFORE the append so a failure there cannot strand the session
         in a permanently-compacting state.
+
+        The steers are only *removed* from the queue after the write is
+        durable: we peek, persist, and drain-on-success. If the append or
+        commit raises (e.g. a git/IO failure, or ``commit_state`` raising
+        ``ConflictError`` because a concurrent cancel just moved the session
+        to ENDED) the steers stay queued and a later close re-attempts them --
+        the whole point of Decision 5 is that a deferred steer is NEVER lost.
+        The failure is logged, not re-raised, so it cannot mask the in-flight
+        turn's own exception (this runs in ``invoke``'s ``finally``).
         """
         async with self._session.messages_lock:
             self._session._state.end_compaction(self._session.session_id)
-            pending = self._session._state.drain_pending_steers(
+            pending = self._session._state.peek_pending_steers(
                 self._session.session_id
             )
             if not pending:
                 return
-            new_jsonl = await self._appended_jsonl(pending)
-            await self._session.commit_state(
-                summary=(
-                    f"{self._session.session_id}: apply "
-                    f"{len(pending)} deferred steer(s)"
-                ),
-                op="user_instruction",
-                files={"messages.jsonl": new_jsonl},
-            )
+            try:
+                new_jsonl = await self._appended_jsonl(pending)
+                await self._session.commit_state(
+                    summary=(
+                        f"{self._session.session_id}: apply "
+                        f"{len(pending)} deferred steer(s)"
+                    ),
+                    op="user_instruction",
+                    files={"messages.jsonl": new_jsonl},
+                )
+            except Exception:
+                logger.exception(
+                    "session %s: failed to persist %d deferred steer(s); "
+                    "keeping them queued for the next compaction close",
+                    self._session.session_id,
+                    len(pending),
+                )
+                return
+            # Durable now -- safe to remove from the queue.
+            self._session._state.drain_pending_steers(self._session.session_id)
             for _ in pending:
                 logger.info(
                     "session %s: applied a steer deferred during compaction",

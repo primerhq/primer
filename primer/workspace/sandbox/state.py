@@ -267,6 +267,16 @@ class SandboxStateRepo:
         """Record a steer deferred during compaction. Caller holds messages_lock."""
         self._pending_steers.setdefault(session_id, []).append(message)
 
+    def peek_pending_steers(self, session_id: str) -> list["Message"]:
+        """Return the pending steers WITHOUT clearing them (FIFO).
+
+        Caller holds messages_lock. Used to drain-after-commit: read the
+        queued steers, persist them durably, and only then call
+        :meth:`drain_pending_steers`, so a failed write leaves them queued
+        instead of dropping them.
+        """
+        return list(self._pending_steers.get(session_id, []))
+
     def drain_pending_steers(self, session_id: str) -> list["Message"]:
         """Return + clear the pending steers (FIFO). Caller holds messages_lock."""
         return self._pending_steers.pop(session_id, [])
