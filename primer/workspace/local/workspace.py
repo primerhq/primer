@@ -675,10 +675,13 @@ class LocalWorkspace(Workspace):
             with target.open("ab") as fh:
                 fh.write(line)
 
-        # Serialise against the session's messages.jsonl read->rewrite
-        # window (AgentSession.append_instruction) so this O_APPEND event
-        # row cannot land in that gap and be truncated by the rewrite.
-        async with self._state.messages_lock:
+        # Serialise against this session's messages.jsonl read->rewrite
+        # windows (AgentSession.append_instruction, the executor's turn
+        # persist) so this O_APPEND event row cannot land in one of those
+        # gaps and be truncated by the rewrite. The lock is keyed by
+        # session id, so a flush for one session never waits on another
+        # session's commit.
+        async with self._state.messages_lock(session_id):
             await asyncio.to_thread(_append)
 
     async def append_state_line(self, relative_path: str, line: bytes) -> None:

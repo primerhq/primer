@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
@@ -31,6 +32,7 @@ from primer.model.workspace_session import (
     SessionInfo,
     WaitingState,
 )
+from primer.session.mutation_lock import KeyedLock
 from primer.workspace.state_helpers import (
     TRAILER_AGENT as _TRAILER_AGENT,
     TRAILER_CALL as _TRAILER_CALL,
@@ -229,11 +231,12 @@ class SandboxStateRepo:
         self._workspace_id = workspace_id
         self._commit_lock = asyncio.Lock()
         # Serialises the messages.jsonl read->rewrite window (session
-        # instruction appends) against the append-file event-row writes
-        # (``Workspace.append_message_line``). Distinct from
-        # ``_commit_lock`` (which the rewrite still takes internally) to
-        # avoid re-entrancy. Mirrors LocalStateRepo._messages_lock.
-        self._messages_lock = asyncio.Lock()
+        # instruction appends, the executor's turn persist) against the
+        # append-file event-row writes (``Workspace.append_message_line``).
+        # Distinct from ``_commit_lock`` (which the rewrite still takes
+        # internally) to avoid re-entrancy. Keyed by session id so unrelated
+        # sessions never contend. Mirrors LocalStateRepo._messages_locks.
+        self._messages_locks = KeyedLock()
         # session_id -> agent_id cache (populated by create_session /
         # initialize scan; used by commit() to resolve the agent trailer).
         self._agent_by_session: dict[str, str] = {}
@@ -246,15 +249,15 @@ class SandboxStateRepo:
     def state_path(self) -> str:
         return self._state_path
 
-    @property
-    def messages_lock(self) -> asyncio.Lock:
-        """Mutual-exclusion lock for messages.jsonl append vs. rewrite.
+    def messages_lock(self, session_id: str) -> AbstractAsyncContextManager[None]:
+        """Mutual exclusion for one session's messages.jsonl writers.
 
-        Acquired by :meth:`Workspace.append_message_line` and by the
-        session's instruction append across its read->rewrite window, so
-        the two never interleave. Mirrors ``LocalStateRepo.messages_lock``.
+        Acquired by :meth:`Workspace.append_message_line` and by every
+        full-file rewriter across its read->rewrite window, so the two never
+        interleave. Keyed by ``session_id`` so unrelated sessions do not
+        contend. Mirrors ``LocalStateRepo.messages_lock``.
         """
-        return self._messages_lock
+        return self._messages_locks.acquire(session_id)
 
     # ------------------------------------------------------------------
     # Version guard

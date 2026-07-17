@@ -26,6 +26,7 @@ import asyncio
 import json
 import logging
 import uuid
+from contextlib import AbstractAsyncContextManager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Literal
@@ -279,8 +280,8 @@ class AgentSession:
         return _SYSTEM_PROMPT_TEMPLATE.format(session_id=self.session_id)
 
     @property
-    def messages_lock(self) -> asyncio.Lock:
-        """Mutual-exclusion lock for this session's messages.jsonl writers.
+    def messages_lock(self) -> AbstractAsyncContextManager[None]:
+        """Mutual exclusion for THIS session's messages.jsonl writers.
 
         Every writer that rewrites the WHOLE file from a snapshot it read
         (this class's :meth:`append_instruction`, the workspace executor's
@@ -290,11 +291,12 @@ class AgentSession:
         Otherwise a write landing in a rewriter's read->rewrite gap is
         silently truncated by the rewrite.
 
-        Exposed on the session (rather than callers reaching into
-        ``_state``) so the keying of the underlying lock table stays an
-        implementation detail of the state repo.
+        Returns a fresh context manager on each access; use it as
+        ``async with session.messages_lock:``. The repo's lock table is
+        keyed by session id, so writers to OTHER sessions never contend --
+        the key is supplied here so callers cannot key it inconsistently.
         """
-        return self._state.messages_lock
+        return self._state.messages_lock(self.session_id)
 
     # ---- Pause / end flag accessors (set by request_*; read by runtime) --
 
