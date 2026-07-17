@@ -1,4 +1,4 @@
-"""WebhookDelivery model — durable record of an inbound webhook fire.
+"""WebhookDelivery model - durable record of an inbound webhook fire.
 
 A row is written by the public webhook endpoint (``POST /v1/webhooks/{token}``)
 BEFORE it returns 202 and BEFORE the in-process ``BackgroundTask`` dispatches
@@ -10,9 +10,9 @@ endpoint, so a duplicate inbound request for the same logical instant collides
 on the primary key and is naturally idempotent at the storage layer.
 
 Lifecycle:
-- ``pending``  — created; dispatch not yet confirmed complete.
-- ``done``     — the background dispatch finished (best-effort mark).
-- ``failed``   — the background dispatch raised (best-effort mark).
+- ``pending``  - created; dispatch not yet confirmed complete.
+- ``done``     - the background dispatch finished (best-effort mark).
+- ``failed``   - the background dispatch raised (best-effort mark).
 
 Startup recovery re-dispatches ``pending`` rows older than a small grace
 window (their owning process died before marking them), giving inbound
@@ -36,7 +36,7 @@ class WebhookDelivery(Identifiable):
     """Persisted record of one inbound webhook fire.
 
     ``id`` is the endpoint-computed ``fire_id`` (never auto-generated), so
-    the model carries no ``_id_prefix`` — callers always supply the id.
+    the model carries no ``_id_prefix`` - callers always supply the id.
     """
 
     trigger_id: str = Field(

@@ -261,7 +261,7 @@ async def recover_webhook_deliveries(
     ``_dispatch_webhook`` path.
 
     Idempotency: the ``fire_id`` gate in ``fire_trigger`` does NOT dedupe a
-    webhook re-fire — ``fire_trigger`` recomputes a fresh wall-clock
+    webhook re-fire - ``fire_trigger`` recomputes a fresh wall-clock
     ``fired_at`` for every webhook call (``scheduled_for=None``), so each
     dispatch derives a different ``fire_id`` and ``last_fired_id`` never
     matches. The durable ``WebhookDelivery.status`` IS the dedupe: only
@@ -294,7 +294,7 @@ async def recover_webhook_deliveries(
             )
             _items = list(_page.items)
             for _row in _items:
-                # Skip rows younger than the grace window — they may be an
+                # Skip rows younger than the grace window - they may be an
                 # in-flight dispatch from THIS process's early startup.
                 if _row.created_at.timestamp() > _cutoff:
                     continue
@@ -320,7 +320,7 @@ async def recover_webhook_deliveries(
             _offset += 200
         if _refired:
             logger.info(
-                "lifespan: webhook recovery — re-dispatched %d stale "
+                "lifespan: webhook recovery - re-dispatched %d stale "
                 "pending delivery(ies) from persisted state", _refired,
             )
     except Exception:  # noqa: BLE001 -- never break startup
