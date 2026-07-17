@@ -493,9 +493,9 @@ class TestWorkspaceProviderRouter:
             json=body,
         )
         assert put.status_code == 403, put.text
-        detail = put.json()["detail"]
-        assert detail["error"] == "reserved_id_protected"
-        assert detail["kind"] == "workspace_provider"
+        ext = put.json()["extensions"]
+        assert ext["error"] == "reserved_id_protected"
+        assert ext["kind"] == "workspace_provider"
 
         # Verify the row is unchanged.
         get = await client.get("/v1/workspace_providers/local")
@@ -717,9 +717,9 @@ class TestWorkspaceTemplateRouter:
         }
         post = await client.post("/v1/workspace_templates", json=body)
         assert post.status_code == 409, post.text
-        detail = post.json()["detail"]
-        assert detail["error"] == "reserved_id"
-        assert detail["kind"] == "workspace_template"
+        ext = post.json()["extensions"]
+        assert ext["error"] == "reserved_id"
+        assert ext["kind"] == "workspace_template"
 
     @pytest.mark.asyncio
     async def test_workspace_template_delete_rejects_reserved_id(
@@ -737,9 +737,9 @@ class TestWorkspaceTemplateRouter:
 
         delete = await client.delete("/v1/workspace_templates/local-default")
         assert delete.status_code == 403, delete.text
-        detail = delete.json()["detail"]
-        assert detail["error"] == "reserved_id_protected"
-        assert detail["kind"] == "workspace_template"
+        ext = delete.json()["extensions"]
+        assert ext["error"] == "reserved_id_protected"
+        assert ext["kind"] == "workspace_template"
 
         # Row preserved.
         got = await client.get("/v1/workspace_templates/local-default")
@@ -763,9 +763,9 @@ class TestWorkspaceTemplateRouter:
             "/v1/workspace_templates/local-default", json=body
         )
         assert put.status_code == 403, put.text
-        detail = put.json()["detail"]
-        assert detail["error"] == "reserved_id_protected"
-        assert detail["kind"] == "workspace_template"
+        ext = put.json()["extensions"]
+        assert ext["error"] == "reserved_id_protected"
+        assert ext["kind"] == "workspace_template"
 
         # Row unchanged.
         got = await client.get("/v1/workspace_templates/local-default")
@@ -998,17 +998,19 @@ class TestWorkspaceRouter:
         resp = await client.post("/v1/workspaces/some-id/pause")
         assert resp.status_code == 501
         body = resp.json()
-        # FastAPI wraps HTTPException.detail as {"detail": ...}
-        assert body["detail"]["error"] == "not_implemented"
-        assert "pause" in body["detail"]["message"].lower()
+        # HTTPException renders through the RFC 7807 envelope: the dict
+        # detail's "message" becomes the string `detail`, the rest of the
+        # keys are preserved verbatim under `extensions`.
+        assert body["extensions"]["error"] == "not_implemented"
+        assert "pause" in body["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_resume_returns_501(self, client) -> None:
         resp = await client.post("/v1/workspaces/some-id/resume")
         assert resp.status_code == 501
         body = resp.json()
-        assert body["detail"]["error"] == "not_implemented"
-        assert "resume" in body["detail"]["message"].lower()
+        assert body["extensions"]["error"] == "not_implemented"
+        assert "resume" in body["detail"].lower()
 
     @pytest.mark.asyncio
     async def test_create_against_agent_sandbox_provider_returns_501(
@@ -1055,9 +1057,9 @@ class TestWorkspaceRouter:
             json={"template_id": "tpl-k", "provider_id": "k8s-as"},
         )
         assert resp.status_code == 501, resp.text
-        detail = resp.json()["detail"]
-        assert detail["error"] == "not_implemented"
-        assert "agent_sandbox" in detail["message"]
+        ext = resp.json()["extensions"]
+        assert ext["error"] == "not_implemented"
+        assert "agent_sandbox" in ext["message"]
 
     @pytest.mark.asyncio
     async def test_workspace_list_includes_phase(self, client) -> None:
@@ -1438,10 +1440,10 @@ class TestDiagnosticEndpoint:
             json={"command": "rm -rf /"},
         )
         assert resp.status_code == 400, resp.text
-        detail = resp.json()["detail"]
-        assert detail["error"] == "command_not_whitelisted"
-        assert detail["head"] == "rm"
-        assert set(detail["allowed"]) == {"echo", "pwd", "whoami", "uname", "ls"}
+        ext = resp.json()["extensions"]
+        assert ext["error"] == "command_not_whitelisted"
+        assert ext["head"] == "rm"
+        assert set(ext["allowed"]) == {"echo", "pwd", "whoami", "uname", "ls"}
         # Backend was NOT called — whitelist short-circuits before
         # diagnostic_exec dispatch.
         assert ws.diagnostic_calls == []
@@ -1482,8 +1484,8 @@ class TestDiagnosticEndpoint:
             json={"command": "echo hi"},
         )
         assert resp.status_code == 501
-        detail = resp.json()["detail"]
-        assert detail["error"] == "not_implemented"
+        ext = resp.json()["extensions"]
+        assert ext["error"] == "not_implemented"
 
 
 class TestLogSubResource:

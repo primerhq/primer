@@ -73,10 +73,14 @@ def _scheduled_body(
 
 
 def _detail_code(body: dict) -> str | None:
-    """Pull the error code out of the standard {"detail": {"code", ...}} envelope."""
-    detail = body.get("detail")
-    if isinstance(detail, dict):
-        return detail.get("code")
+    """Pull the error code out of the RFC 7807 envelope.
+
+    Routers raise ``HTTPException(detail={"code": ...})``; the problem+json
+    handler preserves those keys verbatim under ``extensions``.
+    """
+    extensions = body.get("extensions")
+    if isinstance(extensions, dict):
+        return extensions.get("code")
     return None
 
 

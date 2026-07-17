@@ -92,10 +92,10 @@ async def test_put_call_tool_rejected_as_yielding_not_hard_denied(client):
         json={"allowed_tools": ["system__call_tool"]},
     )
     assert resp.status_code == 422, resp.text
-    detail = resp.json()["detail"]
-    assert detail["code"] == "tool_not_exposable"
-    assert detail["scoped_id"] == "system__call_tool"
-    assert detail["reason"] == "yielding_unsupported"
+    ext = resp.json()["extensions"]
+    assert ext["code"] == "tool_not_exposable"
+    assert ext["scoped_id"] == "system__call_tool"
+    assert ext["reason"] == "yielding_unsupported"
 
 
 @pytest.mark.asyncio

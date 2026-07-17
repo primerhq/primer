@@ -365,9 +365,9 @@ class TestConfigCRUD:
         body2 = {**_config_body(), "embedding_model": "different-model"}
         resp = await client.put("/v1/internal_collections/config", json=body2)
         assert resp.status_code == 409, resp.text
-        detail = resp.json()["detail"]
-        assert detail["error"] == "subsystem_active"
-        assert "embedding_model" in detail["frozen_fields"]
+        ext = resp.json()["extensions"]
+        assert ext["error"] == "subsystem_active"
+        assert "embedding_model" in ext["frozen_fields"]
         # Confirm the row was not mutated.
         get = await client.get("/v1/internal_collections/config")
         assert get.json()["embedding_model"] == _config_body()["embedding_model"]
@@ -490,9 +490,9 @@ class TestBootstrap:
         r2 = await client.post("/v1/internal_collections/bootstrap")
         assert r2.status_code in (202, 409)
         if r2.status_code == 409:
-            detail = r2.json()["detail"]
-            assert detail["error"] == "bootstrap_already_running"
-            assert detail["status"]["status"] == "running"
+            ext = r2.json()["extensions"]
+            assert ext["error"] == "bootstrap_already_running"
+            assert ext["status"]["status"] == "running"
 
         # Settle so other tests don't inherit a half-baked state.
         await _bootstrap_and_wait(client)

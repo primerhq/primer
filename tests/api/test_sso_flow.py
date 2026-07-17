@@ -216,7 +216,7 @@ async def test_list_providers_returns_only_enabled(client, app):
 async def test_login_404_for_missing_provider(client, app):
     r = await _login(client, "no-such-provider")
     assert r.status_code == 404
-    assert r.json()["detail"]["error"] == "provider_not_found"
+    assert r.json()["extensions"]["error"] == "provider_not_found"
 
 
 @pytest.mark.asyncio
@@ -229,7 +229,7 @@ async def test_login_404_for_disabled_provider(client, app, rsa_keypair):
 
     r = await _login(client, provider.id)
     assert r.status_code == 404
-    assert r.json()["detail"]["error"] == "provider_not_found"
+    assert r.json()["extensions"]["error"] == "provider_not_found"
 
 
 @pytest.mark.asyncio
@@ -456,7 +456,7 @@ async def test_callback_mismatched_state_param_rejected(client, app, rsa_keypair
         client, provider.id, code="code-state-mismatch", state="not-the-real-state",
     )
     assert cb.status_code == 400, cb.text
-    assert cb.json()["detail"]["error"] == "invalid_state"
+    assert cb.json()["extensions"]["error"] == "invalid_state"
     assert "primer_session" not in cb.cookies
 
 
@@ -475,7 +475,7 @@ async def test_callback_missing_state_param_rejected(client, app, rsa_keypair):
 
     cb = await _callback(client, provider.id, code="code-state-missing", state=None)
     assert cb.status_code == 400, cb.text
-    assert cb.json()["detail"]["error"] == "invalid_state"
+    assert cb.json()["extensions"]["error"] == "invalid_state"
     assert "primer_session" not in cb.cookies
 
 
@@ -498,7 +498,7 @@ async def test_callback_non_ascii_state_param_rejected(client, app, rsa_keypair)
 
     cb = await _callback(client, provider.id, code="code-state-non-ascii", state="é")
     assert cb.status_code == 400, cb.text
-    assert cb.json()["detail"]["error"] == "invalid_state"
+    assert cb.json()["extensions"]["error"] == "invalid_state"
     assert "primer_session" not in cb.cookies
 
 
@@ -522,7 +522,7 @@ async def test_jit_disabled_unknown_sub_rejected(client, app, rsa_keypair):
 
     cb = await _callback(client, provider.id, code="code", state=qs["state"])
     assert cb.status_code == 403, cb.text
-    assert cb.json()["detail"]["error"] == "sso_jit_disabled"
+    assert cb.json()["extensions"]["error"] == "sso_jit_disabled"
     assert "primer_session" not in cb.cookies
 
     identities_page = await app.state.storage_provider.get_storage(UserIdentity).list(
@@ -565,7 +565,7 @@ async def test_disabled_matched_user_rejected(client, app, rsa_keypair):
 
     cb = await _callback(client, provider.id, code="code", state=qs["state"])
     assert cb.status_code == 403, cb.text
-    assert cb.json()["detail"]["error"] == "account_disabled"
+    assert cb.json()["extensions"]["error"] == "account_disabled"
     assert "primer_session" not in cb.cookies
 
 
@@ -586,7 +586,7 @@ async def test_tampered_signature_rejected(client, app, rsa_keypair, attacker_rs
 
     cb = await _callback(client, provider.id, code="code", state=qs["state"])
     assert cb.status_code == 400, cb.text
-    assert cb.json()["detail"]["error"] == "sso_validation_failed"
+    assert cb.json()["extensions"]["error"] == "sso_validation_failed"
     assert "primer_session" not in cb.cookies
 
 
@@ -609,7 +609,7 @@ async def test_expired_id_token_rejected(client, app, rsa_keypair):
 
     cb = await _callback(client, provider.id, code="code", state=qs["state"])
     assert cb.status_code == 400, cb.text
-    assert cb.json()["detail"]["error"] == "sso_validation_failed"
+    assert cb.json()["extensions"]["error"] == "sso_validation_failed"
 
 
 @pytest.mark.asyncio
@@ -629,7 +629,7 @@ async def test_wrong_nonce_rejected(client, app, rsa_keypair):
 
     cb = await _callback(client, provider.id, code="code", state=qs["state"])
     assert cb.status_code == 400, cb.text
-    assert cb.json()["detail"]["error"] == "sso_validation_failed"
+    assert cb.json()["extensions"]["error"] == "sso_validation_failed"
 
 
 # ---------------------------------------------------------------------------

@@ -186,8 +186,8 @@ async def test_role_user_forbidden_on_create_and_list(client, app):
 
     r = await client.post("/v1/admin/oidc-providers", json=_BODY)
     assert r.status_code == 403, r.text
-    assert r.json()["detail"]["error"] == "forbidden_role"
+    assert r.json()["extensions"]["error"] == "forbidden_role"
 
     r = await client.get("/v1/admin/oidc-providers")
     assert r.status_code == 403, r.text
-    assert r.json()["detail"]["error"] == "forbidden_role"
+    assert r.json()["extensions"]["error"] == "forbidden_role"

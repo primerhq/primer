@@ -438,9 +438,9 @@ async def test_detach_modified_requires_force(client, wsr) -> None:
 
     r = await client.delete(f"/v1/workspaces/{wid}/mounts/{m['mount_id']}")
     assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
-    assert detail["modified"] is True
-    assert doc_path in detail["changed"]
+    ext = r.json()["extensions"]
+    assert ext["modified"] is True
+    assert doc_path in ext["changed"]
 
     r2 = await client.delete(
         f"/v1/workspaces/{wid}/mounts/{m['mount_id']}", params={"force": "true"}

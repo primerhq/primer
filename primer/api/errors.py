@@ -9,11 +9,14 @@ the right HTTP status + problem-type URI. Type URIs are relative
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
+from http import HTTPStatus
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from primer.model.except_ import (
     AuthenticationError,
     AuthRequiredError,
@@ -112,6 +115,7 @@ def _problem_response(
     title: str,
     detail: str,
     extensions: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
 ) -> JSONResponse:
     # Thread the request-id from request.state (set by the
     # _install_request_id middleware in primer.api.app) into the
@@ -134,6 +138,7 @@ def _problem_response(
         status_code=status,
         content=problem.model_dump(exclude_none=True),
         media_type=PROBLEM_JSON_MEDIA_TYPE,
+        headers=headers,
     )
 
 
@@ -191,6 +196,102 @@ async def _validation_error_handler(
     )
 
 
+# Status -> (type URI, title) for raw HTTPExceptions. Reuses the type-URI
+# vocabulary of _PRIMER_ERROR_MAP so there is exactly ONE envelope shape and
+# one set of problem types across the API. Deliberately an explicit table
+# rather than a lookup derived from _PRIMER_ERROR_MAP: that list is ordered
+# for OpenAPI/MRO purposes and its first 404 row is ModelNotFoundError, which
+# would mistype a plain 404 (e.g. an unknown route) as /errors/model-not-found.
+_HTTP_STATUS_PROBLEM: dict[int, tuple[str, str]] = {
+    400: ("/errors/bad-request", "Bad Request"),
+    401: ("/errors/authentication-failed", "Authentication Failed"),
+    403: ("/errors/forbidden", "Forbidden"),
+    404: ("/errors/not-found", "Not Found"),
+    409: ("/errors/conflict", "Conflict"),
+    422: ("/errors/validation-error", "Validation Error"),
+    429: ("/errors/rate-limited", "Rate Limited"),
+    500: ("/errors/internal", "Internal Error"),
+    502: ("/errors/provider-error", "Provider Error"),
+    503: ("/errors/service-unavailable", "Service Unavailable"),
+    504: ("/errors/network-error", "Network Error"),
+}
+
+
+def _problem_for_status(status: int) -> tuple[str, str]:
+    """Map an HTTP status onto its (type URI, title).
+
+    Falls back to the IANA reason phrase for codes outside the table
+    (e.g. 405, 501) so every status still gets a stable, sane type URI.
+    """
+    known = _HTTP_STATUS_PROBLEM.get(status)
+    if known is not None:
+        return known
+    try:
+        phrase = HTTPStatus(status).phrase
+    except ValueError:  # non-standard status code
+        return "/errors/unknown", "Error"
+    return f"/errors/{phrase.lower().replace(' ', '-')}", phrase
+
+
+def _detail_from_mapping(payload: Mapping[str, Any], fallback: str) -> str:
+    """Reduce a dict ``detail`` to RFC 7807's string ``detail``.
+
+    Several routers raise ``HTTPException(detail={"code": ..., "message":
+    ...})``. Prefer a human-readable message when one is carried;
+    otherwise fall back to the machine code (still far more useful than a
+    stringified dict), then to the status title. The full mapping is kept
+    verbatim in ``extensions``, so nothing is lost either way.
+    """
+    for key in ("message", "detail", "description"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    for key in ("code", "error"):
+        value = payload.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return fallback
+
+
+async def _http_exception_handler(
+    request: Request, exc: StarletteHTTPException
+) -> Response:
+    """Render Starlette/FastAPI ``HTTPException`` as problem+json.
+
+    Without this, every raw ``raise HTTPException(...)`` -- including all
+    of require_auth / require_user / require_admin / require_scope and the
+    whole auth router -- would bypass the RFC 7807 envelope and return
+    FastAPI's default ``{"detail": ...}`` as application/json, contrary to
+    the documented contract that every error is application/problem+json.
+    """
+    headers = getattr(exc, "headers", None)
+    # 204/304 carry no body by definition; a problem envelope there would
+    # violate the HTTP spec. Mirror Starlette's own default handling.
+    if exc.status_code in (204, 304):
+        return Response(status_code=exc.status_code, headers=headers)
+
+    type_uri, title = _problem_for_status(exc.status_code)
+    detail = exc.detail
+    extensions: dict[str, Any] | None = None
+    if isinstance(detail, Mapping):
+        extensions = {k: _jsonable(v) for k, v in detail.items()}
+        detail_str = _detail_from_mapping(detail, title)
+    elif isinstance(detail, str) and detail:
+        detail_str = detail
+    else:
+        detail_str = title
+
+    return _problem_response(
+        request=request,
+        status=exc.status_code,
+        type_uri=type_uri,
+        title=title,
+        detail=detail_str,
+        extensions=extensions,
+        headers=headers,
+    )
+
+
 async def _bare_exception_handler(
     request: Request, exc: Exception
 ) -> JSONResponse:
@@ -221,6 +322,12 @@ def register_error_handlers(app: FastAPI) -> None:
             exc_cls, _make_primer_error_handler(status, type_uri, title)
         )
     app.add_exception_handler(RequestValidationError, _validation_error_handler)
+    # Starlette's HTTPException (FastAPI's subclasses it, so this covers both).
+    # Overrides the framework default, which renders `{"detail": ...}` as
+    # application/json and would otherwise escape the problem+json contract on
+    # every raw `raise HTTPException(...)` -- including all auth/authz
+    # rejections and 404-for-unknown-route.
+    app.add_exception_handler(StarletteHTTPException, _http_exception_handler)
     # Status-code 500 override; this is what catches unhandled non-PrimerError
     # exceptions inside ServerErrorMiddleware.
     app.add_exception_handler(500, _bare_exception_handler)

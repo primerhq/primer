@@ -85,7 +85,7 @@ async def test_webhook_unknown_token_404(anon_client):
     """Unknown token returns 404."""
     r = await anon_client.post(f"/v1/webhooks/{'0' * 32}", content=b"{}")
     assert r.status_code == 404
-    assert r.json()["detail"]["code"] == "webhook_not_found"
+    assert r.json()["extensions"]["code"] == "webhook_not_found"
 
 
 @pytest.mark.asyncio
@@ -97,7 +97,7 @@ async def test_webhook_disabled_trigger_403(anon_client, client, unique_suffix):
     token = trigger["config"]["token"]
     r = await anon_client.post(f"/v1/webhooks/{token}", content=b"{}")
     assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "webhook_disabled"
+    assert r.json()["extensions"]["code"] == "webhook_disabled"
 
 
 @pytest.mark.asyncio
@@ -111,7 +111,7 @@ async def test_webhook_hmac_missing_sig_401(anon_client, client, unique_suffix):
     token = trigger["config"]["token"]
     r = await anon_client.post(f"/v1/webhooks/{token}", content=b"{}")
     assert r.status_code == 401
-    assert r.json()["detail"]["code"] == "hmac_mismatch"
+    assert r.json()["extensions"]["code"] == "hmac_mismatch"
 
 
 @pytest.mark.asyncio

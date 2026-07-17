@@ -27,7 +27,7 @@ class TestSingletonGet:
         r = await client.get("/v1/web_search_active_config")
         # 503 subsystem_not_bootstrapped per spec §9.2.
         assert r.status_code == 503, r.text
-        assert r.json()["detail"]["error"] == "subsystem_not_bootstrapped"
+        assert r.json()["extensions"]["error"] == "subsystem_not_bootstrapped"
 
 
 class TestSingletonPut:
@@ -58,7 +58,7 @@ class TestSingletonPut:
         )
         assert r.status_code == 422, r.text
         body = r.json()
-        assert "nope" in body["detail"]["unknown_ids"]
+        assert "nope" in body["extensions"]["unknown_ids"]
 
     @pytest.mark.asyncio
     async def test_put_aggregated_mode_with_existing_providers(self, client) -> None:
@@ -110,7 +110,7 @@ class TestSingletonPut:
             },
         )
         assert r.status_code == 422, r.text
-        assert "nope" in r.json()["detail"]["unknown_ids"]
+        assert "nope" in r.json()["extensions"]["unknown_ids"]
 
     @pytest.mark.asyncio
     async def test_put_empty_aggregated_rejected(self, client) -> None:

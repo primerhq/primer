@@ -145,7 +145,7 @@ async def test_pause_resume(authed_client, unique_suffix, tmp_path):
     wid = await _ws(authed_client, unique_suffix, tmp_path)
     p = await authed_client.post(f"/v1/workspaces/{wid}/pause")
     assert p.status_code == 501, p.text
-    assert p.json()["detail"]["error"] == "not_implemented"
+    assert p.json()["extensions"]["error"] == "not_implemented"
 
 
 @smk("SMK-WSP-17")

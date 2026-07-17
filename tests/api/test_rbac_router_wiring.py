@@ -49,7 +49,7 @@ async def test_admin_route_admin_ok_user_forbidden_feature_ok(client, app):
     # role='user' is REJECTED on the admin-gated route ...
     r = await client.get("/v1/llm_providers")
     assert r.status_code == 403, r.text
-    assert r.json()["detail"]["error"] == "forbidden_role"
+    assert r.json()["extensions"]["error"] == "forbidden_role"
 
     # ... but REACHES a require_user feature route.
     r = await client.get("/v1/agents")

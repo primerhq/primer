@@ -55,6 +55,11 @@ async def test_mcp_gate_rejects_restricted_actor() -> None:
     assert sent[0]["type"] == "http.response.start"
     assert sent[0]["status"] == 403
     body = json.loads(sent[1]["body"])
+    # The MCP gate is raw ASGI: it hand-rolls this body (see
+    # _mcp_send_simple_response) before FastAPI's exception machinery runs, so
+    # it does NOT go through the problem+json handler and keeps the bare
+    # {"detail": ...} shape. Contrast test_mcp_exposure_put_forbidden_for_non_admin
+    # below, which is a normal route and gets the RFC 7807 envelope.
     assert body["detail"]["code"] == "forbidden_role"
 
 
@@ -76,4 +81,4 @@ async def test_mcp_exposure_put_forbidden_for_non_admin(client, app) -> None:
     resp = await client.put("/v1/mcp_exposure", json={"enabled": True})
 
     assert resp.status_code == 403, resp.text
-    assert resp.json()["detail"]["error"] == "forbidden_role"
+    assert resp.json()["extensions"]["error"] == "forbidden_role"

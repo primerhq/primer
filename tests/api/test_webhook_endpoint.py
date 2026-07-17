@@ -80,7 +80,7 @@ async def test_webhook_unknown_token_returns_404(client, fake_storage_provider):
     )
     assert r.status_code == 404, r.text
     body = r.json()
-    assert body["detail"]["code"] == "webhook_not_found"
+    assert body["extensions"]["code"] == "webhook_not_found"
 
 
 @pytest.mark.asyncio
@@ -95,7 +95,7 @@ async def test_webhook_disabled_trigger_returns_403(client, fake_storage_provide
     )
     assert r.status_code == 403, r.text
     body = r.json()
-    assert body["detail"]["code"] == "webhook_disabled"
+    assert body["extensions"]["code"] == "webhook_disabled"
 
 
 @pytest.mark.asyncio
@@ -111,7 +111,7 @@ async def test_webhook_hmac_mismatch_returns_401(client, fake_storage_provider):
     )
     assert r.status_code == 401, r.text
     body = r.json()
-    assert body["detail"]["code"] == "hmac_mismatch"
+    assert body["extensions"]["code"] == "hmac_mismatch"
 
 
 @pytest.mark.asyncio
@@ -169,7 +169,7 @@ async def test_webhook_oversized_body_returns_413(client, fake_storage_provider)
     )
     assert r.status_code == 413, r.text
     body = r.json()
-    assert body["detail"]["code"] == "payload_too_large"
+    assert body["extensions"]["code"] == "payload_too_large"
 
 
 @pytest.mark.asyncio
@@ -190,7 +190,7 @@ async def test_webhook_rate_limit_returns_429(client, fake_storage_provider):
     )
     assert r.status_code == 429, r.text
     body = r.json()
-    assert body["detail"]["code"] == "rate_limited"
+    assert body["extensions"]["code"] == "rate_limited"
 
     # Cleanup so we don't affect other tests.
     _rate_windows.pop(token, None)

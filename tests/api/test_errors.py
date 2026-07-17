@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
 
@@ -200,6 +200,136 @@ async def test_bare_exception_returns_500_internal(
         r.exc_info is not None and "boom" in str(r.exc_info[1])
         for r in caplog.records
     )
+
+
+class TestStarletteHTTPException:
+    """Raw ``HTTPException`` (~91 raise sites, incl. every require_auth /
+    require_user / require_admin / require_scope rejection) must render the
+    same RFC 7807 envelope as PrimerError, not FastAPI's default
+    ``{"detail": ...}`` as plain application/json. See
+    docs/dev/architecture/rest-api.md: "Every error is
+    application/problem+json".
+    """
+
+    def test_string_detail_renders_problem_envelope(self) -> None:
+        app = _make_app()
+        _mount_raiser(app, "/raise", HTTPException(status_code=404, detail="nope"))
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/raise")
+        assert response.status_code == 404
+        assert response.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE
+        body = response.json()
+        assert body["type"] == "/errors/not-found"
+        assert body["title"] == "Not Found"
+        assert body["status"] == 404
+        assert body["detail"] == "nope"
+        assert body["instance"] == "/raise"
+
+    def test_auth_401_is_problem_json(self) -> None:
+        app = _make_app()
+        _mount_raiser(
+            app,
+            "/raise",
+            HTTPException(status_code=401, detail={"error": "auth_required"}),
+        )
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/raise")
+        assert response.status_code == 401
+        assert response.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE
+        body = response.json()
+        assert body["type"] == "/errors/authentication-failed"
+        assert body["status"] == 401
+        # The machine-readable key survives as an extension member.
+        assert body["extensions"]["error"] == "auth_required"
+
+    def test_forbidden_403_is_problem_json(self) -> None:
+        app = _make_app()
+        _mount_raiser(
+            app,
+            "/raise",
+            HTTPException(status_code=403, detail={"error": "forbidden_role"}),
+        )
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/raise")
+        assert response.status_code == 403
+        assert response.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE
+        body = response.json()
+        assert body["type"] == "/errors/forbidden"
+        assert body["title"] == "Forbidden"
+        assert body["status"] == 403
+        assert body["extensions"]["error"] == "forbidden_role"
+
+    def test_dict_detail_conveys_code_and_extra_keys(self) -> None:
+        app = _make_app()
+        _mount_raiser(
+            app,
+            "/raise",
+            HTTPException(
+                status_code=403,
+                detail={"code": "scope_required", "scope": "mcp"},
+            ),
+        )
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/raise")
+        body = response.json()
+        assert body["extensions"]["code"] == "scope_required"
+        assert body["extensions"]["scope"] == "mcp"
+        # detail is a string per RFC 7807 -- never a stringified dict.
+        assert isinstance(body["detail"], str)
+        assert "{" not in body["detail"]
+
+    def test_dict_detail_message_becomes_detail(self) -> None:
+        app = _make_app()
+        _mount_raiser(
+            app,
+            "/raise",
+            HTTPException(
+                status_code=501,
+                detail={"error": "not_implemented", "message": "pause is not supported"},
+            ),
+        )
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/raise")
+        body = response.json()
+        assert body["detail"] == "pause is not supported"
+        assert body["extensions"]["error"] == "not_implemented"
+
+    def test_headers_survive(self) -> None:
+        app = _make_app()
+        _mount_raiser(
+            app,
+            "/raise",
+            HTTPException(
+                status_code=401,
+                detail="token expired",
+                headers={"WWW-Authenticate": 'Bearer realm="primer"'},
+            ),
+        )
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/raise")
+        assert response.status_code == 401
+        assert response.headers["www-authenticate"] == 'Bearer realm="primer"'
+        assert response.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE
+
+    def test_unknown_route_returns_problem_json_404(self) -> None:
+        app = _make_app()
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/no-such-route")
+        assert response.status_code == 404
+        assert response.headers["content-type"] == PROBLEM_JSON_MEDIA_TYPE
+        body = response.json()
+        assert body["type"] == "/errors/not-found"
+        assert body["status"] == 404
+
+    def test_bodyless_status_stays_bodyless(self) -> None:
+        # 204/304 MUST NOT carry a body; a problem envelope there would be
+        # a protocol violation.
+        app = _make_app()
+        _mount_raiser(app, "/raise", HTTPException(status_code=304))
+        client = TestClient(app, raise_server_exceptions=False)
+        response = client.get("/raise")
+        assert response.status_code == 304
+        assert not response.content
 
 
 class TestCommonResponses:
