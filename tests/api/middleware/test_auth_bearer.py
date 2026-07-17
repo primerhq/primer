@@ -139,6 +139,37 @@ async def test_cookie_path_unchanged(client):
 
 
 @pytest.mark.asyncio
+async def test_find_by_hash_uses_cursor_page_no_count():
+    """The bearer lookup must page via CursorPage, not OffsetPage.
+
+    The offset path issues an extra COUNT(*) on every bearer-authenticated
+    request (E-I2); the keyset cursor path issues none. Assert the page
+    type the storage receives so the COUNT can't silently regress.
+    """
+    from primer.api.middleware.auth import AuthMiddleware
+    from primer.model.storage import CursorPage, CursorPageResponse
+
+    seen_pages: list = []
+
+    class _SpyTokenStorage:
+        async def find(self, predicate, page, *, order_by=None):
+            seen_pages.append(page)
+            return CursorPageResponse(next_cursor=None, items=[])
+
+    class _SpyProvider:
+        def get_storage(self, model_class):
+            return _SpyTokenStorage()
+
+    mw = AuthMiddleware(app=None)
+    result = await mw._find_by_hash(_SpyProvider(), "a" * 64)
+
+    assert result is None
+    assert len(seen_pages) == 1
+    assert isinstance(seen_pages[0], CursorPage)
+    assert seen_pages[0].length == 1
+
+
+@pytest.mark.asyncio
 async def test_bearer_updates_last_used_at(client, fake_storage_provider):
     user = await _seeded_user(fake_storage_provider)
     plaintext = mint_plaintext()

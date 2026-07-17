@@ -238,12 +238,15 @@ class AuthMiddleware:
     async def _find_by_hash(self, storage_provider, token_hash: str):
         """Look up an ApiToken by its sha256 hash. Returns the row or None."""
         from primer.model.api_token import ApiToken
-        from primer.model.storage import OffsetPage, Op
+        from primer.model.storage import CursorPage, Op
         from primer.storage.q import Q
 
         storage = storage_provider.get_storage(ApiToken)
         predicate = Q(ApiToken).where_op("token_hash", Op.EQ, token_hash).build()
-        page = await storage.find(predicate, OffsetPage(offset=0, length=1))
+        # CursorPage, not OffsetPage: the offset path issues an extra
+        # COUNT(*) on every bearer-authenticated request (to populate the
+        # page total we never read); the keyset cursor path issues none.
+        page = await storage.find(predicate, CursorPage(length=1))
         items = list(page.items)
         return items[0] if items else None
 
