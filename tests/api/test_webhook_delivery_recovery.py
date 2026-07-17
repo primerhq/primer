@@ -23,7 +23,7 @@ async def test_recover_webhook_redispatches_stale_pending(fake_storage_provider)
     from primer.api._app_lifespan_phases import recover_webhook_deliveries
 
     now = datetime.now(timezone.utc)
-    stale = now - timedelta(minutes=5)
+    stale = now - timedelta(hours=1)
     storage = fake_storage_provider.get_storage(WebhookDelivery)
     await storage.create(WebhookDelivery(
         id="fire-stale", trigger_id="trig-1",
@@ -70,7 +70,7 @@ async def test_recover_webhook_redispatches_every_row_across_pages(
     """
     from primer.api._app_lifespan_phases import recover_webhook_deliveries
 
-    stale = datetime.now(timezone.utc) - timedelta(minutes=5)
+    stale = datetime.now(timezone.utc) - timedelta(hours=1)
     storage = fake_storage_provider.get_storage(WebhookDelivery)
     total = 250  # deliberately > the 200-row recovery page size
     for i in range(total):
@@ -111,7 +111,7 @@ async def test_recover_webhook_gives_up_at_the_attempt_cap(fake_storage_provider
         recover_webhook_deliveries,
     )
 
-    stale = datetime.now(timezone.utc) - timedelta(minutes=5)
+    stale = datetime.now(timezone.utc) - timedelta(hours=1)
     storage = fake_storage_provider.get_storage(WebhookDelivery)
     await storage.create(WebhookDelivery(
         id="fire-poison", trigger_id="trig-poison", extra_context={},
@@ -142,6 +142,27 @@ async def test_recover_webhook_gives_up_at_the_attempt_cap(fake_storage_provider
     assert (await storage.get("fire-under-cap")).attempts == (
         _WEBHOOK_DELIVERY_MAX_ATTEMPTS
     )
+
+
+def test_grace_window_is_configurable_and_clears_a_slow_dispatch():
+    """The grace window is the only guard against re-firing a live sibling's
+    in-flight dispatch, so its default must clear a slow fresh-session
+    dispatch (workspace + session creation), and operators must be able to
+    raise it without a code change.
+    """
+    import importlib
+
+    from primer.api import _app_lifespan_phases as phases
+
+    assert phases._WEBHOOK_DELIVERY_GRACE_SECS >= 300
+
+    with patch.dict(
+        "os.environ", {"PRIMER_WEBHOOK_RECOVERY_GRACE_SECS": "900"}
+    ):
+        reloaded = importlib.reload(phases)
+        assert reloaded._WEBHOOK_DELIVERY_GRACE_SECS == 900.0
+    # Restore the module-level default for any later import of it.
+    importlib.reload(phases)
 
 
 @pytest.mark.asyncio

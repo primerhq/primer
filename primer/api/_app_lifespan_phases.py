@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 
 from primer.api.config import AppConfig
@@ -240,7 +241,30 @@ async def recover_chats(claim_engine, storage_provider) -> None:
         logger.exception("lifespan: chat recovery failed")
 
 
-_WEBHOOK_DELIVERY_GRACE_SECS = 30.0
+# Grace window: only pending rows OLDER than this are re-fired. It is the only
+# thing separating a re-fire from a live sibling's in-flight dispatch.
+#
+# MULTI-PROCESS RE-FIRE HAZARD (known, bounded, NOT eliminated): every API
+# process runs this phase on boot and takes no claim or lock on a delivery. On
+# a rolling deploy the booting replica re-fires the draining replica's still
+# pending rows whenever their dispatch outlives this window - and an
+# agent_fresh_session dispatch (workspace + session creation) plausibly exceeds
+# the old 30s default. Unlike recover_sessions / recover_chats, whose
+# idempotent lease re-arms are harmless to repeat, this phase has real external
+# side effects (it spawns chats/sessions), so a spurious re-fire is a duplicate
+# delivery rather than a no-op.
+#
+# A window only NARROWS that race. Closing it means routing recovery through
+# the claim machine (primer/claim/) so exactly one process owns each delivery,
+# which needs a new ClaimKind + adapter + a consumer loop that heartbeats
+# through a long dispatch; that is a follow-up, not a constant. Meanwhile the
+# default is raised well clear of a typical dispatch. A larger value only
+# delays recovery of a genuinely dropped delivery (already bounded by the boot
+# cadence), so prefer one on deployments with slow fresh-session dispatches or
+# long rolling-deploy drains.
+_WEBHOOK_DELIVERY_GRACE_SECS = float(
+    os.environ.get("PRIMER_WEBHOOK_RECOVERY_GRACE_SECS", "300")
+)
 
 # Page size for the recovery sweep's scan of pending rows. Bounded by the
 # OffsetPage contract (length is 1..200).
