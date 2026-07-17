@@ -31,11 +31,29 @@ from primer.storage.postgres import (
 
 
 def test_registry_declares_the_hot_tables():
-    """token_hash / session status / channel routing / useridentity uniqueness
-    are all registered."""
+    """token_hash / session status / chat recovery / channel routing /
+    useridentity uniqueness are all registered."""
     assert set(_HOT_FIELD_INDEXES) == {
-        "apitoken", "sessions", "channel", "useridentity",
+        "apitoken", "sessions", "chat", "channel", "useridentity",
     }
+
+
+def test_chat_index_covers_status_and_turn_status():
+    """Startup chat recovery filters status='active' AND turn_status IN
+    (claimable, running); a composite expression index serves that."""
+    (suffix, unique, expr), = _HOT_FIELD_INDEXES["chat"]
+    assert suffix == "status_turn"
+    assert unique is False
+    assert expr == "((data->>'status'), (data->>'turn_status'))"
+
+
+def test_chat_model_maps_to_the_chat_table():
+    """The chat index lives on the same table the Chat model stores in
+    (singular 'chat', the lowercased class name)."""
+    from primer.model.chats import Chat
+
+    assert _table_name_for(Chat) == "chat"
+    assert "chat" in _HOT_FIELD_INDEXES
 
 
 def test_apitoken_token_hash_index_is_unique_on_the_scalar():

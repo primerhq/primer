@@ -495,6 +495,17 @@ _HOT_FIELD_INDEXES: dict[str, list[tuple[str, bool, str]]] = {
     "sessions": [
         ("status", False, "((data->>'status'))"),
     ],
+    "chat": [
+        # Startup chat recovery filters status='active' AND turn_status IN
+        # (claimable, running); a composite expression index serves that
+        # combined predicate. Table name is the lowercased class name
+        # ("chat", not "chats") -- see _table_name_for / ChatClaimAdapter.
+        (
+            "status_turn",
+            False,
+            "((data->>'status'), (data->>'turn_status'))",
+        ),
+    ],
     "channel": [
         (
             "provider_external",
