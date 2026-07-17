@@ -25,6 +25,9 @@ from primer.model.except_ import (
     UnsupportedContentError,
 )
 from primer.model.principal import PrincipalRef
+from primer.model.provider import McpConfig, StdioConfig, TransportType
+from primer.toolset.mcp import McpToolsetProvider
+from primer.toolset.workspace_ext import build_workspace_ext_toolset
 
 
 # ---- Fakes ----------------------------------------------------------------
@@ -557,3 +560,140 @@ class TestInvokerRoleFloor:
         )
         assert result.error is False
         assert provider.calls == [("create_agent", {}, None)]
+
+
+# ---- Regression: user-role floor for real threaded surfaces ---------------
+
+
+class _SpyOverRealProvider:
+    """Wrap a REAL provider so the manager consults its REAL
+    ``required_role`` for the floor decision, while observing whether the
+    provider ``call`` layer is reached.
+
+    Every ``workspace_ext`` tool yields and needs a live ``AgentSession``,
+    so dispatching the genuine handler end-to-end is heavy. What the
+    regression turns on is the FLOOR decision, and that reads
+    ``required_role`` -- which we delegate to the real provider verbatim.
+    A pass therefore proves the real declared role cleared the floor and
+    dispatch proceeded to the provider handler layer.
+    """
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self.calls: list[tuple[str, dict[str, Any], str | None]] = []
+
+    def required_role(self, tool_name: str) -> str:
+        return self._real.required_role(tool_name)
+
+    async def list_tools(
+        self, *, principal: str | None = None
+    ) -> AsyncIterator[Tool]:
+        async for t in self._real.list_tools(principal=principal):
+            yield t
+
+    async def call(
+        self,
+        *,
+        tool_name: str,
+        arguments: dict[str, Any],
+        principal: str | None = None,
+        ctx=None,
+    ) -> ToolCallResult:
+        self.calls.append((tool_name, arguments, principal))
+        return ToolCallResult(output=f"reached {tool_name}", is_error=False)
+
+
+class TestUserRoleFloorRealSurfaces:
+    """A ``role="user"`` invoker must be ALLOWED the real ``workspace_ext``
+    tools (they declare ``required_role="user"``) and external MCP proxy
+    tools (``McpToolsetProvider`` defaults the floor to ``"user"``). Both
+    surfaces never declared a role before the RBAC floor existed, so a
+    fail-closed ``"admin"`` default would wrongly deny non-admin invokers
+    -- the regression this test guards against.
+    """
+
+    @staticmethod
+    def _real_workspace_ext():
+        # The subscribe handler factories only capture ``storage_provider``
+        # in a closure; nothing is touched at build time, so a bare stub
+        # suffices to assemble the provider and read its declared roles.
+        return build_workspace_ext_toolset(storage_provider=object())
+
+    def test_real_workspace_ext_tools_declare_user_role(self) -> None:
+        """Every ``workspace_ext`` tool declares ``required_role="user"``;
+        an undeclared name still fails closed to ``admin``."""
+        provider = self._real_workspace_ext()
+        for name in (
+            "sleep",
+            "watch_files",
+            "invoke_graph",
+            "subscribe_to_trigger",
+            "subscribe_to_channel_event",
+        ):
+            assert provider.required_role(name) == "user", name
+        # The floor still bites for anything undeclared.
+        assert provider.required_role("not_a_real_tool") == "admin"
+
+    def test_real_mcp_provider_defaults_floor_to_user(self) -> None:
+        """External MCP proxy tools default the floor to ``"user"`` (the
+        operator's exposure IS the authorization), not the ABC's
+        fail-closed ``"admin"``."""
+        cfg = McpConfig(
+            transport=TransportType.STDIO,
+            config=StdioConfig(command=["echo"]),
+        )
+        provider = McpToolsetProvider(toolset_id="ext", config=cfg)
+        assert provider.required_role("anything") == "user"
+        assert provider.required_role("another_external_tool") == "user"
+
+    @pytest.mark.asyncio
+    async def test_user_invoker_allowed_real_workspace_ext_tools(self) -> None:
+        """Threaded end-to-end: a ``role="user"`` invoker clears the floor
+        for the REAL ``workspace_ext`` tools (handler layer reached) while
+        the SAME invoker is still denied a genuinely admin tool.
+
+        ``workspace_ext`` tools are only visible when a workspace session
+        is bound (they are suppressed from the catalogue on chat), so a
+        minimal fake session is threaded to make them dispatchable -- the
+        spy's ``call`` ignores the built ``ToolContext``.
+        """
+
+        class _FakeSession:
+            session_id = "s-1"
+            workspace_id = "w-1"
+
+        ws = _SpyOverRealProvider(self._real_workspace_ext())
+        # A genuinely admin tool proves the floor still bites.
+        system = _FakeToolsetProvider(
+            toolset_id="system",
+            tools=[_tool("create_llm_provider", toolset_id="system")],
+            roles={"create_llm_provider": "admin"},
+        )
+        mgr = ToolExecutionManager(
+            toolset_providers={"workspace_ext": ws, "system": system},  # type: ignore[arg-type]
+            workspace_session=_FakeSession(),  # type: ignore[arg-type]
+            initiated_by=PrincipalRef(
+                type="user", id="u1", display="u1", role="user", source="local",
+            ),
+        )
+        await mgr.list_tools()
+
+        for bare in ("sleep", "watch_files"):
+            result = await mgr.execute(
+                ToolCallPart(
+                    id=f"c-{bare}", name=f"workspace_ext__{bare}", arguments={},
+                )
+            )
+            assert result.error is False, bare  # floor passed, not denied
+        # The provider handler layer was reached for both allowed tools.
+        assert [c[0] for c in ws.calls] == ["sleep", "watch_files"]
+
+        # Same user invoker, genuinely admin tool -> denied, handler skipped.
+        denied = await mgr.execute(
+            ToolCallPart(
+                id="c-admin", name="system__create_llm_provider", arguments={},
+            )
+        )
+        assert denied.error is True
+        assert "admin" in denied.output
+        assert system.calls == []
