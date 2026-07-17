@@ -525,6 +525,10 @@ async def _build_runner(
         tools=agent.tools,
         approval_resolver=approval_resolver,
         chat_id=chat.id,
+        # The chat's persisted initiator authorises the RBAC tool floor
+        # (system fallback for historical chats with no ``initiated_by``);
+        # a None invoker would fail closed and deny every toolset call.
+        initiated_by=chat.initiated_by or PrincipalRef.system(),
     )
     # No inform sink is wired on the chat surface yet: inform_user in a chat
     # returns delivered_to:0 for now. Chat-side inform delivery is deferred to

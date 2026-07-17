@@ -109,6 +109,7 @@ async def build_subagent_toolmanager(
     approved original_call), so the manager wiring lives in exactly one place.
     """
     from primer.agent.tool_manager import ToolExecutionManager
+    from primer.model.principal import PrincipalRef
     from primer.worker.pool import _toolset_ids_from_scoped
 
     tools = list(context.tools or [])
@@ -127,6 +128,12 @@ async def build_subagent_toolmanager(
         if session_id is not None
         else None
     )
+    # A subagent runs as the SAME invoker as its parent turn: the parent's
+    # ``initiated_by`` rides on the ``AgentResumeContext`` (persisted across
+    # park/resume) so the child manager's RBAC tool floor is authorised
+    # identically. System fallback keeps a None invoker from failing closed
+    # and denying every toolset call the subagent makes.
+    initiated_by = getattr(context, "initiated_by", None) or PrincipalRef.system()
     return ToolExecutionManager(
         toolset_providers=toolset_providers,
         workspace_session=subagent_session,
@@ -134,6 +141,7 @@ async def build_subagent_toolmanager(
         provider_registry=provider_registry,
         tools=tools,
         chat_id=context.chat_id if subagent_session is None else None,
+        initiated_by=initiated_by,
     )
 
 
@@ -212,6 +220,9 @@ async def run_subagent(
         chat_id=chat_id,
         principal=principal,
         tools=list(agent.tools),
+        # Carry the parent run's invoker so the subagent's tool floor is
+        # authorised as the same identity (and survives a park/resume).
+        initiated_by=identity,
     )
     tool_manager = await build_subagent_toolmanager(
         context,

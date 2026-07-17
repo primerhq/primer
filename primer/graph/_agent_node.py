@@ -31,6 +31,7 @@ from primer.graph._node_refs import _NodeDone, _PendingAgentYield
 from primer.graph.template import render_input_template
 from primer.model.chat import Message, StreamEvent, TextPart
 from primer.model.graph import GraphContext, NodeOutput, _AgentNodeRef
+from primer.model.principal import PrincipalRef
 from primer.model.yield_ import YieldToWorker
 
 
@@ -76,11 +77,15 @@ class _AgentNodeMixin:
         output constraints with lazy grammar"). Otherwise use the
         resolver, else an empty manager.
         """
+        # These two fallbacks carry NO toolset providers, so the RBAC tool
+        # floor is unreachable through them; still pass the system principal
+        # (never None) to honour the invariant that every manager resolves
+        # to a real invoker and to stay safe if tools are ever added here.
         if node.response_format is not None:
-            return ToolExecutionManager()
+            return ToolExecutionManager(initiated_by=PrincipalRef.system())
         if self._tool_manager_resolver is not None:
             return await self._tool_manager_resolver(agent)
-        return ToolExecutionManager()
+        return ToolExecutionManager(initiated_by=PrincipalRef.system())
 
     def _agent_node_output(
         self,

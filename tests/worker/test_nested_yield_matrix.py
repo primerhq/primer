@@ -121,6 +121,10 @@ class _PlainToolset:
     def is_yielding(self, tool_name: str) -> bool:
         return False
 
+    def required_role(self, tool_name: str) -> str:
+        del tool_name
+        return "admin"
+
     async def call(self, *, tool_name, arguments, principal=None, ctx=None) -> ToolCallResult:  # noqa: ANN001
         return ToolCallResult(output="did the thing", is_error=False)
 
@@ -143,6 +147,10 @@ class _GatedYieldingToolset:
 
     def is_yielding(self, tool_name: str) -> bool:
         return tool_name == "do_wait"
+
+    def required_role(self, tool_name: str) -> str:
+        del tool_name
+        return "admin"
 
     async def call(self, *, tool_name, arguments, principal=None, ctx=None) -> ToolCallResult:  # noqa: ANN001
         assert ctx is not None

@@ -24,6 +24,7 @@ from primer.model.except_ import (
     ProviderError,
     UnsupportedContentError,
 )
+from primer.model.principal import PrincipalRef
 
 
 # ---- Fakes ----------------------------------------------------------------
@@ -32,10 +33,22 @@ from primer.model.except_ import (
 class _FakeToolsetProvider:
     """Fake :class:`ToolsetProvider` implementing the structural protocol."""
 
-    def __init__(self, *, toolset_id: str, tools: list[Tool]) -> None:
+    def __init__(
+        self,
+        *,
+        toolset_id: str,
+        tools: list[Tool],
+        roles: dict[str, str] | None = None,
+    ) -> None:
         self._toolset_id = toolset_id
         self._tools = tools
+        self._roles = roles or {}
         self.calls: list[tuple[str, dict[str, Any], str | None]] = []
+
+    def required_role(self, tool_name: str) -> str:
+        # Mirror the real ToolsetProvider base: fail-closed to ``admin``
+        # for any tool without an explicitly declared role.
+        return self._roles.get(tool_name, "admin")
 
     async def list_tools(
         self, *, principal: str | None = None
@@ -72,7 +85,7 @@ class TestToolsetRouting:
     async def test_list_tools_merges_providers(self) -> None:
         a = _FakeToolsetProvider(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
         b = _FakeToolsetProvider(toolset_id="b", tools=[_tool("bar", toolset_id="b")])
-        mgr = ToolExecutionManager(toolset_providers={"a": a, "b": b})  # type: ignore[arg-type]
+        mgr = ToolExecutionManager(toolset_providers={"a": a, "b": b}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
         tools = await mgr.list_tools()
         names = sorted(t.id for t in tools)
         # Tool ids are scoped as ``toolset_id__bare_name`` so collisions
@@ -83,7 +96,7 @@ class TestToolsetRouting:
     async def test_execute_routes_to_owning_toolset(self) -> None:
         a = _FakeToolsetProvider(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
         b = _FakeToolsetProvider(toolset_id="b", tools=[_tool("bar", toolset_id="b")])
-        mgr = ToolExecutionManager(toolset_providers={"a": a, "b": b})  # type: ignore[arg-type]
+        mgr = ToolExecutionManager(toolset_providers={"a": a, "b": b}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
         await mgr.list_tools()
         call = ToolCallPart(id="c-1", name="a__foo", arguments={"x": 1})
         result = await mgr.execute(call)
@@ -96,7 +109,7 @@ class TestToolsetRouting:
     @pytest.mark.asyncio
     async def test_execute_passes_principal_through(self) -> None:
         a = _FakeToolsetProvider(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
-        mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
+        mgr = ToolExecutionManager(toolset_providers={"a": a}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
         await mgr.list_tools()
         await mgr.execute(
             ToolCallPart(id="c", name="a__foo", arguments={}),
@@ -107,7 +120,7 @@ class TestToolsetRouting:
     @pytest.mark.asyncio
     async def test_execute_unknown_tool_raises_unsupported(self) -> None:
         a = _FakeToolsetProvider(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
-        mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
+        mgr = ToolExecutionManager(toolset_providers={"a": a}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
         await mgr.list_tools()
         with pytest.raises(UnsupportedContentError):
             await mgr.execute(ToolCallPart(id="c", name="not_a_tool", arguments={}))
@@ -119,7 +132,7 @@ class TestToolsetRouting:
                 raise ProviderError("upstream broke")
 
         a = _Boom(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
-        mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
+        mgr = ToolExecutionManager(toolset_providers={"a": a}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
         await mgr.list_tools()
         result = await mgr.execute(ToolCallPart(id="c", name="a__foo", arguments={}))
         assert result.error is True
@@ -136,7 +149,7 @@ class TestToolsetRouting:
                 )
 
         a = _NeedAuth(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
-        mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
+        mgr = ToolExecutionManager(toolset_providers={"a": a}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
         await mgr.list_tools()
         with pytest.raises(AuthRequiredError):
             await mgr.execute(ToolCallPart(id="c", name="a__foo", arguments={}))
@@ -144,7 +157,7 @@ class TestToolsetRouting:
     @pytest.mark.asyncio
     async def test_execute_lazy_lists_tools_when_not_called_first(self) -> None:
         a = _FakeToolsetProvider(toolset_id="a", tools=[_tool("foo", toolset_id="a")])
-        mgr = ToolExecutionManager(toolset_providers={"a": a})  # type: ignore[arg-type]
+        mgr = ToolExecutionManager(toolset_providers={"a": a}, initiated_by=PrincipalRef.system())  # type: ignore[arg-type]
         result = await mgr.execute(ToolCallPart(id="c", name="a__foo", arguments={}))
         assert result.id == "c"
 
@@ -184,6 +197,7 @@ class TestAgentToolFilter:
         mgr = ToolExecutionManager(
             toolset_providers={"a": a},  # type: ignore[arg-type]
             tools=["a__foo"],
+            initiated_by=PrincipalRef.system(),
         )
         await mgr.list_tools()
         # a__foo is registered and routes correctly.
@@ -359,6 +373,10 @@ class _CapturingProvider:
     def __init__(self) -> None:
         self.captured: dict[str, Any] = {}
 
+    def required_role(self, tool_name: str) -> str:
+        del tool_name
+        return "admin"
+
     async def list_tools(self, *, principal: str | None = None):
         if False:  # pragma: no cover - makes this an async generator
             yield None
@@ -374,6 +392,7 @@ async def test_set_inform_sink_passed_into_tool_context() -> None:
     mgr = ToolExecutionManager(
         toolset_providers={"misc": provider},  # type: ignore[arg-type]
         chat_id="chat-1",
+        initiated_by=PrincipalRef.system(),
     )
 
     async def _sink(msg: str) -> int:
@@ -388,3 +407,153 @@ async def test_set_inform_sink_passed_into_tool_context() -> None:
         principal=None,
     )
     assert provider.captured["inform"] is _sink
+
+
+# ---- RBAC invoker-role floor ----------------------------------------------
+
+
+class TestInvokerRoleFloor:
+    """The agent tool-execution path enforces each tool's declared
+    ``required_role`` against the run's invoker (``initiated_by``),
+    mirroring the MCP dispatch floor. Denial is IN-BAND (``error=True``)
+    and the provider handler never runs."""
+
+    @staticmethod
+    def _provider() -> _FakeToolsetProvider:
+        # ``create_agent`` needs ``user``; ``create_llm_provider`` needs
+        # ``admin`` -- the same shape as the reserved system tools.
+        return _FakeToolsetProvider(
+            toolset_id="system",
+            tools=[
+                _tool("create_agent", toolset_id="system"),
+                _tool("create_llm_provider", toolset_id="system"),
+            ],
+            roles={
+                "create_agent": "user",
+                "create_llm_provider": "admin",
+            },
+        )
+
+    @staticmethod
+    def _mgr(provider: _FakeToolsetProvider, invoker) -> ToolExecutionManager:
+        return ToolExecutionManager(
+            toolset_providers={"system": provider},  # type: ignore[arg-type]
+            initiated_by=invoker,
+        )
+
+    @pytest.mark.asyncio
+    async def test_user_invoker_denied_admin_tool(self) -> None:
+        provider = self._provider()
+        mgr = self._mgr(
+            provider,
+            PrincipalRef(
+                type="user", id="u", display="u", role="user", source="local",
+            ),
+        )
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(
+                id="c", name="system__create_llm_provider", arguments={},
+            )
+        )
+        assert result.error is True
+        assert "requires" in result.output
+        assert "admin" in result.output
+        assert provider.calls == []  # handler never ran
+
+    @pytest.mark.asyncio
+    async def test_user_invoker_allowed_user_tool(self) -> None:
+        provider = self._provider()
+        mgr = self._mgr(
+            provider,
+            PrincipalRef(
+                type="user", id="u", display="u", role="user", source="local",
+            ),
+        )
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(id="c", name="system__create_agent", arguments={})
+        )
+        assert result.error is False
+        assert provider.calls == [("create_agent", {}, None)]
+
+    @pytest.mark.asyncio
+    async def test_admin_invoker_allowed_admin_tool(self) -> None:
+        provider = self._provider()
+        mgr = self._mgr(
+            provider,
+            PrincipalRef(
+                type="user", id="a", display="a", role="admin", source="local",
+            ),
+        )
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(
+                id="c", name="system__create_llm_provider", arguments={},
+            )
+        )
+        assert result.error is False
+        assert provider.calls == [("create_llm_provider", {}, None)]
+
+    @pytest.mark.asyncio
+    async def test_trigger_invoker_allowed_admin_tool(self) -> None:
+        """A trigger-type invoker is internal automation: allowed through
+        the floor like the system principal even for an admin tool and
+        despite carrying no ``role``."""
+        provider = self._provider()
+        mgr = self._mgr(
+            provider,
+            PrincipalRef(
+                type="trigger", id="trg-1", display="trg-1",
+                role=None, source="internal",
+            ),
+        )
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(
+                id="c", name="system__create_llm_provider", arguments={},
+            )
+        )
+        assert result.error is False
+        assert provider.calls == [("create_llm_provider", {}, None)]
+
+    @pytest.mark.asyncio
+    async def test_system_invoker_allowed_admin_tool(self) -> None:
+        provider = self._provider()
+        mgr = self._mgr(provider, PrincipalRef.system())
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(
+                id="c", name="system__create_llm_provider", arguments={},
+            )
+        )
+        assert result.error is False
+        assert provider.calls == [("create_llm_provider", {}, None)]
+
+    @pytest.mark.asyncio
+    async def test_none_invoker_denies_fail_closed(self) -> None:
+        """A manager built with no invoker fails closed: every toolset
+        call is denied. Real construction sites therefore thread a real
+        PrincipalRef or the system fallback."""
+        provider = self._provider()
+        mgr = self._mgr(provider, None)
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(id="c", name="system__create_agent", arguments={})
+        )
+        assert result.error is True
+        assert provider.calls == []
+
+    @pytest.mark.asyncio
+    async def test_system_fallback_allows_where_none_would_deny(self) -> None:
+        """The system fallback the construction sites use in place of a
+        None invoker ALLOWS the same call a None invoker denies -- proving
+        the threading closes the fail-closed gap without over-denying."""
+        provider = self._provider()
+        mgr = self._mgr(provider, PrincipalRef.system())
+        await mgr.list_tools()
+        result = await mgr.execute(
+            ToolCallPart(id="c", name="system__create_agent", arguments={})
+        )
+        assert result.error is False
+        assert provider.calls == [("create_agent", {}, None)]

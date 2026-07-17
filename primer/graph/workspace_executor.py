@@ -52,6 +52,7 @@ from primer.model.graph import (
     _ToolCallNode,
     build_execution_context,
 )
+from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import SessionStatus
 from primer.observability.turn_log_writer import (
     TurnLogWriter,
@@ -62,7 +63,6 @@ from primer.observability.turn_log_writer import (
 if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
-    from primer.model.principal import PrincipalRef
     from primer.model.provider import LLMModel
     from primer.workspace.session import AgentSession
     from primer.workspace.local.state import LocalStateRepo
@@ -327,7 +327,10 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             return ToolExecutionManager.for_workspace(
                 toolset_providers=providers,
                 session=workspace_session,
-                initiated_by=identity,
+                # System fallback so the RBAC tool floor never sees a None
+                # invoker (which fails closed and denies every toolset call);
+                # the worker-built graph path always supplies a real identity.
+                initiated_by=identity or PrincipalRef.system(),
             )
 
         return _resolve
@@ -412,6 +415,10 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
                 toolset_providers=toolset_providers,
                 session=self._workspace_session,
                 approval_resolver=self._approval_resolver,
+                # Authorise the RBAC tool floor as this graph run's invoker
+                # (system fallback when unknown); the worker-built path
+                # threads a real identity via ``self._identity``.
+                initiated_by=self._identity or PrincipalRef.system(),
             )
             # Cache only the workspace-only manager; a per-toolset manager
             # must not leak to a later tool_call naming a different toolset.
