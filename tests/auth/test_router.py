@@ -64,7 +64,7 @@ async def test_register_twice_returns_409(client):
         json={"username": "bob", "password": "anothersecret"},
     )
     assert resp.status_code == 409
-    assert resp.json()["detail"]["error"] == "user_already_exists"
+    assert resp.json()["extensions"]["error"] == "user_already_exists"
 
 
 @pytest.mark.asyncio
@@ -83,7 +83,7 @@ async def test_register_bad_username_422(client):
         json={"username": "Bad Username!", "password": "supersecret"},
     )
     assert resp.status_code == 422
-    assert resp.json()["detail"]["error"] == "invalid_username"
+    assert resp.json()["extensions"]["error"] == "invalid_username"
 
 
 @pytest.mark.asyncio
@@ -117,7 +117,7 @@ async def test_login_wrong_password_401(client):
         json={"username": "alice", "password": "WRONG"},
     )
     assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "invalid_credentials"
+    assert resp.json()["extensions"]["error"] == "invalid_credentials"
 
 
 @pytest.mark.asyncio
@@ -246,7 +246,7 @@ async def test_login_sso_only_user_401_not_500(client, app):
         json={"username": "ssouser", "password": "anything"},
     )
     assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "invalid_credentials"
+    assert resp.json()["extensions"]["error"] == "invalid_credentials"
 
     # Byte-for-byte indistinguishable from an unknown user.
     unknown = await client.post(
@@ -281,7 +281,7 @@ async def test_login_disabled_user_401(client, app):
         json={"username": "disabled", "password": "supersecret"},
     )
     assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "invalid_credentials"
+    assert resp.json()["extensions"]["error"] == "invalid_credentials"
 
 
 @pytest.mark.asyncio
@@ -326,7 +326,7 @@ async def test_change_password_wrong_current_401(client):
         json={"current_password": "WRONG", "new_password": "newsupersecret"},
     )
     assert resp.status_code == 401
-    assert resp.json()["detail"]["error"] == "invalid_credentials"
+    assert resp.json()["extensions"]["error"] == "invalid_credentials"
 
 
 @pytest.mark.asyncio

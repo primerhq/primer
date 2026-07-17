@@ -233,4 +233,4 @@ def test_tap_restricted_returns_403(
         _login(sclient, "restr", "pw-restr-123")
         resp = sclient.get("/v1/workspaces/ws-1/tap")
     assert resp.status_code == 403
-    assert resp.json()["detail"]["error"] == "forbidden_role"
+    assert resp.json()["extensions"]["error"] == "forbidden_role"

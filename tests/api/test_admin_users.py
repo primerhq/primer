@@ -82,7 +82,7 @@ async def test_create_duplicate_username_conflicts(client):
         json={"username": "erin", "password": "otherpassword", "role": "user"},
     )
     assert dup.status_code == 409, dup.text
-    assert dup.json()["detail"]["error"] == "user_already_exists"
+    assert dup.json()["extensions"]["error"] == "user_already_exists"
 
 
 @pytest.mark.asyncio
@@ -169,7 +169,7 @@ async def test_cannot_delete_last_admin(client):
     admin = next(u for u in r.json()["items"] if u["username"] == "testuser")
     r = await client.delete(f"/v1/admin/users/{admin['id']}")
     assert r.status_code == 403, r.text
-    assert r.json()["detail"]["error"] == "last_admin_protected"
+    assert r.json()["extensions"]["error"] == "last_admin_protected"
 
 
 @pytest.mark.asyncio
@@ -178,7 +178,7 @@ async def test_cannot_demote_last_admin(client):
     admin = next(u for u in r.json()["items"] if u["username"] == "testuser")
     r = await client.patch(f"/v1/admin/users/{admin['id']}", json={"role": "user"})
     assert r.status_code == 403, r.text
-    assert r.json()["detail"]["error"] == "last_admin_protected"
+    assert r.json()["extensions"]["error"] == "last_admin_protected"
 
 
 @pytest.mark.asyncio
@@ -187,7 +187,7 @@ async def test_cannot_disable_last_admin(client):
     admin = next(u for u in r.json()["items"] if u["username"] == "testuser")
     r = await client.patch(f"/v1/admin/users/{admin['id']}", json={"disabled": True})
     assert r.status_code == 403, r.text
-    assert r.json()["detail"]["error"] == "last_admin_protected"
+    assert r.json()["extensions"]["error"] == "last_admin_protected"
 
 
 @pytest.mark.asyncio

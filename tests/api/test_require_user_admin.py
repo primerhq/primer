@@ -79,7 +79,7 @@ async def test_user_passes_require_user_but_not_admin(app, client):
     assert (await client.get("/v1/_test_require_user")).status_code == 200
     resp = await client.get("/v1/_test_require_admin")
     assert resp.status_code == 403
-    assert resp.json()["detail"]["error"] == "forbidden_role"
+    assert resp.json()["extensions"]["error"] == "forbidden_role"
 
 
 @pytest.mark.asyncio
@@ -89,10 +89,10 @@ async def test_restricted_rejected_by_both(app, client):
     await _login(client, "restr1")
     r_user = await client.get("/v1/_test_require_user")
     assert r_user.status_code == 403
-    assert r_user.json()["detail"]["error"] == "forbidden_role"
+    assert r_user.json()["extensions"]["error"] == "forbidden_role"
     r_admin = await client.get("/v1/_test_require_admin")
     assert r_admin.status_code == 403
-    assert r_admin.json()["detail"]["error"] == "forbidden_role"
+    assert r_admin.json()["extensions"]["error"] == "forbidden_role"
 
 
 @pytest.mark.asyncio
@@ -101,7 +101,7 @@ async def test_unauthenticated_401(app, client):
     client.cookies.clear()
     r_user = await client.get("/v1/_test_require_user")
     assert r_user.status_code == 401
-    assert r_user.json()["detail"]["error"] == "auth_required"
+    assert r_user.json()["extensions"]["error"] == "auth_required"
     r_admin = await client.get("/v1/_test_require_admin")
     assert r_admin.status_code == 401
-    assert r_admin.json()["detail"]["error"] == "auth_required"
+    assert r_admin.json()["extensions"]["error"] == "auth_required"

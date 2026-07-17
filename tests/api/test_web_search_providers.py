@@ -79,8 +79,8 @@ class TestCascadeBlockOnDelete:
         r = await client.delete("/v1/web_search_providers/tavily-a")
         assert r.status_code == 409, r.text
         body = r.json()
-        assert body["detail"]["error"] == "cascade_blocked"
-        assert body["detail"]["referenced_by"] == "_active_web_search_config"
+        assert body["extensions"]["error"] == "cascade_blocked"
+        assert body["extensions"]["referenced_by"] == "_active_web_search_config"
 
 
 class TestTestRoute:

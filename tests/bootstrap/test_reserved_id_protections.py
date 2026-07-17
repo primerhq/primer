@@ -161,9 +161,9 @@ async def test_post_embedding_provider_with_reserved_id_returns_409(
         "/v1/embedding_providers", json=_embedding_body("huggingface")
     )
     assert resp.status_code == 409, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "reserved_id"
-    assert "huggingface" in detail["reserved"]
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "reserved_id"
+    assert "huggingface" in ext["reserved"]
 
 
 @pytest.mark.asyncio
@@ -173,8 +173,8 @@ async def test_delete_reserved_embedding_provider_returns_403(
     # Protection fires BEFORE the storage lookup — no pre-seeding needed.
     resp = await client.delete("/v1/embedding_providers/huggingface")
     assert resp.status_code == 403, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "reserved_id_protected"
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "reserved_id_protected"
 
 
 @pytest.mark.asyncio
@@ -201,9 +201,9 @@ async def test_post_cross_encoder_provider_with_reserved_id_returns_409(
         "/v1/cross_encoder_providers", json=_cross_encoder_body("huggingface-ce")
     )
     assert resp.status_code == 409, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "reserved_id"
-    assert "huggingface-ce" in detail["reserved"]
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "reserved_id"
+    assert "huggingface-ce" in ext["reserved"]
 
 
 @pytest.mark.asyncio
@@ -212,8 +212,8 @@ async def test_delete_reserved_cross_encoder_provider_returns_403(
 ) -> None:
     resp = await client.delete("/v1/cross_encoder_providers/huggingface-ce")
     assert resp.status_code == 403, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "reserved_id_protected"
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "reserved_id_protected"
 
 
 @pytest.mark.asyncio
@@ -239,9 +239,9 @@ async def test_post_ssp_with_reserved_id_returns_409(
     # "lance" reserved id: use a pgvector body (same endpoint, only id differs).
     resp = await client.post("/v1/ssp", json=_ssp_body("lance"))
     assert resp.status_code == 409, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "reserved_id"
-    assert "lance" in detail["reserved"]
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "reserved_id"
+    assert "lance" in ext["reserved"]
 
 
 @pytest.mark.asyncio
@@ -250,8 +250,8 @@ async def test_delete_reserved_ssp_returns_403(
 ) -> None:
     resp = await client.delete("/v1/ssp/lance")
     assert resp.status_code == 403, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "reserved_id_protected"
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "reserved_id_protected"
 
 
 @pytest.mark.asyncio
@@ -276,9 +276,9 @@ async def test_post_workspace_provider_with_reserved_id_returns_409(
         "/v1/workspace_providers", json=_workspace_provider_body("local")
     )
     assert resp.status_code == 409, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "reserved_id"
-    assert "local" in detail["reserved"]
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "reserved_id"
+    assert "local" in ext["reserved"]
 
 
 @pytest.mark.asyncio
@@ -287,8 +287,8 @@ async def test_delete_reserved_workspace_provider_returns_403(
 ) -> None:
     resp = await client.delete("/v1/workspace_providers/local")
     assert resp.status_code == 403, resp.text
-    detail = resp.json()["detail"]
-    assert detail["error"] == "reserved_id_protected"
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "reserved_id_protected"
 
 
 @pytest.mark.asyncio

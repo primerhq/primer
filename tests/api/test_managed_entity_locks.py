@@ -166,9 +166,9 @@ async def test_put_rejects_managed_entity_with_409(
     body = put_body_fn()
     resp = await client.put(f"/v1/{plural}/{row.id}", json=body)
     assert resp.status_code == 409, f"{kind} PUT: {resp.text}"
-    detail = resp.json()["detail"]
-    assert detail["code"] == "managed_entity", detail
-    assert detail["field"] == "harness_id", detail
+    ext = resp.json()["extensions"]
+    assert ext["code"] == "managed_entity", ext
+    assert ext["field"] == "harness_id", ext
 
 
 @pytest.mark.asyncio
@@ -182,9 +182,9 @@ async def test_delete_rejects_managed_entity_with_409(
 
     resp = await client.delete(f"/v1/{plural}/{row.id}")
     assert resp.status_code == 409, f"{kind} DELETE: {resp.text}"
-    detail = resp.json()["detail"]
-    assert detail["code"] == "managed_entity", detail
-    assert detail["field"] == "harness_id", detail
+    ext = resp.json()["extensions"]
+    assert ext["code"] == "managed_entity", ext
+    assert ext["field"] == "harness_id", ext
 
 
 @pytest.mark.asyncio
@@ -212,9 +212,9 @@ async def test_post_rejects_harness_id_in_body_with_422(
     body["id"] = f"new-{kind}-99"
     resp = await client.post(f"/v1/{plural}", json=body)
     assert resp.status_code == 422, f"{kind} POST: {resp.text}"
-    detail = resp.json()["detail"]
-    assert detail["error"] == "managed_field_set", detail
-    assert detail["field"] == "harness_id", detail
+    ext = resp.json()["extensions"]
+    assert ext["error"] == "managed_field_set", ext
+    assert ext["field"] == "harness_id", ext
 
 
 @pytest.mark.asyncio
