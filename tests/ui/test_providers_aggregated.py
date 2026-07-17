@@ -29,6 +29,18 @@ def test_aggregated_member_editor_and_controls_present() -> None:
     assert "provider_id" in src and "model_name" in src
 
 
+def test_limit_controls_gated_for_aggregated() -> None:
+    """Concurrency + timeout controls are inert for an aggregated provider
+    (AggregatedLLM only routes/fails over; each member enforces its own
+    limits), so the form hides them behind a variant guard and shows a
+    per-member note in their place."""
+    src = _src()
+    assert "enforced per member" in src  # the explanatory note
+    # The aggregated branch (the note) renders in place of the limit fields,
+    # so it precedes the "Max concurrency" control it replaces.
+    assert src.index("enforced per member") < src.index("Max concurrency")
+
+
 def test_providers_jsx_transpiles() -> None:
     from primer.api._jsx_bundle import JSXBundler
 

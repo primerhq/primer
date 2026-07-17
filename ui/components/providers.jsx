@@ -1102,6 +1102,13 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
         </div>
       </div>
 
+      {def?.variant === "aggregated" ? (
+        <div className="field-help">
+          Concurrency and timeouts are enforced per member (each member
+          provider's own limits). An aggregated provider only routes and
+          fails over between members, so it has no limits of its own.
+        </div>
+      ) : (<>
       <div className="field">
         <label className="field-label">Max concurrency <span className="hint">in-flight requests cap</span></label>
         <input
@@ -1188,6 +1195,7 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
           </div>
         )}
       </div>
+      </>)}
     </Modal>
   );
 }
