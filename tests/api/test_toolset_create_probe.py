@@ -49,6 +49,28 @@ async def test_unreachable_http_mcp_is_rejected_and_not_persisted(client):
 
 
 @pytest.mark.asyncio
+async def test_unreachable_sse_mcp_is_rejected_and_not_persisted(client):
+    # SSE is a network transport too, so an unreachable sse endpoint is probed
+    # and rejected on create, exactly like http (not skipped like stdio).
+    r = await client.post(
+        "/v1/toolsets",
+        json={
+            "id": "ts-dead-sse",
+            "provider": "mcp",
+            "config": {
+                "transport": "sse",
+                "config": {"url": _DEAD_URL, "headers": {}},
+            },
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert r.json()["type"] == "/errors/toolset-unreachable"
+
+    g = await client.get("/v1/toolsets/ts-dead-sse")
+    assert g.status_code == 404, g.text
+
+
+@pytest.mark.asyncio
 async def test_allow_unreachable_false_does_not_bypass(client):
     # Only a truthy flag bypasses; allow_unreachable=false still probes and
     # rejects the dead-port create.
