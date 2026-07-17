@@ -258,10 +258,22 @@ async def recover_chats(claim_engine, storage_provider) -> None:
 # the claim machine (primer/claim/) so exactly one process owns each delivery,
 # which needs a new ClaimKind + adapter + a consumer loop that heartbeats
 # through a long dispatch; that is a follow-up, not a constant. Meanwhile the
-# default is raised well clear of a typical dispatch. A larger value only
-# delays recovery of a genuinely dropped delivery (already bounded by the boot
-# cadence), so prefer one on deployments with slow fresh-session dispatches or
-# long rolling-deploy drains.
+# default is raised well clear of a typical dispatch.
+#
+# THE TRADE (read this before changing the value): the boot sweep is ONE-SHOT.
+# A row still inside the grace band when the sweep runs is NOT re-fired by that
+# pass, and nothing re-runs the sweep - so such a row is not "bounded by the
+# boot cadence": on a stable deployment the next boot may be weeks away, or
+# never. To make the bound real, recover_webhook_deliveries schedules a single
+# delayed re-check of the ids it grace-skipped, which fires once the youngest
+# of them clears the window. Recovery latency for a dropped delivery is
+# therefore at most this window (re-check) rather than unbounded (next boot),
+# and the value is a straight duplicate-suppression-vs-recovery-latency trade:
+# larger suppresses more spurious re-fires of a live sibling's slow dispatch
+# and defers a genuinely dropped delivery by up to that long. Raise it on
+# deployments with slow fresh-session dispatches or long rolling-deploy drains;
+# if the re-check task is lost (process exits before it fires) the row falls
+# back to the next boot's sweep.
 _WEBHOOK_DELIVERY_GRACE_SECS = float(
     os.environ.get("PRIMER_WEBHOOK_RECOVERY_GRACE_SECS", "300")
 )
@@ -384,13 +396,65 @@ async def _dispatch_recovered_deliveries(
     return _refired
 
 
-async def recover_webhook_deliveries(
+async def _recheck_grace_skipped_deliveries(
+    _ids: list[str],
+    _delay: float,
+    _storage,
     storage_provider,
     event_bus,
     claim_engine,
     scheduler,
     workspace_registry,
 ) -> None:
+    """Re-check deliveries the boot sweep skipped for the grace window.
+
+    The sweep is one-shot, so without this a row younger than the cutoff at
+    boot is never revisited by this process and waits for the NEXT boot -
+    which on a stable deployment may never come. Sleeping until the youngest
+    skipped row clears the window turns the grace into a genuine upper bound
+    on recovery latency.
+
+    One sleep and one pass, not a poll: every id is past the window by the
+    time this runs, so there is nothing left to wait for afterwards. The task
+    is owned and cancelled by the lifespan, so it cannot outlive the app.
+    """
+    from datetime import datetime, timezone as _tz
+
+    try:
+        await asyncio.sleep(_delay)
+        # Recompute against the clock we woke on, not the sweep's cutoff.
+        _cutoff = (
+            datetime.now(_tz.utc).timestamp() - _WEBHOOK_DELIVERY_GRACE_SECS
+        )
+        _refired = await _dispatch_recovered_deliveries(
+            _ids,
+            _storage,
+            _cutoff,
+            storage_provider,
+            event_bus,
+            claim_engine,
+            scheduler,
+            workspace_registry,
+        )
+        if _refired:
+            logger.info(
+                "lifespan: webhook recovery - re-dispatched %d delivery(ies) "
+                "that were inside the grace window at boot", _refired,
+            )
+    except asyncio.CancelledError:
+        # Shutdown. Anything still pending falls to the next boot's sweep.
+        raise
+    except Exception:  # noqa: BLE001 -- a background task must not die loudly
+        logger.exception("lifespan: webhook grace re-check failed")
+
+
+async def recover_webhook_deliveries(
+    storage_provider,
+    event_bus,
+    claim_engine,
+    scheduler,
+    workspace_registry,
+) -> asyncio.Task | None:
     """Re-dispatch inbound webhook deliveries the previous process dropped.
 
     The webhook endpoint persists a ``WebhookDelivery`` row (status
@@ -415,6 +479,13 @@ async def recover_webhook_deliveries(
     process, or its done/failed marking keeps failing) is abandoned at
     ``_WEBHOOK_DELIVERY_MAX_ATTEMPTS`` and marked ``failed`` rather than
     re-fired on every boot forever.
+
+    Rows still inside the grace window when the sweep runs are not re-fired
+    by this one-shot pass. Returns a single ``asyncio.Task`` that re-checks
+    exactly those ids once they clear the window (``None`` when there are
+    none). The caller OWNS that task and must cancel it on shutdown, so the
+    grace is a real bound on recovery latency rather than a deferral to the
+    next boot.
     """
     try:
         from datetime import datetime, timezone as _tz
@@ -450,6 +521,11 @@ async def recover_webhook_deliveries(
         # OOM in the mass-crash case. _dispatch_recovered_deliveries re-reads
         # each id right before dispatching it.
         _stale_ids: list[str] = []
+        # Ids skipped for the grace window, plus the wall-clock instant the
+        # youngest of them clears it. The re-check task below waits for that
+        # instant, so one pass suffices for all of them.
+        _grace_ids: list[str] = []
+        _grace_deadline = 0.0
         _offset = 0
         while True:
             _page = await _storage.find(
@@ -457,12 +533,19 @@ async def recover_webhook_deliveries(
                 _OffsetPage(offset=_offset, length=_WEBHOOK_RECOVERY_PAGE_SIZE),
             )
             _items = list(_page.items)
-            # Skip rows younger than the grace window - they may be an
-            # in-flight dispatch from a live process.
-            _stale_ids.extend(
-                _row.id for _row in _items
-                if _row.created_at.timestamp() <= _cutoff
-            )
+            for _row in _items:
+                _created = _row.created_at.timestamp()
+                if _created <= _cutoff:
+                    _stale_ids.append(_row.id)
+                else:
+                    # Younger than the grace window - it may be a live
+                    # process's in-flight dispatch, so leave it to the
+                    # re-check rather than racing it now.
+                    _grace_ids.append(_row.id)
+                    _grace_deadline = max(
+                        _grace_deadline,
+                        _created + _WEBHOOK_DELIVERY_GRACE_SECS,
+                    )
             # Advance on the UNFILTERED page length: the grace filter above is
             # applied in Python, so a page can be wholly grace-skipped while
             # more pages remain. Terminating on the filtered count would end
@@ -487,8 +570,39 @@ async def recover_webhook_deliveries(
                 "lifespan: webhook recovery - re-dispatched %d stale "
                 "pending delivery(ies) from persisted state", _refired,
             )
+
+        if not _grace_ids:
+            return None
+        # Wait only until the YOUNGEST grace-skipped row clears the window;
+        # every older one has cleared it by then, so a single pass drains the
+        # set and the task ends. Clamped to the window: a row dated in the
+        # future (clock skew) must not stretch the wait past it, and a
+        # deadline already in the past means fire straight away.
+        _delay = min(
+            max(_grace_deadline - datetime.now(_tz.utc).timestamp(), 0.0),
+            _WEBHOOK_DELIVERY_GRACE_SECS,
+        )
+        logger.info(
+            "lifespan: webhook recovery - %d pending delivery(ies) are inside "
+            "the %.0fs grace window; re-checking them in %.0fs",
+            len(_grace_ids), _WEBHOOK_DELIVERY_GRACE_SECS, _delay,
+        )
+        return asyncio.create_task(
+            _recheck_grace_skipped_deliveries(
+                _grace_ids,
+                _delay,
+                _storage,
+                storage_provider,
+                event_bus,
+                claim_engine,
+                scheduler,
+                workspace_registry,
+            ),
+            name="webhook-recovery-grace-recheck",
+        )
     except Exception:  # noqa: BLE001 -- never break startup
         logger.exception("lifespan: webhook recovery failed")
+        return None
 
 
 async def recover_ic_bootstrap(storage_provider) -> None:

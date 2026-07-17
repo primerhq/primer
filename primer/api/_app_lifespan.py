@@ -625,13 +625,19 @@ def _make_lifespan(config: AppConfig):
         # pending rows via the same _dispatch_webhook path. Runs regardless
         # of claim_engine (fresh-session subs need it, but plain webhook
         # subs do not); the dispatcher tolerates a None claim_engine.
-        await recover_webhook_deliveries(
+        # The sweep is one-shot, so rows still inside the grace window when it
+        # runs would otherwise wait for the NEXT boot (possibly never). It
+        # hands back a single task that re-checks exactly those ids once they
+        # clear the window; we own it and cancel it on teardown so it cannot
+        # outlive the app.
+        _webhook_recheck_task = await recover_webhook_deliveries(
             storage_provider,
             event_bus,
             claim_engine,
             scheduler,
             workspace_registry,
         )
+        app.state.webhook_recovery_recheck_task = _webhook_recheck_task
 
         # --- Observability: claim queue-depth sampler ----------------------
         # Runs every 10s when the claim engine is Postgres-backed and
@@ -925,6 +931,19 @@ def _make_lifespan(config: AppConfig):
                         pass
                 except Exception:
                     logger.exception("claim_depth_task teardown failed")
+            # Sleeping until its grace-skipped ids clear the window. Anything
+            # it had not re-fired yet stays pending for the next boot's sweep.
+            if _webhook_recheck_task is not None:
+                try:
+                    _webhook_recheck_task.cancel()
+                    try:
+                        await _webhook_recheck_task
+                    except asyncio.CancelledError:
+                        pass
+                except Exception:
+                    logger.exception(
+                        "webhook_recheck_task teardown failed"
+                    )
             if event_bus is not None:
                 try:
                     await event_bus.aclose()

@@ -8,12 +8,22 @@ rows alone.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from primer.model.webhook_delivery import WebhookDelivery
+
+
+async def _cancel(task: asyncio.Task) -> None:
+    """Cancel a re-check task the way the lifespan's teardown does."""
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
 
 
 @pytest.mark.asyncio
@@ -44,7 +54,7 @@ async def test_recover_webhook_redispatches_stale_pending(fake_storage_provider)
     with patch(
         "primer.api.routers.webhooks._dispatch_webhook", dispatch_spy
     ):
-        await recover_webhook_deliveries(
+        recheck = await recover_webhook_deliveries(
             fake_storage_provider, None, None, None, None
         )
 
@@ -53,6 +63,11 @@ async def test_recover_webhook_redispatches_stale_pending(fake_storage_provider)
     assert args[0] == "trig-1"                 # trigger_id
     assert args[1] == {"webhook_body": "hi"}   # extra_context
     assert kwargs["delivery_id"] == "fire-stale"
+
+    # 'fire-fresh' is inside the grace window, so the sweep hands back a
+    # re-check task for it rather than abandoning it to the next boot.
+    assert recheck is not None
+    await _cancel(recheck)
 
 
 @pytest.mark.asyncio
@@ -95,6 +110,79 @@ async def test_recover_webhook_redispatches_every_row_across_pages(
 
     assert len(dispatched) == total, f"only {len(dispatched)}/{total} dispatched"
     assert sorted(dispatched) == sorted(f"fire-{i:04d}" for i in range(total))
+
+
+@pytest.mark.asyncio
+async def test_grace_skipped_row_is_dispatched_by_the_recheck(
+    fake_storage_provider,
+):
+    """A row inside the grace window at sweep time IS eventually dispatched.
+
+    The boot sweep is one-shot: without the re-check a row younger than the
+    cutoff is skipped and never revisited by this process, so a delivery
+    dropped inside the grace band waits for the NEXT boot - weeks away, or
+    never, on a stable deployment. That is the silent-loss window this batch
+    exists to close, so the grace must be a bound, not a deferral.
+    """
+    from primer.api import _app_lifespan_phases as phases
+
+    storage = fake_storage_provider.get_storage(WebhookDelivery)
+    await storage.create(WebhookDelivery(
+        id="fire-young", trigger_id="trig-young", extra_context={},
+        status="pending", created_at=datetime.now(timezone.utc),
+    ))
+
+    dispatch_spy = AsyncMock()
+    # A grace short enough to keep the test fast, but long enough that the
+    # row is reliably still inside the window when the sweep reads it.
+    with patch.object(phases, "_WEBHOOK_DELIVERY_GRACE_SECS", 0.3), \
+            patch("primer.api.routers.webhooks._dispatch_webhook", dispatch_spy):
+        recheck = await phases.recover_webhook_deliveries(
+            fake_storage_provider, None, None, None, None
+        )
+        # The one-shot pass skipped it: nothing dispatched yet.
+        assert dispatch_spy.await_count == 0
+        assert recheck is not None
+        # The re-check sleeps until the row clears the window, then fires.
+        await asyncio.wait_for(recheck, timeout=5)
+
+    assert dispatch_spy.await_count == 1
+    assert dispatch_spy.await_args.kwargs["delivery_id"] == "fire-young"
+    # It self-terminates after the single pass - it is not a polling loop.
+    assert recheck.done() and not recheck.cancelled()
+
+
+@pytest.mark.asyncio
+async def test_grace_recheck_task_cancels_cleanly_on_shutdown(
+    fake_storage_provider,
+):
+    """The re-check task is cancellable and dispatches nothing once cancelled.
+
+    It is owned by the lifespan and torn down like chat_tick_task /
+    _claim_depth_task, so shutdown during the grace sleep must not leak the
+    task or fire a delivery on the way out.
+    """
+    from primer.api._app_lifespan_phases import recover_webhook_deliveries
+
+    storage = fake_storage_provider.get_storage(WebhookDelivery)
+    await storage.create(WebhookDelivery(
+        id="fire-young", trigger_id="trig-young", extra_context={},
+        status="pending", created_at=datetime.now(timezone.utc),
+    ))
+
+    dispatch_spy = AsyncMock()
+    with patch("primer.api.routers.webhooks._dispatch_webhook", dispatch_spy):
+        # Default 300s grace: the task is parked in its sleep when we cancel.
+        recheck = await recover_webhook_deliveries(
+            fake_storage_provider, None, None, None, None
+        )
+        assert recheck is not None
+        await _cancel(recheck)
+
+    assert recheck.cancelled(), "re-check task did not cancel"
+    assert dispatch_spy.await_count == 0
+    # The row stays pending, so the next boot's sweep still owns it.
+    assert (await storage.get("fire-young")).status == "pending"
 
 
 @pytest.mark.asyncio
