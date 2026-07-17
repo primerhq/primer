@@ -22,7 +22,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Any, TypeVar
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Path, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, status
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError as PydanticValidationError
 
@@ -50,6 +50,40 @@ _ModelT = TypeVar("_ModelT", bound=Identifiable)
 # Page response is a runtime union of the two concrete page shapes;
 # FastAPI/Pydantic serializes it via the discriminator on ``kind``.
 _PageResp = OffsetPageResponse[Any] | CursorPageResponse[Any]
+
+
+def _escape_like(value: str) -> str:
+    """Escape SQL ``LIKE`` / ``ILIKE`` metacharacters in a user query.
+
+    Escapes the escape char first, then ``%`` and ``_``, so the value matches
+    LITERALLY under the ``ESCAPE '\\'`` clause the ILIKE renderers emit. A user
+    typing ``50%`` then searches for a literal ``50%`` rather than "50 followed
+    by any sequence". Mirrors the backend content-store ``_escape_like``
+    helpers (``primer.storage.sqlite`` / ``primer.storage.postgres``).
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _build_search_predicate(search_fields: Sequence[str], q: str) -> Predicate:
+    """OR a case-insensitive substring (ILIKE) match across ``search_fields``.
+
+    Each field yields ``<field> ILIKE '%<escaped-q>%'``; the terms are folded
+    right-associatively into an OR tree. ``q`` is escaped so its ``%`` / ``_``
+    are treated literally (see :func:`_escape_like`).
+    """
+    pattern = f"%{_escape_like(q)}%"
+    terms = [
+        Predicate(
+            left=FieldRef(name=field),
+            op=Op.ILIKE,
+            right=Value(value=pattern),
+        )
+        for field in search_fields
+    ]
+    combined = terms[-1]
+    for term in reversed(terms[:-1]):
+        combined = Predicate(left=term, op=Op.OR, right=combined)
+    return combined
 
 
 def _compose(
@@ -118,6 +152,7 @@ def make_crud_router(
     managed_by_field: str | None = None,
     references: Sequence[ReferenceCheck] = (),
     cdc_kind: str | None = None,
+    search_fields: list[str] | None = None,
 ) -> APIRouter:
     """Build a CRUD + Find APIRouter for ``model_cls``.
 
@@ -199,6 +234,13 @@ def make_crud_router(
           :func:`~primer.api.routers._cdc_hooks.make_cdc_hooks` into
           ``on_create`` / ``on_update`` / ``on_delete``.  The CDC hooks
           run *before* any user-supplied post-mutate hooks.
+    search_fields
+        When set, the unscoped ``GET /<plural>`` list route accepts an
+        optional ``?q=`` query param and, when it is non-empty, filters
+        rows by a case-insensitive substring (ILIKE) match ORed across
+        these fields via ``storage.find``.  The response keeps the same
+        ``{items, total}`` offset-paged shape as the unfiltered list.
+        ``None`` (the default) leaves the list route unchanged.
     """
 
     # Validate scope params: both must be set together or not at all.
@@ -583,8 +625,22 @@ def make_crud_router(
         async def _list(
             page: PageRequest = Depends(parse_page),
             order_by: list[OrderBy] | None = Depends(parse_order_by),
+            q: str | None = Query(
+                default=None,
+                description=(
+                    "Case-insensitive substring match over the entity's "
+                    "searchable fields. Ignored when the entity declares no "
+                    "searchable fields."
+                ),
+            ),
             storage=Depends(storage_dep),
         ) -> _PageResp:
+            # q present AND this entity is searchable -> ILIKE substring find,
+            # preserving the same page/order_by handling and the identical
+            # OffsetPageResponse {items, total} shape as the plain list.
+            if q and search_fields:
+                predicate = _build_search_predicate(search_fields, q)
+                return await storage.find(predicate, page, order_by=order_by)
             return await storage.list(page, order_by=order_by)
 
         # ---- POST /<plural>/find  (find with predicate) ------------------

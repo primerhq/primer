@@ -49,6 +49,7 @@ agent_router = make_crud_router(
     tag="agents",
     cdc_kind="agent",
     managed_by_field="harness_id",
+    search_fields=["id", "description"],
 )
 
 
@@ -118,6 +119,7 @@ graph_router = make_crud_router(
     tag="graphs",
     cdc_kind="graph",
     managed_by_field="harness_id",
+    search_fields=["id", "description"],
 )
 
 
