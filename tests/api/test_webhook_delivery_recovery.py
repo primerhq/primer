@@ -315,13 +315,17 @@ def test_grace_window_is_configurable_and_clears_a_slow_dispatch():
 
     assert phases._WEBHOOK_DELIVERY_GRACE_SECS >= 300
 
-    with patch.dict(
-        "os.environ", {"PRIMER_WEBHOOK_RECOVERY_GRACE_SECS": "900"}
-    ):
-        reloaded = importlib.reload(phases)
-        assert reloaded._WEBHOOK_DELIVERY_GRACE_SECS == 900.0
-    # Restore the module-level default for any later import of it.
-    importlib.reload(phases)
+    try:
+        with patch.dict(
+            "os.environ", {"PRIMER_WEBHOOK_RECOVERY_GRACE_SECS": "900"}
+        ):
+            reloaded = importlib.reload(phases)
+            assert reloaded._WEBHOOK_DELIVERY_GRACE_SECS == 900.0
+    finally:
+        # Restore the module-level default for any later import of it. Must
+        # be unconditional: a failing assertion above would otherwise leave
+        # the module at GRACE=900 and silently skew every later test.
+        importlib.reload(phases)
 
 
 @pytest.mark.asyncio
