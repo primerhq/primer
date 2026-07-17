@@ -268,7 +268,7 @@ async def test_webhook_persists_pending_delivery_before_dispatch(
     client, fake_storage_provider
 ):
     """A durable WebhookDelivery row exists (status=pending) before the
-    fire-and-forget dispatch completes — stubbing the dispatcher out."""
+    fire-and-forget dispatch completes - stubbing the dispatcher out."""
     from primer.model.storage import OffsetPage
     from primer.model.webhook_delivery import WebhookDelivery
 

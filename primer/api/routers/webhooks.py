@@ -297,7 +297,7 @@ async def receive_webhook(
     # 202). The row id IS the delivery/fire id, so a duplicate inbound
     # for the same instant collides on the primary key and is deduped.
     # Best effort: if the write fails we still dispatch (behaviour then
-    # matches the old fire-and-forget path — no worse than before).
+    # matches the old fire-and-forget path - no worse than before).
     from primer.model.except_ import ConflictError
     from primer.model.webhook_delivery import WebhookDelivery
 
@@ -314,7 +314,7 @@ async def receive_webhook(
     except ConflictError:
         # Same fire_id already recorded (duplicate inbound in the same
         # millisecond); the first request owns the dispatch. Do not
-        # re-dispatch — return the accepted 202 idempotently.
+        # re-dispatch - return the accepted 202 idempotently.
         logger.info(
             "webhook delivery %s already recorded; treating as duplicate",
             delivery_id,
