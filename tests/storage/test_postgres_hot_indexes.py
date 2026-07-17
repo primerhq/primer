@@ -32,10 +32,29 @@ from primer.storage.postgres import (
 
 def test_registry_declares_the_hot_tables():
     """token_hash / session status / chat recovery / channel routing /
-    useridentity uniqueness are all registered."""
+    useridentity uniqueness / webhook recovery are all registered."""
     assert set(_HOT_FIELD_INDEXES) == {
         "apitoken", "sessions", "chat", "channel", "useridentity",
+        "webhookdelivery",
     }
+
+
+def test_webhookdelivery_index_covers_the_recovery_status_filter():
+    """Startup webhook recovery filters status='pending' on every boot; an
+    expression index on the extracted scalar serves that."""
+    (suffix, unique, expr), = _HOT_FIELD_INDEXES["webhookdelivery"]
+    assert suffix == "status"
+    assert unique is False
+    assert expr == "((data->>'status'))"
+
+
+def test_webhook_delivery_model_maps_to_the_webhookdelivery_table():
+    """The index lives on the same table the WebhookDelivery model stores in
+    (the lowercased class name)."""
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    assert _table_name_for(WebhookDelivery) == "webhookdelivery"
+    assert "webhookdelivery" in _HOT_FIELD_INDEXES
 
 
 def test_chat_index_covers_status_and_turn_status():
