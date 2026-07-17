@@ -33,17 +33,54 @@ So instead of one giant agent with everything crammed into its prompt, Primer le
 
 A lot of what Primer ships - knowledge bases, channels, triggers, approvals - you will find in other agent frameworks too. These are the parts that were missing everywhere else, and they are what Primer is really about.
 
-**🔁 Directed cyclic agent graphs.** Wire small agents into a graph that *loops*. Run a bunch of small agents in a feedback loop and you are trading compute for time: the loop keeps running until it reaches the state you want. The move that makes it click is putting an evaluator agent at the end that grades the output and feeds it back to the start - a producer makes a draft, a critic scores it, the graph revises, again and again, until the result is actually good. Instead of a one-shot prompt you hope lands, you get a loop that **converges on a target**.
+<table>
+  <tr>
+    <td width="33%" valign="top">
 
-**📁 Shared workspaces.** Run multiple agents and graphs inside a single sandbox, all reading and writing the same filesystem. They work independently but share everything they find - one agent writes a file, another picks it up. It is the simplest possible way to let a fleet of agents collaborate on the same task.
+🔁 **Directed cyclic agent graphs**
 
-**⏸️ Yielding tools (event-driven, long-running agents).** Loops and graphs are meant to run in the background - you should not have to sit in front of a screen keeping a session open. So an agent can call a tool that **yields control and parks the agent** until an event fires: a file change, a schedule, a webhook, or a human reply. That is what makes long-running, event-driven agents possible - and combined with shared workspaces, one agent can wake the instant another writes to a file.
+Wire small agents into a feedback loop with an evaluator at the end that grades the output and feeds it back - produce, critique, revise, until the loop **converges on a target** instead of hoping a one-shot prompt lands.
 
-**🔎 Semantic tool search.** Register tens of tools on an agent and the definitions alone bloat its context. Instead, Primer embeds every tool as a vector and hands each agent just two meta-tools: one to **search** for the capability it needs, and one to **call** any tool in the platform. Two tools in context, access to all of them. It generalizes - an agent can discover and invoke any other agent or graph the same way.
+</td>
+    <td width="33%" valign="top">
 
-**🧩 First-class dogfooding.** The platform's own capabilities are exposed as internal tools, so you can build **agents that build other agents**, graphs, and collections - on Primer itself.
+📁 **Shared workspaces**
 
-**🔌 MCP over the whole platform.** Every capability is exposed over the **Model Context Protocol**. Point Claude, opencode, or any MCP client at Primer and **operate it by asking an agent** instead of clicking through a UI. You drive the platform with agents, not just point agents at tools.
+Multiple agents and graphs run in one sandbox, reading and writing the same filesystem - a fleet collaborates by handing off files: one writes, another picks it up.
+
+</td>
+    <td width="33%" valign="top">
+
+⏸️ **Yielding tools**
+
+An agent parks and **yields control** until an event fires - a file change, schedule, webhook, or human reply - so loops run in the background. One agent can wake the instant another writes a file.
+
+</td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+
+🔎 **Semantic tool search**
+
+Every tool, agent, and graph is a vector embedding. Each agent carries just two meta-tools - **search** and **call** - and reaches all of them without bloating its context.
+
+</td>
+    <td width="33%" valign="top">
+
+🧩 **First-class dogfooding**
+
+The platform's own capabilities are internal tools, so you can build **agents that build other agents**, graphs, and collections - on Primer itself.
+
+</td>
+    <td width="33%" valign="top">
+
+🔌 **MCP over everything**
+
+Every capability is exposed over the **Model Context Protocol**. Drive Primer from Claude, opencode, or any MCP client - **operate it by asking an agent**, not by clicking a UI.
+
+</td>
+  </tr>
+</table>
 
 ## Batteries included
 
