@@ -360,6 +360,11 @@ class TestSessionMessageKind:
             # Reset-same-session ENDED->CREATED marker (studio-agents-interact
             # §5.2 / plan Task 6).
             "invocation_divider",
+            # Compaction summary marker: keeps messages.jsonl append-only so the
+            # event log survives, while the compacted view is reconstructed at
+            # read time. Skipped by the tap reader. Shared 1:1 with
+            # TapEventClass.COMPACTION_MARKER.
+            "compaction_marker",
         }
         actual = {k.value for k in SessionMessageKind}
         assert actual == expected
