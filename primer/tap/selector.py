@@ -124,12 +124,15 @@ def _resolve_field(name: str, event: TapEvent) -> Any:
     )
 
 
-def _like_to_regex(pattern: str) -> re.Pattern[str]:
-    """Convert a SQL LIKE pattern to a compiled regex (case-sensitive).
+def _like_to_regex(pattern: str, *, flags: int = 0) -> re.Pattern[str]:
+    """Convert a SQL LIKE pattern to a compiled regex.
 
-    * ``%`` → ``.*``
-    * ``_`` → ``.``
+    * ``%`` -> ``.*``
+    * ``_`` -> ``.``
     * All other regex metacharacters are escaped.
+
+    ``flags`` is passed through to :func:`re.compile`; pass
+    ``re.IGNORECASE`` for a case-insensitive (SQL ILIKE) match.
     """
     parts: list[str] = []
     i = 0
@@ -142,7 +145,7 @@ def _like_to_regex(pattern: str) -> re.Pattern[str]:
         else:
             parts.append(re.escape(ch))
         i += 1
-    return re.compile("".join(["^"] + parts + ["$"]))
+    return re.compile("".join(["^"] + parts + ["$"]), flags)
 
 
 def _eval_predicate(pred: Predicate, event: TapEvent) -> bool:
@@ -213,6 +216,13 @@ def _eval_predicate(pred: Predicate, event: TapEvent) -> bool:
             f"Op.LIKE can only match string fields, got {type(field_val)}"
         )
         return bool(_like_to_regex(rhs).match(field_val))
+
+    if op is Op.ILIKE:
+        assert isinstance(rhs, str), f"Op.ILIKE expects a string pattern, got {type(rhs)}"
+        assert isinstance(field_val, str), (
+            f"Op.ILIKE can only match string fields, got {type(field_val)}"
+        )
+        return bool(_like_to_regex(rhs, flags=re.IGNORECASE).match(field_val))
 
     # Should be unreachable if Op enum is exhaustive, but guard anyway.
     raise NotImplementedError(f"Unsupported Op: {op!r}")  # pragma: no cover

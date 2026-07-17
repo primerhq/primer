@@ -242,8 +242,10 @@ class _PredicateTranslator:
         """
         if isinstance(p.left, FieldRef):
             left_sql = _render_field_expr(self._model, p.left.name)
-        else:
+        elif isinstance(p.left, Value):
             left_sql = self._render(p.left)
+        else:
+            raise BadRequestError("ILIKE left side must be FieldRef or Value")
         right_sql = self._render(p.right)
         return f"({left_sql} ILIKE {right_sql} ESCAPE '\\')"
 

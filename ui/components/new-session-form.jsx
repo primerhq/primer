@@ -209,8 +209,24 @@ function SharedNewSessionForm(props) {
   var attachInputRef = React.useRef(null);
   var attachSeqRef = React.useRef(0);
 
+  // Resolve the SELECTED graph's full detail by id so the dependent
+  // Begin.input_schema form renders for ANY selected graph - including one
+  // picked via the server-side search beyond the capped list fetched above.
+  // Always call the hook (Rules of Hooks); the fetcher no-ops unless a graph
+  // is selected. Falls back to the list item until the by-id fetch resolves.
+  var selectedGraphRes = useResource(
+    "shared-new-session:graph-detail:" + (kind === "graph" ? graphId : ""),
+    function (signal) {
+      if (kind !== "graph" || !graphId) return Promise.resolve(null);
+      return apiFetch("GET", "/graphs/" + encodeURIComponent(graphId), null, { signal });
+    },
+    { pollMs: 0 }
+  );
+
   // Look up the selected graph + its Begin node to drive the dynamic form.
-  var selectedGraph = graphItems.find(function (g) { return g.id === graphId; }) || null;
+  var selectedGraph = selectedGraphRes.data
+    || graphItems.find(function (g) { return g.id === graphId; })
+    || null;
   var beginNode = ((selectedGraph && selectedGraph.nodes) || []).find(function (n) {
     return n.kind === "begin";
   }) || null;
