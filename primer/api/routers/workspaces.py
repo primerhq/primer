@@ -605,7 +605,16 @@ async def create_workspace(
             reply_binding=body.reply_binding,
         )
         await workspace_storage.create(row)
-    except Exception:
+    except BaseException:
+        # BaseException, not Exception: asyncio.CancelledError has been a
+        # BaseException since 3.8, so `except Exception` would skip the
+        # teardown on the single most likely way this block is entered -- a
+        # client disconnect during the slow materialise()+mount work cancels
+        # the request task, which would orphan the very live instance this
+        # rollback exists to reclaim (arch review D-I1). The bare `raise`
+        # re-raises the original exception with its traceback intact and
+        # preserves CancelledError's cancellation semantics.
+        #
         # registry.destroy() is row-driven and the row does not exist yet, so
         # tear down the backend instance directly. Best-effort: never let a
         # cleanup failure mask the original error.

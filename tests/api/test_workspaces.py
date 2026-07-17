@@ -8,6 +8,7 @@ fake backend. That keeps the tests cheap and isolated.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,7 @@ from primer.api.registries import (
     ProviderRegistry,
     WorkspaceRegistry,
 )
+from primer.api.routers.workspaces import WorkspaceCreateBody, create_workspace
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -849,6 +851,65 @@ class TestWorkspaceRouter:
         # The orphaned live workspace was torn down...
         assert destroyed, "backend.destroy was not called on rollback"
         # ...and the backend holds no leaked instance.
+        assert await backend.list() == []
+
+    @pytest.mark.asyncio
+    async def test_create_rolls_back_live_workspace_on_cancellation(
+        self, client, wsr, sp
+    ) -> None:
+        """A client disconnect during the slow post-materialise work cancels
+        the request task, raising asyncio.CancelledError -- a BaseException
+        since 3.8, so an ``except Exception`` rollback would skip the teardown
+        and orphan the live instance, which is exactly the D-I1 harm this
+        rollback exists to prevent. The teardown must run, and the
+        CancelledError must still propagate (never be swallowed).
+
+        The handler is driven directly rather than over ``client``: Starlette's
+        BaseHTTPMiddleware absorbs a CancelledError raised inside the app and
+        re-raises RuntimeError("No response returned."), which would hide the
+        very propagation this test pins down.
+        """
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+
+        backend = await wsr.get_backend("local-1")
+        destroyed: list[str] = []
+        original_destroy = backend.destroy
+
+        async def _spy_destroy(workspace_id):
+            destroyed.append(workspace_id)
+            await original_destroy(workspace_id)
+
+        backend.destroy = _spy_destroy  # type: ignore[assignment]
+
+        # Stand in for the request task being cancelled mid-flight, after
+        # materialise() has already brought a live workspace up.
+        row_storage = sp.get_storage(Workspace)
+
+        async def _cancelled(_row):
+            raise asyncio.CancelledError()
+
+        row_storage.create = _cancelled  # type: ignore[assignment]
+
+        # CancelledError still propagates: swallowing it would break
+        # cancellation and leave the caller hanging.
+        with pytest.raises(asyncio.CancelledError):
+            await create_workspace(
+                body=WorkspaceCreateBody(template_id="tpl-1"),
+                # Only read by the mounts branch, which this body doesn't take.
+                request=None,  # type: ignore[arg-type]
+                workspace_storage=row_storage,
+                template_storage=sp.get_storage(WorkspaceTemplate),
+                provider_storage=sp.get_storage(WorkspaceProvider),
+                registry=wsr,
+            )
+
+        # ...and the teardown ran anyway, so nothing leaked.
+        assert destroyed, "backend.destroy was not called on cancellation"
         assert await backend.list() == []
 
     @pytest.mark.asyncio
