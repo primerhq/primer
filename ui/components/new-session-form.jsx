@@ -1,4 +1,4 @@
-/* global React, Modal, Btn, Icon */
+/* global React, Modal, Btn, Icon, EntityPicker */
 // ---------------------------------------------------------------------------
 // SharedNewSessionForm (FD2) — the ONE create-session form.
 //
@@ -388,31 +388,21 @@ function SharedNewSessionForm(props) {
       <div className="field">
         <label className="field-label">{kind === "agent" ? "Agent" : "Graph"}</label>
         {kind === "agent" ? (
-          <select
-            className="select"
+          <EntityPicker
+            path="/agents"
             value={agentId}
-            onChange={function (e) { setAgentId(e.target.value); }}
-            style={{ width: "100%" }}
-            disabled={loading || agentItems.length === 0}
-          >
-            {agentItems.length === 0 && (
-              <option value="">{loading ? "Loading…" : "No agents available"}</option>
-            )}
-            {agentItems.map(function (a) { return <option key={a.id} value={a.id}>{a.id}</option>; })}
-          </select>
+            onChange={setAgentId}
+            placeholder="Search agents…"
+            testid="new-session-agent-picker"
+          />
         ) : (
-          <select
-            className="select"
+          <EntityPicker
+            path="/graphs"
             value={graphId}
-            onChange={function (e) { setGraphId(e.target.value); }}
-            style={{ width: "100%" }}
-            disabled={loading || graphItems.length === 0}
-          >
-            {graphItems.length === 0 && (
-              <option value="">{loading ? "Loading…" : "No graphs available"}</option>
-            )}
-            {graphItems.map(function (g) { return <option key={g.id} value={g.id}>{g.id}</option>; })}
-          </select>
+            onChange={setGraphId}
+            placeholder="Search graphs…"
+            testid="new-session-graph-picker"
+          />
         )}
         {noBinding && (
           <div className="field-help warn">
