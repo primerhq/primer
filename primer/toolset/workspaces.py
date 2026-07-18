@@ -425,6 +425,7 @@ def _tool(
     *,
     yields: bool = False,
     requires_session: bool = False,
+    requires_workspace: bool = False,
     required_role: str | None = None,
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
     return name, (
@@ -437,6 +438,7 @@ def _tool(
             examples=examples,
             yields=yields,
             requires_session=requires_session,
+            requires_workspace=requires_workspace,
             required_role=required_role,
         ),
         handler,

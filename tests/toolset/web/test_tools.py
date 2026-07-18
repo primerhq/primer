@@ -18,10 +18,14 @@ from typing import Any
 import httpx
 import pytest
 
-from primer.model.except_ import BadRequestError
+from primer.model.except_ import BadRequestError, NotFoundError
+from primer.model.yield_ import ToolContext
 from primer.toolset.web.tools import (
+    DownloadArgs,
     HttpRequestArgs,
     WebSearchArgs,
+    make_download_descriptor,
+    make_download_handler,
     make_http_request_descriptor,
     make_http_request_handler,
     make_web_search_descriptor,
@@ -316,9 +320,259 @@ class TestHttpRequestHandler:
             )
 
 
+# ===========================================================================
+# download handler (workspace only)
+# ===========================================================================
+
+
+def _stream_client(*, status: int, body: bytes) -> httpx.AsyncClient:
+    """An httpx.AsyncClient (MockTransport) whose responses stream via
+    ``client.stream(...)`` / ``aiter_bytes()`` - the real code path."""
+
+    def _h(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code=status, content=body)
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(_h))
+
+
+class _FakeWorkspace:
+    def __init__(self, *, write_error: Exception | None = None) -> None:
+        self.writes: list[tuple[str, bytes]] = []
+        self._write_error = write_error
+
+    async def write_file(self, path: str, content: bytes) -> None:
+        if self._write_error is not None:
+            raise self._write_error
+        self.writes.append((path, content))
+
+
+class _FakeWorkspaceRegistry:
+    def __init__(
+        self,
+        *,
+        workspace: _FakeWorkspace | None = None,
+        get_error: Exception | None = None,
+    ) -> None:
+        self.workspace = workspace or _FakeWorkspace()
+        self._get_error = get_error
+        self.get_calls: list[str] = []
+
+    async def get_workspace(self, workspace_id: str):
+        self.get_calls.append(workspace_id)
+        if self._get_error is not None:
+            raise self._get_error
+        return self.workspace
+
+
+def _ctx(workspace_id: str | None = "ws-1") -> ToolContext:
+    return ToolContext(
+        tool_call_id="tc-1", session_id="sess-1", workspace_id=workspace_id
+    )
+
+
+class TestDownloadDescriptor:
+    def test_descriptor_flags_and_id(self) -> None:
+        t = make_download_descriptor("web")
+        assert t.id == "download"
+        assert t.toolset_id == "web"
+        assert t.requires_workspace is True
+        assert t.required_role == "user"
+        props = t.args_schema.get("properties", {})
+        assert {"url", "path", "max_bytes"}.issubset(props.keys())
+
+
+class TestDownloadHandler:
+    @pytest.mark.asyncio
+    async def test_writes_file_at_url_derived_default_path(self) -> None:
+        client = _stream_client(status=200, body=b"col1,col2\n1,2\n")
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/sub/data.csv"}, ctx=_ctx()
+        )
+        assert not result.is_error
+        payload = json.loads(result.output)
+        # Filename derived from the URL's last path segment, at ws root.
+        assert payload["path"] == "data.csv"
+        assert payload["bytes"] == len(b"col1,col2\n1,2\n")
+        assert payload["url"] == "https://example.com/sub/data.csv"
+        assert reg.get_calls == ["ws-1"]
+        assert reg.workspace.writes == [("data.csv", b"col1,col2\n1,2\n")]
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_explicit_path_used_verbatim(self) -> None:
+        client = _stream_client(status=200, body=b"xyz")
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/a.bin", "path": "docs/out.bin"},
+            ctx=_ctx(),
+        )
+        assert not result.is_error
+        assert json.loads(result.output)["path"] == "docs/out.bin"
+        assert reg.workspace.writes == [("docs/out.bin", b"xyz")]
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_trailing_slash_path_appends_url_filename(self) -> None:
+        client = _stream_client(status=200, body=b"xyz")
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/a.bin", "path": "docs/"},
+            ctx=_ctx(),
+        )
+        assert not result.is_error
+        assert json.loads(result.output)["path"] == "docs/a.bin"
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_byte_cap_rejects_and_writes_nothing(self) -> None:
+        # A truncated file is corrupt: the cap must reject, not truncate.
+        client = _stream_client(status=200, body=b"a" * 5000)
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=100
+        )
+        result = await handler(
+            {"url": "https://example.com/big.bin"}, ctx=_ctx()
+        )
+        assert result.is_error is True
+        assert "exceeds" in result.output
+        # Nothing was written and the workspace was never even resolved.
+        assert reg.workspace.writes == []
+        assert reg.get_calls == []
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_per_call_max_bytes_overrides_cap(self) -> None:
+        client = _stream_client(status=200, body=b"a" * 50)
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/x.bin", "max_bytes": 10}, ctx=_ctx()
+        )
+        assert result.is_error is True
+        assert "exceeds" in result.output
+        assert reg.workspace.writes == []
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_no_workspace_in_ctx_is_error(self) -> None:
+        client = _stream_client(status=200, body=b"x")
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/x.bin"}, ctx=_ctx(workspace_id=None)
+        )
+        assert result.is_error is True
+        assert "workspace" in result.output
+        assert reg.get_calls == []
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_http_error_status_is_tool_error(self) -> None:
+        client = _stream_client(status=404, body=b"not found")
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/missing.bin"}, ctx=_ctx()
+        )
+        assert result.is_error is True
+        assert "404" in result.output
+        assert reg.workspace.writes == []
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_empty_url_filename_needs_explicit_path(self) -> None:
+        client = _stream_client(status=200, body=b"x")
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/"}, ctx=_ctx()
+        )
+        assert result.is_error is True
+        assert "path" in result.output
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_workspace_write_rejection_is_tool_error(self) -> None:
+        # A traversal / reserved-path write raises BadRequestError from the
+        # backend; the handler surfaces it in-band, not as a crash.
+        ws = _FakeWorkspace(write_error=BadRequestError("path escapes workspace"))
+        reg = _FakeWorkspaceRegistry(workspace=ws)
+        client = _stream_client(status=200, body=b"x")
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/x.bin", "path": "../escape"},
+            ctx=_ctx(),
+        )
+        assert result.is_error is True
+        assert "cannot write" in result.output
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_workspace_not_found_is_tool_error(self) -> None:
+        reg = _FakeWorkspaceRegistry(get_error=NotFoundError("gone"))
+        client = _stream_client(status=200, body=b"x")
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        result = await handler(
+            {"url": "https://example.com/x.bin"}, ctx=_ctx()
+        )
+        assert result.is_error is True
+        await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_invalid_arguments_raise_bad_request(self) -> None:
+        client = _stream_client(status=200, body=b"x")
+        reg = _FakeWorkspaceRegistry()
+        handler = make_download_handler(
+            http_client=client, workspace_registry=reg, byte_cap=1_000_000
+        )
+        with pytest.raises(BadRequestError, match="invalid arguments"):
+            await handler({"url": "ftp://nope/"}, ctx=_ctx())
+        await client.aclose()
+
+    def test_factory_rejects_zero_byte_cap(self) -> None:
+        client = _stream_client(status=200, body=b"x")
+        with pytest.raises(ValueError, match="byte_cap"):
+            make_download_handler(
+                http_client=client,
+                workspace_registry=_FakeWorkspaceRegistry(),
+                byte_cap=0,
+            )
+
+
 @pytest.mark.asyncio
 async def test_web_tools_conform():
-    from primer.toolset.web.tools import make_web_search_descriptor, make_http_request_descriptor
+    from primer.toolset.web.tools import (
+        make_download_descriptor,
+        make_http_request_descriptor,
+        make_web_search_descriptor,
+    )
     from tests.toolset._desc_conformance import assert_tool_conforms
-    for tool in (make_web_search_descriptor("web"), make_http_request_descriptor("web")):
+    for tool in (
+        make_web_search_descriptor("web"),
+        make_http_request_descriptor("web"),
+        make_download_descriptor("web"),
+    ):
         assert_tool_conforms(tool)

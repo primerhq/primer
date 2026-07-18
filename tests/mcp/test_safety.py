@@ -14,11 +14,17 @@ from primer.model.chat import Tool
 
 
 class _StubProvider:
-    """Minimal ToolsetProvider stand-in for the predicate's two probes."""
+    """Minimal ToolsetProvider stand-in for the predicate's probes."""
 
-    def __init__(self, yielding: bool = False, needs_session: bool = False) -> None:
+    def __init__(
+        self,
+        yielding: bool = False,
+        needs_session: bool = False,
+        needs_workspace: bool = False,
+    ) -> None:
         self.yielding = yielding
         self.needs_session = needs_session
+        self.needs_workspace = needs_workspace
 
     def is_yielding(self, name: str) -> bool:  # noqa: ARG002 — stub
         return self.yielding
@@ -26,13 +32,23 @@ class _StubProvider:
     def requires_session(self, name: str) -> bool:  # noqa: ARG002 — stub
         return self.needs_session
 
+    def requires_workspace(self, name: str) -> bool:  # noqa: ARG002 - stub
+        return self.needs_workspace
 
-def _make_tool(toolset_id: str, name: str, descr: str = "") -> Tool:
+
+def _make_tool(
+    toolset_id: str,
+    name: str,
+    descr: str = "",
+    *,
+    requires_workspace: bool = False,
+) -> Tool:
     return Tool(
         id=name,
         toolset_id=toolset_id,
         description=descr,
         args_schema={"type": "object", "properties": {}},
+        requires_workspace=requires_workspace,
     )
 
 
@@ -130,3 +146,30 @@ def test_reserved_system_toolsets_remain_exposable() -> None:
         tool = _make_tool(toolset_id, "some_tool")
         ok, reason = is_exposable(tool, provider=_StubProvider())
         assert ok is True, f"{toolset_id} should be exposable, got {reason}"
+
+
+def test_requires_workspace_tool_is_not_exposable() -> None:
+    """A workspace-bound tool (reads ctx.workspace_id for file I/O) cannot
+    round-trip over the stateless MCP surface, regardless of its reserved
+    toolset id."""
+    tool = _make_tool("web", "download", requires_workspace=True)
+    ok, reason = is_exposable(tool, provider=_StubProvider())
+    assert ok is False
+    assert reason == "needs_workspace"
+
+
+def test_requires_workspace_system_tool_is_not_exposable() -> None:
+    """read_doc_content lives in the reserved ``system`` toolset yet is
+    still denied because it needs a live workspace."""
+    tool = _make_tool("system", "read_doc_content", requires_workspace=True)
+    ok, reason = is_exposable(tool, provider=_StubProvider())
+    assert ok is False
+    assert reason == "needs_workspace"
+
+
+def test_non_workspace_tool_stays_exposable() -> None:
+    """The new gate only fires on ``requires_workspace`` tools."""
+    tool = _make_tool("web", "web_search", requires_workspace=False)
+    ok, reason = is_exposable(tool, provider=_StubProvider())
+    assert ok is True
+    assert reason is None

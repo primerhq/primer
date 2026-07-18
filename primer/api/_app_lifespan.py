@@ -212,6 +212,7 @@ def _make_lifespan(config: AppConfig):
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
+            workspace_registry=workspace_registry,
         )
         provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
         # NOTE: the always-on _workspaces toolset is built later in this
@@ -273,6 +274,7 @@ def _make_lifespan(config: AppConfig):
         web_toolset = build_web_toolset(
             web_search_service=web_search_service,
             web_fetch_service=web_fetch_service,
+            workspace_registry=workspace_registry,
         )
         logger.info("lifespan: web toolset built")
         provider_registry._web_toolset_provider = web_toolset  # noqa: SLF001

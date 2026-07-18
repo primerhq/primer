@@ -3,22 +3,35 @@
 Split out of :mod:`primer.toolset.system` (a god-module decomposition). This
 module holds the bespoke, hand-written tools whose handlers do not come from
 the generic CRUD factory. Today that is the ``ask_user`` yielding tool (its
-argument model, resume hook, and handler); ``build_system_toolset`` in
-``system.py`` wires the tool entry itself (the other bespoke tools -
-reply-binding, channel-binding, invoke_agent, switch_to_agent - are defined
-inline in the builder because they close over its per-build dependencies).
+argument model, resume hook, and handler) and the workspace-only
+``read_doc_content`` tool (its argument model and handler factory);
+``build_system_toolset`` in ``system.py`` wires the tool entries themselves
+(the other bespoke tools - reply-binding, channel-binding, invoke_agent,
+switch_to_agent - are defined inline in the builder because they close over
+its per-build dependencies).
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.model.chat import ToolCallResult
+from primer.model.except_ import (
+    BadRequestError,
+    NotFoundError,
+    UnsupportedContentError,
+)
 from primer.toolset._helpers import err as _err, ok as _ok
 from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset._system_common import _err_from_validation
+
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from primer.api.registries.workspace_registry import WorkspaceRegistry
 
 
 # ===========================================================================
@@ -158,3 +171,91 @@ async def _ask_user_handler(
             "files": args.files or None,
         },
     )
+
+
+# ===========================================================================
+# read_doc_content - workspace-only tool. Reads a workspace-relative file,
+# runs it through the Docling loader (an OPTIONAL extra), and returns the
+# extracted plain-text/markdown. requires_workspace=True keeps it out of
+# chat context and off the MCP surface. The Docling import is GUARDED so
+# the tool degrades gracefully when the extra is not installed, rather than
+# crashing at dispatch time.
+# ===========================================================================
+
+
+class _ReadDocContentArgs(BaseModel):
+    """Workspace-relative path of the document to convert to text."""
+
+    path: str = Field(
+        ...,
+        min_length=1,
+        description=(
+            "Workspace-relative path of the document (PDF/DOCX/PPTX/HTML/"
+            "...) to convert. Must not escape the workspace."
+        ),
+    )
+
+
+def make_read_doc_content_handler(
+    *,
+    workspace_registry: "WorkspaceRegistry",
+) -> "Callable[..., Awaitable[ToolCallResult]]":
+    """Build the ``read_doc_content`` handler closing over the registry.
+
+    System handlers are module-level, but this one needs the
+    :class:`WorkspaceRegistry` to resolve the live workspace from
+    ``ctx.workspace_id``, so it is produced by this factory (mirroring how
+    the web toolset factories close over their deps).
+    """
+
+    async def _handle(
+        arguments: dict[str, Any], *, ctx: ToolContext
+    ) -> ToolCallResult:
+        # Defensive guard: chat suppression should keep this tool out of
+        # any non-workspace context, but never attempt file I/O without a
+        # live workspace.
+        if ctx is None or ctx.workspace_id is None:
+            return _err(
+                "read_doc_content requires a workspace session (no "
+                "workspace is bound to this turn)",
+                error_type="bad-request",
+            )
+
+        try:
+            args = _ReadDocContentArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+
+        try:
+            ws = await workspace_registry.get_workspace(ctx.workspace_id)
+            raw = await ws.read_file(args.path)
+        except (BadRequestError, NotFoundError) as exc:
+            return _err(
+                f"read_doc_content: cannot read {args.path!r}: {exc}",
+                error_type="not-found",
+            )
+
+        # GUARDED optional-extra import: docling is an optional dependency;
+        # importing the loader when it is not installed raises
+        # ModuleNotFoundError. Import lazily (never at module top) so the
+        # tool degrades to a clear install hint instead of crashing.
+        try:
+            from primer.ingest.loaders import DoclingLoader
+        except ModuleNotFoundError:
+            return _err(
+                "read_doc_content requires the 'docling' extra; install "
+                "primer-ai[docling]",
+                error_type="unavailable",
+            )
+
+        try:
+            loaded = await DoclingLoader().load(raw)
+        except (BadRequestError, UnsupportedContentError) as exc:
+            return _err(
+                f"read_doc_content: could not parse document: {exc}",
+                error_type="bad-request",
+            )
+
+        return _ok({"text": loaded.text})
+
+    return _handle
