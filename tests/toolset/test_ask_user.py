@@ -105,7 +105,7 @@ class TestAskUserHandler:
             )
         assert exc_info.value.yielded.resume_metadata["response_schema"] == schema
 
-    async def test_handler_requires_session_id_in_ctx(self, misc):
+    async def test_handler_requires_ctx_session_id(self, misc):
         # Without session_id we can't form a unique event_key — the
         # tool fails loudly so future scopes don't accidentally lose
         # uniqueness across sessions.

@@ -62,7 +62,6 @@ def _tool(
         toolset_id=toolset_id,
         args_schema={"type": "object", "properties": {}},
         yields=yields,
-        requires_session=yields,
         requires_workspace=requires_workspace,
     )
 

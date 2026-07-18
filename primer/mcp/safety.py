@@ -7,8 +7,8 @@ constraints that v1 MCP can't represent:
 
 * yielding tools — the agent runtime parks them on an event bus,
   MCP v1 tools/list has no equivalent pause/resume primitive.
-* workspace tools requiring an ``AgentSession`` — they read
-  ``ctx.session_id``, which is meaningless outside an agent loop.
+* workspace-bound tools that read ``ctx.workspace_id`` for file
+  I/O, which is meaningless outside a workspace session.
 
 There is intentionally no policy-level denylist. The operator
 chose to enable MCP, chose which tools to expose, and authenticated
@@ -66,9 +66,6 @@ def is_exposable(
 
     * ``"yielding_unsupported"`` — handler yields; MCP v1 has no
       park/resume protocol so the round-trip is impossible.
-    * ``"needs_session"`` — workspace tool that requires a live
-      :class:`AgentSession` (reads ``ctx.session_id``); meaningless
-      outside an agent loop.
     * ``"needs_workspace"`` - tool that requires a live workspace
       (reads ``ctx.workspace_id`` for file I/O); a workspace-bound tool
       cannot run over the stateless MCP surface.
@@ -89,8 +86,6 @@ def is_exposable(
         return False, "not_system_toolset"
     if provider.is_yielding(tool.id):
         return False, "yielding_unsupported"
-    if tool.toolset_id == "workspaces" and provider.requires_session(tool.id):
-        return False, "needs_session"
     # Read the flag straight off the descriptor (mirrors the
     # ``tool.toolset_id`` read above). ``tool`` comes from
     # ``provider.list_tools()`` so its ``requires_workspace`` flag is the

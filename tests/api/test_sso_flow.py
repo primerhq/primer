@@ -777,7 +777,7 @@ def _second_client(app) -> httpx.AsyncClient:
 
 @pytest.mark.asyncio
 @respx.mock
-async def test_link_requires_session(client, app, rsa_keypair):
+async def test_link_requires_authenticated_session(client, app, rsa_keypair):
     _, pub = rsa_keypair
     idp = _IdpFixture(pub)
     idp.register()
@@ -903,7 +903,7 @@ async def test_link_relinking_same_identity_is_idempotent(client, app, rsa_keypa
 
 
 @pytest.mark.asyncio
-async def test_identities_requires_session(client, app):
+async def test_identities_requires_authenticated_session(client, app):
     r = await client.get("/v1/auth/sso/identities")
     assert r.status_code == 401, r.text
 

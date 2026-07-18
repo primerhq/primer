@@ -1,8 +1,8 @@
 """is_exposable — Spec §7 (revised).
 
 HARD_DENY is now empty: the operator owns the exposure decision.
-This file pins that the runtime constraints (yielding tools, workspace
-tools that need an AgentSession) still filter, and that previously
+This file pins that the runtime constraints (yielding tools,
+workspace-bound tools) still filter, and that previously
 hard-denied tools (``system__call_tool``, ``web__http_request``) are
 now exposable when the operator opts them in.
 """
@@ -19,18 +19,13 @@ class _StubProvider:
     def __init__(
         self,
         yielding: bool = False,
-        needs_session: bool = False,
         needs_workspace: bool = False,
     ) -> None:
         self.yielding = yielding
-        self.needs_session = needs_session
         self.needs_workspace = needs_workspace
 
     def is_yielding(self, name: str) -> bool:  # noqa: ARG002 — stub
         return self.yielding
-
-    def requires_session(self, name: str) -> bool:  # noqa: ARG002 — stub
-        return self.needs_session
 
     def requires_workspace(self, name: str) -> bool:  # noqa: ARG002 - stub
         return self.needs_workspace
@@ -81,26 +76,6 @@ def test_yielding_tool_blocked() -> None:
     assert reason == "yielding_unsupported"
 
 
-def test_workspace_tool_needing_session_blocked() -> None:
-    tool = _make_tool("workspaces", "write_file")
-    ok, reason = is_exposable(tool, provider=_StubProvider(needs_session=True))
-    assert ok is False
-    assert reason == "needs_session"
-
-
-def test_non_workspace_tool_needing_session_not_filtered_here() -> None:
-    """``needs_session`` only suppresses tools in the ``workspaces`` toolset.
-
-    Other toolsets that happen to declare a session need-flag would
-    surface via a different reason (or not at all) — the workspaces
-    branch is the spec-defined trigger.
-    """
-    tool = _make_tool("search", "search_agents")
-    ok, reason = is_exposable(tool, provider=_StubProvider(needs_session=True))
-    assert ok is True
-    assert reason is None
-
-
 def test_safe_tool_passes() -> None:
     tool = _make_tool("misc", "uuid_v4")
     ok, reason = is_exposable(tool, provider=_StubProvider())
@@ -141,8 +116,8 @@ def test_reserved_system_toolsets_remain_exposable() -> None:
     from primer.mcp.safety import RESERVED_TOOLSET_IDS
 
     for toolset_id in RESERVED_TOOLSET_IDS:
-        # workspaces tools that need a session are denied for a different
-        # reason; use a plain non-session tool to isolate the floor.
+        # workspace-bound tools are denied for a different reason; use a
+        # plain (non-workspace) tool to isolate the floor.
         tool = _make_tool(toolset_id, "some_tool")
         ok, reason = is_exposable(tool, provider=_StubProvider())
         assert ok is True, f"{toolset_id} should be exposable, got {reason}"

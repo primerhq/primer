@@ -658,17 +658,6 @@ class Tool(Describeable):
             "In-memory metadata only; excluded from serialization."
         ),
     )
-    requires_session: bool = Field(
-        default=False,
-        exclude=True,
-        description=(
-            "True iff the tool's handler needs a live AgentSession (reads "
-            "ctx.session_id). Declared explicitly at the make_tool call site. "
-            "Consumed by InternalToolsetProvider.requires_session and the MCP "
-            "exposure guard. In-memory metadata only; excluded from "
-            "serialization."
-        ),
-    )
     requires_workspace: bool = Field(
         default=False,
         exclude=True,

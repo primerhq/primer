@@ -40,7 +40,6 @@ def make_tool(
     args_schema: dict[str, Any],
     examples: list[ToolExample],
     yields: bool = False,
-    requires_session: bool = False,
     requires_workspace: bool = False,
     required_role: str | None = None,
 ) -> Tool:
@@ -50,19 +49,16 @@ def make_tool(
     Each example's ``args`` is validated against ``args_schema`` (which must be
     a self-contained JSON Schema) and rejected on mismatch.
 
-    ``yields`` and ``requires_session`` are explicit capability flags that
+    ``yields`` and ``requires_workspace`` are explicit capability flags that
     replace the previous source-introspection heuristics in
     :mod:`primer.toolset.internal`. Set ``yields=True`` when the tool's
     handler can park the agent turn (its return annotation includes
     :class:`primer.model.yield_.Yielded` / it raises ``YieldToWorker``).
-    Set ``requires_session=True`` when the handler needs a live
-    ``AgentSession`` (it reads ``ctx.session_id``). Set
-    ``requires_workspace=True`` when the handler needs a live workspace
+    Set ``requires_workspace=True`` when the handler needs a live workspace
     (it reads ``ctx.workspace_id`` for file I/O); such tools are dropped
-    from chat tool context and are not MCP-exposable. All three default
+    from chat tool context and are not MCP-exposable. Both default
     to ``False`` and surface via :meth:`InternalToolsetProvider.is_yielding`
-    / :meth:`InternalToolsetProvider.requires_session` /
-    :meth:`InternalToolsetProvider.requires_workspace`, which the chat
+    / :meth:`InternalToolsetProvider.requires_workspace`, which the chat
     suppression choke point and the MCP exposure guard consult.
     """
     validator = Draft202012Validator(args_schema)
@@ -76,7 +72,6 @@ def make_tool(
         args_schema=args_schema,
         examples=examples,
         yields=yields,
-        requires_session=requires_session,
         requires_workspace=requires_workspace,
         required_role=required_role,
     )
