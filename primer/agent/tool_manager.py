@@ -263,6 +263,22 @@ class ToolExecutionManager:
                             f"contains {_SCOPE_SEPARATOR!r} which is "
                             "reserved as the scope separator"
                         )
+                    # Per-tool workspace-only suppression (additive to the
+                    # workspace_ext toolset-id skip above): a tool that
+                    # declares ``requires_workspace`` reads ctx.workspace_id
+                    # for file I/O and only functions inside a workspace
+                    # session. Outside one (chats, bare managers) drop it
+                    # entirely - do NOT populate the routing table - so it
+                    # never enters chat context AND a model that somehow
+                    # references it gets the standard "not registered"
+                    # UnsupportedContentError in ``_execute_inner``, exactly
+                    # like the workspace_ext toolset-id skip. Read straight
+                    # off the descriptor (mirrors the ``toolset_id`` check
+                    # above); ``InternalToolsetProvider.requires_workspace``
+                    # is the same flag surfaced for the MCP guard. Keyed on
+                    # the same session-absent condition.
+                    if suppress_workspace_ext and t.requires_workspace:
+                        continue
                     scoped_id = f"{toolset_id}{_SCOPE_SEPARATOR}{t.id}"
                     # Routing table is built unconditionally so an
                     # allowlist hit still resolves; the visible

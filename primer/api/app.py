@@ -185,6 +185,7 @@ def create_test_app(
             storage_provider=storage_provider,
             provider_registry=provider_registry,
             semantic_search_registry=_test_ssp_registry,
+            workspace_registry=workspace_registry,
         )
     if workspaces_toolset is None:
         # The test factory builds its scheduler/event_bus/claim_engine
@@ -247,6 +248,7 @@ def create_test_app(
         web_toolset = build_web_toolset(
             web_search_service=_test_ws_service,
             web_fetch_service=_test_wf_service,
+            workspace_registry=workspace_registry,
         )
     # Always-on workspace_ext toolset (workspace-only yielding tools).
     workspace_ext_toolset = build_workspace_ext_toolset(

@@ -81,6 +81,7 @@ class InternalToolsetProvider(ToolsetProvider):
         # endpoint uses them to filter the exposable tool set.
         self._yielding_names: set[str] = set()
         self._session_names: set[str] = set()
+        self._workspace_names: set[str] = set()
         self._required_roles: dict[str, str] = {}
         for name, (tool, handler) in self._registry.items():
             if tool.toolset_id != toolset_id:
@@ -93,6 +94,8 @@ class InternalToolsetProvider(ToolsetProvider):
                 self._yielding_names.add(name)
             if tool.requires_session:
                 self._session_names.add(name)
+            if tool.requires_workspace:
+                self._workspace_names.add(name)
             if tool.required_role is not None:
                 self._required_roles[name] = tool.required_role
 
@@ -113,6 +116,15 @@ class InternalToolsetProvider(ToolsetProvider):
         site). Unknown names return ``False``.
         """
         return tool_name in self._session_names
+
+    def requires_workspace(self, tool_name: str) -> bool:
+        """Return True iff ``tool_name`` needs a live workspace.
+
+        Read at construction time from the tool's explicit
+        ``requires_workspace`` flag (declared at the ``make_tool`` call
+        site). Unknown names return ``False``.
+        """
+        return tool_name in self._workspace_names
 
     def required_role(self, tool_name: str) -> str:
         """RBAC role required to invoke ``tool_name`` over MCP.

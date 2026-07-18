@@ -669,6 +669,20 @@ class Tool(Describeable):
             "serialization."
         ),
     )
+    requires_workspace: bool = Field(
+        default=False,
+        exclude=True,
+        description=(
+            "True for tools that need a live workspace (they read "
+            "ctx.workspace_id for file I/O). Such tools are dropped from "
+            "chat tool context and are not MCP-exposable; they surface only "
+            "inside a workspace session. Declared explicitly at the make_tool "
+            "call site and consumed by InternalToolsetProvider."
+            "requires_workspace, the chat suppression choke point, and the "
+            "MCP exposure guard. In-memory metadata only; excluded from "
+            "serialization."
+        ),
+    )
     required_role: str | None = Field(
         default=None,
         exclude=True,

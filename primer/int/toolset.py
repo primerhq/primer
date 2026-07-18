@@ -168,6 +168,23 @@ class ToolsetProvider(ABC):
         del tool_name
         return False
 
+    def requires_workspace(self, tool_name: str) -> bool:
+        """Return True if this tool requires a live workspace.
+
+        Such tools read ``ctx.workspace_id`` for file I/O and only make
+        sense inside a workspace session. Consulted by the chat
+        suppression choke point (:meth:`ToolExecutionManager.list_tools`)
+        to drop them from chat tool context, and by the MCP exposure
+        guard (:func:`primer.mcp.safety.is_exposable`) to keep them off
+        the stateless MCP surface.
+
+        Default: ``False``. Providers whose handlers read
+        ``ctx.workspace_id`` override this and return ``True`` for the
+        relevant names.
+        """
+        del tool_name
+        return False
+
     def required_role(self, tool_name: str) -> str:
         """RBAC role required to invoke ``tool_name`` over MCP.
 

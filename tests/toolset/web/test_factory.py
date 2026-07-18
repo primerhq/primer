@@ -48,6 +48,14 @@ class _FakeWebFetchService:
         raise AssertionError("fetch should not be called in these tests")
 
 
+class _FakeWorkspaceRegistry:
+    """Minimal WorkspaceRegistry stand-in; list_tools never resolves a
+    workspace (only the download handler's dispatch path would)."""
+
+    async def get_workspace(self, workspace_id: str):  # pragma: no cover
+        raise AssertionError("get_workspace should not be called here")
+
+
 def _ok_client() -> httpx.AsyncClient:
     def _h(req: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -161,3 +169,35 @@ class TestFactory:
         # point of this commit.)
         with pytest.raises(TypeError):
             build_web_toolset()  # type: ignore[call-arg]
+
+    @pytest.mark.asyncio
+    async def test_download_registered_with_workspace_registry(self) -> None:
+        client = _ok_client()
+        ts = build_web_toolset(
+            web_search_service=_FakeWebSearchService([]),
+            web_fetch_service=_FakeWebFetchService(),
+            http_client=client,
+            workspace_registry=_FakeWorkspaceRegistry(),
+        )
+        try:
+            ids = sorted([t.id async for t in ts.list_tools()])
+            assert ids == ["download", "http_request", "web_fetch", "web_search"]
+            # The download tool is flagged workspace-only.
+            assert ts.requires_workspace("download") is True
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_download_absent_without_workspace_registry(self) -> None:
+        client = _ok_client()
+        ts = build_web_toolset(
+            web_search_service=_FakeWebSearchService([]),
+            web_fetch_service=_FakeWebFetchService(),
+            http_client=client,
+        )
+        try:
+            ids = sorted([t.id async for t in ts.list_tools()])
+            assert "download" not in ids
+            assert ts.requires_workspace("download") is False
+        finally:
+            await client.aclose()

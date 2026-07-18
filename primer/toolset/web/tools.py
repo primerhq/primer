@@ -21,13 +21,16 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from typing import TYPE_CHECKING, Any, Literal
+from urllib.parse import urlsplit
 
 import httpx
 from pydantic import BaseModel, Field, HttpUrl, ValidationError
 
 from primer.model.chat import Tool, ToolCallResult, ToolExample
-from primer.model.except_ import BadRequestError
+from primer.model.except_ import BadRequestError, NotFoundError
+from primer.model.yield_ import ToolContext
 from primer.toolset._describe import make_tool
 from primer.web_fetch.adapter import (
     FetchedPage,
@@ -42,6 +45,8 @@ from primer.web_search.adapter import (
 
 
 if TYPE_CHECKING:
+    from primer.api.registries.workspace_registry import WorkspaceRegistry
+    from primer.toolset.internal import ToolHandler
     from primer.web_fetch.service import WebFetchService
     from primer.web_search.service import WebSearchService
 
@@ -132,6 +137,33 @@ class WebFetchArgs(BaseModel):
     )
 
 
+class DownloadArgs(BaseModel):
+    """Arguments for the ``download`` tool (workspace only)."""
+
+    url: HttpUrl = Field(
+        ...,
+        description="Absolute URL of the file to download (http or https).",
+    )
+    path: str | None = Field(
+        default=None,
+        description=(
+            "Optional workspace-relative destination. When omitted (or "
+            "ending with '/'), the filename is taken from the URL's last "
+            "path segment and the file is written under that directory (or "
+            "the workspace root). Must not escape the workspace."
+        ),
+    )
+    max_bytes: int | None = Field(
+        default=None,
+        gt=0,
+        description=(
+            "Optional per-call maximum download size in bytes. The download "
+            "is rejected (nothing is written) the moment the stream exceeds "
+            "this cap. Defaults to the toolset's configured cap when omitted."
+        ),
+    )
+
+
 # ---- Tool descriptors (the JSON schemas the LLM sees) ----------------------
 
 
@@ -197,6 +229,35 @@ def make_web_fetch_descriptor(toolset_id: str) -> Tool:
             ToolExample(args={"url": "https://docs.python.org/3/whatsnew/3.13.html"}, returns="clean markdown of the page"),
             ToolExample(args={"url": "https://example.com/article", "max_chars": 4000}, returns="first ~4000 chars of clean markdown"),
         ],
+        required_role="user",
+    )
+
+
+def make_download_descriptor(toolset_id: str) -> Tool:
+    return make_tool(
+        id="download",
+        toolset_id=toolset_id,
+        purpose="Download the file at a URL into the agent's workspace at a path.",
+        when=(
+            "Use when you need to save a remote file (dataset, asset, "
+            "release artifact) into the workspace for later processing "
+            "(workspace only). To READ a web page as text use ``web_fetch``; "
+            "to inspect raw bytes/headers use ``http_request``."
+        ),
+        args_schema=DownloadArgs.model_json_schema(),
+        examples=[
+            ToolExample(
+                args={"url": "https://example.com/data.csv"},
+                returns="``{path: 'data.csv', bytes: 1234, url: '...'}``",
+                note="writes data.csv at the workspace root",
+            ),
+            ToolExample(
+                args={"url": "https://example.com/a.pdf", "path": "docs/a.pdf"},
+                returns="``{path: 'docs/a.pdf', bytes: ..., url: '...'}``",
+            ),
+        ],
+        yields=False,
+        requires_workspace=True,
         required_role="user",
     )
 
@@ -372,11 +433,131 @@ def make_web_fetch_handler(service: "WebFetchService") -> ToolHandler:
     return _handle
 
 
+def make_download_handler(
+    *,
+    http_client: httpx.AsyncClient,
+    workspace_registry: "WorkspaceRegistry",
+    byte_cap: int,
+) -> "ToolHandler":
+    """Build the async handler for the ``download`` tool (workspace only).
+
+    Streams the remote file with a HARD size cap: the byte total is
+    checked as chunks arrive and the download is rejected the instant it
+    exceeds the cap, so a truncated (corrupt) file is never written. The
+    fully-buffered bytes are then written into the workspace via the
+    workspace backend, which owns path-confinement (a traversal or
+    reserved-path write raises :class:`BadRequestError`).
+
+    Closes over a shared :class:`httpx.AsyncClient` (connection pooling),
+    the :class:`WorkspaceRegistry` (to resolve the live workspace from
+    ``ctx.workspace_id``), and the default ``byte_cap``.
+    """
+    if byte_cap <= 0:
+        raise ValueError(f"byte_cap must be > 0, got {byte_cap!r}")
+
+    async def _handle(
+        arguments: dict[str, Any], *, ctx: ToolContext
+    ) -> ToolCallResult:
+        # Defensive guard: chat suppression should keep this tool out of
+        # any non-workspace context, but never attempt file I/O without a
+        # live workspace.
+        if ctx is None or ctx.workspace_id is None:
+            return ToolCallResult(
+                output=(
+                    "download requires a workspace session (no workspace "
+                    "is bound to this turn)"
+                ),
+                is_error=True,
+            )
+
+        try:
+            args = DownloadArgs.model_validate(arguments)
+        except ValidationError as exc:
+            raise BadRequestError(
+                f"download: invalid arguments: {exc}"
+            ) from exc
+
+        url_str = str(args.url)
+        # Derive the destination path. A trailing '/' (or an omitted path)
+        # means "a directory" -> append the URL's filename.
+        url_name = os.path.basename(urlsplit(url_str).path)
+        if args.path and not args.path.endswith("/"):
+            dest = args.path
+        else:
+            if not url_name:
+                return ToolCallResult(
+                    output=(
+                        "download: cannot derive a filename from the URL; "
+                        "pass an explicit 'path'"
+                    ),
+                    is_error=True,
+                )
+            dest = f"{args.path}{url_name}" if args.path else url_name
+
+        cap = args.max_bytes if args.max_bytes is not None else byte_cap
+
+        # Stream with a hard cap. A truncated file is corrupt, so reject
+        # (write nothing) the moment the running total exceeds the cap -
+        # do NOT read-all-then-truncate.
+        chunks: list[bytes] = []
+        total = 0
+        try:
+            async with http_client.stream("GET", url_str) as resp:
+                resp.raise_for_status()
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > cap:
+                        return ToolCallResult(
+                            output=(
+                                f"download: file exceeds the maximum of "
+                                f"{cap} bytes; nothing was written"
+                            ),
+                            is_error=True,
+                        )
+                    chunks.append(chunk)
+        except httpx.HTTPStatusError as exc:
+            return ToolCallResult(
+                output=(
+                    f"download failed: server returned "
+                    f"{exc.response.status_code} for {url_str}"
+                ),
+                is_error=True,
+            )
+        except httpx.RequestError as exc:
+            return ToolCallResult(
+                output=f"download failed: {type(exc).__name__}: {exc}",
+                is_error=True,
+            )
+
+        data = b"".join(chunks)
+        try:
+            ws = await workspace_registry.get_workspace(ctx.workspace_id)
+            await ws.write_file(dest, data)
+        except (BadRequestError, NotFoundError) as exc:
+            return ToolCallResult(
+                output=f"download: cannot write {dest!r}: {exc}",
+                is_error=True,
+            )
+
+        return ToolCallResult(
+            output=json.dumps(
+                {"path": dest, "bytes": total, "url": url_str},
+                ensure_ascii=False,
+            ),
+            is_error=False,
+        )
+
+    return _handle
+
+
 __all__ = [
+    "DownloadArgs",
     "HttpMethod",
     "HttpRequestArgs",
     "WebFetchArgs",
     "WebSearchArgs",
+    "make_download_descriptor",
+    "make_download_handler",
     "make_http_request_descriptor",
     "make_http_request_handler",
     "make_web_fetch_descriptor",

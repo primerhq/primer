@@ -41,6 +41,7 @@ def make_tool(
     examples: list[ToolExample],
     yields: bool = False,
     requires_session: bool = False,
+    requires_workspace: bool = False,
     required_role: str | None = None,
 ) -> Tool:
     """Build a Tool with validated examples and the standard description anatomy.
@@ -55,10 +56,14 @@ def make_tool(
     handler can park the agent turn (its return annotation includes
     :class:`primer.model.yield_.Yielded` / it raises ``YieldToWorker``).
     Set ``requires_session=True`` when the handler needs a live
-    ``AgentSession`` (it reads ``ctx.session_id``). Both default to
-    ``False`` and surface via :meth:`InternalToolsetProvider.is_yielding`
-    / :meth:`InternalToolsetProvider.requires_session`, which the MCP
-    exposure guard consults.
+    ``AgentSession`` (it reads ``ctx.session_id``). Set
+    ``requires_workspace=True`` when the handler needs a live workspace
+    (it reads ``ctx.workspace_id`` for file I/O); such tools are dropped
+    from chat tool context and are not MCP-exposable. All three default
+    to ``False`` and surface via :meth:`InternalToolsetProvider.is_yielding`
+    / :meth:`InternalToolsetProvider.requires_session` /
+    :meth:`InternalToolsetProvider.requires_workspace`, which the chat
+    suppression choke point and the MCP exposure guard consult.
     """
     validator = Draft202012Validator(args_schema)
     for ex in examples:
@@ -72,5 +77,6 @@ def make_tool(
         examples=examples,
         yields=yields,
         requires_session=requires_session,
+        requires_workspace=requires_workspace,
         required_role=required_role,
     )

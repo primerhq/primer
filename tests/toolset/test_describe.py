@@ -106,3 +106,42 @@ def test_make_tool_flags_excluded_from_serialization():
     dumped = tool.model_dump()
     assert "yields" not in dumped
     assert "requires_session" not in dumped
+
+
+def test_make_tool_requires_workspace_defaults_false():
+    tool = make_tool(
+        id="thing",
+        toolset_id="misc",
+        purpose="Do the thing.",
+        when="Use when you need the thing.",
+        args_schema=_Args.model_json_schema(),
+        examples=[ToolExample(args={"name": "x"})],
+    )
+    assert tool.requires_workspace is False
+
+
+def test_make_tool_sets_requires_workspace_flag():
+    tool = make_tool(
+        id="thing",
+        toolset_id="misc",
+        purpose="Do the thing.",
+        when="Use when you need the thing.",
+        args_schema=_Args.model_json_schema(),
+        examples=[ToolExample(args={"name": "x"})],
+        requires_workspace=True,
+    )
+    assert tool.requires_workspace is True
+
+
+def test_requires_workspace_excluded_from_serialization():
+    # In-memory metadata only; must not appear on the wire.
+    tool = make_tool(
+        id="thing",
+        toolset_id="misc",
+        purpose="Do the thing.",
+        when="Use when you need the thing.",
+        args_schema=_Args.model_json_schema(),
+        examples=[ToolExample(args={"name": "x"})],
+        requires_workspace=True,
+    )
+    assert "requires_workspace" not in tool.model_dump()

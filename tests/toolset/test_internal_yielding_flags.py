@@ -140,3 +140,61 @@ def test_base_class_default_is_false() -> None:
     p = _Minimal()
     assert p.is_yielding("anything") is False
     assert p.requires_session("anything") is False
+    # New capability flag: default False on the ABC too.
+    assert p.requires_workspace("anything") is False
+
+
+def test_internal_provider_requires_workspace_reads_flag() -> None:
+    """InternalToolsetProvider.requires_workspace mirrors the Tool flag."""
+    ws_tool = Tool(
+        id="ws_tool",
+        toolset_id="t",
+        description="x",
+        args_schema={"type": "object"},
+        requires_workspace=True,
+    )
+    plain = Tool(
+        id="plain_tool",
+        toolset_id="t",
+        description="x",
+        args_schema={"type": "object"},
+    )
+    provider = InternalToolsetProvider(
+        toolset_id="t",
+        registry={
+            "ws_tool": (ws_tool, _noop_handler),
+            "plain_tool": (plain, _noop_handler),
+        },
+    )
+    assert provider.requires_workspace("ws_tool") is True
+    assert provider.requires_workspace("plain_tool") is False
+    # Unknown names fail to False.
+    assert provider.requires_workspace("does_not_exist") is False
+
+
+def test_system_read_doc_content_requires_workspace() -> None:
+    """build_system_toolset registers read_doc_content flagged workspace-only."""
+    from primer.toolset.system import build_system_toolset
+
+    sp = _SystemSP()
+    pr = _system_registry(sp)
+
+    class _Reg:  # minimal WorkspaceRegistry stand-in (never dispatched here)
+        async def get_workspace(self, workspace_id):  # pragma: no cover
+            return None
+
+    provider = build_system_toolset(
+        storage_provider=sp, provider_registry=pr, workspace_registry=_Reg()
+    )
+    assert provider.requires_workspace("read_doc_content") is True
+
+
+def test_system_read_doc_content_absent_without_registry() -> None:
+    """Without a workspace_registry the workspace-only tool is not wired."""
+    from primer.toolset.system import build_system_toolset
+
+    sp = _SystemSP()
+    pr = _system_registry(sp)
+    provider = build_system_toolset(storage_provider=sp, provider_registry=pr)
+    # Absent -> unknown name -> False.
+    assert provider.requires_workspace("read_doc_content") is False

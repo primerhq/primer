@@ -163,13 +163,16 @@ from primer.toolset._system_crud import (
 from primer.toolset._system_tools import (
     _AskUserArgs,
     _ask_user_handler,
+    _ReadDocContentArgs,
     ask_user_resume,
+    make_read_doc_content_handler,
 )
 
 
 if TYPE_CHECKING:
     from primer.api.registries import ProviderRegistry
     from primer.api.registries.semantic_search_registry import SemanticSearchRegistry
+    from primer.api.registries.workspace_registry import WorkspaceRegistry
     from primer.int.storage_provider import StorageProvider
 
 
@@ -183,6 +186,7 @@ def build_system_toolset(
     storage_provider: "StorageProvider",
     provider_registry: "ProviderRegistry",
     semantic_search_registry: "SemanticSearchRegistry | None" = None,
+    workspace_registry: "WorkspaceRegistry | None" = None,
     toolset_id: str = SYSTEM_TOOLSET_ID,
 ) -> InternalToolsetProvider:
     """Construct the immutable ``_system`` toolset.
@@ -829,6 +833,42 @@ def build_system_toolset(
         ),
         _ask_user_handler,
     )
+
+    # ---- read_doc_content (workspace-only document -> text) ----------
+    # Only wired when the workspace layer is available (it resolves the
+    # live workspace from ctx.workspace_id to read the file). When
+    # ``workspace_registry`` is None (bare/test builds) the tool is
+    # omitted. requires_workspace=True keeps it out of chat context and
+    # off the MCP surface.
+    if workspace_registry is not None:
+        registry["read_doc_content"] = (
+            make_tool(
+                id="read_doc_content",
+                toolset_id=toolset_id,
+                purpose=(
+                    "Convert a document in the workspace "
+                    "(PDF/DOCX/PPTX/HTML/...) to plain text."
+                ),
+                when=(
+                    "Use when you need the text content of a binary/rich "
+                    "document at a workspace path; not for plain-text files "
+                    "(read those directly). Workspace only."
+                ),
+                args_schema=_ReadDocContentArgs.model_json_schema(),
+                examples=[
+                    ToolExample(
+                        args={"path": "reports/q3.pdf"},
+                        returns="``{text: <document text as markdown>}``",
+                    ),
+                ],
+                yields=False,
+                requires_workspace=True,
+                required_role="user",
+            ),
+            make_read_doc_content_handler(
+                workspace_registry=workspace_registry,
+            ),
+        )
 
     logger.info(
         "system toolset assembled with %d tools (id=%s)",

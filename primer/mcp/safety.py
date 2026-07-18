@@ -69,6 +69,9 @@ def is_exposable(
     * ``"needs_session"`` — workspace tool that requires a live
       :class:`AgentSession` (reads ``ctx.session_id``); meaningless
       outside an agent loop.
+    * ``"needs_workspace"`` - tool that requires a live workspace
+      (reads ``ctx.workspace_id`` for file I/O); a workspace-bound tool
+      cannot run over the stateless MCP surface.
 
     Approval-gated tools are NOT filtered here — that check lives in
     the dispatcher layer (Phase 4) where the
@@ -88,6 +91,13 @@ def is_exposable(
         return False, "yielding_unsupported"
     if tool.toolset_id == "workspaces" and provider.requires_session(tool.id):
         return False, "needs_session"
+    # Read the flag straight off the descriptor (mirrors the
+    # ``tool.toolset_id`` read above). ``tool`` comes from
+    # ``provider.list_tools()`` so its ``requires_workspace`` flag is the
+    # same value ``InternalToolsetProvider.requires_workspace`` surfaces;
+    # reading it directly keeps the predicate robust for any provider.
+    if tool.requires_workspace:
+        return False, "needs_workspace"
     return True, None
 
 
