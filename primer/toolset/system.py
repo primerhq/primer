@@ -799,7 +799,6 @@ def build_system_toolset(
                 ),
             ],
             yields=True,
-            requires_session=True,
         ),
         _switch_to_agent_handler,
     )
@@ -829,7 +828,6 @@ def build_system_toolset(
                 ),
             ],
             yields=True,
-            requires_session=True,
         ),
         _ask_user_handler,
     )

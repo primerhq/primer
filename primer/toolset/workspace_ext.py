@@ -150,7 +150,6 @@ def build_workspace_ext_toolset(
                     ),
                 ],
                 yields=True,
-                requires_session=True,
                 required_role="user",
             ),
             _watch_files_handler,
@@ -181,14 +180,13 @@ def build_workspace_ext_toolset(
                     ),
                 ],
                 yields=True,
-                requires_session=True,
                 required_role="user",
             ),
             _invoke_graph_handler,
         ),
         "subscribe_to_trigger": (
             # Re-home the existing descriptor under the new toolset id; the
-            # bare id, args schema, and yield/session flags are preserved.
+            # bare id, args schema, and yield flag are preserved.
             TOOL_SUBSCRIBE.model_copy(update={"toolset_id": toolset_id}),
             _make_subscribe_handler(storage_provider),
         ),

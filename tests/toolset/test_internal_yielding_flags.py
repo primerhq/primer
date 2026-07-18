@@ -1,10 +1,9 @@
-"""InternalToolsetProvider.is_yielding / requires_session contracts.
+"""InternalToolsetProvider.is_yielding / requires_workspace contracts.
 
-The MCP server endpoint (Spec §7) calls these two predicates to filter
+The MCP server endpoint (Spec §7) calls these predicates to filter
 its exposable tool set. The signals must hold for the canonical
 yielding tools (``sleep``, ``ask_user``, ``watch_files``,
-``subscribe_to_trigger``) and the session-bound workspace tool
-(``watch_files`` reads ``ctx.session_id``).
+``subscribe_to_trigger``).
 """
 
 from __future__ import annotations
@@ -31,14 +30,13 @@ def test_workspace_ext_yielding_tools_flagged() -> None:
 
 
 def test_system_ask_user_flagged() -> None:
-    """``ask_user`` moved to the system toolset; still yields + session-bound."""
+    """``ask_user`` moved to the system toolset; still yields."""
     from primer.toolset.system import build_system_toolset
 
     sp = _SystemSP()
     pr = _system_registry(sp)
     provider = build_system_toolset(storage_provider=sp, provider_registry=pr)
     assert provider.is_yielding("ask_user") is True
-    assert provider.requires_session("ask_user") is True
 
 
 def test_misc_non_yielding_tools_not_flagged() -> None:
@@ -51,13 +49,6 @@ def test_misc_non_yielding_tools_not_flagged() -> None:
     # sleep + ask_user no longer live in misc.
     assert provider.is_yielding("sleep") is False
     assert provider.is_yielding("ask_user") is False
-
-
-def test_misc_session_free_tools_not_flagged() -> None:
-    """Plain misc tools don't read ``ctx.session_id``."""
-    provider = build_misc_toolset()
-    for name in ("uuid_v4", "get_datetime", "hash", "calculate"):
-        assert provider.requires_session(name) is False
 
 
 def _system_registry(sp):
@@ -81,7 +72,6 @@ def _SystemSP():
 def test_unknown_name_defaults_false() -> None:
     provider = build_misc_toolset()
     assert provider.is_yielding("does_not_exist") is False
-    assert provider.requires_session("does_not_exist") is False
 
 
 async def _noop_handler(arguments):  # pragma: no cover - never dispatched here
@@ -89,14 +79,13 @@ async def _noop_handler(arguments):  # pragma: no cover - never dispatched here
 
 
 def test_classification_reads_explicit_flags_not_handler_source() -> None:
-    """The provider reads ``Tool.yields`` / ``Tool.requires_session``.
+    """The provider reads ``Tool.yields``.
 
-    The handler here is a plain no-op whose source contains neither
-    ``Yielded`` nor ``ctx.session_id`` - the OLD getsource/annotation
-    heuristics would classify it as non-yielding and session-free. With
-    the explicit flags set on the Tool, the provider must report it as
-    yielding + session-bound, proving classification comes from the
-    flags, not from introspecting the handler.
+    The handler here is a plain no-op whose source contains no
+    ``Yielded`` - the OLD getsource/annotation heuristic would classify
+    it as non-yielding. With the explicit flag set on the Tool, the
+    provider must report it as yielding, proving classification comes
+    from the flag, not from introspecting the handler.
     """
     flagged = Tool(
         id="flagged_tool",
@@ -104,7 +93,6 @@ def test_classification_reads_explicit_flags_not_handler_source() -> None:
         description="x",
         args_schema={"type": "object"},
         yields=True,
-        requires_session=True,
     )
     plain = Tool(
         id="plain_tool",
@@ -120,9 +108,7 @@ def test_classification_reads_explicit_flags_not_handler_source() -> None:
         },
     )
     assert provider.is_yielding("flagged_tool") is True
-    assert provider.requires_session("flagged_tool") is True
     assert provider.is_yielding("plain_tool") is False
-    assert provider.requires_session("plain_tool") is False
 
 
 def test_base_class_default_is_false() -> None:
@@ -139,7 +125,6 @@ def test_base_class_default_is_false() -> None:
 
     p = _Minimal()
     assert p.is_yielding("anything") is False
-    assert p.requires_session("anything") is False
     # New capability flag: default False on the ABC too.
     assert p.requires_workspace("anything") is False
 
