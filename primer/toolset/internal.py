@@ -72,15 +72,14 @@ class InternalToolsetProvider(ToolsetProvider):
         # the introspection cost per call. A True entry tells
         # dispatch to inject the context kwarg.
         self._handler_takes_ctx: dict[str, bool] = {}
-        # Cache: which tools yield (park the turn) and which require an
-        # AgentSession. Both are declared explicitly at the ``make_tool``
-        # call site via the ``yields`` / ``requires_session`` flags (which
+        # Cache: which tools yield (park the turn) and which require a
+        # live workspace. Both are declared explicitly at the ``make_tool``
+        # call site via the ``yields`` / ``requires_workspace`` flags (which
         # replaced the old handler source/annotation introspection - see
         # :func:`primer.toolset._describe.make_tool`). Surfaced via
-        # :meth:`is_yielding` and :meth:`requires_session`; the MCP server
+        # :meth:`is_yielding` and :meth:`requires_workspace`; the MCP server
         # endpoint uses them to filter the exposable tool set.
         self._yielding_names: set[str] = set()
-        self._session_names: set[str] = set()
         self._workspace_names: set[str] = set()
         self._required_roles: dict[str, str] = {}
         for name, (tool, handler) in self._registry.items():
@@ -92,8 +91,6 @@ class InternalToolsetProvider(ToolsetProvider):
             self._handler_takes_ctx[name] = _handler_takes_ctx(handler)
             if tool.yields:
                 self._yielding_names.add(name)
-            if tool.requires_session:
-                self._session_names.add(name)
             if tool.requires_workspace:
                 self._workspace_names.add(name)
             if tool.required_role is not None:
@@ -107,15 +104,6 @@ class InternalToolsetProvider(ToolsetProvider):
         return ``False``.
         """
         return tool_name in self._yielding_names
-
-    def requires_session(self, tool_name: str) -> bool:
-        """Return True iff ``tool_name`` needs a live AgentSession.
-
-        Read at construction time from the tool's explicit
-        ``requires_session`` flag (declared at the ``make_tool`` call
-        site). Unknown names return ``False``.
-        """
-        return tool_name in self._session_names
 
     def requires_workspace(self, tool_name: str) -> bool:
         """Return True iff ``tool_name`` needs a live workspace.

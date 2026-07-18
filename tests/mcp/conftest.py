@@ -24,9 +24,8 @@ from primer.model.principal import Principal
 class FakeToolsetProvider:
     """ToolsetProvider stand-in that yields a fixed list of tools.
 
-    Both safety probes (``is_yielding`` / ``requires_session``) consult a
-    per-tool override map so individual tests can flip a single tool's
-    flag without subclassing.
+    The safety probe ``is_yielding`` consults a per-tool override map so
+    individual tests can flip a single tool's flag without subclassing.
     """
 
     def __init__(
@@ -35,14 +34,12 @@ class FakeToolsetProvider:
         tools: list[Tool],
         *,
         yielding: set[str] | None = None,
-        sessioned: set[str] | None = None,
         call_handler: Callable[..., ToolCallResult] | None = None,
         roles: dict[str, str] | None = None,
     ) -> None:
         self.toolset_id = toolset_id
         self._tools = tools
         self._yielding = yielding or set()
-        self._sessioned = sessioned or set()
         self._call_handler = call_handler
         self._roles = roles or {}
         self.calls: list[dict[str, Any]] = []
@@ -87,9 +84,6 @@ class FakeToolsetProvider:
 
     def is_yielding(self, tool_name: str) -> bool:
         return tool_name in self._yielding
-
-    def requires_session(self, tool_name: str) -> bool:
-        return tool_name in self._sessioned
 
     def required_role(self, tool_name: str) -> str:
         """Fail-closed default (``"admin"``), mirroring the real

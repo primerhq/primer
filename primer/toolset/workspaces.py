@@ -424,7 +424,6 @@ def _tool(
     examples: list[ToolExample],
     *,
     yields: bool = False,
-    requires_session: bool = False,
     requires_workspace: bool = False,
     required_role: str | None = None,
 ) -> tuple[str, tuple[Tool, ToolHandler]]:
@@ -437,7 +436,6 @@ def _tool(
             args_schema=args_cls.model_json_schema(),
             examples=examples,
             yields=yields,
-            requires_session=requires_session,
             requires_workspace=requires_workspace,
             required_role=required_role,
         ),

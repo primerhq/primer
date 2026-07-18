@@ -153,21 +153,6 @@ class ToolsetProvider(ABC):
         del tool_name
         return False
 
-    def requires_session(self, tool_name: str) -> bool:
-        """Return True if this tool requires :class:`AgentSession` context.
-
-        Used by the MCP server endpoint to exclude workspace-style
-        tools that only make sense inside a running agent loop (they
-        depend on ``ctx.session_id`` / ``ctx.workspace_id`` injected
-        by the worker).
-
-        Default: ``False``. Providers whose handlers read
-        ``ctx.session_id`` override this and return ``True`` for the
-        relevant names.
-        """
-        del tool_name
-        return False
-
     def requires_workspace(self, tool_name: str) -> bool:
         """Return True if this tool requires a live workspace.
 
