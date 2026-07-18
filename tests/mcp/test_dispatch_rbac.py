@@ -46,10 +46,6 @@ class _SysProvider:
         del tool_name
         return False
 
-    def requires_session(self, tool_name: str) -> bool:
-        del tool_name
-        return False
-
     def required_role(self, tool_name: str) -> str:
         return self._roles.get(tool_name, "admin")
 

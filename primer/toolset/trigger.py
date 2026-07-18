@@ -443,7 +443,6 @@ TOOL_SUBSCRIBE = make_tool(
         ),
     ],
     yields=True,
-    requires_session=True,
     required_role="user",
 )
 
@@ -477,7 +476,6 @@ TOOL_SUBSCRIBE_CHANNEL = make_tool(
         ),
     ],
     yields=True,
-    requires_session=True,
     required_role="user",
 )
 

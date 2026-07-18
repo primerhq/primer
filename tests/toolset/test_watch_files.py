@@ -91,7 +91,7 @@ class TestWatchFilesHandler:
             )
         assert exc_info.value.yielded.resume_metadata["batch_window_ms"] == 1000
 
-    async def test_handler_requires_session_id(self, workspaces_toolset):
+    async def test_handler_requires_ctx_session_id(self, workspaces_toolset):
         ctx = ToolContext(
             tool_call_id="tc-x",
             session_id=None,

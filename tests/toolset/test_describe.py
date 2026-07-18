@@ -72,7 +72,6 @@ def test_make_tool_flags_default_false():
         examples=[ToolExample(args={"name": "x"})],
     )
     assert tool.yields is False
-    assert tool.requires_session is False
 
 
 def test_make_tool_sets_explicit_flags():
@@ -84,10 +83,8 @@ def test_make_tool_sets_explicit_flags():
         args_schema=_Args.model_json_schema(),
         examples=[ToolExample(args={"name": "x"})],
         yields=True,
-        requires_session=True,
     )
     assert tool.yields is True
-    assert tool.requires_session is True
 
 
 def test_make_tool_flags_excluded_from_serialization():
@@ -101,11 +98,9 @@ def test_make_tool_flags_excluded_from_serialization():
         args_schema=_Args.model_json_schema(),
         examples=[ToolExample(args={"name": "x"})],
         yields=True,
-        requires_session=True,
     )
     dumped = tool.model_dump()
     assert "yields" not in dumped
-    assert "requires_session" not in dumped
 
 
 def test_make_tool_requires_workspace_defaults_false():

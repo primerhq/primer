@@ -71,16 +71,6 @@ def test_all_four_tools_yield():
         assert provider.is_yielding(name) is True, name
 
 
-def test_requires_session_flags_preserved():
-    provider = _provider()
-    # sleep does NOT require a session; the other three do (unchanged).
-    assert provider.requires_session("sleep") is False
-    assert provider.requires_session("watch_files") is True
-    assert provider.requires_session("invoke_graph") is True
-    assert provider.requires_session("subscribe_to_trigger") is True
-    assert provider.requires_session("subscribe_to_channel_event") is True
-
-
 @pytest.mark.asyncio
 async def test_scoped_ids_via_tool_manager():
     """Through the manager the tools surface as workspace_ext__<bare>."""
