@@ -91,6 +91,7 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         template: WorkspaceTemplate,
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
+        workspace_id: str | None = None,
         resolvers: FileResolvers | None = None,
     ) -> Workspace:
         if not self._initialised:
@@ -103,7 +104,10 @@ class LocalWorkspaceBackend(BaseWorkspaceBackend):
         merged = self.merge_overrides(template, overrides)
         env_str = merged.env_unwrapped()
 
-        workspace_id = _generate_workspace_id()
+        # Pin the live instance to the caller-supplied id when given so the
+        # durable row id and the on-disk workspace dir agree -- otherwise
+        # re-attach after cache eviction looks up the wrong id and 404s.
+        workspace_id = workspace_id or _generate_workspace_id()
         ws_root = self._root / workspace_id
         await asyncio.to_thread(ws_root.mkdir, parents=True, exist_ok=False)
 

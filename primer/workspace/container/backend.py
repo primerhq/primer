@@ -126,6 +126,7 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         template: WorkspaceTemplate,
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
+        workspace_id: str | None = None,
         resolvers: FileResolvers | None = None,
     ) -> Workspace:
         if not isinstance(template.backend, ContainerTemplateConfig):
@@ -142,7 +143,10 @@ class ContainerWorkspaceBackend(BaseWorkspaceBackend):
         if template.strict_write_locking:
             env_str = {**env_str, "PRIMER_STRICT_WRITE_LOCKING": "1"}
 
-        workspace_id = _generate_workspace_id()
+        # Pin the live instance to the caller-supplied id when given so the
+        # durable row id and the container name/id agree -- otherwise
+        # re-attach after cache eviction looks up the wrong id and 404s.
+        workspace_id = workspace_id or _generate_workspace_id()
         # ``workspace-<id>`` is also the docker container's hostname; the
         # bridge_network URL builder reaches the runtime via this exact
         # name. Keep the prefix shared between both reachability modes so

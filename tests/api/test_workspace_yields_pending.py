@@ -207,9 +207,11 @@ class _FakeBackend:
             await ws.aclose()
         self._workspaces.clear()
 
-    async def create(self, template, *, overrides=None, resolvers=None):
+    async def create(
+        self, template, *, overrides=None, workspace_id=None, resolvers=None
+    ):
         self._counter += 1
-        wid = f"ws-{self._counter:04d}"
+        wid = workspace_id or f"ws-{self._counter:04d}"
         ws = _FakeWorkspace(wid)
         self._workspaces[wid] = ws
         return ws
