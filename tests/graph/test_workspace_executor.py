@@ -1255,7 +1255,106 @@ class TestTeeFanInAggregation:
         assert state["ended_reason"] == "completed"
 
 
+class _FakeWorkspaceTool:
+    """Structural :class:`WorkspaceTool` double exposing one workspace tool."""
+
+    id = "echo_ws"
+    description = "a fake workspace tool"
+    examples: list = []
+    requires_workspace_context = True
+
+    def __init__(self) -> None:
+        self.executed: list[Any] = []
+
+    def parameters(self):
+        from pydantic import BaseModel
+
+        class _Args(BaseModel):
+            x: int = 0
+
+        return _Args
+
+    async def execute(self, args, ctx):
+        self.executed.append((args, ctx))
+        from primer.workspace.tool import ToolResult
+
+        return ToolResult(output=f"ws({args.x})", metadata={}, truncated=False)
+
+
+class _WorkspaceSessionWithTools(_FakeWorkspaceSession):
+    """Fake session carrying a real workspace tool so a ``workspace__*``
+    tool_call dispatches cleanly through the lazily-built manager."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.workspace_tools = [_FakeWorkspaceTool()]
+
+
 class TestToolCallInternalToolset:
+    @pytest.mark.asyncio
+    async def test_workspace_toolcall_then_internal_toolset_resolves(
+        self, tmp_path: Path
+    ) -> None:
+        """Ordering regression: a non-workspace tool_call must resolve its
+        toolset even after an EARLIER workspace tool_call in the same run.
+
+        The executor lazily builds a workspace-ONLY ToolExecutionManager on
+        the first workspace-scoped tool_call and cached it in
+        ``self._tool_manager``. A later tool_call naming a non-workspace
+        toolset (``fake__echo``, ``system__...``) then reused that cached
+        workspace-only manager -- which carries no provider for that toolset
+        -- so dispatch failed with ``unknown tool ...; not registered with
+        any toolset or workspace`` (surfaced as ``tool_execution_failed``).
+        A non-workspace tool_call that runs FIRST worked, so the bug was
+        strictly ordering-dependent.
+        """
+        from primer.model.graph import _ToolCallNode
+
+        provider = _FakeToolsetProvider(tool_id="echo", output="echo-out")
+
+        async def toolset_resolver(toolset_id: str):
+            assert toolset_id == "fake"
+            return provider
+
+        async def agent_resolver(agent_id: str) -> Agent:
+            raise KeyError(agent_id)
+
+        async def llm_resolver(agent: Agent):
+            raise NotImplementedError
+
+        repo = await _make_state_repo(tmp_path)
+        # No ``tool_manager=`` -> lazy-build + cache path, mirroring
+        # production ``build_graph_executor`` (executor_builders.py).
+        executor = WorkspaceGraphExecutor(
+            graph=Graph(
+                id="g-order",
+                description="begin -> end (dispatch tested directly)",
+                nodes=[_BeginNode(id="b"), _EndNode(id="e")],
+                edges=[_StaticEdge(from_node="b", to_node="e")],
+            ),
+            agent_resolver=agent_resolver,
+            llm_resolver=llm_resolver,  # type: ignore[arg-type]
+            state_repo=repo,
+            graph_session_id="gsid-order",
+            workspace_session=_WorkspaceSessionWithTools(),  # type: ignore[arg-type]
+            toolset_resolver=toolset_resolver,
+        )
+
+        # 1) WORKSPACE tool_call FIRST -> builds + caches a workspace-only
+        #    manager in ``self._tool_manager``.
+        ws_node = _ToolCallNode(id="w", tool_id="workspace__echo_ws", arguments={})
+        ws_result = await executor._dispatch_toolcall(ws_node, {"x": 3})
+        assert ws_result.output == "ws(3)"
+
+        # 2) NON-workspace tool_call SECOND -> must NOT reuse the cached
+        #    workspace-only manager; it must resolve the ``fake`` toolset and
+        #    dispatch, not raise "unknown tool ...".
+        sys_node = _ToolCallNode(id="t", tool_id="fake__echo", arguments={})
+        sys_result = await executor._dispatch_toolcall(sys_node, {"x": 1})
+
+        assert sys_result.output == "echo-out"
+        assert provider.calls and provider.calls[0]["tool_name"] == "echo"
+
     @pytest.mark.asyncio
     async def test_toolcall_resolves_internal_toolset(self, tmp_path: Path) -> None:
         """A tool_call node naming an internal-toolset tool (e.g.
