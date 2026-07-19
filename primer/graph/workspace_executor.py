@@ -394,7 +394,31 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         from primer.agent.tool_manager import WORKSPACE_TOOLSET_ID, _SCOPE_SEPARATOR
         from primer.model.chat import ToolCallPart
 
+        # Determine the toolset this node needs from its scoped tool_id. A
+        # workspace-scoped id (``workspace__*``) or one with no resolvable
+        # toolset needs no extra provider; a non-workspace toolset id
+        # (``web__``, ``system__``, ...) needs THAT toolset's provider
+        # registered on the manager to dispatch.
+        needs_toolset: str | None = None
+        if self._toolset_resolver is not None and _SCOPE_SEPARATOR in node.tool_id:
+            candidate = node.tool_id.split(_SCOPE_SEPARATOR, 1)[0]
+            if candidate and candidate != WORKSPACE_TOOLSET_ID:
+                needs_toolset = candidate
+
         manager = self._tool_manager
+        # A cached / injected manager may be reused only if it already covers
+        # the toolset this node needs. The manager cached below is
+        # workspace-ONLY (no non-workspace providers); reusing it for a later
+        # node that names a different toolset would make that tool resolve to
+        # "unknown tool ...; not registered with any toolset or workspace".
+        # Rebuild whenever the needed toolset isn't already registered.
+        if (
+            manager is not None
+            and needs_toolset is not None
+            and needs_toolset not in manager.toolset_providers
+        ):
+            manager = None
+
         if manager is None:
             if self._workspace_session is None:
                 raise RuntimeError(
@@ -405,12 +429,10 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             # Resolve the toolset for a scoped, non-workspace tool_id so
             # internal-toolset tools are dispatchable from a tool_call node.
             toolset_providers: dict[str, Any] = {}
-            if self._toolset_resolver is not None and _SCOPE_SEPARATOR in node.tool_id:
-                toolset_id = node.tool_id.split(_SCOPE_SEPARATOR, 1)[0]
-                if toolset_id and toolset_id != WORKSPACE_TOOLSET_ID:
-                    toolset_providers[toolset_id] = await self._toolset_resolver(
-                        toolset_id
-                    )
+            if needs_toolset is not None:
+                toolset_providers[needs_toolset] = await self._toolset_resolver(
+                    needs_toolset
+                )
             manager = ToolExecutionManager.for_workspace(
                 toolset_providers=toolset_providers,
                 session=self._workspace_session,
