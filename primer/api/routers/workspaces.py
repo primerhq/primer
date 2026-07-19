@@ -551,7 +551,12 @@ async def create_workspace(
             )
         overrides = overrides.model_copy(update={"files": extra_files})
 
-    live = await registry.materialise(template=template, overrides=overrides)
+    # Pin the live instance to the caller-supplied id (same id the row is
+    # keyed by, below) so re-attach after cache eviction resolves the SAME
+    # backend object instead of 404ing.
+    live = await registry.materialise(
+        template=template, overrides=overrides, workspace_id=body.id
+    )
 
     # materialise() has now created a live container/volume, but the durable
     # WorkspaceRow is written LAST. Any failure in the mount work or the

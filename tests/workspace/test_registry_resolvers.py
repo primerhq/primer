@@ -13,7 +13,9 @@ class _RecordingBackend:
     def __init__(self):
         self.received_resolvers = None
 
-    async def create(self, template, *, overrides=None, resolvers=None):
+    async def create(
+        self, template, *, overrides=None, workspace_id=None, resolvers=None
+    ):
         self.received_resolvers = resolvers
         return "workspace-handle"
 

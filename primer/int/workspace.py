@@ -490,6 +490,7 @@ class WorkspaceBackend(ABC):
         template: WorkspaceTemplate,
         *,
         overrides: WorkspaceTemplateOverrides | None = None,
+        workspace_id: str | None = None,
         resolvers: "FileResolvers | None" = None,
     ) -> Workspace:
         """Materialise a new workspace from ``template``.
@@ -498,6 +499,14 @@ class WorkspaceBackend(ABC):
         vars, additional files, additional init commands). Override
         semantics are merge-then-extend (see
         :class:`primer.model.workspace.WorkspaceTemplateOverrides`).
+
+        ``workspace_id`` pins the id of the live instance. When ``None``
+        the backend generates one. When supplied the backend MUST
+        materialise the instance under exactly that id -- callers pass
+        it so the durable row id and the live instance id agree, which
+        is what makes re-attach (see :meth:`get`) work after the
+        in-memory cache is evicted, and gives backends predictable /
+        stable object names (e.g. K8s object names).
 
         ``resolvers`` supplies the document/secret resolver callables
         for ``document``- and ``secret``-sourced file mounts. ``None``

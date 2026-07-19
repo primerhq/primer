@@ -168,8 +168,15 @@ class WorkspaceRegistry:
         *,
         template: WorkspaceTemplate,
         overrides: WorkspaceTemplateOverrides | None = None,
+        workspace_id: str | None = None,
     ) -> "Workspace":
-        """Create a new live workspace via the right backend."""
+        """Create a new live workspace via the right backend.
+
+        ``workspace_id`` pins the live instance to a caller-supplied id
+        (typically the same id the durable row is keyed by). Forwarding
+        it keeps the row id and the live instance id in sync so re-attach
+        via :meth:`get_workspace` works after the cache is evicted.
+        """
         backend = await self.get_backend(template.provider_id)
         resolvers = FileResolvers(
             document_resolver=make_document_resolver(self._sp),
@@ -180,7 +187,10 @@ class WorkspaceRegistry:
             ),
         )
         return await backend.create(
-            template, overrides=overrides, resolvers=resolvers
+            template,
+            overrides=overrides,
+            workspace_id=workspace_id,
+            resolvers=resolvers,
         )
 
     async def destroy(self, workspace_id: str) -> None:

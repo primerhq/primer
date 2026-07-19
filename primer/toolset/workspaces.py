@@ -979,7 +979,9 @@ def build_workspaces_toolset(
                 )
         try:
             live = await workspace_registry.materialise(
-                template=template, overrides=args.overrides
+                template=template,
+                overrides=args.overrides,
+                workspace_id=args.id,
             )
         except PrimerError as exc:
             return _err_from_primer(exc, error_type="backend-error")
