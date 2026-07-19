@@ -19,7 +19,12 @@ import pytest
 from aiohttp import web
 
 from primer.workspace.runtime.protocol import ErrorCode, OpName, serialize
-from primer.workspace.runtime.runtime_client import ChangeEvent, RuntimeClient, RuntimeError
+from primer.workspace.runtime.runtime_client import (
+    _MAX_WS_MSG_SIZE,
+    ChangeEvent,
+    RuntimeClient,
+    RuntimeError,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -773,3 +778,74 @@ async def test_connect_wrong_token_raises(
     with pytest.raises(Exception):
         await client.connect()
     await client.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Test: large payloads survive the runtime WS (aiohttp 4 MiB default cap)
+# ---------------------------------------------------------------------------
+
+
+async def test_read_file_larger_than_4mib(
+    fake_runtime: tuple[_FakeRuntime, str],
+) -> None:
+    """A read_file over 4 MiB must survive the runtime WS.
+
+    Regression: the client opened the runtime WS without ``max_msg_size``, so
+    aiohttp's 4 MiB default incoming-message cap dropped the socket with
+    "Connection lost" for larger files (e.g. read_doc_content on 5-7 MB PDFs).
+    The base64-encoded envelope for 5 MiB of bytes is ~6.7 MiB, comfortably
+    over the old cap, so this fails without the ``_MAX_WS_MSG_SIZE`` fix.
+    """
+    runtime, url = fake_runtime
+    big = b"\x5a" * (5 * 1024 * 1024)  # 5 MiB — over aiohttp's 4 MiB default
+    runtime.files["/workspace/big.pdf"] = big
+
+    client = await _connected_client(url)
+    data = await client.read_file("/workspace/big.pdf")
+    assert data == big
+    await client.aclose()
+
+
+async def test_ws_connect_max_msg_size_receives_large_message() -> None:
+    """Narrow proof of the fix at the ``ws_connect`` layer.
+
+    A test server sends a single >4 MiB frame. Without ``max_msg_size`` the
+    aiohttp client's 4 MiB default aborts the receive (surfaced as an ERROR
+    message — the socket the RuntimeClient would treat as "Connection lost").
+    With ``max_msg_size=_MAX_WS_MSG_SIZE`` the same payload arrives intact.
+    """
+    payload = b"\x79" * (5 * 1024 * 1024)  # 5 MiB — over the 4 MiB default
+
+    async def handler(request: web.Request) -> web.WebSocketResponse:
+        ws = web.WebSocketResponse(max_msg_size=_MAX_WS_MSG_SIZE)
+        await ws.prepare(request)
+        await ws.send_bytes(payload)
+        # Hold the connection open until the client is done reading/closing.
+        await ws.receive()
+        return ws
+
+    app = web.Application()
+    app.router.add_get("/", handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    host, port = runner.addresses[0]
+    url = f"ws://{host}:{port}/"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            # Default cap (no max_msg_size): the >4 MiB frame is rejected.
+            ws_default = await session.ws_connect(url)
+            msg = await ws_default.receive()
+            assert msg.type is aiohttp.WSMsgType.ERROR
+            await ws_default.close()
+
+            # Runtime client's cap: the same payload is received whole.
+            ws_big = await session.ws_connect(url, max_msg_size=_MAX_WS_MSG_SIZE)
+            msg_big = await ws_big.receive()
+            assert msg_big.type is aiohttp.WSMsgType.BINARY
+            assert msg_big.data == payload
+            await ws_big.close()
+    finally:
+        await runner.cleanup()

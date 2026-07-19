@@ -96,6 +96,13 @@ def _parse_file_stat(raw: dict[str, Any]) -> FileStat:
 
 _STREAM_CLOSED = object()  # signals that the stream has ended normally
 
+# Workspace files (e.g. read_file / read_doc_content on large PDFs) are read
+# over the runtime WebSocket in a single message; aiohttp's 4 MiB default cap
+# drops the socket for larger docs. Allow generously-large runtime messages.
+# NOTE: keep this a bounded cap (never 0/unlimited) so a runaway message
+# cannot exhaust memory.
+_MAX_WS_MSG_SIZE = 256 * 1024 * 1024  # 256 MiB
+
 
 # ---------------------------------------------------------------------------
 # RuntimeClient
@@ -784,7 +791,9 @@ class RuntimeClient:
             self._session = aiohttp.ClientSession()
 
         headers = {"Authorization": f"Bearer {self._token}"}
-        self._ws = await self._session.ws_connect(self._url, headers=headers)
+        self._ws = await self._session.ws_connect(
+            self._url, headers=headers, max_msg_size=_MAX_WS_MSG_SIZE
+        )
 
         # Handshake
         hello = Request(
