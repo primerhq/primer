@@ -45,6 +45,7 @@ ENV PYTHONUNBUFFERED=1 \
 # Add `build-essential` here if a future dep requires compilation.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends curl ca-certificates git libatomic1 \
+       libgl1 libglib2.0-0 libxcb1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install uv (standalone binary, ~25 MB) directly to /usr/local/bin so
