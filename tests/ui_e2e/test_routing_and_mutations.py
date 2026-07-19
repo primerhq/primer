@@ -81,10 +81,10 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
     selector showing the new id) instead of an ``h1.page-title``.
 
     Priority 1 — mutation feedback. Sister to U0006 (agents) for the
-    workspace-create flow. The backend allocates the id (workspace
-    spec §12 — user-supplied id silently ignored), so the test
-    captures the id from the URL after navigation rather than
-    predicting it.
+    workspace-create flow. The New-workspace modal doesn't collect a
+    user-supplied id (it only picks a template), so the backend
+    allocates one; the test captures the id from the URL after
+    navigation rather than predicting it.
     """
     wp_id = f"wp-u0023-{unique_suffix}"
     tpl_id = f"wt-u0023-{unique_suffix}"

@@ -40,13 +40,11 @@ def _template_body(entity_id: str, *, provider_id: str) -> dict:
 def _workspace_body(*, template_id: str) -> dict:
     """Body for POST /v1/workspaces.
 
-    NB: we deliberately omit ``id``. The local backend (and the
-    container/k8s backends in general) ignore the user-supplied id
-    and generate their own; if the API persists a user-supplied id
-    on the row but the backend keeps the workspace under its own
-    auto-id internally, subsequent file ops 404 on "backend has no
-    live instance". This is a contract bug in the API layer that's
-    been noted in 01-app-spec.md §12 for follow-up.
+    NB: we deliberately omit ``id`` here. Most tests in this module
+    don't need to pin a specific workspace id, so we let the backend
+    allocate one. A caller-supplied id is honored end-to-end (the row
+    and the live backend instance are both keyed under it) -- see
+    test_t0051_workspace_create_honors_user_id for that contract.
     """
     return {"template_id": template_id}
 
@@ -291,38 +289,33 @@ async def test_t0031_workspace_download_content_disposition_sanitised(
 
 
 # ============================================================================
-# T0051 — anomaly pin: WorkspaceCreateBody.id is silently ignored
+# T0051 — caller-provided workspace id is honored end-to-end
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0051_workspace_create_user_id_silently_ignored(
+async def test_t0051_workspace_create_honors_user_id(
     client: httpx.AsyncClient, unique_suffix: str, tmp_path: Path,
 ) -> None:
-    """T0051 — pin the documented anomaly in 01-app-spec.md §12.
+    """T0051 — a caller-supplied id on POST /v1/workspaces is honored
+    end-to-end: the row AND the live backend instance are keyed under
+    that id.
 
-    POSTing /v1/workspaces with `id="..."` causes the server to:
-    - return 201 with that user id in the response body's id field, OR
-    - return 201 with a backend-generated id (the local backend
-      auto-generates one and ignores the user-supplied id).
-
-    Either way, follow-on file ops keyed on the user-supplied id will
-    404 because the in-memory backend cache is keyed on its own
-    auto-generated id.
-
-    This regression test pins the ANOMALOUS behaviour: the response
-    id MUST equal the user-supplied id (so the API at least preserves
-    it on the row), and a file PUT against the user-supplied id MUST
-    404 with /errors/not-found pointing at the "row exists but the
-    backend has no live instance" diagnostic. If a future fix wires
-    the id through to the backend, this test will start failing and
-    force the spec + this test to be updated together.
+    Was a characterization test pinning the OPPOSITE (anomalous)
+    behaviour: the row carried the user-supplied id but the live
+    backend instance was keyed under a separate, backend-generated
+    id, so follow-on file ops against the user-supplied id 404'd with
+    "row exists but the backend has no live instance". That bug was
+    fixed by plumbing the caller id through
+    ``WorkspaceBackend.create`` end to end (needed for workspace
+    re-attach in k3s), so this test now pins the fixed contract: the
+    response id equals the user-supplied id, and a file PUT/GET
+    against that id succeeds.
     """
     provider_id, template_id = await _setup_provider_template(
         client, suffix=unique_suffix, root=tmp_path,
     )
     user_supplied_id = f"ws-user-{unique_suffix}"
-    backend_id: str | None = None
     try:
         ws = await client.post(
             "/v1/workspaces",
@@ -330,35 +323,30 @@ async def test_t0051_workspace_create_user_id_silently_ignored(
         )
         assert ws.status_code == 201, ws.text
         body = ws.json()
-        # Anomaly: the row's id is the user-supplied one, but the live
-        # backend instance is keyed under a different id.
         assert body["id"] == user_supplied_id, (
-            f"anomaly broken — row no longer carries user-supplied id: {body!r}"
+            f"row does not carry the user-supplied id: {body!r}"
         )
 
-        # File PUT keyed on the user-supplied id must 404 with the
-        # documented "row exists but backend has no live instance"
-        # diagnostic. If this assertion starts failing, the underlying
-        # bug has been fixed (or partially fixed); update both this
-        # test and the spec.
+        # File PUT keyed on the user-supplied id succeeds — the live
+        # backend instance is keyed under the same id as the row.
+        path = "x.txt"
         write = await client.put(
             f"/v1/workspaces/{user_supplied_id}/files",
-            params={"path": "x.txt"},
+            params={"path": path},
             json={"content": "noop", "encoding": "text"},
         )
-        assert write.status_code == 404, (
-            f"anomaly broken — file PUT on user id no longer 404s: "
-            f"{write.status_code}: {write.text}"
+        assert write.status_code == 204, write.text
+
+        # --- round-trip: read the file back on the user-supplied id
+        read = await client.get(
+            f"/v1/workspaces/{user_supplied_id}/files/read",
+            params={"path": path},
         )
-        assert "/errors/not-found" in write.text, write.text
-        assert "row exists" in write.text or "live instance" in write.text, (
-            f"diagnostic message changed; update this pin: {write.text}"
-        )
+        assert read.status_code == 200, read.text
+        body_out = read.json()
+        assert body_out["content"] == "noop"
     finally:
-        # Best-effort: row delete by user id may itself be funky; try anyway.
         await client.delete(f"/v1/workspaces/{user_supplied_id}")
-        if backend_id is not None:
-            await client.delete(f"/v1/workspaces/{backend_id}")
         await _teardown_provider_template(client, provider_id, template_id)
 
 
@@ -1042,8 +1030,9 @@ async def test_t0096_workspace_destroy_then_recreate_starts_clean(
         assert rm.status_code == 204, rm.text
         workspace_a = None
 
-        # Workspace B — same template, different id (the local backend
-        # generates its own per the documented anomaly T0051)
+        # Workspace B — same template, different id (no id supplied in
+        # _workspace_body, so the local backend auto-generates one;
+        # see T0051 for the caller-supplied-id contract)
         ws_b = await client.post(
             "/v1/workspaces",
             json=_workspace_body(template_id=template_id),
