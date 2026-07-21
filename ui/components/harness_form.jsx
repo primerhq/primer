@@ -37,6 +37,82 @@ function HF_ProviderPicker({ endpoint, value, onChange, label }) {
 }
 
 // ============================================================================
+// Custom widget: combined LLM provider + model picker
+// ============================================================================
+//
+// value is an object { provider_id, model_name }. Picking a provider populates
+// the model dropdown from that provider's own model list (already carried on
+// each /v1/llm_providers row) and defaults to its first model, so the operator
+// never types a model name.
+
+function HF_LlmModelPicker({ value, onChange, label }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const res = useResource(
+    "hf-llm-model-picker:/v1/llm_providers",
+    (signal) => apiFetch("GET", "/v1/llm_providers?limit=200", null, { signal }),
+    { pollMs: null }
+  );
+  const providers = res.data?.items ?? [];
+  const v = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const providerId = v.provider_id ?? "";
+  const modelName = v.model_name ?? "";
+
+  const modelsFor = (pid) =>
+    (providers.find((p) => p.id === pid)?.models || []).map((m) => m.name);
+  const models = modelsFor(providerId);
+
+  const onProvider = (pid) => {
+    if (!pid) {
+      onChange(null);
+      return;
+    }
+    const ms = modelsFor(pid);
+    // Default to the provider's first model the moment it is selected.
+    onChange({ provider_id: pid, model_name: ms.length ? ms[0] : "" });
+  };
+
+  // Keep a saved model that is no longer in the provider's list visible so it
+  // is not silently dropped when editing an existing binding.
+  const modelOptions =
+    modelName && !models.includes(modelName) ? [modelName, ...models] : models;
+
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+      <select
+        className="select"
+        style={{ flex: "1 1 180px", minWidth: 0 }}
+        value={providerId}
+        onChange={(e) => onProvider(e.target.value)}
+      >
+        <option value="">Select {label}</option>
+        {providers.map((p) => (
+          <option key={p.id} value={p.id}>{p.id}</option>
+        ))}
+      </select>
+      <select
+        className="select"
+        style={{ flex: "1 1 180px", minWidth: 0 }}
+        value={modelName}
+        disabled={!providerId}
+        onChange={(e) =>
+          onChange({ provider_id: providerId, model_name: e.target.value })
+        }
+      >
+        {modelOptions.length === 0 ? (
+          <option value="">
+            {providerId ? "No models on this provider" : "Select a provider first"}
+          </option>
+        ) : (
+          modelOptions.map((m) => (
+            <option key={m} value={m}>{m}</option>
+          ))
+        )}
+      </select>
+    </div>
+  );
+}
+
+// ============================================================================
 // HF_DepCard — collapsible card for one entry in a `dependencies` block
 // ============================================================================
 
@@ -143,6 +219,17 @@ function JsonSchemaForm({ schema, value, onChange, errors, _path }) {
       <div className="field">
         {schema.title && <label className="field-label">{schema.title}</label>}
         <HF_ProviderPicker endpoint="/v1/ssp" value={value} onChange={onChange} label={schema.title || "SSP"} />
+        {err && <div className="field-help" style={{ color: "var(--red)" }}>{err.message}</div>}
+        {schema.description && <div className="field-help">{schema.description}</div>}
+      </div>
+    );
+  }
+  if (widget === "llm-model-picker") {
+    const err = (errors || []).find((e) => e.path === path);
+    return renderInner(
+      <div className="field">
+        {schema.title && <label className="field-label">{schema.title}</label>}
+        <HF_LlmModelPicker value={value} onChange={onChange} label={schema.title || "LLM provider"} />
         {err && <div className="field-help" style={{ color: "var(--red)" }}>{err.message}</div>}
         {schema.description && <div className="field-help">{schema.description}</div>}
       </div>
