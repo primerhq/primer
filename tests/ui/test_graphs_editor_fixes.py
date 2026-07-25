@@ -44,8 +44,21 @@ def test_edge_create_is_an_explicit_gated_mode() -> None:
 def test_create_edge_rejects_self_loops() -> None:
     # onCreate returns false for source===target; G6 only commits an edge when
     # onCreate returns truthy, so an accidental self-drop creates nothing.
+    # (The guard moved from a ternary to an early return when the graph-builder
+    # revamp added the illegal-target rejections below; either form is fine.)
     assert "onCreate:" in CANVAS
-    assert "edge.source !== edge.target" in CANVAS
+    assert "edge.source !== edge.target" in CANVAS or "edge.source === edge.target" in CANVAS
+
+
+def test_create_edge_rejects_targets_the_model_forbids() -> None:
+    # ui/graph-builder/WIRING.md §6.3 - a fan-out feeds its copies through its
+    # own specs, so an outgoing edge from one is a persist-time violation; the
+    # start step takes no incoming edge and a finish step leads nowhere. Refuse
+    # all three at the gesture with an explanation instead of on save.
+    assert 'src.kind === "fan_out"' in CANVAS
+    assert 'dst.kind === "begin"' in CANVAS
+    assert 'src.kind === "end"' in CANVAS
+    assert "onIllegalEdge" in CANVAS
 
 
 def test_connect_handler_still_guards_self_loops() -> None:

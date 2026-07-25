@@ -444,6 +444,10 @@ function GraphDetail({ graphId, pushToast }) {
   const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
   const { navigate } = useRouter();
   const id = graphId;
+  // Graph builder revamp behind a tweak, so a regression is a flag flip
+  // rather than a revert (WIRING.md §15).
+  const [grTweaks] = window.primerApi.useTweaks();
+  const useBuilderV2 = grTweaks.graphBuilderV2 !== false && typeof window.GB_Builder === "function";
 
   const graph = useResource(
     "graph-detail:" + id,
@@ -506,13 +510,23 @@ function GraphDetail({ graphId, pushToast }) {
         onRefresh={() => { graph.refetch(); status.refetch(); }}
         onDelete={() => setConfirmDelete(true)}
       />
-      <GR_GraphEditor
-        graphId={id}
-        loaded={graph.data}
-        onSaved={() => { graph.refetch(); status.refetch(); }}
-        onRefresh={() => { graph.refetch(); status.refetch(); }}
-        pushToast={pushToast}
-      />
+      {useBuilderV2 ? (
+        <window.GB_Builder
+          graphId={id}
+          loaded={graph.data}
+          onSaved={() => { graph.refetch(); status.refetch(); }}
+          onRefresh={() => { graph.refetch(); status.refetch(); }}
+          pushToast={pushToast}
+        />
+      ) : (
+        <GR_GraphEditor
+          graphId={id}
+          loaded={graph.data}
+          onSaved={() => { graph.refetch(); status.refetch(); }}
+          onRefresh={() => { graph.refetch(); status.refetch(); }}
+          pushToast={pushToast}
+        />
+      )}
       {confirmDelete && (
         <Modal
           title="Delete graph?"
