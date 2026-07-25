@@ -125,15 +125,41 @@ function GB_Builder(props) {
   const canSave = dirty && !validation.blocking.length && !hasJsonError && !readOnly;
   const canRun = !validation.blocking.length && !validation.runnable.length;
 
+  // Send an explicit body rather than spreading the draft. The draft is seeded
+  // from the GET response, so a spread would PUT server-managed fields
+  // (created_at / updated_at / harness_id ...) straight back and the write is
+  // rejected. Mirrors the previous editor's whitelist, plus the two graph-level
+  // fields this builder can edit.
+  const buildSaveBody = () => ({
+    id: draft.id,
+    description: draft.description,
+    nodes: (draft.nodes || []).map(GR_stripCoords),
+    edges: (draft.edges || []).map((e) => ({ ...e })),
+    ...(draft.max_iterations != null ? { max_iterations: draft.max_iterations } : {}),
+    ...(draft.on_max_iterations != null ? { on_max_iterations: draft.on_max_iterations } : {}),
+  });
+
   const save = useMutation(
-    () => GB_api.putGraph(graphId, { ...draft, nodes: (draft.nodes || []).map(GR_stripCoords) }),
+    () => GB_api.putGraph(graphId, buildSaveBody()),
     {
-      invalidates: ["graphs:list", `graph:${graphId}`],
+      invalidates: ["graphs:list", `graph:${graphId}`, `graph-detail:${graphId}`, `graph-status:${graphId}`],
       // Same toast the console uses everywhere else, including which graph it
       // was - a revamp is no reason to invent different copy for a save.
       onSuccess: () => {
         if (onSaved) onSaved();
         if (pushToast) pushToast({ kind: "success", title: "Graph saved", detail: graphId });
+      },
+      // Without this a rejected write is silent: the button just re-enables
+      // and the operator has no idea their graph did not save.
+      onError: (err) => {
+        if (pushToast) {
+          pushToast({
+            kind: "error",
+            title: (err && err.title) || "Save failed",
+            detail: (err && (err.detail || err.message)) || "",
+            requestId: (err && err.requestId) || null,
+          });
+        }
       },
     },
   );
