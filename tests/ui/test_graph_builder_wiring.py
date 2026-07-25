@@ -6,6 +6,7 @@ from GraphDetail behind the graphBuilderV2 tweak (ui/graph-builder/WIRING.md
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -83,6 +84,25 @@ def test_graph_detail_renders_the_new_builder_behind_the_tweak() -> None:
     assert "<GR_GraphEditor" in src
     tweaks = (UI / "foundation" / "tweaks.js").read_text(encoding="utf-8")
     assert "graphBuilderV2: true" in tweaks
+
+
+def test_dispatch_never_hands_the_reducer_a_function() -> None:
+    # useReducer's dispatch takes an ACTION; only useState takes an updater
+    # function. Passing `rawDispatch((prev) => ...)` hands GB_reducer a
+    # function whose `.type` is undefined, so EVERY edit falls through to the
+    # reducer's default branch and silently does nothing - the builder renders
+    # but is completely inert. That shipped once and only the Playwright
+    # journeys caught it, because the reducer's own unit tests call
+    # GB_reducer directly and never exercise how the component wires it.
+    src = (GB / "graph-builder.jsx").read_text(encoding="utf-8")
+    bad = re.findall(r"rawDispatch\(\s*(?:function\b|\()", src)
+    # `rawDispatch({ ... })` is fine; `rawDispatch((` or `rawDispatch(function`
+    # is the updater-function shape that silently no-ops.
+    assert not bad, (
+        f"rawDispatch is called with a function ({len(bad)}x). useReducer "
+        "dispatch takes a plain action object."
+    )
+    assert "rawDispatch({ type:" in src, "expected plain action dispatches"
 
 
 def test_builder_keeps_the_editing_controls_the_e2e_journeys_pin() -> None:
