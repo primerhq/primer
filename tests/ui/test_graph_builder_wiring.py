@@ -78,11 +78,25 @@ def test_graph_detail_renders_the_new_builder_behind_the_tweak() -> None:
     src = GRAPHS.read_text(encoding="utf-8")
     assert "window.GB_Builder" in src, "GraphDetail must render the new builder"
     assert "graphBuilderV2" in src, "the swap must be behind the tweak"
-    # The old editor stays reachable, and is still the default until the
-    # ui_e2e journeys are migrated to the new surface.
+    # The revamp is the default; the old editor stays reachable behind the
+    # tweak so a regression is a flag flip rather than a revert.
     assert "<GR_GraphEditor" in src
     tweaks = (UI / "foundation" / "tweaks.js").read_text(encoding="utf-8")
-    assert "graphBuilderV2:" in tweaks, "the revamp must be behind a named tweak"
+    assert "graphBuilderV2: true" in tweaks
+
+
+def test_builder_keeps_the_editing_controls_the_e2e_journeys_pin() -> None:
+    # Discard (revert staged edits) and Tidy up (auto-layout) are contracts the
+    # ui_e2e journeys assert (U0088 / U0089). They are addressed by testid, so
+    # the labels can change but these hooks cannot silently disappear.
+    src = (GB / "graph-builder.jsx").read_text(encoding="utf-8")
+    for testid in ('data-testid="gb-save"', 'data-testid="gb-discard"',
+                   'data-testid="gb-tidy"', 'data-testid="gb-dirty"'):
+        assert testid in src, f"{testid} is missing - a ui_e2e journey drives it"
+    # Discard must actually reset the draft to the loaded seed AND clear undo,
+    # otherwise the reverted work could be restored with Cmd-Z.
+    assert 'rawDispatch({ type: "SET_DRAFT", draft: seed })' in src
+    assert "undoRef.current = []" in src
 
 
 def test_canvas_labels_lead_with_the_human_name() -> None:

@@ -47,6 +47,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e import _graph_builder_helpers as gb
+
 
 from tests._support.smk import smk  # noqa: E402
 pytestmark = smk("SMK-UI-04")
@@ -170,31 +172,21 @@ def test_u0107_graph_builder_persistence_journey(
             timeout=20_000,
         )
 
-        # Save button initially disabled (diff = 0 against loaded).
-        save = page.get_by_role("button", name="Save", exact=True).first
+        # Save initially disabled (no diff against loaded).
+        gb.wait_for_builder(page)
+        save = gb.save_button(page)
         save.wait_for(state="visible", timeout=10_000)
         expect(save).to_be_disabled(timeout=5_000)
+        rows_before = gb.outline_row_count(page)
 
-        # ----- 4. Add Node → Terminal ------------------------------
-        add_btn = page.get_by_role(
-            "button", name="Add node", exact=False,
-        ).first
-        if add_btn.count() == 0:
-            pytest.skip("Add node button not visible in editor")
-        add_btn.click()
-        page.wait_for_timeout(300)  # dropdown render
-
-        terminal_opt = page.get_by_text("Terminal", exact=False).first
-        if terminal_opt.count() == 0:
-            pytest.skip("Terminal option not found in Add menu")
-        terminal_opt.click()
-
-        # Save becomes enabled.
+        # ----- 4. Add a step through the purpose palette ------------
+        gb.add_finish_step(page)
         expect(save).to_be_enabled(timeout=5_000)
+        rows_staged = gb.outline_row_count(page)
+        assert rows_staged == rows_before + 1
 
         # ----- 5. Click Save → toast + Save disables ---------------
         save.click()
-        # "Graph saved" toast appears per graphs.jsx:437.
         expect(page.get_by_text("Graph saved", exact=False)).to_be_visible(
             timeout=10_000,
         )
@@ -202,44 +194,25 @@ def test_u0107_graph_builder_persistence_journey(
         # staged diff (the server's response IS the new baseline).
         expect(save).to_be_disabled(timeout=10_000)
 
-        # Snapshot the visible terminal-node count BEFORE reload so
-        # we can verify post-reload count is the same (persistence).
-        # Terminal nodes render with their kind="terminal" label
-        # somewhere in the editor. Use a stable selector that doesn't
-        # depend on SVG internals — count rendered node boxes.
-        # graphs.jsx renders nodes as absolute-positioned divs;
-        # they typically carry a node id text we can count.
-        # For robustness, just count save mutations — if Save is
-        # disabled post-reload, the editor is consistent with the
-        # server state.
-
-        # ----- 6. Reload → editor re-mounts + loads from server ----
+        # ----- 6. Reload -> builder re-mounts + loads from server ----
         page.reload(wait_until="domcontentloaded")
         expect(page.locator("h1.page-title", has_text=graph_id)).to_be_visible(
             timeout=20_000,
         )
+        gb.wait_for_builder(page)
 
-        # Save is disabled post-reload because draft == loaded;
-        # this is the load-bearing persistence check. If the PUT
-        # body didn't actually save the new node, the loaded graph
-        # would now match a state without that node, the draft
-        # would also be that state (just-loaded), Save would stay
-        # disabled BUT the node would be missing from the page
-        # body. So assert BOTH:
-        #   (a) Save disabled (no spurious diff after reload)
-        #   (b) at least one terminal-kind node visible
-        save_after = page.get_by_role("button", name="Save", exact=True).first
+        # Load-bearing persistence check. Save being disabled alone is not
+        # enough - it would also be disabled if the PUT silently dropped the
+        # new step (draft would just equal the smaller loaded graph). So
+        # assert BOTH: no spurious diff, AND the step actually came back.
+        save_after = gb.save_button(page)
         expect(save_after).to_be_disabled(timeout=15_000)
-
-        # The newly-added Terminal node carries an auto-assigned id
-        # like "terminal_1" (the editor appends a numeric suffix to
-        # the kind). It MUST be visible after reload — that's the
-        # load-bearing persistence check: if Save's PUT didn't
-        # actually persist the new node, the reload would show only
-        # the seed skeleton's two nodes ("start" + "end") and this
-        # locator would time out.
+        assert gb.outline_row_count(page) == rows_staged, (
+            "the step added before Save did not survive the reload - the PUT "
+            "body did not persist it"
+        )
         expect(
-            page.get_by_text("terminal_1", exact=False).first
+            page.locator('[data-testid="gb-outline-row"]', has_text="Finish").first
         ).to_be_visible(timeout=10_000)
 
         # ----- 7. Click "Graphs" breadcrumb → /graphs list ---------
@@ -259,8 +232,9 @@ def test_u0107_graph_builder_persistence_journey(
         expect(page.locator("h1.page-title", has_text=graph_id)).to_be_visible(
             timeout=15_000,
         )
-        # Editor still intact — Save still disabled (loaded == draft).
-        save_final = page.get_by_role("button", name="Save", exact=True).first
+        # Builder still intact - Save still disabled (loaded == draft).
+        gb.wait_for_builder(page)
+        save_final = gb.save_button(page)
         save_final.wait_for(state="visible", timeout=10_000)
         expect(save_final).to_be_disabled(timeout=10_000)
     finally:

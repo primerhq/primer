@@ -17,6 +17,7 @@ import time
 import httpx
 
 from tests.ui_e2e._studio_helpers import open_session_in_studio
+from tests.ui_e2e import _graph_builder_helpers as gb
 
 
 from tests._support.smk import smk  # noqa: E402
@@ -136,33 +137,25 @@ def test_u0029_graph_save_disabled_until_node_added(
             graph_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
 
-        # Wait for the editor toolbar to render (Save lives there).
-        save_btn = page.get_by_role("button", name="Save", exact=True).first
+        gb.wait_for_builder(page)
+        save_btn = gb.save_button(page)
         save_btn.wait_for(state="visible", timeout=10_000)
 
         # Initial state: Save is disabled (graph loaded but unchanged).
         assert save_btn.is_disabled(), (
-            "Save button should start disabled on a freshly-loaded "
-            "graph (diffCount === 0) - possible regression in "
-            "GraphEditor diff detection"
+            "Save should start disabled on a freshly-loaded graph "
+            "(no diff) - possible regression in builder diff detection"
         )
 
-        # Add a node - click "Add node" then "Tool call" in the dropdown.
-        # Tool call needs no agent picker and, added unconnected, yields
-        # only a SOFT "no incoming edges" warning (not a hard topology
-        # violation), so the diff dirties AND Save un-gates. (A second
-        # End node would instead trip the hard "End not reachable from
-        # Begin" rule, which legitimately keeps Save disabled.) Scope to
-        # the dropdown item so we don't click a node drawn on the canvas.
-        page.get_by_role(
-            "button", name="Add node", exact=True,
-        ).first.click()
-        tool_item = page.locator(".dd-item", has_text="Tool call").first
-        tool_item.wait_for(state="visible", timeout=5_000)
-        tool_item.click()
+        # Stage a structural change through the purpose-first palette.
+        # An unconnected Finish step is deliberately fine here: the builder
+        # splits validation into persist-time (blocks Save) and runnability
+        # (blocks Run only), and "End not reachable from Begin" is the
+        # latter - so a draft with one stays saveable.
+        gb.add_finish_step(page)
 
-        # Save must now be enabled (diffCount > 0). Allow a brief
-        # window for React to re-render.
+        # Save must now be enabled. Allow a brief window for React to
+        # re-render.
         deadline = time.monotonic() + 5.0
         enabled = False
         while time.monotonic() < deadline:
@@ -171,15 +164,12 @@ def test_u0029_graph_save_disabled_until_node_added(
                 break
             page.wait_for_timeout(100)
         assert enabled, (
-            "Save button did not become enabled after Add node → "
-            "Tool call; diffCount did not register the structural "
-            "change"
+            "Save did not become enabled after adding a step; the diff "
+            "did not register the structural change"
         )
 
-        # Defence: the "unsaved changes" hint also appears.
-        page.get_by_text(
-            "unsaved changes", exact=False,
-        ).first.wait_for(state="visible", timeout=5_000)
+        # Defence: the unsaved-changes dot also appears.
+        page.locator(gb.DIRTY).first.wait_for(state="visible", timeout=5_000)
     finally:
         _cleanup(base_url, [
             f"/v1/graphs/{graph_id}",
