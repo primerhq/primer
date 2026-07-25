@@ -58,4 +58,6 @@ def test_graph_editor_g6_journey(base_url, console_url, page) -> None:
     gb.add_finish_step(page)
     assert gb.outline_row_count(page) == before + 1
     expect(page.locator(gb.INSPECTOR)).to_be_visible()
-    expect(page.locator('[data-testid="gb-inspector-title"]')).to_contain_text("Finish")
+    # The step name is the primary field and is editable inline, so the title
+    # is an <input> - assert its value, not its (empty) text content.
+    expect(page.locator('[data-testid="gb-inspector-title"]')).to_have_value("Finish")

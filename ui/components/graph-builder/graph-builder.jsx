@@ -129,7 +129,12 @@ function GB_Builder(props) {
     () => GB_api.putGraph(graphId, { ...draft, nodes: (draft.nodes || []).map(GR_stripCoords) }),
     {
       invalidates: ["graphs:list", `graph:${graphId}`],
-      onSuccess: () => { if (onSaved) onSaved(); if (pushToast) pushToast({ title: "Saved" }); },
+      // Same toast the console uses everywhere else, including which graph it
+      // was - a revamp is no reason to invent different copy for a save.
+      onSuccess: () => {
+        if (onSaved) onSaved();
+        if (pushToast) pushToast({ kind: "success", title: "Graph saved", detail: graphId });
+      },
     },
   );
 
