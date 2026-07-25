@@ -29,7 +29,7 @@
     // editor's controls ("Add node", the side-panel fields), which the revamp
     // replaces. Flip on to use the new builder; the switch lives in
     // GraphDetail so turning it back off is a flag flip, not a revert.
-    graphBuilderV2: false,
+    graphBuilderV2: true,
   };
 
   // Subset of keys whose user choice we persist across reloads via

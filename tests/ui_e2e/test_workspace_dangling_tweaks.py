@@ -25,6 +25,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from . import _graph_builder_helpers as gb
+
 
 # ---------------------------------------------------------------------------
 # Seed helpers
@@ -252,12 +254,15 @@ def test_u0082_agent_detail_new_session_preselects_agent(
 def test_u0089_graph_editor_auto_layout_does_not_enable_save(
     page, base_url, console_url, unique_suffix,
 ) -> None:
-    """U0089 - On graph detail editor, Save initially disabled
-    (diffCount=0). Click Auto-layout → nodes are re-positioned but
-    Save STAYS disabled because the diff strips UI-only x/y
-    coordinates before comparison (graphs.jsx:423-429 stripCoords).
+    """U0089 - On the graph builder, Save initially disabled (no diff).
+    Click "Tidy up" (auto-layout) -> nodes are re-positioned but Save
+    STAYS disabled because the diff strips UI-only x/y coordinates
+    before comparison (GB_stripAll / GR_stripCoords).
     Pins the contract that purely-visual changes don't dirty the
     save buffer.
+
+    Migrated to the revamped builder: "Auto-layout" is now "Tidy up"
+    (data-testid gb-tidy) and Save is addressed by testid.
     """
     pid = f"llm-89-{unique_suffix}"
     aid = f"ag-89-{unique_suffix}"
@@ -279,21 +284,18 @@ def test_u0089_graph_editor_auto_layout_does_not_enable_save(
             state="visible", timeout=20_000,
         )
 
-        save = page.get_by_role("button", name="Save", exact=True).first
-        save.wait_for(state="visible", timeout=10_000)
-        expect(save).to_be_disabled()
+        gb.wait_for_builder(page)
+        gb.expect_clean(page)
 
-        # Click Auto-layout in the toolbar.
-        auto = page.get_by_role(
-            "button", name="Auto-layout", exact=True,
-        ).first
-        auto.wait_for(state="visible", timeout=5_000)
-        auto.click()
+        # Re-run the layout ("Tidy up" in the revamped builder).
+        tidy = page.locator(gb.TIDY).first
+        tidy.wait_for(state="visible", timeout=5_000)
+        tidy.click()
 
         # Save remains disabled - x/y do not count as a real diff.
         # Allow a brief settle for React state to flush.
         page.wait_for_timeout(500)
-        expect(save).to_be_disabled()
+        gb.expect_clean(page)
     finally:
         _cleanup(base_url, cleanup_urls)
 
