@@ -37,16 +37,24 @@ function GB_Builder(props) {
   // Undo stack - cheap because the reducer is pure and drafts are small.
   const undoRef = useRef([]);
   const redoRef = useRef([]);
+  // The live draft, mirrored into a ref so the undo stack and the keyboard
+  // handlers can read the current state without re-creating callbacks.
+  const draftRef = useRef(draft);
+  useEffect(() => { draftRef.current = draft; }, [draft]);
+
+  // NOTE: useReducer's dispatch takes an ACTION, not an updater function
+  // (that is useState). Passing a function here would hand GB_reducer a
+  // function as its action, whose `.type` is undefined, so every edit would
+  // fall through to the reducer's default branch and silently do nothing.
+  // Undo bookkeeping therefore happens here, around a plain action dispatch.
   const dispatch = useCallback((action) => {
     if (readOnly) return;
-    rawDispatch((prev) => {
-      const next = GB_reducer(prev, action);
-      if (next !== prev && action.type !== "SET_DRAFT") {
-        undoRef.current = [...undoRef.current.slice(-49), prev];
-        redoRef.current = [];
-      }
-      return next;
-    });
+    const prev = draftRef.current;
+    if (action && action.type !== "SET_DRAFT" && GB_reducer(prev, action) !== prev) {
+      undoRef.current = [...undoRef.current.slice(-49), prev];
+      redoRef.current = [];
+    }
+    rawDispatch(action);
   }, [readOnly]);
 
   useEffect(() => { rawDispatch({ type: "SET_DRAFT", draft: seed }); undoRef.current = []; redoRef.current = []; }, [seed]);
@@ -59,13 +67,15 @@ function GB_Builder(props) {
         e.preventDefault();
         const prev = undoRef.current[undoRef.current.length - 1];
         undoRef.current = undoRef.current.slice(0, -1);
-        rawDispatch((cur) => { redoRef.current = [...redoRef.current, cur]; return prev; });
+        redoRef.current = [...redoRef.current, draftRef.current];
+        rawDispatch({ type: "SET_DRAFT", draft: prev });
       }
       if (mod && e.key.toLowerCase() === "z" && e.shiftKey && redoRef.current.length) {
         e.preventDefault();
         const next = redoRef.current[redoRef.current.length - 1];
         redoRef.current = redoRef.current.slice(0, -1);
-        rawDispatch((cur) => { undoRef.current = [...undoRef.current, cur]; return next; });
+        undoRef.current = [...undoRef.current, draftRef.current];
+        rawDispatch({ type: "SET_DRAFT", draft: next });
       }
     };
     window.addEventListener("keydown", onKey);
