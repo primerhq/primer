@@ -45,10 +45,12 @@ function _g6Palette() {
 }
 
 // Node sizes by kind (also exported; consumers may read GR_NODE_SIZE).
+// Cards are two-line (human name + the reference it runs), so they are wider
+// and taller than the old id-only chips - WIRING.md §6.1.
 const GR_NODE_SIZE = {
   begin: { w: 24, h: 24 }, end: { w: 24, h: 24 },
-  agent: { w: 152, h: 46 }, graph: { w: 152, h: 46 }, fan_in: { w: 152, h: 46 },
-  tool_call: { w: 168, h: 46 }, fan_out: { w: 168, h: 46 },
+  agent: { w: 196, h: 64 }, graph: { w: 196, h: 64 }, fan_in: { w: 196, h: 64 },
+  tool_call: { w: 196, h: 64 }, fan_out: { w: 112, h: 64 },
 };
 function _g6Size(kind) { return GR_NODE_SIZE[kind] || GR_NODE_SIZE.agent; }
 function _g6Tiny(kind) { return kind === "begin" || kind === "end"; }
@@ -99,10 +101,32 @@ function _g6Metric(meta) {
   if (meta.dur != null) parts.push((meta.dur / 1000).toFixed(1) + "s");
   return parts.join("  ·  ");
 }
+// What a node runs, shown as the card's second line (WIRING.md §6.1).
+function _g6Ref(node) {
+  if (!node) return "";
+  if (node.kind === "agent") return node.agent_id || "no agent yet";
+  if (node.kind === "tool_call") return node.tool_id || "no tool yet";
+  if (node.kind === "graph") return node.graph_id || "no graph yet";
+  if (node.kind === "fan_out") {
+    const specs = node.specs || [];
+    if (!specs.length) return "not split yet";
+    const s = specs[0];
+    if (s.kind === "broadcast") return `${s.count || "?"} copies`;
+    if (s.kind === "map") return "one per item";
+    return `${(s.target_node_ids || []).length} steps`;
+  }
+  if (node.kind === "fan_in") return "waits for all";
+  return "";
+}
+
+// The human name is primary; the id is demoted to the inspector header. During
+// a run the second line shows live metrics instead of the static reference.
 function _g6Label(node, metaByNode) {
   if (_g6Tiny(node.kind)) return "";
+  const title = node.description || node.id;
   const m = _g6Metric(metaByNode && metaByNode[node.id]);
-  return m ? `${node.id}\n${m}` : node.id;
+  const second = m || _g6Ref(node);
+  return second ? `${title}\n${second}` : title;
 }
 
 // Edges by kind: static (one), conditional (one per branch target +
@@ -126,11 +150,15 @@ function _g6Edges(draft) {
       push(e.from_node || e.source, e.to_node || e.target, "static", idx, "");
     }
   });
-  // Implicit fan-out edges (FanOut.specs[].target_node_id), not in draft.edges.
+  // Implicit fan-out edges (FanOut.specs[] targets), not in draft.edges. Covers
+  // broadcast/map (target_node_id) AND tee (target_node_ids), so every spec
+  // kind is visible on the canvas rather than only in the panel.
   for (const n of (draft?.nodes || [])) {
     if (n.kind === "fan_out") {
       for (const sp of (n.specs || [])) {
-        if (sp && sp.target_node_id) push(n.id, sp.target_node_id, "implicit", -1, "");
+        if (!sp) continue;
+        if (sp.target_node_id) push(n.id, sp.target_node_id, "implicit", -1, "");
+        for (const t of (sp.target_node_ids || [])) push(n.id, t, "implicit", -1, "");
       }
     }
   }
@@ -231,11 +259,30 @@ function GR_Canvas(props) {
         key: "make-edge",
         trigger: "drag",
         enable: () => !!cb.current.addEdgeMode,
-        // Belt: reject self-loops. G6 only commits the edge when onCreate
-        // returns truthy, so returning false on source===target cancels the
-        // drag cleanly (no phantom edge, no onFinish) — a deliberate drag that
-        // ends back on the source node never creates an edge.
-        onCreate: (edge) => (edge && edge.source !== edge.target ? edge : false),
+        // Reject illegal gestures AT the gesture (WIRING.md §6.3) rather than
+        // letting the user draw an edge the model will refuse. G6 only commits
+        // when onCreate returns truthy, so returning false cancels the drag
+        // cleanly (no phantom edge, no onFinish).
+        onCreate: (edge) => {
+          if (!edge || edge.source === edge.target) return false;
+          const byId = {};
+          for (const n of (draft.nodes || [])) byId[n.id] = n;
+          const src = byId[edge.source];
+          const dst = byId[edge.target];
+          let reason = null;
+          if (src && src.kind === "fan_out") {
+            reason = "A split feeds its copies through its own list - choose who does the work in the panel.";
+          } else if (dst && dst.kind === "begin") {
+            reason = "The start step can't have anything pointing into it.";
+          } else if (src && src.kind === "end") {
+            reason = "A finish step ends the run, so it can't lead anywhere else.";
+          }
+          if (reason) {
+            if (cb.current.onIllegalEdge) cb.current.onIllegalEdge(reason, edge.source);
+            return false;
+          }
+          return edge;
+        },
         style: { stroke: P.violet, lineWidth: 1.5, lineDash: [4, 4], endArrow: true },
       });
     }
@@ -262,6 +309,9 @@ function GR_Canvas(props) {
       });
       graphRef.current = g;
       readyRef.current = false;
+      // Expose the live instance so overlays (GB_Canvas's fan-out bracket and
+      // superstep bands) can measure real node positions through pan/zoom.
+      if (cb.current.onGraphReady) cb.current.onGraphReady(g);
 
       g.on("node:click", (e) => { const id = e && (e.target?.id ?? e.itemId); if (id && cb.current.onNodeClick) cb.current.onNodeClick(id); });
       g.on("node:dblclick", (e) => { const id = e && (e.target?.id ?? e.itemId); if (id && cb.current.onNodeDoubleClick) cb.current.onNodeDoubleClick(id); });
