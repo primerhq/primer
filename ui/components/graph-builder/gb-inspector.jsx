@@ -120,7 +120,7 @@ function GB_Inspector(props) {
             placeholder="Name this step"
             onChange={(e) => patch({ description: e.target.value })}
             style={{
-              fontSize: "var(--fs-14)", fontWeight: 600, background: "transparent", border: "none",
+              fontSize: "var(--fs-13)", fontWeight: 600, background: "transparent", border: "none",
               outline: "none", color: "var(--text)", flex: 1, minWidth: 0, padding: 0,
             }}
           />
