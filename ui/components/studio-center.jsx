@@ -38,12 +38,16 @@ function ST_basename(path) {
 }
 
 // ---------------------------------------------------------------------------
-// ST_fileClassOf — coarse render-class for a path: "markdown"|"image"|"code"|"text".
-// Drives the preview branch + whether syntax highlighting applies.
+// ST_fileClassOf — coarse render-class for a path:
+//   "markdown"|"image"|"html"|"code"|"text".
+// Drives the preview branch + whether syntax highlighting applies. "html" wins
+// over "code" (both claim the .html extension) so an HTML document renders as a
+// document; its source stays one click away behind the Edit toggle.
 // ---------------------------------------------------------------------------
 
 var ST_IMAGE_EXTS = { png: 1, jpg: 1, jpeg: 1, gif: 1, svg: 1, webp: 1, bmp: 1, ico: 1, avif: 1 };
 var ST_MD_EXTS = { md: 1, markdown: 1, mdx: 1 };
+var ST_HTML_EXTS = { html: 1, htm: 1 };
 var ST_CODE_LANGS = {
   py: "python", pyi: "python",
   js: "javascript", jsx: "javascript", ts: "javascript", tsx: "javascript",
@@ -63,6 +67,7 @@ function ST_fileClassOf(path) {
   var ext = ST_extOf(path);
   if (ST_MD_EXTS[ext]) return "markdown";
   if (ST_IMAGE_EXTS[ext]) return "image";
+  if (ST_HTML_EXTS[ext]) return "html";   // before "code": .html is in both tables
   if (ST_CODE_LANGS[ext]) return "code";
   return "text";
 }
@@ -1180,11 +1185,33 @@ function ST_SessionPanel({ wid, sid, pushToast }) {
 // ---------------------------------------------------------------------------
 // ST_FilePreview — render the held content per file class.
 //   markdown → renderMarkdown; code → highlighted line-numbered <pre>;
-//   image → <img> via files/download; else plain text.
+//   image → <img> via files/download; html → sandboxed <iframe>;
+//   else plain text.
 // ---------------------------------------------------------------------------
 
 function ST_FilePreview({ wid, path, content }) {
   var cls = ST_fileClassOf(path);
+
+  // HTML renders as a live document. `srcdoc` feeds it the content already held
+  // by FilePanel (no second fetch, and no auth to thread through an iframe src).
+  //
+  // The sandbox deliberately omits `allow-same-origin`: with it, a workspace file
+  // would run scripts on Studio's OWN origin and could read its cookies, tokens,
+  // and DOM. Without it the frame gets an opaque origin, so it can still fetch
+  // cross-origin services that allow "*" (this is how a report can query the
+  // trail MCP on load) but cannot reach back into Studio.
+  if (cls === "html") {
+    return (
+      <iframe
+        data-testid="file-preview-html"
+        title={ST_basename(path)}
+        srcDoc={content || ""}
+        sandbox="allow-scripts allow-popups"
+        referrerPolicy="no-referrer"
+        style={{ width: "100%", height: "100%", minHeight: 420, border: 0, background: "#fff" }}
+      />
+    );
+  }
 
   if (cls === "image") {
     var src = "/v1/workspaces/" + encodeURIComponent(wid) + "/files/download?path=" + encodeURIComponent(path);
