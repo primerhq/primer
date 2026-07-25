@@ -228,6 +228,28 @@ function GB_Builder(props) {
           {!readOnly ? (
             <Btn
               size="sm"
+              kind="ghost"
+              data-testid="gb-discard"
+              disabled={!dirty || save.loading}
+              onClick={() => {
+                // Throw away every staged edit and go back to the last saved
+                // state. Uses rawDispatch + clears the undo/redo stacks (the
+                // same reset the seed effect performs) so discarded work can't
+                // be half-restored with Cmd-Z.
+                rawDispatch({ type: "SET_DRAFT", draft: seed });
+                undoRef.current = [];
+                redoRef.current = [];
+                setSelectedId(null);
+                setSelectedEdge(null);
+                setLayoutNonce((n) => n + 1);
+              }}
+            >
+              Discard
+            </Btn>
+          ) : null}
+          {!readOnly ? (
+            <Btn
+              size="sm"
               data-testid="gb-save"
               disabled={!canSave || save.loading}
               onClick={() => save.mutate()}
@@ -339,7 +361,7 @@ function GB_Builder(props) {
                 >
                   {addEdgeMode ? "Connecting… (click a step, then another)" : "Connect steps"}
                 </Btn>
-                <Btn size="sm" kind="ghost" onClick={() => { dispatch({ type: "AUTO_LAYOUT" }); setLayoutNonce((n) => n + 1); }}>Tidy up</Btn>
+                <Btn size="sm" kind="ghost" data-testid="gb-tidy" onClick={() => { dispatch({ type: "AUTO_LAYOUT" }); setLayoutNonce((n) => n + 1); }}>Tidy up</Btn>
               </div>
             ) : null}
           </div>

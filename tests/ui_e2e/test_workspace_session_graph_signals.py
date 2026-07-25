@@ -16,6 +16,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_workspace_settings
+from tests.ui_e2e import _graph_builder_helpers as gb
 
 
 # ---------------------------------------------------------------------------
@@ -199,12 +200,17 @@ def test_u0079_workspace_destroy_confirm_navigates_back_to_list(
 def test_u0088_graph_editor_discard_reverts_unsaved_add_node(
     page, base_url, console_url, unique_suffix,
 ) -> None:
-    """U0088 — On graph detail editor, Save initially disabled
-    (diffCount=0). Click Add node → Terminal (Save becomes enabled).
-    Click Discard → unsaved edit reverts; Save returns to disabled.
+    """U0088 - On the graph builder, Save initially disabled (no diff).
+    Add a step (Save becomes enabled). Click Discard -> the unsaved edit
+    reverts; Save returns to disabled and the step is gone.
 
-    Pins the discard-edits contract in graphs.jsx; sister of U0087
-    which exercised the Add-node → Save-enables direction.
+    Pins the discard-edits contract; sister of U0087 which exercised the
+    add-step -> Save-enables direction.
+
+    Migrated to the revamped builder: "Add node -> Terminal" became the
+    purpose palette's "Finish and return something", and the assertions
+    additionally check the outline row count so a Discard that only
+    flipped the button without reverting state would fail.
     """
     pid = f"llm-88-{unique_suffix}"
     aid = f"ag-88-{unique_suffix}"
@@ -242,34 +248,22 @@ def test_u0088_graph_editor_discard_reverts_unsaved_add_node(
             state="visible", timeout=20_000,
         )
 
-        save = page.get_by_role("button", name="Save", exact=True).first
-        save.wait_for(state="visible", timeout=10_000)
-        expect(save).to_be_disabled()
+        gb.wait_for_builder(page)
+        gb.expect_clean(page)
+        before = gb.outline_row_count(page)
 
-        # Add a node (mirror U0087 — Add node → Terminal).
-        add_btn = page.get_by_role(
-            "button", name="Add node", exact=False,
-        ).first
-        if add_btn.count() == 0:
-            pytest.skip("Add node button not found in editor")
-        add_btn.click()
-        page.wait_for_timeout(300)
-        terminal_opt = page.get_by_text("Terminal", exact=False).first
-        if terminal_opt.count() == 0:
-            pytest.skip("Terminal option not found in Add menu")
-        terminal_opt.click()
+        # Stage a structural change through the purpose-first palette.
+        gb.add_finish_step(page)
+        gb.expect_dirty(page)
+        assert gb.outline_row_count(page) == before + 1
 
-        # Save now enabled.
-        expect(save).to_be_enabled(timeout=3_000)
-
-        # Click Discard.
-        discard = page.get_by_role(
-            "button", name="Discard", exact=True,
-        ).first
+        # Discard throws the staged edit away.
+        discard = gb.discard_button(page)
         discard.wait_for(state="visible", timeout=5_000)
         discard.click()
 
-        # Save returns to disabled (diff cleared).
-        expect(save).to_be_disabled(timeout=3_000)
+        # Back to the saved baseline: Save disabled and the step is gone.
+        gb.expect_clean(page)
+        assert gb.outline_row_count(page) == before
     finally:
         _cleanup(base_url, cleanup_urls)

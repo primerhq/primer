@@ -5,15 +5,21 @@ test_*.py unless PRIMER_RUN_UI_E2E=1). NOT part of CI's default pytest run.
 
 The editor renders through window.GR_Canvas (AntV G6, canvas-backed), so
 there are no per-node DOM elements — the graph is pixels on a <canvas>.
-This journey asserts the canvas mounts and that adding a node through the
-toolbar palette works end to end: the new node auto-selects and the side
-panel switches into its per-kind editor.
+This journey asserts the canvas mounts and that adding a step through the
+purpose-first palette works end to end: the new step is created complete and
+selected, so the inspector opens on it.
+
+Migrated to the revamped builder (GB_Builder): the toolbar "Add node" ->
+kind-dropdown gesture became "+ Add a step" -> a purpose palette, and the
+id-keyed side panel became the label-keyed inspector.
 """
 
 from __future__ import annotations
 
 import httpx
 from playwright.sync_api import expect
+
+from . import _graph_builder_helpers as gb
 
 
 def _seed_graph(base_url: str, gid: str) -> None:
@@ -39,14 +45,17 @@ def test_graph_editor_g6_journey(base_url, console_url, page) -> None:
 
     page.goto(f"{console_url}#/graphs/{gid}")
 
+    gb.wait_for_builder(page)
+
     # The G6 canvas mounts: the container plus a <canvas> the renderer drew on.
-    canvas = page.locator('[data-testid="graph-canvas"]')
+    canvas = page.locator(gb.CANVAS)
     expect(canvas).to_be_visible()
     expect(canvas.locator("canvas").first).to_be_visible()
 
-    # Add an agent node via the toolbar palette. onAddNode auto-selects the new
-    # node (id "agent_1"), so the side panel switches into the agent editor.
-    page.get_by_role("button", name="Add node").click()
-    page.locator('a.dd-item', has_text="Agent").first.click()
-    expect(page.get_by_text("AGENT NODE", exact=False)).to_be_visible()
-    expect(page.locator('input[value="agent_1"]').first).to_be_visible()
+    # Add a step through the purpose-first palette. The builder creates a
+    # complete node and selects it, so the inspector opens on the new step.
+    before = gb.outline_row_count(page)
+    gb.add_finish_step(page)
+    assert gb.outline_row_count(page) == before + 1
+    expect(page.locator(gb.INSPECTOR)).to_be_visible()
+    expect(page.locator('[data-testid="gb-inspector-title"]')).to_contain_text("Finish")
