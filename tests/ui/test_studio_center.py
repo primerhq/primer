@@ -241,6 +241,44 @@ def test_file_panel_preview_branches() -> None:
     assert "<img" in src
 
 
+def test_html_files_render_in_an_iframe() -> None:
+    """.html previews as a live document (srcDoc), not as highlighted source."""
+    src = _center_src()
+    assert "ST_HTML_EXTS" in src
+    assert "<iframe" in src
+    assert "srcDoc={content" in src
+
+
+def test_html_class_takes_precedence_over_code() -> None:
+    """`.html` is in both ST_HTML_EXTS and ST_CODE_LANGS - html must be checked first,
+    otherwise the iframe branch is dead code and .html renders as source."""
+    src = _center_src()
+    body = src[src.index("function ST_fileClassOf("):]
+    body = body[: body.index("\n}")]
+    assert body.index("ST_HTML_EXTS") < body.index("ST_CODE_LANGS"), (
+        "ST_fileClassOf must test ST_HTML_EXTS before ST_CODE_LANGS"
+    )
+
+
+def test_html_iframe_sandbox_withholds_same_origin() -> None:
+    """Workspace HTML must not script against Studio's origin.
+
+    `allow-scripts` + `allow-same-origin` together defeat the sandbox: the framed
+    file could read Studio's cookies/tokens and DOM. Any file in any workspace can
+    be opened this way, so this combination must never appear.
+    """
+    src = _center_src()
+    start = src.index('data-testid="file-preview-html"')
+    frame = src[start : src.index("/>", start)]
+    assert 'sandbox="' in frame, "the html iframe must be sandboxed"
+    sandbox = frame[frame.index('sandbox="') + len('sandbox="') :]
+    sandbox = sandbox[: sandbox.index('"')]
+    assert "allow-scripts" in sandbox, "scripts are the point - a report runs JS on load"
+    assert "allow-same-origin" not in sandbox, (
+        "allow-same-origin + allow-scripts lets workspace HTML script Studio's own origin"
+    )
+
+
 def test_file_panel_dirty_via_patch() -> None:
     src = _center_src()
     # Dirty state mirrors into openTabs via the patch() escape hatch.
@@ -266,6 +304,7 @@ def test_center_testids() -> None:
         'data-testid="file-mode-edit"',
         'data-testid="file-save"',
         'data-testid="file-editor"',
+        'data-testid="file-preview-html"',
         'data-testid="file-conflict-banner"',
     ]
     for tid in required:
