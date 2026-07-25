@@ -185,14 +185,17 @@ def test_u0107_graph_builder_persistence_journey(
         rows_staged = gb.outline_row_count(page)
         assert rows_staged == rows_before + 1
 
-        # ----- 5. Click Save → toast + Save disables ---------------
+        # ----- 5. Click Save -> the write lands, then the toast -----
+        # Outcome first, feedback second: Save returning to disabled means the
+        # PUT succeeded AND the refetch made the server response the new
+        # baseline, which is the contract that matters. Asserting it before the
+        # (transient) toast also makes a failure here unambiguous - a stuck
+        # Save points at the write, a missing toast points at the feedback.
         save.click()
+        expect(save).to_be_disabled(timeout=15_000)
         expect(page.get_by_text("Graph saved", exact=False)).to_be_visible(
             timeout=10_000,
         )
-        # Save returns to disabled after the refetch clears the
-        # staged diff (the server's response IS the new baseline).
-        expect(save).to_be_disabled(timeout=10_000)
 
         # ----- 6. Reload -> builder re-mounts + loads from server ----
         page.reload(wait_until="domcontentloaded")
