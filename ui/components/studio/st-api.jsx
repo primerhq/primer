@@ -43,6 +43,27 @@ var ST2_api = {
   // Graph run node states. This is the TOP-LEVEL compute route
   // (primer/api/routers/compute.py:249), not a workspace-scoped one - for a
   // graph-bound session the run id IS the session id.
+  // The turn trail. `with_files=1` adds per-file {path, additions, deletions,
+  // binary}; without it every commit's `files` is null. Deliberately unpolled
+  // by the caller (WIRING §7.1 keeps WS_LogTab's manual-refresh behaviour) -
+  // history does not change under you, and a poll here would refetch the whole
+  // page on a timer for no reason.
+  trail: function (wid, limit, withFiles, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/workspaces/" + encodeURIComponent(wid) + "/log?limit="
+        + encodeURIComponent(limit) + (withFiles ? "&with_files=1" : ""),
+      null, { signal: signal });
+  },
+
+  // One commit's per-file unified patches. Fetched only when a reader opens a
+  // row, which is why the trail carries counts and not content.
+  commit: function (wid, sha, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/workspaces/" + encodeURIComponent(wid) + "/commit/"
+        + encodeURIComponent(sha),
+      null, { signal: signal });
+  },
+
   nodeStates: function (graphId, runId, signal) {
     return window.primerApi.apiFetch(
       "GET", "/graphs/" + encodeURIComponent(graphId) + "/runs/"
@@ -86,6 +107,13 @@ var ST2_api = {
     sessions: function (wid) { return "studio-sessions:" + wid; },
     log: function (wid) { return "studio-log:" + wid; },
     nodeStates: function (gid, rid) { return "graph-node-states:" + gid + ":" + rid; },
+    // Same key shape WS_LogTab uses, so the two views share one cache entry
+    // when their limits agree. with_files varies the key: the two responses
+    // differ in shape, so they must not alias.
+    trail: function (wid, limit, withFiles) {
+      return "workspace-log:" + wid + ":" + limit + (withFiles ? ":files" : "");
+    },
+    commit: function (wid, sha) { return "workspace-commit:" + wid + ":" + sha; },
   },
 };
 

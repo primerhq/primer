@@ -655,7 +655,7 @@ function useStudioState(wid, initialOpen) {
 // collapse to a single document there.
 // ---------------------------------------------------------------------------
 
-function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, debugOpen, onToggleDebug, onToggleLeftPanel, onToggleRightPanel, hideDebugToggle }) {
+function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, debugOpen, onToggleDebug, onToggleLeftPanel, onToggleRightPanel, hideDebugToggle, onOpenChanges }) {
   var { useResource, apiFetch } = window.primerApi;
   var [menuOpen, setMenuOpen] = React.useState(false);
   // Workspace Settings overlay — restores the orphaned WorkspaceDetail tabs
@@ -800,6 +800,21 @@ function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, term
           panel icon (not a bell — per earlier feedback). */}
       {/* Retired under studioV2: Action Required lives in the attention bar and
           the tap lives in the dock, so there is no right rail to toggle. */}
+      {/* studioV2: the turn trail. A center tab, not a rail mode - it is a
+          two-column surface (WIRING §7.2). Opened from here because a changed
+          file nobody can find is a changed file nobody reviews. */}
+      {onOpenChanges && (
+        <button
+          className="st-hbtn touch-target desktop-only"
+          data-testid="studio-changes-toggle"
+          title="Changes (what the agents wrote)"
+          aria-label="Open the changes view"
+          onClick={onOpenChanges}
+        >
+          <Icon name="git-commit" size={15} />
+        </button>
+      )}
+
       {!hideDebugToggle && (
         <button
           className={"st-hbtn touch-target desktop-only" + (debugOpen ? " is-active" : "")}
@@ -1016,6 +1031,9 @@ function Studio({ wid, pushToast, initialOpen }) {
         debugOpen={s.debugOpen}
         onToggleDebug={studio.toggleDebug}
         hideDebugToggle={isV2}
+        onOpenChanges={isV2 ? function () {
+          studio.openTab({ id: "changes", kind: "changes", ref: wid, title: "Changes" });
+        } : null}
         onToggleLeftPanel={function () { setRightPanelOpen(false); setLeftPanelOpen(function (o) { return !o; }); }}
         onToggleRightPanel={function () { setLeftPanelOpen(false); setRightPanelOpen(function (o) { return !o; }); }}
       />
