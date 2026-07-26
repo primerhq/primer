@@ -32,7 +32,7 @@ import json
 import httpx
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_studio
+from tests.ui_e2e._studio_helpers import kind_text, expand_debug_sidebar, open_studio
 
 
 # ---------------------------------------------------------------------------
@@ -186,7 +186,7 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
         item = page.locator("[data-testid='action-item']").first
         expect(item).to_be_visible(timeout=10_000)
         expect(item).to_contain_text("What is your name?")
-        expect(item).to_contain_text("ask_user")
+        expect(item).to_contain_text(kind_text(page, "ask_user"))
         # The ask_user variant renders a respond text input (Enter to send).
         expect(item.locator("[data-testid='action-ask-controls']")).to_be_visible()
         expect(item.locator("[data-testid='respond']")).to_be_visible()

@@ -214,7 +214,10 @@ def test_attention_bar_keeps_the_shipped_testids() -> None:
     for tid in (
         "action-required", "action-item", "approve", "reject", "respond",
         "cancel-yield", "action-required-count", "attention-count",
-        "attention-queue", "attention-queue-item", "unblock-focus",
+        # Queue rows carry `action-item`, not a queue-specific id: they ARE
+        # the pending-item list v1 rendered in the rail, and the shipped
+        # journeys reach the non-head items through it.
+        "attention-queue", "action-item", "unblock-focus",
         "inform-item", "inform-dismiss",
     ):
         assert f'"{tid}"' in src, tid

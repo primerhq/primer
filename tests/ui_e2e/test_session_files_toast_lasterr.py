@@ -37,6 +37,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._studio_helpers import files_list
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -290,6 +291,11 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,
         )
+
+        # v1 stacked Files under Sessions so the tree was always on screen; the
+        # revamp's single rail defaults to Runs, so ask for Files first. No-op
+        # on v1.
+        files_list(page)
 
         # Wait for the file tree to render - the dir1 row must show up.
         dir1_row = page.get_by_text("dir1", exact=False).first

@@ -79,9 +79,50 @@ def is_studio_v2(page: Page) -> bool:
     keep working for whichever shell is actually rendered - the flag is a
     runtime tweak, so one build serves both and a test may pin either.
     ``studio-rail`` exists only in the revamp; ``studio-sidebar-inner`` only in
-    the v1 sidebar.
+    the v1 sidebar. Waits for whichever appears first, because counting before
+    the shell has mounted answers "not v2" for both shells - which would send a
+    v2 caller looking for v1 testids that will never arrive.
     """
+    either = page.locator(
+        '[data-testid="studio-rail"], [data-testid="studio-sidebar-inner"]'
+    )
+    either.first.wait_for(state="attached", timeout=20_000)
     return page.locator('[data-testid="studio-rail"]').count() > 0
+
+
+# The revamp replaced raw park kinds with copy an operator can read: an item
+# says "asked a question", not "ask_user". Journeys assert the item identifies
+# its kind, not which vocabulary happens to be shipped, so they ask here.
+_V2_KIND_COPY = {
+    "ask_user": "asked a question",
+    "approval": "wants approval",
+    "ask_approval": "wants approval",
+    "watch_files": "waiting on a file",
+    "sleep": "sleeping",
+}
+
+
+def show_all_action_items(page: Page, *, timeout: int = 10_000) -> None:
+    """Make every pending action item reachable, on either shell.
+
+    v1 listed all of them in the right rail at once. The revamp shows the
+    oldest in the always-visible bar and puts the rest behind an inbox - one
+    thing needing you is the common case, and a rail-length list of them is
+    not something to render permanently. Any journey that asserts across more
+    than one pending item has to open the inbox first; with one item, the bar
+    alone is enough and this is still safe to call.
+    """
+    if not is_studio_v2(page):
+        return
+    inbox = page.locator("[data-testid='attention-inbox']")
+    if inbox.count() and inbox.get_attribute("aria-expanded") != "true":
+        inbox.click()
+        expect(page.locator("[data-testid='attention-queue']")).to_be_visible(timeout=timeout)
+
+
+def kind_text(page: Page, kind: str) -> str:
+    """The text an action item renders for a park ``kind`` on this shell."""
+    return _V2_KIND_COPY.get(kind, kind) if is_studio_v2(page) else kind
 
 
 def sessions_list(page: Page):

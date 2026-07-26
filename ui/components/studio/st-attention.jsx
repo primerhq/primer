@@ -363,7 +363,7 @@ function ST2_YieldControls({ item, actions, compact }) {
         style={{ gap: 6, alignItems: "center", flex: "1 1 auto", minWidth: 0 }}
       >
         <input
-          data-testid="respond-input"
+          data-testid="respond"
           value={text}
           disabled={!actionable}
           placeholder="Type a reply…"
@@ -379,7 +379,7 @@ function ST2_YieldControls({ item, actions, compact }) {
             padding: "5px 9px", color: "var(--text)", fontSize: "var(--fs-12)",
           }}
         />
-        <button data-testid="respond" disabled={!actionable} onClick={send} style={btn()}>Send ⏎</button>
+        <button data-testid="ask-user-send" disabled={!actionable} onClick={send} style={btn()}>Send ⏎</button>
       </div>
     );
   }
@@ -528,7 +528,11 @@ function AttentionBar({ wid, studio }) {
         background: "var(--amber-dim)", borderBottom: "1px solid var(--amber)",
       }, barBase)}
     >
-      {/* action-required kept so existing journeys still resolve (§13). */}
+      {/* action-required / action-required-count / action-item keep the names
+          the shipped journeys locate. action-item is the WHOLE item - prompt
+          and controls - exactly as the v1 rail's row was; scoping it to the
+          controls alone silently breaks every "the item shows the prompt"
+          assertion. */}
       <span
         data-testid="action-required-count"
         style={{
@@ -538,6 +542,7 @@ function AttentionBar({ wid, studio }) {
       >
         <span data-testid="attention-count">{count}</span>
       </span>
+      <div data-testid="action-item" className="row" style={{ gap: 8, alignItems: "center", minWidth: 0, flex: "1 1 auto" }}>
       <span data-testid="action-required" className="row" style={{ gap: 8, alignItems: "center", minWidth: 0, flex: "1 1 auto" }}>
         <span data-testid="attention-head-item" className="row" style={{ gap: 8, alignItems: "center", minWidth: 0 }}>
           <span data-testid="action-session-link" style={{ fontSize: "var(--fs-12)", fontWeight: 600, color: "var(--text)", whiteSpace: "nowrap" }}>
@@ -551,7 +556,7 @@ function AttentionBar({ wid, studio }) {
           </span>
         </span>
       </span>
-      <div data-testid="action-item" className="row" style={{ gap: 6, alignItems: "center", flex: "0 1 auto" }}>
+      <div className="row" style={{ gap: 6, alignItems: "center", flex: "0 1 auto" }}>
         <ST2_YieldControls item={head} actions={actions} compact />
         {actions.errors[head.tool_call_id] ? (
           <span style={{ fontSize: "var(--fs-11)", color: "var(--red)" }}>{actions.errors[head.tool_call_id]}</span>
@@ -565,6 +570,8 @@ function AttentionBar({ wid, studio }) {
           }}
         >See context</button>
         <button
+          data-testid="attention-inbox"
+          aria-expanded={queueOpen ? "true" : "false"}
           onClick={function () { setUi({ queue: !queueOpen, focus: null }); }}
           style={{
             padding: "3px 9px", borderRadius: 7, background: "transparent",
@@ -572,6 +579,7 @@ function AttentionBar({ wid, studio }) {
             fontSize: "var(--fs-12)", cursor: "pointer",
           }}
         >Inbox ▾</button>
+      </div>
       </div>
 
       {queueOpen ? (
@@ -640,7 +648,7 @@ function AttentionQueue({ items, informs, actions, staleFocus, onDismissInform, 
           return (
             <div
               key={it.tool_call_id || it.session_id}
-              data-testid="attention-queue-item"
+              data-testid="action-item"
               className="col"
               style={{ gap: 7, padding: "11px 13px", borderBottom: "1px solid var(--bg-active)" }}
             >
