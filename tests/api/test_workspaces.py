@@ -281,15 +281,23 @@ class _FakeWorkspace:
             return
         raise NotFoundError(f"{path!r} not found")
 
-    async def log(self, *, limit=50):
-        from primer.model.workspace import CommitInfo
+    async def log(self, *, limit=50, with_files=False):
+        from primer.model.workspace import CommitFile, CommitInfo
 
         return [
             CommitInfo(
                 sha="a" * 40,
                 subject="init",
-                committed_at=datetime.now(timezone.utc),
+                # Fixed, not datetime.now(): a fake that mints a new timestamp
+                # per call makes any test comparing two responses flaky.
+                committed_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
                 workspace_id=self.workspace_id,
+                # Mirrors the real contract: None unless asked for.
+                files=(
+                    [CommitFile(path="a.txt", additions=3, deletions=1)]
+                    if with_files
+                    else None
+                ),
             )
         ][:limit]
 
@@ -1506,6 +1514,84 @@ class TestLogSubResource:
         body = resp.json()
         assert "commits" in body
         assert len(body["commits"]) >= 1
+
+    @pytest.mark.asyncio
+    async def test_log_omits_files_by_default(self, client, wsr) -> None:
+        """`files` stays null unless asked for, so the default response shape
+        (and its size) is unchanged for every existing caller."""
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        wid = post.json()["id"]
+
+        resp = await client.get(f"/v1/workspaces/{wid}/log")
+        assert resp.status_code == 200
+        commits = resp.json()["commits"]
+        assert commits
+        # null, NOT [] - "not requested" must not read as "touched no files".
+        assert all(c["files"] is None for c in commits)
+
+    @pytest.mark.asyncio
+    async def test_log_with_files_serialises_the_file_rows(self, client, wsr) -> None:
+        """`?with_files=1` reaches `ws.log(with_files=...)` and CommitFile
+        serialises with the field names the console reads.
+
+        This covers the ROUTE: the query param, the passthrough, and the JSON
+        shape. Real `--numstat` behaviour (counts, binaries, per-commit
+        attribution) is exercised against a real git repo in
+        tests/workspace/test_state_repo_log_files.py.
+        """
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        wid = post.json()["id"]
+
+        resp = await client.get(f"/v1/workspaces/{wid}/log", params={"with_files": 1})
+        assert resp.status_code == 200, resp.text
+        commits = resp.json()["commits"]
+        assert commits
+        files = commits[0]["files"]
+        assert files, "with_files=1 must reach the workspace and return rows"
+        entry = files[0]
+        assert set(entry) == {"path", "additions", "deletions", "binary"}
+        assert isinstance(entry["path"], str) and entry["path"]
+        assert isinstance(entry["additions"], int)
+        assert isinstance(entry["deletions"], int)
+        assert isinstance(entry["binary"], bool)
+
+    @pytest.mark.asyncio
+    async def test_log_with_files_accepts_the_usual_boolean_spellings(self, client, wsr) -> None:
+        # A pasted link says with_files=true; a hand-built one says 1.
+        await client.post(
+            "/v1/workspace_providers", json=_provider().model_dump(mode="json")
+        )
+        await client.post(
+            "/v1/workspace_templates", json=_template().model_dump(mode="json")
+        )
+        post = await client.post("/v1/workspaces", json={"template_id": "tpl-1"})
+        wid = post.json()["id"]
+
+        for spelling in ("1", "true", "True"):
+            resp = await client.get(
+                f"/v1/workspaces/{wid}/log", params={"with_files": spelling}
+            )
+            assert resp.status_code == 200, (spelling, resp.text)
+            assert resp.json()["commits"][0]["files"], spelling
+
+        for spelling in ("0", "false"):
+            resp = await client.get(
+                f"/v1/workspaces/{wid}/log", params={"with_files": spelling}
+            )
+            assert resp.status_code == 200, (spelling, resp.text)
+            assert resp.json()["commits"][0]["files"] is None, spelling
 
     @pytest.mark.asyncio
     async def test_show_commit_returns_diff(self, client, wsr) -> None:

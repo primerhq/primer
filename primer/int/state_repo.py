@@ -78,8 +78,15 @@ class StateRepo(Protocol):
         session_id: str | None = None,
         agent_id: str | None = None,
         limit: int = 100,
+        with_files: bool = False,
     ) -> list[CommitInfo]:
-        """Return commits, optionally filtered by session or agent. Newest first."""
+        """Return commits, optionally filtered by session or agent. Newest first.
+
+        ``with_files=True`` asks for per-file line deltas on each
+        ``CommitInfo.files``. Backends that cannot supply them leave the field
+        ``None`` rather than ``[]`` -- see :class:`CommitInfo.files`. Callers
+        must treat None as "unknown", never as zero.
+        """
         ...
 
     async def show_commit(self, sha: str) -> dict:

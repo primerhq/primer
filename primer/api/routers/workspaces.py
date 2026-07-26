@@ -1455,10 +1455,20 @@ log_router = APIRouter(tags=["workspace-log"])
 async def workspace_log(
     workspace_id: str = Path(...),
     limit: int = Query(default=50, ge=1, le=500),
+    with_files: bool = Query(
+        default=False,
+        description=(
+            "Include per-file line deltas on each commit's `files`. Off by "
+            "default because it widens the response; on the local backend it "
+            "costs no extra git process (--numstat rides the same git log). "
+            "Backends that cannot supply file data leave `files` null rather "
+            "than empty -- null means unknown, not zero."
+        ),
+    ),
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
-    commits = await ws.log(limit=limit)
+    commits = await ws.log(limit=limit, with_files=with_files)
     return {"commits": [c.model_dump(mode="json") for c in commits]}
 
 

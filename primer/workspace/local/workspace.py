@@ -543,9 +543,9 @@ class LocalWorkspace(Workspace):
                 f"cannot move {src!r} to {dst!r}: {exc.strerror or exc}"
             ) from exc
 
-    async def log(self, *, limit: int = 50) -> list[CommitInfo]:
+    async def log(self, *, limit: int = 50, with_files: bool = False) -> list[CommitInfo]:
         try:
-            return await self._state.history(limit=limit)
+            return await self._state.history(limit=limit, with_files=with_files)
         except (OSError, _GitCommandError) as exc:
             # Either the workspace .state directory disappeared
             # mid-read (race with destroy) or git refused to read a

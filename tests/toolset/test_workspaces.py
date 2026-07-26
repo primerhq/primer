@@ -201,7 +201,7 @@ class _LiveWorkspace:
             raise NotFoundError(f"{path!r} not found")
         del self._files[path]
 
-    async def log(self, *, limit=50):
+    async def log(self, *, limit=50, with_files=False):
         from datetime import datetime, timezone
         from primer.model.workspace import CommitInfo
 

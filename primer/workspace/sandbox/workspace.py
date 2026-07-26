@@ -498,8 +498,8 @@ class SandboxWorkspace(Workspace):
         async for chunk in self._sandbox.archive(resolved):
             yield chunk
 
-    async def log(self, *, limit: int = 50) -> "list[CommitInfo]":
-        return await self._state_repo.history(limit=limit)
+    async def log(self, *, limit: int = 50, with_files: bool = False) -> "list[CommitInfo]":
+        return await self._state_repo.history(limit=limit, with_files=with_files)
 
     async def status(self) -> WorkspaceStatus:
         info = await self._sandbox.inspect()
