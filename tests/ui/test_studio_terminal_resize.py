@@ -73,12 +73,14 @@ def test_start_term_resize_handler_present() -> None:
 
 def test_terminal_resize_handle_rendered_between_center_and_panel() -> None:
     src = _studio_src()
-    # The divider is gated on terminalOpen and wired to the drag handler.
-    assert 'data-testid="terminal-resize"' in src
+    # The divider is gated on the open state and wired to the drag handler.
+    # One handle serves both shells: studioV2 drags the investigate dock, so the
+    # testid switches with it rather than a second handle being added.
+    assert 'data-testid={isV2 ? "dock-resize" : "terminal-resize"}' in src
     assert 'className="st-term-resize"' in src
     assert "onMouseDown={startTermResize}" in src
     # It must sit BEFORE the TerminalPanel mount inside the center column.
-    handle = src.index('data-testid="terminal-resize"')
+    handle = src.index('data-testid={isV2 ? "dock-resize" : "terminal-resize"}')
     panel = src.index("<TerminalPanel wid={wid}")
     assert handle < panel, "resize handle must precede the terminal panel"
 
@@ -90,7 +92,12 @@ def test_terminal_resize_handle_rendered_between_center_and_panel() -> None:
 def test_term_height_css_var_wired_on_root() -> None:
     src = _studio_src()
     # The var is written inline on .st-root next to --st-left-w / --st-right-w.
-    assert '"--st-term-h": s.terminalHeight + "px"' in src
+    # studioV2 sizes the same bottom row from the dock's own height, and
+    # collapses it to 0 when the dock is closed (the v1 panel unmounts instead).
+    assert (
+        '"--st-term-h": (isV2 ? (s.dockOpen ? s.dockHeight : 0) : s.terminalHeight) + "px"'
+        in src
+    )
 
 
 def test_term_panel_flex_reads_css_var() -> None:

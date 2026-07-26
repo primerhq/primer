@@ -42,6 +42,8 @@ var ST_PERSIST_KEYS = [
   "dockOpen",
   "dockTab",
   "dockHeight",
+  "railMode",
+  "railFilter",
 ];
 
 function ST_storageKey(wid) {
@@ -204,6 +206,10 @@ function ST_defaultState() {
     dockOpen: false,
     dockTab: "events",
     dockHeight: 268,
+    // studioV2 rail (§5): one column, two modes, replacing the stacked
+    // Sessions-above-Files sidebar. railFilter narrows the runs list.
+    railMode: "runs",
+    railFilter: "all",
     termTabs: [{ id: "bash", title: "bash" }],
     activeTermId: "bash",
     // Right sidebar activity-feed chip filter
@@ -432,6 +438,14 @@ function useStudioState(wid, initialOpen) {
     });
   }, []);
 
+  // ---- rail (studioV2; §5) ----
+  var setRailMode = React.useCallback(function (m) {
+    setState(function (s) { return Object.assign({}, s, { railMode: m }); });
+  }, []);
+  var setRailFilter = React.useCallback(function (f) {
+    setState(function (s) { return Object.assign({}, s, { railFilter: f }); });
+  }, []);
+
   // ---- right debug/activity rail (StudioActivity) open/collapsed ----
   var toggleDebug = React.useCallback(function () {
     setState(function (s) { return Object.assign({}, s, { debugOpen: !s.debugOpen }); });
@@ -500,6 +514,8 @@ function useStudioState(wid, initialOpen) {
     toggleDock: toggleDock,
     setDockTab: setDockTab,
     setDockHeight: setDockHeight,
+    setRailMode: setRailMode,
+    setRailFilter: setRailFilter,
     toggleChip: toggleChip,
     setLeftWidth: setLeftWidth,
     setRightWidth: setRightWidth,
@@ -899,13 +915,19 @@ function Studio({ wid, pushToast, initialOpen }) {
           <div className="st-panel-overlay mobile-only" data-testid="studio-panel-overlay" onClick={closePanels} />
         )}
 
-        {/* ---- LEFT: B2 StudioSidebar (sessions + files tree) ---- On phones
-            this column is an off-canvas sheet toggled from the sub-header. ---- */}
+        {/* ---- LEFT: the rail ---- On phones this column is an off-canvas
+            sheet toggled from the sub-header. studioV2 swaps the stacked
+            Sessions-above-Files sidebar for one column with two modes (§5);
+            the studio-sidebar testid stays on the column either way, so the
+            drag handle, the drawer behaviour and the shipped journeys that
+            locate the left column are untouched. ---- */}
         <div
           className={"st-col st-col-left" + (leftPanelOpen ? " is-drawer-open" : "")}
           data-testid="studio-sidebar"
         >
-          <StudioSidebar wid={wid} studio={studio} />
+          {isV2 && typeof window.StudioRail === "function"
+            ? <window.StudioRail wid={wid} studio={studio} />
+            : <StudioSidebar wid={wid} studio={studio} />}
         </div>
 
         <div className="st-resize desktop-only" onMouseDown={function (e) { startResize("left", e); }} data-testid="studio-resize-left" />

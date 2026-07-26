@@ -69,6 +69,28 @@ def test_pending_yield_promotes_a_running_session_to_needs() -> None:
     assert ctx.eval("b.bucket") == "needs"
 
 
+def test_pending_yield_promotion_works_on_the_list_endpoint_shape() -> None:
+    # GET /workspaces/{wid}/sessions returns SessionInfo, which carries
+    # `session_id` and NOT `id`. Resolving only `id` silently never promoted a
+    # single row in the rail, because every row comes from that endpoint - and
+    # the bug is invisible (a needs-you row just renders as "working").
+    ctx = _ctx()
+    ctx.eval(
+        'var b = ST2_bucketOf({session_id:"s1", status:"running"},'
+        " {pendingBySession:{s1:true}});"
+    )
+    assert ctx.eval("b.bucket") == "needs"
+
+
+def test_pending_snapshot_for_another_session_does_not_leak() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        'var b = ST2_bucketOf({session_id:"s1", status:"running"},'
+        " {pendingBySession:{s2:true}});"
+    )
+    assert ctx.eval("b.bucket") == "working"
+
+
 def test_watch_and_sleep_parks_read_as_working() -> None:
     # Technically parked, but nothing waits on a human - so the queue count and
     # the rail's "needs you" group agree.
