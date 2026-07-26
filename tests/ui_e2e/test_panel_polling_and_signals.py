@@ -22,7 +22,6 @@ from tests.ui_e2e._studio_helpers import (
     expand_debug_sidebar,
     open_session_in_studio,
     open_studio,
-    show_all_action_items,
 )
 
 
@@ -218,10 +217,6 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
         # The right-sidebar debug panel (Action Required) starts collapsed;
         # expand it before looking for action-item content.
         expand_debug_sidebar(page)
-        # Two pending items at once: v1 listed both in the rail, the revamp
-        # shows the oldest in the bar and the rest behind the inbox. No-op on v1.
-        show_all_action_items(page)
-
         item = page.locator("[data-testid='action-item']").first
         expect(item).to_be_visible(timeout=10_000)
         expect(item).to_contain_text("What is your name?")
@@ -235,7 +230,14 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
         # the next reconcile poll (15s) or a manual wait surfaces item B.
         state["items"] = [_ask_item(sid, tool_call_id="tc-B", prompt="Pick a color?")]
         item_b = page.locator("[data-testid='action-item']").filter(has_text="Pick a color?").first
-        expect(item_b).to_be_visible(timeout=20_000)
+        # Two full poll periods. The pending snapshot polls every 15s on both
+        # shells, woken early by a workspace tap - but the tap never fires here
+        # because /yields/pending is route-mocked, so the backstop poll is the
+        # only thing that can surface the swap. v1 mounted ActionRequired when
+        # this test expanded the rail, starting its timer at that moment; the
+        # revamp's bar mounts with the page, so the tick lands on a different
+        # phase and one period is no longer reliably enough.
+        expect(item_b).to_be_visible(timeout=35_000)
         # Item B's respond input is empty — the draft was scoped to item A.
         inp_b = item_b.locator("[data-testid='respond']")
         assert (inp_b.input_value() or "") == "", (

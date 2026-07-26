@@ -102,31 +102,6 @@ _V2_KIND_COPY = {
 }
 
 
-def show_all_action_items(page: Page, *, timeout: int = 10_000) -> None:
-    """Make every pending action item reachable, on either shell.
-
-    v1 listed all of them in the right rail at once. The revamp shows the
-    oldest in the always-visible bar and puts the rest behind an inbox - one
-    thing needing you is the common case, and a rail-length list of them is
-    not something to render permanently. Any journey that asserts across more
-    than one pending item has to open the inbox first; with one item, the bar
-    alone is enough and this is still safe to call.
-    """
-    if not is_studio_v2(page):
-        return
-    # Wait for the bar to actually have something in it first. The pending
-    # snapshot arrives after mount, so the bar is briefly in its calm state -
-    # and the calm bar has no inbox, so checking too early finds nothing, skips
-    # silently, and leaves every item past the first unreachable.
-    page.locator("[data-testid='action-item']").first.wait_for(
-        state="attached", timeout=timeout,
-    )
-    inbox = page.locator("[data-testid='attention-inbox']")
-    if inbox.count() and inbox.get_attribute("aria-expanded") != "true":
-        inbox.click()
-        expect(page.locator("[data-testid='attention-queue']")).to_be_visible(timeout=timeout)
-
-
 def kind_text(page: Page, kind: str) -> str:
     """The text an action item renders for a park ``kind`` on this shell."""
     return _V2_KIND_COPY.get(kind, kind) if is_studio_v2(page) else kind
