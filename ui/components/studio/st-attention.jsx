@@ -27,6 +27,143 @@ function ST2_kindCopy(kind) {
 }
 
 // ---------------------------------------------------------------------------
+// ?focus=<tool_call_id> deep links (§9, §2.3)
+//
+// The point is a URL you can paste into Slack: "this needs you". That makes the
+// link's lifetime longer than the yield's, so the id is very often stale by the
+// time someone clicks - already approved, denied, or the session ended. A stale
+// link must land somewhere useful and SAY it is stale; silently opening an empty
+// focus panel, or worse the wrong item, is what makes a feature like this
+// untrustworthy.
+//
+// The Studio is a hash router, so the query lives in the hash fragment.
+// ---------------------------------------------------------------------------
+
+// The parse/serialise pair is deliberately pure string work rather than
+// URL / URLSearchParams. Those are Web APIs, not ECMAScript, so anything built
+// on them is only exercisable in a real browser - which for a query-string
+// edge case ("does writing focus drop ?open=") means it effectively is not
+// exercised at all. Keeping the logic pure puts it under test; the Web API stays
+// at the boundary in ST2_syncFocusUrl / ST2_copyFocusLink.
+
+function ST2_splitHash(hash) {
+  var h = String(hash == null ? "" : hash) || "#/";
+  var qIdx = h.indexOf("?");
+  return {
+    path: qIdx >= 0 ? h.slice(0, qIdx) : h,
+    query: qIdx >= 0 ? h.slice(qIdx + 1) : "",
+  };
+}
+
+// [[key, value], ...] preserving order, so rewriting one param cannot reorder
+// or drop the others.
+function ST2_parseQuery(query) {
+  if (!query) return [];
+  return String(query).split("&").filter(Boolean).map(function (pair) {
+    var eq = pair.indexOf("=");
+    var k = eq < 0 ? pair : pair.slice(0, eq);
+    var v = eq < 0 ? "" : pair.slice(eq + 1);
+    try { return [decodeURIComponent(k), decodeURIComponent(v)]; }
+    catch (_e) { return [k, v]; }
+  });
+}
+
+function ST2_buildQuery(pairs) {
+  return pairs.map(function (p) {
+    return encodeURIComponent(p[0]) + "=" + encodeURIComponent(p[1]);
+  }).join("&");
+}
+
+// ST2_focusFromHash(hash) -> the ?focus= value, or null.
+function ST2_focusFromHash(hash) {
+  var found = null;
+  ST2_parseQuery(ST2_splitHash(hash).query).forEach(function (p) {
+    if (p[0] === "focus") found = p[1];
+  });
+  return found || null;
+}
+
+// ST2_hashWithFocus(hash, tcid) -> the hash with focus set (or removed when
+// tcid is falsy), every other param preserved in place.
+function ST2_hashWithFocus(hash, tcid) {
+  var parts = ST2_splitHash(hash);
+  var pairs = ST2_parseQuery(parts.query).filter(function (p) { return p[0] !== "focus"; });
+  if (tcid) pairs.push(["focus", String(tcid)]);
+  var qs = ST2_buildQuery(pairs);
+  return qs ? parts.path + "?" + qs : parts.path;
+}
+
+function ST2_focusFromUrl() {
+  try {
+    return ST2_focusFromHash(window.location.hash);
+  } catch (_e) {
+    return null;
+  }
+}
+
+// Mirror the focused item into the URL with replaceState - no history entry per
+// focus change, same idiom as the Studio's ?open= mirroring.
+function ST2_syncFocusUrl(tcid) {
+  try {
+    var next = ST2_hashWithFocus(window.location.hash, tcid);
+    window.history.replaceState(null, "", ST2_baseUrl() + next);
+    return next;
+  } catch (_e) {
+    return null;
+  }
+}
+
+function ST2_baseUrl() {
+  var loc = window.location;
+  return loc.origin + loc.pathname + (loc.search || "");
+}
+
+// Build the shareable URL for a tool_call_id WITHOUT navigating, so "Copy link"
+// cannot move the reader off the panel they are answering.
+function ST2_focusLinkFor(tcid) {
+  try {
+    return ST2_baseUrl() + ST2_hashWithFocus(window.location.hash, tcid);
+  } catch (_e) {
+    return null;
+  }
+}
+
+function ST2_copyFocusLink(tcid) {
+  var link = ST2_focusLinkFor(tcid);
+  if (!link) return;
+  var toast = window.primerApi && window.primerApi.toastPush;
+  var ok = function () {
+    if (toast) toast({ kind: "success", title: "Link copied", detail: tcid });
+  };
+  var fail = function () {
+    // Clipboard access is refused outside a secure context, so surface the URL
+    // rather than reporting a copy that did not happen.
+    if (toast) toast({ kind: "error", title: "Could not copy", detail: link });
+  };
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(link).then(ok, fail);
+    } else {
+      fail();
+    }
+  } catch (_e) {
+    fail();
+  }
+}
+
+// ST2_resolveFocusTarget(tcid, items, loading) -> {kind, item?}
+//   "wait"    - still loading, decide nothing yet
+//   "none"    - no ?focus= in the URL
+//   "focus"   - the id is live; open it
+//   "stale"   - the id is gone; open the queue and say so
+function ST2_resolveFocusTarget(tcid, items, loading) {
+  if (!tcid) return { kind: "none" };
+  if (loading) return { kind: "wait" };
+  var match = (items || []).filter(function (i) { return i.tool_call_id === tcid; })[0];
+  return match ? { kind: "focus", item: match } : { kind: "stale" };
+}
+
+// ---------------------------------------------------------------------------
 // Data: one resource, one tap listener, informs in local state
 // ---------------------------------------------------------------------------
 
@@ -274,6 +411,34 @@ function AttentionBar({ wid, studio }) {
   var queueOpen = ui.queue;
   var focusItem = ui.focus;
 
+  // Resolve ?focus= once the pending snapshot has actually landed. Applied at
+  // most once per distinct URL value (appliedFocusRef), so the mirroring below
+  // cannot feed itself: focusing an item writes the URL, and without this guard
+  // that write would be read straight back as a fresh deep-link.
+  var appliedFocusRef = React.useRef(null);
+  React.useEffect(function () {
+    var tcid = ST2_focusFromUrl();
+    if (!tcid || appliedFocusRef.current === tcid) return;
+    var target = ST2_resolveFocusTarget(tcid, visible, att.loading);
+    if (target.kind === "wait") return;
+    appliedFocusRef.current = tcid;
+    if (target.kind === "focus") {
+      setUi({ queue: false, focus: target.item, staleFocus: null });
+    } else if (target.kind === "stale") {
+      // Land on the queue rather than an empty panel, and name the reason.
+      setUi({ queue: true, focus: null, staleFocus: tcid });
+      ST2_syncFocusUrl(null);
+    }
+  }, [att.loading, visible.length]); // eslint-disable-line
+
+  // Keep the URL pointing at whatever is focused, so the address bar is always
+  // the shareable link without a separate "copy link" round trip.
+  React.useEffect(function () {
+    var tcid = focusItem && focusItem.tool_call_id;
+    if (tcid) appliedFocusRef.current = tcid;
+    ST2_syncFocusUrl(tcid || null);
+  }, [focusItem]);
+
   // Keyboard is registered ONLY while an overlay is open - j/k/d/c would
   // otherwise eat typing anywhere in Studio.
   React.useEffect(function () {
@@ -338,9 +503,10 @@ function AttentionBar({ wid, studio }) {
         {queueOpen ? (
           <AttentionQueue
             items={visible} informs={att.informs} actions={actions}
+            staleFocus={ui.staleFocus}
             onDismissInform={att.dismissInform}
             onFocus={function (it) { setUi({ queue: false, focus: it }); }}
-            onClose={function () { setUi({ queue: false, focus: null }); }}
+            onClose={function () { setUi({ queue: false, focus: null, staleFocus: null }); }}
           />
         ) : null}
       </div>
@@ -403,9 +569,10 @@ function AttentionBar({ wid, studio }) {
       {queueOpen ? (
         <AttentionQueue
           items={visible} informs={att.informs} actions={actions}
+          staleFocus={ui.staleFocus}
           onDismissInform={att.dismissInform}
           onFocus={function (it) { setUi({ queue: false, focus: it }); }}
-          onClose={function () { setUi({ queue: false, focus: null }); }}
+          onClose={function () { setUi({ queue: false, focus: null, staleFocus: null }); }}
         />
       ) : null}
       {focusItem ? (
@@ -426,7 +593,7 @@ function AttentionBar({ wid, studio }) {
 // Queue popover
 // ---------------------------------------------------------------------------
 
-function AttentionQueue({ items, informs, actions, onDismissInform, onFocus, onClose }) {
+function AttentionQueue({ items, informs, actions, staleFocus, onDismissInform, onFocus, onClose }) {
   return (
     <div
       data-testid="attention-queue"
@@ -440,6 +607,21 @@ function AttentionQueue({ items, informs, actions, onDismissInform, onFocus, onC
         <span style={{ fontSize: "var(--fs-12)", fontWeight: 600 }}>Needs you</span>
         <span className="muted" style={{ marginLeft: "auto", fontSize: "var(--fs-11)", cursor: "pointer" }} onClick={onClose}>esc</span>
       </div>
+      {/* A shared ?focus= link outlives the yield it points at, so say plainly
+          that this one is already handled rather than showing an empty panel
+          and letting the reader assume the link was broken (§9). */}
+      {staleFocus ? (
+        <div
+          data-testid="focus-resolved-note"
+          style={{
+            padding: "8px 13px", fontSize: "var(--fs-11)",
+            background: "var(--bg-1)", color: "var(--text-2)",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
+          That request was already handled. Here is what still needs you.
+        </div>
+      ) : null}
       <div data-testid="action-required-list" style={{ maxHeight: 320, overflow: "auto" }}>
         {!items.length ? (
           <div data-testid="action-required-empty" className="muted" style={{ padding: 14, fontSize: "var(--fs-12)" }}>
@@ -529,7 +711,20 @@ function UnblockFocus({ wid, item, queue, actions, onAdvance, onClose }) {
         <div className="row" style={{ padding: 14, borderBottom: "1px solid var(--border)", alignItems: "center", gap: 9 }}>
           <span style={{ fontSize: "var(--fs-13)", fontWeight: 600 }}>{item.session_name || item.session_id}</span>
           <span style={{ fontSize: "var(--fs-11)", color: "var(--amber)" }}>{ST2_kindCopy(item.kind)}</span>
-          <span className="muted mono" style={{ marginLeft: "auto", fontSize: "var(--fs-11)" }}>
+          {/* The address bar already carries ?focus= for whatever is open here,
+              so this is a convenience over the same URL, not a second source. */}
+          {actionable ? (
+            <span
+              data-testid="focus-copy-link"
+              title="Copy a link to this request"
+              onClick={function () { ST2_copyFocusLink(item.tool_call_id); }}
+              style={{ marginLeft: "auto", fontSize: "var(--fs-11)", color: "var(--text-3)", cursor: "pointer" }}
+            >Copy link</span>
+          ) : null}
+          <span
+            className="muted mono"
+            style={{ marginLeft: actionable ? 0 : "auto", fontSize: "var(--fs-11)" }}
+          >
             {item.tool_call_id || "no tool_call_id"}
           </span>
         </div>
@@ -598,3 +793,9 @@ window.UnblockFocus = UnblockFocus;
 window.ST2_useAttention = ST2_useAttention;
 window.ST2_useYieldActions = ST2_useYieldActions;
 window.ST2_kindCopy = ST2_kindCopy;
+window.ST2_focusFromUrl = ST2_focusFromUrl;
+window.ST2_syncFocusUrl = ST2_syncFocusUrl;
+window.ST2_resolveFocusTarget = ST2_resolveFocusTarget;
+window.ST2_focusLinkFor = ST2_focusLinkFor;
+window.ST2_focusFromHash = ST2_focusFromHash;
+window.ST2_hashWithFocus = ST2_hashWithFocus;
