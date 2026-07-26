@@ -1599,6 +1599,10 @@ function StudioCenter({ wid, studio, tabs, activeId, onFocus, onClose, onCloseAl
     panel = <ST_SessionPanel key={"sess:" + activeTab.ref} wid={wid} sid={activeTab.ref} pushToast={pushToast} />;
   } else if (activeTab.kind === "file") {
     panel = <FilePanel key={"file:" + activeTab.ref} wid={wid} tab={activeTab} studio={studio} pushToast={pushToast} />;
+  } else if (activeTab.kind === "changes" && typeof window.ChangesView === "function") {
+    // The turn trail is a full-width two-column surface (WIRING §7.2), so it
+    // lives as a center tab rather than in the 248px rail.
+    panel = <window.ChangesView wid={wid} studio={studio} />;
   } else {
     panel = (
       <div className="st-placeholder" data-testid="center-unknown" style={{ flex: 1 }}>
