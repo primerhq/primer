@@ -363,7 +363,11 @@ function GB_reducer(draft, action) {
       const layout = window.primerVendor && window.primerVendor.autoLayout;
       if (!layout) return d;
       try {
-        const laid = layout(d); // autoLayout(draft) -> new draft
+        // Spacing is DERIVED from the real card size rather than left at the
+        // helper's 200px default, which predates the two-line cards: at 196px
+        // wide that default leaves a 4px gutter and the steps visibly collide.
+        const size = (window.GR_NODE_SIZE && window.GR_NODE_SIZE.agent) || { w: 196, h: 64 };
+        const laid = layout(d, { colWidth: size.w + 64, rowHeight: size.h + 40 });
         return laid && Array.isArray(laid.nodes) ? laid : d;
       } catch (_e) {
         return d;
@@ -391,7 +395,14 @@ function GB_stripAll(d) {
   return { ...(d || {}), nodes: ((d && d.nodes) || []).map(strip) };
 }
 
+// The builder body fills the viewport rather than sitting in a fixed slab.
+// The subtraction covers the app chrome + page title + status panel + the
+// builder's own top bar; minHeight keeps it usable on short screens, where the
+// page simply scrolls as normal.
+const GB_BODY_STYLE = { flex: 1, minHeight: 520, height: "calc(100vh - 300px)" };
+
 Object.assign(window, {
+  GB_BODY_STYLE,
   GB_slug, GB_uniqueId, GB_defaultInput, GB_makeNode, GB_makeSplitPair,
   GB_renameStructural, GB_allLinks, GB_supersteps, GB_predecessors,
   GB_reducer, GB_stripAll,
