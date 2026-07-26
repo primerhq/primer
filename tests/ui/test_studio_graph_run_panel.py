@@ -317,7 +317,7 @@ def test_suggestion_chips_are_offered_for_questions_only() -> None:
 
 def test_mobile_reuses_the_shared_yield_controls_and_actions() -> None:
     src = MOBILE.read_text(encoding="utf-8")
-    assert "<ST2_YieldControls item={item} actions={actions} />" in src
+    assert "<ST2_YieldControls key={item.tool_call_id} item={item} actions={actions} />" in src
     assert "ST2_useYieldActions(wid)" in src
     # Not a second implementation of the write path.
     assert "useMutation" not in src
