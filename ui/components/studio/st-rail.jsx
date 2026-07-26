@@ -53,9 +53,6 @@ function StudioRail({ wid, studio }) {
   return (
     <div
       data-testid="studio-rail"
-      // studio-sidebar-inner kept as an alias so the shipped journeys that
-      // locate the v1 sidebar still resolve while both shells exist.
-      data-legacy-testid="studio-sidebar-inner"
       className="col"
       style={{ height: "100%", minHeight: 0, gap: 0, overflow: "hidden" }}
     >

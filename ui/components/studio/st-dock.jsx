@@ -144,9 +144,6 @@ function InvestigateDock({ wid, studio, sessionId }) {
   return (
     <div
       data-testid="investigate-dock"
-      // studio-activity kept as an alias for one release so journeys that
-      // locate the old right rail still resolve (WIRING §13).
-      data-legacy-testid="studio-activity"
       className="col"
       style={{
         height: s.dockHeight || 268, flex: "0 0 auto", minHeight: 0,

@@ -30,10 +30,11 @@
     // replaces. Flip on to use the new builder; the switch lives in
     // GraphDetail so turning it back off is a flag flip, not a revert.
     graphBuilderV2: true,
-    // Studio revamp (ui/studio/STUDIO-WIRING.md). Off until the shell is
-    // complete; both shells coexist in one build so QA can A/B. Read with
-    // `=== true` so an incomplete revamp cannot appear by accident.
-    studioV2: false,
+    // Studio revamp (ui/studio/STUDIO-WIRING.md). ON: the shell is complete
+    // (attention bar, rail, dock, panes, Changes, graph strip, mobile). Both
+    // shells still coexist in one build, so turning it back off is a flag flip
+    // rather than a revert; the old shell goes the release after.
+    studioV2: true,
   };
 
   // Subset of keys whose user choice we persist across reloads via

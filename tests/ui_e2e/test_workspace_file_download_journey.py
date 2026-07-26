@@ -39,7 +39,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_studio
+from tests.ui_e2e._studio_helpers import files_list, open_studio
 
 
 from tests._support.smk import smk  # noqa: E402
@@ -171,8 +171,10 @@ def test_u0106_workspace_file_inspect_and_download_journey(
         page.wait_for_url(f"**/console/#/workspaces/{wid}**", timeout=15_000)
         open_studio(page, console_url, wid)
 
-        # The Files section defaults open; the seeded file surfaces as a
-        # sidebar file-row within its lazy tree fetch.
+        # v1 kept the tree always on screen; the revamp's rail defaults to
+        # Runs, so ask for Files first (no-op on v1) before the seeded file
+        # surfaces as a file-row within its lazy tree fetch.
+        files_list(page)
         file_row = page.locator(
             '[data-testid="file-row"]', has_text=file_name,
         ).first

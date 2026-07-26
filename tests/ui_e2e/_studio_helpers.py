@@ -72,16 +72,65 @@ def studio_url(console_url: str, wid: str) -> str:
     return f"{console_url}#/workspaces/{wid}"
 
 
+def is_studio_v2(page: Page) -> bool:
+    """True when the page is showing the revamped Studio shell.
+
+    Detected from the DOM rather than from the tweak default, so these helpers
+    keep working for whichever shell is actually rendered - the flag is a
+    runtime tweak, so one build serves both and a test may pin either.
+    ``studio-rail`` exists only in the revamp; ``studio-sidebar-inner`` only in
+    the v1 sidebar.
+    """
+    return page.locator('[data-testid="studio-rail"]').count() > 0
+
+
+def sessions_list(page: Page):
+    """The list of session rows, whichever shell is rendered.
+
+    v1 stacked a ``sessions-section`` above a ``files-section``; the revamp
+    replaces both with one rail in two modes, so the runs list is ``rail-runs``.
+    """
+    return page.locator(
+        '[data-testid="rail-runs"]' if is_studio_v2(page) else '[data-testid="sessions-section"]'
+    )
+
+
+def files_list(page: Page, *, timeout: int = 10_000):
+    """The file tree, switching the rail into Files mode first when needed.
+
+    On v1 the tree is always mounted below the sessions section. In the revamp
+    Files is one of two rail modes and Runs is the default, so a caller that
+    wants the tree has to ask for it - which is the trade the single rail makes
+    for giving whichever list you are using the full column height.
+    """
+    if not is_studio_v2(page):
+        return page.locator('[data-testid="files-section"]')
+    rail_files = page.locator('[data-testid="rail-files"]')
+    if rail_files.count() == 0:
+        page.locator('[data-testid="rail-mode-files"]').click()
+    expect(rail_files).to_be_visible(timeout=timeout)
+    return rail_files
+
+
 def open_studio(page: Page, console_url: str, wid: str, *, timeout: int = 20_000) -> None:
     """Navigate to a workspace's Studio and wait for the shell to mount.
 
-    Confirms all three region wrappers render so callers can immediately
-    reach the sidebar / center / activity columns.
+    Confirms the region wrappers render so callers can immediately reach the
+    left rail and the center.
+
+    studioV2 has no right column: Action Required moved into the always-mounted
+    attention bar and the event tap into the investigate dock, so
+    ``studio-activity`` is asserted only on the v1 shell (see
+    ``expand_debug_sidebar``).
     """
     page.goto(studio_url(console_url, wid), wait_until="domcontentloaded")
     expect(page.locator('[data-testid="studio-root"]')).to_be_visible(timeout=timeout)
-    for region in ("studio-sidebar", "studio-center", "studio-activity"):
+    for region in ("studio-sidebar", "studio-center"):
         expect(page.locator(f'[data-testid="{region}"]')).to_be_visible(timeout=10_000)
+    if is_studio_v2(page):
+        expect(page.locator('[data-testid="attention-bar"]')).to_be_visible(timeout=10_000)
+    else:
+        expect(page.locator('[data-testid="studio-activity"]')).to_be_visible(timeout=10_000)
 
 
 def open_session_in_studio(
@@ -188,6 +237,13 @@ def expand_debug_sidebar(page: Page, *, timeout: int = 10_000) -> None:
     must call this first — right after ``open_studio`` /
     ``open_session_in_studio`` / ``open_session_via_sidebar``.
     """
+    if is_studio_v2(page):
+        # Nothing to expand: the attention bar is mounted between the header
+        # and the body at all times, including when empty. That IS the revamp's
+        # premise - "nothing needs you" is a state worth showing - so the v1
+        # open-the-panel-first step becomes a visibility assertion.
+        expect(page.locator("[data-testid='attention-bar']")).to_be_visible(timeout=timeout)
+        return
     toggle = page.locator("[data-testid='studio-debug-toggle']")
     expect(toggle).to_be_visible(timeout=timeout)
     if toggle.get_attribute("aria-pressed") != "true":

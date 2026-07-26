@@ -330,7 +330,11 @@ function ST2_YieldControls({ item, actions, compact }) {
 
   if (kind === "approval" || kind === "ask_approval") {
     return (
-      <div className="row" style={{ gap: 6, alignItems: "center" }}>
+      <div
+        className="row"
+        data-testid="action-approval-controls"
+        style={{ gap: 6, alignItems: "center" }}
+      >
         <button
           data-testid="approve" disabled={!actionable}
           title={actionable ? "Approve (Enter)" : "This park has no tool_call_id and cannot be answered"}
@@ -353,7 +357,11 @@ function ST2_YieldControls({ item, actions, compact }) {
       setText("");
     };
     return (
-      <div className="row" style={{ gap: 6, alignItems: "center", flex: "1 1 auto", minWidth: 0 }}>
+      <div
+        className="row"
+        data-testid="action-ask-controls"
+        style={{ gap: 6, alignItems: "center", flex: "1 1 auto", minWidth: 0 }}
+      >
         <input
           data-testid="respond-input"
           value={text}
@@ -637,7 +645,11 @@ function AttentionQueue({ items, informs, actions, staleFocus, onDismissInform, 
               style={{ gap: 7, padding: "11px 13px", borderBottom: "1px solid var(--bg-active)" }}
             >
               <div className="row" style={{ gap: 8, alignItems: "center", minWidth: 0 }}>
-                <span style={{ fontSize: "var(--fs-12)", fontWeight: 600 }}>{it.session_name || it.session_id}</span>
+                <span
+                  data-testid="action-session-link"
+                  style={{ fontSize: "var(--fs-12)", fontWeight: 600, cursor: "pointer" }}
+                  onClick={function () { onFocus(it); }}
+                >{it.session_name || it.session_id}</span>
                 <span style={{ fontSize: "var(--fs-11)", color: "var(--amber)" }}>{ST2_kindCopy(it.kind)}</span>
                 <span
                   className="muted" style={{ marginLeft: "auto", fontSize: "var(--fs-11)", cursor: "pointer" }}
