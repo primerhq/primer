@@ -135,9 +135,12 @@ def test_deep_link_synthesizes_url_tab() -> None:
     # appended (concat) and activated rather than ignored.
     assert "ST_applyUrlTab" in src
     assert "ST_tabFromUrlId(urlTab)" in src
-    # When the url tab isn't already open we append + activate it.
-    assert "base.openTabs = openTabs.concat([tab]);" in src
-    assert "base.activeTabId = urlTab;" in src
+    # When the url tab isn't already open we append + activate it. The append is
+    # keyed by pane (openTabs / asideTabs) so ?open= and ?aside= share one
+    # implementation instead of two that can drift.
+    assert "base[tabsKey] = tabs.concat([tab]);" in src
+    assert "base[activeKey] = urlTab;" in src
+    assert 'ST_applyUrlTabTo(base, "openTabs", "activeTabId",' in src
 
 
 def test_workspace_selector_uses_workspaces_resource() -> None:

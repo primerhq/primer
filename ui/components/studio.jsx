@@ -44,6 +44,9 @@ var ST_PERSIST_KEYS = [
   "dockHeight",
   "railMode",
   "railFilter",
+  "asideTabs",
+  "activeAsideTabId",
+  "asideWidth",
 ];
 
 function ST_storageKey(wid) {
@@ -95,12 +98,13 @@ function ST_savePersisted(wid, state) {
 // Parse ?open=session:<id> / ?open=file:<path> into a tab id string, or
 // null. The Studio uses a hash router (see foundation/router.js), so the
 // query lives in the hash fragment, not window.location.search.
-function ST_tabFromUrl() {
+// `param` selects the pane: "open" is the primary, "aside" the companion (§6).
+function ST_tabFromUrl(param) {
   try {
     var hash = window.location.hash || "";
     var qIdx = hash.indexOf("?");
     if (qIdx < 0) return null;
-    var open = new URLSearchParams(hash.slice(qIdx + 1)).get("open");
+    var open = new URLSearchParams(hash.slice(qIdx + 1)).get(param || "open");
     if (!open) return null;
     if (open.indexOf("session:") === 0) return open;
     if (open.indexOf("file:") === 0) return open;
@@ -136,25 +140,34 @@ function ST_tabFromUrlId(urlTab) {
 // on mount, the first persist effect's ST_syncUrl re-writes the same ?open=
 // value instead of deleting it (so deep-links survive the mount).
 function ST_applyUrlTab(base, fallbackOpen) {
-  var urlTab = ST_tabFromUrl() || (fallbackOpen || null);
+  base = ST_applyUrlTabTo(base, "openTabs", "activeTabId",
+    ST_tabFromUrl("open") || (fallbackOpen || null));
+  // The companion pane is deep-linkable too, so a pasted two-pane URL (a
+  // transcript beside its diff) restores both sides (§6).
+  return ST_applyUrlTabTo(base, "asideTabs", "activeAsideTabId",
+    ST_tabFromUrl("aside"));
+}
+
+// Shared by both panes: activate the url tab if it is already open, else
+// synthesize a minimal one and append it.
+function ST_applyUrlTabTo(base, tabsKey, activeKey, urlTab) {
   if (!urlTab) return base;
-  var openTabs = base.openTabs || [];
-  var present = openTabs.some(function (t) { return t.id === urlTab; });
-  if (present) {
-    base.activeTabId = urlTab;
+  var tabs = base[tabsKey] || [];
+  if (tabs.some(function (t) { return t.id === urlTab; })) {
+    base[activeKey] = urlTab;
     return base;
   }
   var tab = ST_tabFromUrlId(urlTab);
   if (!tab) return base;
-  base.openTabs = openTabs.concat([tab]);
-  base.activeTabId = urlTab;
+  base[tabsKey] = tabs.concat([tab]);
+  base[activeKey] = urlTab;
   return base;
 }
 
-// Mirror the active tab to the URL query via replaceState — no history
-// entry per tab switch. activeTabId is already in `session:<id>` /
-// `file:<path>` form so it maps straight onto ?open=.
-function ST_syncUrl(activeTabId) {
+// Mirror the active tab(s) to the URL query via replaceState - no history
+// entry per tab switch. The ids are already in `session:<id>` / `file:<path>`
+// form so they map straight onto ?open= and ?aside=.
+function ST_syncUrl(activeTabId, activeAsideTabId) {
   try {
     var url = new URL(window.location.href);
     var hash = url.hash || "#/";
@@ -163,6 +176,8 @@ function ST_syncUrl(activeTabId) {
     var params = new URLSearchParams(qIdx >= 0 ? hash.slice(qIdx + 1) : "");
     if (activeTabId) params.set("open", activeTabId);
     else params.delete("open");
+    if (activeAsideTabId) params.set("aside", activeAsideTabId);
+    else params.delete("aside");
     var qs = params.toString();
     url.hash = qs ? path + "?" + qs : path;
     window.history.replaceState(null, "", url.toString());
@@ -210,6 +225,13 @@ function ST_defaultState() {
     // Sessions-above-Files sidebar. railFilter narrows the runs list.
     railMode: "runs",
     railFilter: "all",
+    // studioV2 companion pane (§6). There is deliberately no `asideOpen`
+    // flag: the pane is open exactly when it holds tabs, so "closing the last
+    // companion tab clears asideOpen" is true by construction instead of
+    // being a second source of truth that can desync from the tab list.
+    asideTabs: [],
+    activeAsideTabId: null,
+    asideWidth: 520,
     termTabs: [{ id: "bash", title: "bash" }],
     activeTermId: "bash",
     // Right sidebar activity-feed chip filter
@@ -266,7 +288,7 @@ function useStudioState(wid, initialOpen) {
   // Persist + URL-mirror after every committed state change.
   React.useEffect(function () {
     ST_savePersisted(wid, state);
-    ST_syncUrl(state.activeTabId);
+    ST_syncUrl(state.activeTabId, state.activeAsideTabId);
   }, [wid, state]);
 
   // React to ?open= changes that happen AFTER mount (deep-links followed
@@ -383,6 +405,90 @@ function useStudioState(wid, initialOpen) {
         activeTabId: activeTabId,
         fileModes: fileModes,
       });
+    });
+  }, []);
+
+  // ---- companion pane (studioV2; ui/studio/STUDIO-WIRING.md §6) ----
+  // A second tab strip + panel to the right of the primary one, so a diff can
+  // open BESIDE the transcript that produced it instead of replacing it.
+  var openAside = React.useCallback(function (tab) {
+    setState(function (s) {
+      var prev = s.asideTabs || [];
+      var exists = prev.some(function (t) { return t.id === tab.id; });
+      var fileModes = s.fileModes;
+      if (tab.kind === "file" && fileModes[tab.id] === undefined) {
+        fileModes = Object.assign({}, fileModes);
+        fileModes[tab.id] = tab.mode || "preview";
+      }
+      return Object.assign({}, s, {
+        asideTabs: exists ? prev : prev.concat([tab]),
+        activeAsideTabId: tab.id,
+        fileModes: fileModes,
+      });
+    });
+  }, []);
+
+  var focusAsideTab = React.useCallback(function (id) {
+    setState(function (s) { return Object.assign({}, s, { activeAsideTabId: id }); });
+  }, []);
+
+  var closeAsideTab = React.useCallback(function (id) {
+    setState(function (s) {
+      var prev = s.asideTabs || [];
+      var idx = prev.findIndex(function (t) { return t.id === id; });
+      if (idx < 0) return s;
+      var asideTabs = prev.filter(function (t) { return t.id !== id; });
+      var activeAsideTabId = s.activeAsideTabId;
+      if (activeAsideTabId === id) {
+        // Same left-neighbour rule as closeTab, computed against the
+        // post-filter array so there is no off-by-one.
+        activeAsideTabId = asideTabs.length
+          ? asideTabs[Math.min(Math.max(0, idx - 1), asideTabs.length - 1)].id
+          : null;
+      }
+      return Object.assign({}, s, { asideTabs: asideTabs, activeAsideTabId: activeAsideTabId });
+    });
+  }, []);
+
+  var closeAllAsideTabs = React.useCallback(function () {
+    setState(function (s) {
+      if (!(s.asideTabs && s.asideTabs.length) && s.activeAsideTabId == null) return s;
+      return Object.assign({}, s, { asideTabs: [], activeAsideTabId: null });
+    });
+  }, []);
+
+  var setAsideWidth = React.useCallback(function (w) {
+    setState(function (s) { return Object.assign({}, s, { asideWidth: Math.max(380, Math.min(900, w)) }); });
+  }, []);
+
+  // Alt-\ : move the ACTIVE tab to the other pane (§6). One action rather than
+  // two, so the gesture is reversible with the same keystroke.
+  var moveTabAcross = React.useCallback(function () {
+    setState(function (s) {
+      var from = (s.asideTabs || []).some(function (t) { return t.id === s.activeAsideTabId; })
+        && s.activeAsideTabId
+        ? "aside" : "main";
+      var srcKey = from === "aside" ? "asideTabs" : "openTabs";
+      var dstKey = from === "aside" ? "openTabs" : "asideTabs";
+      var srcActive = from === "aside" ? "activeAsideTabId" : "activeTabId";
+      var dstActive = from === "aside" ? "activeTabId" : "activeAsideTabId";
+      var id = s[srcActive];
+      if (!id) return s;
+      var src = s[srcKey] || [];
+      var idx = src.findIndex(function (t) { return t.id === id; });
+      if (idx < 0) return s;
+      var tab = src[idx];
+      var nextSrc = src.filter(function (t) { return t.id !== id; });
+      var dst = s[dstKey] || [];
+      var nextDst = dst.some(function (t) { return t.id === id; }) ? dst : dst.concat([tab]);
+      var patch = {};
+      patch[srcKey] = nextSrc;
+      patch[dstKey] = nextDst;
+      patch[srcActive] = nextSrc.length
+        ? nextSrc[Math.min(Math.max(0, idx - 1), nextSrc.length - 1)].id
+        : null;
+      patch[dstActive] = id;
+      return Object.assign({}, s, patch);
     });
   }, []);
 
@@ -516,6 +622,12 @@ function useStudioState(wid, initialOpen) {
     setDockHeight: setDockHeight,
     setRailMode: setRailMode,
     setRailFilter: setRailFilter,
+    openAside: openAside,
+    focusAsideTab: focusAsideTab,
+    closeAsideTab: closeAsideTab,
+    closeAllAsideTabs: closeAllAsideTabs,
+    setAsideWidth: setAsideWidth,
+    moveTabAcross: moveTabAcross,
     toggleChip: toggleChip,
     setLeftWidth: setLeftWidth,
     setRightWidth: setRightWidth,
@@ -862,13 +974,18 @@ function Studio({ wid, pushToast, initialOpen }) {
       } else if (e.ctrlKey && e.key === "`") {
         e.preventDefault();
         if (isV2) studio.toggleDock(); else studio.toggleTerminal();
+      } else if (isV2 && e.altKey && e.key === "\\") {
+        // Alt-\ moves the active tab to the other pane (§6). Same keystroke
+        // both directions, so the gesture undoes itself.
+        e.preventDefault();
+        studio.moveTabAcross();
       } else if (e.key === "Escape") {
         if (s.paletteOpen) studio.closePalette();
       }
     }
     window.addEventListener("keydown", onKeyDown);
     return function () { window.removeEventListener("keydown", onKeyDown); };
-  }, [s.paletteOpen, studio.togglePalette, studio.openPalette, studio.closePalette, studio.toggleTerminal]);
+  }, [s.paletteOpen, studio.togglePalette, studio.openPalette, studio.closePalette, studio.toggleTerminal, studio.moveTabAcross]);
 
   return (
     <div
@@ -934,7 +1051,12 @@ function Studio({ wid, pushToast, initialOpen }) {
 
         {/* ---- CENTER: B3 StudioCenter (tabs + active panel) + P7 terminal ---- */}
         <div className="st-col st-col-center" data-testid="studio-center">
-          <StudioCenter wid={wid} studio={studio} />
+          {/* studioV2 hosts the center in PaneHost, which mounts the SAME
+              StudioCenter body twice (primary + companion) so a diff can open
+              beside its transcript instead of replacing it (§6). */}
+          {isV2 && typeof window.PaneHost === "function"
+            ? <window.PaneHost wid={wid} studio={studio} />
+            : <StudioCenter wid={wid} studio={studio} />}
           {/* Horizontal splitter: drag to resize the terminal (writes
               terminalHeight → --st-term-h). Mirrors the column handles. */}
           {(isV2 ? s.dockOpen : s.terminalOpen) && (
