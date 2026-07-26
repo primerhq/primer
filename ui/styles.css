@@ -1431,6 +1431,15 @@ input, textarea, select { font: inherit; color: inherit; }
 .skel { background: linear-gradient(90deg, var(--bg-2) 0%, var(--bg-hover) 50%, var(--bg-2) 100%); background-size: 200% 100%; animation: shimmer 1.4s infinite linear; border-radius: 4px; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -100% 0; } }
 
+/* Studio revamp: the live segment of the graph superstep strip. Reuses the
+   shimmer keyframes above rather than adding a second sweep animation. */
+.st-sweep {
+  background: linear-gradient(90deg, transparent 0%, var(--bg-hover) 50%, transparent 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite linear;
+  pointer-events: none;
+}
+
 /* ---------- Modal ---------- */
 
 .modal-overlay {
