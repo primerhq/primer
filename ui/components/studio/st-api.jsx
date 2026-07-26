@@ -85,6 +85,7 @@ var ST2_api = {
     sessionPending: function (sid) { return "session-adapter:pending:" + sid; },
     sessions: function (wid) { return "studio-sessions:" + wid; },
     log: function (wid) { return "studio-log:" + wid; },
+    nodeStates: function (gid, rid) { return "graph-node-states:" + gid + ":" + rid; },
   },
 };
 

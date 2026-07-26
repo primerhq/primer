@@ -860,6 +860,9 @@ function Studio({ wid, pushToast, initialOpen }) {
   // below so the incomplete shell is strictly opt-in. The bar fetches its own
   // data, so nothing extra is polled while the revamp is off.
   var isV2 = (window.primerApi.useTweaks()[0] || {}).studioV2 === true;
+  // §11 keeps useViewport's isMobile fork; the phone layout is a different
+  // screen, not a narrower one, so it is chosen here rather than in CSS.
+  var isMobileView = window.primerApi.useViewport().isMobile;
 
   // The session the primary pane is showing, so the dock's Events tab can offer
   // a "this session only" filter without a second source of truth.
@@ -1025,6 +1028,12 @@ function Studio({ wid, pushToast, initialOpen }) {
         <window.AttentionBar wid={wid} studio={studio} />
       ) : null}
 
+      {/* Phones get triage + unblock, not a shrunk three-column shell (§11).
+          The desktop body is not rendered at all there - a hidden file editor
+          and a hidden terminal would still open their websockets. */}
+      {isV2 && isMobileView && typeof window.StudioMobile === "function" ? (
+        <window.StudioMobile wid={wid} studio={studio} />
+      ) : (
       <div className="st-body">
         {/* Mobile backdrop: dims the center doc while a panel drawer is open.
             Desktop never shows this (st-panel-overlay is mobile-only in CSS). */}
@@ -1100,6 +1109,7 @@ function Studio({ wid, pushToast, initialOpen }) {
           </div>
         )}
       </div>
+      )}
 
       {/* B5: Command palette overlay (⌘K). Rendered at Studio root so it sits
           above all three columns. paletteMode "command" vs "quickopen" selects
