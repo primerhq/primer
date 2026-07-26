@@ -114,6 +114,13 @@ def show_all_action_items(page: Page, *, timeout: int = 10_000) -> None:
     """
     if not is_studio_v2(page):
         return
+    # Wait for the bar to actually have something in it first. The pending
+    # snapshot arrives after mount, so the bar is briefly in its calm state -
+    # and the calm bar has no inbox, so checking too early finds nothing, skips
+    # silently, and leaves every item past the first unreachable.
+    page.locator("[data-testid='action-item']").first.wait_for(
+        state="attached", timeout=timeout,
+    )
     inbox = page.locator("[data-testid='attention-inbox']")
     if inbox.count() and inbox.get_attribute("aria-expanded") != "true":
         inbox.click()
