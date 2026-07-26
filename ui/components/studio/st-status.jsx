@@ -35,7 +35,12 @@ function ST2_bucketOf(session, opts) {
   var o = opts || {};
   var status = String(s.status || "unknown");
   var reason = s.park_reason || s.parked_reason || (s.parked && s.parked.kind) || null;
-  var hasPendingYield = !!(o.pendingBySession && s.id && o.pendingBySession[s.id]);
+  // The list endpoint returns SessionInfo, which carries `session_id`; the
+  // create-response / detail shapes carry `id`. The pending snapshot is keyed
+  // by `session_id`, so resolving only `id` would silently never promote a
+  // row that came from the list - i.e. every row in the rail.
+  var sid = s.session_id || s.id || null;
+  var hasPendingYield = !!(o.pendingBySession && sid && o.pendingBySession[sid]);
 
   if ((status === "parked" && ST2_NEEDS_REASONS[reason]) || hasPendingYield) {
     return {

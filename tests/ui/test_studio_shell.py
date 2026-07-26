@@ -58,7 +58,9 @@ def test_debug_rail_open_state_lives_in_the_studio_store() -> None:
     assert "toggleDebug: toggleDebug," in src        # exposed on the store
     # Column width is a clean binary driven from state: 0 (fully hidden) when
     # closed, rightWidth when open — opened from the header events toggle.
-    assert '"--st-right-w": (s.debugOpen ? s.rightWidth : 0) + "px"' in src
+    # studioV2 has no right column at all (the investigate dock replaces it),
+    # so the same expression also collapses it to 0 whenever that tweak is on.
+    assert '"--st-right-w": (!isV2 && s.debugOpen ? s.rightWidth : 0) + "px"' in src
 
 
 def test_events_panel_opened_from_a_prominent_header_toggle() -> None:
