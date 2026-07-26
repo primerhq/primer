@@ -246,10 +246,15 @@ function GB_Builder(props) {
         className="row"
         style={{ height: 52, flex: "0 0 auto", gap: 12, alignItems: "center", padding: "0 14px", borderBottom: "1px solid var(--border)", background: "var(--bg-elev)", position: "relative" }}
       >
-        <div className="row mono" style={{ gap: 8, alignItems: "center", fontSize: "var(--fs-12)", color: "var(--text-3)", minWidth: 0 }}>
-          <span>graphs</span>
-          <span style={{ color: "var(--border-strong)" }}>/</span>
-          <span style={{ color: "var(--text)", fontFamily: "inherit", fontSize: "var(--fs-13)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {/* flex + minWidth:0 so a long description actually ellipsises here
+            instead of pushing the controls off the right edge. */}
+        <div className="row mono" style={{ gap: 8, alignItems: "center", fontSize: "var(--fs-12)", color: "var(--text-3)", minWidth: 0, flex: "1 1 auto", overflow: "hidden" }}>
+          <span style={{ flex: "0 0 auto" }}>graphs</span>
+          <span style={{ color: "var(--border-strong)", flex: "0 0 auto" }}>/</span>
+          <span
+            title={draft.description || graphId}
+            style={{ color: "var(--text)", fontFamily: "inherit", fontSize: "var(--fs-13)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}
+          >
             {draft.description || graphId}
           </span>
           {dirty ? <span data-testid="gb-dirty" title="unsaved changes" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--amber)", flex: "0 0 auto" }} /> : null}
@@ -329,7 +334,7 @@ function GB_Builder(props) {
           onApply={(spec) => { dispatch({ type: "APPLY_TEMPLATE", spec }); setLayoutNonce((n) => n + 1); }}
         />
       ) : (
-        <div className="row" style={{ flex: 1, minHeight: 520, height: 620 }}>
+        <div className="row" style={GB_BODY_STYLE}>
           {/* Left rail */}
           <div className="col" style={{ width: 252, flex: "0 0 auto", borderRight: "1px solid var(--border)", background: "var(--bg-1)", minHeight: 0 }}>
             <div className="row" style={{ gap: 8, alignItems: "center", padding: "12px 14px 8px" }}>

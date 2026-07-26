@@ -119,13 +119,24 @@ function _g6Ref(node) {
   return "";
 }
 
+// Node cards are a fixed width, so a label longer than fits is clipped here
+// rather than left to overflow. Descriptions are free text ("write scorer.py
+// into the workspace"), so without this they spill out of the card and collide
+// with neighbouring nodes.
+const _G6_TITLE_CHARS = 24;
+const _G6_SUB_CHARS = 26;
+function _g6Clip(text, max) {
+  const s = String(text == null ? "" : text).replace(/\s+/g, " ").trim();
+  return s.length > max ? `${s.slice(0, max - 1)}…` : s;
+}
+
 // The human name is primary; the id is demoted to the inspector header. During
 // a run the second line shows live metrics instead of the static reference.
 function _g6Label(node, metaByNode) {
   if (_g6Tiny(node.kind)) return "";
-  const title = node.description || node.id;
+  const title = _g6Clip(node.description || node.id, _G6_TITLE_CHARS);
   const m = _g6Metric(metaByNode && metaByNode[node.id]);
-  const second = m || _g6Ref(node);
+  const second = _g6Clip(m || _g6Ref(node), _G6_SUB_CHARS);
   return second ? `${title}\n${second}` : title;
 }
 
@@ -190,6 +201,12 @@ function _g6NodeStyle(P) {
     labelFontSize: 12,
     labelFontFamily: "IBM Plex Mono, monospace",
     labelLineHeight: 15,
+    // Belt and braces with _g6Clip: keep the text inside the card even if a
+    // single unbroken token (a long path, say) survives the character clip.
+    labelWordWrap: true,
+    labelMaxWidth: 168,
+    labelMaxLines: 2,
+    labelTextOverflow: "ellipsis",
     iconSrc: (d) => _g6IconUri(d.data.kind, P.text),
     iconWidth: 15,
     iconHeight: 15,
