@@ -36,6 +36,12 @@ var ST_PERSIST_KEYS = [
   "leftWidth",
   "rightWidth",
   "terminalHeight",
+  // studioV2 (ui/studio/STUDIO-WIRING.md §2.1). Added alongside the v1 keys
+  // rather than replacing them: studioV2 is a runtime tweak, so one build has
+  // to serve both shells and both sets of state.
+  "dockOpen",
+  "dockTab",
+  "dockHeight",
 ];
 
 function ST_storageKey(wid) {
@@ -54,6 +60,17 @@ function ST_loadPersisted(wid) {
     ST_PERSIST_KEYS.forEach(function (k) {
       if (parsed[k] !== undefined) keep[k] = parsed[k];
     });
+    // studioV2 migration: carry the v1 terminal panel's state into the dock the
+    // first time the revamp is used, so switching the tweak on does not silently
+    // close a terminal the operator had open. The key set is a whitelist, not a
+    // schema, so no storage version bump is needed.
+    if (keep.dockOpen === undefined && parsed.terminalOpen !== undefined) {
+      keep.dockOpen = parsed.terminalOpen;
+      if (parsed.terminalOpen) keep.dockTab = keep.dockTab || "term:bash";
+    }
+    if (keep.dockHeight === undefined && parsed.terminalHeight !== undefined) {
+      keep.dockHeight = parsed.terminalHeight;
+    }
     return keep;
   } catch (_e) {
     return {};
@@ -181,6 +198,12 @@ function ST_defaultState() {
     // Debug toggle + the rail's own handle both flip this.
     debugOpen: false,
     terminalHeight: 240,
+    // studioV2 investigate dock. Seeded from terminalOpen/terminalHeight on
+    // first load (see ST_loadPersisted) so an operator who had the terminal
+    // open does not lose it when the revamp is switched on.
+    dockOpen: false,
+    dockTab: "events",
+    dockHeight: 268,
     termTabs: [{ id: "bash", title: "bash" }],
     activeTermId: "bash",
     // Right sidebar activity-feed chip filter
@@ -392,6 +415,23 @@ function useStudioState(wid, initialOpen) {
     setState(function (s) { return Object.assign({}, s, { terminalOpen: !s.terminalOpen }); });
   }, []);
 
+  // ---- investigate dock (studioV2; ui/studio/STUDIO-WIRING.md §8) ----
+  // The dock supersedes the bottom terminal panel AND the right rail, but the
+  // v1 shell is still reachable at runtime via the studioV2 tweak, so its
+  // terminalOpen / debugOpen state stays untouched alongside these keys.
+  var toggleDock = React.useCallback(function () {
+    setState(function (s) { return Object.assign({}, s, { dockOpen: !s.dockOpen }); });
+  }, []);
+  var setDockTab = React.useCallback(function (t) {
+    setState(function (s) { return Object.assign({}, s, { dockOpen: true, dockTab: t }); });
+  }, []);
+  var setDockHeight = React.useCallback(function (h) {
+    setState(function (s) {
+      var max = Math.round(window.innerHeight * 0.7);
+      return Object.assign({}, s, { dockHeight: Math.max(120, Math.min(max, h)) });
+    });
+  }, []);
+
   // ---- right debug/activity rail (StudioActivity) open/collapsed ----
   var toggleDebug = React.useCallback(function () {
     setState(function (s) { return Object.assign({}, s, { debugOpen: !s.debugOpen }); });
@@ -457,6 +497,9 @@ function useStudioState(wid, initialOpen) {
     toggleDensity: toggleDensity,
     toggleTerminal: toggleTerminal,
     toggleDebug: toggleDebug,
+    toggleDock: toggleDock,
+    setDockTab: setDockTab,
+    setDockHeight: setDockHeight,
     toggleChip: toggleChip,
     setLeftWidth: setLeftWidth,
     setRightWidth: setRightWidth,
@@ -484,7 +527,7 @@ function useStudioState(wid, initialOpen) {
 // collapse to a single document there.
 // ---------------------------------------------------------------------------
 
-function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, debugOpen, onToggleDebug, onToggleLeftPanel, onToggleRightPanel }) {
+function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, terminalOpen, onToggleTerminal, debugOpen, onToggleDebug, onToggleLeftPanel, onToggleRightPanel, hideDebugToggle }) {
   var { useResource, apiFetch } = window.primerApi;
   var [menuOpen, setMenuOpen] = React.useState(false);
   // Workspace Settings overlay — restores the orphaned WorkspaceDetail tabs
@@ -627,16 +670,20 @@ function StudioHeader({ wid, pushToast, onTogglePalette, onSelectWorkspace, term
           rail itself (a thin strip at the screen edge); operators repeatedly
           could not open it, so the primary control lives in the header. Uses a
           panel icon (not a bell — per earlier feedback). */}
-      <button
-        className={"st-hbtn touch-target desktop-only" + (debugOpen ? " is-active" : "")}
-        data-testid="studio-debug-toggle"
-        title="Workspace events (Action Required + Activity)"
-        aria-label="Toggle workspace events panel"
-        aria-pressed={debugOpen ? "true" : "false"}
-        onClick={onToggleDebug}
-      >
-        <Icon name="panel-right" size={15} />
-      </button>
+      {/* Retired under studioV2: Action Required lives in the attention bar and
+          the tap lives in the dock, so there is no right rail to toggle. */}
+      {!hideDebugToggle && (
+        <button
+          className={"st-hbtn touch-target desktop-only" + (debugOpen ? " is-active" : "")}
+          data-testid="studio-debug-toggle"
+          title="Workspace events (Action Required + Activity)"
+          aria-label="Toggle workspace events panel"
+          aria-pressed={debugOpen ? "true" : "false"}
+          onClick={onToggleDebug}
+        >
+          <Icon name="panel-right" size={15} />
+        </button>
+      )}
 
       {/* Mobile-only panel-drawer toggle (right: Action Required + Activity). */}
       <button
@@ -684,7 +731,14 @@ function Studio({ wid, pushToast, initialOpen }) {
   // Studio revamp gate (ui/studio/STUDIO-WIRING.md §15). Read with `=== true`
   // below so the incomplete shell is strictly opt-in. The bar fetches its own
   // data, so nothing extra is polled while the revamp is off.
-  var studioV2 = (window.primerApi.useTweaks()[0] || {}).studioV2;
+  var isV2 = (window.primerApi.useTweaks()[0] || {}).studioV2 === true;
+
+  // The session the primary pane is showing, so the dock's Events tab can offer
+  // a "this session only" filter without a second source of truth.
+  var activeSessionId = React.useMemo(function () {
+    var t = (s.openTabs || []).find(function (x) { return x.id === s.activeTabId; });
+    return t && t.kind === "session" ? t.ref : null;
+  }, [s.openTabs, s.activeTabId]);
 
   // Remember the last workspace whose Studio was opened so the global "Studio"
   // nav item (chrome.jsx) can re-open it without a workspace picker. Written on
@@ -752,14 +806,14 @@ function Studio({ wid, pushToast, initialOpen }) {
   var termDragRef = React.useRef(null);
   function startTermResize(e) {
     e.preventDefault();
-    termDragRef.current = { startY: e.clientY, startH: s.terminalHeight };
+    termDragRef.current = { startY: e.clientY, startH: isV2 ? s.dockHeight : s.terminalHeight };
     function onMove(ev) {
       var d = termDragRef.current;
       if (!d) return;
       var delta = d.startY - ev.clientY;
       var maxH = Math.min(800, Math.round(window.innerHeight * 0.7));
       var h = Math.max(120, Math.min(maxH, d.startH + delta));
-      studio.setTerminalHeight(h);
+      if (isV2) studio.setDockHeight(h); else studio.setTerminalHeight(h);
     }
     function onUp() {
       termDragRef.current = null;
@@ -791,7 +845,7 @@ function Studio({ wid, pushToast, initialOpen }) {
         studio.openPalette("quickopen");
       } else if (e.ctrlKey && e.key === "`") {
         e.preventDefault();
-        studio.toggleTerminal();
+        if (isV2) studio.toggleDock(); else studio.toggleTerminal();
       } else if (e.key === "Escape") {
         if (s.paletteOpen) studio.closePalette();
       }
@@ -809,17 +863,23 @@ function Studio({ wid, pushToast, initialOpen }) {
       // regardless of :has() support, and the header Debug toggle controls it.
       // Right rail is a clean binary: full width when open, 0 (fully hidden)
       // when closed — opened from the header toggle, not a thin edge rail.
-      style={{ "--st-left-w": s.leftWidth + "px", "--st-right-w": (s.debugOpen ? s.rightWidth : 0) + "px", "--st-term-h": s.terminalHeight + "px" }}
+      style={{
+        "--st-left-w": s.leftWidth + "px",
+        // studioV2 has no right column at all (§3, §8).
+        "--st-right-w": (!isV2 && s.debugOpen ? s.rightWidth : 0) + "px",
+        "--st-term-h": (isV2 ? (s.dockOpen ? s.dockHeight : 0) : s.terminalHeight) + "px",
+      }}
     >
       <StudioHeader
         wid={wid}
         pushToast={studio.pushToast}
         onTogglePalette={studio.togglePalette}
         onSelectWorkspace={selectWorkspace}
-        terminalOpen={s.terminalOpen}
-        onToggleTerminal={studio.toggleTerminal}
+        terminalOpen={isV2 ? s.dockOpen : s.terminalOpen}
+        onToggleTerminal={isV2 ? studio.toggleDock : studio.toggleTerminal}
         debugOpen={s.debugOpen}
         onToggleDebug={studio.toggleDebug}
+        hideDebugToggle={isV2}
         onToggleLeftPanel={function () { setRightPanelOpen(false); setLeftPanelOpen(function (o) { return !o; }); }}
         onToggleRightPanel={function () { setLeftPanelOpen(false); setRightPanelOpen(function (o) { return !o; }); }}
       />
@@ -828,7 +888,7 @@ function Studio({ wid, pushToast, initialOpen }) {
           collapses. Strictly opt-in while the revamp is incomplete - the graph
           builder shipped inert behind a permissive `!== false` guard, so this
           one must refuse to appear until it is finished. */}
-      {studioV2 === true && typeof window.AttentionBar === "function" ? (
+      {isV2 && typeof window.AttentionBar === "function" ? (
         <window.AttentionBar wid={wid} studio={studio} />
       ) : null}
 
@@ -855,26 +915,46 @@ function Studio({ wid, pushToast, initialOpen }) {
           <StudioCenter wid={wid} studio={studio} />
           {/* Horizontal splitter: drag to resize the terminal (writes
               terminalHeight → --st-term-h). Mirrors the column handles. */}
-          {s.terminalOpen && (
-            <div className="st-term-resize" data-testid="terminal-resize" onMouseDown={startTermResize} />
+          {(isV2 ? s.dockOpen : s.terminalOpen) && (
+            <div
+              className="st-term-resize"
+              data-testid={isV2 ? "dock-resize" : "terminal-resize"}
+              onMouseDown={startTermResize}
+            />
           )}
           {/* Collapsible bottom terminal panel (Ctrl-` / the header toggle
               flip terminalOpen). Only mounted while open — unmounting tears
               down every tab's xterm instance + WS (see studio-terminal.jsx),
               which matches the terminal's ephemeral, no-reconnect v1 design. */}
-          {s.terminalOpen && <TerminalPanel wid={wid} studio={studio} />}
+          {!isV2 && s.terminalOpen && <TerminalPanel wid={wid} studio={studio} />}
+
+          {/* studioV2: the dock supersedes the bottom terminal panel and hosts
+              the tap + terminal + Problems behind one tab strip (§8). */}
+          {isV2 && s.dockOpen && typeof window.InvestigateDock === "function" ? (
+            <window.InvestigateDock
+              wid={wid}
+              studio={studio}
+              sessionId={activeSessionId}
+            />
+          ) : null}
         </div>
 
-        <div className="st-resize desktop-only" onMouseDown={function (e) { startResize("right", e); }} data-testid="studio-resize-right" />
+        {!isV2 && (
+          <div className="st-resize desktop-only" onMouseDown={function (e) { startResize("right", e); }} data-testid="studio-resize-right" />
+        )}
 
         {/* ---- RIGHT: B4 StudioActivity (action required + workspace tap) ----
-            Off-canvas sheet on phones (right edge); static column on desktop. */}
-        <div
-          className={"st-col st-col-right" + (rightPanelOpen ? " is-drawer-open" : "")}
-          data-testid="studio-activity"
-        >
-          <StudioActivity wid={wid} studio={studio} />
-        </div>
+            Off-canvas sheet on phones (right edge); static column on desktop.
+            Retired under studioV2: Action Required moved to the attention bar
+            (§3) and the tap moved into the dock (§8). ---- */}
+        {!isV2 && (
+          <div
+            className={"st-col st-col-right" + (rightPanelOpen ? " is-drawer-open" : "")}
+            data-testid="studio-activity"
+          >
+            <StudioActivity wid={wid} studio={studio} />
+          </div>
+        )}
       </div>
 
       {/* B5: Command palette overlay (⌘K). Rendered at Studio root so it sits
