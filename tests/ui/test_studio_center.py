@@ -372,4 +372,6 @@ def test_center_close_all_wired_to_state() -> None:
     # CenterTabs takes an onCloseAll prop and StudioCenter feeds it the hook's
     # closeAllTabs action.
     assert "onCloseAll" in src
-    assert "onCloseAll={studio.closeAllTabs}" in src
+    # The prop is overridable so PaneHost can point the companion pane's tab bar
+    # at closeAllAsideTabs (§6); omitted, it still resolves to the hook action.
+    assert "onCloseAll={onCloseAll || studio.closeAllTabs}" in src

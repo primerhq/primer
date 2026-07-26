@@ -1323,20 +1323,30 @@ function FilePanel({ wid, tab, studio, pushToast }) {
   }, [data]);
 
   // A dirty tab is one whose draft diverges from the held content. We mirror
-  // that into studio.state.openTabs[*].dirty via the patch() escape hatch so
-  // the tab bar + sidebar dirty dots reflect it.
+  // that into the tab record via the patch() escape hatch so the tab bar +
+  // rail dirty dots reflect it.
+  //
+  // The tab can live in EITHER pane (§6). Marking only openTabs would leave a
+  // companion-pane edit with no dirty dot AND no close confirmation, which is
+  // exactly how unsaved work gets thrown away - so update whichever array
+  // holds it, and only patch the arrays that actually changed.
   function setTabDirty(dirty) {
-    var openTabs = (studio.state.openTabs || []).map(function (t) {
-      if (t.id !== tabId) return t;
-      if (!!t.dirty === !!dirty) return t;
-      return Object.assign({}, t, { dirty: !!dirty });
+    var patch = null;
+    ["openTabs", "asideTabs"].forEach(function (key) {
+      var list = studio.state[key] || [];
+      var changed = false;
+      var next = list.map(function (t) {
+        if (t.id !== tabId) return t;
+        if (!!t.dirty === !!dirty) return t;
+        changed = true;
+        return Object.assign({}, t, { dirty: !!dirty });
+      });
+      if (changed) {
+        patch = patch || {};
+        patch[key] = next;
+      }
     });
-    // Only patch when something actually changed (avoid render churn).
-    var changed = false;
-    for (var i = 0; i < openTabs.length; i++) {
-      if (openTabs[i] !== (studio.state.openTabs || [])[i]) { changed = true; break; }
-    }
-    if (changed) studio.patch({ openTabs: openTabs });
+    if (patch) studio.patch(patch);
   }
 
   function onEditInput(e) {
@@ -1551,10 +1561,14 @@ function FilePanel({ wid, tab, studio, pushToast }) {
 // Props: { wid, studio }  (studio = useStudioState(wid) bag)
 // ---------------------------------------------------------------------------
 
-function StudioCenter({ wid, studio }) {
+// The optional tabs/activeId/on* props parameterise WHICH tab array this body
+// renders, so studioV2's PaneHost (st-panes.jsx §6) can mount a second instance
+// over asideTabs without forking the component. Omitted, everything resolves to
+// the primary pane exactly as before.
+function StudioCenter({ wid, studio, tabs, activeId, onFocus, onClose, onCloseAll, testId }) {
   var s = studio.state;
-  var openTabs = s.openTabs || [];
-  var activeTabId = s.activeTabId;
+  var openTabs = tabs || s.openTabs || [];
+  var activeTabId = activeId !== undefined ? activeId : s.activeTabId;
   // pushToast threads down from app.jsx → Studio when wired; B1 renders Studio
   // without it today, so every toast call below is guarded and simply no-ops
   // until a later task passes it. The 412-conflict UX uses an inline banner
@@ -1595,15 +1609,15 @@ function StudioCenter({ wid, studio }) {
 
   return (
     <div
-      data-testid="studio-center-inner"
+      data-testid={testId || "studio-center-inner"}
       style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, overflow: "hidden" }}
     >
       <CenterTabs
         openTabs={openTabs}
         activeTabId={activeTabId}
-        onFocus={studio.focusTab}
-        onClose={studio.closeTab}
-        onCloseAll={studio.closeAllTabs}
+        onFocus={onFocus || studio.focusTab}
+        onClose={onClose || studio.closeTab}
+        onCloseAll={onCloseAll || studio.closeAllTabs}
       />
       <div style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {panel}
