@@ -245,6 +245,14 @@ function ST2_useYieldActions(wid) {
 
   var invalidates = [ST2_api.keys.pending(wid)];
 
+  // useMutation pushes an error toast unless an onError is supplied. Every call
+  // below already attaches `fail()`, which writes the reason onto the item
+  // itself - so without this a failed answer reports TWICE: once inline and
+  // once as a toast that slides away carrying the only copy the operator might
+  // have read. Inline wins: the error belongs next to the thing that failed,
+  // and it persists until the retry succeeds.
+  var opts = { invalidates: invalidates, onError: function () {} };
+
   // Also refetch the per-session pending cache the inline transcript card
   // reads, so answering in one place updates the other.
   var alsoSession = function (sid) {
@@ -271,19 +279,19 @@ function ST2_useYieldActions(wid) {
 
   var approve = useMutation(
     function (v) { return ST2_api.approve(v.sid, v.tcid); },
-    { invalidates: invalidates }
+    opts
   );
   var deny = useMutation(
     function (v) { return ST2_api.deny(v.sid, v.tcid, v.reason); },
-    { invalidates: invalidates }
+    opts
   );
   var answer = useMutation(
     function (v) { return ST2_api.answer(v.sid, v.tcid, v.response); },
-    { invalidates: invalidates }
+    opts
   );
   var cancel = useMutation(
     function (v) { return ST2_api.cancelYield(v.sid, v.tcid, v.reason); },
-    { invalidates: invalidates }
+    opts
   );
 
   var run = function (m, label) {
