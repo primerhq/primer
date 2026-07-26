@@ -32,9 +32,7 @@ def _ctx():
 
 
 def _diff(ctx, before: str, after: str):
-    ctx.eval(
-        "var out = ST2_diffLines(%s, %s);" % (json.dumps(before), json.dumps(after))
-    )
+    ctx.eval(f"var out = ST2_diffLines({json.dumps(before)}, {json.dumps(after)});")
     return json.loads(ctx.eval("JSON.stringify(out)"))
 
 

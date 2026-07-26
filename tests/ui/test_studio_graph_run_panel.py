@@ -40,7 +40,7 @@ def _ctx():
 
 
 def _steps(ctx, items):
-    ctx.eval("var out = ST2_supersteps(%s);" % json.dumps(items))
+    ctx.eval(f"var out = ST2_supersteps({json.dumps(items)});")
     return json.loads(ctx.eval("JSON.stringify(out)"))
 
 
