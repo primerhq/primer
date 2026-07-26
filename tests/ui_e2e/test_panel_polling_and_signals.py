@@ -22,6 +22,7 @@ from tests.ui_e2e._studio_helpers import (
     expand_debug_sidebar,
     open_session_in_studio,
     open_studio,
+    show_all_action_items,
 )
 
 
@@ -217,6 +218,10 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
         # The right-sidebar debug panel (Action Required) starts collapsed;
         # expand it before looking for action-item content.
         expand_debug_sidebar(page)
+        # Two pending items at once: v1 listed both in the rail, the revamp
+        # shows the oldest in the bar and the rest behind the inbox. No-op on v1.
+        show_all_action_items(page)
+
         item = page.locator("[data-testid='action-item']").first
         expect(item).to_be_visible(timeout=10_000)
         expect(item).to_contain_text("What is your name?")
