@@ -177,7 +177,13 @@ function ST2_RunsRail({ wid, studio }) {
   // yield into "needs". Shares the attention bar's key, so no extra request.
   var pendingRes = api.useResource(
     ST2_api.keys.pending(wid),
-    function (signal) { return ST2_api.pending(wid, signal); },
+    // pendingYields, not pending: `pending` is only the KEY builder. Naming a
+    // function that does not exist here did not fail loudly - useResource is
+    // latest-wins on the fetcher, so the rail replaced the attention bar's
+    // working fetcher with one that throws, every poll after the first failed,
+    // and stale-on-error kept rendering the last good snapshot. The bar simply
+    // stopped updating.
+    function (signal) { return ST2_api.pendingYields(wid, signal); },
     { pollMs: 15000, deps: [wid] }
   );
   var pendingBySession = React.useMemo(function () {

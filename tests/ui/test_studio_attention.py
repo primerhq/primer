@@ -314,3 +314,40 @@ def test_every_studio_file_transpiles() -> None:
         rel = f"components/studio/{f.name}"
         code = b._transform(f.read_text(encoding="utf-8"), rel)
         assert code, rel
+
+
+def test_every_st2_api_call_names_a_function_that_exists() -> None:
+    """Guard the class of bug that froze the attention bar in CI.
+
+    ``ST2_RunsRail`` called ``ST2_api.pending(...)``. That name exists on
+    ``ST2_api.keys``, not on ``ST2_api`` itself - the fetcher is
+    ``pendingYields``. Nothing failed loudly: ``useResource`` is latest-wins on
+    the fetcher, so the rail replaced the attention bar's working fetcher with
+    one that threw, every poll after the first failed, and stale-on-error kept
+    rendering the last good snapshot. The bar stopped updating and said nothing.
+
+    A typo in a fetcher name is invisible to a static test and to a MiniRacer
+    test that never executes the fetcher, so it is checked here directly.
+    """
+    import re
+
+    api_src = API.read_text(encoding="utf-8")
+    # Top-level ST2_api members (two-space indent inside the object literal).
+    defined = set(re.findall(r"^  (\w+): function", api_src, re.M))
+    # Nested key builders live under `keys:` and are NOT callable as ST2_api.X.
+    keys_block = api_src[api_src.index("keys: {"):]
+    key_names = set(re.findall(r"^    (\w+): function", keys_block, re.M))
+
+    assert "pendingYields" in defined, "sanity: the fetcher surface was not parsed"
+    assert "pending" in key_names, "sanity: the key builders were not parsed"
+
+    bad: list[str] = []
+    for f in sorted(STUDIO.glob("st-*.jsx")):
+        if f.name == "st-api.jsx":
+            continue
+        for called in re.findall(r"ST2_api\.(\w+)\(", f.read_text(encoding="utf-8")):
+            if called == "keys":
+                continue
+            if called not in defined:
+                bad.append(f"{f.name}: ST2_api.{called}()")
+    assert not bad, "calls to ST2_api members that do not exist: " + ", ".join(bad)
