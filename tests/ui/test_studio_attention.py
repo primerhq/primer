@@ -351,3 +351,27 @@ def test_every_st2_api_call_names_a_function_that_exists() -> None:
             if called not in defined:
                 bad.append(f"{f.name}: ST2_api.{called}()")
     assert not bad, "calls to ST2_api members that do not exist: " + ", ".join(bad)
+
+
+def test_yield_controls_are_keyed_by_tool_call_id() -> None:
+    """The reply draft lives in ST2_YieldControls' local state.
+
+    Without a key, React reuses the instance when the pending snapshot swaps
+    one yield for another, and the half-typed reply to the OLD question is
+    sitting in the box attached to the new one - one keystroke from being sent
+    as an answer it was not written for. Changing identity resets the state.
+
+    Static, because the failure needs a real render plus a snapshot swap to
+    reproduce; e2e (u0058) covers the behaviour, this covers the regression.
+    """
+    import re
+
+    mounts: list[str] = []
+    for f in sorted(STUDIO.glob("st-*.jsx")):
+        mounts += re.findall(r"<ST2_YieldControls\b[^>]*>", f.read_text(encoding="utf-8"))
+    assert mounts, "sanity: no ST2_YieldControls mounts found"
+    unkeyed = [m for m in mounts if "key={" not in m]
+    assert not unkeyed, "ST2_YieldControls mounted without a key: " + "; ".join(unkeyed)
+    assert all("tool_call_id" in m for m in mounts), (
+        "the key must be the tool_call_id - the yield's identity, not its position"
+    )

@@ -565,7 +565,13 @@ function AttentionBar({ wid, studio }) {
         </span>
       </span>
       <div className="row" style={{ gap: 6, alignItems: "center", flex: "0 1 auto" }}>
-        <ST2_YieldControls item={head} actions={actions} compact />
+        {/* Keyed by tool_call_id: the draft lives in this component's
+            local state, so without a key React reuses the instance when the
+            pending snapshot swaps one yield for another and the half-typed
+            reply to the OLD question is sitting in the box for the new one,
+            one keystroke from being sent as an answer it was not written
+            for. Changing identity resets the state. */}
+        <ST2_YieldControls key={head.tool_call_id} item={head} actions={actions} compact />
         {actions.errors[head.tool_call_id] ? (
           <span style={{ fontSize: "var(--fs-11)", color: "var(--red)" }}>{actions.errors[head.tool_call_id]}</span>
         ) : null}
@@ -675,7 +681,7 @@ function AttentionQueue({ items, informs, actions, staleFocus, onDismissInform, 
               {it.prompt ? (
                 <div className="muted" style={{ fontSize: "var(--fs-11)", lineHeight: 1.5 }}>{ST2_clip(it.prompt, 160)}</div>
               ) : null}
-              <ST2_YieldControls item={it} actions={actions} />
+              <ST2_YieldControls key={it.tool_call_id} item={it} actions={actions} />
               {actions.errors[it.tool_call_id] ? (
                 <div style={{ fontSize: "var(--fs-11)", color: "var(--red)" }}>{actions.errors[it.tool_call_id]}</div>
               ) : null}
@@ -799,7 +805,7 @@ function UnblockFocus({ wid, item, queue, actions, onAdvance, onClose }) {
         </div>
 
         <div className="row" style={{ padding: 13, borderTop: "1px solid var(--border)", gap: 8, alignItems: "center", background: "var(--bg-2)" }}>
-          <ST2_YieldControls item={item} actions={actions} />
+          <ST2_YieldControls key={item.tool_call_id} item={item} actions={actions} />
           {!actionable ? (
             <span className="muted" style={{ fontSize: "var(--fs-11)" }}>
               This park has no tool_call_id, so it cannot be answered from here.

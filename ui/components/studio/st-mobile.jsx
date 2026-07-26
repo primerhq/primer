@@ -130,7 +130,7 @@ function ST2_MobileNeeds({ items, actions }) {
                 })}
               </div>
             ) : null}
-            <ST2_YieldControls item={item} actions={actions} />
+            <ST2_YieldControls key={item.tool_call_id} item={item} actions={actions} />
           </div>
         );
       })}
