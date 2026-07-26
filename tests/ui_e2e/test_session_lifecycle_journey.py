@@ -31,7 +31,7 @@ import time
 import httpx
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_studio, session_row
+from tests.ui_e2e._studio_helpers import open_studio, session_row, sessions_list
 
 
 # ---------------------------------------------------------------------------
@@ -313,11 +313,11 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
 
         # --- 2. Sessions section shows the empty state ----------------------
         # SessionsSection renders "No sessions yet." before any is seeded.
-        expect(page.locator('[data-testid="sessions-section"]')).to_be_visible(
+        expect(sessions_list(page)).to_be_visible(
             timeout=15_000,
         )
         expect(
-            page.locator('[data-testid="sessions-section"]').get_by_text(
+            sessions_list(page).get_by_text(
                 "No sessions yet", exact=False,
             )
         ).to_be_visible(timeout=15_000)

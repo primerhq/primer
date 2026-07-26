@@ -28,7 +28,7 @@ import time
 import httpx
 import pytest
 
-from tests.ui_e2e._studio_helpers import open_studio, session_row
+from tests.ui_e2e._studio_helpers import open_studio, session_row, sessions_list
 
 
 def test_u0002_sessions_sidebar_count_polls_after_api_create(
@@ -109,7 +109,7 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
         # Baseline: a brand-new workspace has zero session rows. Wait for
         # the Sessions section to have finished its first poll (the empty
         # "No sessions yet." copy is present).
-        page.locator('[data-testid="sessions-section"]').wait_for(
+        sessions_list(page).wait_for(
             state="visible", timeout=15_000,
         )
         baseline = _row_count()

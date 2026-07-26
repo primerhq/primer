@@ -21,7 +21,12 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_studio, open_workspace_settings
+from tests.ui_e2e._studio_helpers import (
+    files_list,
+    open_studio,
+    open_workspace_settings,
+    sessions_list,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -131,8 +136,8 @@ def test_u0077_workspace_detail_tabs_all_reachable(
     try:
         open_studio(page, console_url, wid)
         # Files + Sessions are left-sidebar sections in the Studio.
-        expect(page.locator("[data-testid='sessions-section']")).to_be_visible(timeout=15_000)
-        expect(page.locator("[data-testid='files-section']")).to_be_visible(timeout=15_000)
+        expect(sessions_list(page)).to_be_visible(timeout=15_000)
+        expect(files_list(page)).to_be_visible(timeout=15_000)
 
         # Log / Config / Destroy (+ Channels) live in the Settings modal.
         gear = page.locator("[data-testid='studio-settings-btn']")

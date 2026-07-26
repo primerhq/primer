@@ -40,7 +40,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import session_row
+from tests.ui_e2e._studio_helpers import files_list, is_studio_v2, session_row
 
 
 from tests._support.smk import smk  # noqa: E402
@@ -206,10 +206,19 @@ def test_studio_shell_sidebar_center_and_palette(
         expect(page.locator('[data-testid="studio-root"]')).to_be_visible(
             timeout=20_000,
         )
-        for region in ("studio-sidebar", "studio-center", "studio-activity"):
+        for region in ("studio-sidebar", "studio-center"):
             expect(page.locator(f'[data-testid="{region}"]')).to_be_visible(
                 timeout=10_000,
             )
+        # studioV2 has no right column - Action Required moved into the
+        # always-mounted attention bar and the tap into the dock.
+        expect(
+            page.locator(
+                '[data-testid="attention-bar"]'
+                if is_studio_v2(page)
+                else '[data-testid="studio-activity"]'
+            )
+        ).to_be_visible(timeout=10_000)
 
         # --- 2. Left sidebar lists the seeded session ------------------
         # Locate the SEEDED row by its data-session-id (the visible row text
@@ -229,10 +238,12 @@ def test_studio_shell_sidebar_center_and_palette(
         )
 
         # --- 4. Open the file row → file panel in preview --------------
-        # The Files section defaults to open (studio.jsx filesOpen: true,
-        # no persisted state in a fresh browser context), so the seeded
-        # file surfaces directly as a file-row.
+        # v1 stacked Files under Sessions so the tree was always on screen.
+        # The revamp gives one rail two modes with Runs as the default, so the
+        # tree has to be asked for; files_list() switches the rail when needed
+        # and is a no-op on v1.
         if have_file:
+            files_list(page)
             file_row = page.locator(
                 '[data-testid="file-row"]', has_text=file_name,
             ).first

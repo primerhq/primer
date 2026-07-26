@@ -264,11 +264,29 @@ def test_studio_mounts_the_bar_behind_the_v2_tweak() -> None:
     assert "studioV2:" in tweaks
 
 
-def test_v2_is_strictly_opt_in_while_incomplete() -> None:
-    # === true, not !== false: the graph builder shipped inert behind a
-    # permissive guard, so this one must refuse to appear until finished.
+def test_v2_is_read_with_a_strict_comparison() -> None:
+    # === true, not !== false. The revamp is now the default, but the strict
+    # read still matters: a malformed persisted tweaks blob (a string, a null,
+    # anything truthy-but-not-true) must fall back to the shipped shell rather
+    # than half-rendering a surface nobody chose.
     studio = (UI / "components" / "studio.jsx").read_text(encoding="utf-8")
     assert "studioV2 === true" in studio
+
+
+def test_the_revamp_is_the_default_shell() -> None:
+    # The rollout gate. Flipping this back to false is a deliberate act (the
+    # old shell is still in the build for exactly that), not something that
+    # should happen by accident during a merge.
+    tweaks = (UI / "foundation" / "tweaks.js").read_text(encoding="utf-8")
+    assert "studioV2: true" in tweaks
+
+
+def test_both_shells_are_still_in_the_build() -> None:
+    # Turning the revamp back off has to stay a flag flip rather than a revert
+    # until the old shell is deleted the release after.
+    studio = (UI / "components" / "studio.jsx").read_text(encoding="utf-8")
+    assert "<StudioSidebar wid={wid} studio={studio} />" in studio
+    assert "<StudioActivity wid={wid} studio={studio} />" in studio
 
 
 def test_new_files_are_registered_in_index_html_before_studio() -> None:
