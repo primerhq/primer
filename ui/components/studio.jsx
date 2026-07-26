@@ -681,6 +681,11 @@ function Studio({ wid, pushToast, initialOpen }) {
   // work even when app.jsx hasn't passed the prop yet.
   studio.pushToast = pushToast || (window.primerApi && window.primerApi.toastPush) || null;
 
+  // Studio revamp gate (ui/studio/STUDIO-WIRING.md §15). Read with `=== true`
+  // below so the incomplete shell is strictly opt-in. The bar fetches its own
+  // data, so nothing extra is polled while the revamp is off.
+  var studioV2 = (window.primerApi.useTweaks()[0] || {}).studioV2;
+
   // Remember the last workspace whose Studio was opened so the global "Studio"
   // nav item (chrome.jsx) can re-open it without a workspace picker. Written on
   // every mount / wid change; read in app.jsx's openStudio().
@@ -818,6 +823,14 @@ function Studio({ wid, pushToast, initialOpen }) {
         onToggleLeftPanel={function () { setRightPanelOpen(false); setLeftPanelOpen(function (o) { return !o; }); }}
         onToggleRightPanel={function () { setLeftPanelOpen(false); setRightPanelOpen(function (o) { return !o; }); }}
       />
+
+      {/* Attention bar (ui/studio/STUDIO-WIRING.md §3): always mounted, never
+          collapses. Strictly opt-in while the revamp is incomplete - the graph
+          builder shipped inert behind a permissive `!== false` guard, so this
+          one must refuse to appear until it is finished. */}
+      {studioV2 === true && typeof window.AttentionBar === "function" ? (
+        <window.AttentionBar wid={wid} studio={studio} />
+      ) : null}
 
       <div className="st-body">
         {/* Mobile backdrop: dims the center doc while a panel drawer is open.
