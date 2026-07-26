@@ -165,13 +165,23 @@ def test_terminal_panel_component_and_exports() -> None:
 def test_terminal_panel_mounted_in_center_column() -> None:
     src = _studio_src()
     center_idx = src.index('data-testid="studio-center"')
-    center_block = src[center_idx : center_idx + 800]
+    # The block ends where the center column does - the studioV2 dock mounts
+    # inside it too, so a fixed character window would clip.
+    center_block = src[center_idx : src.index('{!isV2 && (', center_idx)]
     assert "<StudioCenter wid={wid} studio={studio} />" in center_block
     assert "<TerminalPanel wid={wid} studio={studio} />" in center_block
     # Gated on terminalOpen, so unmounting on collapse tears the WS(s) down.
     assert "s.terminalOpen &&" in center_block
     # StudioCenter renders first, terminal panel below it.
     assert center_block.index("<StudioCenter") < center_block.index("<TerminalPanel")
+
+
+def test_terminal_panel_is_the_same_component_under_studio_v2() -> None:
+    # studioV2 re-houses the terminal in the investigate dock rather than
+    # reimplementing it, so every protocol test above still covers the v2 path.
+    dock = (UI / "components" / "studio" / "st-dock.jsx").read_text(encoding="utf-8")
+    assert "<TerminalPanel wid={wid} studio={studio} />" in dock
+    assert "function ST_TerminalInstance(" not in dock, "must not fork the xterm mount"
 
 
 def test_ws_url_and_control_frame_protocol() -> None:
