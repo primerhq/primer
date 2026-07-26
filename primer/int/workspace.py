@@ -336,13 +336,19 @@ class Workspace(ABC):
         )
 
     @abstractmethod
-    async def log(self, *, limit: int = 50) -> "list[CommitInfo]":
+    async def log(
+        self, *, limit: int = 50, with_files: bool = False
+    ) -> "list[CommitInfo]":
         """Return up to ``limit`` recent commits from the ``.state`` repo.
 
         Newest commits first. Each commit carries the parsed
         ``X-Primer-*`` trailers (workspace, session, agent, op, tool,
         call) so callers can render structured history without
         re-parsing the message body.
+
+        ``with_files=True`` additionally populates ``CommitInfo.files`` with
+        per-file line deltas where the backend can supply them; it stays
+        ``None`` (never ``[]``) where it cannot.
         """
 
     @abstractmethod

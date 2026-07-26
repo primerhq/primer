@@ -39,7 +39,7 @@ from primer.model.workspace_session import (
     SessionInfo,
     WaitingState,
 )
-from primer.model.workspace import CommitInfo, Op
+from primer.model.workspace import CommitFile, CommitInfo, Op
 from primer.session.mutation_lock import KeyedLock
 from primer.workspace.state_helpers import (
     TRAILER_AGENT as _TRAILER_AGENT,
@@ -435,21 +435,43 @@ class LocalStateRepo:
         session_id: str | None = None,
         agent_id: str | None = None,
         limit: int = 100,
+        with_files: bool = False,
     ) -> list[CommitInfo]:
         """Return commits, optionally filtered. Newest first.
 
         Filters are AND-ed when both supplied. Implemented by passing
         ``--grep=<trailer-pattern>`` to ``git log`` so the filter
         happens inside git rather than after the fact.
+
+        ``with_files=True`` populates ``CommitInfo.files`` with per-file line
+        deltas. This costs NO extra subprocess: ``--numstat`` rides along on
+        the same ``git log``, appended to each record after a trailing field
+        separator. The alternative -- one ``show_commit`` per commit -- is 3
+        git invocations per row, so ~150 processes for a 50-commit page.
+
+        ``--no-renames`` is deliberate: with rename detection on, numstat
+        writes paths as ``old => new`` (or ``dir/{old => new}/f``), which is
+        not a path any other endpoint accepts. A rename surfaces as one
+        deletion plus one addition instead -- unambiguous, and the right shape
+        for a per-file changes list.
         """
         if limit < 1:
             raise ValueError("limit must be >= 1")
 
+        # The record separator LEADS the format, and a field separator TRAILS
+        # it. git prints --numstat after the formatted line, so a trailing
+        # %x1e would put each commit's numstat at the head of the NEXT record;
+        # leading it keeps every record self-contained, and the trailing %x1f
+        # gives the numstat block its own field instead of concatenating it
+        # onto the trailer text. Splitting on %x1e now yields an empty first
+        # chunk, which _parse_log_records already skips.
         args = [
             "log",
             f"--max-count={limit}",
-            "--format=%H%x1f%s%x1f%cI%x1f%(trailers:only,unfold)%x1e",
+            "--format=%x1e%H%x1f%s%x1f%cI%x1f%(trailers:only,unfold)%x1f",
         ]
+        if with_files:
+            args += ["--numstat", "--no-renames"]
         if session_id is not None:
             args += ["--grep", f"^{_TRAILER_SESSION}: {session_id}$"]
         if agent_id is not None:
@@ -750,6 +772,10 @@ def _parse_log_records(stdout: str) -> list[CommitInfo]:
             continue
         sha, subject, committed_at_iso, trailer_block = parts[0], parts[1], parts[2], parts[3]
         trailers = _parse_trailers(trailer_block)
+        # parts[4] is the --numstat block when history() asked for it. Absent
+        # (or empty) means it was not requested, which must stay `None` rather
+        # than becoming `[]` -- an empty list is a commit that touched nothing.
+        files = _parse_numstat(parts[4]) if len(parts) > 4 and parts[4].strip() else None
         out.append(
             CommitInfo(
                 sha=sha,
@@ -761,9 +787,42 @@ def _parse_log_records(stdout: str) -> list[CommitInfo]:
                 op=trailers.get(_TRAILER_OP),
                 tool=trailers.get(_TRAILER_TOOL),
                 call_id=trailers.get(_TRAILER_CALL),
+                files=files,
             )
         )
     return out
+
+
+def _parse_numstat(block: str) -> list[CommitFile]:
+    """Parse a ``git log --numstat`` block into CommitFile rows.
+
+    Each line is ``<additions>\\t<deletions>\\t<path>``, where a binary file
+    reports ``-`` for both counts. A path may itself contain a tab, so the
+    split is bounded to 2 -- everything after the second tab is the path.
+    """
+    files: list[CommitFile] = []
+    for line in block.splitlines():
+        line = line.rstrip("\n")
+        if not line.strip():
+            continue
+        bits = line.split("\t", 2)
+        if len(bits) != 3:
+            continue
+        adds_raw, dels_raw, path = bits
+        if not path:
+            continue
+        binary = adds_raw == "-" or dels_raw == "-"
+        try:
+            adds = 0 if binary else int(adds_raw)
+            dels = 0 if binary else int(dels_raw)
+        except ValueError:
+            # Not a numstat line at all (defensive: never let one odd line
+            # take out the whole page of history).
+            continue
+        files.append(
+            CommitFile(path=path, additions=adds, deletions=dels, binary=binary)
+        )
+    return files
 
 
 def _parse_trailers(block: str) -> dict[str, str]:

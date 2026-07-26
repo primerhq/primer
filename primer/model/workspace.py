@@ -211,6 +211,38 @@ Op = Literal[
 """Allowed values of the ``op`` trailer on state-repo commits."""
 
 
+class CommitFile(BaseModel):
+    """One file touched by a state-repo commit, with its line delta.
+
+    Carries counts only, never content: this is what a history LIST needs
+    (a row per file with ``+n/-m``). The actual patch comes from
+    ``GET /v1/workspaces/{wid}/commit/{sha}``, fetched per commit when a
+    reader opens one, so listing 500 commits never means listing 500 diffs.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(..., min_length=1, description="Path relative to the .state/ repo root.")
+    additions: int = Field(
+        default=0,
+        ge=0,
+        description="Lines added. Always 0 for a binary file -- see ``binary``.",
+    )
+    deletions: int = Field(
+        default=0,
+        ge=0,
+        description="Lines removed. Always 0 for a binary file -- see ``binary``.",
+    )
+    binary: bool = Field(
+        default=False,
+        description=(
+            "True when git reported '-' instead of counts, i.e. a non-text "
+            "blob. Distinguishes 'no line changes' from 'lines are not a "
+            "meaningful unit here', which a bare 0/0 would conflate."
+        ),
+    )
+
+
 class CommitInfo(BaseModel):
     """One commit in the state repo, with trailers parsed.
 
@@ -246,6 +278,18 @@ class CommitInfo(BaseModel):
     call_id: str | None = Field(
         default=None,
         description="Value of the X-Primer-Call trailer, if present.",
+    )
+    files: list[CommitFile] | None = Field(
+        default=None,
+        description=(
+            "Files touched by this commit, with line deltas. Populated only "
+            "when the caller asks for it (``history(with_files=True)`` / "
+            "``GET .../log?with_files=1``) AND the backend can supply it. "
+            "``None`` means 'not requested, or this backend cannot tell you' "
+            "-- which is deliberately distinct from ``[]``, an empty commit "
+            "that genuinely touched no files. A consumer that renders a file "
+            "count must not read None as zero."
+        ),
     )
 
 
@@ -1183,6 +1227,7 @@ class Workspace(Identifiable):
 
 
 __all__ = [
+    "CommitFile",
     "CommitInfo",
     "ContainerConnectionConfig",
     "ContainerConnectionRemote",

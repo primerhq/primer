@@ -592,8 +592,18 @@ class SandboxStateRepo:
         session_id: str | None = None,
         agent_id: str | None = None,
         limit: int = 100,
+        with_files: bool = False,
     ) -> list[CommitInfo]:
-        """Return commits, optionally filtered by session or agent. Newest first."""
+        """Return commits, optionally filtered by session or agent. Newest first.
+
+        ``with_files`` is accepted for Protocol conformance but has no effect:
+        the sandbox transport (``state_history``) returns commit headers only,
+        and this backend already 501s on ``show_commit`` for the same reason.
+        Every ``CommitInfo.files`` therefore stays ``None`` -- "this backend
+        cannot tell you", which is exactly what None means and why it is not
+        ``[]``. Silently returning empty lists would have the console draw
+        "0 files changed" over every commit in a container workspace.
+        """
         if not isinstance(self._sandbox, _StateCapableSandbox):
             return []
         sandbox = self._state_sandbox()
