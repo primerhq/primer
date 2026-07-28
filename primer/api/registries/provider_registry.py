@@ -274,6 +274,20 @@ def _build_default_toolset_factory(
                 config=toolset.config,
                 allowed_stdio_commands=allowed_stdio_commands,
             )
+        if toolset.provider == ToolsetProviderType.PYTHON:
+            from primer.toolset.python_runner.provider import PythonToolsetProvider
+            from primer.toolset.python_runner.runners import LocalHardenedRunner
+
+            return PythonToolsetProvider(
+                toolset_id=toolset.id,
+                config=toolset.config,
+                runner=LocalHardenedRunner(
+                    env={
+                        k: v.get_secret_value()
+                        for k, v in (toolset.config.env or {}).items()
+                    }
+                ),
+            )
         if toolset.provider == ToolsetProviderType.INTERNAL:
             raise ConfigError(
                 f"toolset {toolset.id!r} declares provider='internal' "
