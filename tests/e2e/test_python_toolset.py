@@ -84,7 +84,10 @@ async def test_the_derived_tool_reaches_the_tool_catalogue(
         assert (await _create(client, tid, GREET)).status_code == 201
         r = await client.get(f"/v1/toolsets/{tid}/tools")
         assert r.status_code == 200, r.text
-        ids = [t["id"] for t in (r.json().get("items") or r.json())]
+        # The route returns {"tools": [...]}. The earlier version of this
+        # assertion carried a defensive fallback for a shape it never had,
+        # which turned a wrong guess into a TypeError instead of a clear miss.
+        ids = [t["id"] for t in r.json()["tools"]]
         assert "greet" in ids
     finally:
         await _cleanup(client, tid)
