@@ -698,6 +698,9 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     """
     if _toolset_probe_bypassed(request):
         return
+    if entity.provider == ToolsetProviderType.PYTHON:
+        _validate_python_toolset(entity)
+        return
     if entity.provider != ToolsetProviderType.MCP:
         return
     config = entity.config
@@ -707,6 +710,56 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     ):
         return
     await _probe_mcp_reachable(entity, request)
+
+
+def _validate_python_toolset(entity: Toolset) -> None:
+    """Reject a python toolset whose source cannot produce tools.
+
+    Registration is where a bad tool must fail. Calling time is too late: an
+    agent mid-turn should never be the thing that discovers a docstring is
+    missing. The RFC7807 extensions carry ``field`` and ``lineno`` so the
+    console can point at the offending line.
+    """
+    from primer.toolset.python_runner.registration import (
+        RegistrationError,
+        register_module,
+    )
+
+    config = entity.config
+    try:
+        register_module(
+            config.source, entity.id, config.default_timeout_seconds
+        )
+    except RegistrationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "invalid_python_toolset",
+                "message": str(exc),
+                "field": exc.field,
+                "lineno": exc.lineno,
+            },
+        ) from exc
+
+
+async def _toolset_on_pre_update(
+    entity: Toolset, existing: Toolset, request: Request
+) -> None:
+    """Validate python source and own ``source_version`` server-side.
+
+    The client's version is advisory. If two operators edit concurrently they
+    both send the version they read, and a parked resume could not tell which
+    code it was about to run. The server bumps instead, so the number always
+    moves when the source does.
+    """
+    if entity.provider != ToolsetProviderType.PYTHON:
+        return
+    _validate_python_toolset(entity)
+    prior = existing.config if existing is not None else None
+    if prior is not None and getattr(prior, "source", None) == entity.config.source:
+        entity.config.source_version = prior.source_version
+    elif prior is not None:
+        entity.config.source_version = prior.source_version + 1
 
 
 # ---- Toolset router --------------------------------------------------------
@@ -719,6 +772,7 @@ toolset_router = make_crud_router(
     on_update=_invalidate_toolset,
     on_delete=_invalidate_toolset,
     on_pre_create=_toolset_on_pre_create,
+    on_pre_update=_toolset_on_pre_update,
     managed_by_field="harness_id",
     references=[
         ReferenceCheck(
@@ -1089,3 +1143,38 @@ __all__ = [
     "llm_provider_router",
     "toolset_router",
 ]
+
+
+@toolset_router.get(
+    "/toolsets/{toolset_id}/runtime",
+    summary="Runtime facts about a toolset: isolation level and derived tools",
+    responses=common_responses(404, 500),
+)
+async def toolset_runtime(
+    toolset_id: str = Path(..., description="Toolset id"),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+) -> dict:
+    """What a python toolset actually is at runtime.
+
+    ``isolation_level`` is what this deployment ENFORCES, not what the
+    strongest backend could: ``rlimit-only`` bounds CPU and memory but stops
+    neither filesystem reads nor egress, and the console shows that rather
+    than a generic "sandboxed" badge.
+    """
+    provider = await registry.get_toolset(toolset_id)
+    tools = [t.model_dump(mode="json") async for t in provider.list_tools()]
+    error = getattr(provider, "registration_error", None)
+    return {
+        "toolset_id": toolset_id,
+        "isolation_level": getattr(provider, "isolation_level", None),
+        "tools": tools,
+        "registration_error": (
+            {
+                "message": str(error),
+                "field": error.field,
+                "lineno": error.lineno,
+            }
+            if error is not None
+            else None
+        ),
+    }
