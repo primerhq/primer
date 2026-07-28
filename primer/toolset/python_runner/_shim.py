@@ -41,6 +41,81 @@ def _apply_limits(limits):
             pass
 
 
+def _apply_seccomp(allow_network):
+    """Install a syscall filter via libseccomp, if this host has it.
+
+    Driven through ctypes rather than a Python seccomp package on purpose:
+    the shim runs under -I -S, so NO site-package is importable here. A
+    dependency would simply never load. libseccomp is a system library, so
+    ctypes reaches it while sys.path stays empty.
+
+    Default-allow with a deny list, because a default-deny filter has to
+    enumerate everything CPython touches to start up and one omission is a
+    crash rather than a contained tool.
+
+    Returns True when a filter was loaded.
+    """
+    import ctypes
+    import ctypes.util
+
+    name = ctypes.util.find_library("seccomp")
+    if not name:
+        return False
+    try:
+        lib = ctypes.CDLL(name, use_errno=True)
+    except OSError:
+        return False
+
+    SCMP_ACT_ALLOW = 0x7FFF0000
+    EPERM = 1
+    SCMP_ACT_ERRNO = 0x00050000 | (EPERM & 0x0000FFFF)
+
+    denied = [
+        "ptrace", "process_vm_readv", "process_vm_writev",
+        "fork", "vfork", "execve", "execveat",
+        "mount", "umount2", "pivot_root", "chroot",
+        "init_module", "finit_module", "delete_module",
+        "kexec_load", "reboot", "swapon", "swapoff",
+    ]
+    if not allow_network:
+        # socket() and socketpair() are deliberately NOT denied: they create
+        # an fd and move no data, and asyncio builds its event loop self-pipe
+        # from one. Denying them blocks every async tool while adding no
+        # safety. What actually reaches the network is denied instead.
+        denied += [
+            "connect", "bind", "listen", "accept", "accept4",
+            "sendto", "sendmsg", "recvfrom", "recvmsg",
+        ]
+
+    lib.seccomp_init.restype = ctypes.c_void_p
+    lib.seccomp_syscall_resolve_name.restype = ctypes.c_int
+    lib.seccomp_syscall_resolve_name.argtypes = [ctypes.c_char_p]
+    lib.seccomp_rule_add.restype = ctypes.c_int
+    lib.seccomp_rule_add.argtypes = [
+        ctypes.c_void_p, ctypes.c_uint32, ctypes.c_int, ctypes.c_uint,
+    ]
+    lib.seccomp_load.restype = ctypes.c_int
+    lib.seccomp_load.argtypes = [ctypes.c_void_p]
+    lib.seccomp_release.argtypes = [ctypes.c_void_p]
+
+    ctx = lib.seccomp_init(ctypes.c_uint32(SCMP_ACT_ALLOW))
+    if not ctx:
+        return False
+    try:
+        for sysname in denied:
+            nr = lib.seccomp_syscall_resolve_name(sysname.encode())
+            if nr < 0:
+                # Not present on this architecture; nothing to deny.
+                continue
+            lib.seccomp_rule_add(
+                ctypes.c_void_p(ctx), ctypes.c_uint32(SCMP_ACT_ERRNO),
+                ctypes.c_int(nr), ctypes.c_uint(0),
+            )
+        return lib.seccomp_load(ctypes.c_void_p(ctx)) == 0
+    finally:
+        lib.seccomp_release(ctypes.c_void_p(ctx))
+
+
 class _Yield(Exception):
     def __init__(self, kind, params, meta):
         self.kind = kind
@@ -91,6 +166,7 @@ def _err(kind, message, tb=""):
 def _main():
     req = json.loads(sys.stdin.read())
     _apply_limits(req.get("limits") or {})
+    _apply_seccomp(bool(req.get("allow_network")))
 
     ns = _build_namespace()
     try:
