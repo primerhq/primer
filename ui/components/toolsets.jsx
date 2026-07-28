@@ -405,6 +405,15 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
     setFieldErrors({});
     setUnreachable(null);
     let config = null;
+    if (provider === "python") {
+      // Source is authored in the editor after create; a new toolset starts
+      // from a working example rather than an empty module that cannot
+      // register.
+      config = {
+        source: PY_STARTER,
+        source_version: 1,
+      };
+    }
     if (provider === "mcp") {
       config = transport === "stdio"
         ? {
@@ -434,7 +443,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
 
   const canSubmit = provider === "mcp"
     ? (transport === "stdio" ? !!command.trim() : !!url.trim())
-    : false;
+    : provider === "python";
 
   return (
     <Modal
@@ -518,6 +527,7 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
           style={{ width: "100%" }}
         >
           <option value="mcp">MCP server</option>
+          <option value="python">Python functions</option>
         </select>
         <div className="field-help">
           Internal toolsets (<span className="mono">system</span>, <span className="mono">workspaces</span>, <span className="mono">misc</span>, <span className="mono">search</span>, <span className="mono">web</span>) are runtime built-ins — they cannot be created via this form.
@@ -840,6 +850,16 @@ function TS_ConfigTab({ ts, pushToast }) {
   const isManaged = !!ts?.harness_id;
   const pretty = React.useMemo(() => JSON.stringify(ts, null, 2), [ts]);
   const [editing, setEditing] = React.useState(false);
+
+  // A python toolset's config IS its source, so the config tab is the editor
+  // rather than a JSON blob nobody can meaningfully edit by hand.
+  if (ts?.provider === "python" && typeof window.PythonToolsetEditor === "function") {
+    return (
+      <div style={{ padding: 14 }}>
+        <window.PythonToolsetEditor toolsetId={ts.id} pushToast={pushToast} />
+      </div>
+    );
+  }
 
   return (
     <div style={{ padding: 14 }}>
