@@ -145,3 +145,23 @@ async def test_the_runtime_route_reports_isolation_and_tools(client) -> None:
     }
     assert [t["id"] for t in body["tools"]] == ["greet"]
     assert body["registration_error"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_round_tripped_config_can_be_put_back(client) -> None:
+    """The console saves by GETting the toolset and PUTting config back.
+
+    Any field the read path adds or transforms has to survive that round trip,
+    or every save from the editor fails validation before it reaches the
+    registration check.
+    """
+    await _create(client, "toolset-rt2")
+    got = await client.get("/v1/toolsets/toolset-rt2")
+    assert got.status_code == 200
+    config = dict(got.json()["config"])
+    config["source"] = GOOD + "\n"
+
+    r = await client.put("/v1/toolsets/toolset-rt2", json={
+        "id": "toolset-rt2", "provider": "python", "config": config,
+    })
+    assert r.status_code == 200, r.text

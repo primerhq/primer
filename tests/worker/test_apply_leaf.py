@@ -45,7 +45,7 @@ async def test_apply_leaf_yielding_tool_uses_hook(monkeypatch):
     class _HookResult:
         output = '{"answer": 42}'
         is_error = False
-    def _fake_hook(meta, payload): return _HookResult()
+    def _fake_hook(meta, payload, ctx): return _HookResult()
     import primer.worker.frames as frames_mod
     monkeypatch.setattr(frames_mod, "get_resume_hook", lambda name: _fake_hook, raising=False)
     leaf = Yielded(tool_name="ask_user", event_key="ask_user:ses:c1", resume_metadata={})

@@ -172,9 +172,14 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
         // Registration errors carry the offending field and line, so they
         // belong next to the editor rather than in a toast that slides away
         // while the operator is still looking for the line.
+        // The RFC7807 handler keeps the raised detail dict verbatim in
+        // `extensions` and puts a generic status title in `detail`, so reading
+        // `detail` first shows "Some required fields are missing or invalid"
+        // instead of the registration error naming the function.
         var ext = (err && err.extensions) || {};
         setRegError({
-          message: (err && (err.detail || err.message)) || "could not save",
+          message:
+            ext.message || (err && (err.detail || err.message)) || "could not save",
           field: ext.field || null,
           lineno: ext.lineno || null,
         });
