@@ -144,7 +144,11 @@ class _SleepArgs(BaseModel):
     )
 
 
-def sleep_resume(yield_metadata: dict[str, Any], event_payload: Any) -> ToolCallResult:
+def sleep_resume(
+    yield_metadata: dict[str, Any],
+    event_payload: Any,
+    ctx: "ResumeContext",
+) -> ToolCallResult:
     """Resume hook for sleep — synthesise elapsed-seconds.
 
     Sleep's event payload is empty (the timer scheduler just fires);

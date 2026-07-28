@@ -38,7 +38,10 @@ from primer.graph.invoke_graph import resume_invoke_graph
 from primer.model.chat import ToolCallPart, ToolResultPart
 from primer.model.principal import PrincipalRef
 from primer.model.yield_ import YieldToWorker
-from primer.worker.yield_resume_registry import get_resume_hook
+from primer.worker.yield_resume_registry import (
+    ResumeContext,
+    get_resume_hook,
+)
 from primer.worker.yield_runtime import classify_approval_payload
 
 
@@ -533,7 +536,16 @@ async def apply_leaf(
         )
 
     hook = get_resume_hook(leaf.tool_name)
-    hook_result = hook(leaf.resume_metadata, payload)
+    hook_result = hook(
+        leaf.resume_metadata,
+        payload,
+        ResumeContext(
+            tool_name=leaf.tool_name,
+            tool_call_id=inner_frame.tool_call_id,
+            session_id=getattr(inner_frame, "session_id", None),
+            resolve_provider=getattr(services, "get_toolset", None),
+        ),
+    )
     if asyncio.iscoroutine(hook_result):
         hook_result = await hook_result
     return ToolResultPart(

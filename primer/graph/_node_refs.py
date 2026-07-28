@@ -304,10 +304,23 @@ def _resume_value_yield_toolcall(
     the tool result the node's downstream consumers read via ``nodes.<id>.text``.
     """
     from primer.model.chat import ToolResultPart
-    from primer.worker.yield_resume_registry import get_resume_hook
+    from primer.worker.yield_resume_registry import ResumeContext, get_resume_hook
 
     hook = get_resume_hook(tool_name)
-    hook_result = hook(resume_metadata or {}, payload)
+    # resolve_provider is None here: this path holds only the parked blob, so
+    # a hook that needs to reach its toolset (a python tool) must say it
+    # cannot rather than assume a resolver is present. Threading one from the
+    # caller is the follow-up if graph tool_call nodes need python tools.
+    hook_result = hook(
+        resume_metadata or {},
+        payload,
+        ResumeContext(
+            tool_name=tool_name,
+            tool_call_id=tool_call_id,
+            session_id=None,
+            resolve_provider=None,
+        ),
+    )
     # The resume hooks in-tree are synchronous; guard against an async hook
     # to keep this helper usable if one is added later.
     if asyncio.iscoroutine(hook_result):  # pragma: no cover -- all hooks sync

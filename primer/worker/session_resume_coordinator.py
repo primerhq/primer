@@ -28,7 +28,10 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from primer.model.yield_ import YieldToWorker
-from primer.worker.yield_resume_registry import get_resume_hook
+from primer.worker.yield_resume_registry import (
+    ResumeContext,
+    get_resume_hook,
+)
 from primer.worker.yield_runtime import (
     _resume_tool_approval,
     classify_approval_payload,
@@ -195,7 +198,19 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
             )
         else:
             hook = get_resume_hook(tool_name)
-            hook_result = hook(parked.yielded.resume_metadata, resume_payload.payload)
+            registry = getattr(pool, "_provider_registry", None)
+            hook_result = hook(
+                parked.yielded.resume_metadata,
+                resume_payload.payload,
+                ResumeContext(
+                    tool_name=tool_name,
+                    tool_call_id=parked.tool_call_id or "unknown",
+                    session_id=getattr(session, "id", None),
+                    resolve_provider=(
+                        registry.get_toolset if registry is not None else None
+                    ),
+                ),
+            )
             if asyncio.iscoroutine(hook_result):
                 hook_result = await hook_result
             tool_result_part = ToolResultPart(

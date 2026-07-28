@@ -494,6 +494,7 @@ class _WatchFilesArgs(BaseModel):
 def watch_files_resume(
     yield_metadata: dict[str, Any],
     event_payload: Any,
+    ctx: "ResumeContext",
 ) -> ToolCallResult:
     """Resume hook for watch_files — translate payload into tool result.
 

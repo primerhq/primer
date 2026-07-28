@@ -7,6 +7,12 @@ mock the session at that boundary.
 """
 
 from __future__ import annotations
+from primer.worker.yield_resume_registry import ResumeContext
+
+# The resume contract carries a ResumeContext so a hook can tell which park
+# it is answering. These hooks do not read it; they just have to receive it.
+_RESUME_CTX = ResumeContext(tool_name="test", tool_call_id="tc-test")
+
 
 import asyncio
 import json
@@ -281,14 +287,14 @@ class TestMcpTaskResumeHook:
             "tool_name": "lr",
         }
         payload = {"result": {"answer": 42}}
-        result = mcp_task_resume(meta, payload)
+        result = mcp_task_resume(meta, payload, _RESUME_CTX)
         assert result.is_error is False
         body = json.loads(result.output)
         assert body == {"answer": 42}
 
     def test_resume_with_timeout(self):
         meta = {"task_id": "t-1", "toolset_id": "s", "tool_name": "n"}
-        result = mcp_task_resume(meta, YieldTimeout(elapsed_seconds=600.0))
+        result = mcp_task_resume(meta, YieldTimeout(elapsed_seconds=600.0), _RESUME_CTX)
         body = json.loads(result.output)
         assert body["timed_out"] is True
         assert body["task_id"] == "t-1"
@@ -303,6 +309,7 @@ class TestMcpTaskResumeHook:
                 cancelled_at=datetime.now(timezone.utc),
                 elapsed_seconds=5.0,
             ),
+            _RESUME_CTX,
         )
         body = json.loads(result.output)
         assert body["cancelled"] is True
@@ -317,7 +324,7 @@ class TestMcpTaskResumeHook:
                 "content": [{"type": "text", "text": "task failed"}],
             }
         }
-        result = mcp_task_resume(meta, payload)
+        result = mcp_task_resume(meta, payload, _RESUME_CTX)
         assert result.is_error is True
 
 

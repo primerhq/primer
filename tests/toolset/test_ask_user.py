@@ -7,6 +7,12 @@ that cover the real-response / timeout / cancelled branches.
 """
 
 from __future__ import annotations
+from primer.worker.yield_resume_registry import ResumeContext
+
+# The resume contract carries a ResumeContext so a hook can tell which park
+# it is answering. These hooks do not read it; they just have to receive it.
+_RESUME_CTX = ResumeContext(tool_name="test", tool_call_id="tc-test")
+
 
 import json
 from datetime import datetime, timezone
@@ -152,7 +158,7 @@ class TestAskUserResumeHook:
             "tool_call_id": "tc-abc",
             "parked_at_iso": datetime.now(timezone.utc).isoformat(),
         }
-        result = ask_user_resume(meta, {"response": "Alice"})
+        result = ask_user_resume(meta, {"response": "Alice"}, _RESUME_CTX)
         assert result.is_error is False
         body = json.loads(result.output)
         assert body["response"] == "Alice"
@@ -168,7 +174,7 @@ class TestAskUserResumeHook:
             "parked_at_iso": datetime.now(timezone.utc).isoformat(),
         }
         payload = {"response": {"foo": "bar", "n": 7}}
-        result = ask_user_resume(meta, payload)
+        result = ask_user_resume(meta, payload, _RESUME_CTX)
         body = json.loads(result.output)
         assert body["response"] == {"foo": "bar", "n": 7}
 
@@ -181,7 +187,7 @@ class TestAskUserResumeHook:
             "tool_call_id": "tc-t",
             "parked_at_iso": datetime.now(timezone.utc).isoformat(),
         }
-        result = ask_user_resume(meta, YieldTimeout(elapsed_seconds=42.5))
+        result = ask_user_resume(meta, YieldTimeout(elapsed_seconds=42.5), _RESUME_CTX)
         body = json.loads(result.output)
         assert body["timed_out"] is True
         assert body["elapsed_seconds"] == 42.5
@@ -202,6 +208,7 @@ class TestAskUserResumeHook:
                 cancelled_at=datetime.now(timezone.utc),
                 elapsed_seconds=1.2,
             ),
+            _RESUME_CTX,
         )
         body = json.loads(result.output)
         assert body["cancelled"] is True
