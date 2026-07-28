@@ -13,6 +13,11 @@ its per-build dependencies).
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from primer.worker.yield_resume_registry import ResumeContext
+
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, ValidationError
@@ -94,6 +99,7 @@ class _AskUserArgs(BaseModel):
 def ask_user_resume(
     yield_metadata: dict[str, Any],
     event_payload: Any,
+    ctx: "ResumeContext",
 ) -> ToolCallResult:
     """Resume hook for ask_user - translate payload into tool result.
 

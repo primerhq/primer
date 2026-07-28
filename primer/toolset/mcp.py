@@ -555,6 +555,7 @@ class McpToolsetProvider(ToolsetProvider):
 def mcp_task_resume(
     yield_metadata: dict[str, Any],
     event_payload: Any,
+    ctx: "ResumeContext",
 ) -> ToolCallResult:
     """Resume hook for MCP-task yields.
 

@@ -10,6 +10,11 @@ Verifies:
 """
 
 from __future__ import annotations
+from primer.worker.yield_resume_registry import ResumeContext
+
+# Hooks now receive the context of the park they are answering.
+_RESUME_CTX = ResumeContext(tool_name="test", tool_call_id="tc-test")
+
 
 import asyncio
 
@@ -184,24 +189,24 @@ class TestResumeHookRegistry:
         _registry.update(self._snapshot)
 
     def test_register_then_lookup(self):
-        def hook(meta, payload):
+        def hook(meta, payload, ctx):
             return ToolCallResult(output="ok")
         register_resume_hook("widget", hook)
         assert has_resume_hook("widget")
         assert get_resume_hook("widget") is hook
 
     def test_register_same_hook_twice_is_idempotent(self):
-        def hook(meta, payload):
+        def hook(meta, payload, ctx):
             return ToolCallResult(output="ok")
         register_resume_hook("widget", hook)
         register_resume_hook("widget", hook)  # no raise
         assert get_resume_hook("widget") is hook
 
     def test_register_different_hook_for_same_name_raises(self):
-        def hook_a(meta, payload):
+        def hook_a(meta, payload, ctx):
             return ToolCallResult(output="a")
 
-        def hook_b(meta, payload):
+        def hook_b(meta, payload, ctx):
             return ToolCallResult(output="b")
         register_resume_hook("widget", hook_a)
         with pytest.raises(ConfigError, match="already registered"):
@@ -261,7 +266,7 @@ class TestSleepToolE2E:
             "requested_seconds": 30.0,
             "parked_at_iso": parked_at.isoformat(),
         }
-        result = hook(meta, {})  # empty event payload (timer fire)
+        result = hook(meta, {}, _RESUME_CTX)  # empty event payload (timer fire)
         assert result.is_error is False
         import json
         body = json.loads(result.output)
@@ -284,7 +289,7 @@ class TestSleepToolE2E:
             cancelled_at=datetime.now(timezone.utc),
             elapsed_seconds=5.0,
         )
-        result = hook(meta, cancelled)
+        result = hook(meta, cancelled, _RESUME_CTX)
         assert result.is_error is False
         import json
         body = json.loads(result.output)

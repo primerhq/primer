@@ -25,6 +25,9 @@ the same way. Tools that don't yield don't appear here.
 
 from __future__ import annotations
 
+import inspect
+from dataclasses import dataclass
+
 from collections.abc import Awaitable, Callable
 from typing import Any, Union
 
@@ -41,8 +44,32 @@ from primer.model.yield_ import YieldCancelled, YieldTimeout
 #   * event_payload  — either a real event dict, or a YieldTimeout, or a
 #     YieldCancelled instance.
 # Returns the ToolCallResult the LLM will see as the tool's response.
+@dataclass(frozen=True)
+class ResumeContext:
+    """What a resume hook needs to know about the park it is answering.
+
+    Hooks for tools that park under one fixed name (sleep, ask_user) never
+    needed this. A python toolset's tool names are operator-chosen and its
+    source lives in a record, so its hook cannot know whose code to run from
+    ``yield_metadata`` alone - it needs a way back to the provider.
+    """
+
+    tool_name: str
+    tool_call_id: str
+    session_id: str | None = None
+    # Resolves a toolset id to its provider. Async, because
+    # ProviderRegistry.get_toolset is. ``None`` where the dispatcher has no
+    # registry in scope; a hook that needs it must say so rather than
+    # assuming it is there.
+    resolve_provider: Callable[[str], Awaitable[Any]] | None = None
+
+
 ResumeHook = Callable[
-    [dict[str, Any], dict[str, Any] | YieldTimeout | YieldCancelled],
+    [
+        dict[str, Any],
+        dict[str, Any] | YieldTimeout | YieldCancelled,
+        ResumeContext,
+    ],
     ToolCallResult | Awaitable[ToolCallResult],
 ]
 
@@ -58,6 +85,18 @@ def register_resume_hook(tool_name: str, hook: ResumeHook) -> None:
     tool name raises :class:`ConfigError` (the second registration
     means a bug, not a deliberate override).
     """
+    # A hook written against the old two-argument contract would raise at
+    # RESUME time - on a session that has already been parked for however long
+    # the operator took to answer. Catch it at import instead.
+    try:
+        arity = len(inspect.signature(hook).parameters)
+    except (TypeError, ValueError):  # pragma: no cover - C callables
+        arity = 3
+    if arity < 3:
+        raise TypeError(
+            f"resume hook for tool {tool_name!r} takes {arity} argument(s); "
+            f"hooks receive (yield_metadata, event_payload, ResumeContext)"
+        )
     existing = _registry.get(tool_name)
     if existing is not None and existing is not hook:
         raise ConfigError(
