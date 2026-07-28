@@ -315,8 +315,18 @@ class TestToolsetProviderType:
     def test_mcp_value(self):
         assert ToolsetProviderType.MCP.value == "mcp"
 
-    def test_only_two_members(self):
-        assert {t.value for t in ToolsetProviderType} == {"internal", "mcp"}
+    def test_python_value(self):
+        assert ToolsetProviderType.PYTHON.value == "python"
+
+    def test_members_are_exactly_the_supported_backends(self):
+        # The values are serialized into config files, so the set is a
+        # compatibility surface: adding one is a feature, renaming or removing
+        # one breaks every stored toolset row.
+        assert {t.value for t in ToolsetProviderType} == {
+            "internal",
+            "mcp",
+            "python",
+        }
 
     def test_string_inheritance(self):
         assert isinstance(ToolsetProviderType.INTERNAL, str)

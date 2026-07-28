@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import ClassVar, Literal
 
-from pydantic import BaseModel, Field, HttpUrl, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, SecretStr, model_validator
 
 from primer.model.common import Identifiable
 
@@ -97,6 +97,7 @@ class ToolsetProviderType(str, Enum):
 
     INTERNAL = "internal"
     MCP = "mcp"
+    PYTHON = "python"
 
 
 class TransportType(str, Enum):
@@ -194,6 +195,62 @@ class McpConfig(BaseModel):
         return self
 
 
+class PythonConfig(BaseModel):
+    """Config for a ``python`` toolset: one module's source plus its limits.
+
+    The whole toolset is a single module. Every function in it decorated with
+    ``@primer_tool`` becomes a tool; see
+    :mod:`primer.toolset.python_runner.registration`.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    source: str = Field(
+        ...,
+        description="Python module source. Not a secret; returned on read.",
+    )
+    source_version: int = Field(
+        ...,
+        ge=1,
+        description=(
+            "Bumped on every source edit. Stamped into a park's resume "
+            "metadata so a resume runs the version that parked, not whatever "
+            "the source says now."
+        ),
+    )
+    default_timeout_seconds: float = Field(
+        default=30.0,
+        gt=0.0,
+        le=300.0,
+        description=(
+            "Wall-clock ceiling for a tool that does not declare its own. "
+            "300s is the hard server ceiling."
+        ),
+    )
+    env: dict[str, SecretStr] = Field(
+        default_factory=dict,
+        description=(
+            "Environment variables for the runner process. Secrets: masked on "
+            "every API read path, same as the MCP stdio env."
+        ),
+    )
+    image: str | None = Field(
+        default=None,
+        description=(
+            "Container image for the runner on container/k8s backends. None "
+            "uses the default runner image. Ignored by the local runner, "
+            "which is stdlib-only by construction."
+        ),
+    )
+    allow_network: bool = Field(
+        default=False,
+        description=(
+            "Permit outbound sockets from the tool. Enforceable only at "
+            "isolation levels above 'rlimit-only'."
+        ),
+    )
+
+
 class Toolset(Identifiable):
     """A configured tool source.
 
@@ -218,7 +275,7 @@ class Toolset(Identifiable):
         ...,
         description="Which toolset provider backend this entry targets.",
     )
-    config: McpConfig | None = Field(
+    config: McpConfig | PythonConfig | None = Field(
         default=None,
         description="Provider-specific config. Required for 'mcp', must be omitted for 'internal'.",
     )
@@ -233,9 +290,17 @@ class Toolset(Identifiable):
 
     @model_validator(mode="after")
     def _validate_config_matches_provider(self) -> "Toolset":
-        if self.provider == ToolsetProviderType.MCP and self.config is None:
+        if self.provider == ToolsetProviderType.MCP and not isinstance(
+            self.config, McpConfig
+        ):
             raise ValueError(
                 "provider='mcp' requires a McpConfig in 'config'"
+            )
+        if self.provider == ToolsetProviderType.PYTHON and not isinstance(
+            self.config, PythonConfig
+        ):
+            raise ValueError(
+                "provider='python' requires a PythonConfig in 'config'"
             )
         if self.provider == ToolsetProviderType.INTERNAL and self.config is not None:
             raise ValueError(
