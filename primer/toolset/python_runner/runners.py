@@ -17,6 +17,7 @@ generic "sandboxed" badge.
 from __future__ import annotations
 
 import asyncio
+import ctypes.util
 import json
 import platform
 import shutil
@@ -57,11 +58,13 @@ def detect_local_isolation() -> IsolationLevel:
     if sys.platform == "darwin" and shutil.which("sandbox-exec"):
         return IsolationLevel.SANDBOX_EXEC
     if platform.system() == "Linux":
-        try:
-            import pyseccomp  # noqa: F401
-        except ImportError:
-            return IsolationLevel.RLIMIT_ONLY
-        return IsolationLevel.SECCOMP
+        # libseccomp is a SYSTEM library reached through ctypes, not a Python
+        # package. It has to be: the shim runs under -I -S, so no
+        # site-package is importable there and a pip dependency would never
+        # load.
+        if ctypes.util.find_library("seccomp"):
+            return IsolationLevel.SECCOMP
+        return IsolationLevel.RLIMIT_ONLY
     return IsolationLevel.RLIMIT_ONLY
 
 

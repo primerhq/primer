@@ -11,6 +11,8 @@ import json
 import subprocess
 import sys
 
+import pytest
+
 from primer.toolset.python_runner._shim import SHIM_SOURCE
 
 MODULE = '''
@@ -154,3 +156,113 @@ def test_the_resume_phase_passes_payload_and_meta() -> None:
 def test_an_async_tool_is_awaited() -> None:
     mod = "async def slow(a: str) -> str:\n    return 'async ' + a\n"
     assert _run(_req("slow", {"a": "x"}) | {"module": mod})["value"] == "async x"
+
+
+# ---------------------------------------------------------------------------
+# seccomp: the syscall filter, where the host has libseccomp
+# ---------------------------------------------------------------------------
+
+
+def _seccomp_available() -> bool:
+    import ctypes.util
+
+    return bool(ctypes.util.find_library("seccomp"))
+
+
+SECCOMP_ONLY = pytest.mark.skipif(
+    not _seccomp_available(), reason="libseccomp not present on this host"
+)
+
+
+@SECCOMP_ONLY
+def test_outbound_connections_are_blocked_by_default() -> None:
+    # connect() is what reaches the network. socket() only makes an fd, and is
+    # deliberately allowed so asyncio can build its event loop.
+    mod = (
+        "import socket\n"
+        "def probe(x: str) -> str:\n"
+        "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "    try:\n"
+        "        s.settimeout(2)\n"
+        "        s.connect(('192.0.2.1', 80))\n"
+        "        return 'connected'\n"
+        "    except PermissionError:\n"
+        "        return 'blocked'\n"
+        "    except OSError as exc:\n"
+        "        return 'other:' + type(exc).__name__\n"
+    )
+    out = _run(_req("probe", {"x": "1"}) | {"module": mod})
+    assert out["value"] == "blocked"
+
+
+@SECCOMP_ONLY
+def test_creating_a_socket_is_allowed_so_async_tools_work() -> None:
+    mod = (
+        "import socket\n"
+        "def probe(x: str) -> str:\n"
+        "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "    s.close()\n"
+        "    return 'created'\n"
+    )
+    assert _run(_req("probe", {"x": "1"}) | {"module": mod})["value"] == "created"
+
+
+@SECCOMP_ONLY
+def test_an_async_tool_still_runs_under_the_filter() -> None:
+    # Regression: denying socket() blocked asyncio's self-pipe and broke every
+    # async tool, which is the shape a yielding tool is written in.
+    mod = "async def slow(a: str) -> str:\n    return 'async ' + a\n"
+    out = _run(_req("slow", {"a": "x"}) | {"module": mod})
+    assert out["ok"] is True, out.get("error")
+    assert out["value"] == "async x"
+
+
+@SECCOMP_ONLY
+def test_allow_network_permits_connect() -> None:
+    mod = (
+        "import socket\n"
+        "def probe(x: str) -> str:\n"
+        "    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n"
+        "    try:\n"
+        "        s.settimeout(2)\n"
+        "        s.connect(('192.0.2.1', 80))\n"
+        "        return 'connected'\n"
+        "    except PermissionError:\n"
+        "        return 'blocked'\n"
+        "    except OSError:\n"
+        "        return 'reached-network'\n"
+    )
+    out = _run(_req("probe", {"x": "1"}) | {"module": mod, "allow_network": True})
+    # 192.0.2.0/24 is TEST-NET-1 and never routes, so the call times out or is
+    # refused. Either proves the syscall was permitted; only EPERM would not.
+    assert out["value"] == "reached-network"
+
+
+@SECCOMP_ONLY
+def test_spawning_a_subprocess_is_blocked() -> None:
+    mod = (
+        "import subprocess\n"
+        "def probe(x: str) -> str:\n"
+        "    try:\n"
+        "        subprocess.run(['/bin/true'])\n"
+        "        return 'spawned'\n"
+        "    except Exception:\n"
+        "        return 'blocked'\n"
+    )
+    out = _run(_req("probe", {"x": "1"}) | {"module": mod})
+    assert out["value"] == "blocked"
+
+
+@SECCOMP_ONLY
+def test_ordinary_work_still_runs_under_the_filter() -> None:
+    # A default-deny filter would have to enumerate everything CPython needs;
+    # this asserts the deny-list approach has not broken normal execution.
+    mod = (
+        "import json, math, re\n"
+        "def probe(x: str) -> str:\n"
+        "    data = json.dumps({'v': math.sqrt(16)})\n"
+        "    return re.sub(r'\\\\s+', '', data)\n"
+    )
+    out = _run(_req("probe", {"x": "1"}) | {"module": mod})
+    assert out["ok"] is True
+    assert "4.0" in out["value"]
