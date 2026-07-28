@@ -53,11 +53,14 @@ def test_registration_errors_render_inline_with_the_line() -> None:
     assert code.index("setRegError") < code.index("window.PythonToolsetEditor")
 
 
-def test_the_save_invalidates_both_resources() -> None:
-    # The record and the runtime facts are separate reads; saving must refresh
-    # both or the derived tool list goes stale after an edit.
+def test_the_save_invalidates_every_reader_of_this_toolset() -> None:
+    # Three readers: this editor, the parent detail view (its own key), and the
+    # runtime facts. Missing any leaves a stale view after an edit.
     src = EDITOR.read_text(encoding="utf-8")
-    assert 'invalidates: ["toolset:" + toolsetId, "toolset-runtime:" + toolsetId]' in src
+    for key in ('"toolset:" + toolsetId',
+                '"toolset-detail:" + toolsetId',
+                '"toolset-runtime:" + toolsetId'):
+        assert key in src, key
 
 
 def test_the_runtime_route_is_what_supplies_the_level() -> None:

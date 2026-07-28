@@ -155,14 +155,30 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
 
   var save = api.useMutation(
     function (next) {
+      // Send only the fields this form owns, not the config echoed back from
+      // the read path. A read response is shaped for reading - secrets are
+      // masked, and anything the server adds has to survive a round trip it
+      // was never designed for. Spreading it made every save fail request
+      // validation before it reached the registration check.
+      var prior = (detail.data && detail.data.config) || {};
+      var cfg = { source: next, source_version: prior.source_version || 1 };
+      if (prior.default_timeout_seconds) {
+        cfg.default_timeout_seconds = prior.default_timeout_seconds;
+      }
+      if (prior.allow_network) cfg.allow_network = true;
+      if (prior.image) cfg.image = prior.image;
       return api.apiFetch("PUT", "/toolsets/" + encodeURIComponent(toolsetId), {
         id: toolsetId,
         provider: "python",
-        config: Object.assign({}, detail.data.config, { source: next }),
+        config: cfg,
       });
     },
     {
-      invalidates: ["toolset:" + toolsetId, "toolset-runtime:" + toolsetId],
+      invalidates: [
+        "toolset:" + toolsetId,
+        "toolset-detail:" + toolsetId,
+        "toolset-runtime:" + toolsetId,
+      ],
       onSuccess: function () {
         setRegError(null);
         setDraft(null);
