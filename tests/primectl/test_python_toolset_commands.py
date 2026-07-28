@@ -17,17 +17,25 @@ runner = CliRunner()
 SERVER = ["--server", "http://127.0.0.1:9"]
 
 
+def _plain(text: str) -> str:
+    """Strip ANSI and soft line breaks from typer's rich help output."""
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text).replace("\n", " ")
+
+
 def test_the_toolset_sub_app_is_registered() -> None:
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    assert "toolset" in result.stdout
+    assert "toolset" in _plain(result.stdout)
 
 
 def test_the_python_commands_are_registered() -> None:
     result = runner.invoke(app, SERVER + ["toolset", "--help"])
     assert result.exit_code == 0
+    plain = _plain(result.stdout)
     for cmd in ("create-python", "update-python-source", "list-python-tools"):
-        assert cmd in result.stdout, cmd
+        assert cmd in plain, cmd
 
 
 def test_create_python_requires_a_source_file() -> None:
@@ -74,6 +82,15 @@ def test_update_python_source_reads_the_source_file(tmp_path) -> None:
 def test_source_comes_from_a_file_not_an_argument() -> None:
     # A python module is multi-line; quoting one through a shell is how you
     # register something subtly different from what you wrote.
-    result = runner.invoke(app, SERVER + ["toolset", "create-python", "--help"])
-    assert "--source-file" in result.stdout
-    assert "--source " not in result.stdout
+    #
+    # Asserted against the declared parameters rather than --help: typer
+    # renders help in a rich box with ANSI codes, wrapped to the terminal
+    # width, so a flag name can be split across lines.
+    import inspect
+
+    from primectl.commands.toolset import create_python, update_python_source
+
+    for fn in (create_python, update_python_source):
+        params = inspect.signature(fn).parameters
+        assert "source_file" in params, fn.__name__
+        assert "source" not in params, fn.__name__

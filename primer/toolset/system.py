@@ -1082,6 +1082,10 @@ def build_system_toolset(
                     returns="``{ok: true, toolset_id, tools: [{id, yields, args}]}``",
                 )
             ],
+            # Reading what a toolset exposes is not privileged, but the role
+            # must be explicit: tests/mcp/test_required_role_completeness.py
+            # requires every exposable reserved tool to declare one.
+            required_role="user",
         ),
         _list_python_tools_handler,
     )

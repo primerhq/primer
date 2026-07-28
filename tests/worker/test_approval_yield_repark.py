@@ -183,7 +183,7 @@ async def test_approved_yielding_tool_reparks_then_resumes(monkeypatch):
             self.output = output
             self.is_error = is_error
 
-    def _hook(resume_metadata, payload):
+    def _hook(resume_metadata, payload, ctx):
         return _HookResult(json.dumps({"woke": True, "payload": payload}))
 
     register_resume_hook(real_tool_name, _hook)
