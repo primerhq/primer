@@ -188,11 +188,17 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
         // Registration errors carry the offending field and line, so they
         // belong next to the editor rather than in a toast that slides away
         // while the operator is still looking for the line.
-        // The RFC7807 handler keeps the raised detail dict verbatim in
-        // `extensions` and puts a generic status title in `detail`, so reading
-        // `detail` first shows "Some required fields are missing or invalid"
-        // instead of the registration error naming the function.
-        var ext = (err && err.extensions) || {};
+        // Read the RAW envelope, not ApiError's fields.
+        //
+        // Two layers strip this message. The RFC7807 handler keeps the raised
+        // detail dict verbatim under `extensions` and puts a generic status
+        // title in `detail`. Then ApiError REWRITES title/detail for every 422
+        // into "Data is incomplete" / "Some required fields are missing or
+        // invalid" - friendly for form validation, fatal here, because a
+        // registration error carries the function name and line that are the
+        // entire reason this is shown inline. ApiError also exposes no
+        // `.extensions`; the envelope hangs off `.envelope`.
+        var ext = ((err && err.envelope && err.envelope.extensions) || {});
         setRegError({
           message:
             ext.message || (err && (err.detail || err.message)) || "could not save",
