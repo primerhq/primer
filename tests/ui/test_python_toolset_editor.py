@@ -114,3 +114,27 @@ def test_the_bundle_builds_with_the_editor() -> None:
 
     _etag, body = build_jsx_bundle(UI)
     assert "window.PythonToolsetEditor" in body.decode("utf-8")
+
+
+def test_the_error_is_read_from_the_raw_envelope() -> None:
+    """ApiError is the wrong place to read a registration failure from.
+
+    It exposes no `.extensions`, and for ANY 422 it rewrites title/detail into
+    a generic "Data is incomplete" form message. A registration error carries
+    the function name and line, which is the entire reason it renders inline,
+    so it has to come off the raw envelope.
+    """
+    src = EDITOR.read_text(encoding="utf-8")
+    assert "err.envelope && err.envelope.extensions" in src
+    code = _code_only(src)
+    assert "err.extensions" not in code, (
+        "ApiError has no .extensions; reading it silently yields {}"
+    )
+
+
+def test_apierror_still_has_no_extensions_property() -> None:
+    # Pins the assumption above against the shared class, so this breaks
+    # loudly if ApiError ever grows one rather than silently going stale.
+    api = (UI / "foundation" / "api.js").read_text(encoding="utf-8")
+    assert "this.envelope = envelope;" in api
+    assert "this.extensions" not in api
