@@ -406,11 +406,14 @@ function TS_NewToolsetModal({ onClose, onCreate, pushToast, existing }) {
     setUnreachable(null);
     let config = null;
     if (provider === "python") {
-      // Source is authored in the editor after create; a new toolset starts
-      // from a working example rather than an empty module that cannot
-      // register.
+      // Empty, deliberately. An empty module registers fine -- it just yields
+      // zero tools -- so seeding a starter here only meant every new toolset
+      // shipped a `greet` tool the operator never wrote, live and callable by
+      // any agent bound to it, indistinguishable from an intentional one. The
+      // editor's "Insert example" button is where the template belongs; that
+      // way nothing is callable until someone writes it.
       config = {
-        source: PY_STARTER,
+        source: "",
         source_version: 1,
       };
     }
