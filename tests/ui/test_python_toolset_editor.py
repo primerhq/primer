@@ -86,14 +86,37 @@ def test_python_is_offered_in_the_create_form() -> None:
     assert 'provider === "python"' in src
 
 
-def test_a_new_python_toolset_starts_from_a_registrable_example() -> None:
-    # An empty module cannot register, so create would fail validation and the
-    # operator would never reach the editor.
+def test_a_new_python_toolset_starts_empty() -> None:
+    # This used to seed PY_STARTER on create, justified as "an empty module
+    # cannot register". That was simply false: register_module("") returns []
+    # and PythonConfig(source="") validates. The seed's only real effect was
+    # that every new toolset shipped a live, agent-callable `greet` tool the
+    # operator never wrote.
+    src = TOOLSETS.read_text(encoding="utf-8")
+    start = src.index('if (provider === "python")')
+    block = src[start:src.index("}", start)]
+    assert 'source: ""' in block, "create must not seed a source"
+    assert "PY_STARTER" not in block
+
+
+def test_the_starter_template_is_still_available_on_demand() -> None:
+    # Removing the seed must not remove the template -- it moves to the
+    # editor's explicit "Insert example" action.
     src = EDITOR.read_text(encoding="utf-8")
     assert "PY_STARTER" in src
     assert "@primer_tool()" in src
     assert "Use when" in src
     assert "Args:" in src
+    assert 'data-testid="python-insert-starter"' in src
+
+
+def test_the_empty_state_is_reachable() -> None:
+    # The editor has always had a "no tools yet" branch, but seeding on create
+    # made it dead code through the UI: every new toolset arrived with greet
+    # already registered.
+    src = EDITOR.read_text(encoding="utf-8")
+    assert 'data-testid="python-derived-empty"' in src
+    assert "No tools yet" in src
 
 
 def test_registered_before_the_toolsets_page() -> None:
