@@ -292,3 +292,58 @@ def test_url_reactivity_dedupes_against_active_tab() -> None:
     # No-op when the parsed tab is already active (prevents reopening a
     # user-closed tab unless the URL truly changes).
     assert "s.activeTabId === urlTab" in src
+
+
+# ---------------------------------------------------------------------------
+# Shell sizing contract
+#
+# .st-root's child count is variable: studioV2 inserts an AttentionBar
+# between the topbar and the body, phones swap the body for StudioMobile
+# plus a bottom tab bar. A row list sized for one of those shapes silently
+# collapses the body in the others -- which is exactly what shipped when
+# studioV2 became the default. These pin the sizing model that removes the
+# dependence on the count. The geometry itself is asserted in
+# tests/ui_e2e/test_studio.py.
+# ---------------------------------------------------------------------------
+
+
+def _st_root_block() -> str:
+    """The body of the `.st-root {...}` rule."""
+    css = STYLES.read_text(encoding="utf-8")
+    start = css.index(".st-root {")
+    return css[start:css.index("}", start)]
+
+
+def test_st_root_sizes_by_child_not_by_a_fixed_row_list() -> None:
+    block = _st_root_block()
+    assert "display: flex" in block
+    assert "flex-direction: column" in block
+    # A hardcoded row list is the bug: three children against a two-row
+    # template pushed .st-body into an implicit `auto` row.
+    assert "grid-template-rows" not in block
+
+
+def test_the_body_and_the_mobile_column_both_grow() -> None:
+    css = STYLES.read_text(encoding="utf-8")
+    body_start = css.index(".st-body {")
+    body = css[body_start:css.index("}", body_start)]
+    assert "flex: 1 1 auto" in body, "the body must absorb the leftover height"
+
+    # Phones render StudioMobile's .col instead of .st-body, so it needs the
+    # same treatment -- scoped to direct children so the generic .col
+    # utility is unaffected elsewhere.
+    assert ".st-root > .col {" in css
+    col_start = css.index(".st-root > .col {")
+    col = css[col_start:css.index("}", col_start)]
+    assert "flex: 1 1 auto" in col
+
+
+def test_the_topbar_keeps_its_height_and_may_shrink_horizontally() -> None:
+    css = STYLES.read_text(encoding="utf-8")
+    start = css.index(".st-topbar {")
+    block = css[start:css.index("}", start)]
+    # It used to inherit 44px from the grid row; as a flex item it must say so.
+    assert "flex: 0 0 var(--st-subhead-h, 44px)" in block
+    # min-width:auto floored the row at ~502px (workspace pill + five 44px
+    # touch targets), overflowing every phone viewport.
+    assert "min-width: 0" in block

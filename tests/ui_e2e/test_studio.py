@@ -40,7 +40,12 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import files_list, is_studio_v2, session_row
+from tests.ui_e2e._studio_helpers import (
+    files_list,
+    is_studio_v2,
+    open_studio,
+    session_row,
+)
 
 
 from tests._support.smk import smk  # noqa: E402
@@ -330,6 +335,88 @@ def test_studio_session_redirect_lands_with_tab_open(
         assert_no_console_errors(
             console_messages,
             ignore_patterns=STUDIO_CONSOLE_IGNORES,
+        )
+
+    finally:
+        _cleanup(base_url, ids)
+
+
+# ===========================================================================
+# Shell geometry - the children must tile .st-root with no dead space
+# ===========================================================================
+
+
+@pytest.mark.skipif(
+    os.environ.get("PRIMER_RUN_UI_E2E") != "1",
+    reason="Set PRIMER_RUN_UI_E2E=1 to run UI e2e tests",
+)
+def test_the_studio_body_fills_the_shell_with_no_dead_space(
+    page,
+    base_url: str,
+    console_url: str,
+    unique_suffix: str,
+) -> None:
+    """The Studio's rows must tile .st-root, and the body must own what the
+    topbar and attention bar leave.
+
+    Regression: .st-root was a grid whose ``grid-template-rows`` listed two
+    rows while studioV2 mounts three children (topbar, AttentionBar, body).
+    The body landed in an implicit ``auto`` row, collapsed to its content
+    height, and left ~550px of empty space above it -- the rail and the
+    center pane sat jammed against the bottom of the viewport.
+
+    Presence assertions cannot catch this: every element was mounted and
+    visible, just in the wrong place. So this measures geometry, and it is
+    written against the child *count* being irrelevant -- a fourth row
+    (phones add a bottom tab bar) must not reintroduce the bug.
+    """
+    ids = _seed_studio_ladder(base_url, unique_suffix)
+    wid = ids["workspace"]
+
+    try:
+        open_studio(page, console_url, wid)
+
+        geom = page.evaluate(
+            """
+            () => {
+              const root = document.querySelector('.st-root');
+              if (!root) return null;
+              const kids = [...root.children];
+              const rootH = root.getBoundingClientRect().height;
+              const sumKids = kids.reduce(
+                (a, c) => a + c.getBoundingClientRect().height, 0);
+              // .st-body on desktop; StudioMobile's .col on phones.
+              const fill = document.querySelector('.st-body')
+                        || document.querySelector('.st-root > .col');
+              return {
+                rootH: Math.round(rootH),
+                sumKids: Math.round(sumKids),
+                kidCount: kids.length,
+                fillH: fill ? Math.round(fill.getBoundingClientRect().height) : 0,
+                fillTop: fill
+                  ? Math.round(fill.getBoundingClientRect().top
+                               - root.getBoundingClientRect().top)
+                  : null,
+              };
+            }
+            """
+        )
+        assert geom is not None, "the Studio shell (.st-root) never mounted"
+
+        # 1. The children tile the shell. A few px of tolerance covers
+        #    sub-pixel rounding and the topbar's 1px bottom border.
+        dead = geom["rootH"] - geom["sumKids"]
+        assert dead <= 4, f"{dead}px of dead space inside .st-root: {geom}"
+
+        # 2. The body is the element that grows. Before the fix it was 313px
+        #    of a 952px shell (33%); after, 863px (91%).
+        assert geom["fillH"] > geom["rootH"] * 0.5, (
+            f"body is only {geom['fillH']}px of {geom['rootH']}px: {geom}"
+        )
+
+        # 3. It starts directly under the fixed rows, not pushed down.
+        assert geom["fillTop"] is not None and geom["fillTop"] <= 120, (
+            f"body starts {geom['fillTop']}px into the shell: {geom}"
         )
 
     finally:

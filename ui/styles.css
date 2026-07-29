@@ -130,9 +130,16 @@
    rather than the whole viewport. The .studio-page chrome reset below strips
    the empty page-header + page-body padding so this can size to 100%. Owns its
    own data-theme/-density. */
+/* Flex column, NOT a grid with a fixed row list. The child count varies:
+   studioV2 mounts an AttentionBar between the topbar and the body, and the
+   plain shell does not. A `grid-template-rows: 44px 1fr` sized for two
+   children silently pushed the third into an implicit `auto` row, which
+   collapsed .st-body to its content height and left ~550px of dead space
+   above it. Flex sizes by child, so adding a fourth row later cannot
+   reintroduce that class of bug. */
 .st-root {
-  display: grid;
-  grid-template-rows: var(--st-subhead-h, 44px) 1fr;
+  display: flex;
+  flex-direction: column;
   height: 100%;
   width: 100%;
   background: var(--bg);
@@ -151,8 +158,18 @@
 .app.studio-page .page-header { display: none; }
 .app.studio-page .page-body { padding: 0; height: 100%; min-height: 0; }
 
-/* Slim content sub-header (top row). */
+/* Phones swap .st-body for StudioMobile, whose content root is a plain .col
+   (with the bottom tab bar as a sibling .row.mobile-only). Scoped to direct
+   children so the generic .col utility is untouched everywhere else. */
+.st-root > .col {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* Slim content sub-header (top row). Fixed height as a flex item -- it used to
+   inherit this from the .st-root grid row. */
 .st-topbar {
+  flex: 0 0 var(--st-subhead-h, 44px);
   display: flex;
   align-items: center;
   gap: 10px;
@@ -161,12 +178,20 @@
   border-bottom: 1px solid var(--border);
   position: relative;
   z-index: 30;
+  /* Without this the row is floored at min-content (~502px: the workspace pill
+     plus five 44px touch targets), so it overflowed every phone viewport. The
+     touch targets must keep their 44px (see tests/ui/test_touch_target_audit.py),
+     so the workspace pill is the element that gives. */
+  min-width: 0;
 }
 .st-ws-btn {
   position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
+  /* Lets the workspace-id label actually use its ellipsis when the topbar is
+     narrower than the full id. */
+  min-width: 0;
   padding: 5px 10px;
   border: 1px solid var(--border);
   border-radius: 7px;
@@ -255,6 +280,9 @@
    --st-right-w inline on the grid element. At ≤639px the handles are
    display:none (desktop-only) and the mobile override re-declares 1fr. */
 .st-body {
+  /* Takes every row the topbar and the (optional) attention bar leave behind.
+     min-height:0 keeps the inner scrollers from inflating it past the shell. */
+  flex: 1 1 auto;
   display: grid;
   grid-template-columns: var(--st-left-w, 248px) 5px minmax(0, 1fr) 5px var(--st-right-w, 332px);
   min-height: 0;
