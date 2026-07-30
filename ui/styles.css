@@ -761,6 +761,13 @@ input, textarea, select { font: inherit; color: inherit; }
   background: var(--bg-1);
   position: relative;
   z-index: 20;
+  /* As a grid item this defaults to min-width:auto, which floors the row at
+     its min-content (~410px: brand + hamburger + the status cluster). That is
+     wider than a 390px phone, so the row forced the whole DOCUMENT to scroll
+     sideways on every console page. Chrome must fit the viewport; content that
+     genuinely needs more room scrolls inside .main, which already has
+     overflow:auto for exactly that. */
+  min-width: 0;
 }
 
 .topbar-brand {
@@ -824,6 +831,13 @@ input, textarea, select { font: inherit; color: inherit; }
   align-items: center;
   gap: 8px;
   margin-left: auto;
+  /* The status cluster is the widest thing in the row (~254px). Both levels
+     need releasing: the cluster so it may shrink, and its children so the
+     worker pill's text is what gives rather than the row overflowing. */
+  min-width: 0;
+}
+.topbar-right > * {
+  min-width: 0;
 }
 
 .worker-pill {
@@ -839,6 +853,12 @@ input, textarea, select { font: inherit; color: inherit; }
   color: var(--text-2);
   cursor: pointer;
   transition: border-color 0.15s;
+  /* Now that the pill can shrink, it must clip rather than wrap: "3/3 workers
+     - 0 in flight" breaking mid-phrase doubles the topbar's height on a phone.
+     The worker count leads, so an ellipsis drops the least important half. */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .worker-pill:hover { border-color: var(--border-strong); }
 .worker-pill .dot {
@@ -986,6 +1006,10 @@ input, textarea, select { font: inherit; color: inherit; }
   overflow: auto;
   background: var(--bg);
   position: relative;
+  /* Same min-width:auto floor as .topbar. Without this, a page whose content
+     is wider than the viewport widens .main itself instead of scrolling within
+     it, taking the document with it. */
+  min-width: 0;
 }
 
 .page-header {
