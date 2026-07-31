@@ -598,6 +598,58 @@ def _toolset_unreachable(
     )
 
 
+# Per-toolset bound for the /v1/tools catalogue.
+#
+# The create-time probe above can afford 8s: it is one toolset, on an explicit
+# operator action, and the operator is watching. The catalogue enumerates EVERY
+# toolset on page load, so the same bound would be paid per row.
+#
+# It only has to be generous enough for a healthy MCP server's connect +
+# handshake + tools/list, which is well under a second on a LAN.
+_CATALOGUE_PROBE_TIMEOUT_S = 5.0
+
+
+async def _catalogue_tools(
+    registry: Any, tid: str, principal: Any,
+) -> tuple[list[dict], str | None]:
+    """Drain one toolset's tools under a time bound.
+
+    Returns ``(tools, unavailable_reason)`` -- the reason is ``None`` when the
+    toolset answered.
+
+    The bound is the point. Catching exceptions is not enough to keep one bad
+    toolset from taking down the catalogue: an MCP server that accepts the TCP
+    connection and then never replies raises nothing at all, so an
+    ``except`` clause never runs and the request hangs forever. That is not
+    hypothetical -- it is what a Deployment whose pod is Running but whose
+    process is wedged looks like from the client side.
+    """
+    import asyncio
+
+    tools: list[dict] = []
+    try:
+        async with asyncio.timeout(_CATALOGUE_PROBE_TIMEOUT_S):
+            provider = await registry.get_toolset(tid)
+            async for tool in provider.list_tools(principal=principal):
+                tools.append({
+                    "id": tool.id,
+                    "scoped_id": f"{tid}__{tool.id}",
+                    "description": tool.description or "",
+                    "input_schema": tool.args_schema or {},
+                })
+    except Exception as exc:  # noqa: BLE001
+        # HTTP MCP runs in anyio task groups, so the useful error is a leaf of
+        # a BaseExceptionGroup; reporting the group renders an unreadable
+        # "unhandled errors in a TaskGroup (1 sub-exception)" in the console.
+        leaf = _informative_leaf(exc)
+        if isinstance(leaf, TimeoutError):
+            return [], (
+                f"did not respond within {_CATALOGUE_PROBE_TIMEOUT_S:g}s"
+            )
+        return [], f"{type(leaf).__name__}: {leaf}"
+    return tools, None
+
+
 def _informative_leaf(exc: BaseException) -> BaseException:
     """Unwrap anyio ``BaseExceptionGroup`` wrappers to the informative leaf.
 
@@ -1073,20 +1125,12 @@ async def list_all_tools(
             )
             out.append(entry)
             continue
-        try:
-            provider = await registry.get_toolset(tid)
-            async for tool in provider.list_tools(principal=principal):
-                entry["tools"].append({
-                    "id": tool.id,
-                    "scoped_id": f"{tid}__{tool.id}",
-                    "description": tool.description or "",
-                    "input_schema": tool.args_schema or {},
-                })
-        except Exception as exc:  # noqa: BLE001
+        tools, reason = await _catalogue_tools(registry, tid, principal)
+        if reason is None:
+            entry["tools"] = tools
+        else:
             entry["available"] = False
-            entry["unavailable_reason"] = (
-                f"{type(exc).__name__}: {exc}"
-            )
+            entry["unavailable_reason"] = reason
         out.append(entry)
 
     # 2. User-defined Toolset rows. Page through storage so the
@@ -1114,20 +1158,14 @@ async def list_all_tools(
                 "available": True,
                 "tools": [],
             }
-            try:
-                provider = await registry.get_toolset(row.id)
-                async for tool in provider.list_tools(principal=principal):
-                    entry["tools"].append({
-                        "id": tool.id,
-                        "scoped_id": f"{row.id}__{tool.id}",
-                        "description": tool.description or "",
-                        "input_schema": tool.args_schema or {},
-                    })
-            except Exception as exc:  # noqa: BLE001
+            tools, reason = await _catalogue_tools(
+                registry, row.id, principal,
+            )
+            if reason is None:
+                entry["tools"] = tools
+            else:
                 entry["available"] = False
-                entry["unavailable_reason"] = (
-                    f"{type(exc).__name__}: {exc}"
-                )
+                entry["unavailable_reason"] = reason
             out.append(entry)
         if len(page.items) < page_size:
             break
