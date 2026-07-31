@@ -66,3 +66,51 @@ source moved, the resume refuses: running current code against an answer to
 the old question is worse than refusing, because the operator answered a
 prompt the new code may no longer ask. The server owns the bump, so two
 concurrent editors cannot land on the same number.
+
+## The console builder
+
+`ui/components/toolsets/python-editor.jsx` is the page; the editing surface
+itself is `python-code-editor.jsx`, wrapping CodeMirror 6 from
+`ui/vendor/codemirror.min.js`.
+
+The vendored bundle is built from pinned npm packages to a single IIFE
+exposing one global, `window.CM6`, holding only the names the editor uses.
+`ui/vendor/MANIFEST.md` carries the package inventory, both sha256s, and the
+rebuild recipe; `codemirror.entry.js` is vendored beside it as the bundle's
+source and is deliberately not loaded by the browser. This is the only
+vendored file with transitive packages baked in, which is why the manifest
+spells out what "no transitive deps" means for it: resolved once, pinned by
+version, frozen into a file whose hash is recorded.
+
+If the bundle fails to load the editor renders a plain textarea instead. Both
+carry `data-testid="python-source"`, and the real one is distinguished by
+`data-editor="codemirror"` -- the e2e suite asserts on that, because every
+static test passes either way.
+
+### Completions
+
+Deliberately not general Python. The completion list covers the six names
+primer injects (`primer_tool`, `resumes`, `ask_user`, `sleep_for`,
+`watch_files`, `ctx`) and the docstring sections, because those appear in no
+Python documentation anywhere. Each carries an `info` string: the list is the
+only place that surface is discoverable.
+
+### Live validation
+
+`POST /v1/toolsets/{id}/validate` runs `register_module` against candidate
+source and returns the tools it would produce, or the error with its field
+and line. It never persists.
+
+It always answers 200. Source that does not register is the normal state of a
+half-written function, so treating it as an HTTP error would make the
+editor's happy path an error path. The PUT route still 422s, because there an
+invalid source is a rejected write.
+
+The console debounces at 450ms and feeds the result to two places: CodeMirror
+diagnostics (the failing line is marked) and the function outline (which lists
+what the DRAFT would register, beside a separate panel showing what is saved
+and callable). Those two panels differ exactly while there are unsaved edits,
+which is the gap an operator needs to see before saving.
+
+`RegisteredTool.lineno` exists for this: the outline can list a function only
+if it can also jump to it.
