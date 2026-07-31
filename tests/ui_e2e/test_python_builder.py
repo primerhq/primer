@@ -20,6 +20,8 @@ import pytest
 pytest.importorskip("playwright")
 from playwright.sync_api import Page, expect  # noqa: E402
 
+from tests.ui_e2e._python_helpers import set_python_source  # noqa: E402
+
 
 GREET = (
     "@primer_tool()\n"
@@ -89,18 +91,17 @@ def test_the_outline_lists_functions_from_the_unsaved_draft(
         expect(rows.first).to_be_visible(timeout=15_000)
         expect(rows.first).to_contain_text("greet")
 
-        page.locator(".cm-content").click()
-        page.keyboard.press("Control+End")
-        page.keyboard.type(
+        # Set the document rather than typing it: auto-indent rewrites source
+        # as it arrives, so a typed docstring is not the docstring you wrote.
+        set_python_source(page, GREET + (
             "\n\n@primer_tool()\n"
             "def farewell(who: str) -> str:\n"
-            '"""Say goodbye.\n\n'
-            "Use when parting.\n\n"
-            "Args:\n"
-            "who: Who to bid farewell.\n"
-            '"""\n'
-            "return who\n"
-        )
+            '    """Say goodbye.\n\n'
+            "    Use when parting.\n\n"
+            "    Args:\n        who: Who to bid farewell.\n"
+            '    """\n'
+            "    return who\n"
+        ))
         # Debounced validate (450ms) then a re-render.
         expect(rows).to_have_count(2, timeout=15_000)
         expect(page.locator('[data-testid="python-outline"]')).to_contain_text(
@@ -128,18 +129,15 @@ def test_a_broken_docstring_marks_the_line_without_saving(
         )
 
         # An undocumented parameter: registration names it.
-        page.locator(".cm-content").click()
-        page.keyboard.press("Control+End")
-        page.keyboard.type(
+        set_python_source(page, GREET + (
             "\n\n@primer_tool()\n"
             "def broken(a: str, b: str) -> str:\n"
-            '"""Do a thing.\n\n'
-            "Use when you must.\n\n"
-            "Args:\n"
-            "a: Only a is documented.\n"
-            '"""\n'
-            "return a\n"
-        )
+            '    """Do a thing.\n\n'
+            "    Use when you must.\n\n"
+            "    Args:\n        a: Only a is documented.\n"
+            '    """\n'
+            "    return a\n"
+        ))
         expect(page.locator('[data-testid="python-live-status"]')).to_have_attribute(
             "data-ok", "0", timeout=15_000,
         )

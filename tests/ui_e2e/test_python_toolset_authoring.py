@@ -6,6 +6,8 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
+from tests.ui_e2e._python_helpers import set_python_source
+
 GREET = (
     "@primer_tool()\n"
     "def greet(name: str) -> str:\n"
@@ -71,12 +73,17 @@ def test_a_broken_docstring_reports_inline_with_its_line(
     _seed(base_url, tid)
     try:
         page.goto(f"{console_url}#/toolsets/{tid}", wait_until="domcontentloaded")
-        source = page.locator('[data-testid="python-source"]')
-        expect(source).to_be_visible(timeout=20_000)
+        expect(page.locator('[data-testid="python-source"]')).to_be_visible(
+            timeout=20_000,
+        )
 
         # Strip the docstring: registration must refuse, and say where.
-        source.fill(
-            "@primer_tool()\ndef greet(name: str) -> str:\n    return name\n"
+        # Set through the editor rather than locator.fill(): the surface is a
+        # CodeMirror div now, and typing source into it would be rewritten by
+        # auto-indent before it ever reached the server.
+        set_python_source(
+            page,
+            "@primer_tool()\ndef greet(name: str) -> str:\n    return name\n",
         )
         page.locator('[data-testid="python-save"]').click()
 
