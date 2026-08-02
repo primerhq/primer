@@ -18,6 +18,12 @@ A python toolset is one module. Every function in it decorated with
 toolset record and is edited from the console, the REST API, or
 `primectl toolset create-python`.
 
+A new toolset starts empty. In the console, **Add function** inserts a
+scaffold with the contract spelled out in `#` comments -- one for a plain
+tool, one for a yielding tool and its `@resumes` companion. The editor
+validates against the real registrar as you type, so a missing `Args:` entry
+is marked on its line before you save rather than after.
+
 ## Mental model
 
 ### The shape
