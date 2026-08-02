@@ -276,3 +276,112 @@ async def test_graph_fresh_rejects_non_object_payload(
     )
     assert res.ok is False
     assert res.error_code == "graph_input_invalid"
+
+
+# ---------------------------------------------------------------------------
+# skip-gate liveness — a session that never ran a turn must not wedge its
+# subscription forever (observed: a `turn_no == 0` row held a cron trigger
+# closed for 14h; every fire skipped silently and the job simply stopped).
+# ---------------------------------------------------------------------------
+
+
+def _seed_session(sid, workspace_id, agent_id, **over):
+    from datetime import timedelta
+    base = dict(
+        id=sid,
+        workspace_id=workspace_id,
+        binding=AgentSessionBinding(agent_id=agent_id),
+        status=SessionStatus.RUNNING,
+        turn_status="idle",
+        metadata={"subscription_id": "sb-1"},
+        created_at=datetime.now(timezone.utc) - timedelta(hours=2),
+        turn_no=0,
+    )
+    base.update(over)
+    return WorkspaceSession(**base)
+
+
+def test_never_started_session_stops_holding_the_gate_after_grace(
+    seeded_workspace, seeded_agent,
+):
+    from primer.trigger.subscribers import session_holds_skip_gate
+    stuck = _seed_session("se-stuck", seeded_workspace.id, seeded_agent.id)
+    assert session_holds_skip_gate(stuck) is False
+
+
+def test_never_started_session_still_holds_the_gate_within_grace(
+    seeded_workspace, seeded_agent,
+):
+    """A freshly created session is mid-claim, not stuck - it must still block."""
+    from primer.trigger.subscribers import session_holds_skip_gate
+    fresh = _seed_session(
+        "se-fresh", seeded_workspace.id, seeded_agent.id,
+        created_at=datetime.now(timezone.utc),
+    )
+    assert session_holds_skip_gate(fresh) is True
+
+
+def test_long_running_turn_holds_the_gate_regardless_of_age(
+    seeded_workspace, seeded_agent,
+):
+    """The bound is on NEVER STARTING, never on duration.
+
+    A started turn may legitimately run for hours (a graph build, a long exec). Firing a
+    second session beside it would let two runs write the same workspace state.
+    """
+    from datetime import timedelta
+
+    from primer.trigger.subscribers import session_holds_skip_gate
+    working = _seed_session(
+        "se-working", seeded_workspace.id, seeded_agent.id,
+        turn_no=3, turn_status="running",
+        created_at=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+    assert session_holds_skip_gate(working) is True
+
+
+def test_cancel_requested_releases_the_gate(seeded_workspace, seeded_agent):
+    """Cancel is a flag the worker reads on its next step; a session that never started
+    has nobody to read it, so cancel must reopen the gate by itself."""
+    from primer.trigger.subscribers import session_holds_skip_gate
+    cancelled = _seed_session(
+        "se-cancelled", seeded_workspace.id, seeded_agent.id,
+        turn_no=5, cancel_requested=True,
+    )
+    assert session_holds_skip_gate(cancelled) is False
+
+
+def test_ended_session_never_holds_the_gate(seeded_workspace, seeded_agent):
+    from primer.trigger.subscribers import session_holds_skip_gate
+    done = _seed_session(
+        "se-done", seeded_workspace.id, seeded_agent.id,
+        status=SessionStatus.ENDED, turn_no=2,
+    )
+    assert session_holds_skip_gate(done) is False
+
+
+@pytest.mark.asyncio
+async def test_graph_fresh_fires_past_a_stuck_never_started_session(
+    fake_storage_provider, fake_claim_engine, fake_scheduler,
+    fake_workspace_registry, seeded_workspace, seeded_graph,
+):
+    """End-to-end: the wedged-subscription bug. A stale turn_no==0 row must not skip."""
+    sessions = fake_storage_provider.get_storage(WorkspaceSession)
+    await sessions.create(
+        _seed_session("se-stuck", seeded_workspace.id, "ag-x")
+    )
+    deps = DispatchDeps(
+        storage_provider=fake_storage_provider,
+        claim_engine=fake_claim_engine,
+        scheduler=fake_scheduler,
+        workspace_registry=fake_workspace_registry,
+    )
+    res = await GraphFreshSessionDispatcher().dispatch(
+        _graph_sub(seeded_workspace.id, seeded_graph.id, parallelism="skip"),
+        rendered_payload="{}",
+        fire_context={"trigger_id": "tr-1"},
+        fire_id="fire-tr-1-102",
+        deps=deps,
+    )
+    assert res.ok and not res.skipped, res.error_message
+    assert res.artefact_id is not None
