@@ -29,6 +29,7 @@ from primer.storage.q import Q
 from primer.trigger.subscribers import (
     DispatchDeps,
     SubscriptionDispatchResult,
+    check_subscription_busy,
     register,
 )
 from primer.workspace.session_factory import (
@@ -55,7 +56,7 @@ class AgentFreshSessionDispatcher:
         deps: DispatchDeps,
     ) -> SubscriptionDispatchResult:
         if sub.parallelism == "skip":
-            skip = await _check_subscription_busy(sub, deps)
+            skip = await check_subscription_busy(sub, deps)
             if skip is not None:
                 return skip
 
@@ -123,33 +124,6 @@ class AgentFreshSessionDispatcher:
                 error_message=str(exc),
             )
         return SubscriptionDispatchResult(ok=True, artefact_id=session.id)
-
-
-async def _check_subscription_busy(
-    sub: Subscription, deps: DispatchDeps,
-) -> SubscriptionDispatchResult | None:
-    """Return a ``skipped`` result if any non-terminal session attributed
-    to *sub* exists, otherwise ``None`` (fire normally).
-
-    Used by both the agent_fresh and graph_fresh dispatchers so the
-    busy-check semantics stay identical.
-    """
-    sessions = deps.storage_provider.get_storage(WorkspaceSession)
-    predicate = (
-        Q(WorkspaceSession)
-        .where_op("metadata.subscription_id", Op.EQ, sub.id)
-        .build()
-    )
-    page = await sessions.find(predicate, OffsetPage(offset=0, length=200))
-    for s in page.items:
-        if s.status != SessionStatus.ENDED:
-            return SubscriptionDispatchResult(
-                ok=True,
-                skipped=True,
-                error_code="skipped_subscription_busy",
-                error_message=f"session {s.id!r} still in-flight",
-            )
-    return None
 
 
 register("agent_fresh_session", AgentFreshSessionDispatcher())
