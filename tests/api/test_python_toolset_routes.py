@@ -165,3 +165,46 @@ async def test_a_round_tripped_config_can_be_put_back(client) -> None:
         "id": "toolset-rt2", "provider": "python", "config": config,
     })
     assert r.status_code == 200, r.text
+
+
+@pytest.mark.asyncio
+async def test_runtime_reports_which_tools_yield(client) -> None:
+    """The console's saved-tools panel renders a `yields` badge from this
+    route, so the field has to be here.
+
+    Tool.model_dump() emits id, toolset_id, description and schema only --
+    `yields` is not part of the serialisation. Without it the badge was
+    unreachable: a genuinely yielding tool came back with the key absent, the
+    JSX read `t.yields` as undefined, and the badge never rendered. Found by
+    checking the route's real output while documenting it.
+    """
+    src = (
+        "@primer_tool()\n"
+        "def plain(a: str) -> str:\n"
+        '    """Do it.\n\n    Use when you must.\n\n    Args:\n        a: A.\n    """\n'
+        "    return a\n"
+        "\n\n@primer_tool()\n"
+        "async def ask(question: str, ctx) -> str:\n"
+        '    """Ask the operator.\n\n    Use when a human must decide.\n\n'
+        "    Args:\n        question: What to ask.\n"
+        '    """\n'
+        "    return ask_user(question)\n"
+        "\n\n@resumes(ask)\n"
+        "def _ask_resume(payload: dict, meta: dict) -> str:\n"
+        '    """Return the answer.\n\n    Use when resuming.\n\n'
+        "    Args:\n        payload: P.\n        meta: M.\n"
+        '    """\n'
+        "    return payload['response']\n"
+    )
+    r = await client.post(
+        "/v1/toolsets",
+        json={"id": "rt-yields", "provider": "python",
+              "config": {"source": src, "source_version": 1}},
+    )
+    assert r.status_code == 201, r.text
+
+    body = (await client.get("/v1/toolsets/rt-yields/runtime")).json()
+    by_id = {t["id"]: t for t in body["tools"]}
+    assert "yields" in by_id["ask"], "the badge reads this key"
+    assert by_id["ask"]["yields"] is True
+    assert by_id["plain"]["yields"] is False
