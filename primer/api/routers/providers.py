@@ -1281,7 +1281,15 @@ async def toolset_runtime(
     than a generic "sandboxed" badge.
     """
     provider = await registry.get_toolset(toolset_id)
-    tools = [t.model_dump(mode="json") async for t in provider.list_tools()]
+    # `yields` is not part of Tool's serialisation, but it is the single most
+    # important thing to know about a python tool at a glance: a yielding tool
+    # parks the run rather than returning. The console renders a badge from it,
+    # so add it explicitly rather than leaving the badge unreachable.
+    tools = []
+    async for t in provider.list_tools():
+        entry = t.model_dump(mode="json")
+        entry["yields"] = bool(getattr(t, "yields", False))
+        tools.append(entry)
     error = getattr(provider, "registration_error", None)
     return {
         "toolset_id": toolset_id,
