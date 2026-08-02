@@ -1183,6 +1183,87 @@ __all__ = [
 ]
 
 
+class ValidatePythonSourceBody(BaseModel):
+    """Candidate source, not yet saved."""
+
+    source: str = Field(
+        ..., description="Python module source to analyse without persisting.",
+    )
+
+
+@toolset_router.post(
+    "/toolsets/{toolset_id}/validate",
+    summary="Dry-run: what would this source register, and what is wrong with it",
+    responses=common_responses(404, 500),
+)
+async def validate_python_source(
+    toolset_id: str = Path(..., description="Toolset id"),
+    body: ValidatePythonSourceBody = Body(...),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Analyse candidate source WITHOUT saving it.
+
+    The editor needs the registrar's verdict while the operator is still
+    typing. Until this existed the only way to learn that a docstring was
+    malformed was to save, which meant every mistake round-tripped through a
+    write to the stored toolset.
+
+    Always 200: a source that cannot register is the normal case here, not an
+    HTTP error. ``ok`` distinguishes them. (The PUT path still 422s -- there,
+    invalid source is a rejected write.)
+
+    Safe by construction: :func:`register_module` walks the AST and never
+    imports or executes the module, which is the same property that lets the
+    save path validate untrusted source.
+    """
+    from primer.model.providers.toolset import PythonConfig
+    from primer.toolset.python_runner.registration import (
+        RegistrationError,
+        register_module,
+    )
+
+    # The per-tool default only affects reported timeouts, so a missing or
+    # non-python toolset is not worth a 404 here -- fall back and analyse.
+    default_timeout = 30.0
+    storage = storage_provider.get_storage(Toolset)
+    row = await storage.get(toolset_id)
+    if row is not None and isinstance(row.config, PythonConfig):
+        default_timeout = row.config.default_timeout_seconds
+
+    try:
+        registered = register_module(body.source, toolset_id, default_timeout)
+    except RegistrationError as exc:
+        return {
+            "ok": False,
+            "tools": [],
+            "error": {
+                "message": str(exc),
+                "field": exc.field,
+                "lineno": exc.lineno,
+            },
+        }
+
+    return {
+        "ok": True,
+        "error": None,
+        "tools": [
+            {
+                "id": reg.tool.id,
+                "fn_name": reg.fn_name,
+                "yields": reg.tool.yields,
+                "timeout_seconds": reg.timeout_seconds,
+                "description": reg.tool.description or "",
+                "args": sorted(
+                    (reg.tool.args_schema or {}).get("properties", {}).keys()
+                ),
+                # Where the function sits, so the outline can jump to it.
+                "lineno": reg.lineno,
+            }
+            for reg in registered
+        ],
+    }
+
+
 @toolset_router.get(
     "/toolsets/{toolset_id}/runtime",
     summary="Runtime facts about a toolset: isolation level and derived tools",
