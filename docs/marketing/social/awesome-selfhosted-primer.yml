@@ -1,0 +1,22 @@
+# Drop this into a fork of awesome-selfhosted/awesome-selfhosted-data as
+# software/primer.yml  (filename must be kebab-case, one project per file).
+# VERIFY the two ⚠️ fields against the LIVE repo before opening the PR:
+#   - tags: must be values that already exist in the `tags/` directory of the
+#     data repo. In single-page mode an entry shows only under its FIRST tag,
+#     so order it deliberately. There may be no perfect "AI agents" tag yet;
+#     "Automation" is the safest existing primary, with a more specific second
+#     tag if one exists. Pick from the live taxonomy — do not invent a tag.
+#   - licenses: must match an SPDX id present in the repo's licenses list
+#     (Apache-2.0 is standard and present).
+name: Primer
+website_url: https://github.com/primerhq/primer
+source_code_url: https://github.com/primerhq/primer
+description: Self-hosted control plane for fleets of small, context-optimized AI agents — directed graphs, git-backed workspaces (with mountable, agent-editable knowledge collections), channels with human approvals, triggers, and a built-in MCP server and client, all behind an operator console.
+licenses:
+  - Apache-2.0
+tags:                       # ⚠️ verify against live tags/ taxonomy
+  - Automation
+platforms:
+  - Python
+  - Docker
+depends_3rdparty: false

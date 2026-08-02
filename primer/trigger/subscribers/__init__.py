@@ -15,11 +15,24 @@ import time by calling :func:`register`.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from pydantic import BaseModel
 
+from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Subscription
+from primer.model.workspace_session import SessionStatus, WorkspaceSession
+from primer.storage.q import Q
+
+
+#: How long a session that has never run a turn may hold a ``parallelism="skip"``
+#: subscription closed. A session is created with ``auto_start=True`` and its first turn
+#: is claimed moments later; if the claim is lost (the worker died, the node OOM-killed it)
+#: the row stays non-terminal at ``turn_no == 0`` and nothing ever reaps it. Without a bound
+#: that one row wedges its subscription permanently - every later fire skips, silently, for
+#: as long as the row exists.
+SKIP_GATE_START_GRACE = timedelta(minutes=10)
 
 
 class SubscriptionDispatchResult(BaseModel):
@@ -114,11 +127,73 @@ def get_dispatcher(kind: str) -> Dispatcher:
     return DISPATCHERS[kind]
 
 
+def session_holds_skip_gate(
+    session: WorkspaceSession, *, now: datetime | None = None,
+) -> bool:
+    """Whether *session* should keep a ``parallelism="skip"`` subscription from firing.
+
+    Only sessions that are plausibly still doing work hold the gate:
+
+    * ``ENDED`` never holds it.
+    * A cancelled-requested session never holds it. Cancel is a flag the worker reads on
+      its next step, so a session that never started has nobody to read it; without this
+      an operator asking to cancel could not reopen the gate at all.
+    * ``turn_no >= 1`` always holds it, for as long as the turn runs. A started turn may
+      legitimately take hours (a graph build, a long exec), and firing a second session
+      beside it is worse than skipping - two runs writing the same workspace state can
+      clobber each other. Elapsed time is deliberately NOT consulted here.
+    * ``turn_no == 0`` holds it only within :data:`SKIP_GATE_START_GRACE`. The first turn
+      is claimed moments after creation, so a row still at turn 0 well past that lost its
+      claim and will never run.
+    """
+    if session.status == SessionStatus.ENDED:
+        return False
+    if session.cancel_requested:
+        return False
+    if session.turn_no > 0:
+        return True
+    ref = session.started_at or session.created_at
+    if ref is None:  # defensive: unset clock -> treat as live rather than fire twice
+        return True
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    return ((now or datetime.now(timezone.utc)) - ref) < SKIP_GATE_START_GRACE
+
+
+async def check_subscription_busy(
+    sub: Subscription, deps: DispatchDeps,
+) -> SubscriptionDispatchResult | None:
+    """Return a ``skipped`` result if a live session attributed to *sub* exists, else ``None``.
+
+    Shared by the agent_fresh and graph_fresh dispatchers so the busy-check semantics stay
+    identical; liveness is decided by :func:`session_holds_skip_gate`.
+    """
+    sessions = deps.storage_provider.get_storage(WorkspaceSession)
+    predicate = (
+        Q(WorkspaceSession)
+        .where_op("metadata.subscription_id", Op.EQ, sub.id)
+        .build()
+    )
+    page = await sessions.find(predicate, OffsetPage(offset=0, length=200))
+    for s in page.items:
+        if session_holds_skip_gate(s):
+            return SubscriptionDispatchResult(
+                ok=True,
+                skipped=True,
+                error_code="skipped_subscription_busy",
+                error_message=f"session {s.id!r} still in-flight",
+            )
+    return None
+
+
 __all__ = [
     "DISPATCHERS",
+    "SKIP_GATE_START_GRACE",
     "DispatchDeps",
     "Dispatcher",
     "SubscriptionDispatchResult",
+    "check_subscription_busy",
     "get_dispatcher",
     "register",
+    "session_holds_skip_gate",
 ]

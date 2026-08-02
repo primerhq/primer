@@ -29,6 +29,8 @@ transitive resolution, no surprise additions.
 | xterm.min.js        | https://unpkg.com/@xterm/xterm@5.5.0/lib/xterm.js | 5.5.0 | `1f991ac3b4b283ebf96e60ae23a00a52765dd3a2e46fa6fdda9f1aab032f7495` | MIT | 2026-07-02 |
 | xterm.min.css       | https://unpkg.com/@xterm/xterm@5.5.0/css/xterm.css | 5.5.0 | `ba8e6985669488981ccf40c0cefe3aba80722cb6c92de7ad628b0bd717faf2b6` | MIT | 2026-07-02 |
 | xterm-addon-fit.min.js | https://unpkg.com/@xterm/addon-fit@0.11.0/lib/addon-fit.js | 0.11.0 | `ba3ea256ce0620a0992a197d6c9baea64823fc93d8da07a9e366ca9943c18527` | MIT | 2026-07-02 |
+| codemirror.min.js   | bundled from npm, see "CodeMirror 6" below | 16 pinned packages (@codemirror/state 6.5.2 et al) | `11684404b4478b1b3f1b143475ee7aa5a0703759deeb903455dc1fa834b47ee4` | MIT | 2026-08-01 |
+| codemirror.entry.js | hand-written, no upstream (bundle entry, NOT loaded by the console) | n/a | `874e887276421f0860250687cc2b8d97194e96c269a7ab33c06a9971d91c445b` | MIT (this repo) | 2026-08-01 |
 
 To recompute hand-written hashes (from repo root):
 
@@ -80,3 +82,65 @@ The version pins (React 18.3.1, Babel 7.29.0) and the audit policy
 (no transitive deps, no auto-updates) are unchanged. To upgrade, replace
 the file, recompute the sha256 above, and bump the version column in
 the same commit.
+
+
+## CodeMirror 6 (codemirror.min.js)
+
+The python toolset editor needs a real code editor: syntax-aware
+highlighting, an autocomplete widget, and a gutter that can render
+server-side diagnostics. CodeMirror 6 ships as ESM packages on npm, so it
+cannot be dropped in like React's UMD build -- it is bundled to a single
+IIFE here, matching how `g6.min.js` and `xterm.min.js` are loaded.
+
+**This is the one entry with transitive packages baked in.** The audit
+policy elsewhere is "no transitive deps"; the honest description here is
+"transitive deps resolved ONCE, pinned by exact version, and frozen into a
+file whose sha256 is recorded". Nothing resolves at install or run time --
+the console loads one same-origin file. The full inventory is below so the
+review is over a list, not over a lockfile.
+
+Everything baked in, all MIT, all from the CodeMirror/lezer ecosystem:
+
+| Package | Version |
+|---|---|
+| @codemirror/autocomplete | 6.18.6 |
+| @codemirror/commands | 6.8.1 |
+| @codemirror/lang-python | 6.2.1 |
+| @codemirror/language | 6.11.2 |
+| @codemirror/lint | 6.8.5 |
+| @codemirror/search | 6.5.11 |
+| @codemirror/state | 6.5.2 |
+| @codemirror/view | 6.38.1 |
+| @lezer/common | 1.5.2 |
+| @lezer/highlight | 1.2.1 |
+| @lezer/lr | 1.4.10 |
+| @lezer/python | 1.1.19 |
+| @marijn/find-cluster-break | 1.0.3 |
+| crelt | 1.0.7 |
+| style-mod | 4.1.3 |
+| w3c-keyname | 2.2.8 |
+
+### Rebuilding (reproducible)
+
+`codemirror.entry.js` is the bundle's source and is vendored beside the
+output so the recipe is auditable. It is NOT loaded by the console. To
+rebuild:
+
+```bash
+mkdir cm6 && cd cm6 && npm init -y
+npm install --save-exact \
+  @codemirror/state@6.5.2 @codemirror/view@6.38.1 \
+  @codemirror/commands@6.8.1 @codemirror/language@6.11.2 \
+  @codemirror/lang-python@6.2.1 @codemirror/autocomplete@6.18.6 \
+  @codemirror/lint@6.8.5 @codemirror/search@6.5.11 \
+  @lezer/highlight@1.2.1 esbuild@0.25.10
+cp <repo>/ui/vendor/codemirror.entry.js entry.js
+./node_modules/.bin/esbuild entry.js --bundle --format=iife --minify \
+  --target=es2019 --legal-comments=none --outfile=codemirror.min.js
+sha256sum codemirror.min.js   # must match the table above
+```
+
+The entry exposes exactly one global, `window.CM6`, holding only the names
+the editor uses. Anything not on that object is unreachable from `ui/`,
+which keeps the vendored surface auditable rather than opening all of
+CodeMirror to console code.

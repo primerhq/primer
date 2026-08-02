@@ -35,19 +35,28 @@ var PY_ISOLATION_COPY = {
   },
 };
 
-var PY_STARTER = [
-  "@primer_tool()",
-  "def greet(name: str) -> str:",
-  '    """Greet a person by name.',
-  "",
-  "    Use when you need a friendly greeting.",
-  "",
-  "    Args:",
-  "        name: Who to greet.",
-  '    """',
-  '    return "hello " + name',
-  "",
-].join("\n");
+// The templates live in python-code-editor.jsx as window.PY_SCAFFOLDS -- one
+// per tool shape, each carrying the contract as # comments. This file only
+// decides where they get inserted.
+
+// Turn a registration error's 1-based line into a CodeMirror range, so the
+// failure is marked on the line that caused it rather than only described in
+// a panel above the editor.
+function PY_diagnosticsFor(source, error) {
+  if (!error || !error.lineno) return [];
+  var lines = (source || "").split("\n");
+  var idx = Math.max(0, Math.min(error.lineno - 1, lines.length - 1));
+  var from = 0;
+  for (var i = 0; i < idx; i++) from += lines[i].length + 1;
+  return [{
+    from: from,
+    to: from + lines[idx].length,
+    severity: "error",
+    message: error.field
+      ? error.message + "  (" + error.field + ")"
+      : error.message,
+  }];
+}
 
 function PY_IsolationBadge({ level }) {
   var copy = PY_ISOLATION_COPY[level];
@@ -119,6 +128,125 @@ function PY_DerivedTools({ tools }) {
   );
 }
 
+// The outline. Its job is to turn "one long text document" into something
+// with structure you can navigate: every registered function, what shape it
+// is, and a click that puts the cursor on its `def`.
+//
+// It is fed by the live validate route rather than the saved runtime, so a
+// function you just typed appears before you save it.
+function PY_Outline({ tools, error, onJump }) {
+  if (error) {
+    return (
+      <div
+        data-testid="python-outline-error"
+        className="muted"
+        style={{ padding: "10px 12px", fontSize: "var(--fs-11)", lineHeight: 1.6 }}
+      >
+        No functions registered while the source has an error
+        {error.lineno ? " (line " + error.lineno + ")" : ""}.
+      </div>
+    );
+  }
+  if (!tools || !tools.length) {
+    return (
+      <div
+        data-testid="python-outline-empty"
+        className="muted"
+        style={{ padding: "10px 12px", fontSize: "var(--fs-11)", lineHeight: 1.6 }}
+      >
+        No functions yet. Use <span className="mono">Add function</span> to
+        insert one with the contract spelled out in comments.
+      </div>
+    );
+  }
+  return (
+    <div data-testid="python-outline" className="col" style={{ gap: 0 }}>
+      {tools.map(function (t) {
+        return (
+          <div
+            key={t.id}
+            data-testid="python-outline-row"
+            className="row"
+            onClick={function () { if (onJump) onJump(t.lineno); }}
+            style={{
+              gap: 7, alignItems: "center", cursor: "pointer",
+              padding: "6px 11px", borderBottom: "1px solid var(--border)",
+            }}
+          >
+            <Icon name={t.yields ? "clock" : "tools"} size={12} />
+            <span className="mono" style={{ fontSize: "var(--fs-12)" }}>{t.id}</span>
+            {t.yields ? (
+              <span
+                data-testid="python-outline-yields"
+                style={{
+                  padding: "0 6px", borderRadius: 999, fontSize: "var(--fs-11)",
+                  background: "var(--amber-dim)", color: "var(--amber)",
+                }}
+              >yields</span>
+            ) : null}
+            <span className="muted mono" style={{ marginLeft: "auto", fontSize: "var(--fs-11)" }}>
+              ({(t.args || []).join(", ")})
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// "Add function" -- a small menu rather than one button, because the two tool
+// shapes differ enough that a single template would teach the wrong thing
+// about the one you did not pick.
+function PY_AddFunction({ onInsert }) {
+  var openState = React.useState(false);
+  var open = openState[0];
+  var setOpen = openState[1];
+  var scaffolds = window.PY_SCAFFOLDS || [];
+
+  return (
+    <div style={{ position: "relative" }}>
+      <Btn
+        size="sm"
+        kind="ghost"
+        icon="plus"
+        data-testid="python-add-function"
+        onClick={function () { setOpen(function (o) { return !o; }); }}
+      >Add function</Btn>
+      {open ? (
+        <div
+          data-testid="python-add-function-menu"
+          className="col"
+          style={{
+            position: "absolute", top: 30, left: 0, zIndex: 40, width: 290,
+            gap: 0, background: "var(--bg-elev)", padding: 5,
+            border: "1px solid var(--border-strong)", borderRadius: 9,
+            boxShadow: "var(--shadow)",
+          }}
+        >
+          {scaffolds.map(function (s) {
+            return (
+              <div
+                key={s.id}
+                data-testid={"python-scaffold-" + s.id}
+                className="col"
+                onClick={function () { setOpen(false); if (onInsert) onInsert(s.source); }}
+                style={{ gap: 2, padding: "7px 9px", borderRadius: 6, cursor: "pointer" }}
+                onMouseEnter={function (e) { e.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={function (e) { e.currentTarget.style.background = "transparent"; }}
+              >
+                <span style={{ fontSize: "var(--fs-12)", fontWeight: 600 }}>{s.label}</span>
+                <span className="muted" style={{ fontSize: "var(--fs-11)", lineHeight: 1.45 }}>
+                  {s.hint}
+                </span>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function PythonToolsetEditor({ toolsetId, pushToast }) {
   var api = window.primerApi;
 
@@ -152,6 +280,42 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
   var stored = (detail.data && detail.data.config && detail.data.config.source) || "";
   var source = draft == null ? stored : draft;
   var dirty = draft != null && draft !== stored;
+
+  // Handle on the CodeMirror view, so the outline can jump and "Add function"
+  // can insert at the end without routing text through React state.
+  var viewRef = React.useRef(null);
+
+  // ---- live validation -------------------------------------------------
+  // The registrar's verdict while the operator is still typing. Debounced
+  // because it is a round trip per keystroke otherwise, and 450ms is below
+  // the point where feedback stops feeling attached to the edit.
+  //
+  // A failed request deliberately keeps the previous verdict rather than
+  // clearing it: a dropped packet should not make a real error disappear.
+  var vState = React.useState(null);
+  var validation = vState[0];
+  var setValidation = vState[1];
+
+  React.useEffect(function () {
+    if (detail.loading && !detail.data) return undefined;
+    var cancelled = false;
+    var timer = setTimeout(function () {
+      api.apiFetch(
+        "POST",
+        "/toolsets/" + encodeURIComponent(toolsetId) + "/validate",
+        { source: source }
+      ).then(function (res) {
+        if (!cancelled) setValidation(res);
+      }).catch(function () { /* keep the last verdict */ });
+    }, 450);
+    return function () { cancelled = true; clearTimeout(timer); };
+  }, [source, toolsetId, detail.loading]);
+
+  var liveError = validation ? validation.error : null;
+  var diagnostics = React.useMemo(
+    function () { return PY_diagnosticsFor(source, liveError); },
+    [source, liveError]
+  );
 
   var save = api.useMutation(
     function (next) {
@@ -232,12 +396,33 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
           <span className="muted" style={{ fontSize: "var(--fs-11)", fontWeight: 600, letterSpacing: "0.04em" }}>
             SOURCE
           </span>
-          <Btn
-            size="sm"
-            kind="ghost"
-            data-testid="python-insert-starter"
-            onClick={function () { setDraft(source + (source ? "\n\n" : "") + PY_STARTER); }}
-          >Insert example</Btn>
+          <PY_AddFunction
+            onInsert={function (text) {
+              // Straight into the editor when it is mounted, so the cursor
+              // lands in the new function. React state is the fallback path
+              // for the textarea build.
+              if (viewRef.current && window.PY_appendSource) {
+                window.PY_appendSource(viewRef.current, text);
+              } else {
+                setDraft(source + text);
+              }
+            }}
+          />
+          {validation ? (
+            <span
+              data-testid="python-live-status"
+              data-ok={validation.ok ? "1" : "0"}
+              className="mono"
+              style={{
+                fontSize: "var(--fs-11)",
+                color: validation.ok ? "var(--accent)" : "var(--red)",
+              }}
+            >
+              {validation.ok
+                ? (validation.tools || []).length + " registered"
+                : "does not register"}
+            </span>
+          ) : null}
           <Btn
             size="sm"
             kind="primary"
@@ -272,17 +457,15 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
           </div>
         ) : null}
 
-        <textarea
-          data-testid="python-source"
-          className="input mono"
-          value={source}
-          spellCheck={false}
-          onChange={function (e) { setDraft(e.target.value); }}
-          style={{
-            width: "100%", minHeight: 420, resize: "vertical",
-            fontSize: "var(--fs-12)", lineHeight: 1.6, whiteSpace: "pre",
-          }}
-        />
+        {typeof window.PY_CodeEditor === "function" ? (
+          <window.PY_CodeEditor
+            value={source}
+            onChange={function (next) { setDraft(next); }}
+            diagnostics={diagnostics}
+            viewRef={viewRef}
+            minHeight={460}
+          />
+        ) : null}
       </div>
 
       <div className="col" style={{ flex: "1 1 40%", gap: 10, minWidth: 0 }}>
@@ -299,6 +482,38 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
           />
         ) : null}
 
+        {/* Outline reflects the DRAFT (live validate); Saved reflects what is
+            actually callable right now. Keeping both visible is the point --
+            they differ exactly while there are unsaved edits, and that gap is
+            what an operator needs to see before deciding to save. */}
+        <div className="col" style={{ gap: 0, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+          <div
+            className="row"
+            style={{
+              padding: "7px 11px", gap: 7, alignItems: "center",
+              background: "var(--bg-elev)", borderBottom: "1px solid var(--border)",
+            }}
+          >
+            <Icon name="code" size={13} />
+            <span style={{ fontSize: "var(--fs-12)", fontWeight: 600 }}>Functions</span>
+            {dirty ? (
+              <span className="muted" style={{ fontSize: "var(--fs-11)" }}>unsaved</span>
+            ) : null}
+            <span className="muted" style={{ marginLeft: "auto", fontSize: "var(--fs-11)" }}>
+              {validation && validation.ok ? (validation.tools || []).length : ""}
+            </span>
+          </div>
+          <PY_Outline
+            tools={validation ? validation.tools : null}
+            error={liveError}
+            onJump={function (lineno) {
+              if (viewRef.current && window.PY_revealLine) {
+                window.PY_revealLine(viewRef.current, lineno);
+              }
+            }}
+          />
+        </div>
+
         <div className="col" style={{ gap: 0, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
           <div
             className="row"
@@ -308,7 +523,7 @@ function PythonToolsetEditor({ toolsetId, pushToast }) {
             }}
           >
             <Icon name="tools" size={13} />
-            <span style={{ fontSize: "var(--fs-12)", fontWeight: 600 }}>Derived tools</span>
+            <span style={{ fontSize: "var(--fs-12)", fontWeight: 600 }}>Saved &amp; callable</span>
             <span className="muted" style={{ marginLeft: "auto", fontSize: "var(--fs-11)" }}>
               {(rt.tools || []).length}
             </span>
