@@ -49,6 +49,12 @@
      the class — construct via `new window.FitAddon.FitAddon()`. See
      ui/vendor/MANIFEST.md for the verification note. -->
 <script src="vendor/xterm-addon-fit.min.js"></script>
+<!-- CodeMirror 6, bundled to IIFE. Exposes ONE global, window.CM6, holding
+     only the names the python toolset editor uses (see
+     ui/vendor/codemirror.entry.js for the exact surface, and MANIFEST.md
+     for the pinned package inventory + rebuild recipe). Plain script so it
+     loads before _app.js. -->
+<script src="vendor/codemirror.min.js"></script>
 <script src="_app.js"></script>
 
 <!-- The text/babel script tags below are the single source of truth
@@ -150,6 +156,7 @@
 <script type="text/babel" src="components/graphs.jsx"></script>
 <script type="text/babel" src="components/knowledge.jsx"></script>
 <!-- The python authoring surface is mounted by the toolsets page. -->
+<script type="text/babel" src="components/toolsets/python-code-editor.jsx"></script>
 <script type="text/babel" src="components/toolsets/python-editor.jsx"></script>
 <script type="text/babel" src="components/toolsets.jsx"></script>
 <script type="text/babel" src="components/providers.jsx"></script>

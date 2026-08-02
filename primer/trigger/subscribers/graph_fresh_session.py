@@ -28,6 +28,7 @@ from primer.storage.q import Q
 from primer.trigger.subscribers import (
     DispatchDeps,
     SubscriptionDispatchResult,
+    check_subscription_busy,
     register,
 )
 from primer.workspace.session_factory import (
@@ -72,23 +73,9 @@ class GraphFreshSessionDispatcher:
             )
 
         if sub.parallelism == "skip":
-            sessions = deps.storage_provider.get_storage(WorkspaceSession)
-            predicate = (
-                Q(WorkspaceSession)
-                .where_op("metadata.subscription_id", Op.EQ, sub.id)
-                .build()
-            )
-            page = await sessions.find(
-                predicate, OffsetPage(offset=0, length=200),
-            )
-            for s in page.items:
-                if s.status != SessionStatus.ENDED:
-                    return SubscriptionDispatchResult(
-                        ok=True,
-                        skipped=True,
-                        error_code="skipped_subscription_busy",
-                        error_message=f"session {s.id!r} still in-flight",
-                    )
+            skip = await check_subscription_busy(sub, deps)
+            if skip is not None:
+                return skip
 
         # Use start_workspace_session (NOT create_session) so the on-disk
         # graph-holder slot is allocated via the workspace backend before

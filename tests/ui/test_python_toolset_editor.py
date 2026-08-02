@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 EDITOR = UI / "components" / "toolsets" / "python-editor.jsx"
+CODE_EDITOR = UI / "components" / "toolsets" / "python-code-editor.jsx"
 TOOLSETS = UI / "components" / "toolsets.jsx"
 
 
@@ -26,11 +27,21 @@ def test_the_editor_exists_and_exports() -> None:
 
 def test_it_exposes_its_testids() -> None:
     src = EDITOR.read_text(encoding="utf-8")
-    for tid in ("python-editor", "python-source", "python-save",
+    for tid in ("python-editor", "python-save",
                 "python-derived-tools", "python-tool-row",
                 "python-isolation-level", "python-registration-error",
-                "python-derived-empty"):
+                "python-derived-empty",
+                # the builder surface
+                "python-add-function", "python-outline", "python-live-status"):
         assert f'"{tid}"' in src, tid
+
+
+def test_the_editing_surface_testid_lives_with_the_editor() -> None:
+    # python-source moved to python-code-editor.jsx when the textarea became
+    # a CodeMirror mount. Both the real editor and its no-CM6 fallback carry
+    # it, so tests targeting "the place you type" keep working either way.
+    src = CODE_EDITOR.read_text(encoding="utf-8")
+    assert src.count('data-testid="python-source"') == 2
 
 
 def test_every_isolation_level_has_operator_facing_copy() -> None:
@@ -99,15 +110,17 @@ def test_a_new_python_toolset_starts_empty() -> None:
     assert "PY_STARTER" not in block
 
 
-def test_the_starter_template_is_still_available_on_demand() -> None:
-    # Removing the seed must not remove the template -- it moves to the
-    # editor's explicit "Insert example" action.
-    src = EDITOR.read_text(encoding="utf-8")
-    assert "PY_STARTER" in src
+def test_a_template_is_still_available_on_demand() -> None:
+    # Removing the create-time seed must not remove the template. The single
+    # PY_STARTER became PY_SCAFFOLDS -- one per tool shape, each carrying the
+    # contract as comments -- reached from the "Add function" menu rather
+    # than a lone "Insert example" button.
+    src = CODE_EDITOR.read_text(encoding="utf-8")
+    assert "PY_SCAFFOLDS" in src
     assert "@primer_tool()" in src
     assert "Use when" in src
     assert "Args:" in src
-    assert 'data-testid="python-insert-starter"' in src
+    assert 'data-testid="python-add-function"' in EDITOR.read_text(encoding="utf-8")
 
 
 def test_the_empty_state_is_reachable() -> None:

@@ -56,6 +56,10 @@ class RegisteredTool:
     fn_name: str
     resume_fn_name: str | None
     timeout_seconds: float
+    # 1-based line of the `def`, for the console's function outline. Errors
+    # already carry a line; a successfully registered tool needs one too, or
+    # the outline can list a function but not jump to it.
+    lineno: int = 0
 
 
 def _decorator_named(node: ast.expr, name: str) -> ast.Call | ast.Name | None:
@@ -191,6 +195,7 @@ def register_module(
                 fn_name=node.name,
                 resume_fn_name=resume_name,
                 timeout_seconds=timeout,
+                lineno=node.lineno,
             )
         )
     return out
