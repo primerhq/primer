@@ -33,12 +33,14 @@ from typing import TYPE_CHECKING
 from primer.int.coordinator import (
     ROLE_CHAT_SWEEPER,
     ROLE_HARNESS_SWEEPER,
+    ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,
     ROLE_TIMER_SCHEDULER,
 )
 from primer.int.event_bus import EventBus
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+from primer.model.workspace_session import SessionStatus
 from primer.worker.yield_runtime import make_timeout_payload
 
 if TYPE_CHECKING:
@@ -242,6 +244,116 @@ class TimeoutSweeper(_BackgroundTask):
         payload = make_timeout_payload()
         for event_key in keys:
             await self._bus.publish(event_key, payload=payload)
+
+
+#: A session's first turn is claimed moments after the row is created. One that is still at
+#: turn 0 well past this never got claimed - the worker died, the node OOM-killed it, the
+#: claim was lost - and it will sit non-terminal forever, because every other terminal path
+#: runs INSIDE a turn that never started.
+STUCK_SESSION_GRACE_SECONDS = 600.0
+
+#: OffsetPage caps a single page at 200 rows.
+_MAX_PAGE = 200
+
+
+class StuckSessionSweeper(_BackgroundTask):
+    """Ends sessions that were created but whose first turn never ran.
+
+    Nothing else reaps these. ``TimeoutSweeper`` only handles parks (a turn that started and
+    is waiting), and ``cancel`` merely sets a flag the worker reads on its next step - with no
+    turn running there is nobody to read it, so a stuck row cannot even be cancelled.
+
+    Left alone, one such row is not merely litter: a ``parallelism="skip"`` subscription
+    declines to fire while any attributed session is non-terminal, so a single stuck session
+    silently halts its trigger - observed in production as a cron job that stopped for 14h
+    with no error recorded anywhere.
+
+    Sessions that HAVE started (``turn_no >= 1``) are never touched however long they run: a
+    turn may legitimately take hours, and ending it from underneath the worker would be far
+    worse than leaving it alone.
+    """
+
+    role = ROLE_STUCK_SESSION_SWEEPER
+
+    def __init__(
+        self,
+        *,
+        session_storage: Storage,
+        poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
+        grace_seconds: float = STUCK_SESSION_GRACE_SECONDS,
+    ) -> None:
+        super().__init__(name="stuck-session-sweeper")
+        self._storage = session_storage
+        self._poll = poll_seconds
+        self._grace = grace_seconds
+
+    async def _run(self) -> None:
+        while not self._stopping:
+            try:
+                await self._tick()
+            except Exception as exc:  # noqa: BLE001 - a sweeper must never die on one bad row
+                logger.exception("stuck-session-sweeper: tick failed: %s", exc)
+            try:
+                await asyncio.sleep(self._poll)
+            except asyncio.CancelledError:
+                break
+
+    async def _tick(self) -> int:
+        """End every never-started session past the grace period. Returns how many."""
+        reaped = 0
+        for row in await self._find_stuck():
+            fresh = await self._storage.get(row.id)
+            # Re-read before writing: the claim may have landed while we were looking, in
+            # which case the turn is now running and must not be ended.
+            if fresh is None or not _never_started(fresh, self._grace):
+                continue
+            await self._storage.update(fresh.model_copy(update={
+                "status": SessionStatus.ENDED,
+                "ended_reason": "failed",
+                "ended_detail": "never_started",
+                "ended_at": datetime.now(timezone.utc),
+            }))
+            reaped += 1
+            logger.warning(
+                "stuck-session-sweeper: ended %s - created %s, first turn never ran",
+                fresh.id, fresh.created_at,
+            )
+        return reaped
+
+    async def _find_stuck(self) -> list:
+        """Every never-started session, paged. Pages rather than taking one capped slice:
+        a backlog can exceed a page, and a silent truncation would leave the tail stuck
+        exactly as before while looking like the sweeper had run."""
+        predicate = Predicate(
+            left=FieldRef(name="turn_no"),
+            op=Op.EQ,
+            right=Value(value=0),
+        )
+        out: list = []
+        offset, page_size = 0, _MAX_PAGE
+        while True:
+            page = await self._storage.find(
+                predicate, OffsetPage(offset=offset, length=page_size),
+            )
+            out.extend(s for s in page.items if _never_started(s, self._grace))
+            if len(page.items) < page_size:
+                return out
+            offset += page_size
+
+
+def _never_started(session, grace_seconds: float) -> bool:
+    """Whether *session* is non-terminal and its first turn never ran, past the grace."""
+    if session.status == SessionStatus.ENDED:
+        return False
+    if session.turn_no > 0:
+        return False
+    ref = session.started_at or session.created_at
+    if ref is None:
+        return False
+    if ref.tzinfo is None:
+        ref = ref.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - ref).total_seconds()
+    return age >= grace_seconds
 
 
 class ChatSweeper(_BackgroundTask):

@@ -386,6 +386,7 @@ def _make_lifespan(config: AppConfig):
         yield_listener = None
         timer_scheduler = None
         timeout_sweeper = None
+        stuck_session_sweeper = None
         chat_sweeper = None
         harness_sweeper = None
         watcher_manager = None
@@ -455,6 +456,15 @@ def _make_lifespan(config: AppConfig):
                 session_storage=storage_provider.get_storage(_WorkspaceSession),
             )
             timeout_sweeper.start(coordinator.leader_elector)
+
+            # Ends sessions whose first turn never ran. Without this a lost claim leaves a
+            # non-terminal row forever, and a `parallelism="skip"` subscription will not fire
+            # while one exists — so a single stuck session silently halts its trigger.
+            from primer.bus.scheduler_tasks import StuckSessionSweeper
+            stuck_session_sweeper = StuckSessionSweeper(
+                session_storage=storage_provider.get_storage(_WorkspaceSession),
+            )
+            stuck_session_sweeper.start(coordinator.leader_elector)
 
             from primer.bus.scheduler_tasks import ChatSweeper, HarnessSweeper
             chat_sweeper = ChatSweeper(
@@ -893,6 +903,7 @@ def _make_lifespan(config: AppConfig):
                 (harness_sweeper, "harness_sweeper"),
                 (chat_sweeper, "chat_sweeper"),
                 (timeout_sweeper, "timeout_sweeper"),
+                (stuck_session_sweeper, "stuck_session_sweeper"),
                 (timer_scheduler, "timer_scheduler"),
                 (yield_listener, "yield_listener"),
             ):
