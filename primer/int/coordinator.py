@@ -49,6 +49,7 @@ ROLE_HARNESS_SWEEPER = "harness-sweeper"
 ROLE_WATCHER_MANAGER = "watcher-manager"
 ROLE_MCP_BRIDGE = "mcp-bridge"
 ROLE_COORDINATOR_SWEEPER = "coordinator-sweeper"
+ROLE_STUCK_SESSION_SWEEPER = "stuck-session-sweeper"
 
 
 class RateLimiterLease(AbstractAsyncContextManager["RateLimiterLease"]):
@@ -183,6 +184,7 @@ __all__ = [
     "ROLE_COORDINATOR_SWEEPER",
     "ROLE_HARNESS_SWEEPER",
     "ROLE_MCP_BRIDGE",
+    "ROLE_STUCK_SESSION_SWEEPER",
     "ROLE_TIMEOUT_SWEEPER",
     "ROLE_TIMER_SCHEDULER",
     "ROLE_WATCHER_MANAGER",
