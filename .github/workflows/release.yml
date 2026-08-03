@@ -131,11 +131,18 @@ jobs:
         uses: python-semantic-release/python-semantic-release@v10.6.1
         with:
           github_token: ${{ steps.app-token.outputs.token }}
-          # The first release spans ~1785 commits; the auto-generated
-          # notes exceed the GitHub release-body size limit (125k chars, 422).
-          # Skip the VCS release object here; the tag still pushes and PyPI +
-          # GHCR still publish.
-          vcs_release: "false"
+          # vcs_release was disabled for v0.1.0: that release spanned ~1785
+          # commits and its auto-generated notes blew past GitHub's 125k
+          # release-body limit (422). Every release since inherited the
+          # workaround and shipped without a GitHub Release object, so the
+          # Releases page stopped at v0.5.0 while PyPI and GHCR moved on.
+          #
+          # The constraint does not survive a normal release. v0.6.0 was 59
+          # commits and its hand-written notes were 4.7k chars, under 4% of
+          # the limit. Re-enabled; if a release ever does approach the cap,
+          # the fix is to summarise that release's notes, not to stop
+          # publishing them.
+          vcs_release: "true"
 
   publish-pypi:
     needs: release
