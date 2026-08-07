@@ -441,6 +441,18 @@ class SqliteStorageProvider(StorageProvider):
         await self.connection.execute(sql, (ts_str, "singleton"))
         await self.connection.commit()
 
+    async def set_schema_version(
+        self, version: int, *, migrated_at: datetime | None = None,
+    ) -> None:
+        """Stamp ``schema_version`` and ``last_migration_at``."""
+        ts = (migrated_at or datetime.now(timezone.utc)).isoformat()
+        sql = (
+            "UPDATE system_state SET schema_version = ?, last_migration_at = ? "
+            "WHERE id = ?"
+        )
+        await self.connection.execute(sql, (version, ts, "singleton"))
+        await self.connection.commit()
+
     async def set_session_secret(self, secret: str) -> None:
         """Persist the cookie-signing HMAC secret on the singleton row.
 

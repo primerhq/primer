@@ -105,6 +105,18 @@ class StorageProvider(ABC):
         """
 
     @abstractmethod
+    async def set_schema_version(
+        self, version: int, *, migrated_at: datetime | None = None,
+    ) -> None:
+        """Stamp ``schema_version`` and ``last_migration_at`` on the singleton.
+
+        ``schema_version = N`` means migrations 1..N have been applied.
+        ``migrated_at`` defaults to now. Called by the migration runner
+        after each migration commits, so a crash mid-chain resumes from
+        the last completed version rather than re-running the whole set.
+        """
+
+    @abstractmethod
     async def set_session_secret(self, secret: str) -> None:
         """Persist the cookie-signing HMAC secret on the singleton row.
 

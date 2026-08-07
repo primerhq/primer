@@ -8,7 +8,7 @@ use it without duplication.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, Generic, TypeVar
 
 import pytest
@@ -324,6 +324,8 @@ class _FakeStorageProvider:
         self._stores: dict[type, _InMemoryStorage[Any]] = {}
         self._content_store = _FakeContentStore()
         self._bootstrap_completed_at: datetime | None = None
+        self._schema_version: int = 1
+        self._last_migration_at: datetime | None = None
 
     def get_storage(self, model_class: type[_T]) -> _InMemoryStorage[_T]:
         return self._stores.setdefault(model_class, _InMemoryStorage(model_class))
@@ -344,6 +346,8 @@ class _FakeStorageProvider:
         from primer.model.system_state import SystemState
         return SystemState(
             bootstrap_completed_at=self._bootstrap_completed_at,
+            schema_version=self._schema_version,
+            last_migration_at=self._last_migration_at,
             session_secret=getattr(self, "_session_secret", None),
             sso_jit_enabled=getattr(self, "_sso_jit_enabled", False),
             sso_default_access=getattr(self, "_sso_default_access", None),
@@ -351,6 +355,12 @@ class _FakeStorageProvider:
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         self._bootstrap_completed_at = ts
+
+    async def set_schema_version(
+        self, version: int, *, migrated_at: datetime | None = None,
+    ) -> None:
+        self._schema_version = version
+        self._last_migration_at = migrated_at or datetime.now(UTC)
 
     async def set_session_secret(self, secret: str) -> None:
         self._session_secret = secret
