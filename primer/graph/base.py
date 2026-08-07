@@ -98,7 +98,7 @@ if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
     from primer.model.chat import ToolResultPart
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
     from primer.model.yield_ import YieldCancelled, YieldTimeout
 
 
@@ -168,7 +168,7 @@ class _BaseGraphExecutor(
         *,
         graph: Graph,
         agent_resolver: Callable[[str], Awaitable["Agent"]],
-        llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "LLMModel"]]],
+        llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "ResolvedModel"]]],
         tool_manager_resolver: Callable[
             ["Agent"], Awaitable[ToolExecutionManager]
         ] | None = None,

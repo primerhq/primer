@@ -63,7 +63,7 @@ from primer.observability.turn_log_writer import (
 if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
     from primer.workspace.session import AgentSession
     from primer.workspace.local.state import LocalStateRepo
 
@@ -94,7 +94,7 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         *,
         graph: Graph,
         agent_resolver: Callable[[str], Awaitable["Agent"]],
-        llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "LLMModel"]]],
+        llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "ResolvedModel"]]],
         state_repo: "LocalStateRepo",
         graph_session_id: str,
         workspace_session: "AgentSession | None" = None,

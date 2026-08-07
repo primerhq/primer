@@ -44,7 +44,7 @@ async def _seed_agent(storage_provider) -> Agent:
     agent = Agent(
         id="ag-trig",
         description="seeded test agent",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     await storage_provider.get_storage(Agent).create(agent)
     return agent

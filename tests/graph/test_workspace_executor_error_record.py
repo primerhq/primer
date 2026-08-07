@@ -17,6 +17,9 @@ Two pieces are tested together:
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -33,7 +36,6 @@ from primer.model.graph import (
     _EndNode,
     _StaticEdge,
 )
-from primer.model.provider import LLMModel
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.persistence import _CoalesceState, translate_stream_event
 from primer.workspace.local.state import LocalStateRepo as StateRepo
@@ -56,15 +58,15 @@ async def _make_state_repo(tmp_path: Path) -> StateRepo:
     return repo
 
 
-def _model() -> LLMModel:
-    return LLMModel(name="m", context_length=128_000)
+def _model() -> ResolvedModel:
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
 
 
 def _agent(agent_id: str) -> Agent:
     return Agent(
         id=agent_id,
         description=f"agent {agent_id}",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
 
 

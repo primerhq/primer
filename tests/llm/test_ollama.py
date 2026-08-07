@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import json
 import logging
@@ -65,7 +68,6 @@ from primer.model.except_ import (
 )
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OllamaConfig,
@@ -92,7 +94,7 @@ def _make_provider(
         id="ollama-default",
         provider=LLMProviderType.OLLAMA,
         models=[
-            LLMModel(name=name, context_length=8192)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=8192, config=ModelProfileConfig())
             for name in (models or ["llama3"])
         ],
         config=config,
@@ -173,7 +175,6 @@ class TestConstructor:
         provider = LLMProvider(
             id="x",
             provider=LLMProviderType.OLLAMA,
-            models=[LLMModel(name="llama3", context_length=8192)],
             config=OpenResponsesConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://x/v1/"),
                 api_key=SecretStr("sk-x"),

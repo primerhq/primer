@@ -16,7 +16,6 @@ from primer.model.provider import (
     AggregatedMember,
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -59,7 +58,6 @@ def _member_row(pid: str) -> LLMProvider:
     return LLMProvider(
         id=pid,
         provider=LLMProviderType.ANTHROPIC,
-        models=[LLMModel(name="claude-x", context_length=200000)],
         config=AnthropicConfig(api_key=SecretStr("sk-x")),
         limits=Limits(max_concurrency=4),
     )
@@ -69,7 +67,6 @@ def _agg_row(agg_id: str, members: list[AggregatedMember]) -> LLMProvider:
     return LLMProvider(
         id=agg_id,
         provider=LLMProviderType.AGGREGATED,
-        models=[LLMModel(name="virtual-1", context_length=200000)],
         config=AggregatedLLMConfig(members=members),
         limits=Limits(max_concurrency=4),
     )
@@ -176,13 +173,12 @@ class TestAggregatedRest:
             "id": "agg-rest",
             "provider": "aggregated",
             "config": {
-                "members": [{"provider_id": "member-x", "model_name": "m"}],
+                "members": [{"profile_id": "member-x--m"}],
                 "strategy": "sequential",
                 "failover_point": "before_first_token",
                 "failover_on": "transient_and_config",
             },
-            "models": [{"name": "virtual-1", "context_length": 200000}],
-            "limits": {"max_concurrency": 4},
+                        "limits": {"max_concurrency": 4},
         }
         body.update(overrides)
         return body
@@ -232,7 +228,7 @@ class TestAggregatedRest:
             "/v1/llm_providers/_discover_models",
             json={
                 "provider": "aggregated",
-                "config": {"members": [{"provider_id": "p", "model_name": "m"}]},
+                "config": {"members": [{"profile_id": "p--m"}]},
             },
         )
         assert r.status_code == 400, r.text

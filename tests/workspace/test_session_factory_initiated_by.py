@@ -147,7 +147,7 @@ async def test_start_workspace_session_propagates_initiated_by(
     await fake_storage_provider.get_storage(Agent).create(
         Agent(
             id="ag-1", description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         ),
     )
     live = _FakeLiveWorkspace()

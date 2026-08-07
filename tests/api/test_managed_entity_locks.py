@@ -33,7 +33,7 @@ def _build_agent(harness_id: str | None = "h-test") -> Agent:
     return Agent(
         id="managed-agent-1",
         description="a managed agent",
-        model=AgentModel(provider_id="llm-1", model_name="gpt-4o"),
+        model=AgentModel(profile_id="llm-1--gpt-4o"),
         harness_id=harness_id,
     )
 

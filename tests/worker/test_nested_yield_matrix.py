@@ -34,6 +34,9 @@ a graph checkpoint's nested entry). See the note at the bottom of this file.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
@@ -58,7 +61,6 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
-from primer.model.provider import LLMModel
 from primer.model.scheduler import WorkerConfig
 from primer.model.tool_approval import (
     RequiredApprovalConfig,
@@ -167,7 +169,7 @@ class _GatedYieldingToolset:
 class _ProviderRow:
     """Lightweight LLM-provider stand-in: resume_subagent only reads .models."""
 
-    def __init__(self, models: list[LLMModel]) -> None:
+    def __init__(self, models: list[ResolvedModel]) -> None:
         self.models = models
 
 
@@ -254,14 +256,14 @@ async def _async_return(value):
 
 
 def _provider_row() -> _ProviderRow:
-    return _ProviderRow(models=[LLMModel(name="m1", context_length=128_000)])
+    return _ProviderRow(models=[ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m1", context_length=128_000, config=ModelProfileConfig())])
 
 
 def _agent(*, tools: list[str]) -> Agent:
     return Agent(
         id="agent-sub",
         description="subagent",
-        model=AgentModel(provider_id="prov-1", model_name="m1"),
+        model=AgentModel(profile_id="prov-1--m1"),
         system_prompt=["you are a subagent"],
         tools=tools,
     )

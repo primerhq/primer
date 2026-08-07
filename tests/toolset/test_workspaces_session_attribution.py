@@ -151,7 +151,7 @@ def _seed_agent(sp, agent_id="code-reviewer") -> None:
     sp.get_storage(Agent)._data[agent_id] = Agent(
         id=agent_id,
         description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
 
 

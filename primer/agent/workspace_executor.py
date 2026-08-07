@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
     from primer.model.principal import PrincipalRef
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
     from primer.workspace.session import AgentSession
 
 
@@ -60,7 +60,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
         *,
         agent: "Agent",
         llm: "LLM",
-        llm_model: "LLMModel",
+        llm_model: "ResolvedModel",
         tool_manager: ToolExecutionManager,
         session: "AgentSession",
         compaction: CompactionStrategy | None = None,
@@ -229,7 +229,7 @@ class WorkspaceAgentExecutor(_BaseAgentExecutor):
                     # the last event-log seq at/before the marker, recorded so
                     # tap/UI consumers know the seq-space boundary too.
                     "replaced_to_seq": boundary_seq,
-                    "model": self._model.name,
+                    "model": self._model.model_name,
                     "tokens_before": tokens_before,
                     "tokens_after": tokens_after,
                     "created_at": now.isoformat(),

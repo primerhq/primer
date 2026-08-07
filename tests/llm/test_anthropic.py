@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import base64
 import logging
@@ -35,7 +38,6 @@ from primer.model.except_ import ConfigError, UnsupportedContentError
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -51,7 +53,7 @@ def _make_provider(
         id="ant-default",
         provider=LLMProviderType.ANTHROPIC,
         models=[
-            LLMModel(name=name, context_length=200_000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=200_000, config=ModelProfileConfig())
             for name in (models or ["claude-sonnet-4-5"])
         ],
         config=AnthropicConfig(api_key=SecretStr(api_key)),
@@ -87,7 +89,6 @@ class TestConstructor:
         provider = LLMProvider(
             id="x",
             provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="claude-sonnet-4-5", context_length=1024)],
             config=OpenResponsesConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://x/v1/"),
                 api_key=SecretStr("sk-x"),

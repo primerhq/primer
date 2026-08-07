@@ -66,7 +66,7 @@ def _make_storage() -> PostgresStorage[Agent]:
 def _agent_row(agent_id: str) -> _FakeRow:
     data = {
         "description": "test agent",
-        "model": {"provider_id": "p1", "model_name": "m1"},
+        "model": {"profile_id": "p1--m1"},
     }
     return _FakeRow(id=agent_id, data=json.dumps(data))
 
@@ -103,7 +103,7 @@ async def test_update_uses_provided_conn_without_acquiring() -> None:
     entity = Agent(
         id="a1",
         description="test agent",
-        model=AgentModel(provider_id="p1", model_name="m1"),
+        model=AgentModel(profile_id="p1--m1"),
     )
 
     got = await storage.update(entity, conn=conn)

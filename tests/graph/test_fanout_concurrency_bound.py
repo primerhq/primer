@@ -13,6 +13,9 @@ simultaneously-active worker bodies never exceeds 2, yet all 6 still run.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 from collections.abc import AsyncIterator
 from typing import Any, Generic, TypeVar
@@ -36,7 +39,6 @@ from primer.model.graph import (
     _FanOutNode,
     _StaticEdge,
 )
-from primer.model.provider import LLMModel
 from primer.model.storage import (
     CursorPageResponse,
     FieldRef,
@@ -167,7 +169,7 @@ def _agent(agent_id: str) -> Agent:
     return Agent(
         id=agent_id,
         description=f"agent {agent_id}",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
         system_prompt=[],
     )
 
@@ -177,7 +179,7 @@ async def _build_executor(*, graph: Graph, llm: _ConcurrencyProbeLLM, cap: int):
         return _agent(agent_id)
 
     async def llm_resolver(agent: Agent):
-        return (llm, LLMModel(name="m", context_length=128_000))
+        return (llm, ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig()))
 
     thread_storage: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
     message_storage: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(

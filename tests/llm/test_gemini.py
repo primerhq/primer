@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,7 +17,6 @@ from primer.model.except_ import ConfigError
 from primer.model.provider import (
     GoogleConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -35,7 +37,7 @@ def _make_provider(
         id="gemini-default",
         provider=LLMProviderType.GEMINI,
         models=[
-            LLMModel(name=name, context_length=1_000_000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=1_000_000, config=ModelProfileConfig())
             for name in (models or ["gemini-2.5-flash"])
         ],
         config=GoogleConfig(api_key=SecretStr(api_key)),
@@ -77,7 +79,6 @@ class TestConstructor:
         provider = LLMProvider(
             id="g",
             provider=LLMProviderType.GEMINI,
-            models=[LLMModel(name="gemini-2.5-flash", context_length=1024)],
             config=OpenResponsesConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://example.com/v1/"),
                 api_key=SecretStr("sk-x"),
@@ -99,7 +100,6 @@ class TestConstructor:
     ) -> None:
         caplog.set_level(logging.INFO, logger="primer.llm.gemini")
         provider = _make_provider(
-            models=["gemini-2.5-flash", "gemini-2.5-pro"],
             max_concurrency=2,
         )
         GeminiLLM(provider)

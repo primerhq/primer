@@ -101,9 +101,7 @@ def build_graph_invocation_services(
         return row
 
     async def llm_resolver(agent):
-        llm = await pool._provider_registry.get_llm(agent.model.provider_id)
-        llm_model = await pool._resolve_llm_model(agent)
-        return llm, llm_model
+        return await resolve_llm_and_model(pool, agent)
 
     async def tool_manager_resolver(agent):
         toolset_ids = _toolset_ids_from_scoped(agent.tools)
@@ -191,13 +189,10 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 f"{session.id!r}"
             )
 
-    # Resolve the LLM adapter via the provider registry (cached).
-    llm = await pool._provider_registry.get_llm(agent.model.provider_id)
-
-    # Resolve the LLMModel (provider's config row carries the
-    # context_length); used by the compaction strategy. The agent's
-    # ``model.model_name`` is the provider-side identifier.
-    llm_model = await pool._resolve_llm_model(agent)
+    # Resolve the profile, then the adapter it names. The profile
+    # carries the provider id, the provider-side model name, the
+    # context_length compaction needs, and any API-level tunables.
+    llm, llm_model = await resolve_llm_and_model(pool, agent)
 
     # agent.tools holds scoped tool ids (toolset_id__tool_name).
     # Derive the unique toolset prefixes so we only resolve the
@@ -345,11 +340,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         return row
 
     async def llm_resolver(agent):
-        llm = await pool._provider_registry.get_llm(
-            agent.model.provider_id
-        )
-        llm_model = await pool._resolve_llm_model(agent)
-        return llm, llm_model
+        return await resolve_llm_and_model(pool, agent)
 
     # (4) Holder AgentSession allocated by POST /workspaces/{id}/sessions
     # (Phase 2). Optional - fall back to None for legacy graph-
@@ -448,32 +439,37 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     return _GraphTurnDriver(executor)
 
 
-async def resolve_llm_model(pool: "WorkerPool", agent):
-    """Look up the :class:`LLMModel` row matching ``agent.model``.
+async def resolve_llm_model(
+    pool: "WorkerPool", agent, override_profile_id: str | None = None,
+):
+    """Resolve the :class:`ResolvedModel` this turn should run under.
 
-    Walks the configured :class:`LLMProvider`'s ``models`` list and
-    returns the entry whose ``name`` matches ``agent.model.model_name``.
-    Raises :class:`ConfigError` if the provider doesn't list the
-    requested model name.
+    ``override_profile_id`` wins over the agent's own default when set,
+    which is how the session, chat, and graph-node override surfaces
+    reach the model layer. Raises :class:`NotFoundError` when the
+    resolved profile is absent.
     """
-    from primer.model.except_ import ConfigError, NotFoundError
-    from primer.model.provider import LLMProvider
+    from primer.model_profile import resolve_model
 
-    provider_storage = pool._storage.get_storage(LLMProvider)
-    provider_row = await provider_storage.get(agent.model.provider_id)
-    if provider_row is None:
-        raise NotFoundError(
-            f"LLMProvider {agent.model.provider_id!r} not found "
-            f"for agent {agent.id!r}"
-        )
-    for m in provider_row.models:
-        if m.name == agent.model.model_name:
-            return m
-    raise ConfigError(
-        f"LLMProvider {agent.model.provider_id!r} does not list "
-        f"model {agent.model.model_name!r}; configured models: "
-        f"{[m.name for m in provider_row.models]}"
+    return await resolve_model(
+        pool._storage,
+        default_profile_id=agent.model.profile_id,
+        override_profile_id=override_profile_id,
     )
+
+
+async def resolve_llm_and_model(
+    pool: "WorkerPool", agent, override_profile_id: str | None = None,
+):
+    """Resolve both the adapter and the model facts for one turn.
+
+    Every build path needs the pair, and the provider id now comes from
+    the resolved profile rather than the agent, so resolving them apart
+    would mean two lookups and an opportunity to disagree.
+    """
+    resolved = await resolve_llm_model(pool, agent, override_profile_id)
+    llm = await pool._provider_registry.get_llm(resolved.provider_id)
+    return llm, resolved
 
 
 def infer_post_turn_status(

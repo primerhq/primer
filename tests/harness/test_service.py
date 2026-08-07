@@ -82,7 +82,7 @@ def test_build_rewrites_agent_tools_known_toolset():
         "agent", "assistant",
         {
             "description": "test",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
             "tools": ["my-toolset__hello", "my-toolset__world"],
         },
     )
@@ -101,7 +101,7 @@ def test_build_leaves_external_toolset_tools_alone():
         "agent", "assistant",
         {
             "description": "test",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
             "tools": ["external-toolset__hello"],
         },
     )
@@ -126,7 +126,7 @@ def test_build_rewrites_graph_node_agent_id():
         "agent", "my-agent",
         {
             "description": "test",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
         },
     )
     graph_file = _make_rendered_file(
@@ -291,7 +291,7 @@ def test_rewritten_agent_tool_resolves_to_full_toolset_row_id():
         "agent", "assistant",
         {
             "description": "test",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
             "tools": ["my-toolset__hello"],
         },
     )
@@ -406,7 +406,7 @@ def test_build_returns_entries_on_success():
         "agent", "assistant",
         {
             "description": "A helpful assistant",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
         },
     )
 
@@ -458,7 +458,7 @@ async def test_apply_install_orders_kinds(fake_storage_provider):
         template_source_hash="h", rendered_hash="h4",
         rendered_payload={
             "description": "assistant",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
         },
     )
     graph_entry = RenderedEntry(
@@ -545,7 +545,7 @@ async def test_apply_install_sets_harness_id_on_entities(fake_storage_provider):
         template_source_hash="h", rendered_hash="h1",
         rendered_payload={
             "description": "assistant",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
         },
     )
 
@@ -934,7 +934,7 @@ async def test_apply_install_writes_rendering_snapshot(fake_storage_provider):
         template_source_hash="h", rendered_hash="h1",
         rendered_payload={
             "description": "assistant",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
         },
     )
 
@@ -993,7 +993,7 @@ async def test_apply_uninstall_deletes_in_reverse_order(fake_storage_provider):
     await fake_storage_provider.get_storage(Agent).create(
         Agent(
             id="acme__asst", description="asst",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             harness_id=harness.id,
         )
     )
@@ -1091,7 +1091,7 @@ async def test_apply_uninstall_no_cascade_keeps_entities(fake_storage_provider):
     await fake_storage_provider.get_storage(Agent).create(
         Agent(
             id="keep__asst", description="asst",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             harness_id=harness.id,
         )
     )
@@ -1151,7 +1151,7 @@ async def test_apply_sync_noop_when_hashes_match(fake_storage_provider):
                 template_source_hash="h", rendered_hash="r1",
                 rendered_payload={
                     "description": "assistant",
-                    "model": {"provider_id": "p", "model_name": "m"},
+                    "model": {"profile_id": "p--m"},
                 },
             ),
         ],
@@ -1189,7 +1189,7 @@ async def test_apply_sync_noop_when_hashes_match(fake_storage_provider):
             template_source_hash="h", rendered_hash="r1",
             rendered_payload={
                 "description": "assistant",
-                "model": {"provider_id": "p", "model_name": "m"},
+                "model": {"profile_id": "p--m"},
             },
         ),
     ]
@@ -1234,7 +1234,7 @@ async def test_apply_sync_creates_added_entries(fake_storage_provider):
             template_source_hash="h", rendered_hash="r1",
             rendered_payload={
                 "description": "new agent",
-                "model": {"provider_id": "p", "model_name": "m"},
+                "model": {"profile_id": "p--m"},
             },
         ),
     ]
@@ -1268,7 +1268,7 @@ async def test_apply_sync_deletes_removed_entries(fake_storage_provider):
     await fake_storage_provider.get_storage(Agent).create(
         Agent(
             id="acme__old-agent", description="old",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             harness_id=harness.id,
         )
     )
@@ -1282,7 +1282,7 @@ async def test_apply_sync_deletes_removed_entries(fake_storage_provider):
                 template_source_hash="h", rendered_hash="r1",
                 rendered_payload={
                     "description": "old",
-                    "model": {"provider_id": "p", "model_name": "m"},
+                    "model": {"profile_id": "p--m"},
                 },
             ),
         ],
@@ -1317,7 +1317,7 @@ async def test_apply_sync_updates_changed_entries(fake_storage_provider):
     await fake_storage_provider.get_storage(Agent).create(
         Agent(
             id="acme__asst", description="old description",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             harness_id=harness.id,
         )
     )
@@ -1331,7 +1331,7 @@ async def test_apply_sync_updates_changed_entries(fake_storage_provider):
                 template_source_hash="h", rendered_hash="r-old",
                 rendered_payload={
                     "description": "old description",
-                    "model": {"provider_id": "p", "model_name": "m"},
+                    "model": {"profile_id": "p--m"},
                 },
             ),
         ],
@@ -1345,7 +1345,7 @@ async def test_apply_sync_updates_changed_entries(fake_storage_provider):
             template_source_hash="h", rendered_hash="r-new",
             rendered_payload={
                 "description": "new description",
-                "model": {"provider_id": "p", "model_name": "m"},
+                "model": {"profile_id": "p--m"},
             },
         ),
     ]
@@ -1385,7 +1385,7 @@ async def test_apply_sync_replaces_rendering_snapshot(fake_storage_provider):
             template_source_hash="h", rendered_hash="r1",
             rendered_payload={
                 "description": "assistant",
-                "model": {"provider_id": "p", "model_name": "m"},
+                "model": {"profile_id": "p--m"},
             },
         ),
     ]
@@ -1427,7 +1427,7 @@ async def test_apply_install_payload_cannot_override_harness_id(fake_storage_pro
         rendered_payload={
             "harness_id": "attacker-controlled-value",
             "description": "assistant",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
         },
     )
 
@@ -1475,7 +1475,7 @@ async def test_apply_sync_surfaces_partial_apply_errors(fake_storage_provider):
         template_source_hash="h", rendered_hash="r",
         rendered_payload={
             "description": "assistant",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
         },
     )
 
@@ -1537,7 +1537,7 @@ async def test_apply_sync_failed_entity_retried_on_next_sync(fake_storage_provid
         template_source_hash="h", rendered_hash="r",
         rendered_payload={
             "description": "assistant",
-            "model": {"provider_id": "p", "model_name": "m"},
+            "model": {"profile_id": "p--m"},
         },
     )
 

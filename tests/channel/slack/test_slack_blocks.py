@@ -35,7 +35,7 @@ async def test_parse_agent_selection_switches(tmp_path: Path):
     await p.initialize()
     for aid, nm in [("agent-x", "X"), ("agent-y", "Y")]:
         await p.get_storage(Agent).create(Agent(
-            id=aid, description=nm, model={"provider_id": "lp", "model_name": "m"}))
+            id=aid, description=nm, model={"profile_id": "lp--m"}))
     await p.get_storage(Chat).create(Chat(
         id="chat-1", agent_id="agent-x", created_at=datetime.now(timezone.utc)))
     notice = await parse_agent_selection(

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any, Generic, TypeVar
@@ -33,7 +36,6 @@ from primer.model.except_ import (
     ConflictError,
     NotFoundError,
 )
-from primer.model.provider import LLMModel
 from primer.model.storage import (
     CursorPage,
     CursorPageResponse,
@@ -204,15 +206,15 @@ def _agent(
     return Agent(
         id="researcher",
         description="Research agent",
-        model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
+        model=AgentModel(profile_id="openai-1--gpt-4o-mini"),
         max_output_tokens=max_output_tokens,
         system_prompt=list(system_prompt or []),
         compaction_prompt=list(compaction_prompt or []),
     )
 
 
-def _model(*, context_length: int = 128_000) -> LLMModel:
-    return LLMModel(name="gpt-4o-mini", context_length=context_length)
+def _model(*, context_length: int = 128_000) -> ResolvedModel:
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="gpt-4o-mini", context_length=context_length, config=ModelProfileConfig())
 
 
 def _tool(name: str = "echo") -> Tool:
@@ -363,12 +365,12 @@ class TestThreadManagement:
         agent_a = Agent(
             id="a-1",
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         )
         agent_b = Agent(
             id="b-1",
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         )
         await AgentExecutor.open_thread(agent=agent_a, thread_storage=ts)
         await AgentExecutor.open_thread(agent=agent_a, thread_storage=ts)

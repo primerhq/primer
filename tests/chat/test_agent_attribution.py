@@ -14,6 +14,9 @@ Covers:
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import get_args
@@ -33,7 +36,6 @@ from primer.model.chat import (
     ToolResultPart,
 )
 from primer.model.chats import Chat, ChatMessage, ChatMessageKind
-from primer.model.provider import LLMModel
 
 
 def _now():
@@ -81,12 +83,12 @@ async def _final_turn() -> AsyncIterator[StreamEvent]:
 def _build_runner(chat_store, msg_store, *, agent_id="ag-1") -> ChatTurnRunner:
     agent = Agent(
         id=agent_id, description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     return ChatTurnRunner(
         agent=agent,
         llm=_FakeLLM([_turn_with_tool_call, _final_turn]),
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=_EchoToolManager(),
         chat_storage=chat_store,
         message_storage=msg_store,

@@ -37,10 +37,10 @@ async def _setup(tmp_path, monkeypatch):
     await p.initialize()
     await p.get_storage(Agent).create(Agent(
         id="agent-x", description="X",
-        model={"provider_id": "lp", "model_name": "m"}))
+        model={"profile_id": "lp--m"}))
     await p.get_storage(Agent).create(Agent(
         id="agent-y", description="Y",
-        model={"provider_id": "lp", "model_name": "m"}))
+        model={"profile_id": "lp--m"}))
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.SLACK,
         config=SlackChannelProviderConfig(

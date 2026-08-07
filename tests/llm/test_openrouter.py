@@ -9,6 +9,9 @@ Spec: docs/superpowers/specs/2026-06-04-openrouter-llm-provider-design.md
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import httpx
 import pytest
 import respx
@@ -23,7 +26,6 @@ from primer.model.chat import Message, TextPart
 from primer.model.except_ import BadRequestError
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenRouterConfig,
@@ -46,7 +48,7 @@ def _make_provider(
             app_url=app_url,
         ),
         models=[
-            LLMModel(name=n, context_length=200000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=n, context_length=200000, config=ModelProfileConfig())
             for n in (models or ["anthropic/claude-3.5-sonnet"])
         ],
         limits=Limits(max_concurrency=4),
@@ -172,7 +174,7 @@ class TestListModels:
     async def test_returns_configured_models_sorted_dedup(self) -> None:
         # Plan §5.5: return the configured slugs verbatim, deduplicated, sorted.
         # The LLMProvider model's `models` field rejects duplicates (it's a
-        # list[LLMModel], one per slug). Build with two distinct slugs and
+        # list[ResolvedModel], one per slug). Build with two distinct slugs and
         # confirm both come back in sorted order.
         llm = OpenRouterLLM(_make_provider(models=[
             "openai/gpt-4o",

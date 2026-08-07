@@ -33,7 +33,7 @@ def test_infer_list_of_strings():
 
 
 def test_apply_replaces_at_pointer():
-    entity = {"model": {"provider_id": "openai", "model_name": "gpt-4"}, "temperature": 0.2}
+    entity = {"model": {"profile_id": "openai--gpt-4"}, "temperature": 0.2}
     mappings = [
         OverrideMapping(field_path="/model/provider_id", override_path="llm.provider_id"),
     ]

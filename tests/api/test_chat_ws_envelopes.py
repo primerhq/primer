@@ -26,7 +26,6 @@ from primer.model.chats import ChatMessage
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -170,7 +169,6 @@ async def envelope_seeded_agent(envelope_app: FastAPI) -> Agent:
         LLMProvider(
             id="llm-env",
             provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="m-env", context_length=12_345)],
             config=AnthropicConfig(api_key=SecretStr("test-only")),
             limits=Limits(max_concurrency=1),
         ),
@@ -178,7 +176,7 @@ async def envelope_seeded_agent(envelope_app: FastAPI) -> Agent:
     agent = Agent(
         id="ag-env",
         description="envelope-test agent",
-        model=AgentModel(provider_id="llm-env", model_name="m-env"),
+        model=AgentModel(profile_id="llm-env--m-env"),
         tools=[],
         system_prompt=[],
     )

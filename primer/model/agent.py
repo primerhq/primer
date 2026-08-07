@@ -64,24 +64,19 @@ class AgentModel(BaseModel):
     the docstring + module context disambiguate.
     """
 
-    provider_id: str = Field(
+    profile_id: str = Field(
         ...,
         min_length=1,
         description=(
-            "Identifier of the configured "
-            ":class:`primer.model.provider.LLMProvider` this agent uses. "
-            "Resolved against the application's provider registry at "
-            "session-start time; not validated at construction."
-        ),
-    )
-    model_name: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "Provider-side model name (e.g. 'gpt-4o-mini', "
-            "'claude-sonnet-4-6', 'gemini-2.5-flash'). Must be one of "
-            "the models the referenced provider permits, but that "
-            "constraint is checked by the runtime, not here."
+            "Identifier of the "
+            ":class:`primer.model.model_profile.ModelProfile` this agent "
+            "runs under by DEFAULT. The profile carries the provider, the "
+            "provider-side model name, the context length, and any "
+            "API-level tunables. Resolved at executor-build time; not "
+            "validated at construction. Three invocation surfaces may "
+            "override it per run (session create, chat create and agent "
+            "switch, and graph agent nodes), so this is the fallback "
+            "rather than a fixed binding."
         ),
     )
 

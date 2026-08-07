@@ -81,7 +81,7 @@ async def _setup(tmp_path, *, with_artifacts=True):
     await p.initialize()
     await p.get_storage(Agent).create(Agent(
         id="agent-x", description="X",
-        model={"provider_id": "lp", "model_name": "m"}))
+        model={"profile_id": "lp--m"}))
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.DISCORD,
         config=DiscordChannelProviderConfig(bot_token=SecretStr("x" * 40)))

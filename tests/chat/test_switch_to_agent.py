@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
@@ -10,7 +13,6 @@ from primer.chat.executor import ChatTurnRunner
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, StreamEvent, ToolCallEnd, ToolCallStart
 from primer.model.chats import Chat, ChatMessage
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 
 
@@ -79,7 +81,7 @@ async def test_switch_yield_propagates_out_of_run_turn(fake_storage_provider):
     make switch_to_agent dead code in real chats."""
     agent = Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     chat = Chat(id="cs", agent_id="ag", created_at=_now())
     chat_store = fake_storage_provider.get_storage(Chat)
@@ -94,7 +96,7 @@ async def test_switch_yield_propagates_out_of_run_turn(fake_storage_provider):
     runner = ChatTurnRunner(
         agent=agent,
         llm=_FakeLLM(_tool_stream),
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=_SwitchingToolManager(),
         chat_storage=chat_store,
         message_storage=msg_store,

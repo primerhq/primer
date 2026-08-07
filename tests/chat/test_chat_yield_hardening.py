@@ -17,6 +17,9 @@ Covers four final-review issues:
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 
@@ -33,7 +36,6 @@ from primer.model.chat import (
     ToolResultPart,
 )
 from primer.model.chats import Chat, ChatMessage
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 
 
@@ -54,12 +56,12 @@ class _FakeLLM:
 def _runner(chat_store, msg_store, tool_manager, *, llm=None) -> ChatTurnRunner:
     agent = Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     return ChatTurnRunner(
         agent=agent,
         llm=llm if llm is not None else _FakeLLM(lambda: iter(())),
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=tool_manager,
         chat_storage=chat_store,
         message_storage=msg_store,
@@ -385,13 +387,12 @@ async def test_i4_cancel_abandons_pending(
 
     await fake_storage_provider.get_storage(LLMProvider).create(LLMProvider(
         id="p", provider=LLMProviderType.ANTHROPIC,
-        models=[LLMModel(name="m", context_length=8192)],
         config=AnthropicConfig(api_key=SecretStr("test")),
         limits=Limits(max_concurrency=1),
     ))
     await fake_storage_provider.get_storage(Agent).create(Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     ))
     llm = _CompletingLLM()
 
@@ -467,7 +468,7 @@ async def test_i4_cancel_abandons_pending(
     runner = ChatTurnRunner(
         agent=await fake_storage_provider.get_storage(Agent).get("ag"),
         llm=llm,
-        llm_model=LLMModel(name="m", context_length=8192),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=8192, config=ModelProfileConfig()),
         tool_manager=object(),
         chat_storage=chats,
         message_storage=msgs,

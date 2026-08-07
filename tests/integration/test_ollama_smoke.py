@@ -17,7 +17,6 @@ from primer.llm.ollama import OllamaLLM
 from primer.model.chat import Done, Message, StreamEvent, TextDelta, TextPart
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OllamaConfig,
@@ -45,7 +44,6 @@ async def test_real_ollama_smoke() -> None:
     provider = LLMProvider(
         id="ollama-real",
         provider=LLMProviderType.OLLAMA,
-        models=[LLMModel(name=model_name, context_length=8192)],
         config=OllamaConfig(url=HttpUrl("http://localhost:11434")),
         limits=Limits(max_concurrency=2),
     )

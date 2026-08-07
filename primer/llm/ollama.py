@@ -56,7 +56,6 @@ from primer.model.except_ import (
     BadRequestError,
     ConfigError,
     PrimerError,
-    ModelNotFoundError,
     NetworkError,
     ProviderError,
     RateLimitError,
@@ -436,15 +435,12 @@ class OllamaLLM(LLM):
             "Ollama adapter initialized",
             extra={
                 "provider_id": provider.id,
-                "models": [m.name for m in provider.models],
                 "max_concurrency": provider.limits.max_concurrency,
                 "request_timeout_seconds": provider.limits.request_timeout_seconds,
                 "url": str(provider.config.url),
             },
         )
 
-    async def list_models(self) -> Iterable[str]:
-        return [m.name for m in self._provider.models]
 
     async def count_tokens(
         self,
@@ -491,12 +487,6 @@ class OllamaLLM(LLM):
         tool_choice: ToolChoice | None = None,
         extended: dict[str, Any] | None = None,
     ):
-        allowed = {m.name for m in self._provider.models}
-        if model not in allowed:
-            raise ModelNotFoundError(
-                f"model {model!r} is not configured for provider "
-                f"{self._provider.id!r}; configured models: {sorted(allowed)}"
-            )
 
         ollama_messages = _messages_to_ollama(messages)
         ollama_tools = _tools_to_ollama(tools)

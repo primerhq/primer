@@ -123,7 +123,7 @@ async def _seed_agent(p) -> Agent:
     agent = Agent(
         id="ag-evj",
         description="journey agent",
-        model=AgentModel(provider_id="prov", model_name="model"),
+        model=AgentModel(profile_id="prov--model"),
     )
     await p.get_storage(Agent).create(agent)
     return agent
