@@ -35,6 +35,7 @@ from typing import Protocol, runtime_checkable
 
 from primer.int.storage_provider import StorageProvider
 from primer.storage.migrations.m001_document_content import M001DocumentContent
+from primer.storage.migrations.m002_model_profiles import M002ModelProfiles
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,10 @@ class Migration(Protocol):
 
 
 #: Ordered registry. Index position is not significant; ``version`` is.
-MIGRATIONS: tuple[Migration, ...] = (M001DocumentContent(),)
+MIGRATIONS: tuple[Migration, ...] = (
+    M001DocumentContent(),
+    M002ModelProfiles(),
+)
 
 #: Highest version this build knows how to apply.
 LATEST_VERSION: int = len(MIGRATIONS)
