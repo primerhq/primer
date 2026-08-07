@@ -22,7 +22,10 @@ from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, Message, StreamEvent, TextDelta
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import (
-    AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
 )
 from primer.model.storage import (
     FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,

@@ -472,33 +472,33 @@ async def _build_runner(
         return None, (
             f"agent {chat.agent_id!r} referenced by this chat no longer exists"
         )
+    from primer.model_profile import resolve_model
+
+    # Resolve the profile first: it carries the provider id, the
+    # provider-side model name, and the context length. ``chat.profile_id``
+    # overrides the agent's default when the operator set one at create or
+    # agent-switch time.
+    try:
+        llm_model = await resolve_model(
+            deps.storage_provider,
+            default_profile_id=agent.model.profile_id,
+            override_profile_id=getattr(chat, "profile_id", None),
+        )
+    except NotFoundError as exc:
+        return None, (
+            f"model profile configured on agent {agent.id!r} could not be "
+            f"resolved: {exc}"
+        )
     try:
         llm = (
             deps.fake_llm
             if deps.fake_llm is not None
-            else await deps.provider_registry.get_llm(agent.model.provider_id)
+            else await deps.provider_registry.get_llm(llm_model.provider_id)
         )
     except (NotFoundError, ConfigError) as exc:
         return None, (
-            f"LLM provider {agent.model.provider_id!r} could not be resolved: "
+            f"LLM provider {llm_model.provider_id!r} could not be resolved: "
             f"{exc}"
-        )
-    provider_rows = deps.storage_provider.get_storage(LLMProvider)
-    provider_row = await provider_rows.get(agent.model.provider_id)
-    if provider_row is None:
-        return None, (
-            f"LLM provider {agent.model.provider_id!r} configured on agent "
-            f"{agent.id!r} does not exist"
-        )
-    llm_model = next(
-        (m for m in provider_row.models if m.name == agent.model.model_name),
-        None,
-    )
-    if llm_model is None:
-        return None, (
-            f"model {agent.model.model_name!r} is not registered on provider "
-            f"{agent.model.provider_id!r} (it may have been renamed or removed); "
-            "update the agent's model or re-add it to the provider"
         )
     toolset_ids: set[str] = set()
     for sid in (agent.tools or []):

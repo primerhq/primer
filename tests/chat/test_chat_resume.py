@@ -144,8 +144,11 @@ async def test_dispatch_resume_continues_and_does_not_double_process(
     from primer.chat.tick_router import ChatTickRouter
     from primer.model.chat import Done, TextDelta
     from primer.model.provider import (
-        AnthropicConfig, Limits, LLMProvider, LLMProviderType,
-    )
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
+)
     from primer.model.storage import (
         FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,
     )
