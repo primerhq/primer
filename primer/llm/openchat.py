@@ -80,7 +80,10 @@ _POLICY_BY_FLAVOR: dict[OpenChatFlavor, _FlavorPolicy] = {
     OpenChatFlavor.LMSTUDIO: _FlavorPolicy(require_api_key=False),
     OpenChatFlavor.OLLAMA: _FlavorPolicy(require_api_key=False),
     OpenChatFlavor.VLLM: _FlavorPolicy(require_api_key=False),
-    OpenChatFlavor.OTHER: _FlavorPolicy(require_api_key=True),
+    # OTHER is the catch-all for self-hosted OpenAI-compatible servers,
+    # which are commonly unauthenticated; a missing key surfaces as an
+    # upstream 401 at call time rather than blocking registration.
+    OpenChatFlavor.OTHER: _FlavorPolicy(require_api_key=False),
 }
 
 

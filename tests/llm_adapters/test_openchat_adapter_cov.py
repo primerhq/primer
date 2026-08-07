@@ -128,7 +128,7 @@ class TestFlavorPolicy:
             (OpenChatFlavor.LMSTUDIO, False),
             (OpenChatFlavor.OLLAMA, False),
             (OpenChatFlavor.VLLM, False),
-            (OpenChatFlavor.OTHER, True),
+            (OpenChatFlavor.OTHER, False),
         ],
     )
     def test_policy_table(self, flavor: OpenChatFlavor, requires: bool) -> None:
@@ -155,11 +155,11 @@ class TestConstructor:
         with pytest.raises(ConfigError, match="api_key is required"):
             OpenChatLLM(_make_provider(api_key=""))
 
-    def test_missing_key_other_flavor_raises(self) -> None:
-        with pytest.raises(ConfigError, match="api_key is required"):
-            OpenChatLLM(
-                _make_provider(flavor=OpenChatFlavor.OTHER, api_key=None, url="https://api.example.com/v1/")
-            )
+    def test_missing_key_other_flavor_ok(self) -> None:
+        llm = OpenChatLLM(
+            _make_provider(flavor=OpenChatFlavor.OTHER, api_key=None, url="https://api.example.com/v1/")
+        )
+        assert llm._policy.require_api_key is False
 
     def test_wrong_provider_type_raises(self) -> None:
         provider = _make_provider()
