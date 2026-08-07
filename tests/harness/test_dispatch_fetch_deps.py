@@ -80,8 +80,7 @@ name: bot
 spec:
   description: hi
   model:
-    provider_id: openai
-    model_name: gpt-4
+    profile_id: openai--gpt-4
 """
 
 _EMPTY_SCHEMA = '{"type": "object", "properties": {}}'

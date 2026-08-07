@@ -94,12 +94,12 @@ def _make_deps(fake_storage_provider) -> HarnessDispatchDeps:
 
 
 def _make_agent(*, agent_id: str = "ag-bot",
-                provider_id: str = "openai",
+                profile_id: str = "openai--gpt-4",
                 temperature: float = 0.2) -> Agent:
     return Agent(
         id=agent_id,
         description="Friendly bot",
-        model=AgentModel(provider_id=provider_id, model_name="gpt-4"),
+        model=AgentModel(profile_id=profile_id),
         temperature=temperature,
         tools=[],
     )
@@ -131,8 +131,8 @@ def _make_outbound_harness(
                 template_name="assistant",
                 overrides=[
                     OverrideMapping(
-                        field_path="/model/provider_id",
-                        override_path="llm.provider_id",
+                        field_path="/model/profile_id",
+                        override_path="llm.profile_id",
                         widget="llm-provider-picker",
                     ),
                 ],
@@ -245,7 +245,7 @@ async def test_push_writes_to_remote_and_flips_status(
     assert (work / "harness.yaml").is_file()
     assert (work / "overrides.schema.json").is_file()
     assert (work / "templates" / "assistant.yaml").is_file()
-    assert b"{{ overrides.llm.provider_id }}" in (
+    assert b"{{ overrides.llm.profile_id }}" in (
         work / "templates" / "assistant.yaml"
     ).read_bytes()
 
@@ -283,7 +283,7 @@ async def test_drift_detected_after_entity_mutation(
     pushed = await harness_storage.get("h-drift")
     assert pushed.status == HarnessStatus.INSTALLED
 
-    # Mutate the tracked agent — change provider_id (a templated field) so
+    # Mutate the tracked agent - change profile_id (a templated field) so
     # the rendered bundle stays identical (only the inferred-default in the
     # schema would change); to force a real bundle change we also tweak
     # temperature (a NON-templated leaf), which alters the rendered spec.
