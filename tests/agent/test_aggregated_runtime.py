@@ -5,6 +5,8 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+
+from tests.conftest import seed_model_profile
 from pydantic import SecretStr
 
 from primer.agent.invoke import _resolve_agent_runtime
@@ -60,6 +62,10 @@ async def test_resolves_aggregated_runtime_and_virtual_model():
             limits=Limits(max_concurrency=4),
         )
     )
+    # The aggregated provider's VIRTUAL model name now lives on a profile:
+    # ModelProfile.model_name is the name agents select, and the aggregated
+    # adapter maps it onto each member's own model_name at dispatch.
+    await seed_model_profile(sp, "agg-1--virtual-1")
     await sp.get_storage(Agent).create(
         Agent(
             id="ag-1", description="test agent",
@@ -72,4 +78,4 @@ async def test_resolves_aggregated_runtime_and_virtual_model():
         "ag-1", storage_provider=sp, provider_registry=registry,
     )
     assert isinstance(llm, AggregatedLLM)
-    assert llm_model.name == "virtual-1"   # virtual name matched on the agg row
+    assert llm_model.model_name == "virtual-1"  # virtual name, from the profile
