@@ -207,4 +207,6 @@ async def test_build_runner_reports_missing_model(
     runner, reason = await _build_runner(deps, chat, asyncio.Event())
     assert runner is None
     assert reason is not None
-    assert "gone-model" in reason and "'p'" in reason
+    # The message names the PROFILE, which is what actually failed to
+    # resolve; the provider is a level below and may be fine.
+    assert "gone-model" in reason and "ModelProfile" in reason

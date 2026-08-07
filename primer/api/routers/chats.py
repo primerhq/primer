@@ -748,29 +748,29 @@ async def compact_chat(
             f"Chat {chat_id!r} references agent {chat.agent_id!r} which "
             "no longer exists; cannot compact."
         )
+    from primer.model_profile import resolve_model
+
+    # The profile carries the provider id, the wire model name, and the
+    # context length compaction budgets against. chat.profile_id overrides
+    # the agent default when the operator set one.
     try:
-        llm = await provider_registry.get_llm(agent.model.provider_id)
+        llm_model = await resolve_model(
+            sp,
+            default_profile_id=agent.model.profile_id,
+            override_profile_id=getattr(chat, "profile_id", None),
+        )
+    except NotFoundError as exc:
+        raise ConfigError(
+            f"Agent {agent.id!r} names model profile "
+            f"{agent.model.profile_id!r}, which does not exist: {exc}"
+        ) from exc
+    try:
+        llm = await provider_registry.get_llm(llm_model.provider_id)
     except (NotFoundError, ConfigError) as exc:
         raise ConfigError(
             f"Agent {agent.id!r} has no resolvable LLM provider "
-            f"({agent.model.provider_id!r}): {exc}"
+            f"({llm_model.provider_id!r}): {exc}"
         ) from exc
-    provider_rows = sp.get_storage(LLMProvider)
-    provider_row = await provider_rows.get(agent.model.provider_id)
-    if provider_row is None:
-        raise ConfigError(
-            f"LLMProvider {agent.model.provider_id!r} configured on "
-            f"agent {agent.id!r} does not exist."
-        )
-    llm_model = next(
-        (m for m in provider_row.models if m.name == agent.model.model_name),
-        None,
-    )
-    if llm_model is None:
-        raise ConfigError(
-            f"Model {agent.model.model_name!r} is not enabled on "
-            f"provider {agent.model.provider_id!r}."
-        )
 
     # 4) Load current history via the runner's helper so compaction-
     #    marker reassembly stays consistent with pre-turn compaction.
@@ -804,7 +804,7 @@ async def compact_chat(
         strategy=CompactionStrategy(),
         history=list(history),
         compaction_prompt=compaction_prompt,
-        model_name=llm_model.name,
+        model_name=llm_model.model_name,
         context_length=llm_model.context_length,
     )
 
