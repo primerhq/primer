@@ -100,3 +100,35 @@ class Limits(BaseModel):
             "gap between events, and this bounds the whole generation."
         ),
     )
+    max_retries: int = Field(
+        default=2,
+        ge=0,
+        description=(
+            "How many times to replay a stream that failed at the TRANSPORT "
+            "level (connection dropped, timeout, upstream 5xx, or a 429). A "
+            "request the API explicitly rejected -- bad request, unsupported "
+            "content, unknown model, bad credentials -- is never retried, "
+            "because replaying it reproduces the same rejection and only "
+            "delays the error. Retries stop at the first streamed event: "
+            "once output has reached the consumer, re-running the call would "
+            "duplicate tokens a user may already be reading. Set to 0 to "
+            "disable retries for this provider."
+        ),
+    )
+    retry_backoff_seconds: float = Field(
+        default=0.5,
+        ge=0.0,
+        description=(
+            "Base delay for the exponential retry backoff. The actual wait is "
+            "jittered across [0, base * 2^(attempt-1)] and capped by "
+            "``retry_backoff_max_seconds``. Jitter is deliberate: when a "
+            "provider rate-limits, every in-flight turn hits the wall at the "
+            "same instant, and an unjittered backoff marches them all back in "
+            "lockstep."
+        ),
+    )
+    retry_backoff_max_seconds: float = Field(
+        default=8.0,
+        ge=0.0,
+        description="Ceiling for one retry backoff wait.",
+    )
