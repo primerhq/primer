@@ -122,7 +122,7 @@ async def _seed_provider_and_agent(
         Agent(
             id=agent_id,
             description="chat agent",
-            model=AgentModel(provider_id=provider_id, model_name=model_name),
+            model=AgentModel(profile_id=f"{provider_id}--{model_name}"),
             tools=[],
             system_prompt=[],
         ),
@@ -241,10 +241,14 @@ class TestCompactEndpoint:
     async def test_503_when_agent_provider_unresolved(
         self, client, app, monkeypatch,
     ) -> None:
-        """Seed a provider whose ``models`` list doesn't carry the
-        model the agent points at — the resolver path raises
-        :class:`ConfigError` which surfaces as 503."""
-        await _seed_provider_and_agent(app, provider_models=["other-model"])
+        """An agent naming a profile that does not exist cannot be
+        compacted: the resolver raises, which surfaces as 503.
+
+        This replaces the pre-profile version, which seeded a provider
+        whose ``models`` list omitted the agent's model. That allowlist is
+        gone; an unresolvable profile is the equivalent failure.
+        """
+        await _seed_provider_and_agent(app, model_name="gone")
         await _seed_chat(app, chat_id="c1", turn_status="idle", last_seq=2)
         _patch_apply_compaction(monkeypatch)
 
