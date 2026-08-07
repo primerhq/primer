@@ -68,11 +68,8 @@ async def purge_dead_workers(scheduler=Depends(get_scheduler)) -> dict:
     registry of accumulated tombstones. Returns the number removed.
     Active/draining workers are never touched.
     """
-    workers = await scheduler.list_workers()
-    dead_ids = [w.id for w in workers if w.status == "dead"]
-    for worker_id in dead_ids:
-        await scheduler.deregister_worker(worker_id)
-    return {"removed": len(dead_ids)}
+    removed = await scheduler.purge_dead_workers()
+    return {"removed": removed}
 
 
 @router.delete(

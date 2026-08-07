@@ -144,6 +144,16 @@ class InMemoryScheduler(Scheduler):
         async with self._lock:
             self._workers.pop(worker_id, None)
 
+    async def purge_dead_workers(self) -> int:
+        async with self._lock:
+            dead = [
+                wid for wid, w in self._workers.items()
+                if w.info.status == "dead"
+            ]
+            for wid in dead:
+                self._workers.pop(wid, None)
+            return len(dead)
+
     async def list_workers(self) -> list[WorkerInfo]:
         async with self._lock:
             return [w.info for w in self._workers.values()]

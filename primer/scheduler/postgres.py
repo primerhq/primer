@@ -145,6 +145,14 @@ class PostgresScheduler(Scheduler):
                 "DELETE FROM workers WHERE id = $1", worker_id,
             )
 
+    async def purge_dead_workers(self) -> int:
+        """One DELETE over the whole tombstone set."""
+        async with self._storage.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "DELETE FROM workers WHERE status = 'dead' RETURNING id",
+            )
+        return len(rows)
+
     async def list_workers(self) -> list[WorkerInfo]:
         async with self._storage.pool.acquire() as conn:
             rows = await conn.fetch(
