@@ -1211,32 +1211,30 @@ async def _seed_usage_cache_from_history(sp, chat_id: str) -> None:
 
 
 async def _resolve_context_length(sp, chat_id: str) -> int:
-    """Resolve the agent's model ``context_length`` for a chat.
+    """Resolve the chat's effective ``context_length``.
 
-    Walks ``chat → agent → llm_provider → model`` and returns the
-    model's ``context_length``. Returns 0 on any missing link — the
-    ``usage`` envelope just degrades to ``used_pct=0.0`` rather than
-    failing the WS upgrade. Cached once per WS session in
-    :func:`chat_ws` so we don't re-resolve every turn.
+    Walks ``chat -> agent -> model profile``. The profile carries
+    ``context_length`` directly, so this no longer has to scan a
+    provider's model list. ``chat.profile_id`` overrides the agent's
+    default when the operator set one.
+
+    Returns 0 on any missing link: the ``usage`` envelope degrades to
+    ``used_pct=0.0`` rather than failing the WS upgrade. Cached once per
+    WS session in :func:`chat_ws` so we don't re-resolve every turn.
     """
-    chat_storage = sp.get_storage(Chat)
-    chat = await chat_storage.get(chat_id)
+    from primer.model.model_profile import ModelProfile
+
+    chat = await sp.get_storage(Chat).get(chat_id)
     if chat is None or not chat.agent_id:
         return 0
     agent = await sp.get_storage(Agent).get(chat.agent_id)
     if agent is None or agent.model is None:
         return 0
-    provider_id = agent.model.provider_id
-    model_name = agent.model.model_name
-    if not provider_id or not model_name:
+    profile_id = getattr(chat, "profile_id", None) or agent.model.profile_id
+    if not profile_id:
         return 0
-    provider_row = await sp.get_storage(LLMProvider).get(provider_id)
-    if provider_row is None:
-        return 0
-    for m in provider_row.models:
-        if m.name == model_name:
-            return m.context_length
-    return 0
+    profile = await sp.get_storage(ModelProfile).get(profile_id)
+    return profile.context_length if profile is not None else 0
 
 
 def _message_to_wire(msg: ChatMessage) -> dict[str, Any]:
