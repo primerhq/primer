@@ -27,6 +27,7 @@ from primer.api.registries import (
     WorkspaceRegistry,
 )
 from primer.model.agent import Agent
+from primer.model.model_profile import ModelProfile
 from primer.model.collection import Collection, Document
 from primer.model.except_ import ConfigError
 from primer.model.graph import Graph
@@ -211,6 +212,12 @@ def get_agent_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ) -> "Storage[Agent]":
     return sp.get_storage(Agent)
+
+
+def get_model_profile_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[ModelProfile]":
+    return sp.get_storage(ModelProfile)
 
 
 def get_graph_storage(

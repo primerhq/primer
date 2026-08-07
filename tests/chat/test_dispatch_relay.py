@@ -27,7 +27,10 @@ from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, TextDelta
 from primer.model.chats import Chat, ChatChannelBinding, ChatMessage
 from primer.model.provider import (
-    AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
 )
 
 

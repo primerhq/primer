@@ -115,8 +115,11 @@ async def test_build_runner_wires_approval_resolver(
     from primer.model.agent import Agent, AgentModel
     from primer.model.chats import Chat
     from primer.model.provider import (
-        AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
-    )
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
+)
 
     await fake_storage_provider.get_storage(LLMProvider).create(
         LLMProvider(
@@ -170,8 +173,11 @@ async def test_build_runner_reports_missing_model(
     from primer.model.agent import Agent, AgentModel
     from primer.model.chats import Chat
     from primer.model.provider import (
-        AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
-    )
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
+)
 
     await fake_storage_provider.get_storage(LLMProvider).create(
         LLMProvider(

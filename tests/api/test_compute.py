@@ -49,11 +49,11 @@ class TestAgentStatus:
         self, client, fake_storage_provider
     ) -> None:
         from primer.model.provider import (
-            AnthropicConfig,
-            Limits,
-            LLMProvider,
-            LLMProviderType,
-        )
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
+)
 
         await fake_storage_provider.get_storage(LLMProvider).create(
             LLMProvider(
@@ -93,8 +93,11 @@ class TestAgentStatus:
         have no Toolset storage row — the live registry resolves them
         directly. The status check must NOT flag them as missing."""
         from primer.model.provider import (
-            AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
-        )
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
+)
         await fake_storage_provider.get_storage(LLMProvider).create(
             LLMProvider(
                 id="anthropic-1",
