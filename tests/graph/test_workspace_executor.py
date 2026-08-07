@@ -7,6 +7,9 @@ turn, per superstep, plus the final ENDED transition).
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import json
 import subprocess
 from collections.abc import AsyncIterator
@@ -42,7 +45,6 @@ from primer.model.graph import (
     _StaticEdge,
 )
 from primer.model.principal import PrincipalRef
-from primer.model.provider import LLMModel
 from primer.workspace.local.state import LocalStateRepo as StateRepo
 
 
@@ -124,12 +126,12 @@ def _agent(agent_id: str) -> Agent:
     return Agent(
         id=agent_id,
         description=f"agent {agent_id}",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
 
 
-def _model() -> LLMModel:
-    return LLMModel(name="m", context_length=128_000)
+def _model() -> ResolvedModel:
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
 
 
 async def _make_state_repo(tmp_path: Path, workspace_id: str = "ws-test") -> StateRepo:
@@ -948,7 +950,7 @@ class TestWorkspaceAugmentation:
         agent = Agent(
             id="x",
             description="agent x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             system_prompt=["BASE PROMPT"],
         )
 
@@ -1542,7 +1544,7 @@ class TestIdentityPropagation:
         agent_with_identity_prompt = Agent(
             id="x",
             description="agent x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             system_prompt=["Actor: {{ ctx.identity.id }}"],
         )
 

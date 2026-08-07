@@ -61,7 +61,6 @@ def _make_anthropic_adapter(*, trace_llm_io: bool):
     from primer.llm.anthropic import AnthropicLLM
     from primer.model.provider import (
         AnthropicConfig,
-        LLMModel,
         LLMProvider,
         LLMProviderType,
         Limits as LLMProviderLimits,
@@ -73,7 +72,6 @@ def _make_anthropic_adapter(*, trace_llm_io: bool):
         name="Test Anthropic",
         provider=LLMProviderType.ANTHROPIC,
         config=config,
-        models=[LLMModel(name="claude-3-haiku-20240307", context_length=200000)],
         limits=LLMProviderLimits(max_concurrency=1),
     )
     return AnthropicLLM(provider, rate_limiter=InMemoryRateLimiter(), trace_llm_io=trace_llm_io)
@@ -83,7 +81,6 @@ def _make_openresponses_adapter(*, trace_llm_io: bool):
     from primer.coordinator.in_memory import InMemoryRateLimiter
     from primer.llm.openresponses import OpenResponsesLLM
     from primer.model.provider import (
-        LLMModel,
         LLMProvider,
         LLMProviderType,
         Limits as LLMProviderLimits,
@@ -101,7 +98,6 @@ def _make_openresponses_adapter(*, trace_llm_io: bool):
         name="Test OR",
         provider=LLMProviderType.OPENRESPONSES,
         config=config,
-        models=[LLMModel(name="gpt-4o-mini", context_length=128000)],
         limits=LLMProviderLimits(max_concurrency=1),
     )
     return OpenResponsesLLM(provider, rate_limiter=InMemoryRateLimiter(), trace_llm_io=trace_llm_io)
@@ -112,7 +108,6 @@ def _make_gemini_adapter(*, trace_llm_io: bool):
     from primer.llm.gemini import GeminiLLM
     from primer.model.provider import (
         GoogleConfig,
-        LLMModel,
         LLMProvider,
         LLMProviderType,
         Limits as LLMProviderLimits,
@@ -124,7 +119,6 @@ def _make_gemini_adapter(*, trace_llm_io: bool):
         name="Test Gemini",
         provider=LLMProviderType.GEMINI,
         config=config,
-        models=[LLMModel(name="gemini-2.0-flash", context_length=1000000)],
         limits=LLMProviderLimits(max_concurrency=1),
     )
     return GeminiLLM(provider, rate_limiter=InMemoryRateLimiter(), trace_llm_io=trace_llm_io)
@@ -134,7 +128,6 @@ def _make_ollama_adapter(*, trace_llm_io: bool):
     from primer.coordinator.in_memory import InMemoryRateLimiter
     from primer.llm.ollama import OllamaLLM
     from primer.model.provider import (
-        LLMModel,
         LLMProvider,
         LLMProviderType,
         Limits as LLMProviderLimits,
@@ -147,7 +140,6 @@ def _make_ollama_adapter(*, trace_llm_io: bool):
         name="Test Ollama",
         provider=LLMProviderType.OLLAMA,
         config=config,
-        models=[LLMModel(name="llama3.2", context_length=128000)],
         limits=LLMProviderLimits(max_concurrency=1),
     )
     return OllamaLLM(provider, rate_limiter=InMemoryRateLimiter(), trace_llm_io=trace_llm_io)

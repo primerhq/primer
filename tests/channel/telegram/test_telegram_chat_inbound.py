@@ -26,7 +26,7 @@ async def _setup(tmp_path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
     await p.get_storage(Agent).create(Agent(
-        id="agent-x", description="X", model={"provider_id": "lp", "model_name": "m"}))
+        id="agent-x", description="X", model={"profile_id": "lp--m"}))
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP")))

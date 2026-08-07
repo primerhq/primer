@@ -24,7 +24,7 @@ async def _provider(tmp_path):
     await p.initialize()
     for aid, nm in [("agent-x", "Xavier"), ("agent-y", "Yara")]:
         await p.get_storage(Agent).create(Agent(
-            id=aid, description=nm, model={"provider_id": "lp", "model_name": "m"}))
+            id=aid, description=nm, model={"profile_id": "lp--m"}))
     await p.get_storage(Channel).create(Channel(
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.DISCORD,
         external_id="9001",

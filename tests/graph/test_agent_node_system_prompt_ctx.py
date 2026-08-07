@@ -6,6 +6,9 @@ from tests.graph.test_workspace_executor."""
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from pathlib import Path
 
 import pytest
@@ -20,7 +23,6 @@ from primer.model.graph import (
     _EndNode,
     _StaticEdge,
 )
-from primer.model.provider import LLMModel
 from tests.graph.test_workspace_executor import _FakeLLM, _make_state_repo
 
 _WS_BLOCK = (
@@ -72,12 +74,12 @@ async def test_graph_agent_node_includes_workspace_block(tmp_path: Path) -> None
         return Agent(
             id="x",
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             system_prompt=[_WS_BLOCK],
         )
 
     async def llm_resolver(_a: Agent):
-        return (llm, LLMModel(name="m", context_length=128_000))
+        return (llm, ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig()))
 
     executor = WorkspaceGraphExecutor(
         graph=graph,

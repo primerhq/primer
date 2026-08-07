@@ -9,6 +9,9 @@ fake, not the local filesystem.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import json
 from pathlib import Path
 from typing import Any
@@ -19,7 +22,6 @@ from primer.graph.workspace_executor import WorkspaceGraphExecutor
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Message, StreamEvent, TextPart
 from primer.model.graph import Graph, _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge
-from primer.model.provider import LLMModel
 
 
 # ===========================================================================
@@ -90,11 +92,11 @@ def _build_executor(
         return Agent(
             id=agent_id,
             description=f"agent {agent_id}",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         )
 
     async def llm_resolver(agent: Agent):
-        return (None, LLMModel(name="m", context_length=128_000))  # type: ignore[arg-type]
+        return (None, ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig()))  # type: ignore[arg-type]
 
     return WorkspaceGraphExecutor(
         graph=graph,

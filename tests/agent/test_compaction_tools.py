@@ -5,6 +5,9 @@ scripted fake LLM + a fake tool manager -- no executor / workspace needed.
 """
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -25,7 +28,6 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
-from primer.model.provider import LLMModel
 
 
 # --- fakes + helpers --------------------------------------------------------
@@ -35,13 +37,13 @@ def _agent(**kw: Any) -> Agent:
     return Agent(
         id="researcher",
         description="Research agent",
-        model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
+        model=AgentModel(profile_id="openai-1--gpt-4o-mini"),
         **kw,
     )
 
 
-def _model(context_length: int = 1000) -> LLMModel:
-    return LLMModel(name="gpt-4o-mini", context_length=context_length)
+def _model(context_length: int = 1000) -> ResolvedModel:
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="gpt-4o-mini", context_length=context_length, config=ModelProfileConfig())
 
 
 def _u(text: str) -> Message:

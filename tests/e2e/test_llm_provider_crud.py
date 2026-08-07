@@ -6,6 +6,9 @@ Backlog item T0004 — create → get → list (must include) → put → get
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import httpx
 import pytest
 
@@ -17,8 +20,7 @@ def _llm_body(entity_id: str) -> dict:
     return {
         "id": entity_id,
         "provider": "anthropic",
-        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
-        "config": {"api_key": "sk-test-placeholder"},
+                "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 4},
     }
 
@@ -291,8 +293,7 @@ async def test_t0448_llm_provider_models_endpoint_single_item(
     body = {
         "id": entity_id,
         "provider": "openresponses",
-        "models": [{"name": only_name, "context_length": 4096}],
-        "config": {
+                "config": {
             "url": "http://127.0.0.1:1",
             "api_key": "sk-not-used",
             "flavor": "other",
@@ -335,8 +336,7 @@ async def test_t0449_llm_provider_create_with_empty_models_returns_422(
     body = {
         "id": entity_id,
         "provider": "anthropic",
-        "models": [],
-        "config": {"api_key": "sk-test-placeholder"},
+                "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=body)
@@ -377,8 +377,7 @@ async def test_t0459_llm_provider_create_with_one_mib_body_clean(
     body = {
         "id": entity_id,
         "provider": "anthropic",
-        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
-        "config": {"api_key": big_api_key},
+                "config": {"api_key": big_api_key},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post(
@@ -424,8 +423,7 @@ async def test_t0460_llm_provider_create_with_sixteen_mib_body_clean(
     body = {
         "id": entity_id,
         "provider": "anthropic",
-        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
-        "config": {"api_key": huge_api_key},
+                "config": {"api_key": huge_api_key},
         "limits": {"max_concurrency": 1},
     }
     try:
@@ -495,10 +493,7 @@ async def test_t0493_llm_provider_create_with_deep_unicode_escapes_clean(
         {
             "id": entity_id,
             "provider": "anthropic",
-            "models": [
-                {"name": "claude-sonnet-4-6", "context_length": 200_000},
-            ],
-            # Escapes nested inside the api_key value
+                        # Escapes nested inside the api_key value
             "config": {"api_key": f"sk-{unicode_pairs}-end"},
             "limits": {"max_concurrency": 1},
         }
@@ -544,7 +539,7 @@ async def test_t0562_post_llm_provider_with_duplicate_model_names_clean(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0562 — Per primer/model/provider.py:334-337, LLMProvider.
-    models is `list[LLMModel]` with no documented dedup constraint.
+    models is `list[ResolvedModel]` with no documented dedup constraint.
     Pin observed behavior: duplicate model names are accepted (201)
     or rejected (422) deterministically across two consecutive
     calls; never /errors/internal.
@@ -556,11 +551,7 @@ async def test_t0562_post_llm_provider_with_duplicate_model_names_clean(
     entity_id_b = f"llm-t0562b-{unique_suffix}"
     body_template = {
         "provider": "anthropic",
-        "models": [
-            {"name": "claude-sonnet-4-6", "context_length": 200_000},
-            {"name": "claude-sonnet-4-6", "context_length": 100_000},
-        ],
-        "config": {"api_key": "sk-test"},
+                "config": {"api_key": "sk-test"},
         "limits": {"max_concurrency": 1},
     }
 

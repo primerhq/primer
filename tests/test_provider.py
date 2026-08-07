@@ -655,7 +655,6 @@ class TestLLMProviderConfigUnion:
     def test_accepts_openresponses_config(self) -> None:
         from pydantic import HttpUrl, SecretStr
         from primer.model.provider import (
-            LLMModel,
             LLMProvider,
             LLMProviderType,
             Limits,
@@ -665,7 +664,6 @@ class TestLLMProviderConfigUnion:
         provider = LLMProvider(
             id="o1",
             provider=LLMProviderType.OPENRESPONSES,
-            models=[LLMModel(name="gpt-4o-mini", context_length=8192)],
             config=OpenResponsesConfig(
                 url=HttpUrl("https://api.openai.com/v1/"),
                 api_key=SecretStr("sk-x"),
@@ -677,7 +675,6 @@ class TestLLMProviderConfigUnion:
     def test_accepts_google_config(self) -> None:
         from pydantic import SecretStr
         from primer.model.provider import (
-            LLMModel,
             LLMProvider,
             LLMProviderType,
             Limits,
@@ -686,7 +683,6 @@ class TestLLMProviderConfigUnion:
         provider = LLMProvider(
             id="g1",
             provider=LLMProviderType.GEMINI,
-            models=[LLMModel(name="gemini-2.5-flash", context_length=1_000_000)],
             config=GoogleConfig(api_key=SecretStr("api-x")),
             limits=Limits(max_concurrency=1),
         )
@@ -726,12 +722,11 @@ class TestAnthropicConfigInUnion:
     def test_llm_provider_accepts_anthropic_config(self) -> None:
         from pydantic import SecretStr
         from primer.model.provider import (
-            LLMModel, LLMProvider, LLMProviderType, Limits,
+            LLMProvider, LLMProviderType, Limits,
         )
         provider = LLMProvider(
             id="a1",
             provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="claude-sonnet-4-5", context_length=200_000)],
             config=AnthropicConfig(api_key=SecretStr("sk-ant-x")),
             limits=Limits(max_concurrency=2),
         )
@@ -802,12 +797,11 @@ class TestOllamaConfigInUnion:
     def test_llm_provider_accepts_ollama_config(self) -> None:
         from pydantic import HttpUrl
         from primer.model.provider import (
-            LLMModel, LLMProvider, LLMProviderType, Limits, OllamaConfig,
+            LLMProvider, LLMProviderType, Limits, OllamaConfig,
         )
         provider = LLMProvider(
             id="o1",
             provider=LLMProviderType.OLLAMA,
-            models=[LLMModel(name="llama3", context_length=8192)],
             config=OllamaConfig(url=HttpUrl("http://localhost:11434")),
             limits=Limits(max_concurrency=2),
         )

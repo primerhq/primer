@@ -19,12 +19,14 @@ stubs).
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import pytest
 
 from primer.claim.in_memory import InMemoryClaimEngine
 from primer.model.agent import Agent, AgentModel
 from primer.model.principal import PrincipalRef
-from primer.model.provider import LLMModel
 from primer.model.scheduler import WorkerConfig
 from primer.model.workspace_session import AgentSessionBinding, WorkspaceSession
 from primer.worker.pool import WorkerPool
@@ -76,7 +78,7 @@ def _build_pool(storage_provider: _FakeStorageProvider) -> WorkerPool:
     )
 
     fake_llm = object()
-    fake_llm_model = LLMModel(name="m-1", context_length=8000)
+    fake_llm_model = ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m-1", context_length=8000, config=ModelProfileConfig())
 
     async def _get_llm(provider_id):
         return fake_llm
@@ -113,7 +115,7 @@ async def _persist_and_refetch(
         Agent(
             id="ag-1",
             description="test agent",
-            model=AgentModel(provider_id="prov-1", model_name="m-1"),
+            model=AgentModel(profile_id="prov-1--m-1"),
             tools=[],
             system_prompt=["sys"],
         )

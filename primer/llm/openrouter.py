@@ -8,10 +8,9 @@ defaults:
 1. A fixed ``base_url`` pointing at https://openrouter.ai/api/v1.
 2. Optional ``X-Title`` and ``HTTP-Referer`` headers from the config
    for OpenRouter's app attribution surface.
-3. :meth:`OpenRouterLLM.list_models` returns the configured
-   ``LLMProvider.models`` list verbatim; the catalogue is fetched only
-   by the discovery REST route (see :func:`_discover_openrouter_models`
-   below), not at every agent dispatch.
+3. The catalogue is fetched only by the discovery REST route (see
+   :func:`_discover_openrouter_models` below), never at agent dispatch;
+   which models are reachable is expressed by ModelProfile rows.
 
 Token counts are approximate. :meth:`OpenRouterLLM.count_tokens` falls
 back to ``tiktoken``'s ``cl100k_base`` (same as :class:`OpenChatLLM`).
@@ -56,7 +55,7 @@ from primer.model.chat import (
     Tool,
     ToolChoice,
 )
-from primer.model.except_ import ConfigError, ModelNotFoundError
+from primer.model.except_ import ConfigError
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -122,7 +121,6 @@ class OpenRouterLLM(LLM):
             "OpenRouter adapter initialized",
             extra={
                 "provider_id": provider.id,
-                "models": [m.name for m in provider.models],
                 "max_concurrency": provider.limits.max_concurrency,
                 "request_timeout_seconds": provider.limits.request_timeout_seconds,
                 "app_name_set": provider.config.app_name is not None,
@@ -140,16 +138,6 @@ class OpenRouterLLM(LLM):
                 default_headers=headers or None,
             )
         return self._client
-
-    async def list_models(self) -> Iterable[str]:
-        """Return the configured model slugs verbatim, sorted + deduplicated.
-
-        Operator-typed slugs (Add-by-id surface in the UI) may not appear
-        in OpenRouter's live catalogue. The agent picker must not lose
-        models the operator deliberately added, so this method returns
-        only what the provider config declares without hitting upstream.
-        """
-        return sorted({m.name for m in self._provider.models})
 
     async def count_tokens(
         self,
@@ -180,12 +168,6 @@ class OpenRouterLLM(LLM):
         tool_choice: ToolChoice | None = None,
         extended: dict[str, Any] | None = None,
     ):
-        allowed = {m.name for m in self._provider.models}
-        if model not in allowed:
-            raise ModelNotFoundError(
-                f"model {model!r} is not configured for provider "
-                f"{self._provider.id!r}; configured models: {sorted(allowed)}"
-            )
 
         request: dict[str, Any] = {
             "model": model,

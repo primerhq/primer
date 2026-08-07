@@ -6,6 +6,9 @@ unbounded. The cap force-stops the turn.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 from collections.abc import AsyncIterator
 
@@ -22,7 +25,6 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
-from primer.model.provider import LLMModel
 
 
 class _AlwaysToolLLM:
@@ -67,13 +69,13 @@ def test_agent_max_tool_turns_default_and_none() -> None:
     a = Agent(
         id="ag",
         description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     assert a.max_tool_turns == 50
     b = Agent(
         id="ag2",
         description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
         max_tool_turns=None,
     )
     assert b.max_tool_turns is None
@@ -84,7 +86,7 @@ async def test_run_agent_turn_stops_at_max_tool_turns() -> None:
     agent = Agent(
         id="ag",
         description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
         max_tool_turns=3,
     )
     llm = _AlwaysToolLLM()
@@ -95,7 +97,7 @@ async def test_run_agent_turn_stops_at_max_tool_turns() -> None:
         async for _ in run_agent_turn(
             agent=agent,
             llm=llm,
-            llm_model=LLMModel(name="m", context_length=4096),
+            llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
             tool_manager=tm,
             prompt=[Message(role="user", parts=[TextPart(text="go")])],
             messages_out=messages_out,

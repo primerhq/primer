@@ -10,6 +10,9 @@ can be driven end-to-end.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import base64
 import logging
@@ -75,7 +78,6 @@ from primer.model.except_ import (
 )
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenResponsesConfig,
@@ -94,7 +96,7 @@ def _make_provider(
         id="openai-default",
         provider=LLMProviderType.OPENRESPONSES,
         models=[
-            LLMModel(name=name, context_length=128_000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=128_000, config=ModelProfileConfig())
             for name in (models or ["gpt-4o-mini"])
         ],
         config=OpenResponsesConfig(
@@ -903,7 +905,6 @@ class TestAdapterLifecycle:
         provider = LLMProvider(
             id="o",
             provider=LLMProviderType.OPENRESPONSES,
-            models=[LLMModel(name="gpt-4o-mini", context_length=1024)],
             config=AnthropicConfig(api_key=SecretStr("sk-x")),  # type: ignore[arg-type]
             limits=Limits(max_concurrency=1),
         )

@@ -5,6 +5,9 @@ gates and yielding-tool parks."""
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
@@ -20,7 +23,6 @@ from primer.model.chat import (
     ToolCallStart,
 )
 from primer.model.chats import Chat, ChatMessage
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 
 
@@ -55,7 +57,7 @@ class _YieldingToolManager:
 async def test_yield_to_worker_propagates(fake_storage_provider):
     agent = Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     chat = Chat(id="cy", agent_id="ag", created_at=datetime.now(timezone.utc))
     chat_store = fake_storage_provider.get_storage(Chat)
@@ -70,7 +72,7 @@ async def test_yield_to_worker_propagates(fake_storage_provider):
     runner = ChatTurnRunner(
         agent=agent,
         llm=_FakeLLM(_tool_stream),
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=_YieldingToolManager(),
         chat_storage=chat_store,
         message_storage=msg_store,

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import logging
 from typing import Any
 from unittest.mock import patch
@@ -13,7 +16,6 @@ from primer.llm.openchat import OpenChatLLM, _POLICY_BY_FLAVOR, _FlavorPolicy
 from primer.model.except_ import ConfigError
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenChatConfig,
@@ -33,7 +35,7 @@ def _make_provider(
         id="openchat-default",
         provider=LLMProviderType.OPENCHAT,
         models=[
-            LLMModel(name=name, context_length=8192)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=8192, config=ModelProfileConfig())
             for name in (models or ["gpt-4o-mini"])
         ],
         config=OpenChatConfig(

@@ -125,9 +125,7 @@ def _agent(agent_id: str, description: str) -> Agent:
     return Agent(
         id=agent_id,
         description=description,
-        model=AgentModel(
-            provider_id="anthropic-1", model_name="claude-sonnet-4-6"
-        ),
+        model=AgentModel(profile_id="anthropic-1--claude-sonnet-4-6"),
         temperature=0.0,
         tools=[],
         system_prompt=["you are a test"],
@@ -401,9 +399,7 @@ def _agent_body(description: str) -> dict[str, Any]:
     """A valid Agent body WITHOUT an id, mirroring ``_agent`` above."""
     return {
         "description": description,
-        "model": AgentModel(
-            provider_id="anthropic-1", model_name="claude-sonnet-4-6"
-        ).model_dump(mode="json"),
+        "model": AgentModel(profile_id="anthropic-1--claude-sonnet-4-6").model_dump(mode="json"),
         "temperature": 0.0,
         "tools": [],
         "system_prompt": ["you are a test"],

@@ -23,7 +23,6 @@ from primer.model.chat import (
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -37,7 +36,6 @@ async def test_real_anthropic_smoke() -> None:
     provider = LLMProvider(
         id="real-anthropic",
         provider=LLMProviderType.ANTHROPIC,
-        models=[LLMModel(name="claude-sonnet-4-5", context_length=200_000)],
         config=AnthropicConfig(
             api_key=SecretStr(os.environ["ANTHROPIC_API_KEY"]),
         ),

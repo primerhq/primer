@@ -27,7 +27,6 @@ from primer.model.provider import (
     EmbeddingProviderType,
     HuggingFaceConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -229,7 +228,6 @@ def _llm() -> LLMProvider:
     return LLMProvider(
         id="anthropic-1",
         provider=LLMProviderType.ANTHROPIC,
-        models=[LLMModel(name="claude-sonnet-4-6", context_length=200_000)],
         config=AnthropicConfig(api_key=SecretStr("sk-x")),
         limits=Limits(max_concurrency=4),
     )
@@ -249,7 +247,7 @@ def _agent() -> Agent:
     return Agent(
         id="agt-1",
         description="test agent",
-        model=AgentModel(provider_id="anthropic-1", model_name="claude-sonnet-4-6"),
+        model=AgentModel(profile_id="anthropic-1--claude-sonnet-4-6"),
         temperature=0.0,
         tools=[],
         system_prompt=["you are a test"],
@@ -490,8 +488,8 @@ class TestAggregatedLLMProviderTool:
             "provider": "aggregated",
             "config": {
                 "members": [
-                    {"provider_id": "p1", "model_name": "m1"},
-                    {"provider_id": "p2", "model_name": "m2"},
+                    {"profile_id": "p1--m1"},
+                    {"profile_id": "p2--m2"},
                 ],
                 "strategy": "round_robin",
                 "failover_point": "before_first_token",

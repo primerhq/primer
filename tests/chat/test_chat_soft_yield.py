@@ -8,6 +8,9 @@ tool_result so the agent isn't stuck."""
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from datetime import datetime, timezone
 
 import pytest
@@ -15,7 +18,6 @@ import pytest
 from primer.chat.executor import ChatTurnRunner
 from primer.model.agent import Agent, AgentModel
 from primer.model.chats import Chat, ChatMessage
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 
 
@@ -33,12 +35,12 @@ class _FakeLLM:
 def _runner(chat_store, msg_store) -> ChatTurnRunner:
     agent = Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     return ChatTurnRunner(
         agent=agent,
         llm=_FakeLLM(),
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=object(),
         chat_storage=chat_store,
         message_storage=msg_store,

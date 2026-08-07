@@ -31,7 +31,6 @@ from primer.model.provider import (
     FailoverClasses,
     FailoverPoint,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     RoutingStrategy,
@@ -93,7 +92,6 @@ def _row(config: AggregatedLLMConfig) -> LLMProvider:
     return LLMProvider(
         id="agg-1",
         provider=LLMProviderType.AGGREGATED,
-        models=[LLMModel(name="virtual-1", context_length=200000)],
         config=config,
         limits=Limits(max_concurrency=4),
     )

@@ -191,7 +191,7 @@ def _agent(
     return Agent(
         id=agent_id,
         description=description,
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
 
 

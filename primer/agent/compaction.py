@@ -66,7 +66,7 @@ if TYPE_CHECKING:
 
     from primer.int.llm import LLM
     from primer.model.agent import Agent
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
 
 
 class CompactionToolExecutor(Protocol):
@@ -96,7 +96,7 @@ logger = logging.getLogger(__name__)
 # Per-model context-length fallback table.
 # ---------------------------------------------------------------------------
 #
-# Used when the resolved :class:`LLMModel.context_length` is unavailable
+# Used when the resolved :attr:`ResolvedModel.context_length` is unavailable
 # (e.g. an out-of-band model name not registered with any provider). The
 # table starts small -- the four shipped LLM adapters' commonly-used
 # flagship models -- and grows as new models land.
@@ -128,7 +128,7 @@ def lookup_context_length(*, model_name: str, configured: int | None = None) -> 
 
     Resolution order:
 
-    1. ``configured`` -- the :attr:`LLMModel.context_length` from the
+    1. ``configured`` -- the :attr:`ResolvedModel.context_length` from the
        provider registry, if supplied.
     2. The hardcoded :data:`MODEL_CONTEXT_FALLBACK` entry for
        ``model_name``.
@@ -250,7 +250,7 @@ class CompactionStrategy:
         *,
         agent: "Agent",
         llm: "LLM",
-        model: "LLMModel",
+        model: "ResolvedModel",
         history: list[Message],
         new_messages: list[Message],
         last_known_input_tokens: int | None = None,
@@ -312,7 +312,7 @@ class CompactionStrategy:
         *,
         agent: "Agent",
         llm: "LLM",
-        model: "LLMModel",
+        model: "ResolvedModel",
         history: list[Message],
         tool_manager: "CompactionToolExecutor | None" = None,
         event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
@@ -343,7 +343,7 @@ class CompactionStrategy:
         before: int,
         agent: "Agent",
         llm: "LLM",
-        model: "LLMModel",
+        model: "ResolvedModel",
         tool_manager: "CompactionToolExecutor | None" = None,
         event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
         max_tool_turns: int | None = None,
@@ -373,7 +373,7 @@ class CompactionStrategy:
             estimated_tokens_after=after,
         )
 
-    def _effective_budget(self, model: "LLMModel") -> int:
+    def _effective_budget(self, model: "ResolvedModel") -> int:
         """Token budget for live history before compaction triggers.
 
         Clamp the reserved-output allowance to at most half the model's
@@ -500,7 +500,7 @@ class CompactionStrategy:
         history: list[Message],
         agent: "Agent",
         llm: "LLM",
-        model: "LLMModel",
+        model: "ResolvedModel",
         tool_manager: "CompactionToolExecutor | None" = None,
         event_sink: "Callable[[StreamEvent], Awaitable[None]] | None" = None,
         max_tool_turns: int | None = None,
@@ -567,12 +567,12 @@ class CompactionStrategy:
         summary_request: list[Message],
         *,
         llm: "LLM",
-        model: "LLMModel",
+        model: "ResolvedModel",
     ) -> str:
         """Plain, tool-free summarisation (unchanged legacy path)."""
         text_buffers: list[str] = []
         async for event in llm.stream(
-            model=model.name,
+            model=model.model_name,
             messages=summary_request,
             temperature=0.0,
             max_output_tokens=self.summary_max_tokens,
@@ -596,7 +596,7 @@ class CompactionStrategy:
         summary_request: list[Message],
         *,
         llm: "LLM",
-        model: "LLMModel",
+        model: "ResolvedModel",
         tool_manager: "CompactionToolExecutor",
         event_sink: "Callable[[StreamEvent], Awaitable[None]] | None",
         max_tool_turns: int | None,
@@ -624,7 +624,7 @@ class CompactionStrategy:
         while True:
             buffered: list[StreamEvent] = []
             async for event in llm.stream(
-                model=model.name,
+                model=model.model_name,
                 messages=messages,
                 temperature=0.0,
                 max_output_tokens=self.summary_max_tokens,

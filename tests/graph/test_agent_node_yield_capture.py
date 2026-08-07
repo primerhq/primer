@@ -11,7 +11,6 @@ from primer.model.graph import (
     Graph, GraphNodeMessage, GraphThread,
     _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge,
 )
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 
 from tests.graph.test_toolcall_dispatch import _InMemoryStorage
@@ -44,11 +43,11 @@ async def _drain_until_yield(it):
 
 def _agent():
     return Agent(id="x", description="x",
-                 model=AgentModel(provider_id="p", model_name="m"))
+                 model=AgentModel(profile_id="p--m"))
 
 
 def _model():
-    return LLMModel(name="m", context_length=128_000)
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
 
 
 async def _mk_executor(graph, llm):

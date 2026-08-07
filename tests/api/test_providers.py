@@ -30,7 +30,6 @@ from primer.model.provider import (
     HuggingFaceConfig,
     HuggingFaceCrossEncoderConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     McpConfig,
@@ -45,7 +44,6 @@ def _llm() -> LLMProvider:
     return LLMProvider(
         id="anthropic-1",
         provider=LLMProviderType.ANTHROPIC,
-        models=[LLMModel(name="claude-sonnet-4-6", context_length=200_000)],
         config=AnthropicConfig(api_key=SecretStr("sk-x")),
         limits=Limits(max_concurrency=4),
     )

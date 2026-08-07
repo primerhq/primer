@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import pytest
 from pydantic import SecretStr
 
@@ -12,7 +15,7 @@ def _agent(**overrides) -> Agent:
     body = dict(
         id="agt-1",
         description="test agent",
-        model=AgentModel(provider_id="anthropic-1", model_name="claude-sonnet-4-6"),
+        model=AgentModel(profile_id="anthropic-1--claude-sonnet-4-6"),
         temperature=0.0,
         tools=[],
         system_prompt=["you are a test"],
@@ -48,7 +51,6 @@ class TestAgentStatus:
         from primer.model.provider import (
             AnthropicConfig,
             Limits,
-            LLMModel,
             LLMProvider,
             LLMProviderType,
         )
@@ -57,7 +59,6 @@ class TestAgentStatus:
             LLMProvider(
                 id="anthropic-1",
                 provider=LLMProviderType.ANTHROPIC,
-                models=[LLMModel(name="claude-sonnet-4-6", context_length=200_000)],
                 config=AnthropicConfig(api_key=SecretStr("x")),
                 limits=Limits(max_concurrency=4),
             )
@@ -92,13 +93,12 @@ class TestAgentStatus:
         have no Toolset storage row — the live registry resolves them
         directly. The status check must NOT flag them as missing."""
         from primer.model.provider import (
-            AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+            AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
         )
         await fake_storage_provider.get_storage(LLMProvider).create(
             LLMProvider(
                 id="anthropic-1",
                 provider=LLMProviderType.ANTHROPIC,
-                models=[LLMModel(name="claude-sonnet-4-6", context_length=200_000)],
                 config=AnthropicConfig(api_key=SecretStr("x")),
                 limits=Limits(max_concurrency=4),
             )

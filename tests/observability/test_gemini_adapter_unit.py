@@ -10,6 +10,9 @@ the ``_get_client`` boundary.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import json
 import logging
@@ -79,7 +82,6 @@ from primer.model.except_ import (
 from primer.model.provider import (
     GoogleConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -95,7 +97,7 @@ def _make_provider(
         id="gemini-default",
         provider=LLMProviderType.GEMINI,
         models=[
-            LLMModel(name=name, context_length=1_000_000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=1_000_000, config=ModelProfileConfig())
             for name in (models or ["gemini-2.5-flash"])
         ],
         config=GoogleConfig(api_key=SecretStr(api_key)),
@@ -765,7 +767,6 @@ class TestAdapterLifecycle:
         provider = LLMProvider(
             id="g",
             provider=LLMProviderType.GEMINI,
-            models=[LLMModel(name="gemini-2.5-flash", context_length=1024)],
             config=OpenResponsesConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://api.openai.com/v1/"),
                 api_key=SecretStr("sk-x"),

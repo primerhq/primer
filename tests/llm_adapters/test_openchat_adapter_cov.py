@@ -8,6 +8,9 @@ these tests are pure in-process — no network IO.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import logging
 from collections.abc import AsyncIterator
@@ -37,7 +40,6 @@ from primer.model.except_ import (
 )
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenChatConfig,
@@ -58,7 +60,7 @@ def _make_provider(
         id="openchat-cov",
         provider=LLMProviderType.OPENCHAT,
         models=[
-            LLMModel(name=name, context_length=8192)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=8192, config=ModelProfileConfig())
             for name in (models or ["gpt-4o-mini"])
         ],
         config=OpenChatConfig(
@@ -173,7 +175,6 @@ class TestConstructor:
         provider = LLMProvider(
             id="x",
             provider=LLMProviderType.OPENCHAT,
-            models=[LLMModel(name="gpt-4o-mini", context_length=8192)],
             config=OpenResponsesConfig(url=HttpUrl("https://x/v1/"), api_key=SecretStr("sk-x")),
             limits=Limits(max_concurrency=1),
         )
