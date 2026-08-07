@@ -98,13 +98,18 @@ def _make_lifespan(config: AppConfig):
         storage_provider = _app_facade._build_storage_provider(config)
         await storage_provider.initialize()
         await storage_provider.get_content_store().ensure_schema()
-        # One-time, idempotent, resumable migration of legacy document bodies
-        # (Document.meta['content']/['text']) + paths into the content store.
-        # Cheap on re-runs: documents already migrated are skipped, and a fresh
-        # install with no legacy rows is a no-op.
-        from primer.knowledge.migration import migrate_document_content
+        # Ordered data migrations. Runs BEFORE auto-bootstrap so a migration
+        # never has to reason about whether a reserved row exists yet: it
+        # only ever transforms rows that were already there. A fresh install
+        # baselines straight to LATEST_VERSION instead of running the chain
+        # against an empty database.
+        from primer.storage.migrations import run_migrations
 
-        await migrate_document_content(storage_provider)
+        _state = await storage_provider.get_system_state()
+        await run_migrations(
+            storage_provider,
+            is_fresh_install=_state.bootstrap_completed_at is None,
+        )
 
         from primer.model.provider import SecretProviderConfig
         from primer.secret.factory import SecretProviderFactory

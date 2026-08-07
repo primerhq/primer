@@ -51,7 +51,7 @@ import json
 import logging
 import re
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any, TypeVar
 
 import asyncpg
@@ -387,6 +387,18 @@ class PostgresStorageProvider(StorageProvider):
         )
         async with self.pool.acquire() as conn:
             await conn.execute(sql, ts, "singleton")
+
+    async def set_schema_version(
+        self, version: int, *, migrated_at: datetime | None = None,
+    ) -> None:
+        """Stamp ``schema_version`` and ``last_migration_at``."""
+        ts = migrated_at or datetime.now(UTC)
+        sql = (
+            f'UPDATE {self.system_state_table} '
+            f'SET schema_version = $1, last_migration_at = $2 WHERE id = $3'
+        )
+        async with self.pool.acquire() as conn:
+            await conn.execute(sql, version, ts, "singleton")
 
     async def set_session_secret(self, secret: str) -> None:
         """Persist the cookie-signing HMAC secret on the singleton row."""
