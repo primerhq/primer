@@ -92,8 +92,8 @@ async def test_create_outbound_harness_with_tracked_entities(client):
                     "template_name": "assistant",
                     "overrides": [
                         {
-                            "field_path": "/model/provider_id",
-                            "override_path": "llm.provider_id",
+                            "field_path": "/model/profile_id",
+                            "override_path": "llm.profile_id",
                             "widget": "llm-provider-picker",
                         },
                     ],

@@ -38,8 +38,8 @@ def outbound_harness() -> Harness:
                 template_name="assistant",
                 overrides=[
                     OverrideMapping(
-                        field_path="/model/provider_id",
-                        override_path="llm.provider_id",
+                        field_path="/model/profile_id",
+                        override_path="llm.profile_id",
                         widget="llm-provider-picker",
                     ),
                 ],
@@ -123,14 +123,14 @@ async def test_build_renders_templates_and_schema(
         for f in result.files
         if f.template_path == "templates/assistant.yaml"
     )
-    assert "{{ overrides.llm.provider_id }}" in template_text
+    assert "{{ overrides.llm.profile_id }}" in template_text
 
     assert result.bundle_hash and len(result.bundle_hash) == 64
     assert all(c in "0123456789abcdef" for c in result.bundle_hash)
 
     schema = result.overrides_schema
-    leaf = schema["properties"]["llm"]["properties"]["provider_id"]
-    assert leaf["default"] == "openai"
+    leaf = schema["properties"]["llm"]["properties"]["profile_id"]
+    assert leaf["default"] == "openai--gpt-4"
     assert leaf["type"] == "string"
     assert leaf["x-primer-widget"] == "llm-provider-picker"
 

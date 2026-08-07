@@ -15,17 +15,25 @@ from primer.model.agent import Agent, AgentModel
 
 class TestAgentModel:
     def test_construction(self) -> None:
+        """An agent names a ModelProfile; the provider and the wire model
+        name live on that profile, not here."""
         m = AgentModel(profile_id="openai-1--gpt-4o-mini")
-        assert m.provider_id == "openai-1"
-        assert m.model_name == "gpt-4o-mini"
+        assert m.profile_id == "openai-1--gpt-4o-mini"
 
-    def test_empty_provider_id_rejected(self) -> None:
+    def test_profile_id_is_required(self) -> None:
         with pytest.raises(ValidationError):
-            AgentModel(profile_id="--gpt-4o-mini")
+            AgentModel()  # type: ignore[call-arg]
 
-    def test_empty_model_name_rejected(self) -> None:
+    def test_empty_profile_id_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            AgentModel(profile_id="openai-1--")
+            AgentModel(profile_id="")
+
+    def test_profile_id_is_opaque(self) -> None:
+        """The '<provider>--<model>' shape is only what migration m002
+        synthesises; an operator-created profile may use any id, so the
+        model must not parse structure out of it."""
+        m = AgentModel(profile_id="the-fast-one")
+        assert m.profile_id == "the-fast-one"
 
     def test_round_trip_through_json(self) -> None:
         m = AgentModel(profile_id="anthropic-1--claude-sonnet-4-6")
@@ -45,8 +53,7 @@ class TestAgent:
         )
         assert a.id == "researcher"
         assert a.description == "Finds slow tests in a repo."
-        assert a.model.provider_id == "openai-1"
-        assert a.model.model_name == "gpt-4o-mini"
+        assert a.model.profile_id == "openai-1--gpt-4o-mini"
 
     def test_defaults(self) -> None:
         a = Agent(
