@@ -20,7 +20,7 @@ from a tiny fake toolset provider, mirroring ``test_run_subagent_yield``.
 from __future__ import annotations
 
 from primer.model_profile import ResolvedModel
-from primer.model.model_profile import ModelProfileConfig
+from primer.model.model_profile import ModelProfile, ModelProfileConfig
 
 from collections.abc import AsyncIterator
 from typing import Any

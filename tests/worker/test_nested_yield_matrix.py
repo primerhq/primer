@@ -35,7 +35,7 @@ a graph checkpoint's nested entry). See the note at the bottom of this file.
 from __future__ import annotations
 
 from primer.model_profile import ResolvedModel
-from primer.model.model_profile import ModelProfileConfig
+from primer.model.model_profile import ModelProfile, ModelProfileConfig
 
 import json
 from collections.abc import AsyncIterator
