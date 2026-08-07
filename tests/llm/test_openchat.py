@@ -142,20 +142,7 @@ class TestConstructor:
         record = records[0]
         assert record.provider_id == "openchat-default"  # type: ignore[attr-defined]
         assert record.flavor == "openai"  # type: ignore[attr-defined]
-        assert record.models == ["gpt-4o-mini", "gpt-4o"]  # type: ignore[attr-defined]
         assert record.max_concurrency == 2  # type: ignore[attr-defined]
-
-
-class TestListModels:
-    async def test_returns_configured_model_names(self) -> None:
-        llm = OpenChatLLM(_make_provider(models=["gpt-4o-mini", "gpt-4o"]))
-        assert list(await llm.list_models()) == ["gpt-4o-mini", "gpt-4o"]
-
-    async def test_does_not_call_upstream(self) -> None:
-        llm = OpenChatLLM(_make_provider())
-        with patch.object(OpenChatLLM, "_get_client") as mock_get_client:
-            await llm.list_models()
-            mock_get_client.assert_not_called()
 
 
 import base64
@@ -995,15 +982,6 @@ def _simple_text_chunk_seq(model: str = "gpt-4o-mini") -> list[Any]:
 
 
 class TestStream:
-    async def test_unknown_model_raises_model_not_found(self) -> None:
-        llm = OpenChatLLM(_make_provider(models=["gpt-4o-mini"]))
-        with pytest.raises(ModelNotFoundError, match="not-a-real-model"):
-            async for _ in llm.stream(
-                model="not-a-real-model",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_emits_start_text_usage_done(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

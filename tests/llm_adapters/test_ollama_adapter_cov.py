@@ -583,10 +583,6 @@ class TestGetClient:
 
 
 class TestListModelsAndTokens:
-    async def test_list_models(self) -> None:
-        llm = OllamaLLM(_make_provider(models=["llama3", "mistral"]))
-        assert list(await llm.list_models()) == ["llama3", "mistral"]
-
     async def test_count_tokens_delegates(self) -> None:
         llm = OllamaLLM(_make_provider())
         with patch("primer.llm.ollama.count_tokens_hf", return_value=17) as mock:
@@ -609,14 +605,6 @@ class TestAclose:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = OllamaLLM(_make_provider(models=["llama3"]))
-        with pytest.raises(ModelNotFoundError, match="not-real"):
-            async for _ in llm.stream(
-                model="not-real", messages=[Message(role="user", parts=[TextPart(text="hi")])]
-            ):
-                pass
-
     async def test_happy_path_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = OllamaLLM(_make_provider())
         client = _patched_client(monkeypatch)

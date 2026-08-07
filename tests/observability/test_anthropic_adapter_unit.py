@@ -631,15 +631,6 @@ def _patched_client(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = AnthropicLLM(_make_provider(models=["claude-sonnet-4-5"]))
-        with pytest.raises(ModelNotFoundError, match="not-real"):
-            async for _ in llm.stream(
-                model="not-real",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_event_sequence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = AnthropicLLM(_make_provider())
         client = _patched_client(monkeypatch)
@@ -869,10 +860,6 @@ class TestAdapterLifecycle:
     def test_accepts_empty_api_key(self) -> None:
         llm = AnthropicLLM(_make_provider(api_key=""))
         assert llm._client is None
-
-    async def test_list_models(self) -> None:
-        llm = AnthropicLLM(_make_provider(models=["a", "b"]))
-        assert list(await llm.list_models()) == ["a", "b"]
 
     async def test_get_client_lazy_and_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         inst = _patched_client(monkeypatch)

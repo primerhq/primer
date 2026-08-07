@@ -163,29 +163,6 @@ class TestGetClient:
             await llm.aclose()
 
 
-class TestListModels:
-    async def test_sorted_dedup(self) -> None:
-        llm = OpenRouterLLM(_make_provider(models=["openai/gpt-4o", "anthropic/claude-3.5-sonnet"]))
-        try:
-            assert list(await llm.list_models()) == [
-                "anthropic/claude-3.5-sonnet",
-                "openai/gpt-4o",
-            ]
-        finally:
-            await llm.aclose()
-
-    async def test_no_upstream_call(self) -> None:
-        llm = OpenRouterLLM(_make_provider())
-        try:
-            with respx.mock(assert_all_called=False) as router:
-                router.get(f"{OPENROUTER_BASE_URL}/models").mock(
-                    return_value=httpx.Response(500)
-                )
-                assert list(await llm.list_models()) == ["anthropic/claude-3.5-sonnet"]
-        finally:
-            await llm.aclose()
-
-
 class TestCountTokens:
     async def test_positive(self) -> None:
         llm = OpenRouterLLM(_make_provider())
@@ -201,18 +178,6 @@ class TestCountTokens:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = OpenRouterLLM(_make_provider(models=["anthropic/claude-3.5-sonnet"]))
-        try:
-            with pytest.raises(ModelNotFoundError, match="nope"):
-                async for _ in llm.stream(
-                    model="nope",
-                    messages=[Message(role="user", parts=[TextPart(text="hi")])],
-                ):
-                    pass
-        finally:
-            await llm.aclose()
-
     @respx.mock
     async def test_happy_path_events(self) -> None:
         _mock_stream()

@@ -568,15 +568,6 @@ def _text_stream_chunks() -> list:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = GeminiLLM(_make_provider(models=["gemini-2.5-flash"]))
-        with pytest.raises(ModelNotFoundError, match="not-real"):
-            async for _ in llm.stream(
-                model="not-real",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_sequence(self) -> None:
         llm = GeminiLLM(_make_provider())
         mock_client = MagicMock()
@@ -778,10 +769,6 @@ class TestAdapterLifecycle:
 
     def test_accepts_empty_api_key(self) -> None:
         assert GeminiLLM(_make_provider(api_key=""))._client is None
-
-    async def test_list_models(self) -> None:
-        llm = GeminiLLM(_make_provider(models=["x", "y"]))
-        assert list(await llm.list_models()) == ["x", "y"]
 
     def test_get_client_lazy_and_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         inst = MagicMock()
