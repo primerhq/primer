@@ -49,6 +49,7 @@ class OpenAIEmbeddingFlavor(str, Enum):
 
     OPENAI = "openai"
     LMSTUDIO = "lmstudio"
+    VLLM = "vllm"
     OTHER = "other"
 
 

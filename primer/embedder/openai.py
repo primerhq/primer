@@ -84,6 +84,8 @@ class _FlavorPolicy:
 _POLICY_BY_FLAVOR: dict[OpenAIEmbeddingFlavor, _FlavorPolicy] = {
     OpenAIEmbeddingFlavor.OPENAI: _FlavorPolicy(require_api_key=True),
     OpenAIEmbeddingFlavor.LMSTUDIO: _FlavorPolicy(require_api_key=False),
+    # vLLM serves embeddings unauthenticated by default.
+    OpenAIEmbeddingFlavor.VLLM: _FlavorPolicy(require_api_key=False),
     # OTHER is the catch-all for self-hosted OpenAI-compatible embedding
     # servers, which are commonly unauthenticated; a missing key surfaces
     # as an upstream 401 at call time rather than blocking registration.
