@@ -212,20 +212,59 @@ class TestCascadeInvalidation:
 
 class TestLiveModelsEndpoint:
     @pytest.mark.asyncio
-    async def test_returns_models_from_adapter(
-        self, client, fake_provider_registry
-    ) -> None:
+    async def test_returns_model_names_from_profiles(self, client) -> None:
+        """The endpoint reads profiles, not the adapter.
+
+        Profiles replaced the models[] allowlist as the registry of what a
+        provider serves, so this is a storage query. The live upstream
+        probe is _discover_models.
+        """
         body = _llm().model_dump(mode="json")
         await client.post("/v1/llm_providers", json=body)
-
-        adapter = MagicMock()
-        adapter.list_models = AsyncMock(return_value=["claude-sonnet-4-6", "haiku-4"])
-        adapter.aclose = AsyncMock()
-        fake_provider_registry._llm_factory = lambda _p: adapter  # type: ignore[attr-defined]
+        for pid, model in [
+            ("anthropic-1--sonnet", "claude-sonnet-4-6"),
+            ("anthropic-1--haiku", "haiku-4"),
+        ]:
+            r = await client.post("/v1/model_profiles", json={
+                "id": pid, "description": f"{model} profile.",
+                "provider_id": "anthropic-1", "model_name": model,
+                "context_length": 200000,
+            })
+            assert r.status_code in (200, 201), r.text
 
         resp = await client.get("/v1/llm_providers/anthropic-1/models")
         assert resp.status_code == 200
         assert resp.json() == {"models": ["claude-sonnet-4-6", "haiku-4"]}
+
+    @pytest.mark.asyncio
+    async def test_two_profiles_on_one_model_dedupe(self, client) -> None:
+        """Two profiles may share a model name; the list is distinct names."""
+        await client.post("/v1/llm_providers", json=_llm().model_dump(mode="json"))
+        for pid, reasoning in [("a-fast", "off"), ("a-think", "high")]:
+            r = await client.post("/v1/model_profiles", json={
+                "id": pid, "description": f"sonnet {reasoning}.",
+                "provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6",
+                "context_length": 200000, "config": {"reasoning": reasoning},
+            })
+            assert r.status_code in (200, 201), r.text
+
+        resp = await client.get("/v1/llm_providers/anthropic-1/models")
+        assert resp.json() == {"models": ["claude-sonnet-4-6"]}
+
+    @pytest.mark.asyncio
+    async def test_empty_when_provider_has_no_profiles(self, client) -> None:
+        """Distinct from a missing provider, which 404s.
+
+        Uses its own provider id: the in-memory storage is shared across
+        this class's tests, so reusing anthropic-1 would see the profiles
+        the sibling tests created.
+        """
+        body = _llm().model_dump(mode="json")
+        body["id"] = "anthropic-no-profiles"
+        await client.post("/v1/llm_providers", json=body)
+        resp = await client.get("/v1/llm_providers/anthropic-no-profiles/models")
+        assert resp.status_code == 200
+        assert resp.json() == {"models": []}
 
     @pytest.mark.asyncio
     async def test_404_when_provider_missing(self, client) -> None:
