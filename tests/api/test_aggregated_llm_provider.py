@@ -173,7 +173,7 @@ class TestAggregatedRest:
             "id": "agg-rest",
             "provider": "aggregated",
             "config": {
-                "members": [{"profile_id": "member-x--m"}],
+                "members": [{"provider_id": "member-x", "model_name": "m"}],
                 "strategy": "sequential",
                 "failover_point": "before_first_token",
                 "failover_on": "transient_and_config",
@@ -201,25 +201,33 @@ class TestAggregatedRest:
             or "type" in r.json()
 
     @pytest.mark.asyncio
-    async def test_get_models_returns_virtual_names(
-        self, client, fake_provider_registry
-    ):
+    async def test_get_models_returns_virtual_names(self, client):
+        """The aggregated provider's VIRTUAL model name lives on a profile.
+
+        ``GET /{id}/models`` is a storage query over the provider's
+        ModelProfile rows, not an adapter probe: profiles replaced the
+        ``models[]`` allowlist as the registry of what a provider serves.
+        For an aggregated provider the profile's ``model_name`` is the
+        virtual name an agent selects; the adapter maps it onto each
+        member's own model at dispatch.
+        """
         r = await client.post("/v1/llm_providers", json=self._body(id="agg-models"))
         assert r.status_code in (200, 201), r.text
 
-        # The client fixture's ProviderRegistry is built with a generic
-        # `object()` stub llm_factory (tests/api/conftest.py) so ordinary
-        # CRUD tests don't need real provider adapters. Swap in a real
-        # AggregatedLLM wired with the registry's own get_llm resolver --
-        # same as production's default factory -- to exercise the actual
-        # GET /{id}/models -> list_models() path.
-        def _factory(row):
-            return AggregatedLLM(row, resolve_member=fake_provider_registry.get_llm)
-        fake_provider_registry._llm_factory = _factory  # type: ignore[attr-defined]
+        rp = await client.post("/v1/model_profiles", json={
+            "id": "agg-models--virtual-1",
+            "description": "Virtual model served by the aggregated pool.",
+            "provider_id": "agg-models",
+            "model_name": "virtual-1",
+            "context_length": 128000,
+        })
+        assert rp.status_code in (200, 201), rp.text
 
         rm = await client.get("/v1/llm_providers/agg-models/models")
         assert rm.status_code == 200, rm.text
         assert rm.json()["models"] == ["virtual-1"]
+
+        await client.delete("/v1/model_profiles/agg-models--virtual-1")
         await client.delete("/v1/llm_providers/agg-models")
 
     @pytest.mark.asyncio
@@ -228,7 +236,7 @@ class TestAggregatedRest:
             "/v1/llm_providers/_discover_models",
             json={
                 "provider": "aggregated",
-                "config": {"members": [{"profile_id": "p--m"}]},
+                "config": {"members": [{"provider_id": "p", "model_name": "m"}]},
             },
         )
         assert r.status_code == 400, r.text

@@ -104,6 +104,11 @@ def _mount_routers(
     app.include_router(providers.llm_provider_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.embedding_provider_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.cross_encoder_provider_router, prefix=prefix, dependencies=admin_dep)
+    # ModelProfile CRUD. A profile is provider configuration (it names a
+    # provider and its API-level tunables) => admin, matching the provider
+    # routers above rather than the authoring routers below.
+    from primer.api.routers.model_profiles import model_profile_router
+    app.include_router(model_profile_router, prefix=prefix, dependencies=admin_dep)
     # Toolsets are an authoring feature (agents/graphs reference them) =>
     # require_user. builtin_toolsets_router MUST be registered before
     # toolset_router so GET /toolsets/builtin is matched by the literal
