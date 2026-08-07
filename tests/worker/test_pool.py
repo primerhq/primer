@@ -218,7 +218,7 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     NotImplementedError."""
     from primer.agent.workspace_executor import WorkspaceAgentExecutor
     from primer.model.agent import Agent, AgentModel
-    from primer.model.provider import ResolvedModel
+    from primer.model_profile import ResolvedModel
     from primer.worker.pool import _TurnDriver
 
     sid = "sess-build-1"
