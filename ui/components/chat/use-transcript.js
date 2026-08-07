@@ -27,9 +27,23 @@
   // row passes through unchanged. Without this, every token from the
   // LLM renders as its own bubble — unreadable for any reply longer
   // than a word or two. Moved verbatim from CT_coalesceMessages.
+  // Reasoning streams as its own run of `reasoning` rows, exactly like
+  // assistant text. It is coalesced into one synthetic
+  // "reasoning_block" so the transcript can render a single collapsed
+  // bar rather than one bubble per thinking token. Kept as a SEPARATE
+  // run from assistant_message: reasoning precedes the answer and is
+  // display-only (the backend never replays it into the prompt), so
+  // merging the two would put thinking text inside the answer bubble.
   function chatCoalesce(messages) {
     const out = [];
     let buffer = null;
+    let reasoning = null;
+    const flushReasoning = () => {
+      if (reasoning && reasoning.text.trim().length > 0) {
+        out.push(reasoning);
+      }
+      reasoning = null;
+    };
     const flushBuffer = () => {
       // Skip text-only buffers whose content is whitespace-only. LLMs
       // commonly emit one or more empty/zero-delta assistant_token
@@ -43,6 +57,27 @@
       buffer = null;
     };
     for (const m of messages) {
+      if (m.kind === "reasoning") {
+        // Reasoning arrives BEFORE the answer it explains, so an open
+        // assistant buffer means a new turn started; flush it first.
+        flushBuffer();
+        const delta = typeof m.delta === "string" ? m.delta : "";
+        if (!reasoning) {
+          reasoning = {
+            kind: "reasoning_block",
+            text: delta,
+            startSeq: m.seq,
+            endSeq: m.seq,
+            agent_id: m.agent_id,
+            created_at: m.created_at,
+          };
+        } else {
+          reasoning.text += delta;
+          reasoning.endSeq = m.seq;
+        }
+        continue;
+      }
+      flushReasoning();
       if (m.kind === "assistant_token") {
         const delta = typeof m.delta === "string" ? m.delta : "";
         if (!buffer) {
@@ -71,6 +106,7 @@
       flushBuffer();
       out.push(m);
     }
+    flushReasoning();
     flushBuffer();
     return out;
   }

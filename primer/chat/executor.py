@@ -46,6 +46,7 @@ from primer.model.chat import (
     Done,
     Error,
     Message,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
     TextPart,
@@ -920,6 +921,17 @@ class ChatTurnRunner:
             )
             return
 
+        if isinstance(event, ReasoningDelta):
+            # Display-only: persisted so the operator can inspect how the
+            # model got there, but skipped by _load_history so it never
+            # re-enters the prompt.
+            yield await self._append(
+                chat,
+                kind="reasoning",
+                payload={"delta": event.text},
+            )
+            return
+
         if isinstance(event, ToolCallStart):
             tool_names[event.id] = event.name
             return
@@ -958,7 +970,7 @@ class ChatTurnRunner:
             self._record_usage(event)
             return
 
-        # StreamStart / ReasoningDelta / Done / MediaDelta /
+        # StreamStart / Done / MediaDelta /
         # ToolCallDelta / ExtendedEvent — silently ignored. ToolCallDelta
         # carries argument JSON fragments; ToolCallEnd already exposes
         # the parsed argument object so we don't need to buffer deltas.
@@ -1110,6 +1122,14 @@ class ChatTurnRunner:
                             error=bool(payload.get("error")),
                         ),
                     )
+                continue
+            if kind == "reasoning":
+                # Display-only, and deliberately NOT replayed. Feeding a
+                # model its own prior reasoning back as context is either
+                # rejected outright (providers that scope thinking blocks
+                # to the turn that produced them) or degrades the next
+                # answer. Persisted so the operator can inspect it; skipped
+                # here so it never re-enters the prompt.
                 continue
             # done / yielded / resumed / error / agent_marker — boundary
             # markers; skip. (agent_marker rows carry no model-visible
