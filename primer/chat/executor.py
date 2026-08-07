@@ -570,7 +570,7 @@ class ChatTurnRunner:
                 friendly = _diagnose_unsupported_attachment(
                     exc=exc,
                     prompt_messages=prompt,
-                    model_name=self._model.name,
+                    model_name=self._model.model_name,
                 )
                 if friendly is not None:
                     # Strip the rejected binary parts from every
@@ -1166,7 +1166,7 @@ class ChatTurnRunner:
             tools = None
         triggered, _count = await _mixin_should_compact(
             llm=self._llm,
-            model_name=self._model.name,
+            model_name=self._model.model_name,
             context_length=self._model.context_length,
             history=history,
             tools=tools or None,
@@ -1198,7 +1198,7 @@ class ChatTurnRunner:
             strategy=strategy,
             history=history,
             compaction_prompt=compaction_prompt,
-            model_name=self._model.name,
+            model_name=self._model.model_name,
             context_length=self._model.context_length,
             **tool_kwargs,
         )
