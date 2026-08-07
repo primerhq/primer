@@ -96,9 +96,11 @@ class TestFlavorPolicy:
         policy = _POLICY_BY_FLAVOR[OpenAIEmbeddingFlavor.LMSTUDIO]
         assert policy.require_api_key is False
 
-    def test_other_policy_requires_api_key(self) -> None:
+    def test_other_policy_tolerates_no_key(self) -> None:
+        """OTHER is the catch-all for self-hosted OpenAI-compatible embedding
+        servers, which are commonly unauthenticated."""
         policy = _POLICY_BY_FLAVOR[OpenAIEmbeddingFlavor.OTHER]
-        assert policy.require_api_key is True
+        assert policy.require_api_key is False
 
     def test_policy_dataclass_is_frozen(self) -> None:
         from dataclasses import FrozenInstanceError

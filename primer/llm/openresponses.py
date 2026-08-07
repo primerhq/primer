@@ -186,13 +186,38 @@ def _part_to_input_content(part: Part, *, role: str = "user") -> dict[str, Any]:
     )
 
 
+def _finalize_message_item(item: dict[str, Any]) -> dict[str, Any]:
+    """Collapse a text-only assistant item to plain string content.
+
+    Replaying an assistant turn as a LIST of ``output_text`` parts only
+    matches the Responses API's ``ResponseOutputMessageParam`` union arm,
+    which additionally requires ``id`` and ``status``. Real OpenAI infers
+    those, but a strict reimplementation of the schema (vLLM, SGLang)
+    rejects every arm and returns a 400 listing the whole union.
+
+    String content matches ``EasyInputMessageParam``, which accepts
+    ``role="assistant"``, and validates against both. Tool calls are
+    already split into separate ``function_call`` items by the caller, so
+    a text-only assistant message is the common case and the collapse is
+    lossless. Messages carrying non-text parts keep the list form.
+    """
+    if item["role"] != "assistant":
+        return item
+    content = item["content"]
+    if not all(part.get("type") == "output_text" for part in content):
+        return item
+    return {"role": "assistant", "content": "".join(p["text"] for p in content)}
+
+
 def _messages_to_input_items(messages: list[Message]) -> list[dict[str, Any]]:
     """Walk a chat history and produce an OpenAI Responses ``input`` list.
 
     System messages stay inline as ``role="system"`` items. Assistant
     tool calls split out into top-level ``function_call`` items
     (flushing any in-progress message). Tool-role messages flatten to
-    one ``function_call_output`` per :class:`ToolResultPart`.
+    one ``function_call_output`` per :class:`ToolResultPart`. Text-only
+    assistant messages collapse to string content; see
+    :func:`_finalize_message_item`.
     """
     items: list[dict[str, Any]] = []
 
@@ -217,7 +242,7 @@ def _messages_to_input_items(messages: list[Message]) -> list[dict[str, Any]]:
         for part in msg.parts:
             if isinstance(part, ToolCallPart):
                 if current is not None and current["content"]:
-                    items.append(current)
+                    items.append(_finalize_message_item(current))
                     current = None
                 items.append(
                     {
@@ -238,7 +263,7 @@ def _messages_to_input_items(messages: list[Message]) -> list[dict[str, Any]]:
                     _part_to_input_content(part, role=msg.role),
                 )
         if current is not None and current["content"]:
-            items.append(current)
+            items.append(_finalize_message_item(current))
 
     return items
 
@@ -766,8 +791,13 @@ _POLICY_BY_FLAVOR: dict[OpenResponsesFlavor, _FlavorPolicy] = {
         drop_encrypted_reasoning=True,
         expect_reasoning_under_store_true=False,
     ),
+    # OTHER is the catch-all for "an OpenAI-compatible server we have no
+    # named flavor for". That population is dominated by self-hosted
+    # servers (vLLM, SGLang, llama.cpp, TGI, LiteLLM) which are commonly
+    # unauthenticated, so "unknown server" cannot imply "authenticated".
+    # A genuinely-missing key surfaces as an upstream 401 at call time.
     OpenResponsesFlavor.OTHER: _FlavorPolicy(
-        require_api_key=True,
+        require_api_key=False,
         drop_encrypted_reasoning=False,
         expect_reasoning_under_store_true=True,
     ),
@@ -808,9 +838,10 @@ class OpenResponsesLLM(LLM):
 
         # The flavor policy decides whether a key is required up-front;
         # the Pydantic config allows api_key=None so unauthenticated
-        # endpoints can be registered. For flavors that need a key
-        # (OPENAI, OTHER), we still fail fast at adapter construction
-        # rather than letting the upstream 401 surface later.
+        # endpoints can be registered. Only OPENAI names an endpoint that
+        # definitely authenticates, so it is the only flavor that fails
+        # fast here; every other flavor lets the upstream 401 surface at
+        # call time (see _POLICY_BY_FLAVOR).
         key_present = (
             provider.config.api_key is not None
             and bool(provider.config.api_key.get_secret_value())

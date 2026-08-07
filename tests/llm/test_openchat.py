@@ -58,8 +58,11 @@ class TestFlavorPolicy:
     def test_vllm_policy_tolerates_no_key(self) -> None:
         assert _POLICY_BY_FLAVOR[OpenChatFlavor.VLLM].require_api_key is False
 
-    def test_other_policy_requires_api_key(self) -> None:
-        assert _POLICY_BY_FLAVOR[OpenChatFlavor.OTHER].require_api_key is True
+    def test_other_policy_tolerates_no_key(self) -> None:
+        """OTHER is the catch-all for self-hosted OpenAI-compatible servers,
+        which are commonly unauthenticated. Only OPENAI names an endpoint
+        that definitely authenticates."""
+        assert _POLICY_BY_FLAVOR[OpenChatFlavor.OTHER].require_api_key is False
 
     def test_policy_dataclass_is_frozen(self) -> None:
         policy = _POLICY_BY_FLAVOR[OpenChatFlavor.OPENAI]
@@ -107,15 +110,17 @@ class TestConstructor:
         with pytest.raises(ConfigError, match="api_key is required"):
             OpenChatLLM(_make_provider(flavor=OpenChatFlavor.OPENAI, api_key=""))
 
-    def test_rejects_missing_api_key_for_other_flavor(self) -> None:
-        with pytest.raises(ConfigError, match="api_key is required"):
-            OpenChatLLM(
-                _make_provider(
-                    flavor=OpenChatFlavor.OTHER,
-                    api_key=None,
-                    url="https://api.example.com/v1/",
-                )
+    def test_accepts_missing_api_key_for_other_flavor(self) -> None:
+        """A keyless self-hosted server must be registrable under OTHER; a
+        genuinely-missing key surfaces as an upstream 401 at call time."""
+        llm = OpenChatLLM(
+            _make_provider(
+                flavor=OpenChatFlavor.OTHER,
+                api_key=None,
+                url="https://api.example.com/v1/",
             )
+        )
+        assert llm._policy.require_api_key is False
 
     def test_rejects_wrong_provider_type(self) -> None:
         provider = _make_provider()

@@ -68,9 +68,12 @@ class TestFlavorPolicy:
         assert policy.drop_encrypted_reasoning is True
         assert policy.expect_reasoning_under_store_true is False
 
-    def test_other_policy_matches_openai(self) -> None:
+    def test_other_policy_tolerates_no_key(self) -> None:
+        """OTHER shares OpenAI's reasoning knobs but NOT its key requirement:
+        it is the catch-all for self-hosted OpenAI-compatible servers, which
+        are commonly unauthenticated."""
         policy = _POLICY_BY_FLAVOR[OpenResponsesFlavor.OTHER]
-        assert policy.require_api_key is True
+        assert policy.require_api_key is False
         assert policy.drop_encrypted_reasoning is False
         assert policy.expect_reasoning_under_store_true is True
 
@@ -379,10 +382,9 @@ class TestMessagesToInputItems:
             ]
         )
         assert len(items) == 2
-        assert items[0] == {
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": "let me check"}],
-        }
+        # Text-only assistant content collapses to a string so it validates
+        # against EasyInputMessageParam on strict OpenAI-compatible servers.
+        assert items[0] == {"role": "assistant", "content": "let me check"}
         assert items[1] == {
             "type": "function_call",
             "call_id": "call_1",
@@ -403,10 +405,7 @@ class TestMessagesToInputItems:
             ]
         )
         assert items[0]["type"] == "function_call"
-        assert items[1] == {
-            "role": "assistant",
-            "content": [{"type": "output_text", "text": "done"}],
-        }
+        assert items[1] == {"role": "assistant", "content": "done"}
 
     def test_full_conversation_round_trip(self) -> None:
         messages = [

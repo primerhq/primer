@@ -212,6 +212,31 @@ class TestMessagesToInputItems:
         assert items[0]["content"][0] == {"type": "input_text", "text": "be terse"}
         assert items[1]["role"] == "user"
 
+    def test_assistant_text_replays_as_string_content(self) -> None:
+        """Assistant history must replay as plain string content.
+
+        A list of ``output_text`` parts only validates against the Responses
+        API's ``ResponseOutputMessageParam`` arm, which additionally requires
+        ``id`` and ``status``. Real OpenAI infers those; a strict
+        reimplementation (vLLM / SGLang) rejects the whole union. String
+        content matches ``EasyInputMessageParam`` and validates on both.
+        """
+        items = _messages_to_input_items(
+            [Message(role="assistant", parts=[TextPart(text="hello")])]
+        )
+        assert items == [{"role": "assistant", "content": "hello"}]
+
+    def test_assistant_multiple_text_parts_join(self) -> None:
+        items = _messages_to_input_items(
+            [
+                Message(
+                    role="assistant",
+                    parts=[TextPart(text="one"), TextPart(text="two")],
+                )
+            ]
+        )
+        assert items == [{"role": "assistant", "content": "onetwo"}]
+
     def test_tool_role_becomes_function_call_output(self) -> None:
         items = _messages_to_input_items(
             [Message(role="tool", parts=[ToolResultPart(id="call_1", output="42")])]
@@ -238,9 +263,10 @@ class TestMessagesToInputItems:
                 )
             ]
         )
-        # First a message item flushed, then the function_call item.
-        assert items[0]["role"] == "assistant"
-        assert items[0]["content"][0]["type"] == "output_text"
+        # First a message item flushed, then the function_call item. The
+        # flushed assistant text collapses to string content so it validates
+        # against EasyInputMessageParam on strict servers.
+        assert items[0] == {"role": "assistant", "content": "calling"}
         assert items[1]["type"] == "function_call"
         assert items[1]["call_id"] == "call_1"
         assert items[1]["name"] == "search"
@@ -387,6 +413,12 @@ class TestFlavorPolicy:
         p = _POLICY_BY_FLAVOR[OpenResponsesFlavor.LMSTUDIO]
         assert p.require_api_key is False
         assert p.drop_encrypted_reasoning is True
+
+    def test_other_tolerates_no_key(self) -> None:
+        """OTHER is the catch-all for self-hosted OpenAI-compatible servers
+        (vLLM, SGLang, llama.cpp, TGI), which are commonly unauthenticated.
+        A genuinely-missing key surfaces as an upstream 401 at call time."""
+        assert _POLICY_BY_FLAVOR[OpenResponsesFlavor.OTHER].require_api_key is False
 
     def test_policy_frozen(self) -> None:
         with pytest.raises(Exception):
@@ -884,6 +916,13 @@ class TestAdapterLifecycle:
 
     def test_lmstudio_flavor_allows_empty_key(self) -> None:
         llm = OpenResponsesLLM(_make_provider(flavor=OpenResponsesFlavor.LMSTUDIO, api_key=""))
+        assert llm._policy.require_api_key is False
+
+    def test_other_flavor_allows_empty_key(self) -> None:
+        """A keyless self-hosted server must be registrable under OTHER;
+        before this, OTHER was the only flavor available for a non-LM-Studio
+        server on the Responses API and it hard-failed at construction."""
+        llm = OpenResponsesLLM(_make_provider(flavor=OpenResponsesFlavor.OTHER, api_key=""))
         assert llm._policy.require_api_key is False
 
     async def test_list_models(self) -> None:

@@ -84,7 +84,10 @@ class _FlavorPolicy:
 _POLICY_BY_FLAVOR: dict[OpenAIEmbeddingFlavor, _FlavorPolicy] = {
     OpenAIEmbeddingFlavor.OPENAI: _FlavorPolicy(require_api_key=True),
     OpenAIEmbeddingFlavor.LMSTUDIO: _FlavorPolicy(require_api_key=False),
-    OpenAIEmbeddingFlavor.OTHER: _FlavorPolicy(require_api_key=True),
+    # OTHER is the catch-all for self-hosted OpenAI-compatible embedding
+    # servers, which are commonly unauthenticated; a missing key surfaces
+    # as an upstream 401 at call time rather than blocking registration.
+    OpenAIEmbeddingFlavor.OTHER: _FlavorPolicy(require_api_key=False),
 }
 
 

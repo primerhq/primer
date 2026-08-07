@@ -66,7 +66,9 @@ class OpenAIConfig(_HttpApiKeyConfig):
         description=(
             "Identifies which OpenAI-compatible server is on the other "
             "end so the adapter can apply flavor-specific behavior. "
-            "Defaults to OTHER (conservative; api_key required)."
+            "Defaults to OTHER, which applies no server-specific "
+            "optimisations and does not require an api_key (self-hosted "
+            "OpenAI-compatible servers are commonly unauthenticated)."
         ),
     )
 
