@@ -14,6 +14,8 @@ from primer.model.graph import (
 from primer.model.yield_ import Yielded, YieldToWorker
 
 from tests.graph.test_workspace_executor import _make_state_repo
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
 
 
 def _agent():
