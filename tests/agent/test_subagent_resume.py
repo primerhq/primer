@@ -131,8 +131,7 @@ class _YieldingToolsetProvider:
 
 
 class _ProviderRow:
-    def __init__(self, models: list[ResolvedModel]) -> None:
-        self.models = models
+    """Lightweight LLMProvider stand-in; the row carries no models."""
 
 
 class _Store:
@@ -147,12 +146,21 @@ class _StorageProvider:
     def __init__(self, *, agent: Agent, provider_row: _ProviderRow) -> None:
         self._agent = agent
         self._provider_row = provider_row
+        self._profile = ModelProfile(
+            id="prov-1--m1",
+            description="Test profile.",
+            provider_id="prov-1",
+            model_name="m1",
+            context_length=128_000,
+        )
 
     def get_storage(self, cls: type) -> _Store:
         from primer.model.provider import LLMProvider
 
         if cls is Agent:
             return _Store(self._agent)
+        if cls is ModelProfile:
+            return _Store(self._profile)
         if cls is LLMProvider:
             return _Store(self._provider_row)
         return _Store(None)
@@ -186,7 +194,7 @@ def _agent(*, tools: list[str]) -> Agent:
 
 
 def _provider_row() -> _ProviderRow:
-    return _ProviderRow(models=[ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m1", context_length=128_000, config=ModelProfileConfig())])
+    return _ProviderRow()
 
 
 def _context(*, tools: list[str]) -> AgentResumeContext:

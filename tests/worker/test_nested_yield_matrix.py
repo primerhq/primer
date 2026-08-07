@@ -167,10 +167,7 @@ class _GatedYieldingToolset:
 
 
 class _ProviderRow:
-    """Lightweight LLM-provider stand-in: resume_subagent only reads .models."""
-
-    def __init__(self, models: list[ResolvedModel]) -> None:
-        self.models = models
+    """Lightweight LLMProvider stand-in; the row carries no models."""
 
 
 class _Store:
@@ -193,12 +190,21 @@ class _AgentStorageProvider:
         self._base = base
         self._agent = agent
         self._provider_row = provider_row
+        self._profile = ModelProfile(
+            id="prov-1--m1",
+            description="Test profile.",
+            provider_id="prov-1",
+            model_name="m1",
+            context_length=128_000,
+        )
 
     def get_storage(self, cls: type) -> Any:
         from primer.model.provider import LLMProvider
 
         if cls is Agent:
             return _Store(self._agent)
+        if cls is ModelProfile:
+            return _Store(self._profile)
         if cls is LLMProvider:
             return _Store(self._provider_row)
         return self._base.get_storage(cls)
@@ -256,7 +262,7 @@ async def _async_return(value):
 
 
 def _provider_row() -> _ProviderRow:
-    return _ProviderRow(models=[ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m1", context_length=128_000, config=ModelProfileConfig())])
+    return _ProviderRow()
 
 
 def _agent(*, tools: list[str]) -> Agent:
