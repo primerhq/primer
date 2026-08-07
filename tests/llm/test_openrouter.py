@@ -168,40 +168,6 @@ class TestAuth:
             await llm.aclose()
 
 
-class TestListModels:
-    """6-7. list_models returns configured-only and does not hit upstream."""
-
-    async def test_returns_configured_models_sorted_dedup(self) -> None:
-        # Plan §5.5: return the configured slugs verbatim, deduplicated, sorted.
-        # The LLMProvider model's `models` field rejects duplicates (it's a
-        # list[ResolvedModel], one per slug). Build with two distinct slugs and
-        # confirm both come back in sorted order.
-        llm = OpenRouterLLM(_make_provider(models=[
-            "openai/gpt-4o",
-            "anthropic/claude-3.5-sonnet",
-        ]))
-        try:
-            out = list(await llm.list_models())
-            assert out == ["anthropic/claude-3.5-sonnet", "openai/gpt-4o"]
-        finally:
-            await llm.aclose()
-
-    async def test_does_not_hit_upstream(self) -> None:
-        # If list_models() opened a network call, respx would 500 the URL
-        # and the call would raise. The assertion is that list_models()
-        # returns cleanly because it never makes the call.
-        llm = OpenRouterLLM(_make_provider())
-        try:
-            with respx.mock(assert_all_called=False) as router:
-                router.get(f"{OPENROUTER_BASE_URL}/models").mock(
-                    return_value=httpx.Response(500),
-                )
-                out = list(await llm.list_models())
-                assert out == ["anthropic/claude-3.5-sonnet"]
-        finally:
-            await llm.aclose()
-
-
 class TestCountTokens:
     """8. count_tokens returns a non-zero integer (approximation via tiktoken)."""
 

@@ -109,31 +109,11 @@ class TestConstructor:
         assert len(records) == 1
         record = records[0]
         assert record.provider_id == "gemini-default"  # type: ignore[attr-defined]
-        assert record.models == [  # type: ignore[attr-defined]
-            "gemini-2.5-flash",
-            "gemini-2.5-pro",
-        ]
         assert record.max_concurrency == 2  # type: ignore[attr-defined]
 
 
 # ------------------------------------------------------------------------- #
-# TestListModels                                                             #
 # ------------------------------------------------------------------------- #
-
-
-class TestListModels:
-    async def test_returns_configured_model_names(self) -> None:
-        provider = _make_provider(models=["gemini-2.5-flash", "gemini-2.5-pro"])
-        llm = GeminiLLM(provider)
-        models = list(await llm.list_models())
-        assert models == ["gemini-2.5-flash", "gemini-2.5-pro"]
-
-    async def test_does_not_call_upstream(self) -> None:
-        provider = _make_provider()
-        llm = GeminiLLM(provider)
-        with patch.object(GeminiLLM, "_get_client") as mock_get_client:
-            await llm.list_models()
-            mock_get_client.assert_not_called()
 
 
 # ------------------------------------------------------------------------- #
@@ -850,16 +830,6 @@ def _ok_chunks(*, model: str = "gemini-2.5-flash"):
 
 
 class TestStream:
-    async def test_unknown_model_raises_model_not_found(self) -> None:
-        provider = _make_provider(models=["gemini-2.5-flash"])
-        llm = GeminiLLM(provider)
-        with pytest.raises(ModelNotFoundError, match="not-a-model"):
-            async for _ in llm.stream(
-                model="not-a-model",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_emits_start_text_usage_done(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

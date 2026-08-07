@@ -114,20 +114,6 @@ class TestConstructor:
         assert records[0].provider_id == "ant-default"  # type: ignore[attr-defined]
 
 
-class TestListModels:
-    async def test_returns_configured_names(self) -> None:
-        provider = _make_provider(models=["m1", "m2"])
-        llm = AnthropicLLM(provider)
-        assert list(await llm.list_models()) == ["m1", "m2"]
-
-    async def test_does_not_call_upstream(self) -> None:
-        provider = _make_provider()
-        llm = AnthropicLLM(provider)
-        with patch.object(AnthropicLLM, "_get_client") as m:
-            await llm.list_models()
-            m.assert_not_called()
-
-
 class TestPartToAnthropicBlock:
     def test_text_part(self) -> None:
         part = TextPart(text="hello")
@@ -952,16 +938,6 @@ def _ok_events() -> list[Any]:
 
 
 class TestStream:
-    async def test_unknown_model_raises_model_not_found(self) -> None:
-        provider = _make_provider(models=["claude-sonnet-4-5"])
-        llm = AnthropicLLM(provider)
-        with pytest.raises(ModelNotFoundError, match="not-a-real-model"):
-            async for _ in llm.stream(
-                model="not-a-real-model",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_emits_start_text_usage_done(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

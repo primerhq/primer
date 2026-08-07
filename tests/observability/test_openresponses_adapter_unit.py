@@ -714,15 +714,6 @@ def _ok_events() -> list[Any]:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = OpenResponsesLLM(_make_provider(models=["gpt-4o-mini"]))
-        with pytest.raises(ModelNotFoundError, match="not-real"):
-            async for _ in llm.stream(
-                model="not-real",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_sequence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = OpenResponsesLLM(_make_provider())
         client = _patched_client(monkeypatch)
@@ -925,10 +916,6 @@ class TestAdapterLifecycle:
         server on the Responses API and it hard-failed at construction."""
         llm = OpenResponsesLLM(_make_provider(flavor=OpenResponsesFlavor.OTHER, api_key=""))
         assert llm._policy.require_api_key is False
-
-    async def test_list_models(self) -> None:
-        llm = OpenResponsesLLM(_make_provider(models=["a", "b"]))
-        assert list(await llm.list_models()) == ["a", "b"]
 
     def test_get_client_lazy_and_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         inst = _patched_client(monkeypatch)

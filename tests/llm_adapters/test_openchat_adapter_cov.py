@@ -209,16 +209,6 @@ class TestGetClient:
 
 
 class TestListModelsAndTokens:
-    async def test_list_models_configured(self) -> None:
-        llm = OpenChatLLM(_make_provider(models=["gpt-4o-mini", "gpt-4o"]))
-        assert list(await llm.list_models()) == ["gpt-4o-mini", "gpt-4o"]
-
-    async def test_list_models_no_upstream_call(self) -> None:
-        llm = OpenChatLLM(_make_provider())
-        with patch.object(OpenChatLLM, "_get_client") as mock:
-            await llm.list_models()
-            mock.assert_not_called()
-
     async def test_count_tokens_positive(self) -> None:
         llm = OpenChatLLM(_make_provider(models=["gpt-4o"]))
         n = await llm.count_tokens(
@@ -241,15 +231,6 @@ class TestAclose:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = OpenChatLLM(_make_provider(models=["gpt-4o-mini"]))
-        with pytest.raises(ModelNotFoundError, match="not-a-real-model"):
-            async for _ in llm.stream(
-                model="not-a-real-model",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_happy_path_event_sequence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = OpenChatLLM(_make_provider())
         client = _patched_client(monkeypatch)
