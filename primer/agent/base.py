@@ -73,7 +73,7 @@ from primer.model.graph import build_execution_context
 if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -111,7 +111,7 @@ class _BaseAgentExecutor(ABC):
         *,
         agent: "Agent",
         llm: "LLM",
-        llm_model: "LLMModel",
+        llm_model: "ResolvedModel",
         tool_manager: ToolExecutionManager,
         compaction: CompactionStrategy | None = None,
         principal: str | None = None,

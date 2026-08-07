@@ -93,7 +93,7 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
         create_body={
             "id": "code-reviewer",
             "description": "Reviews diffs",
-            "model": {"provider_id": "anthropic-1", "model_name": "claude-sonnet-4-6"},
+            "model": {"profile_id": "anthropic-1--claude-sonnet-4-6"},
         },
     ),
     "graph": _EntityHint(

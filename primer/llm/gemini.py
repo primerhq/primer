@@ -31,7 +31,6 @@ from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout, _o
 from primer.llm._tokenizer.gemini import count_tokens_gemini
 from primer.model.except_ import (
     ConfigError,
-    ModelNotFoundError,
     UnsupportedContentError,
 )
 from primer.model.chat import (
@@ -89,7 +88,7 @@ async def _discover_gemini_models(
     Used by the discovery REST route powering the UI's *Fetch models*
     button: the operator types an API key into the new-provider form,
     the route calls this helper, and the response populates the model
-    picker. Unlike :meth:`GeminiLLM.list_models` (which returns the
+    picker. Unlike the configured ModelProfile rows (which are the
     stored row's static list), this is a live probe.
 
     Returns a list of dicts (one per upstream model) with:
@@ -843,14 +842,11 @@ class GeminiLLM(LLM):
             "Gemini adapter initialized",
             extra={
                 "provider_id": provider.id,
-                "models": [m.name for m in provider.models],
                 "max_concurrency": provider.limits.max_concurrency,
                 "request_timeout_seconds": provider.limits.request_timeout_seconds,
             },
         )
 
-    async def list_models(self) -> Iterable[str]:
-        return [m.name for m in self._provider.models]
 
     async def count_tokens(
         self,
@@ -897,12 +893,6 @@ class GeminiLLM(LLM):
         tool_choice: ToolChoice | None = None,
         extended: dict[str, Any] | None = None,
     ):
-        allowed = {m.name for m in self._provider.models}
-        if model not in allowed:
-            raise ModelNotFoundError(
-                f"model {model!r} is not configured for provider "
-                f"{self._provider.id!r}; configured models: {sorted(allowed)}"
-            )
 
         system_instruction, contents = _messages_to_gemini(messages)
         gemini_tools = _tools_to_gemini(tools)

@@ -48,7 +48,7 @@ from primer.model.chat import (
     Tool,
     ToolChoice,
 )
-from primer.model.except_ import ConfigError, ModelNotFoundError
+from primer.model.except_ import ConfigError
 from primer.model.provider import (
     LLMProvider,
     LLMProviderType,
@@ -136,14 +136,11 @@ class OpenChatLLM(LLM):
             extra={
                 "provider_id": provider.id,
                 "flavor": provider.config.flavor.value,
-                "models": [m.name for m in provider.models],
                 "max_concurrency": provider.limits.max_concurrency,
                 "request_timeout_seconds": provider.limits.request_timeout_seconds,
             },
         )
 
-    async def list_models(self) -> Iterable[str]:
-        return [m.name for m in self._provider.models]
 
     async def count_tokens(
         self,
@@ -191,12 +188,6 @@ class OpenChatLLM(LLM):
         tool_choice: ToolChoice | None = None,
         extended: dict[str, Any] | None = None,
     ):
-        allowed = {m.name for m in self._provider.models}
-        if model not in allowed:
-            raise ModelNotFoundError(
-                f"model {model!r} is not configured for provider "
-                f"{self._provider.id!r}; configured models: {sorted(allowed)}"
-            )
 
         request: dict[str, Any] = {
             "model": model,

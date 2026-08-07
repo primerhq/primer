@@ -43,7 +43,7 @@ def _seed(base_url: str, suffix: str, tmp_path):
         r = c.post("/v1/agents", json={
             "id": aid,
             "description": "ui-e2e liveness probe agent",
-            "model": {"provider_id": "none", "model_name": "none"},
+            "model": {"profile_id": "none--none"},
             "tools": [],
             "system_prompt": ["test"],
         })

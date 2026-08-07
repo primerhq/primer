@@ -11,6 +11,9 @@ lives in an included directory.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import base64
 import json
@@ -76,7 +79,6 @@ from primer.model.except_ import (
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenResponsesConfig,
@@ -93,7 +95,7 @@ def _make_provider(
         id="anthropic-default",
         provider=LLMProviderType.ANTHROPIC,
         models=[
-            LLMModel(name=name, context_length=200_000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=200_000, config=ModelProfileConfig())
             for name in (models or ["claude-sonnet-4-5"])
         ],
         config=AnthropicConfig(api_key=SecretStr(api_key)),
@@ -855,7 +857,6 @@ class TestAdapterLifecycle:
         provider = LLMProvider(
             id="a",
             provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="claude-sonnet-4-5", context_length=1024)],
             config=OpenResponsesConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://api.openai.com/v1/"),
                 api_key=SecretStr("sk-x"),

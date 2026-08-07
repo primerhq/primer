@@ -6,6 +6,9 @@ T0015 (find with empty predicate), T0016 (malformed predicate → 422).
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import httpx
 import pytest
 
@@ -620,11 +623,7 @@ async def test_t0152_predicate_on_list_item_field_no_internal_error(
     body = {
         "id": entity_id,
         "provider": "anthropic",
-        "models": [
-            {"name": "gpt-foo", "context_length": 8192},
-            {"name": "gpt-bar", "context_length": 8192},
-        ],
-        "config": {"api_key": "sk-test"},
+                "config": {"api_key": "sk-test"},
         "limits": {"max_concurrency": 1},
     }
     create = await client.post("/v1/llm_providers", json=body)
@@ -1681,9 +1680,7 @@ async def test_t0276_order_by_jsonb_list_item_path_clean_envelope(
                 json={
                     "id": entity_id,
                     "provider": "anthropic",
-                    "models": [{"name": f"model-z-{i}",
-                                 "context_length": 200_000}],
-                    "config": {"api_key": "sk-test"},
+                                        "config": {"api_key": "sk-test"},
                     "limits": {"max_concurrency": 1},
                 },
             )
@@ -3431,10 +3428,7 @@ async def test_t0485_predicate_gt_on_sparse_metadata_path_clean(
         json={
             "id": provider_id,
             "provider": "anthropic",
-            "models": [
-                {"name": "claude-sonnet-4-6", "context_length": 200_000},
-            ],
-            "config": {"api_key": "sk-test"},
+                        "config": {"api_key": "sk-test"},
             "limits": {"max_concurrency": 1},
         },
     )
@@ -3654,7 +3648,7 @@ async def test_t0486_predicate_or_of_two_likes_unions_no_dedupe_issues(
 async def test_t0505_predicate_eq_on_list_typed_field_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0505 — LLMProvider.models is a `list[LLMModel]` (JSONB array
+    """T0505 — LLMProvider.models is a `list[ResolvedModel]` (JSONB array
     in storage). Send `{op:"=", left:{name:"models"}, right:{value:
     [{"name":"x", "context_length": 100}]}}` against
     /v1/llm_providers/find. Pin: clean envelope (200 / 4xx / 502),
@@ -3667,10 +3661,7 @@ async def test_t0505_predicate_eq_on_list_typed_field_clean_envelope(
         json={
             "id": entity_id,
             "provider": "anthropic",
-            "models": [
-                {"name": "claude-sonnet-4-6", "context_length": 200_000},
-            ],
-            "config": {"api_key": "sk-test"},
+                        "config": {"api_key": "sk-test"},
             "limits": {"max_concurrency": 1},
         },
     )
@@ -5228,8 +5219,7 @@ async def test_t0755_agent_description_with_rtl_bidi_controls_roundtrips(
     pr = await client.post("/v1/llm_providers", json={
         "id": provider_id,
         "provider": "anthropic",
-        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
-        "config": {"api_key": "sk-test-placeholder"},
+                "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 1},
     })
     assert pr.status_code == 201, pr.text

@@ -66,7 +66,7 @@ async def _seed_agent(app: FastAPI) -> None:
         Agent(
             id=AGENT_ID,
             description="artifact fetch journey",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             tools=[],
             system_prompt=[],
         ),

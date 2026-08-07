@@ -15,20 +15,20 @@ from primer.model.agent import Agent, AgentModel
 
 class TestAgentModel:
     def test_construction(self) -> None:
-        m = AgentModel(provider_id="openai-1", model_name="gpt-4o-mini")
+        m = AgentModel(profile_id="openai-1--gpt-4o-mini")
         assert m.provider_id == "openai-1"
         assert m.model_name == "gpt-4o-mini"
 
     def test_empty_provider_id_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            AgentModel(provider_id="", model_name="gpt-4o-mini")
+            AgentModel(profile_id="--gpt-4o-mini")
 
     def test_empty_model_name_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            AgentModel(provider_id="openai-1", model_name="")
+            AgentModel(profile_id="openai-1--")
 
     def test_round_trip_through_json(self) -> None:
-        m = AgentModel(provider_id="anthropic-1", model_name="claude-sonnet-4-6")
+        m = AgentModel(profile_id="anthropic-1--claude-sonnet-4-6")
         parsed = AgentModel.model_validate_json(m.model_dump_json())
         assert parsed == m
 
@@ -41,7 +41,7 @@ class TestAgent:
         a = Agent(
             id="researcher",
             description="Finds slow tests in a repo.",
-            model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
+            model=AgentModel(profile_id="openai-1--gpt-4o-mini"),
         )
         assert a.id == "researcher"
         assert a.description == "Finds slow tests in a repo."
@@ -52,7 +52,7 @@ class TestAgent:
         a = Agent(
             id="r",
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         )
         assert a.temperature is None
         assert a.tools == []
@@ -63,7 +63,7 @@ class TestAgent:
         a = Agent(
             id="researcher",
             description="A researcher agent",
-            model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
+            model=AgentModel(profile_id="openai-1--gpt-4o-mini"),
             temperature=0.7,
             tools=["web__search", "misc__calculate"],
             system_prompt=[
@@ -85,7 +85,7 @@ class TestAgent:
             Agent(
                 id="r",
                 description="x",
-                model=AgentModel(provider_id="p", model_name="m"),
+                model=AgentModel(profile_id="p--m"),
                 temperature=-0.1,
             )
 
@@ -93,7 +93,7 @@ class TestAgent:
         a = Agent(
             id="r",
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             temperature=0.0,
         )
         assert a.temperature == 0.0
@@ -104,7 +104,7 @@ class TestAgent:
         a = Agent(
             id="r",
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             temperature=1.8,
         )
         assert a.temperature == 1.8
@@ -113,7 +113,7 @@ class TestAgent:
         a = Agent(
             id="",
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         )
         assert re.fullmatch(r"agent-[0-9a-f]{12}", a.id), a.id
 
@@ -123,7 +123,7 @@ class TestAgent:
         a = Agent(
             id="r",
             description="",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         )
         assert a.description == ""
 
@@ -135,7 +135,7 @@ class TestAgent:
         a = Agent(
             id="researcher",
             description="A researcher agent",
-            model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
+            model=AgentModel(profile_id="openai-1--gpt-4o-mini"),
             temperature=0.5,
             tools=["system__search"],
             system_prompt=["Be terse."],
@@ -151,7 +151,7 @@ class TestAgent:
         a = Agent(
             id="r",
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
             tools=["never_registered_tool"],
         )
         assert a.tools == ["never_registered_tool"]

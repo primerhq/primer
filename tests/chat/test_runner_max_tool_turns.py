@@ -6,6 +6,9 @@ unbounded against the LLM."""
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -22,7 +25,6 @@ from primer.model.chat import (
     ToolResultPart,
 )
 from primer.model.chats import Chat, ChatMessage
-from primer.model.provider import LLMModel
 
 
 class _AlwaysToolLLM:
@@ -64,7 +66,7 @@ async def test_chat_runner_stops_at_max_tool_turns(fake_storage_provider) -> Non
     agent = Agent(
         id="ag",
         description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
         max_tool_turns=3,
     )
     chat = Chat(id="cmt", agent_id="ag", created_at=datetime.now(timezone.utc))
@@ -77,7 +79,7 @@ async def test_chat_runner_stops_at_max_tool_turns(fake_storage_provider) -> Non
     runner = ChatTurnRunner(
         agent=agent,
         llm=llm,
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=tm,
         chat_storage=chat_store,
         message_storage=msg_store,
@@ -113,7 +115,7 @@ async def test_chat_runner_honors_cap_above_round_trip_floor(
     agent = Agent(
         id="ag",
         description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
         max_tool_turns=12,
     )
     chat = Chat(id="cmt-hi", agent_id="ag", created_at=datetime.now(timezone.utc))
@@ -126,7 +128,7 @@ async def test_chat_runner_honors_cap_above_round_trip_floor(
     runner = ChatTurnRunner(
         agent=agent,
         llm=llm,
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=tm,
         chat_storage=chat_store,
         message_storage=msg_store,

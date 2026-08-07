@@ -22,7 +22,6 @@ from primer.model.except_ import ProviderTimeoutError
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenChatConfig,
@@ -61,7 +60,6 @@ class TestLimitsField:
         provider = LLMProvider(
             id="p1",
             provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="claude-3-haiku-20240307", context_length=200_000)],
             config=AnthropicConfig(api_key=SecretStr("sk-ant-test")),
             limits=Limits(max_concurrency=2, request_timeout_seconds=120.0),
         )
@@ -323,7 +321,6 @@ def _make_anthropic_provider(*, timeout_seconds: float | None = 0.05) -> LLMProv
     return LLMProvider(
         id="test-ant",
         provider=LLMProviderType.ANTHROPIC,
-        models=[LLMModel(name="claude-3-haiku-20240307", context_length=200_000)],
         config=AnthropicConfig(api_key=SecretStr("sk-ant-test")),
         limits=Limits(max_concurrency=2, request_timeout_seconds=timeout_seconds),
     )
@@ -333,7 +330,6 @@ def _make_openchat_provider(*, timeout_seconds: float | None = 0.05) -> LLMProvi
     return LLMProvider(
         id="test-oc",
         provider=LLMProviderType.OPENCHAT,
-        models=[LLMModel(name="gpt-test", context_length=4096)],
         config=OpenChatConfig(
             url=HttpUrl("http://localhost:11434"),
             flavor=OpenChatFlavor.OTHER,

@@ -67,7 +67,7 @@ def test_every_in_scope_model_declares_its_prefix():
 
 
 def test_models_autogen_with_prefix_when_id_omitted():
-    a = Agent(description="x", model={"provider_id": "p", "model_name": "m"})
+    a = Agent(description="x", model={"profile_id": "p--m"})
     assert _re.fullmatch(r"agent-[0-9a-f]{12}", a.id), a.id
     d = Document(collection_id="c1", name="n", path="n.md")
     assert d.id.startswith("document-")

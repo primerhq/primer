@@ -27,7 +27,7 @@ async def _setup(tmp_path):
     await p.initialize()
     for aid, nm in [("agent-x", "X"), ("agent-y", "Y")]:
         await p.get_storage(Agent).create(Agent(
-            id=aid, description=nm, model={"provider_id": "lp", "model_name": "m"}))
+            id=aid, description=nm, model={"profile_id": "lp--m"}))
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP")))
@@ -62,7 +62,7 @@ async def _setup_many(tmp_path, count: int):
     for i in range(count):
         await p.get_storage(Agent).create(Agent(
             id=f"agent-{i:02d}", description=f"A{i:02d}",
-            model={"provider_id": "lp", "model_name": "m"}))
+            model={"profile_id": "lp--m"}))
     cp = ChannelProvider(
         id="cp-1", provider=ChannelProviderType.TELEGRAM,
         config=TelegramChannelProviderConfig(bot_token=SecretStr("123456:ABCDEFGHIJKLMNOP")))

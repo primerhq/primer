@@ -44,7 +44,7 @@ from primer.model.except_ import AuthRequiredError, PrimerError
 if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ async def run_agent_turn(
     *,
     agent: "Agent",
     llm: "LLM",
-    llm_model: "LLMModel",
+    llm_model: "ResolvedModel",
     tool_manager: ToolExecutionManager,
     prompt: list[Message],
     response_format: dict[str, Any] | None = None,
@@ -106,7 +106,7 @@ async def run_agent_turn(
     while True:
         buffered: list[StreamEvent] = []
         stream = llm.stream(
-            model=llm_model.name,
+            model=llm_model.model_name,
             messages=prompt,
             temperature=agent.temperature,
             max_output_tokens=agent.max_output_tokens,

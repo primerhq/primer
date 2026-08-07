@@ -3,6 +3,9 @@ persists a 'cancelled' row, and exits cleanly."""
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -14,7 +17,6 @@ from primer.chat.executor import ChatTurnRunner
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, Message, StreamEvent, TextDelta
 from primer.model.chats import Chat, ChatMessage
-from primer.model.provider import LLMModel
 
 
 class _NeverEndingStream:
@@ -60,7 +62,7 @@ async def test_cancel_event_set_breaks_stream_and_persists_cancelled(
 ):
     agent = Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     chat = Chat(id="c1", agent_id="ag", created_at=datetime.now(timezone.utc))
     chat_store = fake_storage_provider.get_storage(Chat)
@@ -73,7 +75,7 @@ async def test_cancel_event_set_breaks_stream_and_persists_cancelled(
     runner = ChatTurnRunner(
         agent=agent,
         llm=_FakeLLM(counter),
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=_NullToolManager(),
         chat_storage=chat_store,
         message_storage=msg_store,
@@ -101,7 +103,7 @@ async def test_no_cancel_event_legacy_behaviour(fake_storage_provider):
     entirely — existing callers see no behaviour change."""
     agent = Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     chat = Chat(id="c2", agent_id="ag", created_at=datetime.now(timezone.utc))
     chat_store = fake_storage_provider.get_storage(Chat)
@@ -115,7 +117,7 @@ async def test_no_cancel_event_legacy_behaviour(fake_storage_provider):
     runner = ChatTurnRunner(
         agent=agent,
         llm=_FakeLLM(_short_stream),
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=_NullToolManager(),
         chat_storage=chat_store,
         message_storage=msg_store,

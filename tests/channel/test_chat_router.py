@@ -22,7 +22,7 @@ async def _provider(tmp_path):
     await p.initialize()
     await p.get_storage(Agent).create(
         Agent(id="agent-x", description="X",
-              model={"provider_id": "lp", "model_name": "m"}))
+              model={"profile_id": "lp--m"}))
     await p.get_storage(Channel).create(Channel(
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
         external_id="555",

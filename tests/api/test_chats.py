@@ -19,7 +19,6 @@ from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -112,7 +111,6 @@ async def seeded_agent(app):
         LLMProvider(
             id="llm-p",
             provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="m", context_length=8000)],
             config=AnthropicConfig(api_key=SecretStr("test-only")),
             limits=Limits(max_concurrency=1),
         ),
@@ -122,7 +120,7 @@ async def seeded_agent(app):
     agent = Agent(
         id="ag-chat",
         description="chat agent",
-        model=AgentModel(provider_id="llm-p", model_name="m"),
+        model=AgentModel(profile_id="llm-p--m"),
         tools=[],
         system_prompt=[],
     )
@@ -172,7 +170,7 @@ class TestListChats:
         ag2 = Agent(
             id="ag-2",
             description="b",
-            model=AgentModel(provider_id="llm-p", model_name="m"),
+            model=AgentModel(profile_id="llm-p--m"),
             tools=[],
             system_prompt=[],
         )

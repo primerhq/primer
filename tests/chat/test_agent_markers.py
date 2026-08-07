@@ -18,6 +18,9 @@ Covers:
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
@@ -29,7 +32,6 @@ from primer.chat.enqueue import append_agent_marker
 from primer.chat.executor import ChatTurnRunner
 from primer.model.agent import Agent, AgentModel
 from primer.model.chats import Chat, ChatMessage
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 
 
@@ -113,11 +115,11 @@ async def test_switch_chat_agent_endpoint_appends_switch_marker_and_ticks(
 
     await agent_store.create(Agent(
         id="ag-1", description="a",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     ))
     await agent_store.create(Agent(
         id="ag-2", description="b",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     ))
     chat = Chat(id="c2", agent_id="ag-1", created_at=_now())
     await chat_store.create(chat)
@@ -241,12 +243,12 @@ async def test_apply_switch_handoff_tolerates_missing_event_bus(
 def _build_runner_for_history(chat_store, msg_store, *, agent_id) -> ChatTurnRunner:
     agent = Agent(
         id=agent_id, description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     runner = ChatTurnRunner.__new__(ChatTurnRunner)
     runner._agent = agent
     runner._llm = None
-    runner._model = LLMModel(name="m", context_length=4096)
+    runner._model = ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig())
     runner._tools = None
     runner._chats = chat_store
     runner._messages = msg_store

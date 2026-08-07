@@ -3,6 +3,9 @@ worker-side per-turn task."""
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
@@ -19,7 +22,7 @@ from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, Message, StreamEvent, TextDelta
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import (
-    AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+    AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
 )
 from primer.model.storage import (
     FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,
@@ -51,14 +54,13 @@ async def deps(fake_storage_provider, fake_provider_registry):
     await fake_storage_provider.get_storage(LLMProvider).create(
         LLMProvider(
             id="p", provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="m", context_length=8192)],
             config=AnthropicConfig(api_key=SecretStr("test")),
             limits=Limits(max_concurrency=1),
         ),
     )
     await fake_storage_provider.get_storage(Agent).create(Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     ))
     fake_llm = _FakeLLM()
     async def _get_llm(_pid):
@@ -250,14 +252,13 @@ class TestCancelLifecycle:
         await fake_storage_provider.get_storage(LLMProvider).create(
             LLMProvider(
                 id="p", provider=LLMProviderType.ANTHROPIC,
-                models=[LLMModel(name="m", context_length=8192)],
                 config=AnthropicConfig(api_key=SecretStr("test")),
                 limits=Limits(max_concurrency=1),
             ),
         )
         await fake_storage_provider.get_storage(Agent).create(Agent(
             id="ag", description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         ))
         chats = fake_storage_provider.get_storage(Chat)
         msgs = fake_storage_provider.get_storage(ChatMessage)
@@ -333,14 +334,13 @@ class TestCancelLifecycle:
         await fake_storage_provider.get_storage(LLMProvider).create(
             LLMProvider(
                 id="p", provider=LLMProviderType.ANTHROPIC,
-                models=[LLMModel(name="m", context_length=8192)],
                 config=AnthropicConfig(api_key=SecretStr("test")),
                 limits=Limits(max_concurrency=1),
             ),
         )
         agent = Agent(
             id="ag", description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         )
         await fake_storage_provider.get_storage(Agent).create(agent)
         chats = fake_storage_provider.get_storage(Chat)
@@ -359,7 +359,7 @@ class TestCancelLifecycle:
         runner = ChatTurnRunner(
             agent=agent,
             llm=_FakeLLM(),
-            llm_model=LLMModel(name="m", context_length=8192),
+            llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=8192, config=ModelProfileConfig()),
             tool_manager=None,
             chat_storage=chats,
             message_storage=msgs,
@@ -441,14 +441,13 @@ class TestSingleWriterDisposition:
         await fake_storage_provider.get_storage(LLMProvider).create(
             LLMProvider(
                 id="p", provider=LLMProviderType.ANTHROPIC,
-                models=[LLMModel(name="m", context_length=8192)],
                 config=AnthropicConfig(api_key=SecretStr("test")),
                 limits=Limits(max_concurrency=1),
             ),
         )
         await fake_storage_provider.get_storage(Agent).create(Agent(
             id="ag", description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         ))
         chats = fake_storage_provider.get_storage(Chat)
         msgs = fake_storage_provider.get_storage(ChatMessage)

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import logging
 from typing import Any
@@ -14,7 +17,6 @@ from primer.llm.openresponses import OpenResponsesLLM, _POLICY_BY_FLAVOR, _Flavo
 from primer.model.except_ import ConfigError
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenResponsesConfig,
@@ -38,7 +40,7 @@ def _make_provider(
         id="openai-default",
         provider=LLMProviderType.OPENRESPONSES,
         models=[
-            LLMModel(name=name, context_length=8192)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=8192, config=ModelProfileConfig())
             for name in (models or ["gpt-4o-mini"])
         ],
         config=OpenResponsesConfig(
@@ -123,8 +125,7 @@ class TestConstructor:
 
     def test_logs_init_with_structured_context(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="primer.llm.openresponses")
-        provider = _make_provider(
-            models=["gpt-4o-mini", "gpt-4o"], max_concurrency=2
+        provider = _make_provider( max_concurrency=2
         )
         OpenResponsesLLM(provider)
         records = [r for r in caplog.records if "OpenResponses adapter" in r.message]

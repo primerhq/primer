@@ -7,7 +7,6 @@ from pydantic import HttpUrl, SecretStr, ValidationError
 
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenChatConfig,
@@ -65,7 +64,6 @@ class TestLLMProviderUnionAcceptsOpenChat:
         provider = LLMProvider(
             id="lmstudio-local",
             provider=LLMProviderType.OPENCHAT,
-            models=[LLMModel(name="local-model", context_length=8192)],
             config=OpenChatConfig(
                 url=HttpUrl("http://localhost:1234/v1/"),
                 flavor=OpenChatFlavor.LMSTUDIO,
@@ -79,7 +77,6 @@ class TestLLMProviderUnionAcceptsOpenChat:
         provider = LLMProvider(
             id="openai-chat",
             provider=LLMProviderType.OPENCHAT,
-            models=[LLMModel(name="gpt-4o-mini", context_length=128_000)],
             config=OpenChatConfig(
                 url=HttpUrl("https://api.openai.com/v1/"),
                 api_key=SecretStr("sk-test"),

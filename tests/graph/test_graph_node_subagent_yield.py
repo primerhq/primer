@@ -18,6 +18,9 @@ Two layers:
 """
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 
 import pytest
@@ -29,7 +32,6 @@ from primer.model.graph import (
     Graph, GraphNodeMessage, GraphThread,
     _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge,
 )
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.worker.frames import AgentFrame, AgentResumeContext, frames_from_jsonable
 
@@ -91,7 +93,7 @@ class _NestedYieldLLM:
 
 def _agent():
     return Agent(id="x", description="x",
-                 model=AgentModel(provider_id="p", model_name="m"))
+                 model=AgentModel(profile_id="p--m"))
 
 
 def _graph():
@@ -107,7 +109,7 @@ async def _mk_executor(graph, llm):
         return _agent()
 
     async def llm_resolver(_):
-        return (llm, LLMModel(name="m", context_length=128_000))
+        return (llm, ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig()))
 
     ts: _InMemoryStorage[GraphThread] = _InMemoryStorage(GraphThread)
     ms: _InMemoryStorage[GraphNodeMessage] = _InMemoryStorage(GraphNodeMessage)

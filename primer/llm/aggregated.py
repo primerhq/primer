@@ -145,10 +145,6 @@ class AggregatedLLM(LLM):
         self._cursor = 0
         self._cursor_lock = asyncio.Lock()
 
-    async def list_models(self) -> Iterable[str]:
-        # Mirrors every other adapter: return the stored row's static
-        # model list (the virtual name(s)), not a live probe.
-        return [m.name for m in self._provider.models]
 
     async def _member_order(self) -> list[AggregatedMember]:
         members = self._config.members

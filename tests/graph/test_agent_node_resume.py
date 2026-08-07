@@ -11,7 +11,6 @@ from primer.model.chat import (
 from primer.model.graph import (
     Graph, _AgentNodeRef, _BeginNode, _EndNode, _StaticEdge,
 )
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 
 from tests.graph.test_workspace_executor import _make_state_repo
@@ -19,7 +18,7 @@ from tests.graph.test_workspace_executor import _make_state_repo
 
 def _agent():
     return Agent(id="x", description="x",
-                 model=AgentModel(provider_id="p", model_name="m"),
+                 model=AgentModel(profile_id="p--m"),
                  system_prompt=["Be terse."])
 
 
@@ -58,7 +57,7 @@ async def _build(tmp_path, llm, gsid):
     repo = await _make_state_repo(tmp_path)
 
     async def agent_resolver(_): return _agent()
-    async def llm_resolver(_): return (llm, LLMModel(name="m", context_length=128_000))
+    async def llm_resolver(_): return (llm, ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig()))
 
     return WorkspaceGraphExecutor(
         graph=_graph(), agent_resolver=agent_resolver,
@@ -129,7 +128,7 @@ def _two_ask_graph():
 async def _build2(tmp_path, llm, gsid):
     repo = await _make_state_repo(tmp_path)
     async def agent_resolver(_): return _agent()
-    async def llm_resolver(_): return (llm, LLMModel(name="m", context_length=128_000))
+    async def llm_resolver(_): return (llm, ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig()))
     return WorkspaceGraphExecutor(
         graph=_two_ask_graph(), agent_resolver=agent_resolver,
         llm_resolver=llm_resolver,  # type: ignore[arg-type]

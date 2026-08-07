@@ -75,7 +75,7 @@ class TestLLMProviderAggregatedDispatch:
             "id": "agg-1",
             "provider": "aggregated",
             "config": {
-                "members": [{"provider_id": "p1", "model_name": "m1"}],
+                "members": [{"profile_id": "p1--m1"}],
                 "strategy": "round_robin",
             },
             "models": [{"name": "virtual-1", "context_length": 200000}],

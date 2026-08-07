@@ -7,6 +7,9 @@ chat path (chat_id set, no workspace_session).
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -112,20 +115,19 @@ async def test_build_runner_wires_approval_resolver(
     from primer.model.agent import Agent, AgentModel
     from primer.model.chats import Chat
     from primer.model.provider import (
-        AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+        AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
     )
 
     await fake_storage_provider.get_storage(LLMProvider).create(
         LLMProvider(
             id="p", provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="m", context_length=8192)],
             config=AnthropicConfig(api_key=SecretStr("test")),
             limits=Limits(max_concurrency=1),
         ),
     )
     await fake_storage_provider.get_storage(Agent).create(Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     ))
     chat = Chat(
         id="chat-1", agent_id="ag", title="t",
@@ -168,20 +170,19 @@ async def test_build_runner_reports_missing_model(
     from primer.model.agent import Agent, AgentModel
     from primer.model.chats import Chat
     from primer.model.provider import (
-        AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+        AnthropicConfig, Limits, ResolvedModel, LLMProvider, LLMProviderType,
     )
 
     await fake_storage_provider.get_storage(LLMProvider).create(
         LLMProvider(
             id="p", provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="m", context_length=8192)],
             config=AnthropicConfig(api_key=SecretStr("test")),
             limits=Limits(max_concurrency=1),
         ),
     )
     await fake_storage_provider.get_storage(Agent).create(Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="gone-model"),
+        model=AgentModel(profile_id="p--gone-model"),
     ))
     chat = Chat(
         id="chat-1", agent_id="ag", title="t",

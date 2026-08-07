@@ -72,7 +72,7 @@ if TYPE_CHECKING:
     from primer.agent.tool_manager import ToolExecutionManager
     from primer.int.llm import LLM
     from primer.model.agent import Agent
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -261,7 +261,7 @@ class ChatTurnRunner:
         *,
         agent: "Agent",
         llm: "LLM",
-        llm_model: "LLMModel",
+        llm_model: "ResolvedModel",
         tool_manager: "ToolExecutionManager",
         chat_storage: Storage[Chat],
         message_storage: Storage[ChatMessage],
@@ -535,7 +535,7 @@ class ChatTurnRunner:
 
             try:
                 async for event in self._llm.stream(
-                    model=self._model.name,
+                    model=self._model.model_name,
                     messages=prompt,
                     tools=tools or None,
                     response_format=self._response_format,
@@ -1212,7 +1212,7 @@ class ChatTurnRunner:
                 "summary": result.summary_text,
                 "replaced_from_seq": 1,
                 "replaced_to_seq": next_seq - 1,
-                "model": self._model.name,
+                "model": self._model.model_name,
                 "tokens_before": result.tokens_before,
                 "tokens_after": result.tokens_after,
                 "compaction_prompt_source": prompt_source,

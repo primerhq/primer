@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.int.storage import Storage
     from primer.model.agent import Agent
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,7 @@ class GraphExecutor(_BaseGraphExecutor):
         *,
         graph: Graph,
         agent_resolver: Callable[[str], Awaitable["Agent"]],
-        llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "LLMModel"]]],
+        llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "ResolvedModel"]]],
         thread_storage: "Storage[GraphThread]",
         message_storage: "Storage[GraphNodeMessage]",
         graph_thread_id: str,

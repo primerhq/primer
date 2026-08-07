@@ -25,7 +25,6 @@ from primer.model.chat import (
 )
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenChatConfig,
@@ -53,7 +52,6 @@ async def test_real_openai_smoke() -> None:
     provider = LLMProvider(
         id="real-openai-chat",
         provider=LLMProviderType.OPENCHAT,
-        models=[LLMModel(name="gpt-4o-mini", context_length=128_000)],
         config=OpenChatConfig(
             url=HttpUrl("https://api.openai.com/v1/"),
             api_key=SecretStr(os.environ["OPENAI_API_KEY"]),
@@ -90,7 +88,6 @@ async def test_lmstudio_smoke() -> None:
     provider = LLMProvider(
         id="lmstudio-local-chat",
         provider=LLMProviderType.OPENCHAT,
-        models=[LLMModel(name=model_name, context_length=8192)],
         config=OpenChatConfig(
             url=HttpUrl("http://localhost:1234/v1/"),
             api_key=SecretStr(os.environ["PRIMER_E2E_LMSTUDIO_TOKEN"]),

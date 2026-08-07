@@ -68,7 +68,7 @@ async def test_message_to_chat_default_path_unaffected_by_rules(
 
     await p.get_storage(Agent).create(Agent(
         id="ag-m2c", description="default-chat agent",
-        model=AgentModel(provider_id="prov", model_name="model"),
+        model=AgentModel(profile_id="prov--model"),
     ))
     ch = Channel(
         id="ch-m2c",

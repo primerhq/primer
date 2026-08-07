@@ -19,6 +19,9 @@ from a tiny fake toolset provider, mirroring ``test_run_subagent_yield``.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -36,7 +39,6 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
-from primer.model.provider import LLMModel
 from primer.model.yield_ import Yielded, YieldToWorker
 from primer.worker.frames import AgentResumeContext
 
@@ -129,7 +131,7 @@ class _YieldingToolsetProvider:
 
 
 class _ProviderRow:
-    def __init__(self, models: list[LLMModel]) -> None:
+    def __init__(self, models: list[ResolvedModel]) -> None:
         self.models = models
 
 
@@ -177,14 +179,14 @@ def _agent(*, tools: list[str]) -> Agent:
     return Agent(
         id="agent-sub",
         description="subagent",
-        model=AgentModel(provider_id="prov-1", model_name="m1"),
+        model=AgentModel(profile_id="prov-1--m1"),
         system_prompt=["you are a subagent"],
         tools=tools,
     )
 
 
 def _provider_row() -> _ProviderRow:
-    return _ProviderRow(models=[LLMModel(name="m1", context_length=128_000)])
+    return _ProviderRow(models=[ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m1", context_length=128_000, config=ModelProfileConfig())])
 
 
 def _context(*, tools: list[str]) -> AgentResumeContext:

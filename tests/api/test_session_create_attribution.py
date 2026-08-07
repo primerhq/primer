@@ -74,7 +74,7 @@ async def _seed_workspace_and_agent(app) -> tuple[Workspace, Agent]:
     agent = Agent(
         id="ag-attr-1",
         description="attribution test agent",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     await sp.get_storage(Agent).create(agent)
     return ws, agent

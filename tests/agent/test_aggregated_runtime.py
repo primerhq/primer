@@ -16,7 +16,6 @@ from primer.model.provider import (
     AggregatedMember,
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -48,7 +47,6 @@ async def test_resolves_aggregated_runtime_and_virtual_model():
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
             id="member-1", provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="claude-x", context_length=200000)],
             config=AnthropicConfig(api_key=SecretStr("sk-x")),
             limits=Limits(max_concurrency=4),
         )
@@ -56,7 +54,6 @@ async def test_resolves_aggregated_runtime_and_virtual_model():
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
             id="agg-1", provider=LLMProviderType.AGGREGATED,
-            models=[LLMModel(name="virtual-1", context_length=200000)],
             config=AggregatedLLMConfig(members=[
                 AggregatedMember(provider_id="member-1", model_name="claude-x"),
             ]),
@@ -66,7 +63,7 @@ async def test_resolves_aggregated_runtime_and_virtual_model():
     await sp.get_storage(Agent).create(
         Agent(
             id="ag-1", description="test agent",
-            model=AgentModel(provider_id="agg-1", model_name="virtual-1"),
+            model=AgentModel(profile_id="agg-1--virtual-1"),
         )
     )
     registry = ProviderRegistry(sp)

@@ -40,7 +40,6 @@ from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -136,9 +135,6 @@ async def _seed_provider_and_agent(app: FastAPI) -> None:
         LLMProvider(
             id=PROVIDER_ID,
             provider=LLMProviderType.ANTHROPIC,
-            models=[
-                LLMModel(name=MODEL_NAME, context_length=CONTEXT_LENGTH),
-            ],
             config=AnthropicConfig(api_key=SecretStr("test-only")),
             limits=Limits(max_concurrency=1),
         ),

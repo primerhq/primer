@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -27,7 +30,6 @@ from primer.model.chat import (
     ToolResultPart,
 )
 from primer.model.except_ import ServerError
-from primer.model.provider import LLMModel
 
 
 # ===========================================================================
@@ -54,13 +56,13 @@ def _agent(*, compaction_prompt: list[str] | None = None) -> Agent:
     return Agent(
         id="researcher",
         description="Research agent",
-        model=AgentModel(provider_id="openai-1", model_name="gpt-4o-mini"),
+        model=AgentModel(profile_id="openai-1--gpt-4o-mini"),
         compaction_prompt=list(compaction_prompt or []),
     )
 
 
-def _model(*, name: str = "gpt-4o-mini", context_length: int = 1000) -> LLMModel:
-    return LLMModel(name=name, context_length=context_length)
+def _model(*, name: str = "gpt-4o-mini", context_length: int = 1000) -> ResolvedModel:
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=context_length, config=ModelProfileConfig())
 
 
 class _FakeLLM:

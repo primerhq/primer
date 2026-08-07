@@ -40,7 +40,7 @@ async def _provider(tmp_path):
     await p.initialize()
     await p.get_storage(Agent).create(Agent(
         id="agent-x", description="X",
-        model={"provider_id": "lp", "model_name": "m"}))
+        model={"profile_id": "lp--m"}))
     return p
 
 
