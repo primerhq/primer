@@ -25,6 +25,60 @@
 // resolved through the SAME sendMessage <Conversation> uses for composer
 // sends, not a new endpoint.
 
+// Collapsed reasoning bar. Reasoning is usually far longer than the
+// answer it precedes and is rarely what the operator came to read, so it
+// stays folded until asked for -- but it must be VISIBLE that the model
+// reasoned at all, hence a bar rather than nothing. Collapsed by default
+// on every render: expansion is a per-message act, not a preference.
+//
+// Rendered as plain <pre> rather than markdown: reasoning is a raw
+// think-aloud stream, frequently with unbalanced fences and half-written
+// lists that a markdown pass would mangle into nonsense.
+function CT_ReasoningBlock({ m }) {
+  const [open, setOpen] = React.useState(false);
+  const text = typeof m.text === "string" ? m.text : "";
+  if (!text.trim()) return null;
+  const lines = text.split("\n").length;
+  return (
+    <div style={{ display: "flex", gap: 12, marginBottom: 14 }}>
+      <CT_Attribution
+        label={m.agent_id || "agent"}
+        isUser={false}
+        time={CT_formatTime(m.created_at)}
+      />
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <button
+          type="button"
+          aria-expanded={open}
+          data-testid="chat-reasoning-toggle"
+          onClick={() => setOpen(!open)}
+          style={{
+            display: "inline-flex", alignItems: "center", gap: 6,
+            background: "var(--bg-2)", border: "1px solid var(--border)",
+            borderRadius: 5, padding: "3px 9px", cursor: "pointer",
+            color: "var(--text-3)", font: "inherit", fontSize: 11.5,
+          }}
+        >
+          <Icon name={open ? "chevron-down" : "chevron-right"} size={11} />
+          <span>Reasoning</span>
+          <span style={{ color: "var(--text-4)" }}>
+            {lines} line{lines === 1 ? "" : "s"}
+          </span>
+        </button>
+        {open && (
+          <pre style={{
+            margin: "6px 0 0", padding: "8px 10px",
+            background: "var(--bg-2)", border: "1px solid var(--border)",
+            borderRadius: 5, fontSize: 12, lineHeight: 1.5,
+            color: "var(--text-3)", whiteSpace: "pre-wrap",
+            wordBreak: "break-word", maxHeight: 360, overflowY: "auto",
+          }}>{text}</pre>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // Map a chat_messages row kind → simple bubble role for layout.
 function CT_roleForKind(kind) {
   if (kind === "user_message") return "user";
@@ -586,6 +640,12 @@ function Message({ m, pairedResult, chatId, onRewind, rewindDisabled, compaction
   if (kind === "compaction_marker") {
     return <CompactionMarker m={m} />;
   }
+
+  if (kind === "reasoning_block") {
+    return <CT_ReasoningBlock m={m} />;
+  }
+
+  // (CT_ReasoningBlock is defined above the row renderer.)
 
   // Coalesced agent reply (the streaming tokens collapsed into one
   // bubble by window.chatCoalesce). Renders as markdown — LLMs

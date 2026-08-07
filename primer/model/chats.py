@@ -40,6 +40,11 @@ ChatStatus = Literal["active", "ended"]
 ChatMessageKind = Literal[
     "user_message",
     "assistant_token",
+    # Model reasoning / thinking text, streamed alongside the answer by
+    # providers that expose it. Persisted for DISPLAY only: it is skipped
+    # when rebuilding the prompt, because replaying a model's own reasoning
+    # back to it is either rejected outright or degrades the next turn.
+    "reasoning",
     "tool_call",
     "tool_result",
     # Legacy-unused on the chat soft-yield path (chats never park, so no
