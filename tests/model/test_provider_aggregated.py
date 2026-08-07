@@ -75,7 +75,7 @@ class TestLLMProviderAggregatedDispatch:
             "id": "agg-1",
             "provider": "aggregated",
             "config": {
-                "members": [{"profile_id": "p1--m1"}],
+                "members": [{"provider_id": "p1", "model_name": "m1"}],
                 "strategy": "round_robin",
             },
             "models": [{"name": "virtual-1", "context_length": 200000}],
@@ -90,6 +90,3 @@ class TestLLMProviderAggregatedDispatch:
         assert row.config.strategy == RoutingStrategy.ROUND_ROBIN
         assert row.config.members[0].provider_id == "p1"
 
-    def test_models_required_min_length_one(self):
-        with pytest.raises(ValidationError):
-            LLMProvider.model_validate(self._body(models=[]))

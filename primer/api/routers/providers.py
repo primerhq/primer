@@ -42,6 +42,7 @@ from primer.api.deps import (
     get_cross_encoder_provider_storage,
     get_embedding_provider_storage,
     get_llm_provider_storage,
+    get_model_profile_storage,
     get_principal,
     get_provider_registry,
     get_storage_provider,
@@ -223,16 +224,41 @@ async def invalidate_llm_provider(
 
 @llm_provider_router.get(
     "/llm_providers/{provider_id}/models",
-    summary="Fetch live model list from the LLM provider",
-    responses=common_responses(404, 500, 502, 504),
+    summary="List the model names registered on this provider",
+    responses=common_responses(404, 500),
 )
 async def get_llm_provider_models(
     provider_id: str = Path(..., description="LLMProvider id"),
-    registry: ProviderRegistry = Depends(get_provider_registry),
+    profiles=Depends(get_model_profile_storage),
 ) -> dict:
-    adapter = await registry.get_llm(provider_id)
-    models = await adapter.list_models()
-    return {"models": list(models)}
+    """Return the distinct model names this provider can serve.
+
+    Derived from the provider's :class:`ModelProfile` rows rather than the
+    adapter: profiles replaced ``LLMProvider.models[]`` as the registry of
+    what a provider serves, so this is a storage query and no longer needs
+    to construct an adapter. Several profiles may share a model name (that
+    is the point of profiles), so names are deduplicated.
+
+    For a LIVE probe of what the upstream actually offers, use
+    ``POST /v1/llm_providers/_discover_models`` -- that is what the
+    console's Fetch action drives.
+    """
+    from primer.storage.q import Q
+    from primer.model.model_profile import ModelProfile
+    from primer.model.storage import OffsetPage
+
+    names: list[str] = []
+    offset = 0
+    while True:
+        page = await profiles.find(
+            Q(ModelProfile).where("provider_id", provider_id).build(),
+            OffsetPage(offset=offset, length=200),
+        )
+        names.extend(p.model_name for p in page.items)
+        if len(page.items) < 200:
+            break
+        offset += 200
+    return {"models": sorted(set(names))}
 
 
 @llm_provider_router.post(

@@ -488,8 +488,8 @@ class TestAggregatedLLMProviderTool:
             "provider": "aggregated",
             "config": {
                 "members": [
-                    {"profile_id": "p1--m1"},
-                    {"profile_id": "p2--m2"},
+                    {"provider_id": "p1", "model_name": "m1"},
+                    {"provider_id": "p2", "model_name": "m2"},
                 ],
                 "strategy": "round_robin",
                 "failover_point": "before_first_token",
