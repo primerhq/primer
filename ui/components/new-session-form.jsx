@@ -196,7 +196,21 @@ function SharedNewSessionForm(props) {
   var [workspaceId, setWorkspaceId] = React.useState("");
   var [name, setName] = React.useState("");
   var [instructions, setInstructions] = React.useState("");
-  var [autoStart, setAutoStart] = React.useState(true);
+  // Off by default: creating a session and running it are separate acts,
+  // and a session created with no instructions has nothing to run on.
+  var [autoStart, setAutoStart] = React.useState(false);
+  // Typing instructions implies intent to run, so the toggle follows along
+  // until the operator states a preference. After they touch it, their
+  // choice sticks -- otherwise the control would fight them on every
+  // keystroke.
+  var autoStartTouched = React.useRef(false);
+  React.useEffect(
+    function () {
+      if (autoStartTouched.current) return;
+      setAutoStart(instructions.trim().length > 0);
+    },
+    [instructions]
+  );
   // Dynamic Begin.input_schema form state for the graph binding, keyed by
   // property name. Reset whenever the selected graph (or kind) changes.
   var [graphInputDraft, setGraphInputDraft] = React.useState({});
@@ -543,14 +557,35 @@ function SharedNewSessionForm(props) {
         </>
       )}
       <div className="field">
-        <label style={{ display: "inline-flex", alignItems: "center", gap: 8, cursor: "pointer" }}>
-          <input
-            type="checkbox"
-            checked={autoStart}
-            onChange={function (e) { setAutoStart(e.target.checked); }}
-          />
-          <span>Start immediately</span>
-        </label>
+        <div className="switch-row">
+          <button
+            type="button"
+            role="switch"
+            aria-checked={autoStart}
+            className={"switch-toggle" + (autoStart ? " on" : "")}
+            data-testid="session-auto-start"
+            onClick={function () {
+              autoStartTouched.current = true;
+              setAutoStart(!autoStart);
+            }}
+          >
+            <span className="switch-knob" />
+          </button>
+          <span
+            className="switch-label"
+            onClick={function () {
+              autoStartTouched.current = true;
+              setAutoStart(!autoStart);
+            }}
+          >
+            Start immediately
+          </span>
+        </div>
+        <div className="field-help">
+          {autoStart
+            ? "The session runs as soon as it is created."
+            : "The session is created idle. You can start it from its detail page."}
+        </div>
       </div>
       {errText && (
         <div className="field-help warn" style={{ marginTop: 2 }}>
