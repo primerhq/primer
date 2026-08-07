@@ -824,7 +824,7 @@ async def compact_chat(
             "summary": result.summary_text,
             "replaced_from_seq": 1,
             "replaced_to_seq": next_seq - 1,
-            "model": llm_model.name,
+            "model": llm_model.model_name,
             "tokens_before": result.tokens_before,
             "tokens_after": result.tokens_after,
             "compaction_prompt_source": prompt_source,
