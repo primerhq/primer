@@ -111,8 +111,15 @@ function WorkersPage({ pushToast }) {
 
   const totals = workers.reduce(
     (acc, w) => {
-      acc.cap += w.capacity || 0;
-      acc.flight += w.in_flight || 0;
+      // Capacity and in-flight count only for workers that can actually
+      // run something. A dead worker is a tombstone: its process is gone,
+      // so folding its slots into the total advertises parallelism that
+      // does not exist (a registry with 144 dead rows reported 441 slots
+      // when 3 live workers offered 9).
+      if (w.status !== "dead") {
+        acc.cap += w.capacity || 0;
+        acc.flight += w.in_flight || 0;
+      }
       if (w.status === "active") acc.active += 1;
       if (w.status === "draining") acc.draining += 1;
       if (w.status === "dead") acc.dead += 1;

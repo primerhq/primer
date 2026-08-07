@@ -120,3 +120,28 @@ def test_bundle_transpiles_with_workers() -> None:
     assert etag and body
     text = body.decode("utf-8")
     assert "/* === components/workers.jsx === */" in text
+
+
+# ---- Dead workers must not contribute capacity / in-flight -------------
+# A dead worker is a tombstone: its process is gone, so folding its slots
+# into the totals advertises parallelism that does not exist. A registry
+# with 144 dead rows reported 441 parallel slots when the 3 live workers
+# offered 9.
+
+
+def test_capacity_totals_exclude_dead_workers() -> None:
+    src = _src()
+    assert 'if (w.status !== "dead") {' in src, (
+        "capacity/in_flight accumulation must be gated on the worker not "
+        "being dead"
+    )
+    # The gate has to wrap BOTH accumulators, not just capacity.
+    gated = src.split('if (w.status !== "dead") {', 1)[1].split("}", 1)[0]
+    assert "acc.cap +=" in gated, "capacity must be inside the not-dead gate"
+    assert "acc.flight +=" in gated, "in_flight must be inside the not-dead gate"
+
+
+def test_dead_workers_are_still_counted_for_the_dead_tile() -> None:
+    """Excluding dead from capacity must not stop counting them."""
+    src = _src()
+    assert 'if (w.status === "dead") acc.dead += 1;' in src

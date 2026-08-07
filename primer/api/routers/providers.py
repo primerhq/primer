@@ -230,6 +230,7 @@ async def invalidate_llm_provider(
 async def get_llm_provider_models(
     provider_id: str = Path(..., description="LLMProvider id"),
     profiles=Depends(get_model_profile_storage),
+    providers=Depends(get_llm_provider_storage),
 ) -> dict:
     """Return the distinct model names this provider can serve.
 
@@ -244,8 +245,15 @@ async def get_llm_provider_models(
     console's Fetch action drives.
     """
     from primer.storage.q import Q
+    from primer.model.except_ import NotFoundError
     from primer.model.model_profile import ModelProfile
     from primer.model.storage import OffsetPage
+
+    # A provider with no profiles yet and a provider that does not exist
+    # are different answers ([] vs 404), so check the row explicitly
+    # rather than inferring absence from an empty profile list.
+    if await providers.get(provider_id) is None:
+        raise NotFoundError(f"LLMProvider {provider_id!r} does not exist")
 
     names: list[str] = []
     offset = 0
