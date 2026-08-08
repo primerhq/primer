@@ -103,6 +103,14 @@ class ChatCreateBody(BaseModel):
         min_length=1,
         description="Agent that handles every turn of this chat.",
     )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override. None uses the agent's own "
+            "default. Applies from the next turn onward: the agent and its "
+            "prompt are resolved fresh each turn, so no history is rewritten."
+        ),
+    )
 
 
 @chats_router.post(
@@ -136,6 +144,7 @@ async def create_chat(
     chat = Chat(
         id=f"chat-{uuid.uuid4().hex[:12]}",
         agent_id=body.agent_id,
+        profile_id=body.profile_id,
         created_at=datetime.now(timezone.utc),
         initiated_by=(
             PrincipalRef.from_principal(actor) if actor is not None
@@ -151,6 +160,14 @@ class ChatSwitchAgentBody(BaseModel):
     agent_id: str = Field(
         ..., min_length=1,
         description="Id of the agent to switch this chat to.",
+    )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override. None uses the agent's own "
+            "default. Applies from the next turn onward: the agent and its "
+            "prompt are resolved fresh each turn, so no history is rewritten."
+        ),
     )
 
 
@@ -204,6 +221,11 @@ async def switch_chat_agent(
         )
     old_agent_id = chat.agent_id
     chat.agent_id = body.agent_id
+    # An omitted profile_id on a switch means "use the new agent's own
+    # default", not "keep the previous agent's override" -- carrying an
+    # override across an agent switch would silently apply one agent's
+    # model choice to a different agent.
+    chat.profile_id = body.profile_id
     await chats_storage.update(chat)
 
     from primer.chat.enqueue import append_agent_marker

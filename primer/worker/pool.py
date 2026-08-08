@@ -873,8 +873,10 @@ class WorkerPool:
     async def _build_graph_executor(self, session: WorkspaceSession, workspace):
         return await executor_builders.build_graph_executor(self, session, workspace)
 
-    async def _resolve_llm_model(self, agent):
-        return await executor_builders.resolve_llm_model(self, agent)
+    async def _resolve_llm_model(self, agent, override_profile_id=None):
+        return await executor_builders.resolve_llm_model(
+            self, agent, override_profile_id,
+        )
 
     def _infer_post_turn_status(self, executor, session: WorkspaceSession) -> SessionStatus:
         return executor_builders.infer_post_turn_status(self, executor, session)

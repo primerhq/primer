@@ -192,7 +192,11 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     # Resolve the profile, then the adapter it names. The profile
     # carries the provider id, the provider-side model name, the
     # context_length compaction needs, and any API-level tunables.
-    llm, llm_model = await resolve_llm_and_model(pool, agent)
+    # binding.profile_id overrides the agent's default for THIS run; the
+    # agent definition is unchanged and other sessions are unaffected.
+    llm, llm_model = await resolve_llm_and_model(
+        pool, agent, getattr(binding, "profile_id", None),
+    )
 
     # agent.tools holds scoped tool ids (toolset_id__tool_name).
     # Derive the unique toolset prefixes so we only resolve the
@@ -467,7 +471,10 @@ async def resolve_llm_and_model(
     the resolved profile rather than the agent, so resolving them apart
     would mean two lookups and an opportunity to disagree.
     """
-    resolved = await resolve_llm_model(pool, agent, override_profile_id)
+    # Through pool._resolve_llm_model, not the module function directly:
+    # this module's contract is that builders route via the pool so a test
+    # monkeypatching pool._resolve_llm_model still steers resolution.
+    resolved = await pool._resolve_llm_model(agent, override_profile_id)
     llm = await pool._provider_registry.get_llm(resolved.provider_id)
     return llm, resolved
 

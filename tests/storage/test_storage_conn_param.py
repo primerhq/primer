@@ -80,7 +80,7 @@ async def test_get_uses_provided_conn_without_acquiring() -> None:
 
     assert got is not None
     assert got.id == "a1"
-    assert got.model.provider_id == "p1"
+    assert got.model.profile_id == "p1--m1"
     assert len(conn.calls) == 1
     assert conn.calls[0][1] == ("a1",)
 
