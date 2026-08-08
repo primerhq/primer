@@ -117,6 +117,16 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
             "search_provider_id": "ssp-1",
         },
     ),
+    "model_profile": _EntityHint(
+        sample_id="anthropic-1--claude-sonnet-4-6",
+        create_body={
+            "id": "anthropic-1--claude-sonnet-4-6",
+            "description": "Sonnet with reasoning left at the vendor default.",
+            "provider_id": "anthropic-1",
+            "model_name": "claude-sonnet-4-6",
+            "context_length": 200000,
+        },
+    ),
     "llm_provider": _EntityHint(
         sample_id="anthropic-1",
         create_body={
