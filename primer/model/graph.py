@@ -317,6 +317,17 @@ class _AgentNodeRef(BaseModel):
             "raw text + history."
         ),
     )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional :class:`primer.model.model_profile.ModelProfile` id "
+            "overriding the agent's own default for this node only. The "
+            "agent's ``model.profile_id`` is a DEFAULT, so one agent "
+            "definition can run on a cheap non-reasoning profile in one "
+            "node and a reasoning profile in another. ``None`` (default) "
+            "uses the agent's own."
+        ),
+    )
     description: str | None = Field(
         default=None,
         description="Free-form human-readable label for the UI.",

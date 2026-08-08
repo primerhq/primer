@@ -11,6 +11,9 @@ covered by the same assertions.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 from datetime import datetime, timezone
 from typing import Any
@@ -26,7 +29,10 @@ from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, TextDelta
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import (
-    AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
 )
 from primer.model.storage import FieldRef, Op, OffsetPage, OrderBy, Predicate, Value
 
@@ -66,7 +72,6 @@ async def deps(fake_storage_provider, fake_provider_registry):
     await fake_storage_provider.get_storage(LLMProvider).create(
         LLMProvider(
             id="p", provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="m", context_length=8192)],
             config=AnthropicConfig(api_key=SecretStr("test")),
             limits=Limits(max_concurrency=1),
         ),
@@ -116,7 +121,7 @@ async def deps(fake_storage_provider, fake_provider_registry):
 async def _seed_agent(deps, *, response_format=None) -> None:
     await deps.storage_provider.get_storage(Agent).create(Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
         response_format=response_format,
     ))
 

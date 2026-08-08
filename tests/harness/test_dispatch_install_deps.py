@@ -77,8 +77,7 @@ name: main
 spec:
   description: "Main agent"
   model:
-    provider_id: openai
-    model_name: gpt-4
+    profile_id: openai--gpt-4
 """
 
 # Sub harness whose template intentionally produces an id that collides
@@ -89,8 +88,7 @@ name: widget
 spec:
   description: "Widget"
   model:
-    provider_id: openai
-    model_name: gpt-4
+    profile_id: openai--gpt-4
 """
 
 _EMPTY_SCHEMA = '{"type": "object", "properties": {}}'
@@ -313,7 +311,7 @@ async def test_install_cross_harness_id_collision(
     other_agent = Agent(
         id="acme__widget",
         description="external owner",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
         harness_id="h-other",
     )
     await fake_storage_provider.get_storage(Agent).create(other_agent)

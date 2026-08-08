@@ -34,15 +34,16 @@ class LLM(ABC):
     Subclasses are bound to one configured provider but may dispatch to
     multiple models on it. The ``model`` parameter on :meth:`stream`
     selects which one to use for a given call.
+
+    There is deliberately no ``list_models`` here. It used to enumerate
+    ``LLMProvider.models``, the allowlist that
+    :class:`~primer.model.model_profile.ModelProfile` replaced; adapters
+    also no longer validate ``model`` against that list, because the name
+    now reaches them from a persisted profile rather than caller input.
+    ``Embedder`` and ``CrossEncoder`` keep their own ``list_models``:
+    those families have no profiles and still carry a model list on the
+    provider row.
     """
-
-    @abstractmethod
-    async def list_models(self) -> Iterable[str]:
-        """Return the names of models served by this provider.
-
-        Returns an iterable rather than a list so adapters that paginate
-        the underlying SDK call can yield results lazily.
-        """
 
     @abstractmethod
     def stream(

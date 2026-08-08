@@ -32,7 +32,7 @@ Six LLM backends ship today (`primer/model/provider.py` `LLMProviderType`): `ope
 
 ## 3. Architecture patterns implemented
 
-- **Thin ABC, fat adapter.** `primer.int.LLM` declares four methods (`list_models`, `stream`, `count_tokens`, `aclose`); `primer.int.Embedder` declares three (`list_models`, `embed`, `aclose`). `aclose()` defaults to a no-op on both bases so adapters that hold no resources inherit cheaply. The signatures were derived from the cross-SDK comparison in `research/abc_interface.md` and `research/embedding_interface.md`.
+- **Thin ABC, fat adapter.** `primer.int.LLM` declares three methods (`stream`, `count_tokens`, `aclose`) -- it lost `list_models` when `ModelProfile` rows became the registry of what an LLM provider serves; `primer.int.Embedder` declares three (`list_models`, `embed`, `aclose`) and keeps its own `models[]`. `aclose()` defaults to a no-op on both bases so adapters that hold no resources inherit cheaply. The signatures were derived from the cross-SDK comparison in `research/abc_interface.md` and `research/embedding_interface.md`.
 - **Validate-then-stream construction.** Every adapter `__init__` checks `provider.provider` against its expected enum and `isinstance(provider.config, …)` against its expected config class, raising `ConfigError` on a mismatch. See `AnthropicLLM.__init__`, `HuggingFaceEmbedder.__init__`.
 - **Lazy SDK client.** The SDK client (`AsyncAnthropic`, `AsyncOpenAI`, `google.genai.Client`, `ollama.AsyncClient`, `SentenceTransformer`) is constructed on first use via `_get_client()` / `_get_model()` and cached on the instance, so importing or constructing an adapter never opens a connection.
 - **Shared `RateLimiter` instead of a per-adapter semaphore.** Concurrency is mediated through an injected `RateLimiter` (`primer.int.coordinator`) keyed `llm:{provider.id}` / `embedder:{provider.id}` / `cross_encoder:{provider.id}` with `max_concurrency` from `provider.limits`. When no limiter is injected the adapter falls back to `primer.coordinator.in_memory.InMemoryRateLimiter`. `tests/llm/test_adapters_no_local_semaphore.py` is a source-level pin asserting no adapter constructs its own `asyncio.Semaphore`.
@@ -46,7 +46,7 @@ Six LLM backends ship today (`primer/model/provider.py` `LLMProviderType`): `ope
 
 | Path | Responsibility |
 | --- | --- |
-| `primer/int/llm.py` | `LLM` ABC: `list_models`, `stream`, `count_tokens`, `aclose`. |
+| `primer/int/llm.py` | `LLM` ABC: `stream`, `count_tokens`, `aclose`. |
 | `primer/int/embedder.py` | `Embedder` ABC: `list_models`, `embed`, `aclose`. |
 | `primer/int/cross_encoder.py` | `CrossEncoder` ABC for rerankers. |
 | `primer/int/coordinator.py` | `RateLimiter` / `RateLimiterLease` ABCs and the `Coordinator` bundle. |
@@ -183,6 +183,57 @@ to itself) is rejected at resolve time with `BadRequestError`.
 lazily per `stream` call through the registry, so editing a member is
 picked up transparently on the next call.
 
+### Model profiles
+
+`LLMProvider.models[]` no longer exists. What a provider can serve is
+expressed by :class:`~primer.model.model_profile.ModelProfile` rows
+pointing at it, each naming one `(provider, model)` pair plus its
+API-level config. Several profiles may share a model name; that is the
+point, and it is what lets one model be registered twice with different
+reasoning settings. An Agent references a profile id, and session and chat
+create may override it per run.
+
+`ModelProfileConfig.reasoning` is a vendor-neutral level mapped per adapter
+in `primer/llm/_reasoning.py`, the same normalisation the adapters already
+do for stop reasons. Where a vendor has no true off, the closest setting is
+used:
+
+| Adapter | Wire shape | OFF maps to |
+| --- | --- | --- |
+| `openresponses` | `reasoning.effort` | `minimal` (no true off) |
+| `openchat` (openai) | `reasoning_effort` | `minimal` |
+| `openchat` (vllm/ollama/lmstudio) | `chat_template_kwargs.enable_thinking` | `false` |
+| `anthropic` | `thinking.type` + `budget_tokens` | `disabled` |
+| `gemini` | `thinking_config.thinking_budget` | `0` |
+| `ollama` | `think` | `false` |
+
+**vLLM is asymmetric and this was verified against a live server, not
+assumed.** On Chat Completions, `chat_template_kwargs.enable_thinking:
+false` works: the response carries `reasoning: null` and real content. On
+the Responses endpoint, that key, `extra_body.chat_template_kwargs`, a
+top-level `enable_thinking`, and a native `reasoning.effort` are all
+accepted WITHOUT error and all ignored, with reasoning emitted regardless.
+So `openresponses` + `vllm` maps nothing and logs a warning naming the
+`openchat` provider type as the way to get the control. An operator who
+needs reasoning control against vLLM must use `openchat`.
+
+### Transport retries
+
+Every adapter except `aggregated` is wrapped in
+:class:`~primer.llm.retrying.RetryingLLM` by the registry factory. It
+replays a stream that failed at the TRANSPORT level (`NetworkError`,
+`ProviderTimeoutError`, `ServerError`, `RateLimitError`) and never replays
+one the API explicitly rejected, because that reproduces the same rejection
+and only delays the error. Retries stop at the first streamed event: once
+output has reached the consumer, re-running would duplicate tokens.
+Backoff is exponential with full jitter, tuned by `Limits.max_retries` /
+`retry_backoff_seconds` / `retry_backoff_max_seconds`.
+
+`aggregated` is excluded deliberately: it already fails over across
+members, and wrapping it would retry the whole pool before trying the next
+member. Its members resolve through the same factory, so each is wrapped
+individually.
+
 ## 6. Lifecycle
 
 An adapter is built lazily by `ProviderRegistry` on first lookup of a provider row, cached under the row id, and dropped (with `aclose()`) when the row is invalidated. A single `stream()` call walks the validate, translate, acquire, iterate, classify sequence below. Pre-stream exceptions are classified and re-raised; once the iterator has opened, mid-stream exceptions are classified and yielded as a terminal `Error(fatal=True)` so the consumer's `async for` always closes cleanly.
@@ -234,13 +285,13 @@ Provider rows (`LLMProvider`, `EmbeddingProvider`, `CrossEncoderProvider`) are p
 
 The abstract surface callers consume:
 
-- `LLM.list_models()` returns the configured model names; no adapter queries upstream at call time. `LLM.stream(model, messages, temperature, top_p, max_output_tokens, stop, response_format, tools, tool_choice, extended)` is the async generator. `LLM.count_tokens(model, messages, tools)` returns a best-effort prompt estimate. `LLM.aclose()` releases the SDK client.
+- `LLM` has no `list_models()`: what an LLM provider serves is its `ModelProfile` rows, not a list on the adapter, so the question is answered from storage (`GET /v1/llm_providers/{id}/models`) or by a live probe (`GET /v1/llm_providers/{id}/discovered_models`). The embedder and cross-encoder families still carry their own `models[]` and keep `list_models()`. `LLM.stream(model, messages, temperature, top_p, max_output_tokens, stop, response_format, tools, tool_choice, extended)` is the async generator. `LLM.count_tokens(model, messages, tools)` returns a best-effort prompt estimate. `LLM.aclose()` releases the SDK client.
 - `Embedder.list_models()` and `Embedder.embed(model, inputs, output_dimensions, config)` returning `EmbedResponse`.
 - `CrossEncoder` exposes the reranker surface.
 
 The construction surface is `ProviderRegistry` (`primer/api/registries/provider_registry.py`). Its `_build_default_llm_factory` dispatches each `LLMProviderType` to its adapter, forwarding `rate_limiter` and `trace_llm_io`; `_build_default_embedder_factory` and `_build_default_cross_encoder_factory` do the same for their families. `bind_rate_limiter` rebuilds the factories with the coordinator's limiter once it is available.
 
-The REST surface (`primer/api/routers/providers.py`) carries provider CRUD plus `POST /v1/llm_providers/_discover_models`, a live-probe endpoint with per-backend arms. The Ollama arm probes `ollama.AsyncClient.list` and seeds a default `context_length`; the OpenRouter arm uses a plain `httpx.AsyncClient` against `/models` (not the openai SDK, which strips OpenRouter-specific catalogue fields like pricing and modality) and skips default `context_length` seeding because the catalogue carries it verbatim. The Anthropic arm returns 400 to signal the UI to fall back to a curated suggested-model list, because Anthropic has no useful list-models API. The console form catalogue lives in `ui/components/providers.jsx`.
+The REST surface (`primer/api/routers/providers.py`) carries provider CRUD plus two live-probe endpoints sharing one dispatch (`_probe_llm_models`): `POST /v1/llm_providers/_discover_models` takes a DRAFT config, for the create form before anything is persisted, and `GET /v1/llm_providers/{id}/discovered_models` reads the SAVED row's config server-side, for the detail page. The second exists because secrets are redacted on the wire: replaying a config the console fetched would authenticate upstream with `"**********"`. It also unwraps `SecretStr` before probing, since the helpers interpolate config values straight into an `Authorization` header. Note the pair `GET /{id}/models` (what is REGISTERED here, derived from `ModelProfile` rows) versus `GET /{id}/discovered_models` (what the upstream OFFERS) -- the difference is exactly what the console's Fetch action turns into new profiles. The probe has per-backend arms. The Ollama arm probes `ollama.AsyncClient.list` and seeds a default `context_length`; the OpenRouter arm uses a plain `httpx.AsyncClient` against `/models` (not the openai SDK, which strips OpenRouter-specific catalogue fields like pricing and modality) and skips default `context_length` seeding because the catalogue carries it verbatim. The Anthropic arm returns 400 to signal the UI to fall back to a curated suggested-model list, because Anthropic has no useful list-models API. The console form catalogue lives in `ui/components/providers.jsx`, which also hosts `PR_LlmProfilesPanel`: the LLM provider detail page has no models table, because an LLM provider has no `models[]`. The panel lists the profiles pointing at that provider and turns a fetch result into new ones, synthesising ids with the same `<provider>--<model-slug>` rule as the m002 migration so a created profile collides with rather than duplicates a migrated one. Already-registered models stay selectable: a second profile for the same model is the point of the entity.
 
 Inbound MCP is the mirror of the outbound MCP toolset client and is a peer surface to this subsystem: `primer/mcp/server.py` builds an `mcp.server.lowlevel.Server` exposing Primer's own tool catalogue over Streamable HTTP at `/v1/mcp`, gated by `is_exposable` filtering (`primer/mcp/safety.py`, denying `yielding_unsupported` and `needs_session`), a cookie-only exposure-config rule, and the `primer/agent/tool_manager.py` `invoke_one` helper that bypasses the approval gate and workspace dispatch. Full detail lives in the MCP and rest-api docs.
 
@@ -259,7 +310,7 @@ Inbound MCP is the mirror of the outbound MCP toolset client and is a peer surfa
 
 ## 10. Testing patterns
 
-Each adapter has a unit suite under `tests/llm/<provider>.py` or `tests/embedder/<provider>.py` driving a mocked SDK client (`AsyncMock` for the `openai` / `anthropic` / `google-genai` clients; `respx` for the OpenRouter transport; stubbed `SentenceTransformer` for the local adapters). The suites share a class layout: constructor validation, `list_models`, per-Part input mapping, tool/tool-choice/response-format translation, sampling and extended-kwargs handling, stop-reason mapping, full-stream translation, exception wrapping, concurrency, package re-export, and `count_tokens`.
+Each adapter has a unit suite under `tests/llm/<provider>.py` or `tests/embedder/<provider>.py` driving a mocked SDK client (`AsyncMock` for the `openai` / `anthropic` / `google-genai` clients; `respx` for the OpenRouter transport; stubbed `SentenceTransformer` for the local adapters). The suites share a class layout: constructor validation, per-Part input mapping, tool/tool-choice/response-format translation, sampling and extended-kwargs handling, stop-reason mapping, full-stream translation, exception wrapping, concurrency, package re-export, and `count_tokens`.
 
 `tests/llm/test_adapters_no_local_semaphore.py` is a source-level pin asserting every LLM, embedder, and cross-encoder adapter routes concurrency through the shared `RateLimiter` with no local `asyncio.Semaphore`. The shared classifiers have dedicated tests (`tests/test_openai_errors.py`, `tests/test_anthropic_errors.py`, `tests/test_google_errors.py`); the shared OpenAI helpers have direct coverage (`tests/llm/test_openai_compat.py`, `tests/llm/test_openai_common.py`). Per-provider token counters are tested under `tests/llm/_tokenizer/`.
 
@@ -286,7 +337,7 @@ Integration smokes live under `tests/integration/test_<provider>_smoke.py`, each
 - **`_get_client` substitutes a `no-key-required` sentinel when the OpenAI api_key is empty or `None`.** Why: `AsyncOpenAI` rejects `api_key=None` outright, so the sentinel keeps the SDK constructor happy for unauthenticated LM Studio / Ollama / vLLM endpoints. Spec: docs/superpowers/specs/2026-04-26-openresponses-llm-adapter-design.md.
 - **OpenResponses hardcodes `store=False`, keeps system messages inline as `system` input items, and silently ignores the `stop` knob with a WARNING.** Why: the universal interface always sends full history so server-side retention has no benefit; `instructions` accepts only one string and would lose ordering across multiple system messages; OpenAI Responses has no `stop` parameter and the foundation contract ignores unsupported knobs. Spec: docs/superpowers/specs/2026-04-26-openresponses-llm-adapter-design.md.
 - **The Chat Completions request/response shaping was factored out of `OpenChatLLM` into `primer/llm/_openai_compat.py` once `OpenRouterLLM` arrived.** Why: the two adapters would otherwise duplicate every translation (messages, tools, tool_choice, response_format, SSE chunk parsing); the sampling builder lifted earlier into `_openai_common.py` while the rest of the shaping stayed adapter-local until a second consumer existed. Spec: docs/superpowers/specs/2026-05-30-openchat-llm-provider-design.md.
-- **OpenRouter hard-codes its base URL, requires `api_key`, sets `extra="forbid"`, and `list_models` returns the configured slugs verbatim.** Why: OpenRouter is a single always-authenticated hosted endpoint, its only field overlapping with sibling configs is `api_key` so `extra="forbid"` is the only union discriminator, and operator-typed slugs may be gated or post-date the last catalogue fetch so calling the catalogue per dispatch is wasted IO. Spec: docs/superpowers/specs/2026-06-04-openrouter-llm-provider-design.md.
+- **OpenRouter hard-codes its base URL, requires `api_key`, and sets `extra="forbid"`.** Why: OpenRouter is a single always-authenticated hosted endpoint, and its only field overlapping with sibling configs is `api_key`, so `extra="forbid"` is the only union discriminator. Spec: docs/superpowers/specs/2026-06-04-openrouter-llm-provider-design.md.
 - **The HuggingFace embedder L2-normalises every output vector and prepends model-family query/document prompt prefixes.** Why: every vector store Primer ships ranks by cosine similarity, which is only well-defined after L2 normalisation, and asymmetric-retrieval models (BGE, E5, nomic-embed-text) were trained to expect different prefixes on queries versus documents. Spec: docs/superpowers/specs/2026-04-26-huggingface-embedder-design.md.
 - **The HuggingFace embedder id `huggingface` is reserved and auto-bootstrapped with an empty-string token.** Why: local embeddings should work out of the box for a new operator with no API key and no config, and an empty `SecretStr` becomes `token=None` on the `SentenceTransformer` call, which is correct for public Hub models. Spec: docs/superpowers/specs/2026-04-26-huggingface-embedder-design.md.
 - **The Gemini embedder reuses `GoogleConfig` and `classify_google_exception` and honours Google-only knobs (`task_type`, `document_ocr`, `audio_track_extraction`) that the OpenAI embedder ignores.** Why: sharing the config and classifier keeps the Gemini LLM and embedder consistent, and the Gemini endpoint actually consumes those knobs while the OpenAI endpoint does not. Spec: docs/superpowers/specs/2026-04-26-gemini-embedder-design.md.

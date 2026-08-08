@@ -52,7 +52,7 @@ def _build_default_llm_factory(
     ``resolve_member`` is threaded into the aggregated LLM provider so its
     members resolve lazily through the caller's own ``get_llm``.
     """
-    def _factory(provider: LLMProvider) -> LLM:  # pragma: no cover
+    def _construct(provider: LLMProvider) -> LLM:  # pragma: no cover
         match provider.provider:
             case LLMProviderType.OPENRESPONSES:
                 from primer.llm.openresponses import OpenResponsesLLM
@@ -97,6 +97,18 @@ def _build_default_llm_factory(
                 raise ConfigError(
                     f"unknown LLM provider type {provider.provider!r}"
                 )
+
+    def _factory(provider: LLMProvider) -> LLM:
+        adapter = _construct(provider)
+        if provider.provider is LLMProviderType.AGGREGATED:
+            # Already fails over across its members; wrapping it would retry
+            # the whole pool before trying the next member. Its members are
+            # ordinary providers resolved through this same factory, so they
+            # each get their own retries -- which is the order you want.
+            return adapter
+        from primer.llm.retrying import RetryingLLM
+        return RetryingLLM(adapter, provider)
+
     return _factory
 
 

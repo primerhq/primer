@@ -7,6 +7,9 @@ stream/discover paths run in-process with no network IO.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import json
 import logging
 
@@ -40,7 +43,6 @@ from primer.model.except_ import (
 )
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenRouterConfig,
@@ -64,7 +66,7 @@ def _make_provider(
             app_url=app_url,
         ),
         models=[
-            LLMModel(name=n, context_length=200000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=n, context_length=200000, config=ModelProfileConfig())
             for n in (models or ["anthropic/claude-3.5-sonnet"])
         ],
         limits=Limits(
@@ -126,7 +128,6 @@ class TestConstructor:
         provider = LLMProvider(
             id="x",
             provider=LLMProviderType.OPENROUTER,
-            models=[LLMModel(name="anthropic/claude-3.5-sonnet", context_length=1000)],
             config=OpenChatConfig(
                 url=HttpUrl("https://x/v1/"),
                 api_key=SecretStr("sk-x"),
@@ -162,29 +163,6 @@ class TestGetClient:
             await llm.aclose()
 
 
-class TestListModels:
-    async def test_sorted_dedup(self) -> None:
-        llm = OpenRouterLLM(_make_provider(models=["openai/gpt-4o", "anthropic/claude-3.5-sonnet"]))
-        try:
-            assert list(await llm.list_models()) == [
-                "anthropic/claude-3.5-sonnet",
-                "openai/gpt-4o",
-            ]
-        finally:
-            await llm.aclose()
-
-    async def test_no_upstream_call(self) -> None:
-        llm = OpenRouterLLM(_make_provider())
-        try:
-            with respx.mock(assert_all_called=False) as router:
-                router.get(f"{OPENROUTER_BASE_URL}/models").mock(
-                    return_value=httpx.Response(500)
-                )
-                assert list(await llm.list_models()) == ["anthropic/claude-3.5-sonnet"]
-        finally:
-            await llm.aclose()
-
-
 class TestCountTokens:
     async def test_positive(self) -> None:
         llm = OpenRouterLLM(_make_provider())
@@ -200,18 +178,6 @@ class TestCountTokens:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = OpenRouterLLM(_make_provider(models=["anthropic/claude-3.5-sonnet"]))
-        try:
-            with pytest.raises(ModelNotFoundError, match="nope"):
-                async for _ in llm.stream(
-                    model="nope",
-                    messages=[Message(role="user", parts=[TextPart(text="hi")])],
-                ):
-                    pass
-        finally:
-            await llm.aclose()
-
     @respx.mock
     async def test_happy_path_events(self) -> None:
         _mock_stream()

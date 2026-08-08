@@ -42,7 +42,7 @@ def _make_runner(
     runner._agent = agent or MagicMock(compaction_prompt=None, system_prompt=None)
     runner._llm = llm or MagicMock()
     runner._model = MagicMock(name="gpt-4o", context_length=10_000)
-    runner._model.name = "gpt-4o"  # MagicMock(name=...) sets the repr, not the attr.
+    runner._model.model_name = "gpt-4o"  # MagicMock(name=...) sets the repr, not the attr.
     tm = tool_manager
     if tm is None:
         tm = MagicMock()

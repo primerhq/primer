@@ -10,6 +10,9 @@ the ``_get_client`` boundary.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import json
 import logging
@@ -79,7 +82,6 @@ from primer.model.except_ import (
 from primer.model.provider import (
     GoogleConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -95,7 +97,7 @@ def _make_provider(
         id="gemini-default",
         provider=LLMProviderType.GEMINI,
         models=[
-            LLMModel(name=name, context_length=1_000_000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=1_000_000, config=ModelProfileConfig())
             for name in (models or ["gemini-2.5-flash"])
         ],
         config=GoogleConfig(api_key=SecretStr(api_key)),
@@ -566,15 +568,6 @@ def _text_stream_chunks() -> list:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = GeminiLLM(_make_provider(models=["gemini-2.5-flash"]))
-        with pytest.raises(ModelNotFoundError, match="not-real"):
-            async for _ in llm.stream(
-                model="not-real",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_sequence(self) -> None:
         llm = GeminiLLM(_make_provider())
         mock_client = MagicMock()
@@ -765,7 +758,6 @@ class TestAdapterLifecycle:
         provider = LLMProvider(
             id="g",
             provider=LLMProviderType.GEMINI,
-            models=[LLMModel(name="gemini-2.5-flash", context_length=1024)],
             config=OpenResponsesConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://api.openai.com/v1/"),
                 api_key=SecretStr("sk-x"),
@@ -777,10 +769,6 @@ class TestAdapterLifecycle:
 
     def test_accepts_empty_api_key(self) -> None:
         assert GeminiLLM(_make_provider(api_key=""))._client is None
-
-    async def test_list_models(self) -> None:
-        llm = GeminiLLM(_make_provider(models=["x", "y"]))
-        assert list(await llm.list_models()) == ["x", "y"]
 
     def test_get_client_lazy_and_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         inst = MagicMock()

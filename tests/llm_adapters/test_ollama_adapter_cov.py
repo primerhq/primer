@@ -7,6 +7,9 @@ driven through a patched ``ollama.AsyncClient`` returning fake chunks.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import json
 import logging
@@ -70,7 +73,6 @@ from primer.model.except_ import (
 )
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OllamaConfig,
@@ -89,7 +91,7 @@ def _make_provider(
         id="ollama-cov",
         provider=LLMProviderType.OLLAMA,
         models=[
-            LLMModel(name=name, context_length=8192) for name in (models or ["llama3"])
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=8192, config=ModelProfileConfig()) for name in (models or ["llama3"])
         ],
         config=OllamaConfig(
             url=HttpUrl(url),
@@ -539,7 +541,6 @@ class TestConstructor:
         provider = LLMProvider(
             id="x",
             provider=LLMProviderType.OLLAMA,
-            models=[LLMModel(name="llama3", context_length=8192)],
             config=OpenResponsesConfig(url=HttpUrl("https://x/v1/"), api_key=SecretStr("sk-x")),
             limits=Limits(max_concurrency=1),
         )
@@ -582,10 +583,6 @@ class TestGetClient:
 
 
 class TestListModelsAndTokens:
-    async def test_list_models(self) -> None:
-        llm = OllamaLLM(_make_provider(models=["llama3", "mistral"]))
-        assert list(await llm.list_models()) == ["llama3", "mistral"]
-
     async def test_count_tokens_delegates(self) -> None:
         llm = OllamaLLM(_make_provider())
         with patch("primer.llm.ollama.count_tokens_hf", return_value=17) as mock:
@@ -608,14 +605,6 @@ class TestAclose:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = OllamaLLM(_make_provider(models=["llama3"]))
-        with pytest.raises(ModelNotFoundError, match="not-real"):
-            async for _ in llm.stream(
-                model="not-real", messages=[Message(role="user", parts=[TextPart(text="hi")])]
-            ):
-                pass
-
     async def test_happy_path_events(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = OllamaLLM(_make_provider())
         client = _patched_client(monkeypatch)

@@ -46,6 +46,7 @@ from primer.model.chat import (
     Done,
     Error,
     Message,
+    ReasoningDelta,
     StreamEvent,
     TextDelta,
     TextPart,
@@ -72,7 +73,7 @@ if TYPE_CHECKING:
     from primer.agent.tool_manager import ToolExecutionManager
     from primer.int.llm import LLM
     from primer.model.agent import Agent
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -261,7 +262,7 @@ class ChatTurnRunner:
         *,
         agent: "Agent",
         llm: "LLM",
-        llm_model: "LLMModel",
+        llm_model: "ResolvedModel",
         tool_manager: "ToolExecutionManager",
         chat_storage: Storage[Chat],
         message_storage: Storage[ChatMessage],
@@ -535,7 +536,7 @@ class ChatTurnRunner:
 
             try:
                 async for event in self._llm.stream(
-                    model=self._model.name,
+                    model=self._model.model_name,
                     messages=prompt,
                     tools=tools or None,
                     response_format=self._response_format,
@@ -570,7 +571,7 @@ class ChatTurnRunner:
                 friendly = _diagnose_unsupported_attachment(
                     exc=exc,
                     prompt_messages=prompt,
-                    model_name=self._model.name,
+                    model_name=self._model.model_name,
                 )
                 if friendly is not None:
                     # Strip the rejected binary parts from every
@@ -920,6 +921,17 @@ class ChatTurnRunner:
             )
             return
 
+        if isinstance(event, ReasoningDelta):
+            # Display-only: persisted so the operator can inspect how the
+            # model got there, but skipped by _load_history so it never
+            # re-enters the prompt.
+            yield await self._append(
+                chat,
+                kind="reasoning",
+                payload={"delta": event.text},
+            )
+            return
+
         if isinstance(event, ToolCallStart):
             tool_names[event.id] = event.name
             return
@@ -958,7 +970,7 @@ class ChatTurnRunner:
             self._record_usage(event)
             return
 
-        # StreamStart / ReasoningDelta / Done / MediaDelta /
+        # StreamStart / Done / MediaDelta /
         # ToolCallDelta / ExtendedEvent — silently ignored. ToolCallDelta
         # carries argument JSON fragments; ToolCallEnd already exposes
         # the parsed argument object so we don't need to buffer deltas.
@@ -1111,6 +1123,14 @@ class ChatTurnRunner:
                         ),
                     )
                 continue
+            if kind == "reasoning":
+                # Display-only, and deliberately NOT replayed. Feeding a
+                # model its own prior reasoning back as context is either
+                # rejected outright (providers that scope thinking blocks
+                # to the turn that produced them) or degrades the next
+                # answer. Persisted so the operator can inspect it; skipped
+                # here so it never re-enters the prompt.
+                continue
             # done / yielded / resumed / error / agent_marker — boundary
             # markers; skip. (agent_marker rows carry no model-visible
             # content — they're legibility markers for the agent-timeline
@@ -1166,7 +1186,7 @@ class ChatTurnRunner:
             tools = None
         triggered, _count = await _mixin_should_compact(
             llm=self._llm,
-            model_name=self._model.name,
+            model_name=self._model.model_name,
             context_length=self._model.context_length,
             history=history,
             tools=tools or None,
@@ -1198,7 +1218,7 @@ class ChatTurnRunner:
             strategy=strategy,
             history=history,
             compaction_prompt=compaction_prompt,
-            model_name=self._model.name,
+            model_name=self._model.model_name,
             context_length=self._model.context_length,
             **tool_kwargs,
         )
@@ -1212,7 +1232,7 @@ class ChatTurnRunner:
                 "summary": result.summary_text,
                 "replaced_from_seq": 1,
                 "replaced_to_seq": next_seq - 1,
-                "model": self._model.name,
+                "model": self._model.model_name,
                 "tokens_before": result.tokens_before,
                 "tokens_after": result.tokens_after,
                 "compaction_prompt_source": prompt_source,

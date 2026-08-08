@@ -62,6 +62,7 @@ class OpenResponsesFlavor(str, Enum):
 
     OPENAI = "openai"
     LMSTUDIO = "lmstudio"
+    VLLM = "vllm"
     OTHER = "other"
 
 
@@ -299,20 +300,6 @@ class AggregatedLLMConfig(BaseModel):
         return out
 
 
-class LLMModel(BaseModel):
-    """A single LLM model exposed by a provider."""
-
-    name: str = Field(
-        ...,
-        min_length=1,
-        description="Provider-side model identifier (e.g. 'gpt-4o-mini').",
-    )
-    context_length: PositiveInt = Field(
-        ...,
-        description="Maximum number of tokens the model accepts in a request.",
-    )
-
-
 class LLMProvider(Identifiable):
     """A configured LLM provider entry.
 
@@ -330,11 +317,11 @@ class LLMProvider(Identifiable):
         ...,
         description="Which LLM provider backend this entry targets.",
     )
-    models: list[LLMModel] = Field(
-        ...,
-        min_length=1,
-        description="Models permitted on this provider; must contain at least one.",
-    )
+    # NOTE: the former ``models: list[LLMModel]`` allowlist was removed when
+    # ModelProfile became the sole registry of what a provider can serve.
+    # A provider row now carries connection config only; which models are
+    # reachable through it is expressed by the ModelProfile rows pointing at
+    # it. See primer/model/model_profile.py and migration m002.
     config: (
         OpenResponsesConfig
         | OpenChatConfig

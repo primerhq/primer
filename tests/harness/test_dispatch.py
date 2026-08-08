@@ -32,9 +32,9 @@ _SCHEMA_JSON = """\
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "type": "object",
-  "required": ["model_name"],
+  "required": ["profile_id"],
   "properties": {
-    "model_name": {"type": "string"},
+    "profile_id": {"type": "string"},
     "description": {"type": "string"}
   }
 }
@@ -46,8 +46,7 @@ name: assistant
 spec:
   description: "{{ overrides.description | default('A helpful assistant') }}"
   model:
-    provider_id: "openai"
-    model_name: "{{ overrides.model_name }}"
+    profile_id: "{{ overrides.profile_id }}"
 """
 
 
@@ -115,7 +114,7 @@ def _make_harness(
         git_url=git_url,
         ref="main",
         subpath=None,
-        overrides=overrides or {"model_name": "gpt-4"},
+        overrides=overrides or {"profile_id": "openai--gpt-4"},
         status=status,
         pending_operation=pending_operation,
         created_at=now,
@@ -191,7 +190,7 @@ async def test_install_happy_path(fake_storage_provider, bare_repo):
     # Step 1: fetch so we have available_commit and schema
     harness = _make_harness(
         "h3", git_url=bare_repo, slug="acme3", status=HarnessStatus.DRAFT,
-        overrides={"model_name": "gpt-4"},
+        overrides={"profile_id": "openai--gpt-4"},
     )
     await harness_storage.create(harness)
     await run_one_harness_operation(deps, harness_id="h3", worker_id="w1")
@@ -218,7 +217,7 @@ async def test_install_happy_path(fake_storage_provider, bare_repo):
     agent = await agent_storage.get("acme3__assistant")
     assert agent is not None
     assert agent.harness_id == "h3"
-    assert agent.model.model_name == "gpt-4"
+    assert agent.model.profile_id == "openai--gpt-4"
 
     # HarnessRendering snapshot must be written
     rendering = await fake_storage_provider.get_storage(HarnessRendering).get("h3")
@@ -241,15 +240,15 @@ async def test_install_invalid_overrides(fake_storage_provider, bare_repo):
     # Fetch first (with valid overrides)
     harness = _make_harness(
         "h4", git_url=bare_repo, slug="acme4", status=HarnessStatus.DRAFT,
-        overrides={"model_name": "gpt-4"},
+        overrides={"profile_id": "openai--gpt-4"},
     )
     await harness_storage.create(harness)
     await run_one_harness_operation(deps, harness_id="h4", worker_id="w1")
 
-    # Now set invalid overrides (missing required model_name) and install
+    # Now set invalid overrides (missing required profile_id) and install
     fetched = await harness_storage.get("h4")
     fetched = fetched.model_copy(update={
-        "overrides": {},  # missing required model_name
+        "overrides": {},  # missing required profile_id
         "pending_operation": HarnessOperation.INSTALL,
     })
     await harness_storage.update(fetched)
@@ -275,7 +274,7 @@ async def test_sync_noop_fast_path(fake_storage_provider, bare_repo):
     # Fetch + install
     harness = _make_harness(
         "h5", git_url=bare_repo, slug="acme5", status=HarnessStatus.DRAFT,
-        overrides={"model_name": "gpt-4"},
+        overrides={"profile_id": "openai--gpt-4"},
     )
     await harness_storage.create(harness)
     await run_one_harness_operation(deps, harness_id="h5", worker_id="w1")
@@ -340,7 +339,7 @@ async def test_uninstall_cleans_up(fake_storage_provider, bare_repo):
     # Fetch + install first
     harness = _make_harness(
         "h6", git_url=bare_repo, slug="acme6", status=HarnessStatus.DRAFT,
-        overrides={"model_name": "gpt-4"},
+        overrides={"profile_id": "openai--gpt-4"},
     )
     await harness_storage.create(harness)
     await run_one_harness_operation(deps, harness_id="h6", worker_id="w1")
@@ -389,7 +388,7 @@ async def test_uninstall_no_cascade_keeps_entities(fake_storage_provider, bare_r
 
     harness = _make_harness(
         "h7", git_url=bare_repo, slug="acme7", status=HarnessStatus.DRAFT,
-        overrides={"model_name": "gpt-4"},
+        overrides={"profile_id": "openai--gpt-4"},
     )
     await harness_storage.create(harness)
     await run_one_harness_operation(deps, harness_id="h7", worker_id="w1")

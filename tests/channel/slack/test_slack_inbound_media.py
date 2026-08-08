@@ -130,7 +130,7 @@ async def _make_sp(tmp_path) -> SqliteStorageProvider:
     # agent so the router can resolve-or-create a chat for the inbound message.
     await sp.get_storage(Agent).create(Agent(
         id="agent-x", description="Xavier",
-        model={"provider_id": "lp", "model_name": "m"}))
+        model={"profile_id": "lp--m"}))
     await sp.get_storage(Channel).create(_make_channel())
     return sp
 

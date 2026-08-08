@@ -90,6 +90,3 @@ class TestLLMProviderAggregatedDispatch:
         assert row.config.strategy == RoutingStrategy.ROUND_ROBIN
         assert row.config.members[0].provider_id == "p1"
 
-    def test_models_required_min_length_one(self):
-        with pytest.raises(ValidationError):
-            LLMProvider.model_validate(self._body(models=[]))

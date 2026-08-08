@@ -24,7 +24,7 @@ def _make_agent(*, id: str = "ag-bot", harness_id: str | None = None) -> Agent:
         name="Bot",
         description="d",
         harness_id=harness_id,
-        model={"provider_id": "openai", "model_name": "gpt-4"},
+        model={"profile_id": "openai--gpt-4"},
         temperature=0.2,
         tools=[],
         created_at=datetime.now(timezone.utc),
@@ -92,8 +92,8 @@ async def test_create_outbound_harness_with_tracked_entities(client):
                     "template_name": "assistant",
                     "overrides": [
                         {
-                            "field_path": "/model/provider_id",
-                            "override_path": "llm.provider_id",
+                            "field_path": "/model/profile_id",
+                            "override_path": "llm.profile_id",
                             "widget": "llm-provider-picker",
                         },
                     ],

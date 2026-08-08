@@ -140,7 +140,7 @@ async def _seed_agent(p) -> Agent:
     agent = Agent(
         id="ag-e2a",
         description="event-to-action agent",
-        model=AgentModel(provider_id="prov", model_name="model"),
+        model=AgentModel(profile_id="prov--model"),
     )
     await p.get_storage(Agent).create(agent)
     return agent

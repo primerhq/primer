@@ -277,7 +277,7 @@ def _agent(id="agt-1") -> Agent:
     return Agent(
         id=id,
         description="research agent that finds papers",
-        model=AgentModel(provider_id="anthropic-1", model_name="claude-sonnet-4-6"),
+        model=AgentModel(profile_id="anthropic-1--claude-sonnet-4-6"),
         tools=[],
         system_prompt=["you find scientific papers"],
     )

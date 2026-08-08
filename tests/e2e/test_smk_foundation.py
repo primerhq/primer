@@ -100,7 +100,7 @@ async def test_persistence_survives_restart(authed_client, base_url, unique_suff
     aid = f"persist-{unique_suffix}"
     await authed_client.post(
         "/v1/agents",
-        json={"id": aid, "description": "persist", "model": {"provider_id": "p", "model_name": "m"}, "tools": []},
+        json={"id": aid, "description": "persist", "model": {"profile_id": "p--m"}, "tools": []},
     )
     restart_server(base_url)
     got = await authed_client.get(f"/v1/agents/{aid}")

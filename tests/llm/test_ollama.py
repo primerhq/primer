@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import json
 import logging
@@ -65,7 +68,6 @@ from primer.model.except_ import (
 )
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OllamaConfig,
@@ -92,7 +94,7 @@ def _make_provider(
         id="ollama-default",
         provider=LLMProviderType.OLLAMA,
         models=[
-            LLMModel(name=name, context_length=8192)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=8192, config=ModelProfileConfig())
             for name in (models or ["llama3"])
         ],
         config=config,
@@ -173,7 +175,6 @@ class TestConstructor:
         provider = LLMProvider(
             id="x",
             provider=LLMProviderType.OLLAMA,
-            models=[LLMModel(name="llama3", context_length=8192)],
             config=OpenResponsesConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://x/v1/"),
                 api_key=SecretStr("sk-x"),
@@ -200,15 +201,7 @@ class TestConstructor:
 
 
 # ============================================================================
-# TestListModels
 # ============================================================================
-
-
-class TestListModels:
-    async def test_returns_configured_names(self) -> None:
-        provider = _make_provider(models=["llama3", "mistral"])
-        llm = OllamaLLM(provider)
-        assert list(await llm.list_models()) == ["llama3", "mistral"]
 
 
 # ============================================================================
@@ -886,16 +879,6 @@ class TestClassifyOllamaException:
 
 
 class TestStream:
-    async def test_unknown_model_raises_model_not_found(self) -> None:
-        provider = _make_provider(models=["llama3"])
-        llm = OllamaLLM(provider)
-        with pytest.raises(ModelNotFoundError, match="not-a-real-model"):
-            async for _ in llm.stream(
-                model="not-a-real-model",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_emits_start_text_usage_done(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

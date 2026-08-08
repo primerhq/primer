@@ -103,6 +103,14 @@ class ChatCreateBody(BaseModel):
         min_length=1,
         description="Agent that handles every turn of this chat.",
     )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override. None uses the agent's own "
+            "default. Applies from the next turn onward: the agent and its "
+            "prompt are resolved fresh each turn, so no history is rewritten."
+        ),
+    )
 
 
 @chats_router.post(
@@ -136,6 +144,7 @@ async def create_chat(
     chat = Chat(
         id=f"chat-{uuid.uuid4().hex[:12]}",
         agent_id=body.agent_id,
+        profile_id=body.profile_id,
         created_at=datetime.now(timezone.utc),
         initiated_by=(
             PrincipalRef.from_principal(actor) if actor is not None
@@ -151,6 +160,14 @@ class ChatSwitchAgentBody(BaseModel):
     agent_id: str = Field(
         ..., min_length=1,
         description="Id of the agent to switch this chat to.",
+    )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override. None uses the agent's own "
+            "default. Applies from the next turn onward: the agent and its "
+            "prompt are resolved fresh each turn, so no history is rewritten."
+        ),
     )
 
 
@@ -204,6 +221,11 @@ async def switch_chat_agent(
         )
     old_agent_id = chat.agent_id
     chat.agent_id = body.agent_id
+    # An omitted profile_id on a switch means "use the new agent's own
+    # default", not "keep the previous agent's override" -- carrying an
+    # override across an agent switch would silently apply one agent's
+    # model choice to a different agent.
+    chat.profile_id = body.profile_id
     await chats_storage.update(chat)
 
     from primer.chat.enqueue import append_agent_marker
@@ -748,29 +770,29 @@ async def compact_chat(
             f"Chat {chat_id!r} references agent {chat.agent_id!r} which "
             "no longer exists; cannot compact."
         )
+    from primer.model_profile import resolve_model
+
+    # The profile carries the provider id, the wire model name, and the
+    # context length compaction budgets against. chat.profile_id overrides
+    # the agent default when the operator set one.
     try:
-        llm = await provider_registry.get_llm(agent.model.provider_id)
+        llm_model = await resolve_model(
+            sp,
+            default_profile_id=agent.model.profile_id,
+            override_profile_id=getattr(chat, "profile_id", None),
+        )
+    except NotFoundError as exc:
+        raise ConfigError(
+            f"Agent {agent.id!r} names model profile "
+            f"{agent.model.profile_id!r}, which does not exist: {exc}"
+        ) from exc
+    try:
+        llm = await provider_registry.get_llm(llm_model.provider_id)
     except (NotFoundError, ConfigError) as exc:
         raise ConfigError(
             f"Agent {agent.id!r} has no resolvable LLM provider "
-            f"({agent.model.provider_id!r}): {exc}"
+            f"({llm_model.provider_id!r}): {exc}"
         ) from exc
-    provider_rows = sp.get_storage(LLMProvider)
-    provider_row = await provider_rows.get(agent.model.provider_id)
-    if provider_row is None:
-        raise ConfigError(
-            f"LLMProvider {agent.model.provider_id!r} configured on "
-            f"agent {agent.id!r} does not exist."
-        )
-    llm_model = next(
-        (m for m in provider_row.models if m.name == agent.model.model_name),
-        None,
-    )
-    if llm_model is None:
-        raise ConfigError(
-            f"Model {agent.model.model_name!r} is not enabled on "
-            f"provider {agent.model.provider_id!r}."
-        )
 
     # 4) Load current history via the runner's helper so compaction-
     #    marker reassembly stays consistent with pre-turn compaction.
@@ -804,7 +826,7 @@ async def compact_chat(
         strategy=CompactionStrategy(),
         history=list(history),
         compaction_prompt=compaction_prompt,
-        model_name=llm_model.name,
+        model_name=llm_model.model_name,
         context_length=llm_model.context_length,
     )
 
@@ -824,7 +846,7 @@ async def compact_chat(
             "summary": result.summary_text,
             "replaced_from_seq": 1,
             "replaced_to_seq": next_seq - 1,
-            "model": llm_model.name,
+            "model": llm_model.model_name,
             "tokens_before": result.tokens_before,
             "tokens_after": result.tokens_after,
             "compaction_prompt_source": prompt_source,
@@ -1211,32 +1233,30 @@ async def _seed_usage_cache_from_history(sp, chat_id: str) -> None:
 
 
 async def _resolve_context_length(sp, chat_id: str) -> int:
-    """Resolve the agent's model ``context_length`` for a chat.
+    """Resolve the chat's effective ``context_length``.
 
-    Walks ``chat → agent → llm_provider → model`` and returns the
-    model's ``context_length``. Returns 0 on any missing link — the
-    ``usage`` envelope just degrades to ``used_pct=0.0`` rather than
-    failing the WS upgrade. Cached once per WS session in
-    :func:`chat_ws` so we don't re-resolve every turn.
+    Walks ``chat -> agent -> model profile``. The profile carries
+    ``context_length`` directly, so this no longer has to scan a
+    provider's model list. ``chat.profile_id`` overrides the agent's
+    default when the operator set one.
+
+    Returns 0 on any missing link: the ``usage`` envelope degrades to
+    ``used_pct=0.0`` rather than failing the WS upgrade. Cached once per
+    WS session in :func:`chat_ws` so we don't re-resolve every turn.
     """
-    chat_storage = sp.get_storage(Chat)
-    chat = await chat_storage.get(chat_id)
+    from primer.model.model_profile import ModelProfile
+
+    chat = await sp.get_storage(Chat).get(chat_id)
     if chat is None or not chat.agent_id:
         return 0
     agent = await sp.get_storage(Agent).get(chat.agent_id)
     if agent is None or agent.model is None:
         return 0
-    provider_id = agent.model.provider_id
-    model_name = agent.model.model_name
-    if not provider_id or not model_name:
+    profile_id = getattr(chat, "profile_id", None) or agent.model.profile_id
+    if not profile_id:
         return 0
-    provider_row = await sp.get_storage(LLMProvider).get(provider_id)
-    if provider_row is None:
-        return 0
-    for m in provider_row.models:
-        if m.name == model_name:
-            return m.context_length
-    return 0
+    profile = await sp.get_storage(ModelProfile).get(profile_id)
+    return profile.context_length if profile is not None else 0
 
 
 def _message_to_wire(msg: ChatMessage) -> dict[str, Any]:

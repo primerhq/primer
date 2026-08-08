@@ -26,6 +26,7 @@ from primer.api.deps import (
     get_agent_storage,
     get_graph_storage,
     get_llm_provider_storage,
+    get_model_profile_storage,
     get_session_storage,
     get_storage_provider,
     get_toolset_storage,
@@ -63,6 +64,7 @@ async def agent_status(
     agents=Depends(get_agent_storage),
     llm_providers=Depends(get_llm_provider_storage),
     toolsets=Depends(get_toolset_storage),
+    model_profiles=Depends(get_model_profile_storage),
 ) -> dict:
     """Returns ``{"ok": bool, "issues": [...]}`` describing any
     unresolved references on the agent. Does NOT call the live LLM
@@ -75,9 +77,18 @@ async def agent_status(
 
     issues: list[str] = []
 
-    provider_id = agent.model.provider_id
-    if await llm_providers.get(provider_id) is None:
-        issues.append(f"LLMProvider {provider_id!r} does not exist")
+    # The agent names a ModelProfile, which in turn names the provider.
+    # Both hops are reported independently so a broken agent says WHICH
+    # link is missing rather than just "unhealthy".
+    profile_id = agent.model.profile_id
+    profile = await model_profiles.get(profile_id)
+    if profile is None:
+        issues.append(f"ModelProfile {profile_id!r} does not exist")
+    elif await llm_providers.get(profile.provider_id) is None:
+        issues.append(
+            f"LLMProvider {profile.provider_id!r} referenced by ModelProfile "
+            f"{profile_id!r} does not exist"
+        )
 
     # ``agent.tools`` carries scoped tool ids of the form
     # ``<toolset_id>__<bare_name>`` (or, for tools with no scope prefix,

@@ -67,6 +67,20 @@ function AgentsPage({ onOpen, pushToast }) {
     (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
     { pollMs: null }
   );
+  // An agent names a model PROFILE, not a provider+model pair. The profile
+  // is what carries the provider, the wire model name, and the API-level
+  // config, so the list resolves it to show the vendor dot and the
+  // underlying model -- two agents on different profiles may share a model.
+  const profiles = useResource(
+    "agents:model-profiles",
+    (signal) => apiFetch("GET", "/model_profiles?limit=500", null, { signal }),
+    { pollMs: null }
+  );
+  const profileById = React.useMemo(() => {
+    const m = {};
+    (profiles.data?.items ?? []).forEach((pr) => { m[pr.id] = pr; });
+    return m;
+  }, [profiles.data]);
 
   const items = list.items;
   const filtered = React.useMemo(() => {
@@ -154,8 +168,10 @@ function AgentsPage({ onOpen, pushToast }) {
             items={filtered}
             empty={items.length === 0 ? "No agents yet." : "No agents match."}
             renderCard={(a) => {
-              const providerId = a.model?.provider_id;
-              const modelName = a.model?.model_name;
+              const profileId = a.model?.profile_id;
+              const profile = profileById[profileId];
+              const providerId = profile?.provider_id;
+              const modelName = profile?.model_name;
               const provider = (providers.data?.items ?? []).find((p) => p.id === providerId);
               const vendorColor = AG_PROVIDER_COLORS[provider?.provider] || "var(--text-3)";
               const status = perRowStatus[a.id];
@@ -173,10 +189,10 @@ function AgentsPage({ onOpen, pushToast }) {
               return (
                 <Card
                   title={a.id}
-                  subtitle={providerId
+                  subtitle={profileId
                     ? <span className="mono">
                         <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: vendorColor, marginRight: 6 }}></span>
-                        {providerId}{modelName ? <span className="muted"> · {modelName}</span> : null}
+                        {profileId}{providerId ? <span className="muted"> · {providerId}/{modelName}</span> : <span className="muted"> · (missing profile)</span>}
                       </span>
                     : <span className="muted">(unconfigured)</span>}
                   pill={statusPill}
@@ -194,7 +210,7 @@ function AgentsPage({ onOpen, pushToast }) {
             <tr>
               <th>ID</th>
               <th>Description</th>
-              <th>Provider · model</th>
+              <th>Model profile</th>
               <th>Tools</th>
               <th style={{ textAlign: "right" }}>Sessions</th>
               <th style={{ width: 100 }}>Status</th>
@@ -222,8 +238,10 @@ function AgentsPage({ onOpen, pushToast }) {
                 <tr><td colSpan={6} className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>No agents match.</td></tr>
               )
             ) : filtered.map((a) => {
-              const providerId = a.model?.provider_id;
-              const modelName = a.model?.model_name;
+              const profileId = a.model?.profile_id;
+              const profile = profileById[profileId];
+              const providerId = profile?.provider_id;
+              const modelName = profile?.model_name;
               const provider = (providers.data?.items ?? []).find((p) => p.id === providerId);
               const vendorColor = AG_PROVIDER_COLORS[provider?.provider] || "var(--text-3)";
               const status = perRowStatus[a.id];
@@ -235,10 +253,10 @@ function AgentsPage({ onOpen, pushToast }) {
                     {a.description || <span style={{ color: "var(--text-4)" }}>—</span>}
                   </td>
                   <td className="mono text-sm">
-                    {providerId
+                    {profileId
                       ? <>
                           <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: vendorColor, marginRight: 6 }}></span>
-                          {providerId}{modelName ? <span className="muted"> · {modelName}</span> : null}
+                          {profileId}{providerId ? <span className="muted"> · {providerId}/{modelName}</span> : <span className="muted"> · (missing profile)</span>}
                         </>
                       : <span className="muted">(unconfigured)</span>}
                   </td>
@@ -348,9 +366,12 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   // submit PUT-replaces, and the success callback is just close().
   const isEdit = !!existing;
   const { useResource, useMutation, apiFetch } = window.primerApi;
-  const providers = useResource(
-    "agents:llm-providers",
-    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
+  // The agent's model field is a single profile id. A profile already
+  // pins the provider, the wire model name and the API-level config, so
+  // the form picks one row rather than a provider+model pair.
+  const profiles = useResource(
+    "agents:model-profiles",
+    (signal) => apiFetch("GET", "/model_profiles?limit=500", null, { signal }),
     { pollMs: null }
   );
   // /v1/tools returns the merged catalogue across user-defined + the
@@ -376,8 +397,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
 
   const [id, setId] = React.useState(existing?.id || "");
   const [description, setDescription] = React.useState(existing?.description || "");
-  const [providerId, setProviderId] = React.useState(existing?.model?.provider_id || "");
-  const [modelName, setModelName] = React.useState(existing?.model?.model_name || "");
+  const [profileId, setProfileId] = React.useState(existing?.model?.profile_id || "");
   const [systemPrompt, setSystemPrompt] = React.useState(_joinPrompt(existing?.system_prompt));
   const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
   const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
@@ -409,20 +429,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const [toolPage, setToolPage] = React.useState(1);
 
   React.useEffect(() => {
-    if (!providerId && providers.data?.items?.length) {
-      setProviderId(providers.data.items[0].id);
+    if (!profileId && profiles.data?.items?.length) {
+      setProfileId(profiles.data.items[0].id);
     }
-  }, [providers.data, providerId]);
+  }, [profiles.data, profileId]);
 
-  const selectedProvider = (providers.data?.items ?? []).find((p) => p.id === providerId);
-  const modelOptions = selectedProvider?.models ?? [];
-
-  React.useEffect(() => {
-    if (modelOptions.length > 0 && !modelOptions.some((m) => m.name === modelName)) {
-      setModelName(modelOptions[0].name);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modelOptions]);
+  const profileOptions = profiles.data?.items ?? [];
+  // An agent may already name a profile that has since been deleted. Keep
+  // it in the list so editing an unrelated field does not silently repoint
+  // the agent at whatever happens to sort first.
+  const selectedProfile = profileOptions.find((pr) => pr.id === profileId);
+  const profileMissing = !!profileId && !selectedProfile && !profiles.loading;
 
   const toolsetEntries = toolsCatalogue.data?.items ?? [];
 
@@ -562,7 +579,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
       // On edit the id is locked but still sent (PUT-replace contract).
       ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       description: description || "(no description)",
-      model: { provider_id: providerId, model_name: modelName },
+      model: { profile_id: profileId },
       tools,
       system_prompt: systemPrompt ? [systemPrompt] : [],
       compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
@@ -593,7 +610,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             kind="primary"
             icon={isEdit ? "check" : "plus"}
             onClick={submit}
-            disabled={!providerId || !modelName || create.loading}
+            disabled={!profileId || create.loading}
           >
             {create.loading ? (isEdit ? "Saving…" : "Creating…") : (isEdit ? "Save changes" : "Create")}
           </Btn>
@@ -656,45 +673,42 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             )}
           </div>
           <div className="field">
-            <label className="field-label" htmlFor="na-llm-provider">LLM provider</label>
+            <label className="field-label" htmlFor="na-model-profile">Model profile</label>
             <select
-              id="na-llm-provider"
+              id="na-model-profile"
               className="select"
-              value={providerId}
-              onChange={(e) => setProviderId(e.target.value)}
+              value={profileId}
+              onChange={(e) => setProfileId(e.target.value)}
               style={{ width: "100%" }}
             >
-              <option value="">-- pick a provider --</option>
-              {(providers.data?.items ?? []).map((p) => (
-                <option key={p.id} value={p.id}>{p.id}</option>
+              <option value="">-- pick a model profile --</option>
+              {profileMissing && (
+                <option value={profileId}>{profileId} (missing)</option>
+              )}
+              {profileOptions.map((pr) => (
+                <option key={pr.id} value={pr.id}>
+                  {pr.id} · {pr.provider_id}/{pr.model_name}
+                  {pr.config?.reasoning ? ` · reasoning ${pr.config.reasoning}` : ""}
+                </option>
               ))}
             </select>
-            {(providers.data?.items ?? []).length === 0 && !providers.loading && (
-              <div className="field-help" style={{ color: "var(--amber)" }}>
-                No LLM providers configured. Create one at <span className="mono">/providers/llm</span> first.
+            <div className="field-help">
+              This is the agent's DEFAULT model. A session or chat may name a
+              different profile at invocation time.
+            </div>
+            {profileMissing && (
+              <div className="field-help" style={{ color: "var(--red)" }}>
+                This agent names a profile that no longer exists. Pick another
+                one, or recreate it at <span className="mono">/model-profiles</span>.
               </div>
             )}
-            {fieldErrors["body.model.provider_id"] && (
-              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.provider_id"]}</div>
+            {profileOptions.length === 0 && !profiles.loading && (
+              <div className="field-help" style={{ color: "var(--amber)" }}>
+                No model profiles configured. Create one at <span className="mono">/model-profiles</span> first.
+              </div>
             )}
-          </div>
-          <div className="field">
-            <label className="field-label" htmlFor="na-model">Model</label>
-            <select
-              id="na-model"
-              className="select"
-              value={modelName}
-              onChange={(e) => setModelName(e.target.value)}
-              style={{ width: "100%" }}
-            >
-              <option value="">-- pick a model --</option>
-              {modelOptions.map((m) => (
-                <option key={m.name} value={m.name}>{m.name}</option>
-              ))}
-            </select>
-            <div className="field-help">Model list comes from the provider row, not a live introspection (T0025).</div>
-            {fieldErrors["body.model.model_name"] && (
-              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.model_name"]}</div>
+            {fieldErrors["body.model.profile_id"] && (
+              <div className="field-help" style={{ color: "var(--red)" }}>{fieldErrors["body.model.profile_id"]}</div>
             )}
           </div>
         </>
@@ -1314,7 +1328,20 @@ function AG_ConfigTab({ agent, pushToast }) {
 function AG_ReferencesPanel({ agent }) {
   const { useResource, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
-  const providerId = agent.model?.provider_id;
+  // The agent references a model PROFILE; the provider is one hop further
+  // out. Both rows are shown because either can go missing independently:
+  // a deleted profile and a deleted provider fail the agent in the same
+  // way but are fixed in different places.
+  const profileId = agent.model?.profile_id;
+  const profile = useResource(
+    profileId ? `model-profile:${profileId}` : "model-profile:none",
+    (signal) =>
+      profileId
+        ? apiFetch("GET", "/model_profiles/" + encodeURIComponent(profileId), null, { signal })
+        : Promise.resolve(null),
+    { pollMs: null, deps: [profileId] }
+  );
+  const providerId = profile.data?.provider_id;
   const provider = useResource(
     providerId ? `llm-provider:${providerId}` : "llm-provider:none",
     (signal) =>
@@ -1331,6 +1358,26 @@ function AG_ReferencesPanel({ agent }) {
         <span>References</span>
       </div>
       <div className="panel-body" style={{ padding: "4px 14px" }}>
+        <div className="ref-row">
+          <Icon name="llm" size={13} className="ico" />
+          <span className="label">Model profile</span>
+          <span className="val">
+            <a
+              onClick={() => profileId && navigate("/model-profiles")}
+              style={{ cursor: profileId ? "pointer" : "default" }}
+            >{profileId || "—"}</a>
+            {profile.data ? (
+              <span className="muted text-sm"> · {profile.data.model_name}</span>
+            ) : null}
+          </span>
+          {profile.loading ? (
+            <span className="muted text-sm">checking…</span>
+          ) : profile.error?.status === 404 ? (
+            <span className="pill pill-failed"><span className="dot"></span>missing</span>
+          ) : profile.data ? (
+            <span className="pill pill-ended"><span className="dot"></span>ok</span>
+          ) : null}
+        </div>
         <div className="ref-row">
           <Icon name="llm" size={13} className="ico" />
           <span className="label">LLM provider</span>

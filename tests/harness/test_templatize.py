@@ -33,31 +33,31 @@ def test_infer_list_of_strings():
 
 
 def test_apply_replaces_at_pointer():
-    entity = {"model": {"provider_id": "openai", "model_name": "gpt-4"}, "temperature": 0.2}
+    entity = {"model": {"profile_id": "openai--gpt-4"}, "temperature": 0.2}
     mappings = [
-        OverrideMapping(field_path="/model/provider_id", override_path="llm.provider_id"),
+        OverrideMapping(field_path="/model/profile_id", override_path="llm.profile_id"),
     ]
     out = apply_override_mappings(entity, mappings)
-    assert out["model"]["provider_id"] == "{{ overrides.llm.provider_id }}"
-    assert out["model"]["model_name"] == "gpt-4"
+    assert out["model"]["profile_id"] == "{{ overrides.llm.profile_id }}"
+    # Untargeted fields are left exactly as they were.
+    assert out["temperature"] == 0.2
 
 
 def test_compose_schema_nested_path():
     mappings = [
         OverrideMapping(
-            field_path="/model/provider_id",
-            override_path="llm.provider_id",
+            field_path="/model/profile_id",
+            override_path="llm.profile_id",
             widget="llm-provider-picker",
         ),
-        OverrideMapping(field_path="/model/model_name", override_path="llm.model_name"),
+        OverrideMapping(field_path="/temperature", override_path="llm.temperature"),
     ]
-    values = {"/model/provider_id": "openai", "/model/model_name": "gpt-4"}
+    values = {"/model/profile_id": "openai--gpt-4", "/temperature": 0.2}
     schema = compose_overrides_schema_from_mappings(mappings, values)
-    assert schema["properties"]["llm"]["properties"]["provider_id"]["default"] == "openai"
-    assert (
-        schema["properties"]["llm"]["properties"]["provider_id"]["x-primer-widget"]
-        == "llm-provider-picker"
-    )
+    llm_props = schema["properties"]["llm"]["properties"]
+    assert llm_props["profile_id"]["default"] == "openai--gpt-4"
+    assert llm_props["profile_id"]["x-primer-widget"] == "llm-provider-picker"
+    assert llm_props["temperature"]["default"] == 0.2
 
 
 def test_collision_raises():

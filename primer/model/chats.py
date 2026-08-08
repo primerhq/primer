@@ -40,6 +40,11 @@ ChatStatus = Literal["active", "ended"]
 ChatMessageKind = Literal[
     "user_message",
     "assistant_token",
+    # Model reasoning / thinking text, streamed alongside the answer by
+    # providers that expose it. Persisted for DISPLAY only: it is skipped
+    # when rebuilding the prompt, because replaying a model's own reasoning
+    # back to it is either rejected outright or degrades the next turn.
+    "reasoning",
     "tool_call",
     "tool_result",
     # Legacy-unused on the chat soft-yield path (chats never park, so no
@@ -178,6 +183,16 @@ class Chat(Identifiable):
             "original_call?, response_schema?}. Cleared when the reply is "
             "consumed as the pending call's tool_result. The chat surface does "
             "NOT park; this is purely in-conversation state."
+        ),
+    )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override for this chat. ``None`` uses "
+            "the pinned agent's own default. Because the agent and its "
+            "prompt are resolved fresh each turn rather than stored in "
+            "history, changing this applies from the next turn onward "
+            "with no history rewrite."
         ),
     )
     pending_handoff: str | None = Field(

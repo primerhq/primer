@@ -22,7 +22,6 @@ from primer.model.chat import (
 from primer.model.provider import (
     GoogleConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -36,7 +35,6 @@ async def test_real_gemini_smoke() -> None:
     provider = LLMProvider(
         id="real-gemini",
         provider=LLMProviderType.GEMINI,
-        models=[LLMModel(name="gemini-2.5-flash", context_length=1_000_000)],
         config=GoogleConfig(api_key=SecretStr(os.environ["GEMINI_API_KEY"])),
         limits=Limits(max_concurrency=2),
     )

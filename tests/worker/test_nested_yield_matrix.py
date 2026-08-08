@@ -34,6 +34,9 @@ a graph checkpoint's nested entry). See the note at the bottom of this file.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfile, ModelProfileConfig
+
 import json
 from collections.abc import AsyncIterator
 from datetime import datetime, timedelta, timezone
@@ -58,7 +61,6 @@ from primer.model.chat import (
     ToolCallStart,
     ToolResultPart,
 )
-from primer.model.provider import LLMModel
 from primer.model.scheduler import WorkerConfig
 from primer.model.tool_approval import (
     RequiredApprovalConfig,
@@ -165,10 +167,7 @@ class _GatedYieldingToolset:
 
 
 class _ProviderRow:
-    """Lightweight LLM-provider stand-in: resume_subagent only reads .models."""
-
-    def __init__(self, models: list[LLMModel]) -> None:
-        self.models = models
+    """Lightweight LLMProvider stand-in; the row carries no models."""
 
 
 class _Store:
@@ -191,12 +190,21 @@ class _AgentStorageProvider:
         self._base = base
         self._agent = agent
         self._provider_row = provider_row
+        self._profile = ModelProfile(
+            id="prov-1--m1",
+            description="Test profile.",
+            provider_id="prov-1",
+            model_name="m1",
+            context_length=128_000,
+        )
 
     def get_storage(self, cls: type) -> Any:
         from primer.model.provider import LLMProvider
 
         if cls is Agent:
             return _Store(self._agent)
+        if cls is ModelProfile:
+            return _Store(self._profile)
         if cls is LLMProvider:
             return _Store(self._provider_row)
         return self._base.get_storage(cls)
@@ -254,14 +262,14 @@ async def _async_return(value):
 
 
 def _provider_row() -> _ProviderRow:
-    return _ProviderRow(models=[LLMModel(name="m1", context_length=128_000)])
+    return _ProviderRow()
 
 
 def _agent(*, tools: list[str]) -> Agent:
     return Agent(
         id="agent-sub",
         description="subagent",
-        model=AgentModel(provider_id="prov-1", model_name="m1"),
+        model=AgentModel(profile_id="prov-1--m1"),
         system_prompt=["you are a subagent"],
         tools=tools,
     )

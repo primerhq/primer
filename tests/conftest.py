@@ -317,6 +317,53 @@ class _NoOpTransaction:
         return False
 
 
+#: Profile ids the suite's agent fixtures reference. Shaped
+#: ``<provider>--<model>``, matching what migration m002 synthesises.
+_TEST_PROFILE_IDS: tuple[str, ...] = (
+    "p--m",
+    "llm-p--m",
+    "x--m",
+    "p1--m1",
+    "prov--model",
+    "prov-1--m1",
+    "prov-1--m-1",
+    "openai-1--gpt-4o-mini",
+    "anthropic-1--claude-sonnet-4-6",
+)
+
+
+async def seed_model_profile(
+    storage_provider,
+    profile_id: str = "p--m",
+    *,
+    context_length: int = 128_000,
+    config=None,
+):
+    """Create one ModelProfile row, deriving provider and model from the id.
+
+    For tests running against a real storage backend (where the fake's
+    pre-seeding does not apply), or needing a profile with non-default
+    config. Idempotent: returns the existing row if one is already there.
+    """
+    from primer.model.model_profile import ModelProfile, ModelProfileConfig
+
+    store = storage_provider.get_storage(ModelProfile)
+    existing = await store.get(profile_id)
+    if existing is not None:
+        return existing
+    provider_id, _, model_name = profile_id.partition("--")
+    return await store.create(
+        ModelProfile(
+            id=profile_id,
+            description=f"Test profile {profile_id}.",
+            provider_id=provider_id,
+            model_name=model_name,
+            context_length=context_length,
+            config=config or ModelProfileConfig(),
+        )
+    )
+
+
 class _FakeStorageProvider:
     """In-memory ``StorageProvider`` returning ``_InMemoryStorage`` per model."""
 
@@ -326,6 +373,34 @@ class _FakeStorageProvider:
         self._bootstrap_completed_at: datetime | None = None
         self._schema_version: int = 1
         self._last_migration_at: datetime | None = None
+        self._seed_model_profiles()
+
+    def _seed_model_profiles(self) -> None:
+        """Pre-seed the suite's standard ModelProfile vocabulary.
+
+        Model resolution became storage-backed with the profile cutover:
+        an agent names a profile id, and the resolver reads that row. Tests
+        across the suite build agents from a small fixed set of ids shaped
+        ``<provider>--<model>`` (the same rule migration m002 synthesises
+        with), so seeding them once here keeps every agent-building fixture
+        runnable instead of making each test restate the same rows.
+
+        Tests that need a profile with non-default config, or that run
+        against a real storage backend rather than this fake, should call
+        :func:`seed_model_profile` explicitly.
+        """
+        from primer.model.model_profile import ModelProfile
+
+        store = self.get_storage(ModelProfile)
+        for profile_id in _TEST_PROFILE_IDS:
+            provider_id, _, model_name = profile_id.partition("--")
+            store._data[profile_id] = ModelProfile(
+                id=profile_id,
+                description=f"Test profile {profile_id}.",
+                provider_id=provider_id,
+                model_name=model_name,
+                context_length=128_000,
+            )
 
     def get_storage(self, model_class: type[_T]) -> _InMemoryStorage[_T]:
         return self._stores.setdefault(model_class, _InMemoryStorage(model_class))

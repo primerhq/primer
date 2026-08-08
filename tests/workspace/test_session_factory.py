@@ -267,7 +267,7 @@ async def test_create_session_works_with_seeded_agent(
     await fake_storage_provider.get_storage(Agent).create(
         Agent(
             id="ag-1", description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         ),
     )
     sess = await create_session(
@@ -527,7 +527,7 @@ async def _seed_agent(sp, agent_id="ag-1") -> None:
         Agent(
             id=agent_id,
             description="x",
-            model=AgentModel(provider_id="p", model_name="m"),
+            model=AgentModel(profile_id="p--m"),
         ),
     )
 

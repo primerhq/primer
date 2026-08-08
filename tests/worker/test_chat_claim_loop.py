@@ -3,6 +3,9 @@ chats and dispatches them to run_one_chat_turn."""
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 from datetime import datetime, timezone
 
@@ -13,7 +16,10 @@ from pydantic import SecretStr
 from primer.model.agent import Agent, AgentModel
 from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import (
-    AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
 )
 
 
@@ -23,14 +29,13 @@ async def seeded_agent(app):
     await sp.get_storage(LLMProvider).create(
         LLMProvider(
             id="llm-p", provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="m", context_length=8192)],
             config=AnthropicConfig(api_key=SecretStr("test")),
             limits=Limits(max_concurrency=1),
         ),
     )
     await sp.get_storage(Agent).create(Agent(
         id="ag-chat", description="x",
-        model=AgentModel(provider_id="llm-p", model_name="m"),
+        model=AgentModel(profile_id="llm-p--m"),
     ))
 
 

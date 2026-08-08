@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import shutil
 from collections.abc import AsyncIterator
@@ -22,7 +25,6 @@ from primer.model.chat import (
     TextPart,
 )
 from primer.model.except_ import ConflictError
-from primer.model.provider import LLMModel
 from primer.model.workspace_session import (
     AgentBinding,
     SessionMessageKind,
@@ -87,13 +89,13 @@ def _agent(*, system_prompt=None) -> Agent:
     return Agent(
         id="researcher",
         description="Research agent",
-        model=AgentModel(provider_id="openai-1", model_name="m"),
+        model=AgentModel(profile_id="openai-1--m"),
         system_prompt=list(system_prompt or []),
     )
 
 
-def _model() -> LLMModel:
-    return LLMModel(name="m", context_length=128_000)
+def _model() -> ResolvedModel:
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=128_000, config=ModelProfileConfig())
 
 
 def _template() -> WorkspaceTemplate:
@@ -521,9 +523,9 @@ class TestPersistTurnInstructionRace:
 # ===========================================================================
 
 
-def _small_model() -> LLMModel:
+def _small_model() -> ResolvedModel:
     """Tiny context so a modest seeded history trips the compaction trigger."""
-    return LLMModel(name="m", context_length=500)
+    return ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=500, config=ModelProfileConfig())
 
 
 def _messages_path(workspace, session):

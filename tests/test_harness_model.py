@@ -79,7 +79,7 @@ def test_agent_carries_harness_id():
     from primer.model.agent import Agent, AgentModel
     a = Agent(
         id="a1", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
         harness_id="h1",
     )
     assert a.harness_id == "h1"

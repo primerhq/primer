@@ -10,6 +10,9 @@ can be driven end-to-end.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import base64
 import logging
@@ -75,7 +78,6 @@ from primer.model.except_ import (
 )
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenResponsesConfig,
@@ -94,7 +96,7 @@ def _make_provider(
         id="openai-default",
         provider=LLMProviderType.OPENRESPONSES,
         models=[
-            LLMModel(name=name, context_length=128_000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=128_000, config=ModelProfileConfig())
             for name in (models or ["gpt-4o-mini"])
         ],
         config=OpenResponsesConfig(
@@ -712,15 +714,6 @@ def _ok_events() -> list[Any]:
 
 
 class TestStream:
-    async def test_unknown_model_raises(self) -> None:
-        llm = OpenResponsesLLM(_make_provider(models=["gpt-4o-mini"]))
-        with pytest.raises(ModelNotFoundError, match="not-real"):
-            async for _ in llm.stream(
-                model="not-real",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_sequence(self, monkeypatch: pytest.MonkeyPatch) -> None:
         llm = OpenResponsesLLM(_make_provider())
         client = _patched_client(monkeypatch)
@@ -903,7 +896,6 @@ class TestAdapterLifecycle:
         provider = LLMProvider(
             id="o",
             provider=LLMProviderType.OPENRESPONSES,
-            models=[LLMModel(name="gpt-4o-mini", context_length=1024)],
             config=AnthropicConfig(api_key=SecretStr("sk-x")),  # type: ignore[arg-type]
             limits=Limits(max_concurrency=1),
         )
@@ -924,10 +916,6 @@ class TestAdapterLifecycle:
         server on the Responses API and it hard-failed at construction."""
         llm = OpenResponsesLLM(_make_provider(flavor=OpenResponsesFlavor.OTHER, api_key=""))
         assert llm._policy.require_api_key is False
-
-    async def test_list_models(self) -> None:
-        llm = OpenResponsesLLM(_make_provider(models=["a", "b"]))
-        assert list(await llm.list_models()) == ["a", "b"]
 
     def test_get_client_lazy_and_cached(self, monkeypatch: pytest.MonkeyPatch) -> None:
         inst = _patched_client(monkeypatch)

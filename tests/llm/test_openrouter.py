@@ -9,6 +9,9 @@ Spec: docs/superpowers/specs/2026-06-04-openrouter-llm-provider-design.md
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import httpx
 import pytest
 import respx
@@ -23,7 +26,6 @@ from primer.model.chat import Message, TextPart
 from primer.model.except_ import BadRequestError
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenRouterConfig,
@@ -46,7 +48,7 @@ def _make_provider(
             app_url=app_url,
         ),
         models=[
-            LLMModel(name=n, context_length=200000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=n, context_length=200000, config=ModelProfileConfig())
             for n in (models or ["anthropic/claude-3.5-sonnet"])
         ],
         limits=Limits(max_concurrency=4),
@@ -162,40 +164,6 @@ class TestAuth:
                 pass
             req = respx.calls.last.request
             assert req.headers["Authorization"] == "Bearer sk-or-v1-zzz"
-        finally:
-            await llm.aclose()
-
-
-class TestListModels:
-    """6-7. list_models returns configured-only and does not hit upstream."""
-
-    async def test_returns_configured_models_sorted_dedup(self) -> None:
-        # Plan §5.5: return the configured slugs verbatim, deduplicated, sorted.
-        # The LLMProvider model's `models` field rejects duplicates (it's a
-        # list[LLMModel], one per slug). Build with two distinct slugs and
-        # confirm both come back in sorted order.
-        llm = OpenRouterLLM(_make_provider(models=[
-            "openai/gpt-4o",
-            "anthropic/claude-3.5-sonnet",
-        ]))
-        try:
-            out = list(await llm.list_models())
-            assert out == ["anthropic/claude-3.5-sonnet", "openai/gpt-4o"]
-        finally:
-            await llm.aclose()
-
-    async def test_does_not_hit_upstream(self) -> None:
-        # If list_models() opened a network call, respx would 500 the URL
-        # and the call would raise. The assertion is that list_models()
-        # returns cleanly because it never makes the call.
-        llm = OpenRouterLLM(_make_provider())
-        try:
-            with respx.mock(assert_all_called=False) as router:
-                router.get(f"{OPENROUTER_BASE_URL}/models").mock(
-                    return_value=httpx.Response(500),
-                )
-                out = list(await llm.list_models())
-                assert out == ["anthropic/claude-3.5-sonnet"]
         finally:
             await llm.aclose()
 

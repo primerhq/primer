@@ -127,7 +127,7 @@ async def apply_compaction(
     """Run the :class:`CompactionStrategy` and assemble a :class:`CompactionResult`.
 
     The strategy expects an Agent-like shim with a ``compaction_prompt``
-    field (``list[str]``), and a model shim with ``name`` +
+    field (``list[str]``), and a model shim with ``model_name`` +
     ``context_length``. Both shapes match the duck-typed access pattern
     used by :meth:`CompactionStrategy._full_compact` and
     :meth:`CompactionStrategy._tier2`.
@@ -141,7 +141,9 @@ async def apply_compaction(
 
     class _ModelShim:
         def __init__(self) -> None:
-            self.name = model_name
+            # Mirrors ResolvedModel's field name: CompactionStrategy reads
+            # ``model.model_name`` since model identity moved onto profiles.
+            self.model_name = model_name
             self.context_length = context_length
 
     effective_strategy = _clone_strategy_for_apply(strategy, history)

@@ -6,6 +6,9 @@ history WITHOUT injecting a new user turn."""
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from datetime import datetime, timezone
 
 import pytest
@@ -14,7 +17,6 @@ from primer.chat.executor import ChatTurnRunner
 from primer.model.agent import Agent, AgentModel
 from primer.model.chat import ToolResultPart
 from primer.model.chats import Chat, ChatMessage
-from primer.model.provider import LLMModel
 
 
 class _FakeLLM:
@@ -42,12 +44,12 @@ class _ApprovingToolManager:
 def _runner(chat_store, msg_store, tool_manager=None) -> ChatTurnRunner:
     agent = Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     )
     return ChatTurnRunner(
         agent=agent,
         llm=_FakeLLM(),
-        llm_model=LLMModel(name="m", context_length=4096),
+        llm_model=ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m", context_length=4096, config=ModelProfileConfig()),
         tool_manager=tool_manager if tool_manager is not None else object(),
         chat_storage=chat_store,
         message_storage=msg_store,
@@ -142,8 +144,11 @@ async def test_dispatch_resume_continues_and_does_not_double_process(
     from primer.chat.tick_router import ChatTickRouter
     from primer.model.chat import Done, TextDelta
     from primer.model.provider import (
-        AnthropicConfig, Limits, LLMProvider, LLMProviderType,
-    )
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
+)
     from primer.model.storage import (
         FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,
     )
@@ -168,13 +173,12 @@ async def test_dispatch_resume_continues_and_does_not_double_process(
 
     await fake_storage_provider.get_storage(LLMProvider).create(LLMProvider(
         id="p", provider=LLMProviderType.ANTHROPIC,
-        models=[LLMModel(name="m", context_length=8192)],
         config=AnthropicConfig(api_key=SecretStr("test")),
         limits=Limits(max_concurrency=1),
     ))
     await fake_storage_provider.get_storage(Agent).create(Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     ))
     llm = _CompletingLLM()
 

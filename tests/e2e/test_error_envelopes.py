@@ -6,6 +6,9 @@ T0009 (DELETE idempotency).
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 
 import httpx
@@ -27,8 +30,7 @@ def _llm_body(entity_id: str) -> dict:
     return {
         "id": entity_id,
         "provider": "anthropic",
-        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
-        "config": {"api_key": "sk-test-placeholder"},
+                "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 4},
     }
 
@@ -52,8 +54,7 @@ async def test_t0007_invalid_llm_provider_returns_422(
     bad = {
         "id": f"llm-{unique_suffix}",
         "provider": "ollama",
-        "models": [{"name": "x", "context_length": 1024}],
-        # OllamaConfig requires `url`; omitting it is a real validation
+                # OllamaConfig requires `url`; omitting it is a real validation
         # failure regardless of provider/config cross-checking.
         "config": {},
         "limits": {"max_concurrency": 1},
@@ -94,8 +95,7 @@ async def test_t0097_llm_provider_empty_models_rejected_422(
     body = {
         "id": f"llm-empty-{unique_suffix}",
         "provider": "anthropic",
-        "models": [],
-        "config": {"api_key": "sk-test-placeholder"},
+                "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=body)
@@ -491,8 +491,7 @@ async def test_t0379_provider_config_no_cross_field_validation_pinned(
     body = {
         "id": f"llm-t0379-{unique_suffix}",
         "provider": "anthropic",
-        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
-        # OllamaConfig shape (url, optional api_key) — DIFFERENT from
+                # OllamaConfig shape (url, optional api_key) — DIFFERENT from
         # what anthropic provider would expect (AnthropicConfig has
         # only api_key). The url is coerced away, not rejected.
         "config": {"url": "http://localhost:11434"},
@@ -538,8 +537,7 @@ async def test_t0380_openresponses_flavor_invalid_value_coerced_to_default(
     body = {
         "id": f"llm-t0380-{unique_suffix}",
         "provider": "openresponses",
-        "models": [{"name": "x", "context_length": 1024}],
-        "config": {
+                "config": {
             "url": "http://localhost:1234/v1",
             "api_key": "sk-test",
             "flavor": "this-is-not-a-real-flavor-xyz",
@@ -571,14 +569,13 @@ async def test_t0380_openresponses_flavor_invalid_value_coerced_to_default(
 async def test_t0381_llm_provider_models_context_length_zero_rejected_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0381 — LLMModel.context_length is PositiveInt; 0 is invalid.
+    """T0381 — ResolvedModel.context_length is PositiveInt; 0 is invalid.
     Must reject with 422 cleanly, no /errors/internal from asyncpg.
     """
     body = {
         "id": f"llm-t0381-{unique_suffix}",
         "provider": "anthropic",
-        "models": [{"name": "x", "context_length": 0}],
-        "config": {"api_key": "sk-test"},
+                "config": {"api_key": "sk-test"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=body)
@@ -598,8 +595,7 @@ async def test_t0382_llm_provider_models_context_length_negative_rejected(
     body = {
         "id": f"llm-t0382-{unique_suffix}",
         "provider": "anthropic",
-        "models": [{"name": "x", "context_length": -100}],
-        "config": {"api_key": "sk-test"},
+                "config": {"api_key": "sk-test"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=body)
@@ -633,10 +629,7 @@ async def test_t0383_agent_temperature_negative_rejected_422(
         json={
             "id": provider_id,
             "provider": "anthropic",
-            "models": [
-                {"name": "claude-sonnet-4-6", "context_length": 200_000},
-            ],
-            "config": {"api_key": "sk-test"},
+                        "config": {"api_key": "sk-test"},
             "limits": {"max_concurrency": 1},
         },
     )
@@ -795,8 +788,7 @@ async def test_t0701_llm_provider_context_length_int64_max_clean_envelope(
     body = {
         "id": f"llm-t0701-{unique_suffix}",
         "provider": "anthropic",
-        "models": [{"name": "x", "context_length": huge}],
-        "config": {"api_key": "sk-test"},
+                "config": {"api_key": "sk-test"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=body)
@@ -839,8 +831,7 @@ async def test_t0702_llm_provider_context_length_string_coercion_clean(
     body = {
         "id": f"llm-t0702-{unique_suffix}",
         "provider": "anthropic",
-        "models": [{"name": "x", "context_length": "42"}],
-        "config": {"api_key": "sk-test"},
+                "config": {"api_key": "sk-test"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=body)
@@ -875,8 +866,7 @@ async def test_t0703_embedding_provider_empty_models_returns_422(
     body = {
         "id": f"emb-t0703-{unique_suffix}",
         "provider": "huggingface",
-        "models": [],
-        "config": {"token": "hf-placeholder"},
+                "config": {"token": "hf-placeholder"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/embedding_providers", json=body)
@@ -911,8 +901,7 @@ async def test_t0704_cross_encoder_provider_empty_models_returns_422(
     body = {
         "id": f"ce-t0704-{unique_suffix}",
         "provider": "huggingface",
-        "models": [],
-        "config": {"token": None},
+                "config": {"token": None},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/cross_encoder_providers", json=body)
@@ -948,8 +937,7 @@ async def test_t0705_openresponses_flavor_null_clean_envelope(
     body = {
         "id": entity_id,
         "provider": "openresponses",
-        "models": [{"name": "x", "context_length": 1000}],
-        "config": {
+                "config": {
             "url": "http://localhost:1234/v1",
             "api_key": "placeholder",
             "flavor": None,
@@ -1062,8 +1050,7 @@ async def test_t0725_openresponses_flavor_whitespace_only_clean_envelope(
     body = {
         "id": entity_id,
         "provider": "openresponses",
-        "models": [{"name": "x", "context_length": 1024}],
-        "config": {
+                "config": {
             "url": "http://localhost:1234/v1",
             "api_key": "sk-test",
             "flavor": "   ",  # whitespace-only

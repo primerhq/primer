@@ -18,9 +18,9 @@ async def _provider(tmp_path):
     p = SqliteStorageProvider(SqliteConfig(path=tmp_path / "r.sqlite"))
     await p.initialize()
     await p.get_storage(Agent).create(
-        Agent(id="agent-x", description="Xavier", model={"provider_id": "lp", "model_name": "m"}))
+        Agent(id="agent-x", description="Xavier", model={"profile_id": "lp--m"}))
     await p.get_storage(Agent).create(
-        Agent(id="agent-y", description="Yara", model={"provider_id": "lp", "model_name": "m"}))
+        Agent(id="agent-y", description="Yara", model={"profile_id": "lp--m"}))
     return p
 
 

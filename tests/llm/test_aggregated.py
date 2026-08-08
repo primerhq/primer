@@ -31,7 +31,6 @@ from primer.model.provider import (
     FailoverClasses,
     FailoverPoint,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     RoutingStrategy,
@@ -93,7 +92,6 @@ def _row(config: AggregatedLLMConfig) -> LLMProvider:
     return LLMProvider(
         id="agg-1",
         provider=LLMProviderType.AGGREGATED,
-        models=[LLMModel(name="virtual-1", context_length=200000)],
         config=config,
         limits=Limits(max_concurrency=4),
     )
@@ -270,12 +268,6 @@ async def test_stream_maps_virtual_model_to_each_member_model_name():
 
 
 @pytest.mark.asyncio
-async def test_list_models_returns_virtual_names():
-    cfg = AggregatedLLMConfig(members=[AggregatedMember(provider_id="p", model_name="m")])
-    agg = AggregatedLLM(_row(cfg), resolve_member=_resolver({}))
-    assert list(await agg.list_models()) == ["virtual-1"]
-
-
 @pytest.mark.asyncio
 async def test_count_tokens_delegates_to_first_resolvable_member():
     good = _FakeLLM(name="g")

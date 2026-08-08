@@ -98,7 +98,7 @@ if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.model.agent import Agent
     from primer.model.chat import ToolResultPart
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
     from primer.model.yield_ import YieldCancelled, YieldTimeout
 
 
@@ -168,7 +168,10 @@ class _BaseGraphExecutor(
         *,
         graph: Graph,
         agent_resolver: Callable[[str], Awaitable["Agent"]],
-        llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "LLMModel"]]],
+        llm_resolver: Callable[..., Awaitable[tuple["LLM", "ResolvedModel"]]],
+        # Called as (agent) normally and (agent, profile_id) only when a
+        # node overrides the agent default, so single-argument resolvers
+        # stay valid.
         tool_manager_resolver: Callable[
             ["Agent"], Awaitable[ToolExecutionManager]
         ] | None = None,

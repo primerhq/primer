@@ -31,7 +31,6 @@ from primer.llm._openai_common import build_sampling_params as _build_sampling_p
 from primer.llm._timeout import GenerationBudgetExceeded, _iter_with_timeout
 from primer.model.except_ import (
     ConfigError,
-    ModelNotFoundError,
     UnsupportedContentError,
 )
 from primer.model.chat import (
@@ -786,6 +785,17 @@ _POLICY_BY_FLAVOR: dict[OpenResponsesFlavor, _FlavorPolicy] = {
         drop_encrypted_reasoning=False,
         expect_reasoning_under_store_true=True,
     ),
+    # vLLM's Responses endpoint is unauthenticated by default. VERIFIED
+    # against a live server: it accepts chat_template_kwargs,
+    # extra_body.chat_template_kwargs, a top-level enable_thinking, and a
+    # native reasoning.effort -- and IGNORES all four, emitting reasoning
+    # regardless. There is therefore no reasoning mapping for this flavor;
+    # see _reasoning_extended, which warns rather than pretending.
+    OpenResponsesFlavor.VLLM: _FlavorPolicy(
+        require_api_key=False,
+        drop_encrypted_reasoning=False,
+        expect_reasoning_under_store_true=False,
+    ),
     OpenResponsesFlavor.LMSTUDIO: _FlavorPolicy(
         require_api_key=False,
         drop_encrypted_reasoning=True,
@@ -868,14 +878,11 @@ class OpenResponsesLLM(LLM):
             extra={
                 "provider_id": provider.id,
                 "flavor": provider.config.flavor.value,
-                "models": [m.name for m in provider.models],
                 "max_concurrency": provider.limits.max_concurrency,
                 "request_timeout_seconds": provider.limits.request_timeout_seconds,
             },
         )
 
-    async def list_models(self) -> Iterable[str]:
-        return [m.name for m in self._provider.models]
 
     async def count_tokens(
         self,
@@ -928,12 +935,6 @@ class OpenResponsesLLM(LLM):
         tool_choice: ToolChoice | None = None,
         extended: dict[str, Any] | None = None,
     ):
-        allowed = {m.name for m in self._provider.models}
-        if model not in allowed:
-            raise ModelNotFoundError(
-                f"model {model!r} is not configured for provider "
-                f"{self._provider.id!r}; configured models: {sorted(allowed)}"
-            )
 
         request: dict[str, Any] = {
             "model": model,

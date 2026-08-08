@@ -40,7 +40,7 @@ if TYPE_CHECKING:
     from primer.int.llm import LLM
     from primer.int.storage import Storage
     from primer.model.agent import Agent
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
 
 
 logger = logging.getLogger(__name__)
@@ -60,7 +60,7 @@ class AgentExecutor(_BaseAgentExecutor):
         *,
         agent: "Agent",
         llm: "LLM",
-        llm_model: "LLMModel",
+        llm_model: "ResolvedModel",
         tool_manager: ToolExecutionManager,
         thread_id: str,
         thread_storage: "Storage[Thread]",

@@ -112,6 +112,51 @@ Both backends share rules so an operator can swap providers without renaming any
 - Predicate translation is split between two sibling translators: `_PredicateTranslator` (`primer/storage/_predicate.py`) emits `data->>'field'` with `$N` placeholders for Postgres; `_SqlitePredicateTranslator` (`primer/storage/_sqlite_predicate.py`) emits `json_extract(data, '$.field')` with `?` placeholders for SQLite. Both resolve field annotations to apply numeric casts (`::bigint` / `::double precision` versus `CAST(... AS INTEGER|REAL)`), short-circuit an empty `IN` list to a constant-false clause, and raise `BadRequestError` for a field absent on the model. The two translators are independent visitors with substantial overlap; this duplication is a known, accepted state held honest by the contract test.
 - Order-by rendering (`render_order_by` / `render_order_by_sqlite`) always appends the implicit `id ASC` tiebreaker for deterministic cursor seeks.
 
+### Data migrations
+
+Per-model tables are still created lazily and there is still no Alembic
+step: the DDL genuinely does not need versioning, because every entity
+lives in the same `id` + `data` shape. What DOES need versioning is the
+SHAPE OF THE DATA inside that column, and `primer/storage/migrations/`
+owns that.
+
+`run_migrations(sp, is_fresh_install=...)` runs from the API lifespan
+after `initialize()` and BEFORE auto-bootstrap, so a migration only ever
+transforms rows that were already there and never has to reason about
+whether a reserved row exists yet. Three properties keep it safe:
+
+- **Backend-agnostic.** Migrations operate through `Storage[T]` handles,
+  never raw SQL, so Postgres and SQLite behave identically with no
+  duplicated statements. The cost is paged reads plus per-row updates,
+  irrelevant at the scale of providers, agents, and collections.
+- **Idempotent.** Every migration is get-then-create, so a process death
+  mid-run re-runs harmlessly.
+- **Forward-only.** `system_state.schema_version` is stamped after each
+  migration commits, so a crash resumes from the last completed version.
+  A database reporting a version NEWER than the running build logs a
+  warning and is left untouched; Primer has no rollback story, and
+  guessing at one would be worse than refusing.
+
+`schema_version = N` means migrations 1..N have been applied. The column
+defaulted to `1` long before the runner existed, which correctly describes
+every pre-runner install: `m001` wraps `migrate_document_content`, whose
+ad-hoc lifespan call was unconditional on every boot. A fresh install
+baselines straight to `LATEST_VERSION` rather than running the chain
+against an empty database.
+
+To add one: create `mNNN_<slug>.py` exposing a class with `version`,
+`description`, and `async apply(sp)`, then append an instance to
+`MIGRATIONS`. The contract test pins that versions stay contiguous and
+unique and that applying the chain twice is a no-op.
+
+A migration reads rows written by the OLD schema from inside a build where
+the models have already changed, so it may need its own view classes. The
+table name is derived from `model_class.__name__.lower()`, so a class
+named `LLMProvider` declared inside the migration addresses the same
+table; `extra="allow"` then keeps every field the migration does not care
+about intact across the read-modify-write. `m002_model_profiles.py` is the
+worked example.
+
 ### The `document_content` table
 
 Knowledge documents are path-addressed and their bodies are the source of truth, so the body does not live under the generic `data` JSONB column with the `Document` entity row, nor in the vector store. Instead each `StorageProvider` hands out a `DocumentContentStore` (`primer/int/document_content.py`) via `get_content_store()`, backed by a dedicated `document_content` table that is a sibling to the JSONB entity tables rather than another `Storage[ModelT]` handle. Its columns are `document_id` (PRIMARY KEY), `collection_id`, `path`, `content`, and `updated_at`, with a `UNIQUE(collection_id, path)` index (the authoritative `path -> document_id` resolver) plus a `(collection_id)` index for prefix listing. Postgres stores `content` as `text` and `updated_at` as `timestamptz`; SQLite stores both as `TEXT`. The store exposes path-keyed reads (`get`, `get_by_path`, `resolve_id`), `upsert`, `delete`, `move`, and a prefix `list`, and runs `ensure_schema()` at startup (see `docs/dev/subsystems/knowledge.md`). It is the only first-class table outside the one-table-per-model rule; the vector index over the same bodies is separate and optional.
@@ -157,7 +202,7 @@ Storage tests live under `tests/storage/`. `test_storage_contract.py` runs the s
 - **WAL plus `synchronous=normal` were picked as the default PRAGMA pair.** Why: the standard recommendation for embedded write-heavy workloads, trading one fsync per checkpoint for acceptable durability in the embedded and dev use case. Spec: docs/superpowers/specs/2026-05-24-sqlite-storage-and-optional-config-design.md.
 - **Two backend-specific predicate translators were kept rather than a shared AST plus per-backend emitter.** Why: the SQLite port alone did not justify the maintenance cost of an abstract op tree, and a parametrised contract test keeps both backends honest on identical scenarios; revisit only when a third backend appears. Spec: docs/superpowers/specs/2026-05-24-sqlite-storage-and-optional-config-design.md.
 - **The opaque base64-JSON cursor encode/decode was extracted into a shared module while the keyset-seek `WHERE` clause stayed backend-specific.** Why: the cursor payload is provider-agnostic and worth sharing, but the SQL fragment that consumes the decoded keys is backend-specific and belongs with each storage class. Spec: docs/superpowers/specs/2026-05-24-sqlite-storage-and-optional-config-design.md.
-- **Per-model tables are created lazily on first handle use rather than as a single migration.** Why: it mirrors the Postgres backend, keeps unused models out of the schema, and avoids an Alembic dependency, at the cost of deferring a real schema-migration story. Spec: docs/superpowers/specs/2026-05-24-sqlite-storage-and-optional-config-design.md.
+- **Per-model tables are created lazily on first handle use rather than as a single migration.** Why: it mirrors the Postgres backend, keeps unused models out of the schema, and avoids an Alembic dependency. The deferred half of this, versioning the data shape inside the JSONB column, is now covered by the migration runner described above; the DDL itself still needs no versioning. Spec: docs/superpowers/specs/2026-05-24-sqlite-storage-and-optional-config-design.md.
 - **`AppConfig` collapsed the spec's flat Postgres-only `db_*` knobs into a single optional `db: StorageProviderConfig | None` field defaulting to SQLite.** Why: every config field needed a default so `AppConfig()` constructs with zero provisioning, and the provider-factory shape keeps the storage knobs in one discriminated place. Spec: docs/superpowers/specs/2026-05-24-sqlite-storage-and-optional-config-design.md.
 - **Find endpoints accept a POST JSON body of `(predicate, page, order_by)` and the API translation is identity over `Storage.find`.** Why: predicate trees are too complex for query params and the storage ABC already returns clean page-response shapes, so keeping the translation as identity avoids drift between the API and storage shapes. Spec: docs/superpowers/specs/2026-05-08-rest-api-foundation-design.md.
 - **`Q[ModelT]` was added to validate field names against `model_fields` at call time.** Why: `FieldRef.name` is interpolated into SQL because column references cannot be parameterised, so validating field names at the `Q.where` call site closes the field-name injection vector that the prior hardcoded-string convention only enforced informally. Spec: docs/superpowers/specs/2026-05-27-crud-factory-levelup-design.md.

@@ -261,7 +261,7 @@ async def seeded_agent(app):
     agent = Agent(
         id="ag-test",
         description="test agent",
-        model=AgentModel(provider_id="llm-p", model_name="m"),
+        model=AgentModel(profile_id="llm-p--m"),
         tools=[],
         system_prompt=[],
     )
@@ -1031,7 +1031,7 @@ async def test_top_level_list_sessions_filtered_by_agent_id(
     other = Agent(
         id="ag-other",
         description="other",
-        model=AgentModel(provider_id="llm-p", model_name="m"),
+        model=AgentModel(profile_id="llm-p--m"),
         tools=[],
         system_prompt=[],
     )
@@ -1114,7 +1114,7 @@ async def test_claim_engine_upsert_on_create(
         await agent_storage.create(Agent(
             id="ag-eng",
             description="d",
-            model=AgentModel(provider_id="x", model_name="m"),
+            model=AgentModel(profile_id="x--m"),
             tools=[],
             system_prompt=[],
         ))
@@ -1199,7 +1199,7 @@ async def test_claim_engine_delete_lease_on_cancel(
         await agent_storage.create(Agent(
             id="ag-can",
             description="c",
-            model=AgentModel(provider_id="x", model_name="m"),
+            model=AgentModel(profile_id="x--m"),
             tools=[],
             system_prompt=[],
         ))
@@ -1303,7 +1303,7 @@ async def test_claim_engine_upsert_on_resume(
         await agent_storage.create(Agent(
             id="ag-res",
             description="r",
-            model=AgentModel(provider_id="x", model_name="m"),
+            model=AgentModel(profile_id="x--m"),
             tools=[],
             system_prompt=[],
         ))

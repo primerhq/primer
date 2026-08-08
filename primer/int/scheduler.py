@@ -104,6 +104,16 @@ class Scheduler(ABC):
     async def deregister_worker(self, worker_id: str) -> None: ...
 
     @abstractmethod
+    async def purge_dead_workers(self) -> int:
+        """Remove every worker in the ``dead`` state; return how many went.
+
+        Bulk rather than a loop over :meth:`deregister_worker`: a registry
+        accumulates one tombstone per worker per restart, so this routinely
+        runs against hundreds of rows, and one statement beats N round
+        trips. Active and draining workers are never touched.
+        """
+
+    @abstractmethod
     async def list_workers(self) -> list[WorkerInfo]: ...
 
     # ---- Enqueue ---------------------------------------------------------

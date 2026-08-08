@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import logging
 from typing import Any
@@ -14,7 +17,6 @@ from primer.llm.openresponses import OpenResponsesLLM, _POLICY_BY_FLAVOR, _Flavo
 from primer.model.except_ import ConfigError
 from primer.model.provider import (
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
     OpenResponsesConfig,
@@ -38,7 +40,7 @@ def _make_provider(
         id="openai-default",
         provider=LLMProviderType.OPENRESPONSES,
         models=[
-            LLMModel(name=name, context_length=8192)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=8192, config=ModelProfileConfig())
             for name in (models or ["gpt-4o-mini"])
         ],
         config=OpenResponsesConfig(
@@ -123,8 +125,7 @@ class TestConstructor:
 
     def test_logs_init_with_structured_context(self, caplog: pytest.LogCaptureFixture) -> None:
         caplog.set_level(logging.INFO, logger="primer.llm.openresponses")
-        provider = _make_provider(
-            models=["gpt-4o-mini", "gpt-4o"], max_concurrency=2
+        provider = _make_provider( max_concurrency=2
         )
         OpenResponsesLLM(provider)
         records = [r for r in caplog.records if "OpenResponses adapter" in r.message]
@@ -132,28 +133,11 @@ class TestConstructor:
         record = records[0]
         assert record.provider_id == "openai-default"  # type: ignore[attr-defined]
         assert record.flavor == "openai"  # type: ignore[attr-defined]
-        assert record.models == ["gpt-4o-mini", "gpt-4o"]  # type: ignore[attr-defined]
         assert record.max_concurrency == 2  # type: ignore[attr-defined]
 
 
 # ------------------------------------------------------------------------- #
-# TestListModels                                                             #
 # ------------------------------------------------------------------------- #
-
-
-class TestListModels:
-    async def test_returns_configured_model_names(self) -> None:
-        provider = _make_provider(models=["gpt-4o-mini", "gpt-4o"])
-        llm = OpenResponsesLLM(provider)
-        models = list(await llm.list_models())
-        assert models == ["gpt-4o-mini", "gpt-4o"]
-
-    async def test_does_not_call_upstream(self) -> None:
-        provider = _make_provider()
-        llm = OpenResponsesLLM(provider)
-        with patch.object(OpenResponsesLLM, "_get_client") as mock_get_client:
-            await llm.list_models()
-            mock_get_client.assert_not_called()
 
 
 import openai
@@ -1048,16 +1032,6 @@ class _RecordingStream:
 
 
 class TestStream:
-    async def test_unknown_model_raises_model_not_found(self) -> None:
-        provider = _make_provider(models=["gpt-4o-mini"])
-        llm = OpenResponsesLLM(provider)
-        with pytest.raises(ModelNotFoundError, match="not-a-real-model"):
-            async for _ in llm.stream(
-                model="not-a-real-model",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_stream_closed_on_normal_completion(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

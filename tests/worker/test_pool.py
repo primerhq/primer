@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
@@ -215,14 +218,14 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     NotImplementedError."""
     from primer.agent.workspace_executor import WorkspaceAgentExecutor
     from primer.model.agent import Agent, AgentModel
-    from primer.model.provider import LLMModel
+    from primer.model_profile import ResolvedModel
     from primer.worker.pool import _TurnDriver
 
     sid = "sess-build-1"
     agent = Agent(
         id="ag-1",
         description="test agent",
-        model=AgentModel(provider_id="prov-1", model_name="m-1"),
+        model=AgentModel(profile_id="prov-1--m-1"),
         tools=[],
         system_prompt=["sys"],
     )
@@ -249,7 +252,7 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     # Stub the provider registry calls — the registry instance itself
     # would otherwise need a storage_provider just to look up the LLM.
     fake_llm = object()
-    fake_llm_model = LLMModel(name="m-1", context_length=8000)
+    fake_llm_model = ResolvedModel(profile_id="prov-1--m-1", provider_id="prov-1", model_name="m-1", context_length=8000, config=ModelProfileConfig())
 
     async def _get_llm(provider_id):
         assert provider_id == "prov-1"
@@ -258,7 +261,7 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     async def _get_toolset(_id):
         raise AssertionError("agent has no toolsets registered")
 
-    async def _resolve_llm_model(_agent):
+    async def _resolve_llm_model(_agent, _override=None):
         return fake_llm_model
 
     monkeypatch.setattr(

@@ -22,6 +22,9 @@ enqueue and the drain can't lose-update each other across processes.
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from typing import Any
@@ -36,7 +39,10 @@ from primer.model.agent import Agent, AgentModel
 from primer.model.chat import Done, StreamEvent, TextDelta
 from primer.model.chats import Chat, ChatMessage, PendingChatMessage
 from primer.model.provider import (
-    AnthropicConfig, Limits, LLMModel, LLMProvider, LLMProviderType,
+    AnthropicConfig,
+    Limits,
+    LLMProvider,
+    LLMProviderType,
 )
 from primer.model.storage import (
     FieldRef, Op, OffsetPage, OrderBy, Predicate, Value,
@@ -82,14 +88,13 @@ async def test_followup_during_thinking_is_deferred_and_realized_after_turn(
     await fake_storage_provider.get_storage(LLMProvider).create(
         LLMProvider(
             id="p", provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="m", context_length=8192)],
             config=AnthropicConfig(api_key=SecretStr("test")),
             limits=Limits(max_concurrency=1),
         ),
     )
     await fake_storage_provider.get_storage(Agent).create(Agent(
         id="ag", description="x",
-        model=AgentModel(provider_id="p", model_name="m"),
+        model=AgentModel(profile_id="p--m"),
     ))
 
     chats = fake_storage_provider.get_storage(Chat)

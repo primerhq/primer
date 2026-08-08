@@ -307,6 +307,17 @@ class AgentSessionBinding(BaseModel):
         description="Discriminator tag for the SessionBinding union.",
     )
     agent_id: str = Field(..., min_length=1)
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override for this run. ``None`` (the "
+            "default) uses the agent's own ``model.profile_id``. Lets the "
+            "same agent definition run against a different model or a "
+            "different reasoning setting without duplicating the agent. "
+            "Trigger-driven fresh sessions inherit this for free because "
+            "they route through the same session factory."
+        ),
+    )
     agent_snapshot: "Agent | None" = Field(
         default=None,
         description=(

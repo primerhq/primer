@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from primer.model_profile import ResolvedModel
+from primer.model.model_profile import ModelProfileConfig
+
 import asyncio
 import base64
 import logging
@@ -35,7 +38,6 @@ from primer.model.except_ import ConfigError, UnsupportedContentError
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
-    LLMModel,
     LLMProvider,
     LLMProviderType,
 )
@@ -51,7 +53,7 @@ def _make_provider(
         id="ant-default",
         provider=LLMProviderType.ANTHROPIC,
         models=[
-            LLMModel(name=name, context_length=200_000)
+            ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name=name, context_length=200_000, config=ModelProfileConfig())
             for name in (models or ["claude-sonnet-4-5"])
         ],
         config=AnthropicConfig(api_key=SecretStr(api_key)),
@@ -87,7 +89,6 @@ class TestConstructor:
         provider = LLMProvider(
             id="x",
             provider=LLMProviderType.ANTHROPIC,
-            models=[LLMModel(name="claude-sonnet-4-5", context_length=1024)],
             config=OpenResponsesConfig(  # type: ignore[arg-type]
                 url=HttpUrl("https://x/v1/"),
                 api_key=SecretStr("sk-x"),
@@ -111,20 +112,6 @@ class TestConstructor:
         records = [r for r in caplog.records if "Anthropic adapter initialized" in r.message]
         assert len(records) == 1
         assert records[0].provider_id == "ant-default"  # type: ignore[attr-defined]
-
-
-class TestListModels:
-    async def test_returns_configured_names(self) -> None:
-        provider = _make_provider(models=["m1", "m2"])
-        llm = AnthropicLLM(provider)
-        assert list(await llm.list_models()) == ["m1", "m2"]
-
-    async def test_does_not_call_upstream(self) -> None:
-        provider = _make_provider()
-        llm = AnthropicLLM(provider)
-        with patch.object(AnthropicLLM, "_get_client") as m:
-            await llm.list_models()
-            m.assert_not_called()
 
 
 class TestPartToAnthropicBlock:
@@ -951,16 +938,6 @@ def _ok_events() -> list[Any]:
 
 
 class TestStream:
-    async def test_unknown_model_raises_model_not_found(self) -> None:
-        provider = _make_provider(models=["claude-sonnet-4-5"])
-        llm = AnthropicLLM(provider)
-        with pytest.raises(ModelNotFoundError, match="not-a-real-model"):
-            async for _ in llm.stream(
-                model="not-a-real-model",
-                messages=[Message(role="user", parts=[TextPart(text="hi")])],
-            ):
-                pass
-
     async def test_full_stream_emits_start_text_usage_done(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
