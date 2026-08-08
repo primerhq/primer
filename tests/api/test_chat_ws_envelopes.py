@@ -173,6 +173,19 @@ async def envelope_seeded_agent(envelope_app: FastAPI) -> Agent:
             limits=Limits(max_concurrency=1),
         ),
     )
+    # context_length lives on the profile now, not on a provider models[]
+    # entry, and it is what the initial usage envelope reports.
+    from primer.model.model_profile import ModelProfile
+
+    await sp.get_storage(ModelProfile).create(
+        ModelProfile(
+            id="llm-env--m-env",
+            description="envelope-test profile.",
+            provider_id="llm-env",
+            model_name="m-env",
+            context_length=12_345,
+        ),
+    )
     agent = Agent(
         id="ag-env",
         description="envelope-test agent",
@@ -223,7 +236,7 @@ class TestUsageEnvelopeOnConnect:
         assert frames[0].get("kind") == "usage", frames
         usage = frames[0]
         assert usage["seq"] is None
-        # The seeded LLMProvider declared context_length=12345.
+        # The seeded ModelProfile declared context_length=12345.
         assert usage["context_length"] == 12_345
         # No tokens consumed yet.
         assert usage["input_tokens"] == 0

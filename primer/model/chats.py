@@ -185,6 +185,16 @@ class Chat(Identifiable):
             "NOT park; this is purely in-conversation state."
         ),
     )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override for this chat. ``None`` uses "
+            "the pinned agent's own default. Because the agent and its "
+            "prompt are resolved fresh each turn rather than stored in "
+            "history, changing this applies from the next turn onward "
+            "with no history rewrite."
+        ),
+    )
     pending_handoff: str | None = Field(
         default=None,
         description=(

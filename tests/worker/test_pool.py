@@ -252,7 +252,7 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     # Stub the provider registry calls — the registry instance itself
     # would otherwise need a storage_provider just to look up the LLM.
     fake_llm = object()
-    fake_llm_model = ResolvedModel(profile_id="test-profile", provider_id="test-provider", model_name="m-1", context_length=8000, config=ModelProfileConfig())
+    fake_llm_model = ResolvedModel(profile_id="prov-1--m-1", provider_id="prov-1", model_name="m-1", context_length=8000, config=ModelProfileConfig())
 
     async def _get_llm(provider_id):
         assert provider_id == "prov-1"
@@ -261,7 +261,7 @@ async def test_build_agent_executor_returns_turn_driver(monkeypatch):
     async def _get_toolset(_id):
         raise AssertionError("agent has no toolsets registered")
 
-    async def _resolve_llm_model(_agent):
+    async def _resolve_llm_model(_agent, _override=None):
         return fake_llm_model
 
     monkeypatch.setattr(

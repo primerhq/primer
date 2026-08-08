@@ -86,7 +86,7 @@ def _build_pool(storage_provider: _FakeStorageProvider) -> WorkerPool:
     async def _get_toolset(_id):
         raise AssertionError("this test's agent registers no toolsets")
 
-    async def _resolve_llm_model(_agent):
+    async def _resolve_llm_model(_agent, _override=None):
         return fake_llm_model
 
     pool._provider_registry = type(
