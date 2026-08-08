@@ -51,6 +51,7 @@ _ALIASES = {
     "col": "collections",
     "doc": "documents",
     "llm": "llm_providers",
+    "mp": "model_profiles",
     "ts": "toolsets",
 }
 

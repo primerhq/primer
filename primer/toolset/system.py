@@ -77,6 +77,7 @@ from primer.agent.invoke import (
     run_subagent,
 )
 from primer.model.agent import Agent
+from primer.model.model_profile import ModelProfile
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.toolset._describe import make_tool
 from primer.toolset._helpers import err as _err, ok as _ok
@@ -226,6 +227,9 @@ def build_system_toolset(
     # channels, and the toolset row itself) -> user.
     crud_specs = [
         ("llm_provider", "llm_providers", LLMProvider, None, _inv_llm, _inv_llm, "admin"),
+        # A profile names a provider and its API-level tunables, so it is
+        # provider configuration => admin, matching its REST router.
+        ("model_profile", "model_profiles", ModelProfile, None, None, None, "admin"),
         ("embedding_provider", "embedding_providers", EmbeddingProvider, None, _inv_emb, _inv_emb, "admin"),
         ("cross_encoder_provider", "cross_encoder_providers", CrossEncoderProvider, None, _inv_ce, _inv_ce, "admin"),
         ("toolset", "toolsets", Toolset, None, _inv_ts, _inv_ts, "user"),

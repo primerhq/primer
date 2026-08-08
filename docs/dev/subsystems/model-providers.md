@@ -183,6 +183,57 @@ to itself) is rejected at resolve time with `BadRequestError`.
 lazily per `stream` call through the registry, so editing a member is
 picked up transparently on the next call.
 
+### Model profiles
+
+`LLMProvider.models[]` no longer exists. What a provider can serve is
+expressed by :class:`~primer.model.model_profile.ModelProfile` rows
+pointing at it, each naming one `(provider, model)` pair plus its
+API-level config. Several profiles may share a model name; that is the
+point, and it is what lets one model be registered twice with different
+reasoning settings. An Agent references a profile id, and session and chat
+create may override it per run.
+
+`ModelProfileConfig.reasoning` is a vendor-neutral level mapped per adapter
+in `primer/llm/_reasoning.py`, the same normalisation the adapters already
+do for stop reasons. Where a vendor has no true off, the closest setting is
+used:
+
+| Adapter | Wire shape | OFF maps to |
+| --- | --- | --- |
+| `openresponses` | `reasoning.effort` | `minimal` (no true off) |
+| `openchat` (openai) | `reasoning_effort` | `minimal` |
+| `openchat` (vllm/ollama/lmstudio) | `chat_template_kwargs.enable_thinking` | `false` |
+| `anthropic` | `thinking.type` + `budget_tokens` | `disabled` |
+| `gemini` | `thinking_config.thinking_budget` | `0` |
+| `ollama` | `think` | `false` |
+
+**vLLM is asymmetric and this was verified against a live server, not
+assumed.** On Chat Completions, `chat_template_kwargs.enable_thinking:
+false` works: the response carries `reasoning: null` and real content. On
+the Responses endpoint, that key, `extra_body.chat_template_kwargs`, a
+top-level `enable_thinking`, and a native `reasoning.effort` are all
+accepted WITHOUT error and all ignored, with reasoning emitted regardless.
+So `openresponses` + `vllm` maps nothing and logs a warning naming the
+`openchat` provider type as the way to get the control. An operator who
+needs reasoning control against vLLM must use `openchat`.
+
+### Transport retries
+
+Every adapter except `aggregated` is wrapped in
+:class:`~primer.llm.retrying.RetryingLLM` by the registry factory. It
+replays a stream that failed at the TRANSPORT level (`NetworkError`,
+`ProviderTimeoutError`, `ServerError`, `RateLimitError`) and never replays
+one the API explicitly rejected, because that reproduces the same rejection
+and only delays the error. Retries stop at the first streamed event: once
+output has reached the consumer, re-running would duplicate tokens.
+Backoff is exponential with full jitter, tuned by `Limits.max_retries` /
+`retry_backoff_seconds` / `retry_backoff_max_seconds`.
+
+`aggregated` is excluded deliberately: it already fails over across
+members, and wrapping it would retry the whole pool before trying the next
+member. Its members resolve through the same factory, so each is wrapped
+individually.
+
 ## 6. Lifecycle
 
 An adapter is built lazily by `ProviderRegistry` on first lookup of a provider row, cached under the row id, and dropped (with `aclose()`) when the row is invalidated. A single `stream()` call walks the validate, translate, acquire, iterate, classify sequence below. Pre-stream exceptions are classified and re-raised; once the iterator has opened, mid-stream exceptions are classified and yielded as a terminal `Error(fatal=True)` so the consumer's `async for` always closes cleanly.
