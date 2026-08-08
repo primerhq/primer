@@ -48,6 +48,9 @@ class _NullScheduler(Scheduler):
     async def deregister_worker(self, worker_id: str) -> None:
         pass
 
+    async def purge_dead_workers(self) -> int:
+        return 0
+
     # --- methods required by Scheduler ABC (not called in engine mode) ---
 
     async def enqueue(self, session_id, *, ready_at=None):
