@@ -66,6 +66,18 @@ def _strip_json_fences(text: str) -> str:
 class _AgentNodeMixin:
     """Agent-node turn + resume methods for `_BaseGraphExecutor`."""
 
+    async def _resolve_node_llm(self, node: _AgentNodeRef, agent):
+        """Resolve the adapter + model for one node, honouring its override.
+
+        The second argument is passed ONLY when the node declares one. The
+        resolver is caller-supplied and the overwhelming majority take a
+        single ``agent``; calling those with two arguments would break every
+        graph that never wanted an override in the first place.
+        """
+        if node.profile_id:
+            return await self._llm_resolver(agent, node.profile_id)
+        return await self._llm_resolver(agent)
+
     async def _select_node_tool_manager(
         self, node: _AgentNodeRef, agent: "Agent",
     ) -> ToolExecutionManager:
@@ -134,7 +146,7 @@ class _AgentNodeMixin:
         ``fanout_item``) for synthesized invocations (Spec B §2.1).
         """
         agent = await self._agent_resolver(node.agent_id)
-        llm, llm_model = await self._llm_resolver(agent)
+        llm, llm_model = await self._resolve_node_llm(node, agent)
         tool_manager = await self._select_node_tool_manager(node, agent)
 
         # Render the input template -> single user-role Message.
@@ -212,7 +224,7 @@ class _AgentNodeMixin:
         context = self._context
         assert context is not None
         agent = await self._agent_resolver(node.agent_id)
-        llm, llm_model = await self._llm_resolver(agent)
+        llm, llm_model = await self._resolve_node_llm(node, agent)
         tool_manager = await self._select_node_tool_manager(node, agent)
 
         rendered = render_input_template(

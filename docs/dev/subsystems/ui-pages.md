@@ -49,7 +49,7 @@ A handful of surfaces break the mould: the dashboard and health and workers page
 
 - **Optimistic-write only for reversible edits; wait-for-200 for destructive or cascading mutations.** Description / metadata / config edits use the optimistic `useMutation` path; graph `PUT`-replace, workspace destroy, provider invalidate, and any delete wait for the response before refetching. The rationale lives in [ui-foundation.md](ui-foundation.md).
 
-- **Anomaly surfaces are rendered in place, not hidden.** Documented backend quirks get a labelled banner or helper line on the owning page: T0025 model-list-is-static helper text in the provider and collection modals, T0379 provider/config-not-cross-validated warning, T0711 MCP-HTTP 500 banner on the toolsets and agents Tools tabs, T0245/U0014 stdio-allowlist warning in the toolset modal. The backend cause is documented in the matching subsystem doc; the affordance is documented here.
+- **Anomaly surfaces are rendered in place, not hidden.** Documented backend quirks get a labelled banner or helper line on the owning page: T0025 model-list-is-static helper text in the embedding/cross-encoder provider and collection modals (the LLM provider form has no model list at all now -- see below), T0379 provider/config-not-cross-validated warning, T0711 MCP-HTTP 500 banner on the toolsets and agents Tools tabs, T0245/U0014 stdio-allowlist warning in the toolset modal. The backend cause is documented in the matching subsystem doc; the affordance is documented here.
 
 - **Inline-for-input-validation, toast-for-action-outcome.** 422 ProblemDetails responses map `extensions.errors[].loc` to per-field inline errors in modals; non-422 failures and success acknowledgements go through the toast queue. Yielding-tool inputs (AskUser) render their 422/500 inline under the input rather than as a toast.
 
@@ -66,13 +66,14 @@ All page components live under `ui/components/` as self-invoking `<script type="
 | `/workspaces/:id[/:tab]` | WorkspaceDetailPage | `workspaces.jsx` | `GET /v1/workspaces/{id}` + files/log/sessions/channels sub-resources |
 | `/workspaces/providers[/:id]` | WorkspaceProvidersListPage / Detail | `workspaces/providers.jsx` | `GET /v1/workspace_providers?limit=200` |
 | `/workspaces/templates[/:id]` | WorkspaceTemplatesListPage / Detail | `workspaces/templates.jsx` | `GET /v1/workspace_templates?limit=200` |
-| `/agents[/:id]` | AgentsListPage / AgentDetailPage | `agents.jsx` | `GET /v1/agents`, `/v1/agents/{id}/status`, `/v1/tools` |
+| `/agents[/:id]` | AgentsListPage / AgentDetailPage | `agents.jsx` | `GET /v1/agents`, `/v1/agents/{id}/status`, `/v1/tools`, `/v1/model_profiles` |
 | `/graphs[/:id]` | GraphsListPage / GraphDetailPage | `graphs.jsx` | `GET /v1/graphs`, `/v1/graphs/{id}/status`, `PUT /v1/graphs/{id}` |
 | `/knowledge/collections[/:id]` | CollectionsListPage / Detail | `knowledge.jsx` | `GET /v1/collections`, `/collections/{id}/documents`, `/collections/{id}/search` |
 | `/knowledge/documents[/:id]` | DocumentsListPage / Detail | `knowledge.jsx` | `GET /v1/documents`, `POST /v1/documents/_convert_file` |
 | `/toolsets[/:id]` | ToolsetsListPage / ToolsetDetailPage | `toolsets.jsx` | `GET /v1/tools`, `/v1/toolsets/{id}/tools`, `/v1/tool_approval_policies` |
 | `/tools` | ToolsListPage | `toolsets.jsx` | `GET /v1/tools/catalogue`, `/v1/tool_approval_policies` |
-| `/providers/llm[/:id]` | LlmProvidersListPage / Detail | `providers.jsx` | `GET /v1/llm_providers`, `.../{id}/models`, `POST .../_discover_models` |
+| `/providers/llm[/:id]` | LlmProvidersListPage / Detail | `providers.jsx` | `GET /v1/llm_providers`, `.../{id}/discovered_models`, `POST .../_discover_models`, `GET /v1/model_profiles` |
+| `/model-profiles` | ModelProfilesPage | `model-profiles.jsx` | `GET/POST/PUT/DELETE /v1/model_profiles`, `GET /v1/llm_providers` |
 | `/providers/embedding[/:id]` | EmbeddingProvidersListPage / Detail | `providers.jsx` | `GET /v1/embedding_providers` |
 | `/providers/cross_encoder[/:id]` | CrossEncoderProvidersListPage / Detail | `providers.jsx` | `GET /v1/cross_encoder_providers` |
 | `/ssp[/:id]` | SemanticSearchListPage / Detail | `semantic-search.jsx` | `GET /v1/ssp`, `POST /v1/ssp/{id}/invalidate`, `/v1/collections` |
@@ -182,7 +183,8 @@ Per-page coverage is split between Python static-source assertions and gated bro
 
 - **Edit mode blanks any field still holding the `**********` secret redaction before submit.** Why: round-tripping the literal asterisks would clobber the stored secret; blanking lets the backend keep the existing value when the operator leaves the field untouched. Spec: docs/superpowers/specs/2026-05-25-designer-handoff-ui-spec.md.
 
-- **Documented backend anomalies are surfaced in place rather than hidden.** Why: operators need to see that the model list is static (T0025), that provider config is not cross-validated (T0379), that an MCP-HTTP toolset is leaking a 500 (T0711), and that the stdio allowlist gates at session-open (U0014), so each gets a labelled banner or helper line on the owning page. Spec: docs/superpowers/specs/2026-05-16-ui-toolsets-design.md.
+- **An LLM provider's model registry is its ModelProfile rows, and the console says which of two lists it is showing.** Why: `GET /{id}/models` reports what is REGISTERED here and `GET /{id}/discovered_models` reports what the upstream OFFERS, and an operator who confuses them will think a fetch failed when it merely found nothing new. The LLM provider form therefore has no model table (an LLM provider carries no `models[]`); the detail page's `PR_LlmProfilesPanel` lists the profiles pointing at that provider and turns fetched rows into more of them. Models already registered stay selectable, because a second profile for the same model is the point of the entity.
+- **Documented backend anomalies are surfaced in place rather than hidden.** Why: operators need to see that the model list is static for the embedding and cross-encoder families (T0025), that provider config is not cross-validated (T0379), that an MCP-HTTP toolset is leaking a 500 (T0711), and that the stdio allowlist gates at session-open (U0014), so each gets a labelled banner or helper line on the owning page. Spec: docs/superpowers/specs/2026-05-16-ui-toolsets-design.md.
 
 - **The toolsets page is a single unified list of built-in plus user toolsets rather than two sub-views.** Why: operators want one place to see every tool source with its availability state, and a single `/v1/tools` fan-out powers it without maintaining two pagination paths and two empty states. Spec: docs/superpowers/specs/2026-05-16-ui-toolsets-design.md.
 

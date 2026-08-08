@@ -648,6 +648,13 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
     (s) => apiFetch("GET", "/graphs?limit=200", null, { signal: s }),
     {},
   );
+  // A node may override the agent's DEFAULT model profile, so the picker
+  // needs the profile vocabulary as well as the agent one.
+  const profiles = useResource(
+    "graphs-editor:model-profiles",
+    (s) => apiFetch("GET", "/model_profiles?limit=500", null, { signal: s }),
+    {},
+  );
   // Tool catalogue: same cache key as GR_ToolCallForm so the picker and
   // the toolcall_unknown_tool violation share one fetch. If the fetch
   // hasn't completed (or failed), the violation check is skipped — the
@@ -1117,6 +1124,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
           selected={selected}
           selectedEdgeIdx={selectedEdgeId}
           agentsList={agents.data?.items}
+          profilesList={profiles.data?.items}
           graphsList={allGraphs.data?.items}
           onUpdateNode={(patch) => {
             setDraft((d) => ({
@@ -1686,6 +1694,7 @@ function GR_SidePanel({
   onSetGraph,
   onReportJsonError,
   agentsList,
+  profilesList,
   graphsList,
   onCreateAgent,
 }) {
@@ -1711,6 +1720,7 @@ function GR_SidePanel({
           onNavigateSubgraph={onNavigateSubgraph}
           onReportJsonError={onReportJsonError}
           agentsList={agentsList}
+          profilesList={profilesList}
           graphsList={graphsList}
           onCreateAgent={onCreateAgent}
         />
@@ -1841,6 +1851,7 @@ function GR_SelectedNodeForm({
   onNavigateSubgraph,
   onReportJsonError,
   agentsList,
+  profilesList,
   graphsList,
   onCreateAgent,
 }) {
@@ -1964,6 +1975,30 @@ function GR_SelectedNodeForm({
                   New
                 </Btn>
               )}
+            </div>
+          </div>
+          <div className="field">
+            <label className="field-label">model profile (override)</label>
+            <select
+              className="select"
+              value={node.profile_id || ""}
+              onChange={(e) => onUpdateNode({ profile_id: e.target.value || null })}
+              style={{ width: "100%" }}
+              data-testid="gr-node-profile"
+            >
+              <option value="">use the agent's default</option>
+              {(profilesList || []).map((pr) => (
+                <option key={pr.id} value={pr.id}>
+                  {pr.id} · {pr.provider_id}/{pr.model_name}
+                  {pr.config?.reasoning ? ` · reasoning ${pr.config.reasoning}` : ""}
+                </option>
+              ))}
+            </select>
+            <div className="field-help">
+              The agent's own profile is a default. Overriding it here runs
+              this node on a different model without touching the agent, so
+              one definition can be cheap in one node and reasoning-heavy in
+              another.
             </div>
           </div>
           <GR_TextAreaField

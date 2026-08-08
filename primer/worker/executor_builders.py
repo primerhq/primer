@@ -100,8 +100,8 @@ def build_graph_invocation_services(
             raise NotFoundError(f"Agent {agent_id!r} not found")
         return row
 
-    async def llm_resolver(agent):
-        return await resolve_llm_and_model(pool, agent)
+    async def llm_resolver(agent, profile_id: str | None = None):
+        return await resolve_llm_and_model(pool, agent, profile_id)
 
     async def tool_manager_resolver(agent):
         toolset_ids = _toolset_ids_from_scoped(agent.tools)
@@ -343,8 +343,8 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
             )
         return row
 
-    async def llm_resolver(agent):
-        return await resolve_llm_and_model(pool, agent)
+    async def llm_resolver(agent, profile_id: str | None = None):
+        return await resolve_llm_and_model(pool, agent, profile_id)
 
     # (4) Holder AgentSession allocated by POST /workspaces/{id}/sessions
     # (Phase 2). Optional - fall back to None for legacy graph-
