@@ -1,5 +1,10 @@
-"""Static + transpile checks for the combined LLM provider+model picker widget
-used by the harness registration form (HarnessRegisterDialog)."""
+"""Static + transpile checks for the model-profile picker widget used by the
+harness registration form (HarnessRegisterDialog).
+
+An agent's model is a single ModelProfile id -- the profile carries the
+provider, the wire model name and the API-level config -- so remapping one
+on install is one choice, not a provider + model pair.
+"""
 
 from __future__ import annotations
 
@@ -14,27 +19,40 @@ def _src() -> str:
     return HARNESS_FORM.read_text(encoding="utf-8")
 
 
-def test_llm_model_picker_widget_registered() -> None:
+def test_model_profile_picker_widget_registered() -> None:
     src = _src()
-    # The recursive JSON-schema form renders the new combined widget.
-    assert '"llm-model-picker"' in src or "'llm-model-picker'" in src
-    assert "HF_LlmModelPicker" in src
+    # The recursive JSON-schema form renders the widget.
+    assert '"model-profile-picker"' in src or "'model-profile-picker'" in src
+    assert "HF_ModelProfilePicker" in src
 
 
-def test_llm_model_picker_populates_models_from_provider() -> None:
+def test_widget_name_is_one_the_backend_accepts() -> None:
+    """A widget the OverrideMapping Literal rejects can never be rendered."""
+    from primer.model.harness import OverrideMapping
+
+    OverrideMapping(
+        field_path="/model/profile_id",
+        override_path="/agent_model_profile",
+        widget="model-profile-picker",
+    )
+
+
+def test_picker_lists_profiles() -> None:
     src = _src()
-    # Fetches providers (whose rows carry their model lists) and derives the
-    # model options from the selected provider id.
-    assert "/v1/llm_providers" in src
-    assert ".models" in src
-    # The value is the combined { provider_id, model_name } object.
-    assert "provider_id" in src and "model_name" in src
+    assert "/v1/model_profiles" in src
+    # The value is a bare profile id, not a { provider_id, model_name } pair.
+    assert "typeof value === \"string\"" in src
 
 
-def test_llm_model_picker_defaults_to_first_model_on_provider_select() -> None:
+def test_picker_shows_the_resolved_provider_and_model() -> None:
+    """Several profiles may share one model, so the id alone is ambiguous."""
     src = _src()
-    # Selecting a provider defaults model_name to that provider's first model.
-    assert "ms[0]" in src
+    assert "pr.provider_id" in src and "pr.model_name" in src
+
+
+def test_picker_keeps_a_missing_saved_id_visible() -> None:
+    src = _src()
+    assert "missing &&" in src
 
 
 def test_harness_form_transpiles() -> None:
@@ -44,4 +62,4 @@ def test_harness_form_transpiles() -> None:
         ui_dir=UI, babel_source=(UI / "vendor" / "babel.min.js").read_text()
     )
     code = b._transform(_src(), "components/harness_form.jsx")
-    assert code and "HF_LlmModelPicker" in code
+    assert code and "HF_ModelProfilePicker" in code
