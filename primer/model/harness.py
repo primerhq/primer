@@ -41,6 +41,9 @@ class OverrideMapping(BaseModel):
     override_path: str
     widget: Literal[
         "llm-provider-picker",
+        # An agent's model is a ModelProfile id, so remapping one on install
+        # is a single choice rather than a provider + model pair.
+        "model-profile-picker",
         "embedding-provider-picker",
         "ssp-picker",
         "cross-encoder-picker",
