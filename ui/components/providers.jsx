@@ -1,4 +1,4 @@
-/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab */
+/* global React, Icon, Btn, Modal, Banner, CardList, Card, Fab, MP_ProfileModal */
 
 // NOTE: do NOT destructure window.primerApi at module top level. The docs
 // embeds install a fixture-backed stub (DocsMakeStubApi) AFTER this module is
@@ -282,8 +282,28 @@ function ProvidersPage({ kind: kindProp, pushToast }) {
 // ============================================================================
 
 function ProvidersList({ kindProp, pushToast }) {
-  const { useViewport, usePagedList, Pager } = window.primerApi;
+  const { useViewport, usePagedList, Pager, useResource, apiFetch } = window.primerApi;
   const k = KINDS[kindProp];
+  // An LLM provider carries no models[]: its ModelProfile rows are the
+  // registry. Counting the removed field would report 0 for every row.
+  const isLlm = k.plural === "llm_providers";
+  const profiles = useResource(
+    "providers:profile-counts",
+    (sig) => isLlm
+      ? apiFetch("GET", "/model_profiles?limit=500", null, { signal: sig })
+      : Promise.resolve(null),
+    { pollMs: null, deps: [isLlm] },
+  );
+  const profileCounts = React.useMemo(() => {
+    const out = {};
+    ((profiles.data && profiles.data.items) || []).forEach((r) => {
+      out[r.provider_id] = (out[r.provider_id] || 0) + 1;
+    });
+    return out;
+  }, [profiles.data]);
+  const countFor = (row) => isLlm
+    ? (profileCounts[row.id] || 0)
+    : (row.models || []).length;
   const { isMobile } = useViewport();
   const [createOpen, setCreateOpen] = React.useState(false);
   const [textFilter, setTextFilter] = React.useState("");
@@ -331,7 +351,7 @@ function ProvidersList({ kindProp, pushToast }) {
               : "No providers match."}
             renderCard={(p) => {
               const color = VENDOR_COLORS[p.provider] || "var(--text-3)";
-              const modelCount = (p.models || []).length;
+              const modelCount = countFor(p);
               return (
                 <Card
                   title={p.id}
@@ -341,7 +361,9 @@ function ProvidersList({ kindProp, pushToast }) {
                       {p.provider || "—"}
                     </span>
                   }
-                  meta={`${modelCount} model${modelCount === 1 ? "" : "s"}`}
+                  meta={isLlm
+                    ? `${modelCount} profile${modelCount === 1 ? "" : "s"}`
+                    : `${modelCount} model${modelCount === 1 ? "" : "s"}`}
                   onClick={() => navigateDetail(p.id)}
                 />
               );
@@ -355,7 +377,7 @@ function ProvidersList({ kindProp, pushToast }) {
             <tr>
               <th>ID</th>
               <th>Provider</th>
-              <th style={{ textAlign: "right" }}>Models</th>
+              <th style={{ textAlign: "right" }}>{isLlm ? "Profiles" : "Models"}</th>
             </tr>
           </thead>
           <tbody>
@@ -381,7 +403,7 @@ function ProvidersList({ kindProp, pushToast }) {
               )
             ) : filtered.map((p) => {
               const color = VENDOR_COLORS[p.provider] || "var(--text-3)";
-              const modelCount = (p.models || []).length;
+              const modelCount = countFor(p);
               return (
                 <tr key={p.id} onClick={() => navigateDetail(p.id)} style={{ cursor: "pointer" }}>
                   <td className="mono">{p.id}</td>
@@ -695,6 +717,235 @@ function PR_AggregatedEditor({ value, onChange, candidates }) {
 }
 
 // ============================================================================
+// PR_LlmProfilesPanel: the model registry for one LLM provider.
+// ============================================================================
+//
+// An LLM provider has no models[] of its own: what it serves is whatever
+// ModelProfile rows point at it. "Fetch models" live-probes the upstream and
+// offers each reported model as a profile to create -- discovery says what
+// exists, a profile says what this deployment chose to register, and one
+// model may be registered several times with different reasoning settings.
+//
+// The probe runs server-side against the SAVED row
+// (GET /v1/llm_providers/{id}/discovered_models) because the row this page
+// holds has its secrets redacted; replaying that config would authenticate
+// with "**********". That endpoint reports what the upstream OFFERS;
+// /models reports what is REGISTERED here.
+
+const PR_UNSAFE_SLUG = /[^a-z0-9-]+/g;
+
+function pr_synthProfileId(providerId, modelName) {
+  // Mirrors synth_profile_id in the m002 migration so a profile created here
+  // collides with (rather than duplicates) a migrated one.
+  const slug = String(modelName).toLowerCase().replace(PR_UNSAFE_SLUG, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${providerId}--${slug}`;
+}
+
+function PR_LlmProfilesPanel({ providerId, providerType, pushToast }) {
+  const { apiFetch, useResource, useMutation, useRouter } = window.primerApi;
+  const { navigate } = useRouter();
+  const _push = pushToast || (() => {});
+  const [discovered, setDiscovered] = React.useState(null);
+  const [query, setQuery] = React.useState("");
+  const [picked, setPicked] = React.useState(() => new Set());
+  const [customizing, setCustomizing] = React.useState(null);
+  // "aggregated" and the local/static provider types have no live list
+  // endpoint; probing them 400s. Their profiles are typed in by hand -- an
+  // aggregated provider's virtual model name is only meaningful here.
+  const discoverable = !!(PROVIDER_KINDS_FIELDS.llm[providerType] || {}).discoverable;
+
+  const profiles = useResource(
+    `provider-profiles:${providerId}`,
+    (sig) => apiFetch("GET", "/model_profiles?limit=500", null, { signal: sig }),
+    { deps: [providerId] },
+  );
+  const mine = (profiles.data?.items ?? []).filter((r) => r.provider_id === providerId);
+  const haveModel = new Set(mine.map((r) => r.model_name));
+
+  const discover = useMutation(
+    () => apiFetch("GET", "/llm_providers/" + encodeURIComponent(providerId) + "/discovered_models"),
+    {
+      onSuccess: (r) => {
+        const rows = Array.isArray(r?.models) ? r.models : [];
+        setDiscovered(rows);
+        setPicked(new Set());
+        _push(rows.length
+          ? { kind: "info", title: "Fetched models", detail: `${rows.length} reported by the provider` }
+          : { kind: "warning", title: "Provider returned no models", detail: "Check the URL / credentials." });
+      },
+      onError: (err) => _push({
+        kind: "error",
+        title: err.title || "Fetch failed",
+        detail: err.detail || err.message,
+        requestId: err.requestId,
+      }),
+    },
+  );
+
+  const createOne = useMutation(
+    (body) => apiFetch("POST", "/model_profiles", body),
+    { invalidates: [`provider-profiles:${providerId}`] },
+  );
+
+  const createPicked = async () => {
+    const rows = (discovered || []).filter((m) => picked.has(m.name));
+    let made = 0;
+    const failed = [];
+    for (const m of rows) {
+      try {
+        await createOne.mutate({
+          id: pr_synthProfileId(providerId, m.name),
+          description: `${m.name} on ${providerId}`,
+          provider_id: providerId,
+          model_name: m.name,
+          context_length: m.context_length || 32000,
+          config: {},
+        });
+        made += 1;
+      } catch (err) {
+        // Partial success is the normal outcome when some ids already
+        // exist, so report what landed rather than failing the batch.
+        failed.push(`${m.name}: ${err.detail || err.title || err.message}`);
+      }
+    }
+    setPicked(new Set());
+    profiles.refetch();
+    if (made) _push({ kind: "info", title: `Created ${made} profile${made === 1 ? "" : "s"}`, detail: providerId });
+    if (failed.length) {
+      _push({ kind: "error", title: `${failed.length} profile${failed.length === 1 ? "" : "s"} not created`, detail: failed[0] });
+    }
+  };
+
+  const visible = React.useMemo(() => {
+    const rows = discovered || [];
+    const q = query.trim().toLowerCase();
+    return q ? rows.filter((m) => String(m.name).toLowerCase().includes(q)) : rows;
+  }, [discovered, query]);
+
+  return (
+    <div className="panel">
+      <div className="panel-h">
+        <Icon name="llm" size={13} className="muted" />
+        <span>Model profiles</span>
+        <span className="sub">· what this provider serves</span>
+        <div className="right" style={{ display: "flex", gap: 6 }}>
+          <Btn size="sm" icon="plus" kind="ghost" onClick={() => setCustomizing({ name: "" })}>
+            New profile
+          </Btn>
+          <Btn size="sm" icon="refresh" kind="ghost"
+            onClick={() => discover.mutate()}
+            disabled={discover.loading || !discoverable}
+            title={discoverable
+              ? "Live-probe the provider for the models it offers"
+              : `${providerType} has no live list-models endpoint; add profiles by hand`}>
+            {discover.loading ? "Fetching…" : "Fetch models"}
+          </Btn>
+        </div>
+      </div>
+      <div className="panel-body" style={{ padding: 0 }}>
+        {profiles.loading && mine.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>Loading…</div>
+        ) : mine.length === 0 ? (
+          <div className="muted text-sm" style={{ padding: 20, textAlign: "center" }}>
+            No profiles point at this provider yet. Fetch its models to create some.
+          </div>
+        ) : (
+          <table className="tbl">
+            <thead><tr><th>Profile</th><th>Model</th><th>Reasoning</th><th style={{ textAlign: "right" }}>Context</th></tr></thead>
+            <tbody>
+              {mine.map((r) => (
+                <tr key={r.id} onClick={() => navigate("/model-profiles")} style={{ cursor: "pointer" }}>
+                  <td className="mono">{r.id}</td>
+                  <td className="mono">{r.model_name}</td>
+                  <td className="mono muted text-sm">{r.config?.reasoning || "—"}</td>
+                  <td className="mono num tabular" style={{ textAlign: "right" }}>{(r.context_length || 0).toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {discovered && (
+        <div className="panel-body" style={{ borderTop: "1px solid var(--border)" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+            <input
+              className="input mono"
+              placeholder={`Filter ${discovered.length} reported model${discovered.length === 1 ? "" : "s"}…`}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ flex: 1 }}
+            />
+            <Btn size="sm" kind="primary" icon="plus" disabled={picked.size === 0 || createOne.loading}
+              onClick={createPicked}>
+              Create {picked.size || ""} profile{picked.size === 1 ? "" : "s"}
+            </Btn>
+          </div>
+          {visible.length === 0 ? (
+            <div className="muted text-sm" style={{ padding: 12, textAlign: "center" }}>No models match.</div>
+          ) : (
+            <div style={{ maxHeight: 320, overflowY: "auto" }}>
+              <table className="tbl">
+                <thead><tr><th style={{ width: 30 }}></th><th>Reported model</th><th style={{ textAlign: "right" }}>Context</th><th style={{ width: 110 }}></th></tr></thead>
+                <tbody>
+                  {visible.map((m) => (
+                    <tr key={m.name}>
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={picked.has(m.name)}
+                          onChange={(e) => setPicked((prev) => {
+                            const next = new Set(prev);
+                            if (e.target.checked) next.add(m.name); else next.delete(m.name);
+                            return next;
+                          })}
+                        />
+                      </td>
+                      <td className="mono">
+                        {m.name}
+                        {/* Already-registered is not a reason to hide the row:
+                            a second profile for the same model is the point. */}
+                        {haveModel.has(m.name) && (
+                          <span className="muted text-sm"> · already registered</span>
+                        )}
+                      </td>
+                      <td className="mono num tabular" style={{ textAlign: "right" }}>
+                        {(m.context_length || 0).toLocaleString()}
+                      </td>
+                      <td>
+                        <Btn size="sm" kind="ghost" onClick={() => setCustomizing(m)}>Customize…</Btn>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {customizing && (
+        <MP_ProfileModal
+          open
+          existing={null}
+          prefill={customizing.name ? {
+            id: pr_synthProfileId(providerId, customizing.name),
+            description: `${customizing.name} on ${providerId}`,
+            provider_id: providerId,
+            model_name: customizing.name,
+            context_length: customizing.context_length || 32000,
+          } : { provider_id: providerId }}
+          providers={[{ id: providerId, provider: "" }]}
+          onClose={() => setCustomizing(null)}
+          onSaved={() => { setCustomizing(null); profiles.refetch(); }}
+        />
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
 // Create modal — provider-pattern with rich per-provider controls.
 // ============================================================================
 
@@ -702,6 +953,11 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   const { apiFetch, useMutation, useResource } = window.primerApi;
   const _push = pushToast || (() => {});
   const fieldKind = _normKind(kindProp);
+  // LLM providers no longer carry a models[] list: a ModelProfile row is the
+  // registry of what an LLM provider serves, because one model may be
+  // registered several times with different API-level config. Embedding and
+  // cross-encoder providers still keep their own list.
+  const usesProfiles = fieldKind === "llm";
   const providers = PROVIDER_KINDS_FIELDS[fieldKind] || {};
   const providerOptions = Object.keys(providers);
   // Same modal handles create (existing == null) and edit. In edit
@@ -932,7 +1188,7 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
       ...(isEdit ? { id: existing.id } : (id ? { id } : {})),
       provider,
       config: def?.variant === "aggregated" ? aggConfig : cleanConfig(),
-      models: cleanModels(),
+      ...(usesProfiles ? {} : { models: cleanModels() }),
       limits: {
         max_concurrency: Number(maxConcurrency) || 1,
         ...(requestTimeoutSeconds !== "" && requestTimeoutSeconds !== null
@@ -950,13 +1206,14 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   };
 
   const canSubmit = !!provider
-    && models.length > 0
+    && (usesProfiles || models.length > 0)
     // Every model row must have its required fields filled. Model fields
     // are required by default; only those flagged `optional` (e.g. a
     // reranker's max_pair_length) may be blank. Without this, an empty
     // model row (the Add button seeds blank fields) submitted
     // `models: [{}]` and the API rejected it with a 422 on models.0.name.
-    && models.every((m) => def?.modelFields.every((f) => f.optional || String(m[f.key] ?? "").trim() !== ""))
+    && (usesProfiles
+      || models.every((m) => def?.modelFields.every((f) => f.optional || String(m[f.key] ?? "").trim() !== "")))
     && def?.config.every((f) => !f.required || (configValues[f.key] != null && configValues[f.key] !== ""))
     && ((def?.variant !== "aggregated")
       || (aggConfig.members.length >= 1
@@ -1029,6 +1286,17 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
         ))
       )}
 
+      {usesProfiles ? (
+        <div className="field">
+          <label className="field-label">Models</label>
+          <div className="field-help">
+            An LLM provider does not carry a model list. Save it, then open
+            its detail page and use <strong>Fetch models</strong> to turn what
+            the upstream reports into model profiles: one model can become
+            several profiles with different reasoning settings.
+          </div>
+        </div>
+      ) : (
       <div className="field">
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <label className="field-label">Models</label>
@@ -1101,6 +1369,7 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
           Use the {def?.discoverable ? "Fetch" : "Suggest"} models button above to populate or refresh.
         </div>
       </div>
+      )}
 
       {def?.variant === "aggregated" ? (
         <div className="field-help">
@@ -1423,9 +1692,12 @@ function ProviderDetailBody({ p, models, k, pushToast }) {
         />
       )}
 
+      {k.plural === "llm_providers" ? (
+        <PR_LlmProfilesPanel providerId={p.id} providerType={p.provider} pushToast={pushToast} />
+      ) : (
       <div className="panel">
         <div className="panel-h">
-          <Icon name={k.plural === "llm_providers" ? "llm" : "emb"} size={13} className="muted" />
+          <Icon name="emb" size={13} className="muted" />
           <span>Models</span>
           <span className="sub">· returns the static row list, not a live introspection (T0025)</span>
           <div className="right">
@@ -1455,6 +1727,7 @@ function ProviderDetailBody({ p, models, k, pushToast }) {
           )}
         </div>
       </div>
+      )}
     </>
   );
 }

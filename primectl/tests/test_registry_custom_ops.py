@@ -46,3 +46,16 @@ def test_workspace_reply_binding_is_custom_op(reg):
     assert op.method == "put"
     assert op.path_template == "/v1/workspaces/{workspace_id}/reply_binding"
     assert op.path_params == ("workspace_id",)
+
+
+def test_saved_provider_probe_does_not_collide_with_the_draft_probe(reg):
+    """Both paths end in a models-discovery segment and the {param} is
+    dropped when deriving the action name, so a shared name here would
+    silently rename one op to "discover-models-post"."""
+    p = reg.resolve("llm_provider")
+    assert "discover-models" in p.custom_ops
+    assert "discovered-models" in p.custom_ops
+    assert p.custom_ops["discover-models"].method == "post"
+    saved = p.custom_ops["discovered-models"]
+    assert saved.method == "get"
+    assert saved.path_params == ("provider_id",)

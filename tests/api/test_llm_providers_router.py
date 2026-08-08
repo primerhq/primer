@@ -252,3 +252,84 @@ class TestDiscoverOpenChat:
         )
         assert r.status_code >= 400
         assert "probe failed" in r.text.lower()
+
+
+class TestDiscoverModelsOnASavedProvider:
+    """``GET /v1/llm_providers/{id}/discovered_models``.
+
+    The draft-config variant cannot serve the provider detail page: the row
+    the console holds has its secrets redacted, so replaying that config
+    would probe upstream with ``"**********"`` as the API key. This variant
+    reads the stored row server-side instead.
+    """
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_is_404(self, client) -> None:
+        r = await client.get("/v1/llm_providers/nope/discovered_models")
+        assert r.status_code == 404, r.text
+
+    @pytest.mark.asyncio
+    async def test_probes_with_the_unredacted_stored_secret(
+        self, client, monkeypatch
+    ) -> None:
+        seen: dict = {}
+
+        async def _fake_probe(config):
+            seen.update(config)
+            return {"models": [{"name": "m-1"}]}
+
+        monkeypatch.setattr(
+            "primer.api.routers.providers._probe_openai_compatible_models",
+            _fake_probe,
+        )
+        create = await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "saved-probe",
+                "description": "probe target",
+                "provider": "openresponses",
+                "config": {
+                    "url": "http://example.invalid",
+                    "flavor": "other",
+                    "api_key": "sk-real-secret",
+                },
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        assert create.status_code in (200, 201), create.text
+        # The GET the console holds is redacted -- that is the whole reason
+        # this endpoint exists.
+        got = await client.get("/v1/llm_providers/saved-probe")
+        assert got.json()["config"]["api_key"] != "sk-real-secret"
+
+        r = await client.get("/v1/llm_providers/saved-probe/discovered_models")
+        assert r.status_code == 200, r.text
+        assert r.json()["models"][0]["name"] == "m-1"
+        assert seen.get("api_key") == "sk-real-secret"
+
+    @pytest.mark.asyncio
+    async def test_seeds_a_context_length_the_probe_cannot_know(
+        self, client, monkeypatch
+    ) -> None:
+        """/v1/models does not report a context window; a ModelProfile
+        requires one, so the response carries a default to override."""
+        async def _fake_probe(config):
+            return {"models": [{"name": "m-1"}]}
+
+        monkeypatch.setattr(
+            "primer.api.routers.providers._probe_openai_compatible_models",
+            _fake_probe,
+        )
+        await client.post(
+            "/v1/llm_providers",
+            json={
+                "id": "saved-probe-2",
+                "description": "probe target",
+                "provider": "openresponses",
+                "config": {"url": "http://example.invalid", "flavor": "other"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        r = await client.get("/v1/llm_providers/saved-probe-2/discovered_models")
+        assert r.status_code == 200, r.text
+        assert r.json()["models"][0]["context_length"] > 0

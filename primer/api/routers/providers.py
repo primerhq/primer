@@ -4,6 +4,7 @@ Each entity follows the standard CRUD + Find shape from
 :mod:`primer.api.routers._crud`, plus entity-specific operations:
 
 * LLMProvider:           ``GET /v1/llm_providers/{id}/models``
+                         ``GET /v1/llm_providers/{id}/discovered_models``
                          ``POST /v1/llm_providers/{id}/invalidate``
                          ``POST /v1/llm_providers/_discover_models``
 * EmbeddingProvider:     ``GET /v1/embedding_providers/{id}/models``
@@ -282,35 +283,101 @@ async def discover_llm_models(
     Used by the console's "Fetch Models" button before any provider
     has been persisted. Returns ``{"models": [{name, context_length?}, ...]}``.
 
-    Note: the adapters' ``list_models()`` method returns the stored
-    row's static model list (anomaly T0025), not a live probe. This
-    endpoint deliberately bypasses the adapter for discovery and calls
-    the provider's native list endpoint directly.
+    For a provider that IS already persisted, use
+    ``GET /v1/llm_providers/{id}/discovered_models`` instead: secrets are
+    redacted on the wire, so a config round-tripped through a GET cannot
+    authenticate a probe.
 
     ``ollama``, ``openresponses``, ``openchat``, ``openrouter``,
     ``anthropic``, and ``gemini`` expose a live list-models API. Any
     other provider type returns 400 and the frontend falls back to its
     curated suggested-model list.
     """
+    return await _probe_llm_models(body.provider, body.config)
+
+
+@llm_provider_router.get(
+    "/llm_providers/{provider_id}/discovered_models",
+    summary="Live-probe a saved LLM provider for its upstream model list",
+    responses=common_responses(400, 404, 502),
+)
+async def discover_saved_llm_models(
+    provider_id: str = Path(..., description="LLMProvider id"),
+    providers=Depends(get_llm_provider_storage),
+) -> dict:
+    """Live-probe a provider that already exists, using its stored config.
+
+    Distinct from ``GET /llm_providers/{id}/models``, which reports what is
+    REGISTERED (its ModelProfile rows). This reports what the upstream
+    currently OFFERS; the difference is what the console's Fetch action
+    turns into new profiles.
+
+    The draft-config variant above cannot serve the provider detail page:
+    the row the console holds has its secrets redacted, so replaying that
+    config would probe with ``"**********"`` as the API key. Reading the
+    stored row server-side keeps the real secret where it belongs.
+
+    Returns the same ``{"models": [...]}`` shape, which the console turns
+    into :class:`ModelProfile` rows -- discovery lists what the upstream
+    offers; a profile is what this deployment chooses to register.
+    """
+    from primer.model.except_ import NotFoundError
+
+    row = await providers.get(provider_id)
+    if row is None:
+        raise NotFoundError(f"LLMProvider {provider_id!r} does not exist")
+    # mode="json" would re-mask every SecretStr to "**********" -- the exact
+    # value this endpoint exists to avoid sending upstream. Dump in python
+    # mode and unwrap explicitly.
+    config = _unwrap_secrets(row.config.model_dump(mode="python"))
+    return await _probe_llm_models(str(getattr(row.provider, "value", row.provider)), config)
+
+
+def _unwrap_secrets(value: Any) -> Any:
+    """Recursively replace ``SecretStr`` with its real value.
+
+    The probe helpers interpolate config values straight into headers, so a
+    ``SecretStr`` that survives this would be sent literally as
+    ``Bearer **********`` -- an auth failure that looks like a bad key.
+    """
+    from pydantic import SecretStr
+
+    if isinstance(value, SecretStr):
+        return value.get_secret_value()
+    if isinstance(value, dict):
+        return {k: _unwrap_secrets(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_unwrap_secrets(v) for v in value]
+    return value
+
+
+async def _probe_llm_models(provider: str, config: dict[str, Any]) -> dict:
+    """Dispatch a live list-models probe by provider type.
+
+    Note: the adapters' ``list_models()`` method is not used here (anomaly
+    T0025); this bypasses the adapter and calls the provider's native list
+    endpoint directly.
+    """
+
     # Validate the draft via the canonical model so config shape errors
     # surface cleanly. We never persist or run anything from the stub.
     _build_stub_provider(
         LLMProvider,
-        provider=body.provider,
-        config=body.config,
+        provider=provider,
+        config=config,
         models=[{"name": "_probe", "context_length": 1}],
     )
-    if body.provider == "ollama":
-        result = await _probe_ollama_models(body.config)
-    elif body.provider == "openresponses":
-        result = await _probe_openai_compatible_models(body.config)
-    elif body.provider == "openchat":
+    if provider == "ollama":
+        result = await _probe_ollama_models(config)
+    elif provider == "openresponses":
+        result = await _probe_openai_compatible_models(config)
+    elif provider == "openchat":
         # OpenAI-compatible Chat Completions: same /v1/models probe as
         # openresponses (both carry an OpenAI-style base URL).
-        result = await _probe_openai_compatible_models(body.config)
-    elif body.provider == "openrouter":
+        result = await _probe_openai_compatible_models(config)
+    elif provider == "openrouter":
         try:
-            draft = OpenRouterConfig.model_validate(body.config)
+            draft = OpenRouterConfig.model_validate(config)
         except ValidationError as exc:
             raise BadRequestError(
                 f"invalid OpenRouter config: {exc}",
@@ -329,9 +396,9 @@ async def discover_llm_models(
                 f"{exc}",
             ) from exc
         result = {"models": catalogue}
-    elif body.provider == "anthropic":
+    elif provider == "anthropic":
         try:
-            ant_draft = AnthropicConfig.model_validate(body.config)
+            ant_draft = AnthropicConfig.model_validate(config)
         except ValidationError as exc:
             raise BadRequestError(
                 f"invalid Anthropic config: {exc}",
@@ -350,9 +417,9 @@ async def discover_llm_models(
                 f"{exc}",
             ) from exc
         result = {"models": catalogue}
-    elif body.provider == "gemini":
+    elif provider == "gemini":
         try:
-            gem_draft = GoogleConfig.model_validate(body.config)
+            gem_draft = GoogleConfig.model_validate(config)
         except ValidationError as exc:
             raise BadRequestError(
                 f"invalid Gemini config: {exc}",
@@ -380,7 +447,7 @@ async def discover_llm_models(
     else:
         raise BadRequestError(
             f"live model discovery is not supported for provider "
-            f"{body.provider!r}; populate the models list manually or "
+            f"{provider!r}; populate the models list manually or "
             f"use the UI's 'Suggest models' fallback.",
         )
     # Neither Ollama's /api/tags, OpenAI's /v1/models, nor Anthropic's
@@ -390,7 +457,7 @@ async def discover_llm_models(
     # verbatim, so skip the default for that branch. Gemini reports
     # inputTokenLimit for most models but not all, so seed the default
     # only where the helper omitted it.
-    if body.provider in ("ollama", "openresponses", "openchat", "anthropic", "gemini"):
+    if provider in ("ollama", "openresponses", "openchat", "anthropic", "gemini"):
         for m in result.get("models", []):
             m.setdefault("context_length", _DEFAULT_LLM_CONTEXT_LENGTH)
     return result
