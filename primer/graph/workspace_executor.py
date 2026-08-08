@@ -94,7 +94,10 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
         *,
         graph: Graph,
         agent_resolver: Callable[[str], Awaitable["Agent"]],
-        llm_resolver: Callable[["Agent"], Awaitable[tuple["LLM", "ResolvedModel"]]],
+        llm_resolver: Callable[..., Awaitable[tuple["LLM", "ResolvedModel"]]],
+        # Called as (agent) normally and (agent, profile_id) only when a
+        # node overrides the agent default, so single-argument resolvers
+        # stay valid.
         state_repo: "LocalStateRepo",
         graph_session_id: str,
         workspace_session: "AgentSession | None" = None,

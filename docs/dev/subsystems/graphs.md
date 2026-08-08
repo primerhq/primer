@@ -16,7 +16,7 @@ The seven node kinds are:
 
 - `_BeginNode` (`kind="begin"`): pure data-shaping entry node carrying the graph's input contract (`input_schema`).
 - `_EndNode` (`kind="end"`): pure data-shaping sink carrying the graph's output contract (`output_template` + `output_schema`).
-- `_AgentNodeRef` (`kind="agent"`): runs a stored `Agent` with an `input_template`, optional `response_format`, and designer-only `input_schema`.
+- `_AgentNodeRef` (`kind="agent"`): runs a stored `Agent` with an `input_template`, optional `response_format`, designer-only `input_schema`, and an optional `profile_id` overriding the agent's DEFAULT model profile for this node only. The override reaches the executor through `_resolve_node_llm`, which passes the profile to the caller-supplied `llm_resolver` ONLY when the node declares one: the seam is a plain callable and nearly every resolver in the codebase takes a single `agent`, so calling them with two arguments would break every graph that never wanted an override.
 - `_GraphNodeRef` (`kind="graph"`): delegates to a sub-graph (recursive composition).
 - `_FanOutNode` (`kind="fan_out"`): pure dispatcher; spawns parallel downstream instances per `FanOutSpec`.
 - `_FanInNode` (`kind="fan_in"`): wait-for-all aggregator with an `aggregate_template` + optional `output_schema`.
