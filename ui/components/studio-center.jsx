@@ -512,6 +512,9 @@ function SessionAgentPanel({ wid, sid, session, pushToast }) {
           >Restart</Btn>
         )}
       </div>
+      {window.ExternalPendingBanner && (
+        <window.ExternalPendingBanner sessionId={sid} pushToast={pushToast} />
+      )}
       <window.Transcript
         messages={rows}
         chatId={sid}
