@@ -247,3 +247,11 @@ Per the project convention, smoke-test session changes with `uv run primer api` 
 - **The failed-turn `ProblemDetails` envelope is reused for both the `TurnLogFailed` event and the legacy `messages.jsonl` `ERROR` record.** Why: operators viewing the Messages tab or the Last-error panel see the real exception type/title/detail instead of the spec-era generic string, and any future provider-error type added to the error map lands in both surfaces automatically. Spec: docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md.
 - **The `WorkspaceTurnLogWriter` bootstraps its seq counter by reading the existing file on first append.** Why: without it a worker restart mid-session would write `seq=1` over the existing seq space and break `since_seq` pagination for any polling operator. Spec: docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md.
 - **Sessions are single-use; resuming after `ENDED` is not supported in v1.** Why: it avoids designing reanimation semantics before they are needed; `parent_session_id` is reserved for fork/spawn attribution without committing to a resume API. Spec: docs/superpowers/specs/2026-05-02-workspace-design.md.
+
+## Cross-reference: external tools
+
+The steer endpoint doubles as the resume path for invoker-supplied tool
+calls: `tool_results` in the body resolves pending external calls
+(409-atomic), message content cancels them with a synthetic result, and
+`external_tools` registers the next turn's defs; see
+[external-tools](external-tools.md).

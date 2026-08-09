@@ -39,6 +39,7 @@ flowchart TD
         chats[Chats]
         harness[Harness]
         triggers[Triggers]
+        exttools[External Tools]
     end
 
     subgraph Integration["Integration subsystems"]
@@ -85,6 +86,10 @@ flowchart TD
     triggers --> claim
     triggers --> worker
     triggers --> rest
+
+    exttools --> worker
+    exttools --> storage
+    exttools --> rest
 
     channels --> provider
     channels --> worker
@@ -178,6 +183,10 @@ flowchart TD
 - [services](subsystems/services.md) - agent-published web apps: immutable versioned
   bundles served at /svc/{name}/ by any API replica, with bundle python executing
   per-request in the python-runner sandbox.
+- [external-tools](subsystems/external-tools.md) - invoker-supplied tool calls: an
+  API caller attaches tool definitions to an invocation, the model calls them, the
+  turn parks, and the caller resumes it with the result through the same
+  invocation API.
 - [ui-foundation](subsystems/ui-foundation.md) - the shared browser substrate every
   console page builds on: the HTTP client, the polled-read and optimistic-write hooks,
   hash routing, the chrome shell, and the shared primitives.
