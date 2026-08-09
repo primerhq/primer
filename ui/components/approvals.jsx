@@ -624,7 +624,31 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
   );
   const providerItems = providers.data?.items ?? [];
   const selectedProvider = providerItems.find((p) => p.id === providerId);
-  const modelOptions = selectedProvider?.models ?? [];
+
+  // What a provider publishes is its ModelProfile rows, not a models[]
+  // list on the provider row. The judge still takes a bare model NAME --
+  // it is a direct provider call, not an agent turn, so there is no agent
+  // default for a profile to override -- and the backend validates that
+  // name against these same rows, so the dropdown has to derive from
+  // them or it offers values the API will reject.
+  const profiles = useResource(
+    "approvals-modal:model-profiles",
+    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    {},
+  );
+  const modelOptions = React.useMemo(() => {
+    const seen = new Map();
+    for (const pr of profiles.data?.items ?? []) {
+      // Several profiles may name one model; the judge picks a name, so
+      // list each name once.
+      if (pr.provider_id === providerId && !seen.has(pr.model_name)) {
+        seen.set(pr.model_name, {
+          name: pr.model_name, context_length: pr.context_length,
+        });
+      }
+    }
+    return [...seen.values()];
+  }, [profiles.data, providerId]);
 
   // Reset model when provider changes.
   React.useEffect(() => {
@@ -634,7 +658,8 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
     if (!selectedProvider) {
       setModel("");
     }
-  }, [providerId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providerId, modelOptions]);
 
   const create = useMutation(
     (body) => isEdit
