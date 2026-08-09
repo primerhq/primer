@@ -31,7 +31,12 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel, Field
 
-from primer.api.deps import get_claim_engine, get_event_bus, get_session_storage
+from primer.api.deps import (
+    get_claim_engine,
+    get_event_bus,
+    get_external_tool_call_storage,
+    get_session_storage,
+)
 from primer.api.errors import common_responses
 from primer.int.claim import ClaimEngine
 from primer.int.event_bus import EventBus
@@ -441,6 +446,7 @@ async def post_cancel_yielded_tool(
     ] = CancelYieldedToolBody(),  # body is optional; default-construct
     session_storage=Depends(get_session_storage),
     event_bus: EventBus = Depends(get_event_bus),
+    call_storage=Depends(get_external_tool_call_storage),
 ) -> dict[str, str]:
     """Cancel a single yield without terminating the whole session.
 
@@ -476,6 +482,21 @@ async def post_cancel_yielded_tool(
         )
     payload = make_cancelled_payload(reason=body.reason)
     await event_bus.publish(event_key, payload)
+    # An _external park additionally resolves its audit row so the
+    # pending endpoints and the global list reflect the cancel.
+    if yielded.get("tool_name") == "_external":
+        from primer.chat.pending import flip_external_row
+
+        meta = yielded.get("resume_metadata") or {}
+        await flip_external_row(
+            call_storage,
+            row_id=meta.get("external_call_row_id"),
+            status="cancelled",
+            result={
+                "cancelled": True,
+                "reason": body.reason or "cancelled by operator",
+            },
+        )
     return {"status": "accepted"}
 
 

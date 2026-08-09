@@ -18,6 +18,7 @@ from primer.model.external_tool import (
 from primer.api.deps import (
     get_claim_engine,
     get_event_bus,
+    get_external_tool_call_storage,
     get_scheduler,
     get_session_storage,
     get_storage_provider,
@@ -332,9 +333,21 @@ async def cancel_session(
         event_bus=event_bus,
         workspace_registry=workspace_registry,
     )
-    return await _cancel_session_helper(
+    result = await _cancel_session_helper(
         workspace_id=workspace_id, session_id=session_id, deps=deps,
     )
+    # Hard cancel abandons any invoker-supplied tool calls still pending;
+    # resolve their audit rows so orchestrators polling the global list
+    # see the terminal state.
+    from primer.model.external_tool import ExternalToolCall
+    from primer.session.external_tools import cancel_pending_external
+
+    await cancel_pending_external(
+        call_storage=storage_provider.get_storage(ExternalToolCall),
+        session_id=session_id,
+        reason="session cancelled",
+    )
+    return result
 
 
 @nested_session_router.delete(
@@ -361,6 +374,7 @@ async def delete_session(
     engine=Depends(get_claim_engine),
     workspace_registry=Depends(get_workspace_registry),
     event_bus=Depends(get_event_bus),
+    call_storage=Depends(get_external_tool_call_storage),
 ) -> None:
     """Permanently remove a session row + best-effort cleanup of its
     on-disk slot under ``<workspace>/.state/sessions/<sid>/``.
@@ -383,6 +397,15 @@ async def delete_session(
             f"Session {session_id!r} does not exist on workspace "
             f"{workspace_id!r}"
         )
+    # Resolve any still-pending invoker-supplied tool calls before the
+    # row goes away (the audit rows outlive the session).
+    from primer.session.external_tools import cancel_pending_external
+
+    await cancel_pending_external(
+        call_storage=call_storage,
+        session_id=session_id,
+        reason="session deleted",
+    )
     if s.status == SessionStatus.RUNNING and not force:
         raise ConflictError(
             f"Session {session_id!r} is running; cancel it first "

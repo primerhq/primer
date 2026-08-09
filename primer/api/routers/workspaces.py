@@ -1171,8 +1171,19 @@ async def restart_session_route(
     event_bus=Depends(get_event_bus),
 ) -> WorkspaceSession:
     """Re-open an ENDED session and invoke it (studio-agents-interact §5.3)."""
+    from primer.model.external_tool import ExternalToolCall
     from primer.session.enqueue import SessionWakeDeps
+    from primer.session.external_tools import cancel_pending_external
     from primer.session.reset import SessionResetDeps, restart_session
+
+    # A restart discards the previous run's in-flight state; resolve any
+    # audit rows a prior park left pending (a session that ENDED via
+    # failure never went through the cancel route's sweep).
+    await cancel_pending_external(
+        call_storage=storage_provider.get_storage(ExternalToolCall),
+        session_id=session_id,
+        reason="session restarted",
+    )
 
     return await restart_session(
         workspace_id=workspace_id,

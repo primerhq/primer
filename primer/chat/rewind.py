@@ -74,6 +74,21 @@ async def truncate_chat_after(
         if not cursor:
             break
 
+    # A rewind erases the exchange, so an external pending gets ONLY its
+    # audit-row flip - no conversation append (the rows it would pair
+    # with are being deleted).
+    cleared_pending = chat.pending_tool_call
+    if cleared_pending and cleared_pending.get("mode") == "external":
+        from primer.chat.pending import flip_external_row
+        from primer.model.external_tool import ExternalToolCall
+
+        await flip_external_row(
+            storage_provider.get_storage(ExternalToolCall),
+            row_id=cleared_pending.get("external_call_row_id"),
+            status="cancelled",
+            result={"cancelled": True, "reason": "chat rewound"},
+        )
+
     chat.last_seq = target_seq
     chat.next_unprocessed_seq = min(chat.next_unprocessed_seq, target_seq)
     chat.pending_tool_call = None

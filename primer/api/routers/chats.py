@@ -44,6 +44,7 @@ from fastapi import (
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from primer.model.external_tool import (
+    ExternalToolCall,
     ExternalToolDef,
     ExternalToolResultIn,
     validate_external_tool_defs,
@@ -723,6 +724,16 @@ async def end_chat(
     chat = await chat_storage.get(chat_id)
     if chat is None:
         raise NotFoundError(f"Chat {chat_id!r} does not exist")
+
+    # Ending (or deleting) the chat abandons any pending invoker-supplied
+    # tool call; resolve the audit rows first (they outlive the chat).
+    from primer.session.external_tools import cancel_pending_external
+
+    await cancel_pending_external(
+        call_storage=sp.get_storage(ExternalToolCall),
+        chat_id=chat_id,
+        reason="chat ended",
+    )
 
     if force:
         message_storage = sp.get_storage(ChatMessage)
