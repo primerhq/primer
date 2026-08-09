@@ -99,7 +99,12 @@ async def _validate_approval_config(
                 field_path="approval.provider_id",
                 message=f"unknown LLM provider {cfg.provider_id!r}",
             )
-        names = {m.name for m in row.models}
+        # An LLM provider no longer carries a models[] list: what it
+        # serves is its ModelProfile rows. The judge calls the adapter
+        # with a bare model name (no agent, so no profile to resolve), so
+        # the check stays "is this name published by that provider" -- it
+        # just reads the profiles to answer it.
+        names = await _published_model_names(sp, cfg.provider_id)
         if cfg.model not in names:
             raise _validation_error(
                 field_path="approval.model",
@@ -108,6 +113,31 @@ async def _validate_approval_config(
                     f"{cfg.provider_id!r} (available: {sorted(names)})"
                 ),
             )
+
+
+async def _published_model_names(sp, provider_id: str) -> set[str]:
+    """Distinct model names the provider's ModelProfile rows name.
+
+    Mirrors ``GET /v1/llm_providers/{id}/models``. Paged because a
+    provider with many profiles is the expected shape once an operator
+    has fetched a large upstream catalogue.
+    """
+    from primer.model.model_profile import ModelProfile
+    from primer.model.storage import OffsetPage
+    from primer.storage.q import Q
+
+    names: set[str] = set()
+    offset = 0
+    store = sp.get_storage(ModelProfile)
+    while True:
+        page = await store.find(
+            Q(ModelProfile).where("provider_id", provider_id).build(),
+            OffsetPage(offset=offset, length=200),
+        )
+        names.update(p.model_name for p in page.items)
+        if len(page.items) < 200:
+            return names
+        offset += 200
 
 
 def _validation_error(*, field_path: str, message: str) -> RequestValidationError:
