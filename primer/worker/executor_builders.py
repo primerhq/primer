@@ -266,7 +266,17 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         graph_invocation_services=gis,
         initiated_by=initiated_by,
         external_tools=_external_defs_for(session, agent),
-        external_call_storage=pool._storage.get_storage(ExternalToolCall),
+        # ``pool._storage`` is always present in production; some pool
+        # unit-tests construct the pool with ``storage=None`` (see the
+        # same tolerance in WorkerPool._dispatch). Harmless to pass None:
+        # ToolExecutionManager only builds the external dispatcher when
+        # the agent actually has external tools, and an agent that has
+        # them always came through a pool with storage.
+        external_call_storage=(
+            pool._storage.get_storage(ExternalToolCall)
+            if pool._storage is not None
+            else None
+        ),
     )
 
     from primer.agent.inform import SessionInformSink
@@ -396,7 +406,11 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         from primer.model.external_tool import ExternalToolCall
 
         node_external_tools = _external_defs_for(session, agent)
-        node_call_storage = pool._storage.get_storage(ExternalToolCall)
+        node_call_storage = (
+            pool._storage.get_storage(ExternalToolCall)
+            if pool._storage is not None
+            else None
+        )
         if workspace_session is not None:
             gis = pool._build_graph_invocation_services(
                 workspace=workspace,
