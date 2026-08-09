@@ -8,7 +8,12 @@ from datetime import datetime, timezone
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Query, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from primer.model.external_tool import (
+    ExternalToolDef,
+    validate_external_tool_defs,
+)
 
 from primer.api.deps import (
     get_claim_engine,
@@ -78,6 +83,14 @@ class SessionCreateBody(BaseModel):
         ),
     )
     metadata: dict[str, Any] = Field(default_factory=dict)
+    external_tools: list[ExternalToolDef] | None = Field(
+        default=None,
+        description=(
+            "Invoker-supplied tool defs for the initial turn (when "
+            "auto_start / initial_instructions trigger one). Gated by the "
+            "agent's allow_external_tools; validated for name/caps here."
+        ),
+    )
     graph_input: Any | None = Field(
         default=None,
         description=(
@@ -89,6 +102,12 @@ class SessionCreateBody(BaseModel):
             "input."
         ),
     )
+
+    @model_validator(mode="after")
+    def _check_external_tools(self) -> "SessionCreateBody":
+        if self.external_tools:
+            validate_external_tool_defs(self.external_tools)
+        return self
 
 
 @nested_session_router.post(
@@ -164,6 +183,7 @@ async def create_session(
         name=body.name,
         initiated_by=initiated_by,
         deps=deps,
+        external_tools=body.external_tools,
     )
 
 

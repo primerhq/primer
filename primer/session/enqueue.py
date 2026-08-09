@@ -72,6 +72,7 @@ async def wake_session(
     session_id: str,
     instruction: str | None,
     deps: SessionWakeDeps,
+    external_tools: "list | None" = None,
 ) -> WorkspaceSession:
     """Append ``instruction`` (if any) and re-arm the session's claim.
 
@@ -145,6 +146,14 @@ async def wake_session(
                 created_at=datetime.now(timezone.utc),
             ))
             await writer.flush()
+
+        # Replace the active external tool set for the turn this wake
+        # triggers (None = leave the set unchanged; [] = clear it). Dumped
+        # by_alias so the stored dicts carry the wire "schema" key.
+        if external_tools is not None:
+            row.external_tools = [
+                d.model_dump(by_alias=True) for d in external_tools
+            ]
 
         # 2. Re-arm the scheduler-visible row: claimable + clear pause;
         #    CREATED/PAUSED/WAITING advance to RUNNING (like /resume).

@@ -102,6 +102,20 @@ def validate_external_tool_defs(defs: list[ExternalToolDef]) -> None:
         )
 
 
+class ExternalToolResultIn(BaseModel):
+    """One invoker-supplied tool result riding an invocation body.
+
+    Shared wire shape across the session steer body and the chat send
+    body (REST + WS): ``{tool_call_id, result, is_error?}``. The
+    ``result`` payload is fed to the model verbatim as the tool result;
+    ``is_error`` mirrors the provider-side error-result flag.
+    """
+
+    tool_call_id: str = Field(..., min_length=1)
+    result: Any = Field(...)
+    is_error: bool = Field(default=False)
+
+
 class ExternalToolCall(Identifiable):
     """Stored record of one external tool call (pending or resolved)."""
 
@@ -129,5 +143,6 @@ __all__ = [
     "ExternalToolCall",
     "ExternalToolCallStatus",
     "ExternalToolDef",
+    "ExternalToolResultIn",
     "validate_external_tool_defs",
 ]

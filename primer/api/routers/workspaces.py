@@ -32,7 +32,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from primer.api.deps import (
     get_claim_engine,
@@ -58,6 +58,12 @@ from primer.model.except_ import (
     BadRequestError,
     ConflictError,
     NotFoundError,
+    ValidationError as SemanticValidationError,
+)
+from primer.model.external_tool import (
+    ExternalToolDef,
+    ExternalToolResultIn,
+    validate_external_tool_defs,
 )
 from primer.model.storage import (
     CursorPageResponse,
@@ -214,16 +220,75 @@ _DIAGNOSTIC_COMMAND_WHITELIST: frozenset[str] = frozenset(
 
 
 class SteerBody(BaseModel):
-    """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/steer``."""
+    """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/steer``.
 
-    instruction: str = Field(
-        ...,
+    One endpoint, all invocation behaviours: ``instruction`` invokes /
+    steers / resumes; ``tool_results`` resolves pending external tool
+    calls; both together mean results first, cancel any remaining
+    pending calls, then the instruction steers the resumed turn.
+    ``external_tools`` registers invoker-supplied tool defs for the
+    turn this message triggers (gated by the agent's
+    ``allow_external_tools``).
+    """
+
+    instruction: str | None = Field(
+        default=None,
         min_length=1,
         description=(
             "User-role text appended as a fresh ``user_instruction`` "
             "message in the session's transcript."
         ),
     )
+    external_tools: list[ExternalToolDef] | None = Field(
+        default=None,
+        description=(
+            "Invoker-supplied tool defs for the turn this message "
+            "triggers; replaces the session's active set. Omit to leave "
+            "the set unchanged on a pure-results body; [] clears it."
+        ),
+    )
+    tool_results: list[ExternalToolResultIn] | None = Field(
+        default=None,
+        description=(
+            "Results for pending external tool calls. Unknown or "
+            "already-resolved ids reject the whole request (409) before "
+            "any state changes."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _at_least_one(self) -> "SteerBody":
+        if not self.instruction and not self.tool_results:
+            raise ValueError(
+                "steer body needs 'instruction' and/or 'tool_results'"
+            )
+        if self.tool_results is not None and len(self.tool_results) == 0:
+            raise ValueError("'tool_results' must be non-empty when present")
+        if self.external_tools:
+            validate_external_tool_defs(self.external_tools)
+        return self
+
+
+async def _binding_allows_external(row, storage_provider) -> bool:
+    """Does this session's agent allow invoker-supplied tools?
+
+    Prefers the binding's frozen ``agent_snapshot`` when one was taken
+    (immutability against later Agent edits, matching every other
+    snapshot-covered field); otherwise reads the live Agent row, the
+    same live-definition semantics all non-snapshot sessions get. Graph
+    bindings answer False here; the graph surface gates per node at
+    injection time.
+    """
+    binding = getattr(row, "binding", None)
+    if getattr(binding, "kind", None) != "agent":
+        return False
+    snap = getattr(binding, "agent_snapshot", None)
+    if snap is not None:
+        return bool(getattr(snap, "allow_external_tools", False))
+    from primer.model.agent import Agent
+
+    agent = await storage_provider.get_storage(Agent).get(binding.agent_id)
+    return bool(agent is not None and agent.allow_external_tools)
 
 
 class SessionRenameBody(BaseModel):
@@ -990,21 +1055,90 @@ async def steer_session(
     session it reopens it as a fresh invocation (divider + run). 409 only
     when an ENDED session is non-restartable (workspace_lost/force_deleted).
     """
+    from primer.model.external_tool import ExternalToolCall
     from primer.session.enqueue import SessionWakeDeps, wake_session
+    from primer.session.external_tools import (
+        CANCEL_REASON_SUPERSEDED,
+        _pending_targets,
+        apply_tool_results,
+        cancel_pending_external,
+    )
+    from primer.session.yields import durably_wake_session
+    from primer.worker.yield_runtime import make_cancelled_payload
 
-    deps = SessionWakeDeps(
-        storage_provider=storage_provider,
-        scheduler=scheduler,
-        claim_engine=engine,
-        workspace_registry=registry,
-        event_bus=event_bus,
-    )
-    return await wake_session(
-        workspace_id=workspace_id,
-        session_id=session_id,
-        instruction=body.instruction,
-        deps=deps,
-    )
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    call_storage = storage_provider.get_storage(ExternalToolCall)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+
+    # Registration gate: external_tools requires allow_external_tools on
+    # the session's agent (snapshot when frozen, else the live row).
+    if body.external_tools and not await _binding_allows_external(
+        row, storage_provider
+    ):
+        raise SemanticValidationError(
+            "this session's agent does not have allow_external_tools "
+            "enabled; external_tools rejected"
+        )
+
+    # Dispatch rule (external-tools spec §6), in order:
+    # 1+2. Validate then apply tool_results (409-atomic inside the helper).
+    if body.tool_results:
+        await apply_tool_results(
+            row,
+            body.tool_results,
+            call_storage=call_storage,
+            session_storage=sessions,
+            engine=engine,
+            event_bus=event_bus,
+        )
+        row = await sessions.get(session_id)  # refreshed park state
+
+    # 3. Message content cancels every still-pending external call, waking
+    #    the park with the synthetic cancelled payload so the turn resumes
+    #    and pairs the call before the queued instruction is consumed.
+    if body.instruction:
+        cancelled = await cancel_pending_external(
+            call_storage=call_storage, session_id=session_id,
+        )
+        if cancelled and row is not None:
+            payload = make_cancelled_payload(reason=CANCEL_REASON_SUPERSEDED)
+            for _tcid, key in _pending_targets(row).items():
+                await durably_wake_session(
+                    row,
+                    event_key=key,
+                    payload=payload,
+                    session_storage=sessions,
+                    engine=engine,
+                )
+                try:
+                    await event_bus.publish(key, payload)
+                except Exception:  # noqa: BLE001 - durable flip landed
+                    logger.exception(
+                        "external tool cancel publish failed for %r", key
+                    )
+
+        deps = SessionWakeDeps(
+            storage_provider=storage_provider,
+            scheduler=scheduler,
+            claim_engine=engine,
+            workspace_registry=registry,
+            event_bus=event_bus,
+        )
+        return await wake_session(
+            workspace_id=workspace_id,
+            session_id=session_id,
+            instruction=body.instruction,
+            external_tools=body.external_tools,
+            deps=deps,
+        )
+
+    # 4. Pure-results body: the park is resumable; no new turn to trigger.
+    return await sessions.get(session_id)
 
 
 class RestartBody(BaseModel):

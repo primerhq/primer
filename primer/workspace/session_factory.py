@@ -100,6 +100,7 @@ async def start_workspace_session(
     deps: SessionFactoryDeps,
     name: str | None = None,
     initiated_by: PrincipalRef | None = None,
+    external_tools: "list | None" = None,
 ) -> WorkspaceSession:
     """Full create flow shared by the REST route and the workspaces tool:
     validate workspace + binding (+ graph_input vs Begin.input_schema),
@@ -246,6 +247,17 @@ async def start_workspace_session(
     # Persist the row + (optionally) auto-start + always register a
     # forward-compat ClaimEngine upsert via the shared service helper.
     # workspace_registry=None because the slot is already allocated above.
+    # Registration gate for invoker-supplied tools on the initial turn:
+    # agent bindings check the resolved agent's flag here (the graph
+    # surface gates per node at injection time and validates at its own
+    # create path).
+    if external_tools:
+        if resolved_agent is None or not resolved_agent.allow_external_tools:
+            raise ValidationError(
+                "this session's agent does not have allow_external_tools "
+                "enabled; external_tools rejected"
+            )
+
     return await create_session(
         workspace_id=workspace_id,
         binding=binding,
@@ -258,6 +270,7 @@ async def start_workspace_session(
         session_id=sid,
         name=name,
         initiated_by=initiated_by,
+        external_tools=external_tools,
         deps=SessionFactoryDeps(
             storage_provider=deps.storage_provider,
             claim_engine=deps.claim_engine,
@@ -281,6 +294,7 @@ async def create_session(
     autonomous: bool | None = None,
     name: str | None = None,
     initiated_by: PrincipalRef | None = None,
+    external_tools: "list | None" = None,
 ) -> WorkspaceSession:
     """Persist a :class:`WorkspaceSession` row + optionally auto-start.
 
@@ -344,6 +358,11 @@ async def create_session(
         autonomous=autonomous,
         initiated_by=initiated_by,
         created_at=now,
+        external_tools=(
+            [d.model_dump(by_alias=True) for d in external_tools]
+            if external_tools
+            else None
+        ),
     )
     sessions_storage = deps.storage_provider.get_storage(WorkspaceSession)
     await sessions_storage.create(session)
