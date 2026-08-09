@@ -163,7 +163,14 @@ _CONSOLE_CSP = (
     "font-src 'self'; "
     "img-src 'self' data:; "
     "connect-src 'self'; "
-    "frame-ancestors 'none'; "
+    # frame-src + frame-ancestors 'self' (not 'none'): the Studio2 trial
+    # shell hosts un-migrated console pages in SAME-ORIGIN iframes (the
+    # legacy-document bridge). frame-src lets the console EMBED itself
+    # (default-src 'none' otherwise blocks all frames); frame-ancestors
+    # lets it BE embedded. Cross-origin stays blocked in both directions,
+    # which is the clickjacking threat model.
+    "frame-src 'self'; "
+    "frame-ancestors 'self'; "
     "base-uri 'none'; "
     "form-action 'self'"
 )
@@ -184,6 +191,12 @@ def _install_console_csp(app: FastAPI) -> None:
             # Direct assignment, not setdefault — the policy is strict
             # by intent; no downstream handler should be loosening it.
             response.headers["Content-Security-Policy"] = _CONSOLE_CSP
+            # Pair with frame-ancestors 'self': the legacy X-Frame-Options
+            # header must agree, or browsers honoring it would still
+            # refuse the Studio2 trial's same-origin legacy iframes.
+            # Direct assignment wins over the security-headers
+            # middleware's setdefault regardless of middleware order.
+            response.headers["X-Frame-Options"] = "SAMEORIGIN"
             # Cache-Control is set per-file inside _CachingStaticFiles
             # (immutable for ui/vendor/*, no-cache for index.html,
             # short-lived public for everything else). Don't blanket

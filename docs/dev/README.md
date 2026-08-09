@@ -175,9 +175,15 @@ flowchart TD
 - [model-providers](subsystems/model-providers.md) - the adapter layer that converts
   Primer's universal model interfaces into concrete vendor SDK wire shapes for LLMs,
   embedders, and cross-encoder rerankers.
+- [services](subsystems/services.md) - agent-published web apps: immutable versioned
+  bundles served at /svc/{name}/ by any API replica, with bundle python executing
+  per-request in the python-runner sandbox.
 - [ui-foundation](subsystems/ui-foundation.md) - the shared browser substrate every
   console page builds on: the HTTP client, the polled-read and optimistic-write hooks,
   hash routing, the chrome shell, and the shared primitives.
+- [ui-studio2](subsystems/ui-studio2.md) - the opt-in Studio2 trial shell at #/studio2:
+  one persistent frame with a command registry, document tabs, and a same-origin
+  iframe bridge to every un-migrated classic page.
 - [ui-pages](subsystems/ui-pages.md) - the per-page layer of the operator console: the
   repeating list-and-detail page shapes, the loader and confirmation conventions, and a
   page-by-page route index.

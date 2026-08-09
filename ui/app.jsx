@@ -85,6 +85,7 @@ function App() {
       return "internal-collections";
     }
     if (root === "harnesses") return "harnesses";
+    if (root === "services") return "services";
     if (root === "triggers") return params.id ? "trigger-detail" : "triggers";
     if (root === "settings") {
       if (path.startsWith("/settings/api-tokens")) return "api-tokens";
@@ -1030,6 +1031,32 @@ function App() {
       </>
     );
     pageBody = <HarnessesPage harnessId={harnessId} />;
+  } else if (page === "services") {
+    const serviceId = params.id || null;
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb">
+            <a onClick={() => navigate("dashboard")}>Distributions</a>
+            <span className="sep">/</span>
+            {serviceId ? (
+              <>
+                <a onClick={() => { window.location.hash = "#/services"; }}>Services</a>
+                <span className="sep">/</span>
+                <span className="mono" style={{ color: "var(--text)" }}>{serviceId}</span>
+              </>
+            ) : (
+              <span style={{ color: "var(--text)" }}>Services</span>
+            )}
+          </div>
+          <h1 className="page-title">{serviceId ? <span className="mono">{serviceId}</span> : "Services"}</h1>
+          {!serviceId && (
+            <div className="page-sub">Agent-published web apps served at /svc/&#123;name&#125;/</div>
+          )}
+        </div>
+      </>
+    );
+    pageBody = <window.SV_ServicesPage serviceId={serviceId} />;
   } else if (page === "triggers" || page === "trigger-detail") {
     const triggerId = params.id || null;
     const isDetail = page === "trigger-detail" && triggerId;
@@ -1439,8 +1466,16 @@ function NewSessionModal({ onClose, onCreate }) {
   );
 }
 
+// Studio2 trial gate: /studio2 renders the parallel shell instead of the
+// classic console. One hook, unconditional, so hook order is stable.
+function S2_RootGate() {
+  const { path } = window.primerApi.useRouter();
+  if (path.startsWith("/studio2")) return <window.S2_Shell />;
+  return <App />;
+}
+
 ReactDOM.createRoot(document.getElementById("root")).render(
   <window.AuthGate>
-    <App />
+    <S2_RootGate />
   </window.AuthGate>
 );
