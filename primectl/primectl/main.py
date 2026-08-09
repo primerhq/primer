@@ -22,6 +22,7 @@ from primectl.commands import doc as _doc  # noqa: E402
 from primectl.commands import channel as _channel  # noqa: E402
 from primectl.commands import workspace as _workspace  # noqa: E402
 from primectl.commands import chat as _chat  # noqa: E402
+from primectl.commands import external_tools as _external_tools  # noqa: E402
 from primectl.commands import session as _session  # noqa: E402
 from primectl.commands import tap as _tap  # noqa: E402
 from primectl.commands import toolset as _toolset  # noqa: E402
@@ -36,6 +37,7 @@ _channel.register(app)
 _workspace.register(app)
 _toolset.register(app)
 _chat.register(app)
+_external_tools.register(app)
 _session.register(app)
 _tap.register(app)
 app.add_typer(config_app, name="config")
