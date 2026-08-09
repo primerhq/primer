@@ -41,7 +41,13 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from primer.model.external_tool import (
+    ExternalToolDef,
+    ExternalToolResultIn,
+    validate_external_tool_defs,
+)
 
 from primer.api.deps import (
     get_agent_storage,
@@ -402,6 +408,23 @@ class ChatSendMessageBody(BaseModel):
             "WebSocket path applies."
         ),
     )
+    external_tools: list[ExternalToolDef] | None = Field(
+        default=None,
+        description=(
+            "Invoker-supplied tool defs for the turn this message "
+            "triggers; replaces the chat's active set. Gated by the "
+            "agent's allow_external_tools flag (422 otherwise)."
+        ),
+    )
+    tool_results: list[ExternalToolResultIn] | None = Field(
+        default=None,
+        description=(
+            "Results for the chat's pending external tool call. An "
+            "unknown or already-resolved id rejects the whole request "
+            "(409). A body with only tool_results resumes the parked "
+            "turn without appending a user message."
+        ),
+    )
     response_format: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -414,10 +437,111 @@ class ChatSendMessageBody(BaseModel):
         ),
     )
 
+    @model_validator(mode="after")
+    def _check_external_fields(self) -> "ChatSendMessageBody":
+        if self.external_tools:
+            validate_external_tool_defs(self.external_tools)
+        if self.tool_results is not None and len(self.tool_results) == 0:
+            raise ValueError("'tool_results' must be non-empty when present")
+        return self
+
+
+async def _apply_external_dispatch(
+    *,
+    chat: Chat,
+    chats_storage,
+    sp,
+    external_tools: list[ExternalToolDef] | None,
+    tool_results: list[ExternalToolResultIn] | None,
+    has_content: bool,
+) -> None:
+    """Apply the external-tools dispatch rule for one inbound message.
+
+    Shared by the REST send path and the WS ``user_message`` frame:
+
+    1. ``external_tools`` requires the agent's ``allow_external_tools``.
+    2. ``tool_results`` must match the chat's pending external call
+       exactly (chats hold at most one pending); the result is stamped
+       onto the pending dict for the worker's resume path and the audit
+       row resolves.
+    3. Message content while an external call is pending cancels it with
+       the synthetic superseded result (paired tool_result + terminal
+       row, same shape as cancel-while-awaiting).
+    4. A turn-triggering message replaces the chat's active tool set.
+    """
+    import json as _json
+
+    from primer.chat.pending import abandon_pending_rows, flip_external_row
+    from primer.model.external_tool import ExternalToolCall
+    from primer.session.external_tools import CANCEL_REASON_SUPERSEDED
+
+    if external_tools:
+        agent = await sp.get_storage(Agent).get(chat.agent_id)
+        if agent is None or not agent.allow_external_tools:
+            raise ValidationError(
+                "this chat's agent does not have allow_external_tools "
+                "enabled; external_tools rejected"
+            )
+
+    pending = chat.pending_tool_call or {}
+    is_external_pending = pending.get("mode") == "external"
+    call_storage = sp.get_storage(ExternalToolCall)
+
+    if tool_results:
+        ids = [r.tool_call_id for r in tool_results]
+        if (
+            not is_external_pending
+            or len(ids) != 1
+            or ids[0] != pending.get("tool_call_id")
+            or pending.get("external_result")
+        ):
+            raise ConflictError(
+                f"no pending external tool call(s) {ids!r} on chat "
+                f"{chat.id!r}; nothing was applied"
+            )
+        tr = tool_results[0]
+        stamped = dict(pending)
+        stamped["external_result"] = {
+            "result": tr.result,
+            "is_error": bool(tr.is_error),
+        }
+        chat.pending_tool_call = stamped
+        await chats_storage.update(chat)
+        await flip_external_row(
+            call_storage,
+            row_id=stamped.get("external_call_row_id"),
+            status="completed",
+            result=tr.result,
+            is_error=bool(tr.is_error),
+        )
+    elif is_external_pending and has_content:
+        await abandon_pending_rows(
+            chat,
+            pending=pending,
+            messages=sp.get_storage(ChatMessage),
+            chats=chats_storage,
+            result_text=_json.dumps(
+                {"cancelled": True, "reason": CANCEL_REASON_SUPERSEDED}
+            ),
+            terminal_reason="superseded_by_new_user_message",
+        )
+        await flip_external_row(
+            call_storage,
+            row_id=pending.get("external_call_row_id"),
+            status="cancelled",
+            result={"cancelled": True, "reason": CANCEL_REASON_SUPERSEDED},
+        )
+
+    if external_tools is not None and has_content:
+        chat.external_tools = [
+            d.model_dump(by_alias=True) for d in external_tools
+        ]
+        await chats_storage.update(chat)
+
 
 @chats_router.post(
     "/chats/{chat_id}/messages",
-    response_model=ChatMessage,
+    response_model=ChatMessage | None,
     status_code=202,
     summary="Append a user message to a chat and wake the worker",
     responses=common_responses(404, 409, 422, 500),
@@ -428,7 +552,7 @@ async def send_chat_message(
     request: Request = None,  # type: ignore[assignment]
     sp=Depends(get_storage_provider),
     engine=Depends(get_claim_engine),
-) -> ChatMessage:
+) -> ChatMessage | None:
     """Operator/CLI message-send over REST (no streaming).
 
     The only client-to-chat send path other than the WebSocket
@@ -469,26 +593,45 @@ async def send_chat_message(
             "wait for it to finish before sending another message."
         )
 
-    # Validate + normalise the frame through the same helper the WS
-    # recv loop uses so both send paths apply identical part validation.
-    try:
-        user_parts = _parse_user_message_parts(body.model_dump())
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
+    # External-tools dispatch rule (registration gate, tool_results
+    # resolution, cancel-on-content) — shared with the WS recv loop.
+    has_content = bool(body.content or body.parts)
+    await _apply_external_dispatch(
+        chat=chat,
+        chats_storage=chats_storage,
+        sp=sp,
+        external_tools=body.external_tools,
+        tool_results=body.tool_results,
+        has_content=has_content,
+    )
 
-    # Persist the user_message row + bump chat.last_seq / title via the
-    # canonical service helper. Do NOT reinvent the append. The helper
-    # validates the ephemeral response_format (A3) before persisting
-    # anything; a malformed schema raises ValueError -> 422.
-    try:
-        row = await append_user_message(
-            chat=chat,
-            parts=user_parts,
-            storage_provider=sp,
-            response_format=body.response_format,
+    row: ChatMessage | None = None
+    if has_content:
+        # Validate + normalise the frame through the same helper the WS
+        # recv loop uses so both send paths apply identical part validation.
+        try:
+            user_parts = _parse_user_message_parts(body.model_dump())
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+
+        # Persist the user_message row + bump chat.last_seq / title via the
+        # canonical service helper. Do NOT reinvent the append. The helper
+        # validates the ephemeral response_format (A3) before persisting
+        # anything; a malformed schema raises ValueError -> 422.
+        try:
+            row = await append_user_message(
+                chat=chat,
+                parts=user_parts,
+                storage_provider=sp,
+                response_format=body.response_format,
+            )
+        except ValueError as exc:
+            raise ValidationError(str(exc)) from exc
+    elif not body.tool_results:
+        # Neither content/parts nor tool_results: nothing to do.
+        raise ValidationError(
+            "message needs 'content'/'parts' and/or 'tool_results'"
         )
-    except ValueError as exc:
-        raise ValidationError(str(exc)) from exc
 
     # Flip turn_status to claimable and wake workers - the exact tail of
     # the WS recv loop. Re-fetch so we update the freshest row.
@@ -1498,6 +1641,65 @@ async def _recv_loop(
                 }
             )
             continue
+        # External-tools dispatch (invoker-supplied tools): the frame may
+        # carry ``external_tools`` and/or ``tool_results`` alongside (or
+        # instead of) content/parts. Same rule as the REST send path.
+        raw_defs = incoming.get("external_tools")
+        raw_results = incoming.get("tool_results")
+        frame_has_content = bool(
+            incoming.get("content") or incoming.get("parts")
+        )
+        if raw_defs or raw_results:
+            chat = await chats_storage.get(chat_id)
+            if chat is None or chat.status == "ended":
+                return
+            try:
+                defs = (
+                    [ExternalToolDef.model_validate(d) for d in raw_defs]
+                    if raw_defs
+                    else None
+                )
+                if defs:
+                    validate_external_tool_defs(defs)
+                results = (
+                    [ExternalToolResultIn.model_validate(r) for r in raw_results]
+                    if raw_results
+                    else None
+                )
+                await _apply_external_dispatch(
+                    chat=chat,
+                    chats_storage=chats_storage,
+                    sp=storage_provider,
+                    external_tools=defs,
+                    tool_results=results,
+                    has_content=frame_has_content,
+                )
+            except (ValueError, ValidationError, ConflictError) as exc:
+                await websocket.send_json(
+                    {"kind": "error", "message": str(exc)},
+                )
+                continue
+            if not frame_has_content:
+                # Pure-results frame: nothing to append; flip claimable
+                # so the worker resumes the parked turn with the result.
+                latest = await chats_storage.get(chat_id)
+                if latest is not None and latest.status == "active":
+                    latest.turn_status = "claimable"
+                    await chats_storage.update(latest)
+                    try:
+                        await event_bus.publish(
+                            "chat-claimable", {"chat_id": chat_id}
+                        )
+                    except Exception:  # noqa: BLE001 - advisory pulse
+                        logger.exception(
+                            "external tool_results claimable publish failed"
+                        )
+                    if claim_engine is not None:
+                        from primer.int.claim import ClaimKind
+                        await claim_engine.upsert(
+                            ClaimKind.CHAT, chat_id, priority=10
+                        )
+                continue
         # Two payload shapes are accepted:
         #   {"content": "<text>"}           — legacy text-only
         #   {"parts": [{type, ...}, ...]}   — structured (multimodal)

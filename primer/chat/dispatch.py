@@ -318,17 +318,24 @@ async def run_one_chat_turn(
                         chat = cleared
                     continue
                 # Resume path: the chat parked on a yielding tool
-                # (ask_user / approval). The parked turn persisted NO
-                # terminal row, so _find_next_user_message would re-serve
-                # the ORIGINAL prompting message; instead locate the
-                # human's reply (the first user_message after the pending
-                # tool_call row). If none has arrived yet, release idle
-                # and wait for the next claim.
-                reply_um = await _find_resume_reply(
-                    deps, chat_id, chat.pending_tool_call,
-                )
-                if reply_um is None:
-                    return "idle"
+                # (ask_user / approval / external). The parked turn
+                # persisted NO terminal row, so _find_next_user_message
+                # would re-serve the ORIGINAL prompting message; instead
+                # locate the reply. For ask_user/approval that is the
+                # human's next user_message; for an external pending the
+                # "reply" is the invoker's result, stamped onto the
+                # pending dict by the invocation endpoint. If neither has
+                # arrived yet, release idle and wait for the next claim.
+                reply_um = None
+                if chat.pending_tool_call.get("mode") == "external":
+                    if not chat.pending_tool_call.get("external_result"):
+                        return "idle"
+                else:
+                    reply_um = await _find_resume_reply(
+                        deps, chat_id, chat.pending_tool_call,
+                    )
+                    if reply_um is None:
+                        return "idle"
                 # Consume the reply as the pending call's tool_result,
                 # then continue the agent loop from the augmented
                 # history. resume_pending flags the reply
@@ -337,9 +344,14 @@ async def run_one_chat_turn(
                 # (done/error) closes the originally-parked user_message
                 # so _find_next_user_message advances past it next drain.
                 try:
-                    await runner.resume_pending(
-                        chat, chat.pending_tool_call, reply_um,
-                    )
+                    if reply_um is None:
+                        await runner.resume_external_pending(
+                            chat, chat.pending_tool_call,
+                        )
+                    else:
+                        await runner.resume_pending(
+                            chat, chat.pending_tool_call, reply_um,
+                        )
                     refreshed = await chat_storage.get(chat_id)
                     if refreshed is not None:
                         chat = refreshed
@@ -519,6 +531,17 @@ async def _build_runner(
     approval_resolver = ApprovalResolver(
         storage=deps.storage_provider.get_storage(ToolApprovalPolicy),
     )
+    from primer.model.external_tool import ExternalToolCall, ExternalToolDef
+
+    external_defs = None
+    raw_defs = getattr(chat, "external_tools", None)
+    if raw_defs and getattr(agent, "allow_external_tools", False):
+        # Defense in depth: send-time gating already 422'd defs on a
+        # flag-off agent, so a populated field with the flag off can only
+        # mean the agent definition changed between sends.
+        external_defs = [ExternalToolDef.model_validate(d) for d in raw_defs]
+    external_call_storage = deps.storage_provider.get_storage(ExternalToolCall)
+
     tool_manager = ToolExecutionManager(
         toolset_providers=toolset_providers,
         provider_registry=deps.provider_registry,
@@ -529,6 +552,8 @@ async def _build_runner(
         # (system fallback for historical chats with no ``initiated_by``);
         # a None invoker would fail closed and deny every toolset call.
         initiated_by=chat.initiated_by or PrincipalRef.system(),
+        external_tools=external_defs,
+        external_call_storage=external_call_storage,
     )
     # No inform sink is wired on the chat surface yet: inform_user in a chat
     # returns delivered_to:0 for now. Chat-side inform delivery is deferred to
@@ -573,6 +598,7 @@ async def _build_runner(
         ),
         response_format=effective_response_format,
         execution_context=exec_ctx,
+        external_call_storage=external_call_storage,
     ), None
 
 

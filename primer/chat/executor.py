@@ -89,7 +89,7 @@ _MAX_TOOL_ROUND_TRIPS = 8
 # pause (soft_yield records a pending_tool_call; the human's next
 # message resolves it). Every other yielding tool is out of scope on
 # the chat surface and is failed closed inline as a tool error.
-_SOFT_YIELD_TOOLS = frozenset({"ask_user", "_approval"})
+_SOFT_YIELD_TOOLS = frozenset({"ask_user", "_approval", "_external"})
 
 
 def _is_soft_yield_tool(exc: YieldToWorker) -> bool:
@@ -271,6 +271,7 @@ class ChatTurnRunner:
         approval_record_storage: object | None = None,
         response_format: dict[str, Any] | None = None,
         execution_context: "ExecutionContext | None" = None,
+        external_call_storage: object | None = None,
     ) -> None:
         self._agent = agent
         self._llm = llm
@@ -292,6 +293,11 @@ class ChatTurnRunner:
         # wired, an approval resolved on the chat surface (operator yes/no, or
         # a cancel-while-awaiting) writes a ToolApprovalRecord. None -> skip.
         self._approval_records = approval_record_storage
+        # Optional Storage[ExternalToolCall]: lets the runner keep the
+        # audit rows in lockstep when it abandons an external pending
+        # (cancel-while-awaiting). None -> row flips are skipped (the
+        # lazy sweep / lifecycle endpoints still cover them).
+        self._external_calls = external_call_storage
         # Optional artifact store: when a tool returns media (MCP image/audio),
         # convert + store it so the tool_result row carries media parts the
         # channel relay can forward. None -> tool media is not surfaced.
@@ -777,6 +783,27 @@ class ChatTurnRunner:
             prompt = meta.get("prompt") or ""
             pending = {"tool_call_id": tool_call_id, "mode": "ask_user",
                        "response_schema": meta.get("response_schema")}
+        elif y.tool_name == "_external":
+            # Invoker-supplied tool: the "reply" comes from the API
+            # caller via the invocation endpoint, not a human message.
+            # Persist the machine-readable external_tool_call row (the
+            # WS push frame, replayable on reconnect) instead of prose.
+            original = meta.get("original_call") or {}
+            pending = {
+                "tool_call_id": tool_call_id,
+                "mode": "external",
+                "name": original.get("name", ""),
+                "arguments": original.get("arguments", {}),
+                "external_call_row_id": meta.get("external_call_row_id"),
+            }
+            await self._append(chat, kind="external_tool_call", payload={
+                "id": tool_call_id,
+                "name": original.get("name", ""),
+                "arguments": original.get("arguments", {}),
+            })
+            chat.pending_tool_call = pending
+            await self._persist_chat(chat)
+            return
         else:
             # Out of scope on the chat surface (mcp_task deferred; sleep/watch
             # unreachable). Fail closed so the agent is not stuck.
@@ -821,7 +848,8 @@ class ChatTurnRunner:
     async def abandon_pending(self, chat: Chat, pending: dict) -> None:
         """Abandon a pending (awaiting-input) tool call on cancel. Delegates to
         the shared helper so the switch endpoint can reuse the same logic. The
-        helper records the cancellation when the gate is an approval."""
+        helper records the cancellation when the gate is an approval; an
+        external pending additionally flips its audit row to cancelled."""
         from primer.chat.pending import abandon_pending_rows
         await abandon_pending_rows(
             chat, pending=pending, messages=self._messages, chats=self._chats,
@@ -829,6 +857,14 @@ class ChatTurnRunner:
             terminal_reason="cancel_while_awaiting_input",
             approval_records=self._approval_records,
         )
+        if pending.get("mode") == "external" and self._external_calls is not None:
+            from primer.chat.pending import flip_external_row
+            await flip_external_row(
+                self._external_calls,
+                row_id=pending.get("external_call_row_id"),
+                status="cancelled",
+                result={"cancelled": True, "reason": "cancelled by user"},
+            )
 
     # Tokens that read as an affirmative approval. Matched case-folded
     # against the reply's whitespace-split tokens.
@@ -895,6 +931,34 @@ class ChatTurnRunner:
             "payload": {**(reply_msg.payload or {}), "_history_excluded": True},
         })
         await self._messages.update(excluded)
+        chat.pending_tool_call = None
+        await self._persist_chat(chat)
+
+    async def resume_external_pending(self, chat: Chat, pending: dict) -> None:
+        """Pair a resolved external pending with its invoker-supplied result.
+
+        The invocation endpoint already stamped
+        ``pending['external_result'] = {result, is_error}`` (and resolved
+        the audit row); this appends the paired ``tool_result`` row so the
+        continuation's rebuilt history carries the call/result pair, then
+        clears the pending slot. No reply user_message is involved: the
+        answer came from the API caller, not a human message.
+        """
+        import json as _json
+
+        res = pending.get("external_result") or {}
+        result = res.get("result")
+        output = (
+            result
+            if isinstance(result, str)
+            else _json.dumps(result, ensure_ascii=False, default=str)
+        )
+        await self._append(chat, kind="tool_result", payload={
+            "id": pending.get("tool_call_id"),
+            "name": pending.get("name", ""),
+            "result": output,
+            "error": bool(res.get("is_error", False)),
+        })
         chat.pending_tool_call = None
         await self._persist_chat(chat)
 
