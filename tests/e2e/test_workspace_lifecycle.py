@@ -18,6 +18,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 def _provider_body(entity_id: str, root: Path) -> dict:
@@ -2637,9 +2638,7 @@ async def test_t0241_destroy_workspace_with_active_session_clean_ops(
     # Need an LLMProvider + Agent for the session binding
     provider_id = f"llm-t0241-{unique_suffix}"
     agent_id = f"agent-t0241-{unique_suffix}"
-    pr = await client.post(
-        "/v1/llm_providers",
-        json={
+    pr = await seed_llm_provider(client, {
             "id": provider_id,
             "provider": "anthropic",
             "models": [
@@ -2655,10 +2654,7 @@ async def test_t0241_destroy_workspace_with_active_session_clean_ops(
         json={
             "id": agent_id,
             "description": "T0241",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "claude-sonnet-4-6",
-            },
+            "model": agent_model(provider_id, "claude-sonnet-4-6"),
             "tools": [],
         },
     )
@@ -9544,7 +9540,7 @@ async def test_t0693_workspace_log_racing_concurrent_resume_signal(
     # Need an LLM provider + agent for the session
     llm_provider_id = f"llm-t0693-{unique_suffix}"
     agent_id = f"agent-t0693-{unique_suffix}"
-    pr = await client.post("/v1/llm_providers", json={
+    pr = await seed_llm_provider(client, {
         "id": llm_provider_id,
         "provider": "anthropic",
         "models": [
@@ -9557,8 +9553,7 @@ async def test_t0693_workspace_log_racing_concurrent_resume_signal(
     ag = await client.post("/v1/agents", json={
         "id": agent_id,
         "description": "T0693 agent",
-        "model": {"provider_id": llm_provider_id,
-                  "model_name": "claude-sonnet-4-6"},
+        "model": agent_model(llm_provider_id, "claude-sonnet-4-6"),
         "tools": [],
     })
     assert ag.status_code == 201, ag.text
@@ -9720,7 +9715,7 @@ async def test_t0696_cancel_session_then_immediate_log_get_clean(
     )
     llm_provider_id = f"llm-t0696-{unique_suffix}"
     agent_id = f"agent-t0696-{unique_suffix}"
-    pr = await client.post("/v1/llm_providers", json={
+    pr = await seed_llm_provider(client, {
         "id": llm_provider_id,
         "provider": "anthropic",
         "models": [
@@ -9733,8 +9728,7 @@ async def test_t0696_cancel_session_then_immediate_log_get_clean(
     ag = await client.post("/v1/agents", json={
         "id": agent_id,
         "description": "T0696",
-        "model": {"provider_id": llm_provider_id,
-                  "model_name": "claude-sonnet-4-6"},
+        "model": agent_model(llm_provider_id, "claude-sonnet-4-6"),
         "tools": [],
     })
     assert ag.status_code == 201, ag.text
@@ -9806,7 +9800,7 @@ async def test_t0716_workspace_delete_racing_steer_clean_envelopes(
     )
     llm_provider_id = f"llm-t0716-{unique_suffix}"
     agent_id = f"agent-t0716-{unique_suffix}"
-    pr = await client.post("/v1/llm_providers", json={
+    pr = await seed_llm_provider(client, {
         "id": llm_provider_id,
         "provider": "anthropic",
         "models": [
@@ -9819,8 +9813,7 @@ async def test_t0716_workspace_delete_racing_steer_clean_envelopes(
     ag = await client.post("/v1/agents", json={
         "id": agent_id,
         "description": "T0716",
-        "model": {"provider_id": llm_provider_id,
-                  "model_name": "claude-sonnet-4-6"},
+        "model": agent_model(llm_provider_id, "claude-sonnet-4-6"),
         "tools": [],
     })
     assert ag.status_code == 201, ag.text

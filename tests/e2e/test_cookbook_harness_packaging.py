@@ -29,6 +29,7 @@ from pathlib import Path
 import pytest
 
 from tests._support.smk import smk
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 pytestmark = pytest.mark.asyncio
 
@@ -115,7 +116,7 @@ async def test_build_push_fetch_install(authed_client, unique_suffix, tmp_path):
             "/v1/embedding_providers", json={"id": emb_id, **_EMBED_PROVIDER},
         )
         assert r.status_code in (201, 409), r.text
-        r = await authed_client.post("/v1/llm_providers", json={"id": llm_id, **_LLM_PROVIDER})
+        r = await seed_llm_provider(authed_client, {"id": llm_id, **_LLM_PROVIDER})
         assert r.status_code in (201, 409), r.text
 
         r = await authed_client.post("/v1/collections", json={
@@ -128,7 +129,7 @@ async def test_build_push_fetch_install(authed_client, unique_suffix, tmp_path):
 
         r = await authed_client.post("/v1/agents", json={
             "id": agent_id, "description": "Answers from the KB collection.",
-            "model": {"provider_id": llm_id, "model_name": "scripted:default"},
+            "model": agent_model(llm_id, "scripted:default"),
             "tools": [],
         })
         assert r.status_code == 201, r.text

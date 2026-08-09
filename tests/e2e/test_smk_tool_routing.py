@@ -17,6 +17,7 @@ from tests._support.runs import (
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
+from tests._support.model_profiles import agent_model, seed_profile
 
 pytestmark = pytest.mark.asyncio
 
@@ -70,7 +71,7 @@ async def test_call_tool_dispatch(authed_client, mock_llm, unique_suffix, tmp_pa
                      "toolset_id": "system", "tool_name": "create_agent",
                      "arguments": {"entity": {
                          "id": created, "description": "via call_tool",
-                         "model": {"provider_id": f"p-{unique_suffix}", "model_name": sc},
+                         "model": agent_model(f"p-{unique_suffix}", sc),
                          "tools": [],
                      }},
                  }),
@@ -97,7 +98,7 @@ async def test_system_tools_manage_entities(authed_client, mock_llm, unique_suff
                  emit_tool="system__create_agent",
                  emit_args={"entity": {
                      "id": new_agent_id, "description": "made by system tool",
-                     "model": {"provider_id": agent_provider(unique_suffix), "model_name": sc},
+                     "model": agent_model(agent_provider(unique_suffix), sc),
                      "tools": [],
                  }}),
             Rule(when_tool_result=True, emit_text="created"),

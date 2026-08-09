@@ -37,6 +37,7 @@ from urllib.request import Request, urlopen
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 # Host the user runs LM Studio on; sourced from the environment so no
@@ -111,7 +112,7 @@ def _agent_body(entity_id: str, *, provider_id: str, model_id: str) -> dict:
     return {
         "id": entity_id,
         "description": "lmstudio session lifecycle test",
-        "model": {"provider_id": provider_id, "model_name": model_id},
+        "model": agent_model(provider_id, model_id),
         "tools": [],
     }
 
@@ -143,9 +144,7 @@ async def _full_setup(
     wp_id = f"lmwp-{suffix}"
     tpl_id = f"lmtpl-{suffix}"
 
-    pr = await client.post(
-        "/v1/llm_providers",
-        json=_llm_provider_body(provider_id, _MODEL_ID),
+    pr = await seed_llm_provider(client, _llm_provider_body(provider_id, _MODEL_ID),
     )
     assert pr.status_code == 201, pr.text
     ag = await client.post(
@@ -604,7 +603,7 @@ def _bogus_agent_body(entity_id: str, *, provider_id: str) -> dict:
     return {
         "id": entity_id,
         "description": "bogus-LLM session for failure-path tests",
-        "model": {"provider_id": provider_id, "model_name": "any-model"},
+        "model": agent_model(provider_id, "any-model"),
         "tools": [],
     }
 
@@ -618,8 +617,7 @@ async def _setup_bogus_llm_chain(
     wp_id = f"bogusw-{suffix}"
     tpl_id = f"bogustpl-{suffix}"
 
-    pr = await client.post(
-        "/v1/llm_providers", json=_bogus_llm_provider_body(provider_id),
+    pr = await seed_llm_provider(client, _bogus_llm_provider_body(provider_id),
     )
     assert pr.status_code == 201, pr.text
     ag = await client.post(

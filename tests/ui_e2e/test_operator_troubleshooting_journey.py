@@ -23,6 +23,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_studio, session_row
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 
 
 # ---------------------------------------------------------------------------
@@ -47,7 +48,7 @@ def _seed_ladder(base_url: str, suffix: str) -> dict[str, str]:
         "session": "",
     }
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": ids["llm"],
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -58,7 +59,7 @@ def _seed_ladder(base_url: str, suffix: str) -> dict[str, str]:
         r = c.post("/v1/agents", json={
             "id": ids["agent"],
             "description": "U0105 operator probe",
-            "model": {"provider_id": ids["llm"], "model_name": "fake-model"},
+            "model": agent_model(ids["llm"], "fake-model"),
             "tools": [],
             "system_prompt": ["probe"],
         })

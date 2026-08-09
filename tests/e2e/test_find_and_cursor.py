@@ -6,11 +6,10 @@ T0015 (find with empty predicate), T0016 (malformed predicate → 422).
 
 from __future__ import annotations
 
-from primer.model_profile import ResolvedModel
-from primer.model.model_profile import ModelProfileConfig
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 def _toolset_body(entity_id: str) -> dict:
@@ -623,10 +622,14 @@ async def test_t0152_predicate_on_list_item_field_no_internal_error(
     body = {
         "id": entity_id,
         "provider": "anthropic",
-                "config": {"api_key": "sk-test"},
+        "models": [
+            {"name": "gpt-foo", "context_length": 8192},
+            {"name": "gpt-bar", "context_length": 8192},
+        ],
+        "config": {"api_key": "sk-test"},
         "limits": {"max_concurrency": 1},
     }
-    create = await client.post("/v1/llm_providers", json=body)
+    create = await seed_llm_provider(client, body)
     assert create.status_code == 201, create.text
     try:
         find_body = {
@@ -1675,12 +1678,12 @@ async def test_t0276_order_by_jsonb_list_item_path_clean_envelope(
     try:
         for i in range(3):
             entity_id = f"{prefix}-{i}"
-            r = await client.post(
-                "/v1/llm_providers",
-                json={
+            r = await seed_llm_provider(client, {
                     "id": entity_id,
                     "provider": "anthropic",
-                                        "config": {"api_key": "sk-test"},
+                    "models": [{"name": f"model-z-{i}",
+                                 "context_length": 200_000}],
+                    "config": {"api_key": "sk-test"},
                     "limits": {"max_concurrency": 1},
                 },
             )
@@ -3423,12 +3426,13 @@ async def test_t0485_predicate_gt_on_sparse_metadata_path_clean(
     wp_id = f"wp-t0485-{unique_suffix}"
     tpl_id = f"wt-t0485-{unique_suffix}"
 
-    pr = await client.post(
-        "/v1/llm_providers",
-        json={
+    pr = await seed_llm_provider(client, {
             "id": provider_id,
             "provider": "anthropic",
-                        "config": {"api_key": "sk-test"},
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            "config": {"api_key": "sk-test"},
             "limits": {"max_concurrency": 1},
         },
     )
@@ -3438,10 +3442,7 @@ async def test_t0485_predicate_gt_on_sparse_metadata_path_clean(
         json={
             "id": agent_id,
             "description": "T0485",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "claude-sonnet-4-6",
-            },
+            "model": agent_model(provider_id, "claude-sonnet-4-6"),
             "tools": [],
         },
     )
@@ -3648,20 +3649,21 @@ async def test_t0486_predicate_or_of_two_likes_unions_no_dedupe_issues(
 async def test_t0505_predicate_eq_on_list_typed_field_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0505 — LLMProvider.models is a `list[ResolvedModel]` (JSONB array
-    in storage). Send `{op:"=", left:{name:"models"}, right:{value:
-    [{"name":"x", "context_length": 100}]}}` against
-    /v1/llm_providers/find. Pin: clean envelope (200 / 4xx / 502),
-    never /errors/internal — list-vs-scalar coercion in JSONB is a
-    documented edge (T0236/T0361 area).
+    """T0505 — a `=` predicate against a field that is an OBJECT in JSONB
+    storage. ``LLMProvider.models`` used to be the list-typed example;
+    the field is gone, so ``config`` (a nested object) exercises the same
+    non-scalar coercion path. Pin: clean envelope (200 / 4xx / 502),
+    never /errors/internal — non-scalar coercion in JSONB is a documented
+    edge (T0236/T0361 area).
     """
     entity_id = f"llm-t0505-{unique_suffix}"
-    pr = await client.post(
-        "/v1/llm_providers",
-        json={
+    pr = await seed_llm_provider(client, {
             "id": entity_id,
             "provider": "anthropic",
-                        "config": {"api_key": "sk-test"},
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            "config": {"api_key": "sk-test"},
             "limits": {"max_concurrency": 1},
         },
     )
@@ -3671,13 +3673,8 @@ async def test_t0505_predicate_eq_on_list_typed_field_clean_envelope(
             "predicate": {
                 "kind": "predicate",
                 "op": "=",
-                "left": {"kind": "field", "name": "models"},
-                "right": {
-                    "kind": "value",
-                    "value": [
-                        {"name": "claude-sonnet-4-6", "context_length": 200_000},
-                    ],
-                },
+                "left": {"kind": "field", "name": "config"},
+                "right": {"kind": "value", "value": {"api_key": "sk-test"}},
             },
             "page": {"kind": "offset", "offset": 0, "length": 50},
         }
@@ -5216,10 +5213,11 @@ async def test_t0755_agent_description_with_rtl_bidi_controls_roundtrips(
     description = (
         "before ‮rlo‬ after ‭lro‬ ‏mark"
     )
-    pr = await client.post("/v1/llm_providers", json={
+    pr = await seed_llm_provider(client, {
         "id": provider_id,
         "provider": "anthropic",
-                "config": {"api_key": "sk-test-placeholder"},
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 1},
     })
     assert pr.status_code == 201, pr.text
@@ -5228,10 +5226,7 @@ async def test_t0755_agent_description_with_rtl_bidi_controls_roundtrips(
         ag = await client.post("/v1/agents", json={
             "id": agent_id,
             "description": description,
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "claude-sonnet-4-6",
-            },
+            "model": agent_model(provider_id, "claude-sonnet-4-6"),
             "tools": [],
             "system_prompt": ["test"],
         })

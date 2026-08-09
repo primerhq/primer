@@ -33,6 +33,7 @@ from pathlib import Path
 
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 
 _PGVECTOR_DSN = {
@@ -115,10 +116,13 @@ def test_harness_packaging_cli(base_url, unique_suffix, tmp_path):
         }))
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": llm_id, "provider": "openchat",
-            "models": [{"name": "scripted:default", "context_length": 8192}],
             "config": {"url": "http://127.0.0.1:1/v1", "flavor": "lmstudio"},
             "limits": {"max_concurrency": 1},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(llm_id, [{"name": "scripted:default", "context_length": 8192}]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
         pc.run("create", "-f", manifest(tmp_path, "col", "collection", {
             "id": coll_id, "description": "IT-support KB",
             "embedder": {"provider_id": emb_id, "model": "all-MiniLM-L6-v2"},
@@ -126,7 +130,7 @@ def test_harness_packaging_cli(base_url, unique_suffix, tmp_path):
         }))
         pc.run("create", "-f", manifest(tmp_path, "agent", "agent", {
             "id": agent_id, "description": "Answers from the KB collection.",
-            "model": {"provider_id": llm_id, "model_name": "scripted:default"},
+            "model": agent_model(llm_id, "scripted:default"),
             "tools": [],
         }))
 

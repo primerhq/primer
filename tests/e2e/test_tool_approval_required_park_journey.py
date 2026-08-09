@@ -50,6 +50,7 @@ from urllib.request import Request, urlopen
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 # ---------------------------------------------------------------------------
@@ -141,7 +142,7 @@ def _agent_body(entity_id: str, *, provider_id: str, model_id: str) -> dict:
     return {
         "id": entity_id,
         "description": "T0850 approval-required park journey probe",
-        "model": {"provider_id": provider_id, "model_name": model_id},
+        "model": agent_model(provider_id, model_id),
         # Workspace tools are composed automatically when the session
         # attaches to a workspace — no need to list them here. We don't
         # add any first-class user toolsets either; the gate fires on
@@ -238,8 +239,7 @@ async def test_t0850_tool_approval_required_park_journey(
 
     try:
         # ----- 1. LLM provider -----
-        r = await client.post(
-            "/v1/llm_providers", json=_llm_provider_body(llm_id, _MODEL_ID),
+        r = await seed_llm_provider(client, _llm_provider_body(llm_id, _MODEL_ID),
         )
         assert r.status_code == 201, r.text
 

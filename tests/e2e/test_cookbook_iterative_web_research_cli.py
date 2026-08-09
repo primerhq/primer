@@ -39,6 +39,7 @@ from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
 from tests._support.testconfig import requires
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 pytestmark = [requires("web:duckduckgo")]
 
@@ -118,20 +119,23 @@ def test_iterative_web_research_cli(base_url, mock_llm, unique_suffix, tmp_path)
         # --- The scripted LLM provider (lists all three scenarios) -------
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": pid, "provider": "openchat",
-            "models": [
-                {"name": res_scn, "context_length": 8192},
-                {"name": ext_scn, "context_length": 8192},
-                {"name": jud_scn, "context_length": 8192},
-            ],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(pid, [
+                {"name": res_scn, "context_length": 8192},
+                {"name": ext_scn, "context_length": 8192},
+                {"name": jud_scn, "context_length": 8192},
+            ]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
 
         # --- The three agents (create -f) --------------------------------
         pc.run("create", "-f", manifest(tmp_path, "researcher", "agent", {
             "id": res_id,
             "description": "Searches the web and writes a sourced findings report.",
-            "model": {"provider_id": pid, "model_name": res_scn},
+            "model": agent_model(pid, res_scn),
             "tools": ["web__web_search", "web__web_fetch"],
             "system_prompt": [
                 "You research a topic on the web and write short sourced "
@@ -141,7 +145,7 @@ def test_iterative_web_research_cli(base_url, mock_llm, unique_suffix, tmp_path)
         pc.run("create", "-f", manifest(tmp_path, "extractor", "agent", {
             "id": ext_id,
             "description": "Distils sourced facts from research findings.",
-            "model": {"provider_id": pid, "model_name": ext_scn},
+            "model": agent_model(pid, ext_scn),
             "tools": [],
             "system_prompt": [
                 "You distil research findings into a clean numbered list of "
@@ -151,7 +155,7 @@ def test_iterative_web_research_cli(base_url, mock_llm, unique_suffix, tmp_path)
         pc.run("create", "-f", manifest(tmp_path, "judge", "agent", {
             "id": jud_id,
             "description": "Judges whether the research is complete.",
-            "model": {"provider_id": pid, "model_name": jud_scn},
+            "model": agent_model(pid, jud_scn),
             "tools": [],
             "system_prompt": [
                 "You are a fact-checking judge. Return JSON only: verdict is "

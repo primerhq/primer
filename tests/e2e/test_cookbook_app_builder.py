@@ -54,6 +54,7 @@ from tests._support.mock_llm import Rule
 from tests._support.runs import make_local_workspace, make_scripted_agent, wait_terminal
 from tests._support.smk import smk
 from tests._support.testconfig import requires
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 pytestmark = [pytest.mark.asyncio]
 
@@ -156,9 +157,7 @@ async def test_app_builder_provisions_and_runs_mini_app(
 
         # The digest LLM provider the summarizer agent (created by the builder)
         # will reference. Points at the mock; lists only the digest scenario.
-        r = await authed_client.post(
-            "/v1/llm_providers",
-            json={
+        r = await seed_llm_provider(authed_client, {
                 "id": digest_provider_id,
                 "provider": "openchat",
                 "models": [{"name": digest_scenario, "context_length": 8192}],
@@ -225,8 +224,7 @@ async def test_app_builder_provisions_and_runs_mini_app(
                 emit_args={"entity": {
                     "id": summarizer_id,
                     "description": "Summarizes the news into a digest.",
-                    "model": {"provider_id": digest_provider_id,
-                              "model_name": digest_scenario},
+                    "model": agent_model(digest_provider_id, digest_scenario),
                     "tools": [],
                     "system_prompt": ["Return a one-line digest of the news."],
                 }},

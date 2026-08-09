@@ -41,6 +41,7 @@ from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 pytestmark = [requires("embedder", "pgvector")]
 
@@ -145,7 +146,7 @@ def test_app_builder_cli(base_url, mock_llm, unique_suffix, tmp_path):
              emit_args={"entity": {
                  "id": summarizer_id,
                  "description": "Summarizes the news into a digest.",
-                 "model": {"provider_id": digest_pid, "model_name": digest_scenario},
+                 "model": agent_model(digest_pid, digest_scenario),
                  "tools": [],
                  "system_prompt": ["Return a one-line digest of the news."]}},
              emit_tool_call_id="c3"),
@@ -181,22 +182,28 @@ def test_app_builder_cli(base_url, mock_llm, unique_suffix, tmp_path):
         # --- The digest LLM provider the summarizer (built by the agent) uses
         pc.run("create", "-f", manifest(tmp_path, "digestllm", "llm_provider", {
             "id": digest_pid, "provider": "openchat",
-            "models": [{"name": digest_scenario, "context_length": 8192}],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(digest_pid, [{"name": digest_scenario, "context_length": 8192}]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
 
         # --- The scripted builder LLM provider + the app-builder agent ------
         pc.run("create", "-f", manifest(tmp_path, "builderllm", "llm_provider", {
             "id": builder_pid, "provider": "openchat",
-            "models": [{"name": builder_scenario, "context_length": 8192}],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(builder_pid, [{"name": builder_scenario, "context_length": 8192}]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
         pc.run("create", "-f", manifest(tmp_path, "builder", "agent", {
             "id": builder_id,
             "description": "Provisions a whole mini-app from one request.",
-            "model": {"provider_id": builder_pid, "model_name": builder_scenario},
+            "model": agent_model(builder_pid, builder_scenario),
             "tools": [
                 "system__create_collection", "system__put_document",
                 "system__create_agent", "system__create_graph",

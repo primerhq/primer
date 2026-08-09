@@ -48,6 +48,7 @@ import time
 from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 
 _DEPLOY_PATH = "RELEASE"
@@ -199,7 +200,7 @@ def _make_agent(pc: Primectl, tmp_path, *, aid: str, pid: str, scenario: str) ->
     pc.run("create", "-f", manifest(tmp_path, f"agent-{aid}", "agent", {
         "id": aid,
         "description": "Confirms a deploy target with a human, then deploys behind a gate.",
-        "model": {"provider_id": pid, "model_name": scenario},
+        "model": agent_model(pid, scenario),
         "tools": ["system__ask_user", "workspaces__write_workspace_file"],
         "max_tool_turns": 5,
         "system_prompt": [
@@ -245,13 +246,16 @@ def test_release_conductor_cli(base_url, mock_llm, unique_suffix, tmp_path):
         # --- Shared scripted LLM provider (two scenarios) ----------------
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": pid, "provider": "openchat",
-            "models": [
-                {"name": ok_scenario, "context_length": 8192},
-                {"name": no_scenario, "context_length": 8192},
-            ],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(pid, [
+                {"name": ok_scenario, "context_length": 8192},
+                {"name": no_scenario, "context_length": 8192},
+            ]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
 
         # --- REQUIRED approval policy on the deploy tool + invalidate -----
         # Policies are unique on (toolset_id, tool_name); clear any leftover for

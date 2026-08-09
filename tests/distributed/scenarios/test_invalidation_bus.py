@@ -31,6 +31,7 @@ import pytest_asyncio
 
 from tests.distributed.cluster import TestCluster
 from tests._support.smk import smk
+from tests._support.model_profiles import seed_llm_provider
 
 
 # ---------------------------------------------------------------------------
@@ -71,34 +72,39 @@ async def test_provider_patch_invalidates_other_api_cache(
     Steps:
     1. POST a new ``LLMProvider`` via API#0.
     2. GET it via API#1 — this populates API#1's in-process registry cache.
-    3. PUT the provider with an updated ``models`` list via API#0.
-    4. Poll API#1 until the GET response reflects the new model name (the
-       bus has delivered the invalidation and the cache has been evicted).
+    3. PUT the provider with a changed ``limits`` block via API#0.
+    4. Poll API#1 until the GET response reflects the new value (the bus
+       has delivered the invalidation and the cache has been evicted).
+
+    The observable used to be the provider's ``models`` list. That field
+    no longer exists -- an LLM provider's registry is its ModelProfile
+    rows -- so the propagating change is now a field the provider still
+    owns. ``max_concurrency`` is a good one: it is read at adapter
+    construction, so a stale cache would keep serving the old value.
     """
     cluster = cluster_2x2_bus
     await cluster.authenticate()
     provider_id = f"test-llm-{uuid.uuid4().hex[:8]}"
 
-    original_model = "original-model-v1"
-    updated_model = "updated-model-v2"
+    original_concurrency = 4
+    updated_concurrency = 9
 
     provider_body = {
         "id": provider_id,
         "provider": "openresponses",
-        "models": [{"name": original_model, "context_length": 4096}],
         "config": {
             "url": "http://localhost:11434/v1",
             "api_key": None,
             "flavor": "other",
         },
-        "limits": {"max_concurrency": 4},
+        "limits": {"max_concurrency": original_concurrency},
     }
 
     # ------------------------------------------------------------------
     # 1. Create the provider via API#0
     # ------------------------------------------------------------------
     async with cluster.client(0) as c0:
-        resp = await c0.post("/v1/llm_providers", json=provider_body)
+        resp = await seed_llm_provider(c0, provider_body)
         assert resp.status_code == 201, (
             f"POST /v1/llm_providers returned {resp.status_code}: {resp.text}"
         )
@@ -113,16 +119,16 @@ async def test_provider_patch_invalidates_other_api_cache(
             f" {resp.status_code}: {resp.text}"
         )
         data = resp.json()
-        assert any(
-            m["name"] == original_model for m in data["models"]
-        ), f"api-1 does not see {original_model!r} in {data['models']}"
+        assert data["limits"]["max_concurrency"] == original_concurrency, (
+            f"api-1 does not see the original limits: {data['limits']}"
+        )
 
     # ------------------------------------------------------------------
     # 3. Update the provider (new model name) via API#0
     # ------------------------------------------------------------------
     updated_body = {
         **provider_body,
-        "models": [{"name": updated_model, "context_length": 8192}],
+        "limits": {"max_concurrency": updated_concurrency},
     }
     async with cluster.client(0) as c0:
         resp = await c0.put(
@@ -147,17 +153,17 @@ async def test_provider_patch_invalidates_other_api_cache(
             if resp.status_code != 200:
                 return False
             last_response = resp.json()
-        return any(
-            m["name"] == updated_model
-            for m in last_response.get("models", [])
+        return (
+            last_response.get("limits", {}).get("max_concurrency")
+            == updated_concurrency
         )
 
     await cluster.wait_for(_api1_sees_update, timeout_s=10.0, interval_s=0.2)
 
-    assert any(
-        m["name"] == updated_model
-        for m in last_response.get("models", [])
+    assert (
+        last_response.get("limits", {}).get("max_concurrency")
+        == updated_concurrency
     ), (
-        f"API#1 still returns stale model list after invalidation."
+        f"API#1 still returns a stale provider row after invalidation."
         f" Last response: {last_response}"
     )

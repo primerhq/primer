@@ -129,8 +129,7 @@ async def test_meta_agent_builds_from_use_case(
                      emit_args={"entity": {
                          "id": built_id,
                          "description": "Returns the current date and time on request.",
-                         "model": {"provider_id": f"p-meta{sfx}",
-                                   "model_name": f"scripted:meta-{sfx}"},
+                         "model": agent_model(f"p-meta{sfx}", f"scripted:meta-{sfx}"),
                          "tools": ["misc__get_datetime"],
                          "system_prompt": ["Return the current date and time."],
                      }}),

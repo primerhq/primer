@@ -42,6 +42,7 @@ from tests.ui_e2e._studio_helpers import open_studio, session_row, sessions_list
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 pytestmark = smk("SMK-UI-06")
 
 
@@ -68,7 +69,7 @@ def _seed_session_ladder(
         "session": "",     # backend-assigned
     }
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": ids["llm"],
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -95,7 +96,7 @@ def _seed_session_ladder(
         r = c.post("/v1/agents", json={
             "id": ids["agent"],
             "description": "journey agent",
-            "model": {"provider_id": ids["llm"], "model_name": "fake-model"},
+            "model": agent_model(ids["llm"], "fake-model"),
             "tools": [],
             "system_prompt": ["probe"],
         })
@@ -270,7 +271,7 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
     }
     try:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
-            r = c.post("/v1/llm_providers", json={
+            r = seed_llm_provider_with(c, {
                 "id": ids["llm"],
                 "provider": "ollama",
                 "config": {"url": "http://127.0.0.1:9999"},
@@ -297,7 +298,7 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
             r = c.post("/v1/agents", json={
                 "id": ids["agent"],
                 "description": "u0104 agent",
-                "model": {"provider_id": ids["llm"], "model_name": "fake-model"},
+                "model": agent_model(ids["llm"], "fake-model"),
                 "tools": [],
                 "system_prompt": ["probe"],
             })

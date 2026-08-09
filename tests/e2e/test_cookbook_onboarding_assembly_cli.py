@@ -37,6 +37,7 @@ import json
 from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 
 _REGION_COUNT = 3
@@ -118,11 +119,14 @@ def test_onboarding_assembly_cli(base_url, mock_llm, unique_suffix, tmp_path):
         # --- The scripted LLM provider (all five scenarios) --------------
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": pid, "provider": "openchat",
-            "models": [{"name": s, "context_length": 8192}
-                       for s in (kyc_scn, prov_scn, rgn_scn, fail_scn, crd_scn)],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(pid, [{"name": s, "context_length": 8192}
+                       for s in (kyc_scn, prov_scn, rgn_scn, fail_scn, crd_scn)]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
 
         # --- The five agents (create -f) ---------------------------------
         for aid, scn, prompt in (
@@ -133,12 +137,12 @@ def test_onboarding_assembly_cli(base_url, mock_llm, unique_suffix, tmp_path):
         ):
             pc.run("create", "-f", manifest(tmp_path, aid, "agent", {
                 "id": aid, "description": prompt,
-                "model": {"provider_id": pid, "model_name": scn},
+                "model": agent_model(pid, scn),
                 "tools": [], "system_prompt": [prompt],
             }))
         pc.run("create", "-f", manifest(tmp_path, "coord", "agent", {
             "id": crd_aid, "description": "Kicks off the onboarding assembly.",
-            "model": {"provider_id": pid, "model_name": crd_scn},
+            "model": agent_model(pid, crd_scn),
             "tools": ["workspace_ext__invoke_graph"],
             "system_prompt": [
                 "When asked to onboard a customer, call invoke_graph with the "

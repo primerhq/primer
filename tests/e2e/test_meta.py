@@ -10,6 +10,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from tests._support.model_profiles import seed_llm_provider
 
 
 @pytest.mark.asyncio
@@ -124,9 +125,7 @@ async def test_t0182_security_headers_present_on_422_validation_error(
     exception handler that bypasses the middleware would be caught.
     """
     # POST to /v1/llm_providers with a missing required field → 422
-    resp = await client.post(
-        "/v1/llm_providers",
-        json={"id": "irrelevant", "provider": "anthropic"},  # missing models
+    resp = await seed_llm_provider(client, {"id": "irrelevant", "provider": "anthropic"},  # missing models
     )
     assert resp.status_code == 422, resp.text
     assert resp.json()["type"] == "/errors/validation-error"
@@ -234,7 +233,7 @@ async def test_t0313_422_error_carries_problem_json_content_type(
     """T0313 — Same RFC 7807 media type pin for the 422 path
     (Pydantic-overridden validation envelope per spec §3).
     """
-    resp = await client.post("/v1/llm_providers", json={})
+    resp = await seed_llm_provider(client, {})
     assert resp.status_code == 422, resp.text
     ct = resp.headers.get("content-type", "")
     assert "problem+json" in ct.lower(), (
@@ -288,7 +287,7 @@ async def test_t0315_post_with_trailing_slash_consistent(
     fail validation cleanly — the focus is on the trailing-slash
     handling, not the create path.
     """
-    bare = await client.post("/v1/llm_providers", json={})
+    bare = await seed_llm_provider(client, {})
     slash = await client.post("/v1/llm_providers/", json={})
 
     for resp, label in ((bare, "no-slash"), (slash, "trailing-slash")):
@@ -365,7 +364,7 @@ async def test_t0368_etag_header_absent_on_instance_get(
         "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 1},
     }
-    create = await client.post("/v1/llm_providers", json=body)
+    create = await seed_llm_provider(client, body)
     assert create.status_code == 201, create.text
     try:
         resp = await client.get(f"/v1/llm_providers/{entity_id}")
@@ -446,7 +445,7 @@ async def test_t0375_rfc7807_instance_echoes_full_request_path(
     )
 
     # 422 path
-    r422 = await client.post("/v1/llm_providers", json={})
+    r422 = await seed_llm_provider(client, {})
     assert r422.status_code == 422, r422.text
     body_422 = r422.json()
     assert "instance" in body_422, body_422

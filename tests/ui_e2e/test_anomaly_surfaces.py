@@ -22,6 +22,7 @@ from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 pytestmark = smk("SMK-UI-02", "SMK-UI-05", status="partial")
 
 
@@ -118,7 +119,7 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
     provider_id = f"llm-u0018-{unique_suffix}"
     agent_id = f"ag-u0018-{unique_suffix}"
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": provider_id,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -129,7 +130,7 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
         r = c.post("/v1/agents", json={
             "id": agent_id,
             "description": "u0018 deep-link probe",
-            "model": {"provider_id": provider_id, "model_name": "fake-model"},
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [],
             "system_prompt": ["test"],
         })
@@ -229,7 +230,7 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
     session_id: str | None = None
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         # 1. LLM provider - placeholder (no upstream call).
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": provider_id,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -242,10 +243,7 @@ def test_u0013_session_detail_renders_t0399_stale_cache_notice(
         r = c.post("/v1/agents", json={
             "id": agent_id,
             "description": "u0013 session-detail probe",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "fake-model",
-            },
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [],
             "system_prompt": ["test"],
         })
@@ -344,7 +342,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
     bad_toolset_id = f"ts-u0009-bad-{unique_suffix}"
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         # Seed LLM (placeholder).
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": provider_id,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -377,10 +375,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
         r = c.post("/v1/agents", json={
             "id": agent_id,
             "description": "u0009 per-toolset isolation probe",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "fake-model",
-            },
+            "model": agent_model(provider_id, "fake-model"),
             "tools": ["misc__uuid_v4", f"{bad_toolset_id}__placeholder_tool"],
             "system_prompt": ["test"],
         })

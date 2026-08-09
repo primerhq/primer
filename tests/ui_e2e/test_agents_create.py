@@ -27,6 +27,7 @@ import pytest
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 pytestmark = smk("SMK-UI-03")
 
 
@@ -56,7 +57,7 @@ def _seeded_llm_provider(
         "limits": {"max_concurrency": 1},
     }
     with _api(base_url) as c:
-        resp = c.post("/v1/llm_providers", json=body)
+        resp = seed_llm_provider_with(c, body)
         assert resp.status_code == 201, (
             f"failed to seed LLM provider precondition: "
             f"{resp.status_code} {resp.text}"
@@ -291,7 +292,7 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
             r = c.post("/v1/agents", json={
                 "id": agent_id,
                 "description": "u0020 delete probe",
-                "model": {"provider_id": provider_id, "model_name": "fake-model"},
+                "model": agent_model(provider_id, "fake-model"),
                 "tools": [],
                 "system_prompt": ["test"],
             })

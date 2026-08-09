@@ -39,6 +39,7 @@ from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
 from tests._support.testconfig import requires
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 pytestmark = [requires("embedder", "pgvector")]
 
@@ -142,7 +143,7 @@ def test_meta_agent_builder_cli(base_url, mock_llm, unique_suffix, tmp_path):
              emit_args={"entity": {
                  "id": built_id,
                  "description": "Returns the current date and time on request.",
-                 "model": {"provider_id": meta_pid, "model_name": scenario},
+                 "model": agent_model(meta_pid, scenario),
                  "tools": ["misc__get_datetime"],
                  "system_prompt": ["Return the current date and time."]}}),
         Rule(when_tool_result=True, emit_text="created datetime-agent"),
@@ -163,14 +164,17 @@ def test_meta_agent_builder_cli(base_url, mock_llm, unique_suffix, tmp_path):
         # --- The scripted meta-agent's LLM provider + the meta-builder agent
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": meta_pid, "provider": "openchat",
-            "models": [{"name": scenario, "context_length": 8192}],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(meta_pid, [{"name": scenario, "context_length": 8192}]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
         pc.run("create", "-f", manifest(tmp_path, "meta", "agent", {
             "id": meta_id,
             "description": "Builds new agents from a use case by discovering tools.",
-            "model": {"provider_id": meta_pid, "model_name": scenario},
+            "model": agent_model(meta_pid, scenario),
             "tools": ["search__search_tools", "system__create_agent"],
             "max_tool_turns": 8,
             "system_prompt": ["You build new agents from a use case by discovering tools."],

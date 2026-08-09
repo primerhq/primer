@@ -3,18 +3,23 @@
 Covers backlog item T0025 (reframed).
 
 The original backlog entry assumed the endpoint fetches from upstream
-and asserted 502/503 on a refused connection. Reading
-`primer.llm.{anthropic,gemini,ollama,openresponses}.list_models` shows
-the endpoint actually just echoes the configured ``LLMProvider.models``
-list (every adapter's ``list_models`` returns
-``[m.name for m in self._provider.models]``). The endpoint never
-touches the network, so reachability of the upstream is irrelevant.
+and asserted 502/503 on a refused connection. It does not: for the LLM
+family it answers from storage, listing the distinct model names of the
+provider's :class:`ModelProfile` rows, and for the embedding and
+cross-encoder families it echoes their still-present ``models[]``.
+Either way the endpoint never touches the network, so reachability of
+the upstream is irrelevant.
 
-This test pins the actual contract: even when the configured `url`
-points at a refused-connection address, the endpoint returns 200 and
-echoes the configured names. If a future refactor makes the endpoint
-truly live, this test will start failing and force the spec + this
-test to be revisited together.
+The LIVE probe is a different endpoint --
+``GET /v1/llm_providers/{id}/discovered_models`` -- and the distinction
+is deliberate: one reports what is REGISTERED here, the other what the
+upstream OFFERS.
+
+This test pins that contract: even when the configured `url` points at
+a refused-connection address, the endpoint returns 200 and echoes the
+registered names. If a future refactor makes it truly live, this test
+will start failing and force the spec + this test to be revisited
+together.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import httpx
 import pytest
 
 from tests._support.smk import smk
+from tests._support.model_profiles import seed_llm_provider
 
 
 def _bad_url_provider_body(entity_id: str) -> dict:
@@ -51,8 +57,7 @@ async def test_t0025_provider_models_endpoint_returns_configured_models(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     entity_id = f"llm-bad-{unique_suffix}"
-    create = await client.post(
-        "/v1/llm_providers", json=_bad_url_provider_body(entity_id),
+    create = await seed_llm_provider(client, _bad_url_provider_body(entity_id),
     )
     assert create.status_code == 201, create.text
 

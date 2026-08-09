@@ -20,11 +20,12 @@ import httpx
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_session_in_studio
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 
 
 def _seed_llm_provider(base_url: str, pid: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": pid, "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
             "models": [{"name": "fake-model", "context_length": 4096}],
@@ -37,7 +38,7 @@ def _seed_agent(base_url: str, aid: str, pid: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/agents", json={
             "id": aid, "description": "run-view probe",
-            "model": {"provider_id": pid, "model_name": "fake-model"},
+            "model": agent_model(pid, "fake-model"),
             "tools": [], "system_prompt": ["test"],
         })
         assert r.status_code in (201, 409), r.text

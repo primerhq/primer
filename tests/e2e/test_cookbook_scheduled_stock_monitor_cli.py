@@ -48,6 +48,7 @@ import yaml
 from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 
 _ALERT_MESSAGE = (
@@ -214,20 +215,23 @@ def test_stock_monitor_cli(base_url, mock_llm, unique_suffix, tmp_path):
         # --- The scripted monitor LLM provider ---------------------------
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": pid, "provider": "openchat",
-            "models": [
-                {"name": mat_scenario, "context_length": 8192},
-                {"name": sil_scenario, "context_length": 8192},
-            ],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(pid, [
+                {"name": mat_scenario, "context_length": 8192},
+                {"name": sil_scenario, "context_length": 8192},
+            ]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
 
         # --- Two monitor agents (material + silent), web+inform bound ----
         for aid, scenario in ((mat_agent, mat_scenario), (sil_agent, sil_scenario)):
             pc.run("create", "-f", manifest(tmp_path, f"agent-{aid}", "agent", {
                 "id": aid,
                 "description": "Monitors stock news and alerts a channel on material news.",
-                "model": {"provider_id": pid, "model_name": scenario},
+                "model": agent_model(pid, scenario),
                 "tools": ["web__web_search", "misc__inform_user"],
                 "max_tool_turns": 8,
                 "system_prompt": [

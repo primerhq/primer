@@ -45,6 +45,7 @@ from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 pytestmark = [requires("embedder", "pgvector")]
 
@@ -271,16 +272,19 @@ def test_tiered_help_desk_cli(base_url, mock_llm, unique_suffix, tmp_path):
 
         pc.run("create", "-f", manifest(tmp_path, f"llm-{local}", "llm_provider", {
             "id": pid + f"-{decision}", "provider": "openchat",
-            "models": [
-                {"name": fl_scenario, "context_length": 8192},
-                {"name": bill_scenario, "context_length": 8192},
-            ],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(pid + f"-{decision}", [
+                {"name": fl_scenario, "context_length": 8192},
+                {"name": bill_scenario, "context_length": 8192},
+            ]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
         pc.run("create", "-f", manifest(tmp_path, f"fl-{local}", "agent", {
             "id": fl_id, "description": "Front-line support.",
-            "model": {"provider_id": pid + f"-{decision}", "model_name": fl_scenario},
+            "model": agent_model(pid + f"-{decision}", fl_scenario),
             "tools": ["system__search_collection", "system__ask_user",
                       "system__switch_to_agent"],
             "system_prompt": [
@@ -291,7 +295,7 @@ def test_tiered_help_desk_cli(base_url, mock_llm, unique_suffix, tmp_path):
         }))
         pc.run("create", "-f", manifest(tmp_path, f"bill-{local}", "agent", {
             "id": bill_id, "description": "Billing specialist; issues refunds.",
-            "model": {"provider_id": pid + f"-{decision}", "model_name": bill_scenario},
+            "model": agent_model(pid + f"-{decision}", bill_scenario),
             "tools": [f"misc__{_GATED_TOOL}"],
             "system_prompt": [
                 "You are a billing specialist. Issue the refund the customer "

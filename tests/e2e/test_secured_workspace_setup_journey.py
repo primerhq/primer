@@ -51,6 +51,7 @@ import json
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 # 60-char placeholder for DiscordChannelProviderConfig.bot_token
@@ -108,7 +109,7 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
 
     try:
         # ----- 1. LLMProvider ---------------------------------------------
-        r = await client.post("/v1/llm_providers", json={
+        r = await seed_llm_provider(client, {
             "id": llm_id,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -194,7 +195,7 @@ async def test_t0853_secured_workspace_setup_with_cascade_invariants(
         r = await client.post("/v1/agents", json={
             "id": agent_id,
             "description": "T0853 secured agent",
-            "model": {"provider_id": llm_id, "model_name": "fake-model"},
+            "model": agent_model(llm_id, "fake-model"),
             "tools": [toolset_id],
             "system_prompt": ["secured agent"],
         })

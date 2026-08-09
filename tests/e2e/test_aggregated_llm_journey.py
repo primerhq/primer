@@ -13,6 +13,7 @@ import httpx
 import pytest
 
 from tests._support.mock_llm import Rule
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 def _ws_headers(client: httpx.AsyncClient) -> list[tuple[str, str]]:
@@ -37,7 +38,7 @@ async def test_aggregated_fails_over_from_429_member(
 
     # One openchat provider (points at the mock) exposing both scenario models.
     member_pid = f"agg-member-{unique_suffix}"
-    r = await client.post("/v1/llm_providers", json={
+    r = await seed_llm_provider(client, {
         "id": member_pid,
         "provider": "openchat",
         "models": [
@@ -51,7 +52,7 @@ async def test_aggregated_fails_over_from_429_member(
 
     # Aggregated provider: member[0] = 429 model, member[1] = ok model.
     agg_pid = f"agg-{unique_suffix}"
-    r = await client.post("/v1/llm_providers", json={
+    r = await seed_llm_provider(client, {
         "id": agg_pid,
         "provider": "aggregated",
         "config": {
@@ -73,7 +74,7 @@ async def test_aggregated_fails_over_from_429_member(
     r = await client.post("/v1/agents", json={
         "id": agent_id,
         "description": "aggregated failover probe",
-        "model": {"provider_id": agg_pid, "model_name": "agg-virtual"},
+        "model": agent_model(agg_pid, "agg-virtual"),
         "tools": [],
         "system_prompt": ["aggregated failover probe"],
     })
@@ -127,7 +128,7 @@ async def test_aggregated_fails_over_from_429_member(
         assert assistant_text == "served-by-member-2", assistant_text
 
         # CRUD RFC7807: an empty members list is 422.
-        bad = await client.post("/v1/llm_providers", json={
+        bad = await seed_llm_provider(client, {
             "id": f"agg-bad-{unique_suffix}",
             "provider": "aggregated",
             "config": {"members": []},

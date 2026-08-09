@@ -13,6 +13,7 @@ import pytest
 
 from tests._support.harness_git import build_harness_repo
 from tests._support.smk import smk
+from tests._support.model_profiles import profile_id_for, seed_llm_provider
 
 pytestmark = pytest.mark.asyncio
 
@@ -66,9 +67,7 @@ async def test_install_operation_accepted_and_completes(authed_client, unique_su
     # which does not complete on the hermetic server (see FINDINGS F3); they
     # are validated on the distributed lane.
     pid = f"hp-{unique_suffix}"
-    await authed_client.post(
-        "/v1/llm_providers",
-        json={"id": pid, "provider": "openchat",
+    await seed_llm_provider(authed_client, {"id": pid, "provider": "openchat",
               "models": [{"name": "scripted:default", "context_length": 8192}],
               "config": {"url": "http://127.0.0.1:1/v1", "flavor": "lmstudio"},
               "limits": {"max_concurrency": 1}},
@@ -79,7 +78,7 @@ async def test_install_operation_accepted_and_completes(authed_client, unique_su
     await _wait_idle(authed_client, hid)
     setov = await authed_client.put(
         f"/v1/harnesses/{hid}/overrides",
-        json={"provider_id": pid, "model_name": "scripted:default"},
+        json={"profile_id": profile_id_for(pid, "scripted:default")},
     )
     assert setov.status_code in (200, 204), setov.text
     install = await authed_client.post(f"/v1/harnesses/{hid}/install")

@@ -41,6 +41,7 @@ from urllib.request import Request, urlopen
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 # ---------------------------------------------------------------------------
@@ -135,7 +136,7 @@ def _agent_body(entity_id: str, *, provider_id: str, model_id: str) -> dict:
     return {
         "id": entity_id,
         "description": "lmstudio full-execution journey probe",
-        "model": {"provider_id": provider_id, "model_name": model_id},
+        "model": agent_model(provider_id, model_id),
         "tools": [],
     }
 
@@ -197,9 +198,7 @@ async def test_lmstudio_full_execution_journey_produces_observable_artifacts(
 
     try:
         # ----- seed providers + workspace + agent -----
-        r = await client.post(
-            "/v1/llm_providers",
-            json=_llm_provider_body(llm_id, _MODEL_ID),
+        r = await seed_llm_provider(client, _llm_provider_body(llm_id, _MODEL_ID),
         )
         assert r.status_code == 201, r.text
         r = await client.post(

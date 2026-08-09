@@ -12,6 +12,7 @@ Covers:
 from __future__ import annotations
 
 import httpx
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 
 
 # ---------------------------------------------------------------------------
@@ -23,7 +24,7 @@ def _seed_llm_provider(base_url: str, pid: str) -> None:
     """POST a placeholder ollama LLM provider so the agent seeder
     can reference a real id without calling an upstream model."""
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": pid,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -39,10 +40,7 @@ def _seed_agent(base_url: str, agent_id: str, provider_id: str) -> None:
         r = c.post("/v1/agents", json={
             "id": agent_id,
             "description": "ui-e2e probe",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "fake-model",
-            },
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [],
             "system_prompt": ["test"],
         })

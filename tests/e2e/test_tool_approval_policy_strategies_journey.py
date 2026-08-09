@@ -57,6 +57,7 @@ import httpx
 import pytest
 
 from tests._support.smk import smk
+from tests._support.model_profiles import seed_llm_provider
 
 
 def _llm_body(entity_id: str, model_name: str) -> dict:
@@ -155,8 +156,7 @@ async def test_t0858_tool_approval_policy_multi_strategy_journey(
     judge_model = "judge-m1"
 
     # ----- 0. Seed LLMProvider used by the llm-type policy -----
-    seed = await client.post(
-        "/v1/llm_providers", json=_llm_body(llm_id, judge_model),
+    seed = await seed_llm_provider(client, _llm_body(llm_id, judge_model),
     )
     assert seed.status_code == 201, seed.text
 

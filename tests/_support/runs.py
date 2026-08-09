@@ -12,6 +12,7 @@ from pathlib import Path
 import httpx
 
 from tests._support.mock_llm import Rule, ScriptRegistry
+from tests._support.model_profiles import agent_model, seed_llm_provider
 
 _TERMINAL = {"ended"}
 
@@ -35,9 +36,9 @@ async def make_scripted_agent(
     registry.register(scenario, rules)
     pid = f"p-{suffix}"
     aid = f"a-{suffix}"
-    pr = await client.post(
-        "/v1/llm_providers",
-        json={
+    pr = await seed_llm_provider(
+        client,
+        {
             "id": pid,
             "provider": "openchat",
             "models": [{"name": scenario, "context_length": 8192}],
@@ -51,7 +52,7 @@ async def make_scripted_agent(
         json={
             "id": aid,
             "description": "smk scripted agent",
-            "model": {"provider_id": pid, "model_name": scenario},
+            "model": agent_model(pid, scenario),
             "tools": tools or [],
             "system_prompt": system_prompt or ["You are a scripted test agent."],
         },
@@ -78,9 +79,9 @@ async def make_real_agent(
     pid = f"pr-{suffix}"
     aid = f"ar-{suffix}"
     model = real_cfg["model"]
-    pr = await client.post(
-        "/v1/llm_providers",
-        json={
+    pr = await seed_llm_provider(
+        client,
+        {
             "id": pid,
             "provider": "openchat",
             "models": [{"name": model, "context_length": 8192}],
@@ -98,7 +99,7 @@ async def make_real_agent(
         json={
             "id": aid,
             "description": "smk real-llm agent",
-            "model": {"provider_id": pid, "model_name": model},
+            "model": agent_model(pid, model),
             "tools": tools or [],
             "system_prompt": system_prompt
             or ["You are a terse assistant. Follow the user's instruction exactly."],

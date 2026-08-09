@@ -51,6 +51,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_workspace_settings
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 
 
 # 60-char placeholder; satisfies DiscordChannelProviderConfig.bot_token
@@ -73,9 +74,7 @@ def _seed(base_url: str, suffix: str) -> dict[str, str]:
         "workspace": "",
     }
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post(
-            "/v1/llm_providers",
-            json={
+        r = seed_llm_provider_with(c, {
                 "id": ids["llm"],
                 "provider": "ollama",
                 "config": {"url": "http://127.0.0.1:9999"},
@@ -89,9 +88,7 @@ def _seed(base_url: str, suffix: str) -> dict[str, str]:
             json={
                 "id": ids["agent"],
                 "description": "U0108 channels journey default agent",
-                "model": {
-                    "provider_id": ids["llm"], "model_name": "fake-model",
-                },
+                "model": agent_model(ids["llm"], "fake-model"),
                 "tools": [],
                 "system_prompt": ["u0108"],
             },
