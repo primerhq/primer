@@ -121,6 +121,7 @@ async def start_workspace_session(
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
 
     resolved_agent = None
+    resolved_graph = None
     if isinstance(binding, AgentSessionBinding):
         resolved_agent = await agents.get(binding.agent_id)
         if resolved_agent is None:
@@ -194,6 +195,40 @@ async def start_workspace_session(
     # (Plan §3.2): persist + auto-start + claim registration live in
     # create_session so the trigger dispatcher, this helper and the
     # REST handler share one canonical create path.
+    # Registration gate for invoker-supplied tools on the initial turn,
+    # BEFORE any slot allocation. Agent bindings check the resolved
+    # agent's flag; graph bindings need at least one agent node whose
+    # agent allows them (injection is then gated per node, so flag-off
+    # nodes never see the defs).
+    if external_tools:
+        if resolved_agent is not None:
+            if not resolved_agent.allow_external_tools:
+                raise ValidationError(
+                    "this session's agent does not have "
+                    "allow_external_tools enabled; external_tools rejected"
+                )
+        elif resolved_graph is not None:
+            node_agent_ids = {
+                n.agent_id
+                for n in resolved_graph.nodes
+                if getattr(n, "kind", None) == "agent"
+            }
+            any_allows = False
+            for aid in sorted(node_agent_ids):
+                a = await agents.get(aid)
+                if a is not None and a.allow_external_tools:
+                    any_allows = True
+                    break
+            if not any_allows:
+                raise ValidationError(
+                    f"no agent node in graph {resolved_graph.id!r} has "
+                    "allow_external_tools enabled; external_tools rejected"
+                )
+        else:
+            raise ValidationError(
+                "external_tools requires an agent or graph binding"
+            )
+
     sid = f"sess-{uuid.uuid4().hex[:12]}"
 
     # Allocate the on-disk session slot inside the workspace so the
@@ -247,17 +282,6 @@ async def start_workspace_session(
     # Persist the row + (optionally) auto-start + always register a
     # forward-compat ClaimEngine upsert via the shared service helper.
     # workspace_registry=None because the slot is already allocated above.
-    # Registration gate for invoker-supplied tools on the initial turn:
-    # agent bindings check the resolved agent's flag here (the graph
-    # surface gates per node at injection time and validates at its own
-    # create path).
-    if external_tools:
-        if resolved_agent is None or not resolved_agent.allow_external_tools:
-            raise ValidationError(
-                "this session's agent does not have allow_external_tools "
-                "enabled; external_tools rejected"
-            )
-
     return await create_session(
         workspace_id=workspace_id,
         binding=binding,

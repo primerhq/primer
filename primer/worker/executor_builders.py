@@ -389,6 +389,14 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 toolset_id
             )
             toolset_providers[toolset_id] = provider
+        # Invoker-supplied tools: the graph session's stored defs are
+        # injected per NODE, gated by each node agent's flag (the
+        # resolver receives the node's Agent). Rows for graph-node calls
+        # carry node attribution in the checkpoint, not on the row.
+        from primer.model.external_tool import ExternalToolCall
+
+        node_external_tools = _external_defs_for(session, agent)
+        node_call_storage = pool._storage.get_storage(ExternalToolCall)
         if workspace_session is not None:
             gis = pool._build_graph_invocation_services(
                 workspace=workspace,
@@ -404,6 +412,8 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 tools=agent.tools,
                 graph_invocation_services=gis,
                 initiated_by=initiated_by,
+                external_tools=node_external_tools,
+                external_call_storage=node_call_storage,
             )
         return ToolExecutionManager(
             toolset_providers=toolset_providers,
@@ -411,6 +421,8 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
             provider_registry=pool._provider_registry,
             tools=agent.tools,
             initiated_by=initiated_by,
+            external_tools=node_external_tools,
+            external_call_storage=node_call_storage,
         )
 
     # (4) Optional handles wired in later phases.
