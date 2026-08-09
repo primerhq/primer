@@ -918,7 +918,7 @@ function TS_ToolsTab({ id, ts, onInvalidate }) {
   // policies once and look up by (toolset_id, tool_name).
   const policies = useResource(
     "toolsets:approval-policies",
-    (signal) => apiFetch("GET", "/tool_approval_policies?limit=500", null, { signal }),
+    (signal) => apiFetch("GET", "/tool_approval_policies?limit=200", null, { signal }),
     { pollMs: null, deps: [] }
   );
 

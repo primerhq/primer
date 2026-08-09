@@ -34,7 +34,7 @@ class TestFormSendsTheProfileShape:
 
     def test_picker_lists_profiles_not_providers(self) -> None:
         src = _src()
-        assert '"/model_profiles?limit=500"' in src
+        assert '"/model_profiles?limit=200"' in src
         assert 'htmlFor="na-model-profile"' in src
 
     def test_submit_is_blocked_without_a_profile(self) -> None:

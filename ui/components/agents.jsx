@@ -73,7 +73,7 @@ function AgentsPage({ onOpen, pushToast }) {
   // underlying model -- two agents on different profiles may share a model.
   const profiles = useResource(
     "agents:model-profiles",
-    (signal) => apiFetch("GET", "/model_profiles?limit=500", null, { signal }),
+    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
     { pollMs: null }
   );
   const profileById = React.useMemo(() => {
@@ -371,7 +371,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   // the form picks one row rather than a provider+model pair.
   const profiles = useResource(
     "agents:model-profiles",
-    (signal) => apiFetch("GET", "/model_profiles?limit=500", null, { signal }),
+    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
     { pollMs: null }
   );
   // /v1/tools returns the merged catalogue across user-defined + the

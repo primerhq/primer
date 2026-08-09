@@ -652,7 +652,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   // needs the profile vocabulary as well as the agent one.
   const profiles = useResource(
     "graphs-editor:model-profiles",
-    (s) => apiFetch("GET", "/model_profiles?limit=500", null, { signal: s }),
+    (s) => apiFetch("GET", "/model_profiles?limit=200", null, { signal: s }),
     {},
   );
   // Tool catalogue: same cache key as GR_ToolCallForm so the picker and

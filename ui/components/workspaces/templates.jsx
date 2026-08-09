@@ -619,7 +619,7 @@ function WorkspaceTemplateDetail({ templateId, pushToast }) {
 
   const workspaces = useResource(
     `ws:template:${templateId}:workspaces`,
-    (signal) => apiFetch("GET", "/workspaces?limit=500", null, { signal }),
+    (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
     { deps: [templateId] }
   );
   const referencingWorkspaces = React.useMemo(() => {
