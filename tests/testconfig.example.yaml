@@ -21,6 +21,12 @@ lanes:
   hermetic: true        # tests with no external deps (always safe)
   knowledge: false      # embedder + vector store required
   web_search: false     # a web search backend required
+  public_network: false # tests that query a live third-party service over
+                        # the public internet (e.g. driving a real search
+                        # through the open-websearch MCP server). Off by
+                        # default: whether Bing answers is not a property of
+                        # this codebase, and a failure there says nothing
+                        # about Primer.
   channels: false       # Slack/Telegram/Discord round trips
   mcp: false            # external MCP servers (stdio and/or http)
   harness: false        # git remote for inbound/outbound harness
