@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
-from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider, seed_profile
+from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider
 
 
 def _llm_body(entity_id: str) -> dict:

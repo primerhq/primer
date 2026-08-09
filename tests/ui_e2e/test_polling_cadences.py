@@ -29,7 +29,7 @@ import httpx
 import pytest
 
 from tests.ui_e2e._studio_helpers import open_studio, session_row, sessions_list
-from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider_with
 
 
 def test_u0002_sessions_sidebar_count_polls_after_api_create(

@@ -25,7 +25,7 @@ from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider_with
 pytestmark = smk("SMK-UI-11", status="partial")
 
 

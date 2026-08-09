@@ -38,7 +38,7 @@ import os
 import pytest
 
 from tests._support.smk import smk
-from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider_with
 
 # Module-level gate — even though tests/ui_e2e/conftest.py already
 # collect-ignores the whole directory when PRIMER_RUN_UI_E2E is unset,

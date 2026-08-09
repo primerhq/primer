@@ -51,7 +51,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_workspace_settings
-from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider_with
 
 
 # 60-char placeholder; satisfies DiscordChannelProviderConfig.bot_token

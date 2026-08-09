@@ -33,7 +33,7 @@ from pathlib import Path
 
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
-from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
+from tests._support.model_profiles import agent_model, profile_manifests
 
 
 _PGVECTOR_DSN = {

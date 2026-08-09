@@ -34,7 +34,7 @@ from tests._support.runs import (
     start_agent_session,
 )
 from tests._support.yield_journeys import drive_park_on_tool, wait_for_resume
-from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider
 
 
 def _ws_headers(client: httpx.AsyncClient) -> list[tuple[str, str]]:

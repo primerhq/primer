@@ -31,7 +31,7 @@ import httpx
 import pytest
 
 from tests._support.smk import smk
-from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider
 
 
 def _pg_port() -> int:

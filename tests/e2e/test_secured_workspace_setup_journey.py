@@ -51,7 +51,7 @@ import json
 
 import httpx
 import pytest
-from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider
 
 
 # 60-char placeholder for DiscordChannelProviderConfig.bot_token
