@@ -273,3 +273,6 @@ docs/.launch/
 # Local agent/orchestration scratch (Claude Code + oh-my-claudecode state).
 .claude/
 .omc/
+
+# Marketing, spec and planning docs stay local; never commit them.
+docs/marketing/
