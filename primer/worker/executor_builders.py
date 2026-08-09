@@ -26,6 +26,25 @@ if TYPE_CHECKING:
     from primer.worker.pool import WorkerPool
 
 
+def _external_defs_for(session_row, agent) -> "list | None":
+    """Parse the row's stored external tool defs, gated by the agent flag.
+
+    ``agent`` is the snapshot-first resolved Agent the builder already
+    holds, so the gate matches the API-side registration gate. Returning
+    None when the flag is off is defense in depth: the API already
+    rejected registration, so a populated row with the flag off can only
+    mean the agent definition changed mid-session.
+    """
+    raw = getattr(session_row, "external_tools", None)
+    if not raw:
+        return None
+    if not getattr(agent, "allow_external_tools", False):
+        return None
+    from primer.model.external_tool import ExternalToolDef
+
+    return [ExternalToolDef.model_validate(d) for d in raw]
+
+
 async def build_executor(pool: "WorkerPool", session: WorkspaceSession, workspace):
     """Construct an executor for ``session`` against ``workspace``.
 
@@ -236,6 +255,8 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         graph_session_id=session.id,
         initiated_by=initiated_by,
     )
+    from primer.model.external_tool import ExternalToolCall
+
     tool_manager = ToolExecutionManager.for_workspace(
         toolset_providers=toolset_providers,
         session=agent_session,
@@ -244,6 +265,8 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         tools=agent.tools,
         graph_invocation_services=gis,
         initiated_by=initiated_by,
+        external_tools=_external_defs_for(session, agent),
+        external_call_storage=pool._storage.get_storage(ExternalToolCall),
     )
 
     from primer.agent.inform import SessionInformSink

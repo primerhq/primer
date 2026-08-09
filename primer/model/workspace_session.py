@@ -496,6 +496,16 @@ class WorkspaceSession(Identifiable):
             "resume_event_payload). Shape documented in spec §5.2."
         ),
     )
+    external_tools: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Active invoker-supplied tool defs for the next/current turn "
+            "(ExternalToolDef dumps, wire alias 'schema'). Replaced by "
+            "each turn-triggering invocation; None/[] means the turn has "
+            "no external tools. A pure tool_results body leaves the set "
+            "untouched (the resumed turn keeps its tools)."
+        ),
+    )
 
     # ------------------------------------------------------------------
     # Streaming lifecycle fields (mirrors Chat model in primer.model.chats).
