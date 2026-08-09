@@ -36,19 +36,29 @@ def _pending_targets(session: Any) -> dict[str, str]:
         key = yielded.get("event_key")
         if tcid and key:
             out[tcid] = key
+    # Graph checkpoints carry external parks in two places, both keyed by
+    # the "_external" marker name: tool-call node suspends live in
+    # ``pending_toolcalls`` (with their wake key), agent-node yields in
+    # ``pending_agent_yields`` (their event_key IS the wake key).
     checkpoint = blob.get("graph_checkpoint") or {}
-    for entry in checkpoint.get("pending_dispatch") or []:
-        if entry.get("kind") != "external":
+    for entry in checkpoint.get("pending_toolcalls") or []:
+        if entry.get("tool_name") != "_external":
             continue
         tcid = entry.get("tool_call_id")
         if not tcid:
             continue
-        # The wake key follows the same convention everywhere; prefer an
-        # explicit per-entry key when the checkpoint recorded one.
-        key = entry.get("parked_event_key") or (
+        out[tcid] = entry.get("parked_event_key") or (
             f"external_tool:{session.id}:{tcid}"
         )
-        out[tcid] = key
+    for entry in checkpoint.get("pending_agent_yields") or []:
+        if entry.get("tool_name") != "_external":
+            continue
+        tcid = entry.get("tool_call_id")
+        if not tcid:
+            continue
+        out[tcid] = entry.get("event_key") or (
+            f"external_tool:{session.id}:{tcid}"
+        )
     return out
 
 
