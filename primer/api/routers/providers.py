@@ -86,6 +86,13 @@ logger = logging.getLogger(__name__)
 # ---- Reserved-id protection helpers ---------------------------------------
 
 
+# Toolset ids claimed by the runtime's pseudo-toolsets. ``external`` is
+# the invoker-supplied per-invocation tool scope; ``workspace`` /
+# ``workspace_ext`` are the workspace-tool scopes composed by the tool
+# manager. None of them may exist as stored Toolset rows.
+RESERVED_TOOLSET_IDS = frozenset({"external", "workspace", "workspace_ext"})
+
+
 def _make_reserved_create_guard(reserved_ids: frozenset[str], kind: str):
     """Return an ``on_pre_create`` hook that rejects POST with a reserved id."""
     async def _guard(entity, request: Request) -> None:
@@ -848,7 +855,25 @@ async def _toolset_on_pre_create(entity: Toolset, request: Request) -> None:
     (streamable) and ``sse`` (legacy); the ``allow_unreachable`` bypass,
     non-MCP toolsets, and stdio MCP (no remote endpoint -- probing it would
     launch a subprocess) all skip the probe.
+
+    Also rejects the reserved ``external`` toolset id (409): that scope
+    is claimed by invoker-supplied per-invocation tools
+    (primer.agent.external_tools), so a stored toolset must never
+    collide with it. Checked before the probe bypass on purpose.
     """
+    if entity.id in RESERVED_TOOLSET_IDS:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reserved_id",
+                "kind": "toolset",
+                "reserved": sorted(RESERVED_TOOLSET_IDS),
+                "message": (
+                    f"id {entity.id!r} is reserved and cannot be "
+                    "created via the API"
+                ),
+            },
+        )
     if _toolset_probe_bypassed(request):
         return
     if entity.provider == ToolsetProviderType.PYTHON:

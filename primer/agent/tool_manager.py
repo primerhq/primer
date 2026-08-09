@@ -71,6 +71,12 @@ WORKSPACE_TOOLSET_ID = "workspace"
 # whole point of the workspace_ext toolset (context optimization).
 WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
 
+# Reserved toolset id for invoker-supplied per-invocation tools. Kept as
+# a local constant (canonical home: primer.agent.external_tools) so the
+# hot list/dispatch paths don't import that module unless a caller
+# actually registered external tools.
+_EXTERNAL_TOOLSET_ID = "external"
+
 # Tool ids surfaced to the LLM are scoped as ``toolset_id<sep>bare_name`` so
 # tools with colliding bare names across different toolsets stay
 # distinguishable. The separator is ``__`` (two underscores) — chosen
@@ -114,8 +120,24 @@ class ToolExecutionManager:
         chat_id: str | None = None,
         graph_invocation_services: "Any | None" = None,
         initiated_by: "PrincipalRef | None" = None,
+        external_tools: "list | None" = None,
+        external_call_storage: "Any | None" = None,
     ) -> None:
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
+        # Invoker-supplied per-invocation tools (spec: external tool
+        # calls). Registered as one more toolset provider under the
+        # reserved ``external`` id; its tools bypass the agent allowlist
+        # because they are per-invocation grants, not Agent.tools entries.
+        if external_tools:
+            from primer.agent.external_tools import (
+                EXTERNAL_TOOLSET_ID,
+                ExternalToolsetProvider,
+            )
+
+            self._toolsets[EXTERNAL_TOOLSET_ID] = ExternalToolsetProvider(
+                defs=list(external_tools),
+                call_storage=external_call_storage,
+            )
         self._workspace_tools: dict[str, "WorkspaceTool"] = dict(workspace_tools or {})
         self._workspace_session = workspace_session
         self._approval_resolver = approval_resolver
@@ -192,6 +214,8 @@ class ToolExecutionManager:
         tools: list[str] | None = None,
         graph_invocation_services: "Any | None" = None,
         initiated_by: "PrincipalRef | None" = None,
+        external_tools: "list | None" = None,
+        external_call_storage: "Any | None" = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -215,6 +239,8 @@ class ToolExecutionManager:
             tools=tools,
             graph_invocation_services=graph_invocation_services,
             initiated_by=initiated_by,
+            external_tools=external_tools,
+            external_call_storage=external_call_storage,
         )
 
     async def list_tools(
@@ -284,7 +310,14 @@ class ToolExecutionManager:
                     # allowlist hit still resolves; the visible
                     # catalogue is filtered below.
                     self._tool_to_toolset[scoped_id] = (toolset_id, t.id)
-                    if self._tools_allowlist is not None and scoped_id not in self._tools_allowlist:
+                    # External tools bypass the agent allowlist: they are
+                    # per-invocation grants carried by the triggering
+                    # message, not entries in Agent.tools.
+                    if (
+                        self._tools_allowlist is not None
+                        and toolset_id != _EXTERNAL_TOOLSET_ID
+                        and scoped_id not in self._tools_allowlist
+                    ):
                         continue
                     scoped_tool = t.model_copy(update={"id": scoped_id})
                     catalogue.append(scoped_tool)
@@ -381,6 +414,7 @@ class ToolExecutionManager:
             # list didn't include it.
             if (
                 self._tools_allowlist is not None
+                and toolset_id != _EXTERNAL_TOOLSET_ID
                 and call.name not in self._tools_allowlist
             ):
                 raise UnsupportedContentError(
@@ -389,7 +423,15 @@ class ToolExecutionManager:
                 )
 
         # Approval gate — runs after routing resolution, before dispatch.
-        if not bypass_approval and self._approval_resolver is not None:
+        # The ``external`` pseudo-toolset is exempt by design: the caller
+        # mediates every external call (it answers its own tool), so an
+        # approval layer on top adds nothing, and a policy row targeting
+        # the reserved id must not gate it.
+        if (
+            not bypass_approval
+            and self._approval_resolver is not None
+            and toolset_id != _EXTERNAL_TOOLSET_ID
+        ):
             policy = await self._approval_resolver.find(
                 toolset_id=toolset_id, tool_name=bare_name,
             )

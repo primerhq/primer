@@ -28,6 +28,12 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from primer.model.yield_ import YieldToWorker
+
+# Imported for its side effect: registers the ``_external`` resume hook.
+# The provider module is otherwise imported lazily (only when a caller
+# registers external tools), so a worker process resuming a park it
+# never created (e.g. after a restart) would miss the hook without this.
+import primer.agent.external_tools  # noqa: F401
 from primer.worker.yield_resume_registry import (
     ResumeContext,
     get_resume_hook,
