@@ -69,6 +69,10 @@ PORT="${PRIMER_E2E_PORT:-8765}"
 DB_USER="${PRIMER_DB_USER:-primer}"
 DB_PASSWORD="${PRIMER_DB_PASSWORD:-primer}"
 DB_NAME="primer_e2e"
+# docker-compose.yml already publishes the container on ${PRIMER_DB_PORT:-5432};
+# the rendered config has to agree with it, or bring-up fails on any machine
+# that already has something else bound to 5432.
+DB_PORT="${PRIMER_DB_PORT:-5432}"
 # Set PRIMER_E2E_NO_VECTOR=1 to render an AppConfig without a vector_store
 # block. Used by gating tests that need to assert 503 behaviour on the
 # collection / document / search routes when the subsystem is disabled.
@@ -131,7 +135,7 @@ db:
   provider: postgres
   config:
     hostname: localhost
-    port: 5432
+    port: $DB_PORT
     database: $DB_NAME
     username: $DB_USER
     password: $DB_PASSWORD
@@ -161,7 +165,7 @@ vector_store:
   provider: pgvector
   config:
     hostname: localhost
-    port: 5432
+    port: $DB_PORT
     database: $DB_NAME
     username: $DB_USER
     password: $DB_PASSWORD

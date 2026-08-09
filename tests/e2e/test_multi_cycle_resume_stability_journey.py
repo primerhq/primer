@@ -62,15 +62,29 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import os
+
 import asyncpg
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
+
+
+def _pg_port() -> int:
+    """Host port of the e2e Postgres.
+
+    docker-compose.yml publishes it on ``PRIMER_DB_PORT`` (default 5432);
+    these tests reach past the API to the same database, so they have to
+    agree with it or they fail on any machine where 5432 is taken.
+    """
+    return int(os.environ.get("PRIMER_DB_PORT", "5432"))
+
 
 
 async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
         host="localhost",
-        port=5432,
+        port=_pg_port(),
         user="primer",
         password="primer",
         database="primer_e2e",
@@ -85,9 +99,7 @@ async def _seed_ladder(
     wp_id = f"wp-t865-{suffix}"
     tpl_id = f"tpl-t865-{suffix}"
 
-    r = await client.post(
-        "/v1/llm_providers",
-        json={
+    r = await seed_llm_provider(client, {
             "id": pid,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -101,7 +113,7 @@ async def _seed_ladder(
         json={
             "id": aid,
             "description": "T0865 cycle-after-failure probe",
-            "model": {"provider_id": pid, "model_name": "fake-model"},
+            "model": agent_model(pid, "fake-model"),
             "tools": [],
             "system_prompt": ["probe"],
         },

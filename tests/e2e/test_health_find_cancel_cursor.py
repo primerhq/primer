@@ -19,9 +19,23 @@ Four wire-contract / yielding-tools tests:
 
 from __future__ import annotations
 
+import os
+
 import asyncpg
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
+
+
+def _pg_port() -> int:
+    """Host port of the e2e Postgres.
+
+    docker-compose.yml publishes it on ``PRIMER_DB_PORT`` (default 5432);
+    these tests reach past the API to the same database, so they have to
+    agree with it or they fail on any machine where 5432 is taken.
+    """
+    return int(os.environ.get("PRIMER_DB_PORT", "5432"))
+
 
 
 # ---------------------------------------------------------------------------
@@ -31,15 +45,13 @@ import pytest
 
 async def _pg() -> asyncpg.Connection:
     return await asyncpg.connect(
-        host="localhost", port=5432,
+        host="localhost", port=_pg_port(),
         user="primer", password="primer", database="primer_e2e",
     )
 
 
 async def _seed_llm_provider(client: httpx.AsyncClient, pid: str) -> None:
-    r = await client.post(
-        "/v1/llm_providers",
-        json={
+    r = await seed_llm_provider(client, {
             "id": pid, "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
             "models": [{"name": "fake-model", "context_length": 4096}],
@@ -56,7 +68,7 @@ async def _seed_agent(
         "/v1/agents",
         json={
             "id": agent_id, "description": "probe",
-            "model": {"provider_id": provider_id, "model_name": "fake-model"},
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [], "system_prompt": ["probe"],
         },
     )
