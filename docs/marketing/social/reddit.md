@@ -71,9 +71,9 @@ depth. Tag the post appropriately (flair like "Tools" / "Resource" /
 "Discussion" if available), disclose you're the creator, and lead with the
 engineering problem, not the pitch.
 
-**Angle:** orchestration + loop engineering — the systems-design framing.
+**Angle:** orchestration + graph engineering — the systems-design framing.
 
-**Title:** Loop engineering: designing the system that prompts your agent, not
+**Title:** Graph engineering: designing the structure your agents run inside, not
 the prompt itself
 
 **Body:**

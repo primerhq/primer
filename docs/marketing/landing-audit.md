@@ -29,7 +29,7 @@
 
 ### Hero clarity vs. the real positioning — under-indexes on 2 of the 4 proof pillars
 `positioning.md` names four pillars every asset should lean on: **(1) control plane, not a
-library, (2) MCP-native, (3) loop engineering, (4) batteries-included & self-hostable.** The
+library, (2) MCP-native, (3) graph engineering, (4) batteries-included & self-hostable.** The
 hero currently only lands (3) and (4):
 - The eyebrow says **"Self-hosted agent orchestration"** — not "control plane," not "fleets."
   A reader skimming the eyebrow + H1 could still mistake Primer for an `import`-able

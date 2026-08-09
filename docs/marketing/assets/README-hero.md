@@ -7,7 +7,7 @@ Current: *"An unopinionated, batteries-included agent-orchestration platform bui
 
 Sharper alternates to A/B:
 - **A (control-plane reframe):** *"The self-hosted control plane for fleets of small, context-optimized agents. One bet: a small model with a clean context can rival a much larger one."*
-- **B (loop-forward):** *"Batteries-included orchestration for loop engineering — fleets of small agents, each with a clean context, wired with graphs, workspaces, triggers, and channels. Self-hosted, MCP-native."*
+- **B (graph-forward):** *"Batteries-included orchestration for graph engineering — fleets of small agents, each with a clean context, wired into a declarative topology with workspaces, triggers, and channels. Self-hosted, MCP-native."*
 - **C (tightest):** *"Run fleets of small, context-optimized agents in production. Self-hosted. MCP-native. Batteries included."*
 
 ## New for 0.3.0: add a hero bullet for Collection ↔ Workspace mount

@@ -5,7 +5,7 @@
 ## What Primer is (the framing — keep it consistent)
 - **The bet:** a small model given a clean, purpose-built context can rival a much larger one — because every transformer spreads a fixed unit of attention across all tokens, so a tight context puts more of it on the tokens that matter (helps big models too). This is a **thesis, not a benchmarked result** — say so; that candor is the credibility.
 - **Category:** NOT a framework you `import` — a **self-hosted control plane you run** for fleets of small, context-optimized agents. Python 3.12 / FastAPI; operator console at `/console`; Apache-2.0.
-- **Ownable narrative:** **loop engineering.**
+- **Ownable narrative:** **graph engineering.**
 - **Freshest hook:** **MCP-native** (built-in MCP server *and* client — drive Primer *with* agents).
 - **Origin story:** wanted to run useful agents on a 16GB gaming GPU (RTX 5060 Ti), which caps you ~a 12B model at 4-bit → the whole design follows from that constraint.
 - **Two ICPs:** indie AI builders (speed, self-host, MCP, a real console) · platform/infra teams (control plane, isolation, ops, production posture).

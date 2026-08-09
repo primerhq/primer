@@ -72,7 +72,7 @@ lead with substance (a lesson, a build story, a benchmark), tool as context.
 
 **Match the piece to the channel:**
 - *Technical deep-dive / tutorial* (e.g. "running an agent loop on a 12B local model", "how directed cyclic graphs converge") -> Dev.to + **Lobsters** + **r/LocalLLaMA** / r/selfhosted.
-- *Opinion / narrative* (the small-model bet, loop engineering, why context beats model size) -> Dev.to + **Hacker News** (as a blog-post submission, not Show HN) + r/LocalLLaMA discussion.
+- *Opinion / narrative* (the small-model bet, graph engineering, why context beats model size) -> Dev.to + **Hacker News** (as a blog-post submission, not Show HN) + r/LocalLLaMA discussion.
 
 **Prioritize these 5 first (in order):**
 1. **Hacker News (Show HN)** - once, for the flagship "Primer launch" moment.

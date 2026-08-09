@@ -17,7 +17,7 @@
 [![PRs welcome](https://img.shields.io/badge/PRs-welcome-61d46a.svg)](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
 [![Stars](https://img.shields.io/github/stars/primerhq/primer?style=flat&color=61d46a)](https://github.com/primerhq/primer/stargazers)
 
-[Quickstart](#quickstart) · [What makes it different](#what-makes-primer-different) · [Loop engineering](#built-for-loop-engineering) · [How it works](#how-it-works) · [Docs](#documentation) · [Contributing](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
+[Quickstart](#quickstart) · [What makes it different](#what-makes-primer-different) · [Graph engineering](#built-for-graph-engineering) · [How it works](#how-it-works) · [Docs](#documentation) · [Contributing](https://github.com/primerhq/primer/blob/main/CONTRIBUTING.md)
 
 </div>
 
@@ -100,22 +100,28 @@ Everything else a real deployment needs, integrated from day one and self-hostab
 
 <!-- SCREENSHOTS: add a framed-console section here (Dashboard / Session control room / Approvals / Graph editor) once the captures are produced. -->
 
-## Built for loop engineering
+## Built for graph engineering
 
-Loop engineering is the shift from prompting an agent turn-by-turn to **designing the system that prompts it** - a loop that wakes on a schedule, works toward a stated goal, checks its own output against evidence, and escalates to a human only when it should. The leverage moves from writing a good prompt to designing a good loop.
+Graph engineering is the shift from prompting an agent turn-by-turn to **designing the structure it runs inside** - which agent handles which step, what runs at the same time, where it branches on the result, who signs off, and where it circles back. The leverage moves from writing a good prompt to drawing a good graph.
 
-A loop needs a specific set of primitives. Primer ships all of them, integrated and self-hostable:
+A loop is one shape a graph can take: a cycle, usually two nodes and a condition. Most real work is not that shape. It branches on what came back, fans out across a dozen items and rejoins, calls a self-contained sub-graph in the middle, and stops for a human at exactly one step while the rest runs unattended.
 
-| A loop needs... | Primer gives you |
+Primer's execution model *is* that graph. You declare a topology of typed nodes - agents, sub-graphs, fan-out/fan-in, direct tool calls, and begin/end nodes carrying the run's input and output contracts - wired by static or conditional edges that route on what a node actually returned. A Pregel-style executor walks it in supersteps, running every ready node concurrently; cycles are allowed and bound themselves with `max_iterations`.
+
+The payoff is context discipline you get structurally. Each node is its own agent with its own model profile, its own tools, and its own output schema, so what crosses an edge is a value you chose rather than a transcript that accumulated. Splitting a long job into a researcher, an extractor, and a judge is three small contexts instead of one enormous one.
+
+The rest of the primitives a durable graph needs ship integrated and self-hostable:
+
+| A graph needs... | Primer gives you |
 |---|---|
-| **A heartbeat** - work surfaced on a cadence, not by hand | **Triggers** that start a fresh session or graph run (or resume a parked one) on a cron schedule, a delay, or a webhook |
-| **Isolation** - parallel agents that don't collide | **Workspaces** - a per-agent local, container, or Kubernetes sandbox with its own persistent, git-backed filesystem |
+| **A heartbeat** - runs surfaced on a cadence, not by hand | **Triggers** that start a fresh session or graph run (or resume a parked one) on a cron schedule, a delay, or a webhook |
+| **Isolation** - parallel branches that don't collide | **Workspaces** - a per-agent local, container, or Kubernetes sandbox with its own persistent, git-backed filesystem |
 | **Durable memory** - the agent forgets, the repo doesn't | Git-backed workspace **state** plus **knowledge collections** agents retrieve from, so knowledge compounds across runs instead of resetting to zero |
-| **A maker and a checker** - keep the writer away from the grader | **Directed cyclic graphs** with producer-judge loops, fan-out/fan-in, and runtime agent/graph invocation |
+| **A maker and a checker** - keep the writer away from the grader | The producer-judge pattern as a two-node cycle: a conditional edge that delivers, retries, or escalates on the judge's verdict |
 | **Connectors** - reach real tools and real people | A built-in **MCP server** (and MCP client), plus **Slack / Telegram / Discord** channels |
-| **A human gate** - approve the risky, let the safe run | **Approval gates** and **park-and-resume**: an agent waits on a person for hours without holding compute, then continues when the reply lands |
+| **A human gate** - approve the risky, let the safe run | **Approval gates** and mid-graph **park-and-resume**: a run waits at one node for a person for hours without holding compute, then continues when the reply lands |
 
-Primer does not press "go" on the loop for you - it gives you the orchestration substrate to build one and to keep a human in it where that matters. And the same context discipline that makes a single agent accurate is what lets a loop run for a long time without drifting: each iteration gets a clean, purpose-built context instead of an ever-growing transcript.
+Primer does not decide the shape for you - it gives you the substrate to draw the graph on and to keep a human in it where that matters.
 
 ## Quickstart
 

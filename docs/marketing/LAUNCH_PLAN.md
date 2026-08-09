@@ -20,7 +20,7 @@ Optimize early for **star velocity** — it gates HN/Reddit ranking, credibility
 - **Category reframe:** not another framework you `import` — a **self-hosted control plane you run** for fleets of small agents.
 - **Two ICPs, two messages:** indie AI builders (speed, self-host, MCP, a real console) · platform/infra teams (control plane, isolation, ops, production posture).
 - **Freshest hook:** **MCP-native** — operate Primer *with* agents. Least-crowded, most timely.
-- **Ownable narrative:** **loop engineering.**
+- **Ownable narrative:** **graph engineering.**
 
 ## 2. Phased sequence (build credibility → spend the big shot last)
 

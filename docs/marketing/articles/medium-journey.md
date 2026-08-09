@@ -2,7 +2,7 @@
 TITLE OPTIONS — pick one before publishing:
 1. I tried to run AI agents on a 16GB gaming GPU. It changed how I build with LLMs.
 2. The bet behind Primer: a small model with a clean context can rival a much bigger one
-3. Loop engineering: what building an agent platform on modest hardware taught me
+3. Graph engineering: what building an agent platform on modest hardware taught me
 -->
 
 # I tried to run AI agents on a 16GB gaming GPU. It changed how I build with LLMs.
@@ -47,7 +47,7 @@ Primer was built as a narrative: each subsystem is the answer to a problem the p
 
 Keep every context absurdly small on purpose — smaller than feels comfortable. Decompose further than feels necessary; a task that "obviously" needs one smart agent usually splits into three or four narrow ones, each easier to get right. Don't reach for a bigger tool catalog when a narrower one will do — search for the capability you need instead of carrying all of them around. Push state out of the model's context and into something durable — a file, a shared workspace, a queue — so the model's actual job is reasoning over a small slice, not remembering everything at once. And when a single pass isn't good enough, don't chase a smarter single pass; build a loop and let a second attempt, or a hundredth, fix what the first one got wrong. Time and structure are cheap. Context is not.
 
-I've started calling this loop engineering: less "prompt better," more "build the machinery that lets an imperfect model reach a good answer over several small, cheap steps."
+I've started calling this graph engineering: less "prompt better," more "draw the structure that lets an imperfect model reach a good answer over several small, cheap steps." The steps are nodes, what connects them is an edge, and the shape they make is the thing you actually design.
 
 ## Where this actually stands
 

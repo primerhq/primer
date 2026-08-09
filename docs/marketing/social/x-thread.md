@@ -29,7 +29,7 @@ plane you run: a console, an API, a worker pool — the operational surface
 libraries don't have.
 
 **5/**
-Directed cyclic graphs let you wire agents into producer-judge loops,
+Declarative agent graphs let you wire nodes into producer-judge cycles,
 fan-out/fan-in, and conditional branches — multi-step reasoning as structure,
 not one sprawling prompt.
 
@@ -82,10 +82,11 @@ A model doesn't run out of intelligence first. It runs out of attention —
 spread thin across every token you hand it. Clean the context and the small
 model gets a lot closer to the big one.
 
-**B — loop engineering framing:**
-Loop engineering: designing the system that prompts the agent, not the
+**B — graph engineering framing:**
+Graph engineering: designing the structure the agents run inside, not the
 prompt. A heartbeat, isolation, a maker and a checker, a human gate. The skill
-shifts from writing a good prompt to designing a good loop.
+shifts from writing a good prompt to drawing a good graph. A loop is one
+shape a graph can take; most real work also branches and fans out.
 
 **C — self-host / ops-surface:**
 Console, workspaces, triggers, channels, approvals, harnesses — the

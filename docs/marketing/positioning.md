@@ -1,6 +1,6 @@
 # Primer — Positioning & Messaging (source of truth for all copy)
 
-> Everything else in this kit derives its facts + voice from here. Grounded in the README; do not invent capabilities beyond what ships in 0.3.0.
+> Everything else in this kit derives its facts + voice from here. Grounded in the README; do not invent capabilities beyond what ships in 0.6.0.
 
 ## The core bet (the thing to repeat everywhere)
 **A small model given a clean, purpose-built context can rival a much larger one.**
@@ -15,14 +15,15 @@ A model spreads a fixed attention budget across every token. Keep the context ti
 1. *The self-hosted control plane for fleets of small, context-optimized agents.*
 2. *Run fleets of small agents in production — a clean context each, wired with graphs, workspaces, triggers, and channels. Self-hosted, MCP-native.*
 3. *An agent-orchestration platform built on one bet: a small model with a clean context can rival a much bigger one.* (closest to current README — safest)
-4. *The orchestration substrate for loop engineering.* (narrative-forward; pairs with the manifesto)
+4. *The orchestration substrate for graph engineering.* (narrative-forward; pairs with the manifesto)
+5. *Most agent work isn't a loop. It's a graph.* (sharpest; leads with the category, pairs with the homepage)
 
 **Repo description (≤120 chars):** *Self-hosted control plane for fleets of small, context-optimized agents: graphs, workspaces, channels, triggers, MCP.*
 
 ## Four proof pillars (every asset leans on ≥1)
 1. **Control plane, not a library** — console, workspaces, ops surface; you *run* it.
 2. **MCP-native** — built-in MCP server *and* client; operate Primer *with* agents. (freshest, least-crowded hook)
-3. **Loop engineering** — designing the system that prompts the agent, not the prompt. The philosophy Primer is built for.
+3. **Graph engineering** — designing the structure the agents run inside, not the prompt. A loop is one shape a graph can take (a cycle); real work also branches, fans out, and rejoins. The philosophy Primer is built for, and the thing its execution model actually is.
 4. **Batteries-included & self-hostable** — graphs, semantic search, channels, triggers, approvals, harnesses — integrated, Apache-2.0, on your hardware.
 
 ## Dual-ICP messaging matrix
@@ -34,9 +35,9 @@ A model spreads a fixed attention budget across every token. Keep the context ti
 | Tone | builder-to-builder, show don't tell | ops/production credibility, restraint |
 | Channels | Reddit, HN, X, dev.to | LinkedIn, comparison content, docs depth |
 
-## Concrete capabilities (only claim these — all ship in 0.3.0)
+## Concrete capabilities (only claim these — all ship in 0.6.0)
 - **Yielding / park-and-resume agents** — park on a slow tool or human decision, free compute, resume when the event fires.
-- **Directed cyclic graphs** — producer-judge loops, fan-out/fan-in, conditional branches, runtime agent/graph invocation.
+- **Declarative agent graphs** — seven typed node kinds (agent, sub-graph, fan-out, fan-in, tool call, begin/end contracts) wired by static or conditional edges; a Pregel-style executor runs every ready node concurrently per superstep. Cycles are allowed and bound themselves with `max_iterations`, which is what makes a producer-judge loop just a two-node cycle. Each node pins its own model profile, tools, and output schema, so the contexts stay separate.
 - **Workspaces & sessions** — per-agent local / container / **Kubernetes** sandbox; persistent, git-backed filesystem + state.
 - **Semantic search** — ingest → vector collections; retrieve only relevant chunks.
 - **Collection ↔ workspace mount** — mount a collection into an agent's workspace as a live, editable directory (from Studio's *Mount collection* or at workspace-creation time); agents read/write those files directly. A 3-way diff + **Apply to collection** syncs local edits back upstream (local-wins on conflict); detach removes the workspace copy only, with an unsynced-changes guard.
@@ -48,8 +49,8 @@ A model spreads a fixed attention budget across every token. Keep the context ti
 - **Stack:** Python 3.12, FastAPI, SQLite (zero-config) / Postgres+pgvector (prod), operator console, `primectl` CLI, Docker/GHCR images.
 
 ## Honesty guardrails (protects credibility on HN/Reddit)
-- It's **0.3.0** — say "early / v0.3" where relevant; don't say "production-ready" flatly.
-- Primer **doesn't press "go"** on the loop for you — it's the substrate; a human stays in it where it matters.
+- It's **0.6.0** — say "early" where relevant; don't say "production-ready" flatly. Prefer "early" over a pinned version number in evergreen copy so it does not go stale each release.
+- Primer **doesn't decide the shape** for you — it's the substrate you draw the graph on; a human stays in it where it matters.
 - "Rival a much larger one" is a **bet/thesis**, framed as such — not a benchmarked guarantee.
 - No invented benchmarks, users, or logos.
 
