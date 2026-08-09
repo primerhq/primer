@@ -66,6 +66,12 @@ class InMemoryClaimEngine(ClaimEngine):
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None:
         self._leases.pop((kind, entity_id), None)
 
+    async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+        row = self._leases.get((kind, entity_id))
+        if row is None or row.claimed_by is None or row.expires_at is None:
+            return False
+        return row.expires_at > datetime.now(UTC)
+
     async def claim_due(self, worker_id: str, *, max_count: int) -> list[Lease]:
         _tracer = _tracing.get_tracer("primer.claim")
         with _tracer.start_as_current_span("claim.due") as _span:
