@@ -37,6 +37,7 @@ from primer.int.coordinator import (
     ROLE_TIMEOUT_SWEEPER,
     ROLE_TIMER_SCHEDULER,
 )
+from primer.int.claim import ClaimKind
 from primer.int.event_bus import EventBus
 from primer.int.storage import Storage
 from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
@@ -44,6 +45,7 @@ from primer.model.workspace_session import SessionStatus
 from primer.worker.yield_runtime import make_timeout_payload
 
 if TYPE_CHECKING:
+    from primer.int.claim import ClaimEngine
     from primer.int.coordinator import LeaderElector
 
 
@@ -268,9 +270,20 @@ class StuckSessionSweeper(_BackgroundTask):
     silently halts its trigger - observed in production as a cron job that stopped for 14h
     with no error recorded anywhere.
 
-    Sessions that HAVE started (``turn_no >= 1``) are never touched however long they run: a
-    turn may legitimately take hours, and ending it from underneath the worker would be far
-    worse than leaving it alone.
+    Sessions that HAVE started are never touched however long they run: a turn may
+    legitimately take hours, and ending it from underneath the worker would be far worse
+    than leaving it alone.
+
+    Establishing "has started" needs the claim engine, and getting this wrong is what the
+    ``claim_engine`` argument exists to prevent. ``turn_no`` alone cannot answer it: the
+    counter is bumped on RELEASE, so a first turn that has been running for hours still
+    reads 0 and looks identical to one that was never claimed. Gating on ``turn_no == 0``
+    plus a 10-minute age therefore reaped live sessions — observed on a daily rating job
+    whose turns run ~3.5h: the row was flipped to ENDED at the 10-minute mark while its
+    worker computed happily for another three hours, which both lied about session state
+    and released the ``parallelism="skip"`` gate, letting the next cron tick start a
+    second concurrent run. A live lease (heartbeated by the worker, expiring within one
+    TTL of its death) is the signal that actually distinguishes the two cases.
     """
 
     role = ROLE_STUCK_SESSION_SWEEPER
@@ -279,11 +292,13 @@ class StuckSessionSweeper(_BackgroundTask):
         self,
         *,
         session_storage: Storage,
+        claim_engine: "ClaimEngine | None" = None,
         poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
         grace_seconds: float = STUCK_SESSION_GRACE_SECONDS,
     ) -> None:
         super().__init__(name="stuck-session-sweeper")
         self._storage = session_storage
+        self._claim_engine = claim_engine
         self._poll = poll_seconds
         self._grace = grace_seconds
 
@@ -307,6 +322,13 @@ class StuckSessionSweeper(_BackgroundTask):
             # which case the turn is now running and must not be ended.
             if fresh is None or not _never_started(fresh, self._grace):
                 continue
+            # The decisive check, and the last one before a destructive write: a live
+            # lease means a worker is mid-turn on this session right now. Done per
+            # candidate rather than as a bulk filter because the candidate list is
+            # already narrow (turn_no == 0 past the grace) and the read must be as
+            # close to the write as possible.
+            if await self._has_live_lease(fresh.id):
+                continue
             await self._storage.update(fresh.model_copy(update={
                 "status": SessionStatus.ENDED,
                 "ended_reason": "failed",
@@ -319,6 +341,23 @@ class StuckSessionSweeper(_BackgroundTask):
                 fresh.id, fresh.created_at,
             )
         return reaped
+
+    async def _has_live_lease(self, session_id: str) -> bool:
+        """Whether a worker is mid-turn on *session_id*.
+
+        Errs toward "yes" on both no-engine and error paths. Skipping a genuinely stuck
+        session costs one more poll interval; ending a live one destroys a running job.
+        """
+        if self._claim_engine is None:
+            return True
+        try:
+            return await self._claim_engine.has_live_lease(ClaimKind.SESSION, session_id)
+        except Exception as exc:  # noqa: BLE001 - an unreadable lease must not authorise a reap
+            logger.warning(
+                "stuck-session-sweeper: lease lookup failed for %s, leaving it alone: %s",
+                session_id, exc,
+            )
+            return True
 
     async def _find_stuck(self) -> list:
         """Every never-started session, paged. Pages rather than taking one capped slice:

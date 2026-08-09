@@ -190,6 +190,26 @@ class PostgresClaimEngine(ClaimEngine):
             )
 
     # ------------------------------------------------------------------
+    # has_live_lease
+    # ------------------------------------------------------------------
+
+    async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+        """Whether a worker holds an unexpired lease on (kind, entity_id) right now.
+
+        ``expires_at`` is pushed forward by every heartbeat, so this stays true for as
+        long as the worker is alive and false within one lease TTL of it dying — which
+        is exactly the line the stuck-session sweeper needs to draw.
+        """
+        async with self._storage.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT 1 FROM {self._table} "
+                f"WHERE kind = $1 AND entity_id = $2 "
+                f"AND claimed_by IS NOT NULL AND expires_at > now()",
+                kind.value, entity_id,
+            )
+        return row is not None
+
+    # ------------------------------------------------------------------
     # claim_due
     # ------------------------------------------------------------------
 

@@ -112,3 +112,18 @@ class ClaimEngine(ABC):
 
     @abstractmethod
     async def delete_lease(self, kind: ClaimKind, entity_id: str) -> None: ...
+
+    async def has_live_lease(self, kind: ClaimKind, entity_id: str) -> bool:
+        """Whether a worker currently holds an unexpired lease on (kind, entity_id).
+
+        This is the only honest "a turn is running right now" signal in the system.
+        ``sessions.turn_no`` is not one: it is bumped on RELEASE, so a first turn that
+        has been executing for hours still reads 0, indistinguishable from a turn that
+        was never claimed.
+
+        Concrete, not abstract, and the default is ``True`` on purpose. The sole caller
+        is :class:`~primer.bus.scheduler_tasks.StuckSessionSweeper`, whose failure mode
+        is ending a session out from under a live worker. An engine that cannot answer
+        must therefore make the sweeper do nothing rather than make it reap.
+        """
+        return True

@@ -468,6 +468,10 @@ def _make_lifespan(config: AppConfig):
             from primer.bus.scheduler_tasks import StuckSessionSweeper
             stuck_session_sweeper = StuckSessionSweeper(
                 session_storage=storage_provider.get_storage(_WorkspaceSession),
+                # Without the engine the sweeper cannot tell a session whose first turn
+                # is still running from one that never started, and defaults to reaping
+                # neither. Passing it is what keeps the sweeper both safe and useful.
+                claim_engine=claim_engine,
             )
             stuck_session_sweeper.start(coordinator.leader_elector)
 
