@@ -102,6 +102,13 @@ logger = logging.getLogger(__name__)
 
 def create_app(config: AppConfig) -> FastAPI:
     """Production factory: builds the app + wires the lifespan handler."""
+    import os
+
+    if os.environ.get("PRIMER_SERVE_ONLY") == "1":
+        # Dedicated serving replica (services spec section 6): no worker
+        # starts, and _mount_routers mounts only /svc plus the always-on
+        # observability surface.
+        config = config.model_copy(update={"runtime_mode": RuntimeMode.API})
     # Disable Swagger / ReDoc UIs unless the operator opts back in via
     # the log_level=debug setting; the OpenAPI JSON stays under the
     # /v1/ prefix to match the rest of the versioned API surface.

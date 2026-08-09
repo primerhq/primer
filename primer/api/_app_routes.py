@@ -25,6 +25,7 @@ from primer.api.routers import (
 )
 from primer.api.routers.auth import auth_router
 from primer.api.routers.semantic_search import semantic_search_router
+from primer.api.routers.services import service_router
 from primer.api.routers.web_fetch import (
     web_fetch_active_config_router,
     web_fetch_providers_helpers_router,
@@ -68,8 +69,21 @@ def _mount_routers(
     # alongside auth_router so SSO login works in all runtime modes.
     from primer.api.routers.sso import sso_router
     app.include_router(sso_router, prefix=prefix)
+
+    # Service serving plane (/svc/*) — services spec section 6. Mounted
+    # OUTSIDE the /v1 prefix: these are app URLs, not API resources.
+    # PRIMER_SERVE_ONLY=1 turns this process into a dedicated serving
+    # replica: /svc plus the always-on observability surface, no entity
+    # routers (create_app also forces RuntimeMode.API so no worker runs).
+    import os
+
+    from primer.api.routers.svc_serve import svc_serve_router
+    if os.environ.get("PRIMER_SERVE_ONLY") == "1":
+        app.include_router(svc_serve_router)
+        return
     if runtime_mode == RuntimeMode.WORKER:
         return
+    app.include_router(svc_serve_router)
 
     # RBAC role gates (§6.2), applied at include-router time:
     #   admin_dep -> require_admin (role == "admin")            provider/
@@ -121,6 +135,7 @@ def _mount_routers(
     app.include_router(tools_router, prefix=prefix, dependencies=user_dep)
     # SemanticSearchProvider CRUD — a provider => admin only.
     app.include_router(semantic_search_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(service_router, prefix=prefix, dependencies=admin_dep)
     from primer.api.routers.artifact_storage import artifact_storage_router
     app.include_router(artifact_storage_router, prefix=prefix, dependencies=admin_dep)
     # web_search / web_fetch providers — system configuration => admin.

@@ -19,7 +19,11 @@ from jsonschema.exceptions import ValidationError
 
 from primer.model.chat import Tool, ToolExample
 from primer.toolset._describe import make_tool
-from primer.toolset.python_runner.docstring import DocstringError, parse_docstring
+from primer.toolset.python_runner.docstring import (
+    DocstringError,
+    ParsedDocstring,
+    parse_docstring,
+)
 from primer.toolset.python_runner.schema import SchemaError, build_args_schema
 
 TOOL_DECORATOR = "primer_tool"
@@ -133,10 +137,40 @@ def _collect(
     return tool_nodes, resume_for
 
 
+def _lenient_docstring(
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> ParsedDocstring:
+    """Best-effort docstring for contexts outside LLM context.
+
+    Service bundle functions are called by app code, not by a model, so
+    a missing or partial docstring degrades to a synthesized description
+    instead of failing registration. Annotations still drive the schema.
+    """
+    try:
+        return parse_docstring(ast.get_docstring(node) or "")
+    except DocstringError:
+        return ParsedDocstring(
+            purpose=f"Run the {node.name} function.",
+            when="Use when a service app calls it through the gateway.",
+        )
+
+
 def register_module(
-    source: str, toolset_id: str, default_timeout: float
+    source: str,
+    toolset_id: str,
+    default_timeout: float,
+    *,
+    require_docstrings: bool = True,
+    allow_yielding: bool = True,
 ) -> list[RegisteredTool]:
-    """Parse ``source`` and return one RegisteredTool per decorated function."""
+    """Parse ``source`` and return one RegisteredTool per decorated function.
+
+    ``require_docstrings=False`` drops the docstring-anatomy bar (used by
+    service bundles, whose descriptions never reach a model);
+    ``allow_yielding=False`` rejects ``@resumes`` companions outright
+    (used by callers with no park/resume path, e.g. the synchronous
+    service gateway). Defaults preserve the original strict behavior.
+    """
     try:
         tree = ast.parse(source)
     except SyntaxError as exc:
@@ -156,11 +190,24 @@ def register_module(
                 f"@{TOOL_DECORATOR} function in this module"
             )
 
+    if not allow_yielding and resume_for:
+        offender = sorted(resume_for)[0]
+        raise RegistrationError(
+            f"{offender}: yielding functions are not allowed in this "
+            f"context (the caller is synchronous); remove the "
+            f"@{RESUME_DECORATOR} companion"
+        )
+
     out: list[RegisteredTool] = []
     for node, dec in tool_nodes:
         try:
-            doc = parse_docstring(ast.get_docstring(node) or "")
-            schema = build_args_schema(node, doc)
+            if require_docstrings:
+                doc = parse_docstring(ast.get_docstring(node) or "")
+            else:
+                doc = _lenient_docstring(node)
+            schema = build_args_schema(
+                node, doc, require_arg_docs=require_docstrings
+            )
         except (DocstringError, SchemaError) as exc:
             raise RegistrationError(
                 f"{node.name}: {exc}", field=exc.field, lineno=node.lineno
