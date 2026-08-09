@@ -6,6 +6,7 @@ const NAV = [
     items: [
       { id: "dashboard", label: "Dashboard", icon: "home" },
       { id: "studio", label: "Studio", icon: "panel-left" },
+      { id: "studio2", label: "Studio (trial)", icon: "panel-left" },
     ],
   },
   {
@@ -66,7 +67,10 @@ const NAV = [
   },
   {
     group: "Distributions",
-    items: [{ id: "harnesses", label: "Harnesses", icon: "box" }],
+    items: [
+      { id: "harnesses", label: "Harnesses", icon: "box" },
+      { id: "services", label: "Services", icon: "box" },
+    ],
   },
   {
     group: "Automation",
