@@ -39,6 +39,7 @@ _LMSTUDIO_MODEL = os.environ.get(
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 pytestmark = smk("SMK-UI-07", status="partial")
 
 
@@ -70,7 +71,7 @@ def test_chat_survives_refresh_mid_stream(
     agent_id = f"u-resume-ag-{unique_suffix}"
 
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": provider_id,
             "provider": "openresponses",
             "config": {
@@ -87,10 +88,7 @@ def test_chat_survives_refresh_mid_stream(
         r = c.post("/v1/agents", json={
             "id": agent_id,
             "description": "chat resume journey agent",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": _LMSTUDIO_MODEL,
-            },
+            "model": agent_model(provider_id, _LMSTUDIO_MODEL),
             "tools": [],
             "system_prompt": [
                 "Reply at length so the answer takes a few seconds to "

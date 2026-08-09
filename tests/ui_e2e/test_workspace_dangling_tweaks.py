@@ -34,12 +34,13 @@ from . import _graph_builder_helpers as gb
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
 def _seed_llm_provider(base_url: str, pid: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": pid, "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
             "models": [{"name": "fake-model", "context_length": 4096}],
@@ -52,7 +53,7 @@ def _seed_agent(base_url: str, agent_id: str, provider_id: str) -> None:
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post("/v1/agents", json={
             "id": agent_id, "description": "ws+agent+graph+tweaks probe",
-            "model": {"provider_id": provider_id, "model_name": "fake-model"},
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [], "system_prompt": ["test"],
         })
         assert r.status_code == 201, r.text

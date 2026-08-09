@@ -29,6 +29,7 @@ import pytest
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 pytestmark = smk("SMK-UI-02", "SMK-UI-03", "SMK-UI-04", "SMK-UI-06")
 
 
@@ -45,7 +46,7 @@ def _seed_full_set(base_url: str, suffix: str, ws_root: Path) -> dict[str, str]:
         "workspace": "",  # backend-assigned, filled below
     }
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": ids["llm"],
             "provider": "openresponses",
             "models": [{"name": "stub-model", "context_length": 8192}],
@@ -97,7 +98,7 @@ def _seed_full_set(base_url: str, suffix: str, ws_root: Path) -> dict[str, str]:
         r = c.post("/v1/agents", json={
             "id": ids["agent"],
             "description": "journey agent",
-            "model": {"provider_id": ids["llm"], "model_name": "stub-model"},
+            "model": agent_model(ids["llm"], "stub-model"),
             "tools": [],
         })
         assert r.status_code == 201, f"seed agent failed: {r.text}"

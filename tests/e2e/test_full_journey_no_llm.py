@@ -24,6 +24,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 def _llm_provider_body(entity_id: str) -> dict:
@@ -108,7 +109,7 @@ def _agent_body(entity_id: str, *, provider_id: str, toolset_id: str | None = No
     body = {
         "id": entity_id,
         "description": "journey agent",
-        "model": {"provider_id": provider_id, "model_name": "stub-model"},
+        "model": agent_model(provider_id, "stub-model"),
         "tools": [],
     }
     if toolset_id is not None:
@@ -188,7 +189,7 @@ async def test_full_setup_and_cascade_delete_journey_no_llm(
 
     try:
         # ===== 1. providers ==============================================
-        r = await client.post("/v1/llm_providers", json=_llm_provider_body(llm_id))
+        r = await seed_llm_provider(client, _llm_provider_body(llm_id))
         assert r.status_code == 201, r.text
         created["llm_providers"].append(llm_id)
 

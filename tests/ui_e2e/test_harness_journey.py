@@ -13,6 +13,7 @@ import pytest
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import profile_id_for, seed_llm_provider_with
 pytestmark = smk("SMK-UI-09")
 
 
@@ -35,13 +36,11 @@ def _bootstrap_bare_repo(tmp_path: Path) -> str:
         "type": "object",
         "required": ["llm"],
         "properties": {
+            # One value, not a pair: an agent's model is a ModelProfile id.
             "llm": {
                 "type": "object",
-                "required": ["provider_id", "model_name"],
-                "properties": {
-                    "provider_id": {"type": "string"},
-                    "model_name": {"type": "string"},
-                },
+                "required": ["profile_id"],
+                "properties": {"profile_id": {"type": "string"}},
             },
         },
     }))
@@ -52,8 +51,7 @@ def _bootstrap_bare_repo(tmp_path: Path) -> str:
         "spec:\n"
         "  description: e2e assistant\n"
         "  model:\n"
-        "    provider_id: '{{ overrides.llm.provider_id }}'\n"
-        "    model_name: '{{ overrides.llm.model_name }}'\n"
+        "    profile_id: '{{ overrides.llm.profile_id }}'\n"
         "  tools: []\n"
         "  system_prompt:\n"
         "    - 'You are an e2e assistant.'\n"
@@ -100,7 +98,7 @@ def test_harness_register_fetch_install_via_rest(tmp_path: Path, base_url: str) 
     # Seed an LLMProvider so the rendered Agent passes Pydantic validation
     # (Agent.model references a real provider_id).
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": f"e2e-llm-{suffix}",
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -125,12 +123,7 @@ def test_harness_register_fetch_install_via_rest(tmp_path: Path, base_url: str) 
         _poll(c, hid, "ready", timeout_s=30)
 
         # Update overrides
-        overrides = {
-            "llm": {
-                "provider_id": f"e2e-llm-{suffix}",
-                "model_name": "e2e-model",
-            },
-        }
+        overrides = {"llm": {"profile_id": profile_id_for(f"e2e-llm-{suffix}", "e2e-model")}}
         r = c.put(f"/v1/harnesses/{hid}/overrides", json=overrides)
         assert r.status_code == 200, r.text
 
@@ -145,7 +138,9 @@ def test_harness_register_fetch_install_via_rest(tmp_path: Path, base_url: str) 
         assert r.status_code == 200, r.text
         agent = r.json()
         assert agent["harness_id"] == hid
-        assert agent["model"]["provider_id"] == f"e2e-llm-{suffix}"
+        assert agent["model"]["profile_id"] == profile_id_for(
+            f"e2e-llm-{suffix}", "e2e-model",
+        )
 
         # PUT to the managed agent should be rejected. The generic
         # managed-entity guard (wired via _crud's managed_by_field) now

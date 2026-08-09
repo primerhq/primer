@@ -6,13 +6,12 @@ T0009 (DELETE idempotency).
 
 from __future__ import annotations
 
-from primer.model_profile import ResolvedModel
-from primer.model.model_profile import ModelProfileConfig
 
 import asyncio
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 def _toolset_body(entity_id: str) -> dict:
@@ -30,7 +29,8 @@ def _llm_body(entity_id: str) -> dict:
     return {
         "id": entity_id,
         "provider": "anthropic",
-                "config": {"api_key": "sk-test-placeholder"},
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 4},
     }
 
@@ -54,12 +54,13 @@ async def test_t0007_invalid_llm_provider_returns_422(
     bad = {
         "id": f"llm-{unique_suffix}",
         "provider": "ollama",
-                # OllamaConfig requires `url`; omitting it is a real validation
+        "models": [{"name": "x", "context_length": 1024}],
+        # OllamaConfig requires `url`; omitting it is a real validation
         # failure regardless of provider/config cross-checking.
         "config": {},
         "limits": {"max_concurrency": 1},
     }
-    resp = await client.post("/v1/llm_providers", json=bad)
+    resp = await seed_llm_provider(client, bad)
     assert resp.status_code == 422, resp.text
     body = resp.json()
     assert body["type"] == "/errors/validation-error"
@@ -86,19 +87,24 @@ async def test_t0008_duplicate_toolset_id_returns_409(
 
 
 @pytest.mark.asyncio
-async def test_t0097_llm_provider_empty_models_rejected_422(
+async def test_t0097_model_profile_empty_model_name_rejected_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0097 — `LLMProvider.models` has `min_length=1`. POSTing with
-    `models: []` must yield 422 `/errors/validation-error`, with a
-    detail mentioning the constraint."""
+    """T0097 (successor) — `LLMProvider.models` is gone, so the empty-list
+    constraint it pinned no longer exists. The successor constraint lives
+    on the entity that replaced it: a ModelProfile with an empty
+    ``model_name`` must yield 422 `/errors/validation-error`.
+
+    A profile with no model name would resolve to a provider call with no
+    model, which fails much later and much less legibly."""
     body = {
-        "id": f"llm-empty-{unique_suffix}",
-        "provider": "anthropic",
-                "config": {"api_key": "sk-test-placeholder"},
-        "limits": {"max_concurrency": 1},
+        "id": f"profile-empty-{unique_suffix}",
+        "description": "empty model name",
+        "provider_id": f"llm-empty-{unique_suffix}",
+        "model_name": "",
+        "context_length": 4096,
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await client.post("/v1/model_profiles", json=body)
     assert resp.status_code == 422, resp.text
     envelope = resp.json()
     assert envelope["type"] == "/errors/validation-error", envelope
@@ -165,7 +171,7 @@ async def test_t0009_delete_on_missing_returns_404(
     return 204 for missing rows.
     """
     entity_id = f"llm-idem-{unique_suffix}"
-    create = await client.post("/v1/llm_providers", json=_llm_body(entity_id))
+    create = await seed_llm_provider(client, _llm_body(entity_id))
     assert create.status_code == 201, create.text
 
     first_delete = await client.delete(f"/v1/llm_providers/{entity_id}")
@@ -200,7 +206,7 @@ async def test_t0172_put_with_mismatched_body_id_returns_409(
 
     # Create the row at path_id so the PUT target exists (otherwise the
     # mismatch could be masked by a 404 from the missing-row path).
-    created = await client.post("/v1/llm_providers", json=_llm_body(path_id))
+    created = await seed_llm_provider(client, _llm_body(path_id))
     assert created.status_code == 201, created.text
     try:
         mismatched = _llm_body(body_id)
@@ -231,7 +237,7 @@ async def test_t0183_post_entity_with_empty_body_returns_clean_422(
     (the required fields are absent). Pin 422 + /errors/validation-error,
     never 5xx.
     """
-    resp = await client.post("/v1/llm_providers", json={})
+    resp = await seed_llm_provider(client, {})
     assert resp.status_code == 422, resp.text
     envelope = resp.json()
     assert envelope["type"] == "/errors/validation-error", envelope
@@ -291,8 +297,7 @@ async def test_t0185_patch_on_crud_entity_returns_405_with_allow_header(
     the missing-row path.
     """
     entity_id = f"llm-t0185-{unique_suffix}"
-    created = await client.post(
-        "/v1/llm_providers", json=_llm_body(entity_id),
+    created = await seed_llm_provider(client, _llm_body(entity_id),
     )
     assert created.status_code == 201, created.text
     try:
@@ -413,8 +418,7 @@ async def test_t0292_parallel_create_same_agent_id_yields_201_and_409(
     # Pre-warm Agent + LLMProvider tables
     warmup_llm = f"llm-warmup-{unique_suffix}"
     warmup_agent = f"agent-warmup-{unique_suffix}"
-    pr = await client.post(
-        "/v1/llm_providers", json=_llm_body(warmup_llm),
+    pr = await seed_llm_provider(client, _llm_body(warmup_llm),
     )
     assert pr.status_code == 201, pr.text
     ag_warm = await client.post(
@@ -422,10 +426,7 @@ async def test_t0292_parallel_create_same_agent_id_yields_201_and_409(
         json={
             "id": warmup_agent,
             "description": "warmup",
-            "model": {
-                "provider_id": warmup_llm,
-                "model_name": "claude-sonnet-4-6",
-            },
+            "model": agent_model(warmup_llm, "claude-sonnet-4-6"),
             "tools": [],
         },
     )
@@ -436,10 +437,7 @@ async def test_t0292_parallel_create_same_agent_id_yields_201_and_409(
     body = {
         "id": entity_id,
         "description": "race",
-        "model": {
-            "provider_id": warmup_llm,
-            "model_name": "claude-sonnet-4-6",
-        },
+        "model": agent_model(warmup_llm, "claude-sonnet-4-6"),
         "tools": [],
     }
     try:
@@ -491,13 +489,14 @@ async def test_t0379_provider_config_no_cross_field_validation_pinned(
     body = {
         "id": f"llm-t0379-{unique_suffix}",
         "provider": "anthropic",
-                # OllamaConfig shape (url, optional api_key) — DIFFERENT from
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        # OllamaConfig shape (url, optional api_key) — DIFFERENT from
         # what anthropic provider would expect (AnthropicConfig has
         # only api_key). The url is coerced away, not rejected.
         "config": {"url": "http://localhost:11434"},
         "limits": {"max_concurrency": 1},
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await seed_llm_provider(client, body)
     # Accepted as 201 (no cross-field rejection); pin no /errors/internal.
     envelope = resp.json() if resp.content else {}
     assert envelope.get("type") != "/errors/internal", (
@@ -537,14 +536,15 @@ async def test_t0380_openresponses_flavor_invalid_value_coerced_to_default(
     body = {
         "id": f"llm-t0380-{unique_suffix}",
         "provider": "openresponses",
-                "config": {
+        "models": [{"name": "x", "context_length": 1024}],
+        "config": {
             "url": "http://localhost:1234/v1",
             "api_key": "sk-test",
             "flavor": "this-is-not-a-real-flavor-xyz",
         },
         "limits": {"max_concurrency": 1},
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await seed_llm_provider(client, body)
     envelope = resp.json() if resp.content else {}
     assert envelope.get("type") != "/errors/internal", resp.text
     if resp.status_code == 201:
@@ -566,26 +566,30 @@ async def test_t0380_openresponses_flavor_invalid_value_coerced_to_default(
 
 
 @pytest.mark.asyncio
-async def test_t0381_llm_provider_models_context_length_zero_rejected_422(
+async def test_t0381_model_profile_context_length_zero_rejected_422(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0381 — ResolvedModel.context_length is PositiveInt; 0 is invalid.
+    """T0381 — ModelProfile.context_length is PositiveInt; 0 is invalid.
     Must reject with 422 cleanly, no /errors/internal from asyncpg.
+
+    The constraint used to sit on ``LLMProvider.models[].context_length``;
+    it moved with the field to the profile.
     """
     body = {
-        "id": f"llm-t0381-{unique_suffix}",
-        "provider": "anthropic",
-                "config": {"api_key": "sk-test"},
-        "limits": {"max_concurrency": 1},
+        "id": f"profile-t0381-{unique_suffix}",
+        "description": "zero context",
+        "provider_id": f"llm-t0381-{unique_suffix}",
+        "model_name": "x",
+        "context_length": 0,
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await client.post("/v1/model_profiles", json=body)
     assert resp.status_code == 422, resp.text
     envelope = resp.json()
     assert envelope["type"] == "/errors/validation-error", envelope
 
 
 @pytest.mark.asyncio
-async def test_t0382_llm_provider_models_context_length_negative_rejected(
+async def test_t0382_model_profile_context_length_negative_rejected(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0382 — Companion to T0381 with a negative value. The 422
@@ -593,12 +597,13 @@ async def test_t0382_llm_provider_models_context_length_negative_rejected(
     nested field path so clients can locate the bad input.
     """
     body = {
-        "id": f"llm-t0382-{unique_suffix}",
-        "provider": "anthropic",
-                "config": {"api_key": "sk-test"},
-        "limits": {"max_concurrency": 1},
+        "id": f"profile-t0382-{unique_suffix}",
+        "description": "negative context",
+        "provider_id": f"llm-t0382-{unique_suffix}",
+        "model_name": "x",
+        "context_length": -100,
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await client.post("/v1/model_profiles", json=body)
     assert resp.status_code == 422, resp.text
     envelope = resp.json()
     assert envelope["type"] == "/errors/validation-error", envelope
@@ -608,10 +613,10 @@ async def test_t0382_llm_provider_models_context_length_negative_rejected(
         envelope.get("detail", "") + " "
         + str(envelope.get("extensions", {}))
     ).lower()
-    # At least mention "context_length" or "models" in the path
-    assert "context_length" in detail_text or "models" in detail_text, (
+    # At least mention "context_length" in the path
+    assert "context_length" in detail_text, (
         f"422 envelope doesn't reference the offending field path "
-        f"`models[].context_length`: {envelope!r}"
+        f"`context_length`: {envelope!r}"
     )
 
 
@@ -624,12 +629,13 @@ async def test_t0383_agent_temperature_negative_rejected_422(
     """
     # Need an LLMProvider for the model reference
     provider_id = f"llm-t0383-{unique_suffix}"
-    pr = await client.post(
-        "/v1/llm_providers",
-        json={
+    pr = await seed_llm_provider(client, {
             "id": provider_id,
             "provider": "anthropic",
-                        "config": {"api_key": "sk-test"},
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            "config": {"api_key": "sk-test"},
             "limits": {"max_concurrency": 1},
         },
     )
@@ -638,10 +644,7 @@ async def test_t0383_agent_temperature_negative_rejected_422(
         body = {
             "id": f"agent-t0383-{unique_suffix}",
             "description": "T0383",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "claude-sonnet-4-6",
-            },
+            "model": agent_model(provider_id, "claude-sonnet-4-6"),
             "tools": [],
             "temperature": -0.1,
         }
@@ -769,12 +772,12 @@ async def test_t0564_delete_on_openapi_json_returns_405(
 
 
 # ============================================================================
-# T0701 — LLMProvider models[].context_length=2**63 boundary clean
+# T0701 — ModelProfile.context_length=2**63 boundary clean
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0701_llm_provider_context_length_int64_max_clean_envelope(
+async def test_t0701_model_profile_context_length_int64_max_clean_envelope(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0701 — Extends T0381/T0382 (lower bound) to the int64-max
@@ -786,12 +789,13 @@ async def test_t0701_llm_provider_context_length_int64_max_clean_envelope(
     """
     huge = 2 ** 63  # 1 past int64 signed max
     body = {
-        "id": f"llm-t0701-{unique_suffix}",
-        "provider": "anthropic",
-                "config": {"api_key": "sk-test"},
-        "limits": {"max_concurrency": 1},
+        "id": f"profile-t0701-{unique_suffix}",
+        "description": "int64-max context",
+        "provider_id": f"llm-t0701-{unique_suffix}",
+        "model_name": "x",
+        "context_length": huge,
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await client.post("/v1/model_profiles", json=body)
     envelope = resp.json() if resp.content else {}
     assert envelope.get("type") != "/errors/internal", (
         f"context_length=2**63 leaked /errors/internal: {resp.text}"
@@ -802,24 +806,24 @@ async def test_t0701_llm_provider_context_length_int64_max_clean_envelope(
     )
     if resp.status_code == 201:
         # If accepted, GET round-trips byte-exact
-        got = await client.get(f"/v1/llm_providers/{body['id']}")
+        got = await client.get(f"/v1/model_profiles/{body['id']}")
         assert got.status_code == 200, got.text
-        assert got.json()["models"][0]["context_length"] == huge, (
+        assert got.json()["context_length"] == huge, (
             f"int64-max corrupted on round-trip: "
-            f"{got.json()['models'][0]['context_length']!r}"
+            f"{got.json()['context_length']!r}"
         )
     else:
         assert envelope["type"].startswith("/errors/"), envelope
-    await client.delete(f"/v1/llm_providers/{body['id']}")
+    await client.delete(f"/v1/model_profiles/{body['id']}")
 
 
 # ============================================================================
-# T0702 — LLMProvider models[].context_length="42" string-coercion clean
+# T0702 — ModelProfile.context_length="42" string-coercion clean
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0702_llm_provider_context_length_string_coercion_clean(
+async def test_t0702_model_profile_context_length_string_coercion_clean(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0702 — context_length="42" (string). Pydantic v2 has strict-
@@ -829,12 +833,13 @@ async def test_t0702_llm_provider_context_length_string_coercion_clean(
     Documents the type-coercion edge in the PositiveInt boundary.
     """
     body = {
-        "id": f"llm-t0702-{unique_suffix}",
-        "provider": "anthropic",
-                "config": {"api_key": "sk-test"},
-        "limits": {"max_concurrency": 1},
+        "id": f"profile-t0702-{unique_suffix}",
+        "description": "string context",
+        "provider_id": f"llm-t0702-{unique_suffix}",
+        "model_name": "x",
+        "context_length": "42",
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await client.post("/v1/model_profiles", json=body)
     envelope = resp.json() if resp.content else {}
     assert envelope.get("type") != "/errors/internal", (
         f"context_length='42' leaked /errors/internal: {resp.text}"
@@ -847,7 +852,7 @@ async def test_t0702_llm_provider_context_length_string_coercion_clean(
     )
     if resp.status_code == 422:
         assert envelope["type"] == "/errors/validation-error", envelope
-    await client.delete(f"/v1/llm_providers/{body['id']}")
+    await client.delete(f"/v1/model_profiles/{body['id']}")
 
 
 # ============================================================================
@@ -866,7 +871,8 @@ async def test_t0703_embedding_provider_empty_models_returns_422(
     body = {
         "id": f"emb-t0703-{unique_suffix}",
         "provider": "huggingface",
-                "config": {"token": "hf-placeholder"},
+        "models": [],
+        "config": {"token": "hf-placeholder"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/embedding_providers", json=body)
@@ -901,7 +907,8 @@ async def test_t0704_cross_encoder_provider_empty_models_returns_422(
     body = {
         "id": f"ce-t0704-{unique_suffix}",
         "provider": "huggingface",
-                "config": {"token": None},
+        "models": [],
+        "config": {"token": None},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/cross_encoder_providers", json=body)
@@ -937,14 +944,15 @@ async def test_t0705_openresponses_flavor_null_clean_envelope(
     body = {
         "id": entity_id,
         "provider": "openresponses",
-                "config": {
+        "models": [{"name": "x", "context_length": 1000}],
+        "config": {
             "url": "http://localhost:1234/v1",
             "api_key": "placeholder",
             "flavor": None,
         },
         "limits": {"max_concurrency": 1},
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await seed_llm_provider(client, body)
     envelope = resp.json() if resp.content else {}
     assert envelope.get("type") != "/errors/internal", (
         f"flavor=null leaked /errors/internal: {resp.text}"
@@ -1050,14 +1058,15 @@ async def test_t0725_openresponses_flavor_whitespace_only_clean_envelope(
     body = {
         "id": entity_id,
         "provider": "openresponses",
-                "config": {
+        "models": [{"name": "x", "context_length": 1024}],
+        "config": {
             "url": "http://localhost:1234/v1",
             "api_key": "sk-test",
             "flavor": "   ",  # whitespace-only
         },
         "limits": {"max_concurrency": 1},
     }
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await seed_llm_provider(client, body)
     envelope = resp.json() if resp.content else {}
 
     # Primary invariant — no internal-error leak under sub-discriminator

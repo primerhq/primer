@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import pytest_asyncio
 
+from tests._support.model_profiles import seed_llm_provider
+
 
 @pytest_asyncio.fixture
 async def scripted_provider(client, mock_llm, unique_suffix):
@@ -28,7 +30,7 @@ async def scripted_provider(client, mock_llm, unique_suffix):
         "config": {"url": base_url, "flavor": "lmstudio"},
         "limits": {"max_concurrency": 4},
     }
-    r = await client.post("/v1/llm_providers", json=body)
+    r = await seed_llm_provider(client, body)
     assert r.status_code in (200, 201), r.text
     return pid
 

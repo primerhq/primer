@@ -13,6 +13,7 @@ import httpx
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 pytestmark = smk("SMK-UI-04", "SMK-UI-05", status="partial")
 
 
@@ -127,7 +128,7 @@ def test_u0028_graph_create_modal_navigates_and_renders_status(
     # Seed LLM provider + agent so the modal's "seed agent" dropdown
     # has a deterministic option.
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": provider_id,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -138,10 +139,7 @@ def test_u0028_graph_create_modal_navigates_and_renders_status(
         r = c.post("/v1/agents", json={
             "id": agent_id,
             "description": "u0028 graph create probe",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "fake-model",
-            },
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [],
             "system_prompt": ["test"],
         })

@@ -6,13 +6,12 @@ Backlog item T0004 — create → get → list (must include) → put → get
 
 from __future__ import annotations
 
-from primer.model_profile import ResolvedModel
-from primer.model.model_profile import ModelProfileConfig
 
 import httpx
 import pytest
 
 from tests._support.smk import smk
+from tests._support.model_profiles import seed_llm_provider
 
 
 def _llm_body(entity_id: str) -> dict:
@@ -20,7 +19,8 @@ def _llm_body(entity_id: str) -> dict:
     return {
         "id": entity_id,
         "provider": "anthropic",
-                "config": {"api_key": "sk-test-placeholder"},
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 4},
     }
 
@@ -86,7 +86,10 @@ async def test_t0119_delete_then_recreate_same_id_returns_new_row(
     v1["limits"]["max_concurrency"] = 4
     v2 = _llm_body(entity_id)
     v2["limits"]["max_concurrency"] = 16
-    v2["models"][0] = {"name": "different-model", "context_length": 50_000}
+    # The re-created row must reflect v2, so the second distinguishing
+    # change has to be on a field the provider still owns; models[] moved
+    # to ModelProfile rows.
+    v2["limits"]["request_timeout_seconds"] = 42.0
 
     create1 = await client.post(base, json=v1)
     assert create1.status_code == 201, create1.text
@@ -102,7 +105,7 @@ async def test_t0119_delete_then_recreate_same_id_returns_new_row(
         body = got.json()
         # Must reflect v2, NOT v1
         assert body["limits"]["max_concurrency"] == 16, body
-        assert body["models"][0]["name"] == "different-model", body
+        assert body["limits"]["request_timeout_seconds"] == 42.0, body
     finally:
         await client.delete(f"{base}/{entity_id}")
 
@@ -293,14 +296,15 @@ async def test_t0448_llm_provider_models_endpoint_single_item(
     body = {
         "id": entity_id,
         "provider": "openresponses",
-                "config": {
+        "models": [{"name": only_name, "context_length": 4096}],
+        "config": {
             "url": "http://127.0.0.1:1",
             "api_key": "sk-not-used",
             "flavor": "other",
         },
         "limits": {"max_concurrency": 1},
     }
-    create = await client.post("/v1/llm_providers", json=body)
+    create = await seed_llm_provider(client, body)
     assert create.status_code == 201, create.text
     try:
         resp = await client.get(f"/v1/llm_providers/{entity_id}/models")
@@ -324,32 +328,40 @@ async def test_t0448_llm_provider_models_endpoint_single_item(
 
 
 @pytest.mark.asyncio
-async def test_t0449_llm_provider_create_with_empty_models_returns_422(
+async def test_t0449_llm_provider_create_with_no_models_is_accepted(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0449 — Per primer/model/provider.py:334-337, the LLMProvider
-    `models` field has `min_length=1`. Pin that POST with `models: []`
-    is rejected with a 422 /errors/validation-error envelope; row is
-    not created.
+    """T0449 (inverted) — an LLMProvider with no models is now VALID.
+
+    The original pinned ``models`` having ``min_length=1``, so an empty
+    list was a 422. The field is gone: what a provider serves is its
+    ModelProfile rows, and a provider with none yet is the ordinary state
+    right after creation -- the console's fetch-then-create-profiles flow
+    depends on it. Pinned in the inverted direction so a regression that
+    resurrects a required models list is caught here.
     """
     entity_id = f"llm-t0449-{unique_suffix}"
     body = {
         "id": entity_id,
         "provider": "anthropic",
-                "config": {"api_key": "sk-test-placeholder"},
+        "config": {"api_key": "sk-test-placeholder"},
         "limits": {"max_concurrency": 1},
     }
     resp = await client.post("/v1/llm_providers", json=body)
-    assert resp.status_code != 500, resp.text
-    assert resp.status_code == 422, (
-        f"empty models list should be 422; got "
+    assert resp.status_code == 201, (
+        f"a provider with no models must be creatable; got "
         f"{resp.status_code}: {resp.text}"
     )
-    envelope = resp.json()
-    assert envelope.get("type") == "/errors/validation-error", envelope
-    # Row was not created
-    got = await client.get(f"/v1/llm_providers/{entity_id}")
-    assert got.status_code == 404, got.text
+    try:
+        got = await client.get(f"/v1/llm_providers/{entity_id}")
+        assert got.status_code == 200, got.text
+        assert "models" not in got.json(), got.json()
+        # And it serves nothing until a profile points at it.
+        models = await client.get(f"/v1/llm_providers/{entity_id}/models")
+        assert models.status_code == 200, models.text
+        assert models.json()["models"] == [], models.text
+    finally:
+        await client.delete(f"/v1/llm_providers/{entity_id}")
 
 
 # ============================================================================
@@ -377,11 +389,11 @@ async def test_t0459_llm_provider_create_with_one_mib_body_clean(
     body = {
         "id": entity_id,
         "provider": "anthropic",
-                "config": {"api_key": big_api_key},
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": big_api_key},
         "limits": {"max_concurrency": 1},
     }
-    resp = await client.post(
-        "/v1/llm_providers", json=body,
+    resp = await seed_llm_provider(client, body,
         timeout=httpx.Timeout(60.0, connect=10.0),
     )
     envelope = resp.json() if resp.content else {}
@@ -423,12 +435,12 @@ async def test_t0460_llm_provider_create_with_sixteen_mib_body_clean(
     body = {
         "id": entity_id,
         "provider": "anthropic",
-                "config": {"api_key": huge_api_key},
+        "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
+        "config": {"api_key": huge_api_key},
         "limits": {"max_concurrency": 1},
     }
     try:
-        resp = await client.post(
-            "/v1/llm_providers", json=body,
+        resp = await seed_llm_provider(client, body,
             timeout=httpx.Timeout(120.0, connect=10.0),
         )
     except (httpx.RemoteProtocolError, httpx.WriteError) as exc:
@@ -493,7 +505,10 @@ async def test_t0493_llm_provider_create_with_deep_unicode_escapes_clean(
         {
             "id": entity_id,
             "provider": "anthropic",
-                        # Escapes nested inside the api_key value
+            "models": [
+                {"name": "claude-sonnet-4-6", "context_length": 200_000},
+            ],
+            # Escapes nested inside the api_key value
             "config": {"api_key": f"sk-{unicode_pairs}-end"},
             "limits": {"max_concurrency": 1},
         }
@@ -530,66 +545,59 @@ async def test_t0493_llm_provider_create_with_deep_unicode_escapes_clean(
 
 
 # ============================================================================
-# T0562 — POST /v1/llm_providers with duplicate names in models clean envelope
+# T0562 — two ModelProfiles may name one model on one provider
 # ============================================================================
 
 
 @pytest.mark.asyncio
-async def test_t0562_post_llm_provider_with_duplicate_model_names_clean(
+async def test_t0562_two_profiles_for_one_model_are_accepted(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """T0562 — Per primer/model/provider.py:334-337, LLMProvider.
-    models is `list[ResolvedModel]` with no documented dedup constraint.
-    Pin observed behavior: duplicate model names are accepted (201)
-    or rejected (422) deterministically across two consecutive
-    calls; never /errors/internal.
+    """T0562 (reframed) — two profiles naming the same model on the same
+    provider must both be accepted.
 
-    Catches a regression where a future dedup validator changes
-    the contract silently.
+    The original pinned that duplicate entries in ``LLMProvider.models``
+    behaved deterministically. That list is gone, and the successor
+    question is sharper: registering one model twice with different
+    settings is the entire reason ModelProfile exists, so it must not be
+    treated as a duplicate. Only the profile id is unique.
     """
-    entity_id_a = f"llm-t0562a-{unique_suffix}"
-    entity_id_b = f"llm-t0562b-{unique_suffix}"
-    body_template = {
+    pid = f"llm-t0562-{unique_suffix}"
+    create = await client.post("/v1/llm_providers", json={
+        "id": pid,
         "provider": "anthropic",
-                "config": {"api_key": "sk-test"},
+        "config": {"api_key": "sk-test"},
         "limits": {"max_concurrency": 1},
-    }
-
-    # Two distinct ids so neither call hits the duplicate-id 409
-    # path — the only difference in outcome should be the dedup
-    # behavior on `models`
-    body_a = {**body_template, "id": entity_id_a}
-    body_b = {**body_template, "id": entity_id_b}
-
-    r1 = await client.post("/v1/llm_providers", json=body_a)
-    r2 = await client.post("/v1/llm_providers", json=body_b)
-
+    })
+    assert create.status_code == 201, create.text
     try:
-        for r, label in ((r1, "call-1"), (r2, "call-2")):
-            envelope = r.json() if r.content else {}
-            assert envelope.get("type") != "/errors/internal", (
-                f"{label}: dup model names leaked /errors/internal: "
-                f"{r.text}"
-            )
-            assert r.status_code in (201, 422), (
-                f"{label}: unexpected {r.status_code}: {r.text}"
-            )
+        common = {
+            "provider_id": pid,
+            "model_name": "claude-sonnet-4-6",
+            "context_length": 200_000,
+        }
+        fast = await client.post("/v1/model_profiles", json={
+            **common,
+            "id": f"{pid}--fast",
+            "description": "reasoning off",
+            "config": {"reasoning": "off"},
+        })
+        deep = await client.post("/v1/model_profiles", json={
+            **common,
+            "id": f"{pid}--deep",
+            "description": "reasoning high",
+            "config": {"reasoning": "high"},
+        })
+        for r, label in ((fast, "fast"), (deep, "deep")):
+            assert r.status_code == 201, f"{label}: {r.status_code} {r.text}"
 
-        # Determinism: same outcome across both
-        assert r1.status_code == r2.status_code, (
-            f"non-deterministic dedup behavior: {r1.status_code} vs "
-            f"{r2.status_code}"
-        )
-
-        # If accepted, the duplicate models survive on GET
-        if r1.status_code == 201:
-            got = await client.get(f"/v1/llm_providers/{entity_id_a}")
-            assert got.status_code == 200, got.text
-            got_models = got.json().get("models", [])
-            names = [m["name"] for m in got_models]
-            # Either preserved both entries (dup intact) or deduped
-            # to one — pin observation
-            assert names.count("claude-sonnet-4-6") in (1, 2), names
+        # The provider reports the shared model ONCE: several profiles may
+        # name it, but /models answers "what can this serve", not "how many
+        # ways is it configured".
+        listed = await client.get(f"/v1/llm_providers/{pid}/models")
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["models"] == ["claude-sonnet-4-6"], listed.text
     finally:
-        await client.delete(f"/v1/llm_providers/{entity_id_a}")
-        await client.delete(f"/v1/llm_providers/{entity_id_b}")
+        for suffix in ("fast", "deep"):
+            await client.delete(f"/v1/model_profiles/{pid}--{suffix}")
+        await client.delete(f"/v1/llm_providers/{pid}")

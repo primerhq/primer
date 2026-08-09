@@ -24,6 +24,7 @@ import time
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 # ---------------------------------------------------------------------------
@@ -32,9 +33,7 @@ import pytest
 
 
 async def _seed_llm_provider(client: httpx.AsyncClient, pid: str) -> None:
-    r = await client.post(
-        "/v1/llm_providers",
-        json={
+    r = await seed_llm_provider(client, {
             "id": pid,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -53,7 +52,7 @@ async def _seed_agent(
         json={
             "id": agent_id,
             "description": "probe",
-            "model": {"provider_id": provider_id, "model_name": "fake-model"},
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [],
             "system_prompt": ["probe"],
         },
@@ -108,9 +107,7 @@ async def test_t0766_chat_messages_after_seq_filter(
 
     pid = f"llm-t766-{unique_suffix}"
     aid = f"ag-t766-{unique_suffix}"
-    r = await client.post(
-        "/v1/llm_providers",
-        json={
+    r = await seed_llm_provider(client, {
             "id": pid,
             "provider": "openchat",
             "models": [{"name": scenario, "context_length": 8192}],
@@ -124,7 +121,7 @@ async def test_t0766_chat_messages_after_seq_filter(
         json={
             "id": aid,
             "description": "t766 probe",
-            "model": {"provider_id": pid, "model_name": scenario},
+            "model": agent_model(pid, scenario),
             "tools": [],
             "system_prompt": ["probe"],
         },

@@ -34,6 +34,7 @@ from tests._support.runs import (
     start_agent_session,
 )
 from tests._support.yield_journeys import drive_park_on_tool, wait_for_resume
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 def _ws_headers(client: httpx.AsyncClient) -> list[tuple[str, str]]:
@@ -53,9 +54,7 @@ def _ws_headers(client: httpx.AsyncClient) -> list[tuple[str, str]]:
 
 
 async def _seed_llm_provider(client: httpx.AsyncClient, pid: str) -> None:
-    r = await client.post(
-        "/v1/llm_providers",
-        json={
+    r = await seed_llm_provider(client, {
             "id": pid, "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
             "models": [{"name": "fake-model", "context_length": 4096}],
@@ -72,7 +71,7 @@ async def _seed_agent(
         "/v1/agents",
         json={
             "id": agent_id, "description": "bus+ws probe",
-            "model": {"provider_id": provider_id, "model_name": "fake-model"},
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [], "system_prompt": ["probe"],
         },
     )

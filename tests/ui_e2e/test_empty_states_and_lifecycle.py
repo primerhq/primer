@@ -129,9 +129,10 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
     the fresh row.
 
     Provider choice: ``anthropic`` — its config requires only
-    ``api_key`` and the "Suggest models" button populates the
-    suggestedModels list directly (no live discovery call). Keeps
-    the test deterministic.
+    ``api_key``, so the form has nothing else to fill. An LLM provider
+    no longer carries a models list (its ModelProfile rows are the
+    registry), so creating one needs no model step at all; that is the
+    behaviour this now asserts.
     """
     provider_id = f"llm-u0047-{unique_suffix}"
     try:
@@ -162,13 +163,15 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
         api_key_input = modal.locator("input[type=password]").first
         api_key_input.fill("sk-test-placeholder")
 
-        # Populate models via the "Suggest models" button — anthropic
-        # is non-discoverable so this loads suggestedModels directly
-        # (no live call).
-        modal.get_by_role("button", name="Suggest models").first.click()
-        # At least one model row should now exist — wait briefly for
-        # React to render the rows.
-        page.wait_for_timeout(250)
+        # No model step: an LLM provider has no models[] to declare, so
+        # Create must already be enabled. This is the regression guard --
+        # the old form gated submit on models.length > 0, which made LLM
+        # providers uncreatable once the field was removed.
+        from playwright.sync_api import expect
+
+        expect(
+            modal.get_by_role("button", name="Create", exact=True),
+        ).to_be_enabled()
 
         # Submit.
         modal.get_by_role("button", name="Create").first.click()

@@ -19,6 +19,7 @@ from pathlib import Path
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 # The lifecycle tests below need a real agent turn to converge to a terminal
@@ -61,7 +62,7 @@ def _agent_body(entity_id: str, *, provider_id: str) -> dict:
     return {
         "id": entity_id,
         "description": "test agent",
-        "model": {"provider_id": provider_id, "model_name": _llm_model_name()},
+        "model": agent_model(provider_id, _llm_model_name()),
         "tools": [],
     }
 
@@ -101,7 +102,7 @@ async def test_t0042_top_level_get_session_works_without_workspace_context(
     workspace_id: str | None = None
     session_id: str | None = None
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         ag = await client.post(
@@ -180,7 +181,7 @@ async def _full_setup(
     wp_id = f"wp-{suffix}"
     tpl_id = f"wt-{suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents", json=_agent_body(agent_id, provider_id=provider_id),
@@ -5656,7 +5657,7 @@ async def test_t0756_post_agents_nfc_vs_nfd_creates_two_distinct_rows(
     nfc_id = f"ag-t0756-{nfc_form}-{unique_suffix}"
     nfd_id = f"ag-t0756-{nfd_form}-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json={
+    pr = await seed_llm_provider(client, {
         "id": provider_id,
         "provider": "anthropic",
         "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
@@ -5671,7 +5672,7 @@ async def test_t0756_post_agents_nfc_vs_nfd_creates_two_distinct_rows(
         nfc_resp = await client.post("/v1/agents", json={
             "id": nfc_id,
             "description": "t0756 NFC form",
-            "model": {"provider_id": provider_id, "model_name": "claude-sonnet-4-6"},
+            "model": agent_model(provider_id, "claude-sonnet-4-6"),
             "tools": [],
             "system_prompt": ["test"],
         })
@@ -5694,7 +5695,7 @@ async def test_t0756_post_agents_nfc_vs_nfd_creates_two_distinct_rows(
         nfd_resp = await client.post("/v1/agents", json={
             "id": nfd_id,
             "description": "t0756 NFD form",
-            "model": {"provider_id": provider_id, "model_name": "claude-sonnet-4-6"},
+            "model": agent_model(provider_id, "claude-sonnet-4-6"),
             "tools": [],
             "system_prompt": ["test"],
         })

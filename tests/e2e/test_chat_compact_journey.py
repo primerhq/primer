@@ -33,10 +33,13 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import SecretStr
 
 from tests._support.smk import smk
+from tests._support.model_profiles import profile_id_for
 from primer.agent.compaction_mixin import CompactionResult
 from primer.api.app import create_test_app
 from primer.model.agent import Agent, AgentModel
 from primer.model.chats import Chat, ChatMessage
+from primer.model.model_profile import ModelProfile
+from primer.model_profile import ResolvedModel
 from primer.model.provider import (
     AnthropicConfig,
     Limits,
@@ -127,6 +130,10 @@ async def client(app: FastAPI) -> AsyncIterator[AsyncClient]:
 PROVIDER_ID = "llm-journey"
 AGENT_ID = "ag-journey"
 MODEL_NAME = "m"
+# The agent names a profile; the profile carries the provider, the wire
+# model name, and the context length the compaction threshold is computed
+# against -- which is what this journey is measuring.
+PROFILE_ID = profile_id_for(PROVIDER_ID, MODEL_NAME)
 CONTEXT_LENGTH = 10_000
 
 
@@ -139,11 +146,20 @@ async def _seed_provider_and_agent(app: FastAPI) -> None:
             limits=Limits(max_concurrency=1),
         ),
     )
+    await app.state.storage_provider.get_storage(ModelProfile).create(
+        ModelProfile(
+            id=PROFILE_ID,
+            description="compaction journey",
+            provider_id=PROVIDER_ID,
+            model_name=MODEL_NAME,
+            context_length=CONTEXT_LENGTH,
+        ),
+    )
     await app.state.storage_provider.get_storage(Agent).create(
         Agent(
             id=AGENT_ID,
             description="compaction journey",
-            model=AgentModel(provider_id=PROVIDER_ID, model_name=MODEL_NAME),
+            model=AgentModel(profile_id=PROFILE_ID),
             tools=[],
             system_prompt=[],
         ),
@@ -315,17 +331,25 @@ class TestChatCompactJourney:
         agent = await app.state.storage_provider.get_storage(Agent).get(
             AGENT_ID,
         )
-        provider = await app.state.storage_provider.get_storage(
-            LLMProvider,
-        ).get(PROVIDER_ID)
-        assert agent is not None and provider is not None
+        # The runner's model facts come from the PROFILE now, not from a
+        # models[] entry on the provider row.
+        profile = await app.state.storage_provider.get_storage(
+            ModelProfile,
+        ).get(PROFILE_ID)
+        assert agent is not None and profile is not None
 
         # Build a stub runner the same way the REST endpoint does so
         # _load_history sees the same surface.
         runner = ChatTurnRunner.__new__(ChatTurnRunner)
         runner._agent = agent
         runner._llm = fake_llm
-        runner._model = provider.models[0]
+        runner._model = ResolvedModel(
+            profile_id=profile.id,
+            provider_id=profile.provider_id,
+            model_name=profile.model_name,
+            context_length=profile.context_length,
+            config=profile.config,
+        )
         runner._tools = None
         runner._chats = app.state.storage_provider.get_storage(Chat)
         runner._messages = app.state.storage_provider.get_storage(ChatMessage)

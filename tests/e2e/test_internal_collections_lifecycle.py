@@ -25,6 +25,7 @@ import asyncio
 import httpx
 import pytest
 import pytest_asyncio
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 def _embedding_provider_body(entity_id: str) -> dict:
@@ -223,7 +224,7 @@ def _agent_body(entity_id: str, *, provider_id: str, description: str) -> dict:
     return {
         "id": entity_id,
         "description": description,
-        "model": {"provider_id": provider_id, "model_name": "claude-sonnet-4-6"},
+        "model": agent_model(provider_id, "claude-sonnet-4-6"),
         "tools": [],
     }
 
@@ -275,7 +276,7 @@ async def test_t0034_cdc_new_agent_appears_in_search(
         await _wait_bootstrap(client)
 
         # Need an LLMProvider for the Agent's model reference.
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -406,7 +407,7 @@ async def test_t0035_cdc_deleted_agent_removed_from_search(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -476,7 +477,7 @@ async def test_t0062_search_top_k_caps_result_count(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -555,7 +556,7 @@ async def test_t0059_search_ranks_marker_match_above_noise(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -715,7 +716,7 @@ async def test_t0107_cdc_unicode_marker_searchable(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -774,7 +775,7 @@ async def test_t0090_cdc_burst_load_all_agents_indexed(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -857,7 +858,7 @@ async def test_t0091_cdc_reactivation_cycle_works(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_active = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -930,7 +931,7 @@ async def test_t0036_cdc_updated_agent_description_indexed(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -1029,7 +1030,7 @@ async def test_t0164_cdc_new_graph_appears_in_search(
         config_created = True
 
         # Need an LLMProvider + Agent for the Graph's agent node reference
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -1187,7 +1188,7 @@ async def test_t0174_search_query_distinguishes_two_agents(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -1593,7 +1594,7 @@ async def test_t0224_bootstrap_envelope_counts_shape(
         config_created = True
 
         # Seed one Agent BEFORE bootstrap so the bootstrap counts it
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
         ag = await client.post(
@@ -1734,7 +1735,7 @@ async def test_t0226_agents_search_ranking_stable_across_calls(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -1832,7 +1833,7 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
         assert put.status_code == 200, put.text
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -1939,7 +1940,7 @@ async def test_t0244_ic_config_delete_then_reput_search_recovers(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_currently_active = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -2348,7 +2349,7 @@ async def test_t0288_cdc_delete_graph_removes_from_search(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -2451,7 +2452,7 @@ async def test_t0289_concurrent_cdc_ingest_and_search_clean(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -2556,7 +2557,7 @@ async def test_t0299_search_concurrent_with_agent_update_clean(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -2674,7 +2675,7 @@ async def test_t0333_search_filter_field_silently_ignored(
         await _bootstrap_subsystem(client, embedder_id, ssp_id)
         config_created = True
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -3026,7 +3027,7 @@ async def test_t0400_cdc_agent_to_search_latency_recorded(
             )
             await _wait_bootstrap(client)
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -3239,7 +3240,7 @@ async def test_t0412_cdc_burst_create_with_concurrent_delete_config_clean(
             )
             await _wait_bootstrap(client)
 
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -3603,7 +3604,7 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
 
         # Create LLMProvider + Agent post-swap; CDC must work against
         # the new embedder
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
         ag = await client.post(
@@ -3681,7 +3682,7 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
 
         # Pre-create the LLMProvider so agent creates don't fail on
         # missing-provider — that's not what we're testing
-        llm = await client.post("/v1/llm_providers", json=_llm_body(llm_id))
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
         assert llm.status_code == 201, llm.text
         llm_created = True
 
@@ -4016,8 +4017,7 @@ async def test_t0538_search_top_k_100_documented_hit_shape(
         )
         await _wait_bootstrap(client)
 
-        llm = await client.post(
-            "/v1/llm_providers", json=_llm_body(llm_id),
+        llm = await seed_llm_provider(client, _llm_body(llm_id),
         )
         assert llm.status_code == 201, llm.text
         llm_created = True
@@ -4206,7 +4206,7 @@ async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
 
     try:
         # Seed an LLM provider so the agents have a valid provider_id.
-        lp = await client.post("/v1/llm_providers", json={
+        lp = await seed_llm_provider(client, {
             "id": llm_id,
             "provider": "anthropic",
             "models": [{"name": "claude-sonnet-4-6", "context_length": 200_000}],
@@ -4220,7 +4220,7 @@ async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
             ar = await client.post("/v1/agents", json={
                 "id": aid,
                 "description": "t0601 race-target agent",
-                "model": {"provider_id": llm_id, "model_name": "claude-sonnet-4-6"},
+                "model": agent_model(llm_id, "claude-sonnet-4-6"),
                 "tools": [],
                 "system_prompt": ["test"],
             })

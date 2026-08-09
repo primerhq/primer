@@ -29,6 +29,7 @@ import httpx
 import pytest
 
 from tests.ui_e2e._studio_helpers import open_studio, session_row, sessions_list
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 
 
 def test_u0002_sessions_sidebar_count_polls_after_api_create(
@@ -61,7 +62,7 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
     workspace_id: str | None = None
     session_id: str | None = None
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": provider_id,
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -72,10 +73,7 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
         r = c.post("/v1/agents", json={
             "id": agent_id,
             "description": "u0002 polling probe",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "fake-model",
-            },
+            "model": agent_model(provider_id, "fake-model"),
             "tools": [],
             "system_prompt": ["test"],
         })

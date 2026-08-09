@@ -48,6 +48,7 @@ import pytest_asyncio
 
 from tests.distributed.cluster import TestCluster
 from tests._support.smk import smk
+from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
 
 
 # ---------------------------------------------------------------------------
@@ -84,9 +85,7 @@ async def _setup_llm_and_agent(cluster: TestCluster) -> str:
     agent_id = f"agent-{uuid.uuid4().hex[:6]}"
 
     async with cluster.client(0) as c0:
-        resp = await c0.post(
-            "/v1/llm_providers",
-            json={"id": provider_id, **_STUB_PROVIDER_BODY},
+        resp = await seed_llm_provider(c0, {"id": provider_id, **_STUB_PROVIDER_BODY},
         )
         assert resp.status_code == 201, (
             f"POST /v1/llm_providers returned {resp.status_code}: {resp.text}"
@@ -97,7 +96,7 @@ async def _setup_llm_and_agent(cluster: TestCluster) -> str:
             json={
                 "id": agent_id,
                 "description": "Stub agent for failure-injection test",
-                "model": {"provider_id": provider_id, "model_name": "stub-model"},
+                "model": agent_model(provider_id, "stub-model"),
             },
         )
         assert resp.status_code == 201, (

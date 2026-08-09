@@ -38,6 +38,7 @@ from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
 from tests._support.testconfig import load_config, requires
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 pytestmark = [requires("embedder", "pgvector")]
 
@@ -240,17 +241,20 @@ def test_support_desk_cli(base_url, mock_llm, unique_suffix, tmp_path):
         # Scripted LLM provider both agents share.
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": pid, "provider": "openchat",
-            "models": [
-                {"name": fl_scenario, "context_length": 8192},
-                {"name": sp_scenario, "context_length": 8192},
-            ],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(pid, [
+                {"name": fl_scenario, "context_length": 8192},
+                {"name": sp_scenario, "context_length": 8192},
+            ]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
         # Front-line + specialist agents.
         pc.run("create", "-f", manifest(tmp_path, "fl", "agent", {
             "id": fl_id, "description": "Front-line support.",
-            "model": {"provider_id": pid, "model_name": fl_scenario},
+            "model": agent_model(pid, fl_scenario),
             "tools": ["system__search_collection"],
             "system_prompt": [
                 "You are front-line support. Answer from the kb collection "
@@ -259,7 +263,7 @@ def test_support_desk_cli(base_url, mock_llm, unique_suffix, tmp_path):
         }))
         pc.run("create", "-f", manifest(tmp_path, "sp", "agent", {
             "id": sp_id, "description": "Billing specialist.",
-            "model": {"provider_id": pid, "model_name": sp_scenario},
+            "model": agent_model(pid, sp_scenario),
             "tools": ["system__search_collection"],
             "system_prompt": [
                 "You are a billing specialist. Answer billing questions in "

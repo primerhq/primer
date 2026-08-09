@@ -66,6 +66,7 @@ from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_session_in_s
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 pytestmark = smk("SMK-UI-10")
 
 
@@ -89,7 +90,7 @@ def _seed_session_ladder(base_url: str, suffix: str) -> dict[str, str]:
         "session": "",
     }
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.post("/v1/llm_providers", json={
+        r = seed_llm_provider_with(c, {
             "id": ids["llm"],
             "provider": "ollama",
             "config": {"url": "http://127.0.0.1:9999"},
@@ -116,7 +117,7 @@ def _seed_session_ladder(base_url: str, suffix: str) -> dict[str, str]:
         r = c.post("/v1/agents", json={
             "id": ids["agent"],
             "description": "u0109 approval probe agent",
-            "model": {"provider_id": ids["llm"], "model_name": "fake-model"},
+            "model": agent_model(ids["llm"], "fake-model"),
             "tools": [],
             "system_prompt": ["probe"],
         })

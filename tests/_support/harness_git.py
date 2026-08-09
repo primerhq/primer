@@ -14,8 +14,7 @@ name: assistant
 spec:
   description: "{{ overrides.description | default('A harness test assistant') }}"
   model:
-    provider_id: "{{ overrides.provider_id }}"
-    model_name: "{{ overrides.model_name | default('scripted:default') }}"
+    profile_id: "{{ overrides.profile_id }}"
   tools: []
   system_prompt:
     - "You are a harness-installed assistant."
@@ -75,14 +74,16 @@ def build_harness_repo(
         f"apiVersion: primer/v1\nkind: Harness\nname: {name}\n", encoding="utf-8"
     )
     (work / "overrides.schema.json").write_text(
+        # An agent's model is one ModelProfile id -- the profile pins the
+        # provider, the wire model name, and the API-level config -- so the
+        # harness remaps one value on install rather than a pair.
         '{"type": "object", '
-        '"properties": {"provider_id": {"type": "string"}, '
-        '"model_name": {"type": "string"}, '
+        '"properties": {"profile_id": {"type": "string"}, '
         '"description": {"type": "string"}, '
         '"embedder_provider_id": {"type": "string"}, '
         '"embedder_model": {"type": "string"}, '
         '"search_provider_id": {"type": "string"}}, '
-        '"required": ["provider_id"]}\n',
+        '"required": ["profile_id"]}\n',
         encoding="utf-8",
     )
     tdir = work / "templates"

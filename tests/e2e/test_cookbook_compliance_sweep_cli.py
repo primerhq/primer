@@ -39,6 +39,7 @@ import yaml
 from tests._support.mock_llm import Rule
 from tests._support.primectl_driver import Primectl, manifest, mint_token
 from tests._support.smk import smk
+from tests._support.model_profiles import agent_model, profile_manifests, seed_profile
 
 
 # The watchlist. `payments-legacy` is the unreachable one: `1 / 0` errors, the
@@ -99,14 +100,17 @@ def test_compliance_sweep_cli(base_url, mock_llm, unique_suffix, tmp_path):
         # --- The scripted LLM provider + scope-lister agent --------------
         pc.run("create", "-f", manifest(tmp_path, "llm", "llm_provider", {
             "id": pid, "provider": "openchat",
-            "models": [{"name": scenario, "context_length": 8192}],
             "config": {"url": mock_base_url, "flavor": "lmstudio"},
             "limits": {"max_concurrency": 4},
         }))
+        # One ModelProfile per model this provider serves:
+        # an LLM provider carries no models[] of its own.
+        for _pn, _pk, _ps in profile_manifests(pid, [{"name": scenario, "context_length": 8192}]):
+            pc.run("create", "-f", manifest(tmp_path, _pn, _pk, _ps))
         pc.run("create", "-f", manifest(tmp_path, "scope", "agent", {
             "id": scope_id,
             "description": "Names the in-scope services for the nightly sweep.",
-            "model": {"provider_id": pid, "model_name": scenario},
+            "model": agent_model(pid, scenario),
             "tools": [],
             "system_prompt": [
                 "You output ONLY a JSON object of the services to audit, as "

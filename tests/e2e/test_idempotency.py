@@ -16,6 +16,7 @@ import asyncio
 
 import httpx
 import pytest
+from tests._support.model_profiles import seed_llm_provider
 
 
 def _llm_body(entity_id: str) -> dict:
@@ -137,7 +138,7 @@ async def test_t0250_concurrent_invalidate_calls_all_204(
     sequential idempotency.
     """
     entity_id = f"llm-conc-{unique_suffix}"
-    created = await client.post("/v1/llm_providers", json=_llm_body(entity_id))
+    created = await seed_llm_provider(client, _llm_body(entity_id))
     assert created.status_code == 201, created.text
     try:
         before = await client.get(f"/v1/llm_providers/{entity_id}")
@@ -159,7 +160,7 @@ async def test_t0250_concurrent_invalidate_calls_all_204(
         after = await client.get(f"/v1/llm_providers/{entity_id}")
         assert after.status_code == 200, after.text
         after_body = after.json()
-        for field in ("id", "provider", "models"):
+        for field in ("id", "provider", "config"):
             assert after_body.get(field) == before_body.get(field), (
                 f"field {field!r} changed across concurrent invalidates: "
                 f"before={before_body.get(field)!r}, "
@@ -180,7 +181,7 @@ async def test_t0364_concurrent_invalidate_and_delete_same_provider(
     subsequent GET returns 404.
     """
     entity_id = f"llm-race-id-{unique_suffix}"
-    created = await client.post("/v1/llm_providers", json=_llm_body(entity_id))
+    created = await seed_llm_provider(client, _llm_body(entity_id))
     assert created.status_code == 201, created.text
 
     inv_resp, del_resp = await asyncio.gather(
@@ -275,7 +276,7 @@ async def test_t0278_put_with_body_omitting_id_uses_path_id(
     """
     entity_id = f"llm-noid-{unique_suffix}"
     initial = _llm_body(entity_id)
-    created = await client.post("/v1/llm_providers", json=initial)
+    created = await seed_llm_provider(client, initial)
     assert created.status_code == 201, created.text
     try:
         # PUT body with NO id field
@@ -330,7 +331,7 @@ async def test_t0266_parallel_puts_same_row_one_body_wins(
     }
 
     # Initial create
-    created = await client.post("/v1/llm_providers", json=body_a)
+    created = await seed_llm_provider(client, body_a)
     assert created.status_code == 201, created.text
     try:
         # Race two PUTs concurrently
@@ -351,11 +352,12 @@ async def test_t0266_parallel_puts_same_row_one_body_wins(
         got = await client.get(f"/v1/llm_providers/{entity_id}")
         assert got.status_code == 200, got.text
         row = got.json()
-        winner_models = [m["name"] for m in row["models"]]
-        assert winner_models in (
-            ["claude-sonnet-4-6"],
-            ["claude-sonnet-4-6", "claude-haiku-4-5"],
-        ), f"row corrupted across PUT race: {row!r}"
+        # The two bodies differ on max_concurrency; the surviving row must
+        # be exactly one of them, not a blend. models[] used to be the
+        # distinguishing field before it moved to ModelProfile rows.
+        assert row["limits"]["max_concurrency"] in (1, 4), (
+            f"row corrupted across PUT race: {row!r}"
+        )
     finally:
         await client.delete(f"/v1/llm_providers/{entity_id}")
 

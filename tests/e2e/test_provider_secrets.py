@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from tests._support.model_profiles import seed_llm_provider
 
 
 _PLAINTEXT_KEY = "sk-test-PLAINTEXT-MUST-NEVER-LEAK"
@@ -51,7 +52,7 @@ async def test_t0027_provider_secrets_never_echoed(
 ) -> None:
     entity_id = f"llm-secret-{unique_suffix}"
     body = _llm_body(entity_id)
-    create = await client.post("/v1/llm_providers", json=body)
+    create = await seed_llm_provider(client, body)
     assert create.status_code == 201, create.text
 
     try:
@@ -111,7 +112,7 @@ async def test_t0211_post_with_unknown_extra_field_silently_accepted(
     body = _llm_body(entity_id)
     body[extra_field_name] = "this-should-be-dropped"
 
-    create = await client.post("/v1/llm_providers", json=body)
+    create = await seed_llm_provider(client, body)
     # Either silently accepted (Pydantic extra="ignore", common default)
     # or rejected (Pydantic extra="forbid"). Pin no 5xx.
     assert create.status_code < 500, create.text
@@ -164,9 +165,10 @@ async def test_t0726_post_with_deeply_nested_unknown_extra_keys_clean_envelope(
         "deeper": {extra_nested: "even-deeper"},
         "list": [{"k": "v"}, {extra_nested: "list-deep"}],
     }
-    body["models"][0]["__extra_in_model"] = "drop-me-too"
-
-    resp = await client.post("/v1/llm_providers", json=body)
+    # The former third probe put an extra key inside a models[] entry.
+    # That field is gone; the equivalent surface is a ModelProfile body,
+    # which seed_llm_provider builds from the declared models below.
+    resp = await seed_llm_provider(client, body)
     envelope = resp.json() if resp.content else {}
 
     # Primary invariant — no internal-error leak under deep nesting.

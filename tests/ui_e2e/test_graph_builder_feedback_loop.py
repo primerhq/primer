@@ -38,6 +38,7 @@ import os
 import pytest
 
 from tests._support.smk import smk
+from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
 
 # Module-level gate — even though tests/ui_e2e/conftest.py already
 # collect-ignores the whole directory when PRIMER_RUN_UI_E2E is unset,
@@ -94,7 +95,7 @@ def test_graph_builder_feedback_loop_journey(
         # {complete, summary} so the conditional branch can terminate.
         model_name = os.environ.get("PRIMER_E2E_LLM_MODEL", "google/gemma-4-e4b")
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
-            r = c.post("/v1/llm_providers", json={
+            r = seed_llm_provider_with(c, {
                 "id": llm_id,
                 "provider": "openchat",
                 "config": {
@@ -116,9 +117,7 @@ def test_graph_builder_feedback_loop_journey(
                 r = c.post("/v1/agents", json={
                     "id": aid,
                     "description": desc,
-                    "model": {
-                        "provider_id": llm_id, "model_name": model_name,
-                    },
+                    "model": agent_model(llm_id, model_name),
                     "tools": [],
                     "system_prompt": [f"you are the {desc}"],
                 })

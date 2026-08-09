@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider, seed_profile
 
 
 def _llm_body(entity_id: str) -> dict:
@@ -29,7 +30,7 @@ def _agent_body(entity_id: str, *, provider_id: str, tools: list[str]) -> dict:
     return {
         "id": entity_id,
         "description": "test agent",
-        "model": {"provider_id": provider_id, "model_name": "claude-sonnet-4-6"},
+        "model": agent_model(provider_id, "claude-sonnet-4-6"),
         "tools": tools,
     }
 
@@ -112,7 +113,7 @@ async def test_t0023_agent_status_missing_toolset(
     missing_toolset_id = f"missing-ts-{unique_suffix}"
 
     # Real provider so the only issue is the toolset miss.
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         # Tool ids are scoped: "<toolset_id>__<bare_name>". The status
@@ -169,7 +170,7 @@ async def test_t0045_agent_status_multi_toolset_only_missing_flagged(
     missing_toolset_id = f"ts-missing-{unique_suffix}"
     agent_id = f"agent-multi-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         ts = await client.post("/v1/toolsets", json=_toolset_body(present_toolset_id))
@@ -238,7 +239,7 @@ async def test_t0109_agent_status_ok_when_all_references_resolve(
     toolset_id = f"ts-ok-{unique_suffix}"
     agent_id = f"agent-ok-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         ts = await client.post("/v1/toolsets", json=_toolset_body(toolset_id))
@@ -285,7 +286,7 @@ async def test_t0033_agent_status_recovers_after_provider_recreate(
     provider_id = f"llm-rec-{unique_suffix}"
     agent_id = f"agent-rec-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         ag = await client.post(
@@ -311,8 +312,7 @@ async def test_t0033_agent_status_recovers_after_provider_recreate(
             ), broken_body
 
             # Step 3: provider recreated with same id → status ok again
-            recreated = await client.post(
-                "/v1/llm_providers", json=_llm_body(provider_id),
+            recreated = await seed_llm_provider(client, _llm_body(provider_id),
             )
             assert recreated.status_code == 201, recreated.text
             healed = await client.get(f"/v1/agents/{agent_id}/status")
@@ -342,7 +342,7 @@ async def test_t0106_agent_unicode_description_round_trip(
     # CJK + emoji + Arabic (RTL) — all valid NFC code points
     distinctive = f"日本語 🎉 العربية {unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         ag = await client.post(
@@ -391,7 +391,7 @@ async def test_t0076_agent_put_with_unknown_tool_flips_status(
     missing_toolset_id = f"missing-put-{unique_suffix}"
     agent_id = f"agent-put-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         ts = await client.post("/v1/toolsets", json=_toolset_body(present_toolset_id))
@@ -558,7 +558,7 @@ async def test_t0240_delete_provider_concurrent_with_status(
     provider_id = f"llm-race-{unique_suffix}"
     agent_id = f"agent-race-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         ag = await client.post(
@@ -619,7 +619,7 @@ async def test_t0265_create_agent_referencing_deleted_provider_permissive(
     agent_id = f"agent-t0265-{unique_suffix}"
 
     # Create then delete the provider
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     rm = await client.delete(f"/v1/llm_providers/{provider_id}")
     assert rm.status_code == 204, rm.text
@@ -665,7 +665,7 @@ async def test_t0344_delete_provider_flips_agent_and_graph_status(
     agent_id = f"agent-t0344-{unique_suffix}"
     graph_id = f"graph-t0344-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -736,7 +736,7 @@ async def test_t0357_graph_status_walks_depth_one_for_subgraph_refs(
     top_graph_id = f"topgraph-t0357-{unique_suffix}"
     missing_agent_id = f"missing-on-top-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -840,7 +840,7 @@ async def test_t0358_session_bound_to_graph_with_subgraph_creates_cleanly(
     wp_id = f"wp-t0358-{unique_suffix}"
     tpl_id = f"wt-t0358-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -1066,9 +1066,7 @@ async def test_t0384_agent_status_flags_model_not_in_provider_list(
     provider_id = f"llm-t0384-{unique_suffix}"
     agent_id = f"agent-t0384-{unique_suffix}"
 
-    pr = await client.post(
-        "/v1/llm_providers",
-        json={
+    pr = await seed_llm_provider(client, {
             "id": provider_id,
             "provider": "anthropic",
             "models": [{"name": "model-a", "context_length": 1024}],
@@ -1083,10 +1081,7 @@ async def test_t0384_agent_status_flags_model_not_in_provider_list(
         json={
             "id": agent_id,
             "description": "T0384",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "model-b",
-            },
+            "model": agent_model(provider_id, "model-b"),
             "tools": [],
         },
     )
@@ -1128,7 +1123,7 @@ async def test_t0413_delete_toolset_flips_agent_status_ok_false(
     toolset_id = f"ts-t0413-{unique_suffix}"
     agent_id = f"agent-t0413-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ts = await client.post("/v1/toolsets", json=_toolset_body(toolset_id))
     assert ts.status_code == 201, ts.text
@@ -1197,7 +1192,7 @@ async def test_t0430_graph_create_edge_unknown_node_id_returns_422(
     agent_id = f"agent-t0430-{unique_suffix}"
     graph_id = f"graph-t0430-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -1290,7 +1285,7 @@ async def test_t0431_graph_create_with_cyclic_edges_documented_behavior(
     agent_id = f"agent-t0431-{unique_suffix}"
     graph_id = f"graph-t0431-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -1374,7 +1369,7 @@ async def test_t0447_concurrent_post_agents_same_id_one_wins(
     agent_id = f"agent-t0447-{unique_suffix}"
     warmup_id = f"agent-warmup-t0447-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         # Warm the agents table (creates the row + drops it)
@@ -1465,7 +1460,7 @@ async def test_t0469_graph_router_branch_unknown_to_node_returns_422(
     agent_id = f"agent-t0469-{unique_suffix}"
     graph_id = f"graph-t0469-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -1542,7 +1537,7 @@ async def test_t0470_graph_with_multiple_terminals_accepted_status_clean(
     agent_id = f"agent-t0470-{unique_suffix}"
     graph_id = f"graph-t0470-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -1615,7 +1610,7 @@ async def test_t0471_graph_with_self_loop_edge_returns_clean_envelope(
     agent_id = f"agent-t0471-{unique_suffix}"
     graph_id = f"graph-t0471-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -1685,7 +1680,7 @@ async def test_t0472_graph_entry_node_at_terminal_only_node_clean(
     agent_id = f"agent-t0472-{unique_suffix}"
     graph_id = f"graph-t0472-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -1761,7 +1756,7 @@ async def test_t0473_put_graph_with_live_session_clean_envelope(
     wp_id = f"wp-t0473-{unique_suffix}"
     tpl_id = f"wt-t0473-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -1906,7 +1901,7 @@ async def test_t0474_delete_graph_with_bound_session_orphan_tolerated(
     wp_id = f"wp-t0474-{unique_suffix}"
     tpl_id = f"wt-t0474-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2018,7 +2013,7 @@ async def test_t0475_graph_subgraph_node_missing_graph_id_status_clean(
     graph_id = f"graph-t0475-{unique_suffix}"
     missing_subgraph_id = f"missing-sub-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2097,9 +2092,7 @@ async def test_t0492_agent_status_with_malformed_provider_url_clean(
     agent_id = f"agent-t0492-{unique_suffix}"
     malformed_url = "http://"  # passes Pydantic str but is a no-op host
 
-    pr = await client.post(
-        "/v1/llm_providers",
-        json={
+    pr = await seed_llm_provider(client, {
             "id": provider_id,
             "provider": "openresponses",
             "models": [
@@ -2175,7 +2168,7 @@ async def test_t0495_graph_max_iterations_zero_rejected_422(
     agent_id = f"agent-t0495-{unique_suffix}"
     graph_id = f"graph-t0495-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2231,7 +2224,7 @@ async def test_t0496_graph_max_iterations_negative_rejected_422(
     agent_id = f"agent-t0496-{unique_suffix}"
     graph_id = f"graph-t0496-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2284,7 +2277,7 @@ async def test_t0497_graph_max_iterations_very_large_accepted_round_trip(
     agent_id = f"agent-t0497-{unique_suffix}"
     graph_id = f"graph-t0497-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2355,7 +2348,7 @@ async def test_t0498_graph_with_callable_router_create_clean(
     agent_id = f"agent-t0498-{unique_suffix}"
     graph_id = f"graph-t0498-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2445,7 +2438,7 @@ async def test_t0499_put_graph_body_id_mismatch_returns_409(
     graph_id = f"graph-t0499-{unique_suffix}"
     wrong_id = f"graph-t0499-other-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2507,7 +2500,7 @@ async def test_t0500_post_graph_concurrent_put_same_id_clean(
     agent_id = f"agent-t0500-{unique_suffix}"
     graph_id = f"graph-t0500-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2619,7 +2612,7 @@ async def test_t0519_graph_node_ids_edge_cases_round_trip(
     agent_id = f"agent-t0519-{unique_suffix}"
     graph_id = f"graph-t0519-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2709,7 +2702,7 @@ async def test_t0520_graph_entry_at_subgraph_node_session_converges_cleanly(
     wp_id = f"wp-t0520-{unique_suffix}"
     tpl_id = f"wt-t0520-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2844,7 +2837,7 @@ async def test_t0521_graph_with_subgraph_and_agent_siblings_round_trip(
     graph_id = f"graph-t0521-{unique_suffix}"
     missing_subgraph_id = f"missing-sub-t0521-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2916,7 +2909,7 @@ async def test_t0522_graph_with_empty_description_accepted(
     agent_id = f"agent-t0522-{unique_suffix}"
     graph_id = f"graph-t0522-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -2975,7 +2968,7 @@ async def test_t0523_graph_max_iterations_one_accepted_round_trip(
     agent_id = f"agent-t0523-{unique_suffix}"
     graph_id = f"graph-t0523-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3034,7 +3027,7 @@ async def test_t0524_graph_node_jinja_syntax_error_in_template_accepted(
     agent_id = f"agent-t0524-{unique_suffix}"
     graph_id = f"graph-t0524-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3114,7 +3107,7 @@ async def test_t0525_post_graph_invalidate_clean_envelope(
     agent_id = f"agent-t0525-{unique_suffix}"
     graph_id = f"graph-t0525-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3174,7 +3167,7 @@ async def test_t0544_graphs_find_cursor_pagination_round_trip(
     prefix = f"graph-t0544-{unique_suffix}"
     graph_ids = [f"{prefix}-{i:02d}" for i in range(4)]
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3256,7 +3249,7 @@ async def test_t0545_graph_node_ids_reserved_style_names_round_trip(
     agent_id = f"agent-t0545-{unique_suffix}"
     graph_id = f"graph-t0545-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3325,7 +3318,7 @@ async def test_t0546_graph_description_with_control_chars_round_trip(
     agent_id = f"agent-t0546-{unique_suffix}"
     graph_id = f"graph-t0546-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3388,7 +3381,7 @@ async def test_t0547_post_delete_post_same_graph_id_no_stale_cache(
     graph_id = f"graph-t0547-{unique_suffix}"
     warmup_id = f"graph-warm-t0547-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3457,7 +3450,7 @@ async def test_t0548_put_graph_with_paused_session_clean(
     wp_id = f"wp-t0548-{unique_suffix}"
     tpl_id = f"wt-t0548-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3583,16 +3576,13 @@ async def test_t0561_post_agent_with_explicit_null_temperature_accepted(
     provider_id = f"llm-t0561-{unique_suffix}"
     agent_id = f"agent-t0561-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         body = {
             "id": agent_id,
             "description": "T0561 explicit null temperature",
-            "model": {
-                "provider_id": provider_id,
-                "model_name": "claude-sonnet-4-6",
-            },
+            "model": agent_model(provider_id, "claude-sonnet-4-6"),
             "tools": [],
             "temperature": None,  # explicit null
         }
@@ -3636,7 +3626,7 @@ async def test_t0563_post_entity_description_with_deep_unicode_escapes(
     provider_id = f"llm-t0563-{unique_suffix}"
     agent_id = f"agent-t0563-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
 
     # Build raw JSON wire bytes manually so the embedded `\uXXXX`
@@ -3649,12 +3639,12 @@ async def test_t0563_post_entity_description_with_deep_unicode_escapes(
     description_payload = (
         f"T0563-marker-{unique_suffix}-" + wire_pair * 100 + "-end"
     )
+    _pid = profile_id_for(provider_id, "claude-sonnet-4-6")
     raw_body = (
         '{'
         f'"id":"{agent_id}",'
         f'"description":"{description_payload}",'
-        f'"model":{{"provider_id":"{provider_id}",'
-        f'"model_name":"claude-sonnet-4-6"}},'
+        f'"model":{{"profile_id":"{_pid}"}},'
         f'"tools":[]'
         '}'
     )
@@ -3753,7 +3743,7 @@ async def test_t0568_graph_post_missing_begin_now_allowed(
     agent_id = f"agent-t0568-{unique_suffix}"
     graph_id = f"graph-t0568-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3813,7 +3803,7 @@ async def test_t0569_graph_post_with_100_nodes_round_trip(
     agent_id = f"agent-t0569-{unique_suffix}"
     graph_id = f"graph-t0569-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3889,7 +3879,7 @@ async def test_t0570_mutual_subgraph_cycle_accepted_status_clean(
     graph_a_id = f"graph-a-t0570-{unique_suffix}"
     graph_b_id = f"graph-b-t0570-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -3971,7 +3961,7 @@ async def test_t0571_post_delete_post_then_status_clean(
     graph_id = f"graph-t0571-{unique_suffix}"
     warmup_id = f"graph-warm-t0571-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -4040,10 +4030,7 @@ async def test_t0588_agent_create_with_null_tool_entry_returns_422(
     body = {
         "id": agent_id,
         "description": "T0588 null tool entry",
-        "model": {
-            "provider_id": f"placeholder-{unique_suffix}",
-            "model_name": "claude-sonnet-4-6",
-        },
+        "model": agent_model(f"placeholder-{unique_suffix}", "claude-sonnet-4-6"),
         "tools": [None],  # the offending element
     }
     resp = await client.post("/v1/agents", json=body)
@@ -4088,7 +4075,7 @@ async def test_t0594_predicate_eq_temperature_zero_clean_envelope(
     """
     provider_id = f"llm-t0594-{unique_suffix}"
     agent_id = f"agent-t0594-{unique_suffix}"
-    pr = await client.post("/v1/llm_providers", json={
+    pr = await seed_llm_provider(client, {
         "id": provider_id,
         "provider": "anthropic",
         "models": [
@@ -4167,7 +4154,7 @@ async def test_t0600_agent_burst_create_delete_race_clean_envelopes(
     import asyncio
     provider_id = f"llm-t0600-{unique_suffix}"
     warmup_id = f"agent-warmup-t0600-{unique_suffix}"
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     agent_ids = [f"agent-t0600-{i:02d}-{unique_suffix}" for i in range(20)]
     try:
@@ -4261,7 +4248,7 @@ async def test_t0589_llm_provider_max_concurrency_zero_returns_422(
     body = _llm_body(provider_id)
     body["limits"] = {"max_concurrency": 0}  # the offending value
 
-    resp = await client.post("/v1/llm_providers", json=body)
+    resp = await seed_llm_provider(client, body)
     envelope = resp.json() if resp.content else {}
     assert envelope.get("type") != "/errors/internal", (
         f"max_concurrency=0 leaked /errors/internal: {resp.text}"
@@ -4302,7 +4289,7 @@ async def test_t0613_graph_put_replace_nodes_status_reflects_v2(
     graph_id = f"graph-t0613-{unique_suffix}"
     missing_agent = f"agent-MISSING-t0613-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     try:
         # Two real agents
@@ -4407,7 +4394,7 @@ async def test_t0617_graph_node_with_both_agent_id_and_graph_id_clean(
     agent_id = f"agent-t0617-{unique_suffix}"
     graph_id = f"graph-t0617-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -4482,7 +4469,7 @@ async def test_t0618_graph_put_missing_begin_now_allowed(
     agent_id = f"agent-t0618-{unique_suffix}"
     graph_id = f"graph-t0618-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -4564,7 +4551,7 @@ async def test_t0619_graph_duplicate_edges_round_trip(
     agent_id = f"agent-t0619-{unique_suffix}"
     graph_id = f"graph-t0619-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -4641,7 +4628,7 @@ async def test_t0620_graph_node_empty_id_returns_422(
     agent_id = f"agent-t0620-{unique_suffix}"
     graph_id = f"graph-t0620-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -4701,7 +4688,7 @@ async def test_t0621_graph_zero_edges_multi_node_accepted_clean(
     agent_id = f"agent-t0621-{unique_suffix}"
     graph_id = f"graph-t0621-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -4775,7 +4762,7 @@ async def test_t0622_graph_max_iterations_null_accepted(
     agent_id = f"agent-t0622-{unique_suffix}"
     graph_id = f"graph-t0622-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -4839,7 +4826,7 @@ async def test_t0623_graph_concurrent_put_replace_clean_envelopes(
     agent_id = f"agent-t0623-{unique_suffix}"
     graph_id = f"graph-t0623-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -4943,7 +4930,7 @@ async def test_t0624_graph_deleted_then_resume_session_clean_fatal_path(
     tpl_id = f"wt-t0624-{unique_suffix}"
     graph_id = f"graph-t0624-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5072,7 +5059,7 @@ async def test_t0637_graph_status_3_level_subgraph_chain_clean_envelope(
     graph_b = f"graph-b-t0637-{unique_suffix}"
     graph_c = f"graph-c-t0637-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5190,7 +5177,7 @@ async def test_t0638_graph_session_steer_cancel_resume_clean_fatal(
     tpl_id = f"wt-t0638-{unique_suffix}"
     graph_id = f"graph-t0638-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5317,7 +5304,7 @@ async def test_t0639_two_graph_bound_sessions_terminate_independently(
     tpl_id = f"wt-t0639-{unique_suffix}"
     graph_id = f"graph-t0639-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5442,7 +5429,7 @@ async def test_t0640_graph_put_mid_flight_on_running_session(
     tpl_id = f"wt-t0640-{unique_suffix}"
     graph_id = f"graph-t0640-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5572,7 +5559,7 @@ async def test_t0641_graph_large_dag_200_nodes_round_trips(
     agent_id = f"agent-t0641-{unique_suffix}"
     graph_id = f"graph-t0641-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5655,7 +5642,7 @@ async def test_t0642_graph_duplicate_node_ids_clean_envelope(
     agent_id = f"agent-t0642-{unique_suffix}"
     graph_id = f"graph-t0642-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5742,7 +5729,7 @@ async def test_t0672_cancel_graph_bound_created_before_first_turn(
     tpl_id = f"wt-t0672-{unique_suffix}"
     graph_id = f"graph-t0672-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5846,7 +5833,7 @@ async def test_t0673_graph_put_entry_swap_mid_flight_session_clean_fatal(
     tpl_id = f"wt-t0673-{unique_suffix}"
     graph_id = f"graph-t0673-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -5984,7 +5971,7 @@ async def test_t0674_graph_node_ids_byte_exact_distinct(
     agent_id = f"agent-t0674-{unique_suffix}"
     graph_id = f"graph-t0674-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -6068,7 +6055,7 @@ async def test_t0715_delete_llm_provider_then_agent_status_clean(
     provider_id = f"llm-t0715-{unique_suffix}"
     agent_id = f"agent-t0715-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
@@ -6138,7 +6125,7 @@ async def test_t0414_delete_agent_flips_graph_status_to_failed(
     agent_id = f"agent-t0414-{unique_suffix}"
     graph_id = f"graph-t0414-{unique_suffix}"
 
-    pr = await client.post("/v1/llm_providers", json=_llm_body(provider_id))
+    pr = await seed_llm_provider(client, _llm_body(provider_id))
     assert pr.status_code == 201, pr.text
     ag = await client.post(
         "/v1/agents",
