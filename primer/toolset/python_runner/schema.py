@@ -80,8 +80,16 @@ def _annotation_to_schema(node: ast.expr, param: str) -> dict[str, Any]:
 def build_args_schema(
     fn_node: ast.FunctionDef | ast.AsyncFunctionDef,
     doc: ParsedDocstring,
+    *,
+    require_arg_docs: bool = True,
 ) -> dict[str, Any]:
-    """Build the tool's args schema from ``fn_node``'s signature."""
+    """Build the tool's args schema from ``fn_node``'s signature.
+
+    ``require_arg_docs=False`` relaxes the every-parameter-documented
+    rule for contexts whose descriptions never reach LLM context
+    (service bundle functions); annotations stay mandatory because they
+    ARE the schema.
+    """
     a = fn_node.args
     if a.vararg is not None:
         raise SchemaError(
@@ -111,14 +119,15 @@ def build_args_schema(
             raise SchemaError(
                 f"parameter {name!r} needs a type annotation", field=name
             )
-        if name not in doc.args:
+        if name not in doc.args and require_arg_docs:
             raise SchemaError(
                 f"parameter {name!r} is not documented in the docstring's "
                 f"Args: section",
                 field=name,
             )
         prop = _annotation_to_schema(arg.annotation, name)
-        prop["description"] = doc.args[name]
+        if name in doc.args:
+            prop["description"] = doc.args[name]
         if name in defaults:
             prop["default"] = defaults[name]
         else:

@@ -38,6 +38,7 @@ from primer.model.provider import (
     LLMProvider,
     Toolset,
 )
+from primer.model.service import Service, ServiceVersion
 from primer.model.user import User
 from primer.model.workspace_session import WorkspaceSession
 from primer.model.workspace import (
@@ -224,6 +225,18 @@ def get_graph_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ) -> "Storage[Graph]":
     return sp.get_storage(Graph)
+
+
+def get_service_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[Service]":
+    return sp.get_storage(Service)
+
+
+def get_service_version_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+) -> "Storage[ServiceVersion]":
+    return sp.get_storage(ServiceVersion)
 
 
 def get_collection_storage(
