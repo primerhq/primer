@@ -179,6 +179,14 @@ class AgentBinding(BaseModel):
             "and are listed by inspecting the workspace's tool set."
         ),
     )
+    allow_external_tools: bool = Field(
+        default=False,
+        description=(
+            "Snapshot of Agent.allow_external_tools at session start, so "
+            "a mid-session agent edit never changes a running "
+            "conversation's external-tool behaviour."
+        ),
+    )
 
 
 # ===========================================================================

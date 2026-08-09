@@ -208,6 +208,7 @@ async def start_workspace_session(
             agent_id=resolved_agent.id,
             agent_name=resolved_agent.id,
             registered_tool_ids=list(resolved_agent.tools or []),
+            allow_external_tools=resolved_agent.allow_external_tools,
         )
         live_workspace = await deps.workspace_registry.get_workspace(
             workspace_id,

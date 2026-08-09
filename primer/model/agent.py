@@ -185,6 +185,16 @@ class Agent(Describeable):
             "summarisation."
         ),
     )
+    allow_external_tools: bool = Field(
+        default=False,
+        description=(
+            "When true, an API caller invoking this agent may register "
+            "per-invocation external tool definitions. When the LLM calls "
+            "one, the turn parks and the caller resumes it with the result "
+            "through the invocation API. Default false: invocation bodies "
+            "carrying external_tools are rejected with 422."
+        ),
+    )
     response_format: dict[str, Any] | None = Field(
         default=None,
         description=(
