@@ -162,3 +162,11 @@ Unit and integration coverage lives under `tests/chat/` (`test_dispatch.py`, `te
 - **On-demand `POST /v1/chats/{id}/compact` returns 409 when a turn is in flight; manual compaction is chat-only.** Why: reusing the turn-in-flight lock keeps manual compaction from racing the runner's own pre-turn auto-compaction, and workspace sessions remain auto-only with no REST surface. Spec: docs/superpowers/specs/2026-05-30-auto-compaction-token-counting-design.md.
 - **Triggers drive `user_message` turns into an existing chat through the canonical `append_user_message` plus `ClaimEngine.upsert` path.** Why: routing the `chat_message` subscriber through the same enqueue plus claim path as a WebSocket `user_message` keeps persistence, title derivation, and attribution single-sourced. Spec: docs/superpowers/specs/2026-06-01-triggers-and-subscriptions-design.md.
 - **The multi-process plus SQLite startup guard was not implemented; the constraint is documentation-only.** Why: the in-memory event bus cannot bridge processes, so a multi-process deployment must move to Postgres LISTEN/NOTIFY, but the intended boot-time guard refusing SQLite under multi-process never landed. Spec: docs/superpowers/specs/2026-05-27-chat-turn-detachment-design.md.
+
+## Cross-reference: external tools
+
+`Chat.pending_tool_call` has a third mode, `external`, for
+invoker-supplied tool calls: the send path stamps the caller's result
+onto the pending dict and the dispatch loop pairs it without consuming a
+human reply; the persisted `external_tool_call` message row is the WS
+push frame. See [external-tools](external-tools.md).

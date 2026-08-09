@@ -205,3 +205,9 @@ Per-page coverage is split between Python static-source assertions and gated bro
 - **The web-search and MCP-server pages reuse the list-bar plus stacked-panel shape with a reserved built-in row rendered inert.** Why: the bootstrapped DuckDuckGo web-search row and the MCP exposure singleton are server-owned, so they render with a built-in badge and no Edit/Delete affordance rather than being hidden. Spec: docs/superpowers/specs/2026-06-03-web-search-providers-design.md.
 
 - **A parallel trial console (the Studio2 shell) mounts at `#/studio2` and hosts un-migrated pages in same-origin iframes.** Why: the consolidation is validated as an opt-in surface instead of a rewrite; the page layer here stays authoritative until the trial verdict. See [ui-studio2](ui-studio2.md).
+
+## Cross-reference: external tools
+
+The session panel and chat detail mount `window.ExternalPendingBanner`
+(`ui/components/external-tools.jsx`), and both agent editors expose the
+`allow_external_tools` toggle. See [external-tools](external-tools.md).

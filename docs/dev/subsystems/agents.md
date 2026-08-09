@@ -179,3 +179,10 @@ Tests live under `tests/agent/`. The data models are covered by `test_thread_mod
 - **The worker special-cases `tool_name=="_approval"` inline rather than registering a resume hook in the registry.** Why: the resume needs the live `ToolExecutionManager` to re-dispatch the original call, and the registry passes only the parked blob plus payload. Spec: `docs/superpowers/specs/2026-05-24-tool-approval-system-design.md`.
 - **`ToolExecutionManager.invoke_one` collapses to dispatch plus metrics plus tracing, trusting the MCP dispatcher's filters.** Why: MCP cannot park, resume, or bind a workspace context, so the inbound endpoint reuses a thinner path than the agent-side `execute`. Spec: `docs/superpowers/specs/2026-06-02-mcp-server-endpoint-design.md`.
 - **The failed-turn path drives both the new `TurnLogFailed` event and the legacy `messages.jsonl` ERROR record off one `ProblemDetails` envelope.** Why: operators now see the real exception type, title, and detail in both the Turn-log tab and the Messages tab, retiring the generic "unexpected executor error" string. Spec: `docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md`.
+
+## Cross-reference: external tools
+
+Invoker-supplied tools ride the tool manager as a per-invocation
+`external` pseudo-toolset that bypasses the agent allowlist and the
+approval gate and always yields; see
+[external-tools](external-tools.md).

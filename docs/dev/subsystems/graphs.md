@@ -189,3 +189,10 @@ Tests live under `tests/graph/`. Model tests round-trip every node kind and exer
 - **Sub-graph runs inherit the parent's turn-log storage so nested timelines stay in one table.** Why: without threading `turn_log_storage` into children, subgraphs would emit silently and operators would see a partial timeline. Spec: docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md.
 </content>
 </invoke>
+
+## Cross-reference: external tools
+
+Agent-node calls to invoker-supplied tools park through
+`pending_agent_yields` under the `_external` marker and resolve
+individually via the steer endpoint's `tool_results`, riding the generic
+value-yield resume path. See [external-tools](external-tools.md).
