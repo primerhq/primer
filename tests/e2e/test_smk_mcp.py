@@ -380,35 +380,42 @@ async def _drive_search_through_real_mcp(
     return final
 
 
-@smk("SMK-MCP-01", "SMK-MCP-03", "SMK-MCP-04")
+# The mount + catalogue half of these journeys is fully local: the
+# open-websearch server runs on this machine and `tools/list` is an MCP call
+# to it. Driving a SEARCH is not -- the server forwards the query to a public
+# engine, and whether that engine answers within the turn is not a property
+# of this codebase. It was flaky in CI for exactly that reason (the tool call
+# never returned, the session ended after one turn, and the round-trip
+# assertion read total=1), so the two halves are separate tests and only the
+# live half is gated.
+
+
+@smk("SMK-MCP-01", status="partial")
 @requires("mcp:stdio")
-async def test_external_stdio_open_websearch(
-    authed_client, mock_llm, ows_stdio_mount, unique_suffix, tmp_path
+async def test_external_stdio_open_websearch_mounts_and_lists_tools(
+    authed_client, ows_stdio_mount, unique_suffix
 ):
-    """Mount the REAL open-websearch server over stdio, confirm its tool
-    catalogue, scope an agent to its ``search`` tool, and drive a live tool call
-    end to end through a scripted agent."""
+    """Mount the REAL open-websearch server over stdio and confirm its tool
+    catalogue. No network: the server is local and this is a `tools/list`."""
     tid = f"mcp-ext-stdio-{unique_suffix}"
     await _mount_mcp(authed_client, tid, ows_stdio_mount)
     try:
         names = await _list_tool_names(authed_client, tid)
         assert _EXPECTED_OWS_TOOL in names, names
         assert len(names) >= 1, names
-        await _drive_search_through_real_mcp(
-            authed_client, mock_llm, tid, unique_suffix, tmp_path)
     finally:
         await authed_client.delete(f"/v1/toolsets/{tid}")
 
 
-@smk("SMK-MCP-02", "SMK-MCP-03", "SMK-MCP-04")
+@smk("SMK-MCP-02", status="partial")
 @requires("mcp:http")
-async def test_external_http_open_websearch(
-    authed_client, mock_llm, ows_http_url, unique_suffix, tmp_path
+async def test_external_http_open_websearch_mounts_and_lists_tools(
+    authed_client, ows_http_url, unique_suffix
 ):
     """Spawn a REAL open-websearch streamable-HTTP daemon, mount it over the
-    http transport, confirm its tool catalogue, and drive a live tool call end
-    to end. The daemon's lifecycle is managed by the ``ows_http_url`` fixture
-    (started in setup, process group terminated in teardown)."""
+    http transport, and confirm its tool catalogue. The daemon's lifecycle is
+    managed by the ``ows_http_url`` fixture (started in setup, process group
+    terminated in teardown). No network beyond localhost."""
     tid = f"mcp-ext-http-{unique_suffix}"
     await _mount_mcp(
         authed_client, tid, {"transport": "http", "config": {"url": ows_http_url}})
@@ -416,6 +423,41 @@ async def test_external_http_open_websearch(
         names = await _list_tool_names(authed_client, tid)
         assert _EXPECTED_OWS_TOOL in names, names
         assert len(names) >= 1, names
+    finally:
+        await authed_client.delete(f"/v1/toolsets/{tid}")
+
+
+@smk("SMK-MCP-03", "SMK-MCP-04")
+@requires("mcp:stdio", "net:public")
+async def test_external_stdio_open_websearch_live_query(
+    authed_client, mock_llm, ows_stdio_mount, unique_suffix, tmp_path
+):
+    """Drive a live search through the stdio-mounted real server end to end.
+
+    Needs the ``public_network`` lane: the query leaves the machine.
+    """
+    tid = f"mcp-ext-stdio-live-{unique_suffix}"
+    await _mount_mcp(authed_client, tid, ows_stdio_mount)
+    try:
+        await _drive_search_through_real_mcp(
+            authed_client, mock_llm, tid, unique_suffix, tmp_path)
+    finally:
+        await authed_client.delete(f"/v1/toolsets/{tid}")
+
+
+@smk("SMK-MCP-03", "SMK-MCP-04")
+@requires("mcp:http", "net:public")
+async def test_external_http_open_websearch_live_query(
+    authed_client, mock_llm, ows_http_url, unique_suffix, tmp_path
+):
+    """Drive a live search through the http-mounted real server end to end.
+
+    Needs the ``public_network`` lane: the query leaves the machine.
+    """
+    tid = f"mcp-ext-http-live-{unique_suffix}"
+    await _mount_mcp(
+        authed_client, tid, {"transport": "http", "config": {"url": ows_http_url}})
+    try:
         await _drive_search_through_real_mcp(
             authed_client, mock_llm, tid, unique_suffix, tmp_path)
     finally:

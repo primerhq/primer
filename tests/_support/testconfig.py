@@ -86,6 +86,12 @@ class Caps:
         # explicitly pointed elsewhere. The fixture availability is what these
         # caps gate, so they are always present in the hermetic build.
         s.update({"mcp:stdio", "mcp:http", "harness"})
+        # Reaching a third-party search engine over the public internet. The
+        # MCP caps above only gate whether the fixture server can RUN; a test
+        # that drives a live query through it depends on something no amount
+        # of local setup controls, so it gets its own opt-in lane.
+        if self._truthy(c, "lanes", "public_network"):
+            s.add("net:public")
         for wb in ("container", "kubernetes"):
             if self._truthy(c, "workspace_backends", wb):
                 s.add(f"workspace:{wb}")
