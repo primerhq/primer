@@ -21,7 +21,7 @@ from tests.ui_e2e import _graph_builder_helpers as gb
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
 pytestmark = smk("SMK-UI-04", status="partial")
 
 
@@ -326,13 +326,12 @@ def test_u0041_create_agent_then_bind_to_session_flow(
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
 
-        # Fill the form. Create stays disabled until a provider AND a
-        # model are selected, so fill id + provider + model.
+        # Fill the form. Create stays disabled until a model profile is
+        # selected, so fill id + profile.
         modal.locator("input#na-id").fill(agent_id)
-        modal.locator("select#na-llm-provider").select_option(
-            value=provider_id,
+        modal.locator("select#na-model-profile").select_option(
+            value=profile_id_for(provider_id, "fake-model"),
         )
-        modal.locator("select#na-model").select_option("fake-model")
 
         # Submit.
         modal.get_by_role("button", name="Create").first.click()

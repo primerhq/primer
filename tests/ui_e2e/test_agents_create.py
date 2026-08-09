@@ -27,7 +27,7 @@ import pytest
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
 pytestmark = smk("SMK-UI-03")
 
 
@@ -127,8 +127,8 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             # assert the exact row and clean up reliably.
             #
             # Selector strategy: use the htmlFor/id pairs added to
-            # NewAgentModal (na-id, na-description, na-llm-provider,
-            # na-model, na-system-prompt, na-temperature). These are
+            # NewAgentModal (na-id, na-description, na-model-profile,
+            # na-system-prompt, na-temperature). These are
             # semantic IDs tied to the JSX, more stable than
             # get_by_label substring matches (which hit strict-mode
             # violations when labels share words). When the JSX
@@ -138,11 +138,11 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             modal.locator("#na-description").fill(
                 f"u0006 seed {unique_suffix}",
             )
-            # The LLM provider dropdown was seeded; pick our row.
-            modal.locator("#na-llm-provider").select_option(provider_id)
-            # Model dropdown auto-seeds to the first option once the
-            # provider's models load - give the populate effect a tick.
-            modal.locator("#na-model").select_option("fake-model")
+            # One picker, not a pair: an agent names a ModelProfile,
+            # which already pins the provider and the wire model name.
+            modal.locator("#na-model-profile").select_option(
+                profile_id_for(provider_id, "fake-model"),
+            )
 
             # Submit.
             modal.get_by_role("button", name="Create").click()
@@ -209,8 +209,9 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
 
         modal.locator("#na-id").fill(agent_id)
         modal.locator("#na-description").fill("u0007 422 probe")
-        modal.locator("#na-llm-provider").select_option(provider_id)
-        modal.locator("#na-model").select_option("fake-model")
+        modal.locator("#na-model-profile").select_option(
+            profile_id_for(provider_id, "fake-model"),
+        )
         # Temperature lives on the "Advanced" tab of the form - switch to
         # it and wait for the input before filling.
         modal.get_by_test_id("agent-tab-advanced").click()

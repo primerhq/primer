@@ -40,7 +40,7 @@ const AGENTS_FIXTURE = {
     "items": [{
       "id": "weekly-digest",
       "description": "Summarises the week",
-      "model": { "provider_id": "demo-openai", "model_name": "gpt-4o" },
+      "model": { "profile_id": "demo-openai--gpt-4o" },
       "temperature": null, "tools": [],
       "system_prompt": ["You write concise weekly digests."],
       "compaction_prompt": [], "harness_id": null
@@ -48,13 +48,31 @@ const AGENTS_FIXTURE = {
   },
   "GET /agents/weekly-digest": {
     "id": "weekly-digest", "description": "Summarises the week",
-    "model": { "provider_id": "demo-openai", "model_name": "gpt-4o" },
+    "model": { "profile_id": "demo-openai--gpt-4o" },
     "temperature": null, "tools": [],
     "system_prompt": ["You write concise weekly digests."],
     "compaction_prompt": [], "harness_id": null
   },
+  // An agent names a ModelProfile; the page resolves it to show which
+  // model the agent runs and which provider is behind it, so the stub has
+  // to serve the profile too or every row reads "(unconfigured)".
+  "GET /model_profiles?limit=200": {
+    "kind": "offset", "offset": 0, "length": 1, "total": 1,
+    "items": [{
+      "id": "demo-openai--gpt-4o",
+      "description": "gpt-4o on demo-openai",
+      "provider_id": "demo-openai", "model_name": "gpt-4o",
+      "context_length": 128000, "config": {}, "harness_id": null
+    }]
+  },
   "GET /llm_providers?limit=200": {
-    "kind": "offset", "offset": 0, "length": 0, "total": 0, "items": []
+    "kind": "offset", "offset": 0, "length": 1, "total": 1,
+    "items": [{
+      "id": "demo-openai", "description": "Demo OpenAI provider",
+      "provider": "openresponses",
+      "config": { "url": "https://api.openai.com/v1", "flavor": "openai" },
+      "limits": { "max_concurrency": 4 }
+    }]
   }
 };
 
