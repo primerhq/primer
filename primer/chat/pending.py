@@ -65,8 +65,10 @@ async def abandon_pending_rows(
         )
         await write_approval_record(approval_records, record)
     await _append_row(chat, kind="tool_result", messages=messages, payload={
+        # External pendings carry the invoker-defined tool name; the
+        # legacy gates (ask_user / approval) fall back to the mode label.
         "id": pending.get("tool_call_id"),
-        "name": str(pending.get("mode") or ""),
+        "name": str(pending.get("name") or pending.get("mode") or ""),
         "result": result_text,
         "error": True,
     })
@@ -79,3 +81,36 @@ async def abandon_pending_rows(
         chat.cancel_requested_at = latest.cancel_requested_at
         chat.agent_id = latest.agent_id
     await chats.update(chat)
+
+
+async def flip_external_row(
+    storage: Any,
+    *,
+    row_id: str | None,
+    status: str,
+    result: Any,
+    is_error: bool = True,
+) -> None:
+    """Best-effort resolve of an external call's audit row.
+
+    The park/pending slot is the execution source of truth; a missing or
+    already-resolved row must never fail the surrounding flow, so every
+    error is swallowed after the guard checks.
+    """
+    if not row_id:
+        return
+    try:
+        row = await storage.get(row_id)
+        if row is None or row.status != "pending":
+            return
+        row.status = status
+        row.result = result
+        row.is_error = is_error
+        row.resolved_at = datetime.now(timezone.utc)
+        await storage.update(row)
+    except Exception:  # noqa: BLE001 - audit row is best-effort
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "external tool call row flip failed for %r", row_id
+        )

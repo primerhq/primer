@@ -47,6 +47,12 @@ ChatMessageKind = Literal[
     "reasoning",
     "tool_call",
     "tool_result",
+    # Persisted push-frame for an invoker-supplied (external) tool call:
+    # written by the runner's soft-yield when the pending mode is
+    # "external" so a WS client sees the call live AND on reconnect
+    # replay. Display/protocol only - skipped when rebuilding the
+    # prompt (the paired tool_call/tool_result rows carry history).
+    "external_tool_call",
     # Legacy-unused on the chat soft-yield path (chats never park, so no
     # row is ever written with these kinds). Retained because
     # dispatch._find_next_user_message still lists "yielded" among its
@@ -177,12 +183,25 @@ class Chat(Identifiable):
     pending_tool_call: dict[str, Any] | None = Field(
         default=None,
         description=(
-            "Set when the chat agent invoked a yielding tool (ask_user or an "
-            "approval-gated call) and the turn ended awaiting the human's "
-            "reply. Holds {tool_call_id, mode: 'ask_user'|'approval', "
-            "original_call?, response_schema?}. Cleared when the reply is "
-            "consumed as the pending call's tool_result. The chat surface does "
-            "NOT park; this is purely in-conversation state."
+            "Set when the chat agent invoked a yielding tool (ask_user, an "
+            "approval-gated call, or an invoker-supplied external tool) and "
+            "the turn ended awaiting the reply. Holds {tool_call_id, mode: "
+            "'ask_user'|'approval'|'external', original_call?, "
+            "response_schema?}; mode 'external' additionally carries {name, "
+            "arguments, external_call_row_id} and, once the invoker "
+            "responds, {external_result: {result, is_error}}. Cleared when "
+            "the reply is consumed as the pending call's tool_result. The "
+            "chat surface does NOT park; this is purely in-conversation "
+            "state."
+        ),
+    )
+    external_tools: list[dict[str, Any]] | None = Field(
+        default=None,
+        description=(
+            "Active invoker-supplied tool defs for the next turn "
+            "(ExternalToolDef dumps, wire alias 'schema'). Replaced by each "
+            "turn-triggering message; None/[] means no external tools. "
+            "Gated by the agent's allow_external_tools flag at send time."
         ),
     )
     profile_id: str | None = Field(
