@@ -107,3 +107,85 @@ async def test_list_and_delete(client):
 async def test_invalidate_endpoint_returns_202(client):
     r = await client.post("/v1/tool_approval_policies/invalidate")
     assert r.status_code in (200, 202)
+
+
+class TestLlmJudgeModelValidation:
+    """``approval.model`` is checked against what the provider publishes.
+
+    That used to mean ``LLMProvider.models``. The field is gone -- the
+    provider's ModelProfile rows are the registry -- and reading it raised
+    AttributeError inside the create hook, turning every llm-judge policy
+    create into a 500.
+    """
+
+    async def _seed_provider(self, client, pid: str) -> None:
+        r = await client.post("/v1/llm_providers", json={
+            "id": pid,
+            "description": "judge provider",
+            "provider": "anthropic",
+            "config": {"api_key": "sk-test"},
+            "limits": {"max_concurrency": 1},
+        })
+        assert r.status_code in (200, 201), r.text
+
+    async def _seed_profile(self, client, pid: str, model: str) -> None:
+        r = await client.post("/v1/model_profiles", json={
+            "id": f"{pid}--{model}",
+            "description": "judge model",
+            "provider_id": pid,
+            "model_name": model,
+            "context_length": 4096,
+        })
+        assert r.status_code in (200, 201), r.text
+
+    def _body(self, pid: str, model: str) -> dict:
+        return {
+            "id": f"p-llm-{model}",
+            "toolset_id": "system",
+            "tool_name": "x",
+            "approval": {
+                "type": "llm",
+                "provider_id": pid,
+                "model": model,
+                "prompt": "decide",
+            },
+        }
+
+    @pytest.mark.asyncio
+    async def test_model_named_by_a_profile_is_accepted(self, client):
+        await self._seed_provider(client, "judge-a")
+        await self._seed_profile(client, "judge-a", "claude-x")
+        r = await client.post(
+            "/v1/tool_approval_policies", json=self._body("judge-a", "claude-x"),
+        )
+        assert r.status_code == 201, r.text
+
+    @pytest.mark.asyncio
+    async def test_model_no_profile_names_is_422_not_500(self, client):
+        """The regression: this raised AttributeError and surfaced as a
+        500 /errors/internal instead of a field-level 422."""
+        await self._seed_provider(client, "judge-b")
+        await self._seed_profile(client, "judge-b", "claude-x")
+        r = await client.post(
+            "/v1/tool_approval_policies", json=self._body("judge-b", "nope"),
+        )
+        assert r.status_code == 422, r.text
+        errors = r.json()["extensions"]["errors"]
+        assert any(
+            list(e["loc"])[-2:] == ["approval", "model"] for e in errors
+        ), errors
+
+    @pytest.mark.asyncio
+    async def test_provider_with_no_profiles_rejects_every_model(self, client):
+        await self._seed_provider(client, "judge-c")
+        r = await client.post(
+            "/v1/tool_approval_policies", json=self._body("judge-c", "anything"),
+        )
+        assert r.status_code == 422, r.text
+
+    @pytest.mark.asyncio
+    async def test_unknown_provider_is_still_422(self, client):
+        r = await client.post(
+            "/v1/tool_approval_policies", json=self._body("no-such", "m"),
+        )
+        assert r.status_code == 422, r.text

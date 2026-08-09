@@ -62,8 +62,10 @@ class LlmApprovalConfig(BaseModel):
         ...,
         min_length=1,
         description=(
-            "Model name as published by the provider's ``models`` "
-            "list. Validated at policy create/update time."
+            "Model name the provider publishes, i.e. named by one of its "
+            "``ModelProfile`` rows. The judge is a direct provider call "
+            "rather than an agent turn, so it takes the bare name and no "
+            "profile id. Validated at policy create/update time."
         ),
     )
     prompt: str = Field(
