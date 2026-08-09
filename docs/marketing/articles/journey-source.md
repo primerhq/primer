@@ -57,7 +57,7 @@ problem the last one exposed. Walk 4–6 of these (don't do all 9 — pick the v
 ## Titles to test
 - *I tried to run AI agents on a 16GB gaming GPU. It changed how I build with LLMs.*
 - *The bet behind Primer: a small model with a clean context can rival a much bigger one*
-- *Loop engineering: what building an agent platform on modest hardware taught me*
+- *Graph engineering: what building an agent platform on modest hardware taught me*
 
 ## Don't
 - Don't claim benchmarked parity — it's a thesis; say so (that line IS the trust).

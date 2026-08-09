@@ -10,12 +10,12 @@ It started with a constraint. I wanted to run useful AI agents on a 16GB gaming 
 
 **A small model given a clean, purpose-built context can rival a much larger one.**
 
-Every transformer spends a fixed budget of attention across its tokens. A tight, deliberate context puts more of that budget on what actually matters (and yes — that helps big models too). I call it *loop engineering*: the value isn't the model, it's the loop you build around it.
+Every transformer spends a fixed budget of attention across its tokens. A tight, deliberate context puts more of that budget on what actually matters (and yes — that helps big models too). I call it *graph engineering*: the value isn't the model, it's the structure you build around it.
 
 Primer is the **self-hosted control plane** that makes that practical at fleet scale. Not a library you import — a platform you run:
 
 → **Park-and-resume** agents that wait hours on a tool or a human decision without holding compute
-→ **Directed graphs** — producer/judge loops, fan-out/fan-in — as first-class structure, not glue code
+→ **Declarative agent graphs** — typed nodes, conditional edges, fan-out/fan-in, cycles — as first-class structure, not glue code
 → **Workspaces** (local / container / **Kubernetes**) with a git-backed filesystem, so agent state lives *outside* the context window
 → **MCP-native** — a built-in MCP server *and* client, so you can drive the platform with agents
 → **Collections that mount as editable files** — knowledge your agents read, write, and sync back, versioned like code

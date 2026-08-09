@@ -11,7 +11,7 @@
 | Sub | Why it fits | Angle |
 |---|---|---|
 | **r/LocalLLaMA** | large + exactly your people (self-host, small/open models). The 16GB-GPU origin story *lands* here. | local-first, own-your-stack, small-model bet |
-| **r/AI_Agents** | the precise niche — people building agent systems, growing fast | orchestration, loop engineering, park/resume |
+| **r/AI_Agents** | the precise niche — people building agent systems, growing fast | orchestration, graph engineering, park/resume |
 | **r/LLMDevs** | LLM engineers building real things | graphs, maker/checker, MCP |
 
 **Tier 2 — strong fit:**
