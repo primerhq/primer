@@ -12,7 +12,7 @@ Covers:
 from __future__ import annotations
 
 import httpx
-from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider_with
 
 
 # ---------------------------------------------------------------------------

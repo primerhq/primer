@@ -20,7 +20,7 @@ import httpx
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_session_in_studio
-from tests._support.model_profiles import agent_model, seed_llm_provider_with, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider_with
 
 
 def _seed_llm_provider(base_url: str, pid: str) -> None:

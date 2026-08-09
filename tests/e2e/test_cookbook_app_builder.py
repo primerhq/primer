@@ -54,7 +54,7 @@ from tests._support.mock_llm import Rule
 from tests._support.runs import make_local_workspace, make_scripted_agent, wait_terminal
 from tests._support.smk import smk
 from tests._support.testconfig import requires
-from tests._support.model_profiles import agent_model, seed_llm_provider, seed_profile
+from tests._support.model_profiles import agent_model, seed_llm_provider
 
 pytestmark = [pytest.mark.asyncio]
 

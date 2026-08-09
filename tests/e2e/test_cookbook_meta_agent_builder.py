@@ -36,6 +36,7 @@ from tests._support.runs import (
 )
 from tests._support.smk import smk
 from tests._support.testconfig import requires
+from tests._support.model_profiles import agent_model
 
 pytestmark = pytest.mark.asyncio
 
