@@ -678,6 +678,9 @@ function ChatDetail({ chatId, onBack, pushToast }) {
       }}
     >
       <div className="panel" style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0, minWidth: 0 }}>
+        {window.ExternalPendingBanner && (
+          <window.ExternalPendingBanner chatId={cid} pushToast={pushToast} />
+        )}
         {isMobile ? (
           <div className="chat-mobile-header">
             <button

@@ -213,6 +213,20 @@ function S2_AgentDoc({ refId, docApi }) {
             onChange={(e) => edit({
               temperature: e.target.value === "" ? null : Number(e.target.value) })} />
         </S2_Field>
+        <S2_Field label="external tools"
+          hint="API callers may attach per-invocation tool definitions; the turn pauses until the caller responds"
+          error={fieldErrors.allow_external_tools}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8,
+            fontSize: "var(--fs-12)", color: "var(--text-2)",
+            cursor: managed ? "default" : "pointer" }}>
+            <input type="checkbox" disabled={managed}
+              data-testid="s2-agent-allow-external-tools"
+              checked={!!cur.allow_external_tools}
+              onChange={(e) => edit({
+                allow_external_tools: e.target.checked })} />
+            allow_external_tools
+          </label>
+        </S2_Field>
         <S2_Field label="system prompt"
           hint="one segment per line; joined at prompt-assembly time"
           error={fieldErrors.system_prompt}>

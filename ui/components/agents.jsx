@@ -401,6 +401,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const [systemPrompt, setSystemPrompt] = React.useState(_joinPrompt(existing?.system_prompt));
   const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
   const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
+  const [allowExternalTools, setAllowExternalTools] = React.useState(existing?.allow_external_tools ?? false);
   // selectedScopedIds is a Set so toggles are O(1); persisted as a
   // sorted list at submit time for stable JSON.
   const [selectedScopedIds, setSelectedScopedIds] = React.useState(_initialTools);
@@ -584,6 +585,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
       system_prompt: systemPrompt ? [systemPrompt] : [],
       compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
       compaction_tool_access: compactionToolAccess,
+      allow_external_tools: allowExternalTools,
     };
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
@@ -941,6 +943,15 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
               testid="na-compaction-tool-access"
               label="Tool access during compaction"
               help="let the compaction prompt call this agent's tools while summarising — e.g. dump the compacted content to workspace files. Runs in a bounded, ephemeral loop; the tool calls don't enter conversation history. Leave off for plain text-only compaction."
+            />
+          </div>
+          <div className="field">
+            <AG_Toggle
+              checked={allowExternalTools}
+              onChange={setAllowExternalTools}
+              testid="na-allow-external-tools"
+              label="Allow external tools"
+              help="let API callers attach their own per-invocation tool definitions when invoking this agent. When the model calls one, the turn pauses until the caller responds through the invocation API. Leave off to reject invocation bodies carrying external tools."
             />
           </div>
           <div className="field">
