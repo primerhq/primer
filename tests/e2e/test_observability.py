@@ -56,8 +56,17 @@ async def test_t0079_health_full_contract_under_api_plus_worker(
         isinstance(worker_pool.get("capacity"), int)
         and worker_pool["capacity"] > 0
     ), worker_pool
-    # in_flight should be 0 on a fresh, idle bringup.
-    assert worker_pool.get("in_flight") == 0, worker_pool
+    # in_flight is a live gauge, not a constant. This is a CONTRACT test
+    # and it runs partway through a serial suite that shares one server,
+    # so "the pool is idle right now" is not something it can assume:
+    # any in-flight turn from a neighbouring test, or a session left
+    # occupying a slot after its workspace container went unreachable,
+    # makes an == 0 assertion fail for reasons that say nothing about the
+    # health payload. Pin the contract instead: an integer within the
+    # pool's own capacity.
+    in_flight = worker_pool.get("in_flight")
+    assert isinstance(in_flight, int), worker_pool
+    assert 0 <= in_flight <= worker_pool["capacity"], worker_pool
 
 
 _REQUIRED_WORKER_FIELDS = (
