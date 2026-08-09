@@ -39,7 +39,7 @@ A lot of what Primer ships - knowledge bases, channels, triggers, approvals - yo
 
 🔁 **Directed cyclic agent graphs**
 
-Wire small agents into a feedback loop with an evaluator at the end that grades the output and feeds it back - produce, critique, revise, until the loop **converges on a target** instead of hoping a one-shot prompt lands.
+Wire small agents into a topology that branches, fans out, and rejoins. Add an evaluator on a cycle back to the producer and the run **converges on a target** - produce, critique, revise - instead of hoping a one-shot prompt lands.
 
 </td>
     <td width="33%" valign="top">
@@ -53,7 +53,7 @@ Multiple agents and graphs run in one sandbox, reading and writing the same file
 
 ⏸️ **Yielding tools**
 
-An agent parks and **yields control** until an event fires - a file change, schedule, webhook, or human reply - so loops run in the background. One agent can wake the instant another writes a file.
+An agent parks and **yields control** until an event fires - a file change, schedule, webhook, or human reply - so runs continue in the background. One agent can wake the instant another writes a file.
 
 </td>
   </tr>
