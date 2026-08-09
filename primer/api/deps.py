@@ -296,6 +296,15 @@ def get_session_storage(
     return sp.get_storage(WorkspaceSession)
 
 
+def get_external_tool_call_storage(
+    sp: "StorageProvider" = Depends(get_storage_provider),
+):
+    """Storage[ExternalToolCall] handle off the app's storage provider."""
+    from primer.model.external_tool import ExternalToolCall
+
+    return sp.get_storage(ExternalToolCall)
+
+
 def get_chat_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ):

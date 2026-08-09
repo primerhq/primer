@@ -183,6 +183,11 @@ def _mount_routers(
     app.include_router(tap_router, prefix=prefix, dependencies=user_dep)
     # Yields — session/workspace feature => require_user.
     app.include_router(yields_router.yields_router, prefix=prefix, dependencies=user_dep)
+    # External tool calls (invoker-supplied tools) — read surface for the
+    # pending/audit rows; the write path is the invocation endpoints.
+    # Feature => require_user, same tier as yields.
+    from primer.api.routers.external_tools import external_tools_router
+    app.include_router(external_tools_router, prefix=prefix, dependencies=user_dep)
     # Chat REST + WS — feature => require_user. NOTE: the WS endpoint
     # inside this router cannot use the include-time dep (FastAPI does not
     # enforce deps on WebSocket routes the same way); the WS handler
