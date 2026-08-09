@@ -50,7 +50,7 @@ function HF_ModelProfilePicker({ value, onChange, label }) {
   const { useResource, apiFetch } = window.primerApi;
   const res = useResource(
     "hf-model-profile-picker:/v1/model_profiles",
-    (signal) => apiFetch("GET", "/v1/model_profiles?limit=500", null, { signal }),
+    (signal) => apiFetch("GET", "/v1/model_profiles?limit=200", null, { signal }),
     { pollMs: null }
   );
   const profiles = res.data?.items ?? [];

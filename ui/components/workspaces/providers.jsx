@@ -526,7 +526,7 @@ function WorkspaceProviderDetail({ providerId, pushToast }) {
 
   const templates = useResource(
     `ws:provider:${providerId}:templates`,
-    (signal) => apiFetch("GET", "/workspace_templates?limit=500", null, { signal }),
+    (signal) => apiFetch("GET", "/workspace_templates?limit=200", null, { signal }),
     { deps: [providerId] }
   );
   const referencingTemplates = React.useMemo(() => {

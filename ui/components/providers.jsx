@@ -290,7 +290,7 @@ function ProvidersList({ kindProp, pushToast }) {
   const profiles = useResource(
     "providers:profile-counts",
     (sig) => isLlm
-      ? apiFetch("GET", "/model_profiles?limit=500", null, { signal: sig })
+      ? apiFetch("GET", "/model_profiles?limit=200", null, { signal: sig })
       : Promise.resolve(null),
     { pollMs: null, deps: [isLlm] },
   );
@@ -655,7 +655,7 @@ function PR_Toggle({ checked, onChange, label, help, disabled, testid }) {
 // LLM members each pin a specific upstream model.
 // ============================================================================
 
-function PR_AggregatedEditor({ value, onChange, candidates }) {
+function PR_AggregatedEditor({ value, onChange, candidates, profiles }) {
   // value: { members: [{provider_id, model_name}], strategy, failover_point, failover_on }
   const v = value || {};
   const members = v.members || [];
@@ -671,7 +671,19 @@ function PR_AggregatedEditor({ value, onChange, candidates }) {
   };
   const remove = (i) => set({ members: members.filter((_, j) => j !== i) });
   const add = () => set({ members: [...members, { provider_id: "", model_name: "" }] });
-  const modelsFor = (pid) => (candidates.find((c) => c.id === pid)?.models || []).map((m) => m.name);
+  // A member pins a downstream (provider, model) PAIR rather than a
+  // profile: the aggregated adapter dispatches to the upstream directly,
+  // so there is no profile of its own to resolve. The model names still
+  // come from that provider's ModelProfile rows, because that is what a
+  // provider publishes now. Deduped: several profiles may name one model,
+  // and a member picks the model, not the profile.
+  const modelsFor = (pid) => [
+    ...new Set(
+      (profiles || [])
+        .filter((pr) => pr.provider_id === pid)
+        .map((pr) => pr.model_name),
+    ),
+  ];
   return (
     <div className="field">
       <label className="field-label">Members (ordered; failover walks top to bottom)</label>
@@ -757,7 +769,7 @@ function PR_LlmProfilesPanel({ providerId, providerType, pushToast }) {
 
   const profiles = useResource(
     `provider-profiles:${providerId}`,
-    (sig) => apiFetch("GET", "/model_profiles?limit=500", null, { signal: sig }),
+    (sig) => apiFetch("GET", "/model_profiles?limit=200", null, { signal: sig }),
     { deps: [providerId] },
   );
   const mine = (profiles.data?.items ?? []).filter((r) => r.provider_id === providerId);
@@ -1016,6 +1028,15 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   const llmCandidates = (llmProvidersRes.data?.items ?? []).filter(
     (p) => p.provider !== "aggregated"
   );
+  // Model names for those candidates: a provider publishes its
+  // ModelProfile rows, so the member picker reads them rather than a
+  // models[] that no longer exists.
+  const aggProfilesRes = useResource(
+    "providers:agg-member-profiles",
+    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+  const aggProfiles = aggProfilesRes.data?.items ?? [];
   const [maxConcurrency, setMaxConcurrency] = React.useState(
     existing?.limits?.max_concurrency ?? 1
   );
@@ -1273,6 +1294,7 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
           value={aggConfig}
           onChange={setAggConfig}
           candidates={llmCandidates}
+          profiles={aggProfiles}
         />
       ) : (
         def && def.config.map((f) => (

@@ -559,7 +559,7 @@ function SSPDetail({ sspId, pushToast }) {
   // preview — the source of truth is the backend cascade-block hook.)
   const collections = useResource(
     `ssp-detail:${sspId}:collections`,
-    (signal) => apiFetch("GET", "/collections?limit=500", null, { signal }),
+    (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
     { deps: [sspId] }
   );
   const referencingCollections = React.useMemo(() => {
