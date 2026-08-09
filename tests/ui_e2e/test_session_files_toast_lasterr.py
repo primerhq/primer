@@ -38,7 +38,7 @@ from playwright.sync_api import expect
 
 from tests._support.smk import smk  # noqa: E402
 from tests.ui_e2e._studio_helpers import files_list
-from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -189,8 +189,9 @@ def test_u0032_toast_renders_request_id_on_5xx(
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
         modal.locator("#na-id").fill(f"ag-32-{unique_suffix}")
-        modal.locator("#na-llm-provider").select_option(pid)
-        modal.locator("#na-model").select_option("fake-model")
+        modal.locator("#na-model-profile").select_option(
+            profile_id_for(pid, "fake-model"),
+        )
 
         # Click "Create" - mocked response will return our 500.
         create_btn = page.get_by_role(
