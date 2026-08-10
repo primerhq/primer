@@ -131,14 +131,10 @@ def _build_default_embedder_factory(
     def _factory(provider: EmbeddingProvider) -> Embedder:  # pragma: no cover
         match provider.provider:
             case EmbeddingProviderType.HUGGINGFACE:
-                try:
-                    from primer.embedder.huggingface import HuggingFaceEmbedder
-                except ModuleNotFoundError as exc:
-                    raise ConfigError(
-                        "the HuggingFace embedder needs the optional "
-                        "'huggingface' extra; install it with: "
-                        "pip install 'primer-ai[huggingface]'"
-                    ) from exc
+                from primer.common.optional import require_extra
+
+                require_extra("huggingface", "the HuggingFace embedder")
+                from primer.embedder.huggingface import HuggingFaceEmbedder
                 return HuggingFaceEmbedder(provider, rate_limiter=rate_limiter)
             case EmbeddingProviderType.OPENAI:
                 from primer.embedder.openai import OpenAIEmbedder
@@ -173,16 +169,12 @@ def _build_default_cross_encoder_factory(
     def _factory(provider: CrossEncoderProvider) -> CrossEncoder:  # pragma: no cover
         match provider.provider:
             case CrossEncoderProviderType.HUGGINGFACE:
-                try:
-                    from primer.cross_encoder.huggingface import (
-                        HuggingFaceCrossEncoder,
-                    )
-                except ModuleNotFoundError as exc:
-                    raise ConfigError(
-                        "the HuggingFace cross-encoder needs the optional "
-                        "'huggingface' extra; install it with: "
-                        "pip install 'primer-ai[huggingface]'"
-                    ) from exc
+                from primer.common.optional import require_extra
+
+                require_extra("huggingface", "the HuggingFace cross-encoder")
+                from primer.cross_encoder.huggingface import (
+                    HuggingFaceCrossEncoder,
+                )
                 return HuggingFaceCrossEncoder(provider, rate_limiter=rate_limiter)
             case _:
                 raise ConfigError(

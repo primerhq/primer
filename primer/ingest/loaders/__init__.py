@@ -24,10 +24,11 @@ def __getattr__(name: str):
         try:
             from primer.ingest.loaders.docling import DoclingLoader
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+            from primer.common.optional import install_hint
+
             raise ModuleNotFoundError(
-                "DoclingLoader requires the optional 'docling' extra. "
-                "Install it with: pip install 'primer-ai[docling]' "
-                "(or 'primer-ai[full]')."
+                "DoclingLoader requires the optional 'docling' extra; "
+                f"{install_hint('docling')}."
             ) from exc
         return DoclingLoader
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

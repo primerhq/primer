@@ -28,13 +28,13 @@ Usage example (from the lifespan)::
 from __future__ import annotations
 
 import copy
-import importlib.util
 import logging
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from primer.common.optional import has_extra
 from primer.bootstrap.defaults import (
     RESERVED_CROSS_ENCODERS,
     RESERVED_EMBEDDERS,
@@ -246,7 +246,7 @@ class BootstrapRunner:
             # dependency is installed. The slim image ships without the
             # 'huggingface' extra (sentence-transformers), so registering the
             # row here would create a default provider that fails at use time.
-            if importlib.util.find_spec("sentence_transformers") is None:
+            if not has_extra("huggingface"):
                 result.skipped.append(reserved_id)
                 logger.info(
                     "bootstrap: skipping default embedder %r — the "
@@ -280,7 +280,7 @@ class BootstrapRunner:
             # Only register the default Lance SSP when lancedb is installed
             # (the 'lance' extra). A build without it shouldn't carry a
             # default provider that can't open a store.
-            if importlib.util.find_spec("lancedb") is None:
+            if not has_extra("lance"):
                 result.skipped.append(reserved_id)
                 logger.info(
                     "bootstrap: skipping default Lance SSP %r — the 'lance' "
@@ -313,7 +313,7 @@ class BootstrapRunner:
 
             # Slim image ships without the 'huggingface' extra; don't register
             # a default cross-encoder that can't import at rerank time.
-            if importlib.util.find_spec("sentence_transformers") is None:
+            if not has_extra("huggingface"):
                 result.skipped.append(reserved_id)
                 logger.info(
                     "bootstrap: skipping default cross-encoder %r — the "

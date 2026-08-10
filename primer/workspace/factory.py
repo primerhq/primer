@@ -61,6 +61,12 @@ class WorkspaceBackendFactory:
                 subprocess_timeout_seconds=subprocess_timeout_seconds,
             )
         if config.provider == WorkspaceProviderType.CONTAINER:
+            from primer.common.optional import require_extra
+
+            # Guard BEFORE the backend import: without it an operator on a
+            # core-only install gets a ModuleNotFoundError naming aiodocker,
+            # which does not tell them which extra to install.
+            require_extra("docker", "the container workspace backend")
             from primer.model.workspace import ContainerWorkspaceConfig
             from primer.workspace.container.backend import (
                 ContainerWorkspaceBackend,
@@ -71,6 +77,9 @@ class WorkspaceBackendFactory:
                 )
             return ContainerWorkspaceBackend(config.config)
         if config.provider == WorkspaceProviderType.KUBERNETES:
+            from primer.common.optional import require_extra
+
+            require_extra("kubernetes", "the Kubernetes workspace backend")
             from primer.model.workspace import KubernetesWorkspaceConfig
             from primer.workspace.k8s.backend import (
                 KubernetesWorkspaceBackend,
