@@ -26,10 +26,11 @@ def __getattr__(name: str):
         try:
             from primer.cross_encoder.huggingface import HuggingFaceCrossEncoder
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+            from primer.common.optional import install_hint
+
             raise ModuleNotFoundError(
                 "HuggingFaceCrossEncoder requires the optional 'huggingface' "
-                "extra. Install it with: pip install 'primer-ai[huggingface]' "
-                "(or 'primer-ai[full]' for everything)."
+                f"extra; {install_hint('huggingface')}."
             ) from exc
         return HuggingFaceCrossEncoder
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

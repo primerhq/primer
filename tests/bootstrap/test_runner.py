@@ -343,18 +343,21 @@ async def test_run_skips_huggingface_defaults_when_dep_missing(
     the default embedder + cross-encoder are SKIPPED (not created, not
     errored) so no unusable default provider is registered; bootstrap still
     completes and dep-independent defaults (e.g. the Lance SSP) are created."""
-    import importlib.util as _ilu
+    import primer.common.optional as optional_mod
 
     from primer.model.provider import CrossEncoderProvider, EmbeddingProvider
 
-    real_find_spec = _ilu.find_spec
+    # Patch the helper's seam, not importlib.util: the helper binds
+    # find_spec at import time, so patching the stdlib afterwards would
+    # not be seen. One seam is the point of centralising these checks.
+    real_find_spec = optional_mod._find_spec
 
     def fake_find_spec(name: str, *args: Any, **kwargs: Any):
         if name == "sentence_transformers":
             return None
         return real_find_spec(name, *args, **kwargs)
 
-    monkeypatch.setattr(_ilu, "find_spec", fake_find_spec)
+    monkeypatch.setattr(optional_mod, "_find_spec", fake_find_spec)
 
     runner = _make_runner(storage_provider, root_dir)
     result = await runner.run()
@@ -383,18 +386,19 @@ async def test_run_skips_lance_ssp_when_lancedb_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Without the 'lance' extra (lancedb) the default Lance SSP is skipped."""
-    import importlib.util as _ilu
+    import primer.common.optional as optional_mod
 
     from primer.model.provider import SemanticSearchProvider
 
-    real_find_spec = _ilu.find_spec
+    # See the note in the huggingface skip test: patch the helper's seam.
+    real_find_spec = optional_mod._find_spec
 
     def fake_find_spec(name: str, *args: Any, **kwargs: Any):
         if name == "lancedb":
             return None
         return real_find_spec(name, *args, **kwargs)
 
-    monkeypatch.setattr(_ilu, "find_spec", fake_find_spec)
+    monkeypatch.setattr(optional_mod, "_find_spec", fake_find_spec)
 
     runner = _make_runner(storage_provider, root_dir)
     result = await runner.run()

@@ -66,10 +66,15 @@ def __getattr__(name: str):
                     DoclingSplitter as obj,
                 )
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+            from primer.common.optional import install_hint
+
+            # Stays a ModuleNotFoundError: this is the PEP-562 import
+            # protocol, and callers doing a try/except ImportError around
+            # the attribute access would stop seeing it as a ConfigError.
+            # Only the hint text is centralised.
             raise ModuleNotFoundError(
-                f"{name} requires the optional 'docling' extra. Install it "
-                "with: pip install 'primer-ai[docling]' (or "
-                "'primer-ai[full]' for everything)."
+                f"{name} requires the optional 'docling' extra; "
+                f"{install_hint('docling')}."
             ) from exc
         return obj
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

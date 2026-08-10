@@ -27,10 +27,11 @@ def __getattr__(name: str):
         try:
             from primer.ingest.splitters.docling import DoclingSplitter
         except ModuleNotFoundError as exc:  # pragma: no cover - import guard
+            from primer.common.optional import install_hint
+
             raise ModuleNotFoundError(
-                "DoclingSplitter requires the optional 'docling' extra. "
-                "Install it with: pip install 'primer-ai[docling]' "
-                "(or 'primer-ai[full]')."
+                "DoclingSplitter requires the optional 'docling' extra; "
+                f"{install_hint('docling')}."
             ) from exc
         return DoclingSplitter
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
