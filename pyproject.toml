@@ -39,7 +39,6 @@ dependencies = [
     "pyyaml>=6.0.3",
     "tiktoken>=0.13.0",
     "trafilatura>=2.1.0",
-    "transformers>=5.8.1",
     "typer>=0.21.2",
     "tzdata>=2026.2",
     "uvicorn[standard]>=0.49.0",
@@ -53,7 +52,7 @@ dependencies = [
 # `primer-ai[full]` restores the batteries-included experience.
 [project.optional-dependencies]
 # Local HuggingFace embeddings + cross-encoder reranking (pulls torch).
-huggingface = ["sentence-transformers>=5.5.1"]
+huggingface = ["sentence-transformers>=5.5.1", "transformers>=5.8.1"]
 # Rich multi-format document ingestion (PDF/DOCX/PPTX/HTML; pulls torch + OCR).
 docling = ["docling>=2.102.1"]
 # LanceDB embedded vector store (the alternative to the core pgvector backend).

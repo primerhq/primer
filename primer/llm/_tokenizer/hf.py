@@ -5,8 +5,11 @@ prompt token count cheaply (no network — sentencepiece / BPE local).
 We cache one tokenizer instance per model per process; cache miss
 loads from the HF Hub (uses local cache once it's been pulled).
 
-Load failure (model not on the Hub, hub unreachable) falls back to
-the char heuristic. The cache key is the bare model name.
+``transformers`` ships in the optional 'huggingface' extra and is
+imported lazily inside :func:`_get_tokenizer`; without it every count
+uses the char heuristic. Load failure (model not on the Hub, hub
+unreachable) falls back the same way. The cache key is the bare model
+name.
 """
 
 from __future__ import annotations
@@ -15,8 +18,6 @@ import json
 import logging
 from collections.abc import Sequence
 from typing import Any
-
-from transformers import AutoTokenizer
 
 from primer.llm._tokenizer.char_fallback import count_tokens_char_fallback
 from primer.model.chat import (
@@ -71,6 +72,17 @@ def _get_tokenizer(model: str) -> Any | None:
     cached = _TOKENIZER_CACHE.get(model)
     if cached is not None:
         return cached
+    try:
+        from transformers import AutoTokenizer
+    except ImportError:
+        # ImportError, not ModuleNotFoundError: the sys.modules[name]=None
+        # idiom used to simulate absence raises the plain base class.
+        logger.debug(
+            "transformers not installed; using the char heuristic for %r "
+            "(install 'primer-ai[huggingface]' for exact Ollama counts)",
+            model,
+        )
+        return None
     try:
         tok = AutoTokenizer.from_pretrained(model)
     except Exception as exc:  # noqa: BLE001

@@ -8,9 +8,11 @@ serialised :class:`DoclingDocument` is stored under
 :class:`primer.ingest.splitters.docling.DoclingSplitter` can use it
 without re-parsing.
 
-``docling`` ships as a core dependency, so this loader is always
-available and is what callers should construct unless they have a
-specific reason to substitute another :class:`DocumentLoader`.
+``docling`` ships in the optional 'docling' extra; constructing this
+loader on an install without it raises the guarded ModuleNotFoundError
+from :func:`primer.ingest.__getattr__` with the install hint. Where it
+is installed this is the loader callers should construct, unless they
+have a specific reason to substitute another :class:`DocumentLoader`.
 """
 
 from __future__ import annotations
