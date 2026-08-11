@@ -12,7 +12,7 @@ A hard rule the spec set and the code enforces: pages must route all I/O through
 
 The console is a single-page React app served from the same FastAPI origin as the REST API. There is no bundler and no `package.json`; `ui/index.html` lists every source file as an inert `<script type="text/babel">` tag, and the backend (`primer/api/_jsx_bundle.py`) reads that list at startup, transpiles each file inside an embedded V8 isolate, and serves the concatenated result as a single `/console/_app.js`. The browser only loads three vendored UMD scripts (React, ReactDOM, html2canvas) plus that one bundle. The `text/babel` tags are the source-of-truth bundle order; the browser ignores them.
 
-Every foundation module attaches its public surface to `window.primerApi`. There is no React context provider wrapping the tree; shared state lives at module scope (the `useResource` cache, the toast queue, the tweaks store) so that non-React callers can read and write it too. Modules load in dependency order from `ui/index.html`: `api.js` then `toast.js` then `use-resource.js` then `use-mutation.js` then `router.js` then `tweaks.js` then `idle.js` then `viewport.js`, followed by the vendor helpers, shared primitives, and page components.
+Every foundation module attaches its public surface to `window.primerApi`. There is no React context provider wrapping the tree; shared state lives at module scope (the `useResource` cache, the toast queue, the tweaks store) so that non-React callers can read and write it too. Modules load in dependency order from `ui/index.html`: `api.js` then `toast.js` then `use-resource.js` then `use-mutation.js` then `capabilities.js` then `router.js` then `tweaks.js` then `idle.js` then `viewport.js`, followed by the vendor helpers, shared primitives, and page components.
 
 The chrome wraps the active page. `ui/app.jsx` is the root shell: it reads the route from `useRouter()`, derives a page name from the path, owns most of the live polling (sidebar counts, worker stats, IC config, palette docs), and renders the chrome around the page body.
 
@@ -54,6 +54,7 @@ On a mobile viewport the desktop `Sidebar` is hidden by CSS and the `MobileNav` 
 The foundation primitives, all self-invoking and all contributing to `window.primerApi`:
 
 - `ui/foundation/api.js` - `apiFetch`, `ApiError`, path resolution, the T0103a retry, the 422 humanizer, the network-error envelope, FormData support.
+- `ui/foundation/capabilities.js` - `useCapabilities`, `capabilityHint`, `extraInstalled`, `CapabilityGate`, and `EXTRA_FOR_PROVIDER_TYPE`. Wraps `GET /v1/capabilities` so pages render honest not-installed states instead of offering backends the server cannot run; `extraInstalled` treats unknown as installed so a page never flashes the gate while the fetch is in flight. See [modularity](modularity.md).
 - `ui/foundation/use-resource.js` - `useResource`, the shared cache `Map`, `_eq` structural equality, the page-wide `visibilitychange` listener, and the internal helpers (`findKeys`, `peekData`, `replaceData`, `refetchKey`, `refetchAll`) exposed under `window.primerApi._resource` and `window.primerApi._refetchAll`.
 - `ui/foundation/use-mutation.js` - `useMutation`.
 - `ui/foundation/router.js` - `useRouter`, the routes table on `window.primerApi.routes`, `parseHash`/`buildHash`/`navigate`, and `matchRoute`/`_router` test helpers.
