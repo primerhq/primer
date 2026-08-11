@@ -47,6 +47,7 @@ SUBSYSTEM_DOCS = [
     "model-providers",
     "ui-foundation",
     "ui-pages",
+    "modularity",
 ]
 
 ARCH_HEADINGS = [

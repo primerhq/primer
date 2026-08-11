@@ -45,6 +45,9 @@ a one-line reason; it may not simply be omitted.
 
 ### Backend
 
+- Declare the dependency tier: any new third-party dependency is either
+  justified as core in [modularity](subsystems/modularity.md) or gated behind an
+  extra with a `require_extra` guard and a capabilities row.
 - Define the persisted shape as Pydantic models in `primer/model/` (an
   `Identifiable` subclass for anything stored).
 - Honour the storage migration rules: per-model tables are created lazily on first
