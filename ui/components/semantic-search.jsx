@@ -291,6 +291,10 @@ function SSPCreateModal({ onClose, pushToast, existing }) {
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
   const isScale = form.provider === "pgvectorscale";
   const isLance = form.provider === "lance";
+  // lance is the one backend behind an optional extra; pgvector and
+  // pgvectorscale are core (they only need a reachable Postgres).
+  const caps = window.primerApi.useCapabilities();
+  const lanceMissing = !window.primerApi.extraInstalled(caps, "lance");
   const isPostgresFamily = form.provider === "pgvector" || form.provider === "pgvectorscale";
 
   const create = useMutation(
@@ -409,8 +413,16 @@ function SSPCreateModal({ onClose, pushToast, existing }) {
             <select className="select mono" value={form.provider} onChange={(e) => update("provider", e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
               <option value="pgvector">pgvector</option>
               <option value="pgvectorscale">pgvectorscale</option>
-              <option value="lance">lance (embedded)</option>
+              <option value="lance">
+                lance (embedded){lanceMissing ? " (not installed)" : ""}
+              </option>
             </select>
+            {isLance && lanceMissing && (
+              <div className="field-help" style={{ color: "var(--amber)" }}
+                data-capability-hint="lance">
+                {window.primerApi.capabilityHint("lance")}
+              </div>
+            )}
           </FieldRow>
 
           {isPostgresFamily && (<>
