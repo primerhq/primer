@@ -75,7 +75,8 @@ erDiagram
 | `primer/channel/session_relay.py` | `post_session_start_ack` / `post_session_final_result` lifecycle relay. |
 | `primer/trigger/sources/channel.py` | `ChannelSource`: the `channel` trigger event-source anchor (not claim-driven). |
 | `primer/trigger/subscribers/start_chat.py` | `start_chat` action: open a thread-bound chat seeded with the event text. |
-| `primer/channel/adapter.py` | `ChannelAdapter` ABC; `PromptEnvelope` / `ResponseEnvelope` dataclasses. |
+| `primer/model/envelope.py` | `PromptEnvelope` / `ResponseEnvelope` dataclasses. They live in core model, not here, so the agent and worker layers can name them without importing `primer.channel`; an import-linter contract enforces that. |
+| `primer/channel/adapter.py` | `ChannelAdapter` ABC; re-exports both envelopes for the per-platform adapters that import them from here. |
 | `primer/channel/correlation.py` | `CorrelationStore`: `upsert_session`, `upsert_chat` (atomic `INSERT ... ON CONFLICT` on the `(channel_id, anchor)` unique index), `lookup`, `delete`; `ACTIVE_CHAT_ANCHOR` sentinel. |
 | `primer/channel/inbound_router.py` | `ChannelInboundRouter.route`: resolves anchor -> session gate or chat; `open_thread_chat`. |
 | `primer/channel/chat_router.py` | `ChatChannelRouter.deliver_message`: resolve-or-create a chat on the channel, drive the chat turn. |
