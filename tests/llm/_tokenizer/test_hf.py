@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib.util import find_spec
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,10 +20,17 @@ def _clear_cache() -> None:
     invalidate_hf_cache()
 
 
+@pytest.mark.skipif(
+    find_spec("transformers") is None,
+    reason="exact-tokenizer path needs the 'huggingface' extra",
+)
 class TestCountTokensHF:
     # transformers is imported lazily inside _get_tokenizer (it lives in
     # the optional 'huggingface' extra), so the patch target is the
-    # library itself, not an attribute on the hf module.
+    # library itself, not an attribute on the hf module. That also means
+    # these cannot run at all without it: patch() has to import the
+    # module to replace an attribute on it. The fallback tests below
+    # deliberately stay unskipped, since they cover the absent case.
     def test_uses_cached_tokenizer(self) -> None:
         fake_tok = MagicMock()
         fake_tok.encode.return_value = [1, 2, 3, 4, 5]

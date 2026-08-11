@@ -73,3 +73,25 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: ./coverage.xml
           fail_ci_if_error: false
+
+  core-install:
+    # Boundary rule 1 enforcement (modular-monolith): a core-only install
+    # (no extras) must import the app, boot, and pass the guard suite.
+    # Any top-level import of an optional dep fails here first.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v7
+        with:
+          version: "latest"
+      - name: Sync (core, no extras)
+        run: uv sync
+      - name: App imports on a core-only install
+        run: uv run python -c "import primer.api.app, primer.cli; print('core import ok')"
+      - name: Core boot + guard suite
+        run: >-
+          uv run pytest -o addopts= -n 0 -p no:cacheprovider -q
+          tests/api/test_health.py tests/api/test_capabilities.py
+          tests/common/test_optional.py tests/workspace/test_factory_guards.py
+          "tests/llm/_tokenizer/test_hf.py" tests/model/test_envelope.py
