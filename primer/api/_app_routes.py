@@ -104,6 +104,12 @@ def _mount_routers(
     from primer.api.routers.api_tokens import api_tokens_router
     app.include_router(api_tokens_router, prefix=prefix, dependencies=user_dep)
 
+    # Which optional extras this deployment has. Read-only and computed
+    # from importability, so the console can render capability-aware
+    # states instead of failing at use time.
+    from primer.api.routers import capabilities
+    app.include_router(capabilities.router, prefix=prefix, dependencies=user_dep)
+
     # OIDC account linking + linked-identity list/unlink — sibling of the
     # (public) sso_router mounted above. Personal per-user resource, same
     # rationale as api_tokens_router: any user/admin manages their OWN
