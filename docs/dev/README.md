@@ -196,6 +196,9 @@ flowchart TD
 - [ui-pages](subsystems/ui-pages.md) - the per-page layer of the operator console: the
   repeating list-and-detail page shapes, the loader and confirmation conventions, and a
   page-by-page route index.
+- [modularity](subsystems/modularity.md) - the modular-monolith contract: one wheel with
+  a lean core, optional subsystems behind packaging extras, capability discovery, and the
+  two boundary rules enforced by the core-install lane and the import-linter contracts.
 
 ### Vision and motivation
 

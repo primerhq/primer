@@ -134,13 +134,38 @@ pipx install 'primer-ai[full]'                   # batteries-included
 primer api                                       # API + in-process worker
 ```
 
-The bare `pipx install primer-ai` installs a lean core (REST API, console, MCP, SQLite/Postgres storage, and the API-based LLM/embedder providers). The `[full]` extra adds the optional backends - local HuggingFace embeddings, Docling ingestion, LanceDB, Slack/Telegram/Discord channels, and the container/Kubernetes workspace backends - which pull a larger ML stack. You can also pick à la carte: `primer-ai[huggingface]`, `[docling]`, `[lance]`, `[channels]`, `[docker]`, `[kubernetes]`.
+The bare `pipx install primer-ai` installs a lean core (REST API, console, MCP, SQLite/Postgres storage, and the API-based LLM/embedder providers). Everything else is an extra you opt into.
+
+### Install options
+
+| Extra | Enables | Weight |
+|---|---|---|
+| *(core)* | REST API, console, MCP server and client, SQLite/Postgres storage, API-based LLM and embedder providers, local workspaces | ~345M |
+| `huggingface` | local embeddings, local cross-encoder reranking, exact Ollama token counts | heavy (torch) |
+| `docling` | PDF/DOCX/PPTX ingestion and structure-aware splitting | heavy |
+| `lance` | embedded LanceDB vector store | light |
+| `channels` | Slack, Telegram and Discord | light |
+| `docker` | container workspace backend | light |
+| `kubernetes` | Kubernetes workspace backend | light |
+| `full` | all of the above | heaviest |
+
+```bash
+pipx install 'primer-ai[lance,channels]'    # a la carte
+pipx install 'primer-ai[full]'              # everything
+```
+
+An extra is resolved at import time, so enabling one is install plus restart. Without it the feature is not hidden, just honest: the API returns a `ConfigError` naming the extra, the console labels the option "(not installed)", and `GET /v1/capabilities` (or `primectl capabilities`) reports exactly what this deployment has.
 
 **Docker** (no Python toolchain required):
 
 ```bash
-docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest
+docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest        # slim
+docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest-full   # batteries included
 ```
+
+`:latest` is the slim image: core plus the light operational extras (lance, channels, docker, kubernetes). It boots cleanly and skips the default providers it cannot construct. For local HuggingFace embeddings or Docling ingestion, use `:latest-full`.
+
+> **Tag change.** `:latest` used to be the batteries-included image. It is now slim. If you rely on HuggingFace or Docling from the image, switch to `:latest-full`. The old `-fat` and `-slim` suffixes still resolve for one release cycle.
 
 **From source** (for contributors):
 
