@@ -230,6 +230,9 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null }) {
 
   const [form, setForm] = React.useState(() => _wpFromProvider(existing));
   const [fieldErrors, setFieldErrors] = React.useState({});
+  // Container and Kubernetes backends need optional extras; local does
+  // not. Say so at pick time rather than at first workspace create.
+  const caps = window.primerApi.useCapabilities();
   const update = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
   const create = useMutation(
@@ -376,9 +379,26 @@ function WorkspaceProviderCreateModal({ onClose, pushToast, existing = null }) {
       <WS_FieldRow label="backend" hint={isEdit ? "locked — backend kind cannot change after create" : undefined}>
         <select className="select mono" value={form.backend} onChange={(e) => update("backend", e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
           <option value="local">local (host filesystem)</option>
-          <option value="container">container (docker / podman / containerd)</option>
-          <option value="kubernetes">kubernetes</option>
+          <option value="container">
+            container (docker / podman / containerd)
+            {window.primerApi.extraInstalled(caps, "docker") ? "" : " (not installed)"}
+          </option>
+          <option value="kubernetes">
+            kubernetes
+            {window.primerApi.extraInstalled(caps, "kubernetes") ? "" : " (not installed)"}
+          </option>
         </select>
+        {(() => {
+          // local is core; only the two sandboxed backends need an extra.
+          const extra = window.primerApi.EXTRA_FOR_PROVIDER_TYPE[form.backend];
+          if (!extra || window.primerApi.extraInstalled(caps, extra)) return null;
+          return (
+            <div className="field-help" style={{ color: "var(--amber)" }}
+              data-capability-hint={extra}>
+              {window.primerApi.capabilityHint(extra)}
+            </div>
+          );
+        })()}
       </WS_FieldRow>
 
       {isLocal && (<>

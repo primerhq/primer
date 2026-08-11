@@ -1008,6 +1008,10 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
   // just "openrouter"). For other providers discovery still flows into
   // `models` directly via the legacy onSuccess branch below.
   const [discovered, setDiscovered] = React.useState([]);
+  // Which optional extras this server has, so a provider type whose
+  // backend is not installed says so at pick time instead of failing
+  // when the row is first used.
+  const caps = window.primerApi.useCapabilities();
   // Config for the "aggregated" variant's dedicated sub-editor - not part
   // of the generic ConfigField-driven configValues map (def.config is []
   // for aggregated; see PROVIDER_KINDS_FIELDS.llm.aggregated above).
@@ -1275,8 +1279,26 @@ function NewProviderModal({ kindProp, plural, label, onClose, onCreated, pushToa
       <div className="field">
         <label className="field-label">Provider {isEdit && <span className="hint">locked — recreate to change provider type</span>}</label>
         <select className="select" value={provider} onChange={(e) => setProvider(e.target.value)} disabled={isEdit} style={{ width: "100%" }}>
-          {providerOptions.map((p) => <option key={p} value={p}>{providers[p].label}</option>)}
+          {providerOptions.map((p) => {
+            const extra = window.primerApi.EXTRA_FOR_PROVIDER_TYPE[p];
+            const missing = extra && !window.primerApi.extraInstalled(caps, extra);
+            return (
+              <option key={p} value={p}>
+                {providers[p].label}{missing ? " (not installed)" : ""}
+              </option>
+            );
+          })}
         </select>
+        {(() => {
+          const extra = window.primerApi.EXTRA_FOR_PROVIDER_TYPE[provider];
+          if (!extra || window.primerApi.extraInstalled(caps, extra)) return null;
+          return (
+            <div className="field-help" style={{ color: "var(--amber)" }}
+              data-capability-hint={extra}>
+              {window.primerApi.capabilityHint(extra)}
+            </div>
+          );
+        })()}
         {/* T0379: documented anomaly surface — see docs/testing/05-ui-spec.md §5.
             The backend does NOT cross-validate that the chosen `provider`
             type and the supplied `config` shape agree (it'll happily persist

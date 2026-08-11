@@ -70,6 +70,10 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
   const [showNew, setShowNew] = React.useState(false);
   const [filter, setFilter] = React.useState("");
   const [platform, setPlatform] = React.useState("");
+  // Banner, not a gate: rows may already exist from a fatter deployment
+  // sharing this database, and viewing/deleting them stays useful even
+  // where the SDKs to run them are absent.
+  const caps = window.primerApi.useCapabilities();
 
   // Providers are the paginated table (bug #19); text + platform filters
   // narrow the current page and reset to page 0. The channels fetch is only a
@@ -96,6 +100,11 @@ function ChannelProvidersPage({ onOpen, pushToast }) {
 
   return (
     <div className="col" style={{ gap: 14 }}>
+      {!window.primerApi.extraInstalled(caps, "channels") && (
+        <div className="banner warn" data-capability-banner="channels">
+          {window.primerApi.capabilityHint("channels")}
+        </div>
+      )}
       <div className="filter-bar">
         <div className="input-icon">
           <Icon name="search" size={13} className="icon" />

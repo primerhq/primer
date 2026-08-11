@@ -2320,6 +2320,11 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
     isEdit ? "paste" : "upload",
   );
 
+  // Rich-format upload converts through docling; .md / .txt short-circuit
+  // and stay available without it, so this is a hint rather than a gate.
+  const caps = window.primerApi.useCapabilities();
+  const doclingMissing = !window.primerApi.extraInstalled(caps, "docling");
+
   // File-upload conversion state.
   const [convertingFile, setConvertingFile] = React.useState(false);
   const [convertedFileName, setConvertedFileName] = React.useState(null);
@@ -2597,6 +2602,14 @@ function KN_NewDocumentModal({ collections, defaultCollection, pushToast, onClos
             </span>
           )}
         </div>
+
+        {contentMode === "upload" && doclingMissing && (
+          <div className="field-help" style={{ color: "var(--amber)" }}
+            data-capability-hint="docling">
+            PDF/DOCX/PPTX ingestion requires the docling extra.{" "}
+            {window.primerApi.capabilityHint("docling")}
+          </div>
+        )}
 
         {contentMode === "paste" ? (
           <textarea
