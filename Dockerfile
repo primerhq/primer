@@ -58,15 +58,13 @@ WORKDIR /app
 # README.md is referenced by pyproject.toml's `readme = "README.md"`
 # field, so hatchling needs it present even for a deps-only sync.
 # UV_SYNC_EXTRAS selects which optional backends are installed. The default
-# builds the batteries-included "fat" image (--all-extras: huggingface,
-# docling, lance, channels, docker, kubernetes). The release also builds a
-# "slim" image by passing only the light operational extras, dropping the
-# multi-GB huggingface + docling torch stack:
-#   --build-arg UV_SYNC_EXTRAS="--extra kubernetes --extra docker \
-#                               --extra channels --extra lance"
-# BootstrapRunner self-skips dep-backed default providers whose extra is
-# absent, so a slim image boots cleanly.
-ARG UV_SYNC_EXTRAS="--all-extras"
+# builds the slim image (core + the light operational extras: kubernetes,
+# docker, channels, lance); it drops the multi-GB huggingface + docling
+# torch stack. BootstrapRunner self-skips dep-backed default providers
+# whose extra is absent, so it boots cleanly. Build the batteries-included
+# image with:
+#   --build-arg UV_SYNC_EXTRAS="--all-extras"
+ARG UV_SYNC_EXTRAS="--extra kubernetes --extra docker --extra channels --extra lance"
 COPY pyproject.toml uv.lock README.md ./
 RUN uv sync ${UV_SYNC_EXTRAS} --frozen --no-install-project --no-dev
 
