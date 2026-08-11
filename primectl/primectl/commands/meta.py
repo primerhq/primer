@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import typer
 
-from primectl.commands.crud import _session
+from primectl.client import ApiError, ConnectionFailed
+from primectl.commands.crud import _fail, _session
 from primectl.registry import UnknownResource
 
 
@@ -35,6 +36,33 @@ def register(app: typer.Typer) -> None:
                 ",".join(verbs),
                 ",".join(sorted(r.custom_ops)),
             )
+        Console().print(table)
+
+    @app.command()
+    def capabilities(ctx: typer.Context) -> None:
+        """Show which optional subsystems the server has installed."""
+        sess = _session(ctx)
+        from rich.console import Console
+        from rich.table import Table
+
+        try:
+            resp = sess.client.request("get", "/v1/capabilities")
+        except (ApiError, ConnectionFailed) as exc:
+            _fail(sess, exc)
+        data = resp.json()
+        table = Table(show_edge=False, pad_edge=False)
+        for col in ("EXTRA", "INSTALLED", "DETAIL"):
+            table.add_column(col)
+        for extra, status in sorted(data["extras"].items()):
+            detail = ""
+            if status.get("platforms"):
+                # Only 'channels' carries per-platform detail; list the ones
+                # actually importable so a partial install is visible rather
+                # than collapsing to a bare "no".
+                detail = ",".join(
+                    p for p, ok in sorted(status["platforms"].items()) if ok
+                ) or "none"
+            table.add_row(extra, "yes" if status["installed"] else "no", detail)
         Console().print(table)
 
     @app.command()
