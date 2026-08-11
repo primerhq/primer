@@ -13,7 +13,6 @@ is idempotent either way.
 from __future__ import annotations
 
 from primer.int.storage_provider import StorageProvider
-from primer.knowledge.migration import migrate_document_content
 
 
 class M001DocumentContent:
@@ -23,6 +22,12 @@ class M001DocumentContent:
     description = "migrate legacy document bodies into the content store"
 
     async def apply(self, sp: StorageProvider) -> None:
+        # Lazy: storage is core and knowledge is a subsystem, so importing
+        # it at module scope would make every core-only install pull the
+        # knowledge stack just to register the migration chain. A core-only
+        # install never runs this against documents anyway.
+        from primer.knowledge.migration import migrate_document_content
+
         await migrate_document_content(sp)
 
 

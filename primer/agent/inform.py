@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from primer.channel.adapter import PromptEnvelope
+from primer.model.envelope import PromptEnvelope
 
 
 logger = logging.getLogger(__name__)

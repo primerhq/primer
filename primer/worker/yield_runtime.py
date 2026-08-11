@@ -530,7 +530,7 @@ async def _resume_call_tool_dispatch(
 # ===========================================================================
 
 
-from primer.channel.adapter import PromptEnvelope
+from primer.model.envelope import PromptEnvelope
 
 
 def _build_prompt_envelope(

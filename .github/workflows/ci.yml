@@ -41,6 +41,8 @@ jobs:
           uv pip install --no-deps ./primectl ./runtime
       - name: Lint (ruff)
         run: uv run ruff check .
+      - name: Import contracts (import-linter)
+        run: uv run lint-imports
       - name: Docs hygiene
         run: uv run pytest tests/docs/ -q --tb=short
       # Narrowed unit sweep: excludes e2e / distributed / ui_e2e / integration /

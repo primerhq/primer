@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 from abc import ABC, abstractmethod
 from collections import OrderedDict
-from dataclasses import dataclass, field
 from typing import Any
 
 from primer.model.channel import ChannelProviderType
+# Envelopes live in core model so the agent/worker layers never import
+# primer.channel; re-exported here because every channel adapter and
+# a good deal of test code imports them from this module.
+from primer.model.envelope import PromptEnvelope, ResponseEnvelope
 
 # Channels that anchor one thread per chat (multi-type). Telegram has no
 # threads (single-type: one 1:1 chat per channel).
@@ -86,44 +89,6 @@ def attribution_header(env: "PromptEnvelope") -> str:
     ws = env.workspace_name or "workspace"
     sess = env.session_label or "session"
     return f"\U0001F6E0 Workspace: {ws} · Session: {sess}\n"
-
-
-@dataclass
-class PromptEnvelope:
-    """Provider-agnostic ask-user / approval payload."""
-
-    kind: str
-    workspace_id: str
-    session_id: str
-    tool_call_id: str
-    prompt: str
-    response_schema: dict[str, Any] | None
-    choices: list[str] | None
-    timeout_at_iso: str | None
-    # Structured approval detail (kind == "tool_approval"), so renderers can
-    # format the call cleanly instead of parsing it out of ``prompt``.
-    tool_name: str | None = None
-    tool_args: dict[str, Any] | None = None
-    # Artifact-backed media parts (as dicts) to upload alongside the prompt,
-    # e.g. workspace files attached to ask_user / inform_user. None == no media.
-    media: list[dict[str, Any]] | None = None
-    # Optional attribution context surfaced in channel gate posts.
-    workspace_name: str | None = None
-    session_label: str | None = None
-
-
-@dataclass
-class ResponseEnvelope:
-    """Provider-agnostic response from the platform."""
-
-    kind: str
-    workspace_id: str
-    session_id: str
-    tool_call_id: str
-    response: Any
-    decision: str | None
-    reason: str | None
-    platform_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class ChannelAdapter(ABC):

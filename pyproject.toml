@@ -270,6 +270,7 @@ match = "main"
 [dependency-groups]
 dev = [
     "grpcio-tools>=1.81.1",
+    "import-linter>=2.13",
     "playwright>=1.60.0",
     "pre-commit>=4.0.0",
     "pytest>=9.1.0",
@@ -290,3 +291,45 @@ docs = [
 # release in the release workflow; synced via `uv sync --group release`.
 release = ["python-semantic-release>=10.5.3,<11"]
 
+
+[tool.importlinter]
+root_packages = ["primer"]
+
+[[tool.importlinter.contracts]]
+name = "core layers do not import optional subsystems"
+type = "forbidden"
+source_modules = [
+    "primer.model",
+    "primer.int",
+    "primer.storage",
+    "primer.common",
+    "primer.claim",
+]
+forbidden_modules = [
+    "primer.channel",
+    "primer.knowledge",
+    "primer.ingest",
+    "primer.embedder.huggingface",
+    "primer.cross_encoder.huggingface",
+    "primer.vector.lance",
+    "primer.workspace.container",
+    "primer.workspace.k8s",
+]
+allow_indirect_imports = true
+ignore_imports = [
+    # Sanctioned lazy seam: the migration wrapper resolves knowledge at
+    # apply() time; a core-only install never runs it against documents.
+    "primer.storage.migrations.m001_document_content -> primer.knowledge.migration",
+]
+
+[[tool.importlinter.contracts]]
+name = "agent/worker reach channel only through sanctioned dispatch seams"
+type = "forbidden"
+source_modules = ["primer.agent", "primer.worker"]
+forbidden_modules = ["primer.channel"]
+allow_indirect_imports = true
+ignore_imports = [
+    "primer.agent.inform -> primer.channel.media",
+    "primer.worker.yield_runtime -> primer.channel.media",
+    "primer.worker.engine_handlers -> primer.channel.chat_dispatcher",
+]
