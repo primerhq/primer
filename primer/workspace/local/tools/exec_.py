@@ -50,6 +50,16 @@ class ExecArgs(BaseModel):
             "raises BadRequestError."
         ),
     )
+    check: bool = Field(
+        default=False,
+        description=(
+            "Fail the tool call when the command exits non-zero. Default False "
+            "keeps the historical behaviour, where a failing command returns "
+            "normally and its exit code is visible only in the output text - so "
+            "a graph node wrapping it reports success no matter what happened "
+            "inside. Set True for any step whose failure should stop the graph."
+        ),
+    )
     description: str = Field(
         ...,
         min_length=1,
@@ -221,6 +231,8 @@ class Exec(WorkspaceTool):
         out_text = stdout.decode("utf-8", errors="replace")
         err_text = stderr.decode("utf-8", errors="replace")
         body = f"{rc}\n{out_text}\n{err_text}"
+        if args.check and rc != 0:
+            raise BadRequestError(nonzero_exit_message(args.command, rc, out_text, err_text))
         return ToolResult(
             output=body,
             metadata={
@@ -277,4 +289,16 @@ def _curated_subprocess_env() -> dict[str, str]:
     return {k: v for k, v in os.environ.items() if k in _ENV_PASSTHROUGH}
 
 
-__all__ = ["Exec", "ExecArgs"]
+def nonzero_exit_message(command: str, rc: int, stdout: str, stderr: str) -> str:
+    """A failure message carrying the tail of the output, not just the code.
+
+    The exit code alone sends the reader back to the raw output to find out what
+    happened; including the tail means the node's error field says it directly.
+    stderr first because that is where a traceback lands.
+    """
+    tail = (stderr.strip() or stdout.strip())[-800:]
+    suffix = f"\n{tail}" if tail else ""
+    return f"command exited {rc}: {command!r}{suffix}"
+
+
+__all__ = ["Exec", "ExecArgs", "nonzero_exit_message"]
