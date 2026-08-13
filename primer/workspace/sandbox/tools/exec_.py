@@ -13,7 +13,7 @@ from pydantic import BaseModel
 from primer.int.sandbox import Sandbox
 from primer.model.chat import ToolExample
 from primer.model.except_ import BadRequestError
-from primer.workspace.local.tools.exec_ import ExecArgs
+from primer.workspace.local.tools.exec_ import ExecArgs, nonzero_exit_message
 from primer.workspace.sandbox.tools._common import resolve_sandbox_path
 from primer.workspace.tool import ToolCallContext, ToolResult, WorkspaceTool
 
@@ -89,6 +89,17 @@ class SandboxExec(WorkspaceTool):
                 f"{args.command!r}"
             ) from exc
         body = f"{result.exit_code}\n{result.stdout}\n{result.stderr}"
+        # Without `check`, a command that fails still produces a SUCCESSFUL tool
+        # call, so the graph node wrapping it records status=completed, error=None.
+        # A run whose script raised is then indistinguishable from one that
+        # succeeded, and the only trace is an exit code buried at the head of the
+        # output text.
+        if args.check and result.exit_code != 0:
+            raise BadRequestError(
+                nonzero_exit_message(
+                    args.command, result.exit_code, result.stdout, result.stderr
+                )
+            )
         return ToolResult(
             output=body,
             metadata={
