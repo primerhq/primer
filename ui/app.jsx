@@ -405,6 +405,7 @@ function App() {
     // Designer's API: navigate(page, extra?). Map to URL paths.
     const ROUTES = {
       dashboard: "/",
+      studio2: "/studio2",
       sessions: "/sessions",
       "session-detail": (e) => `/sessions/${e}`,
       workspaces: "/workspaces",
@@ -441,6 +442,7 @@ function App() {
       "chat-detail": (e) => `/chats/${e}`,
       harnesses: "/harnesses",
       "harness-detail": (e) => `/harnesses/${e}`,
+      services: "/services",
       triggers: "/triggers",
       "trigger-detail": (e) => `/triggers/${e}`,
       "api-tokens": "/settings/api-tokens",
