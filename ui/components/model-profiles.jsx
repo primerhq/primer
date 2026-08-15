@@ -98,7 +98,6 @@ function MP_ProfileModal({ open, onClose, onSaved, existing, providers, prefill 
   const errFor = (name) => fieldErrors[`body.${name}`];
   return (
     <Modal
-      open={open}
       onClose={onClose}
       title={isEdit ? `Edit ${existing.id}` : "New model profile"}
       footer={
@@ -332,25 +331,28 @@ function ModelProfilesPage() {
         onSaved={() => list.refetch()}
       />
 
-      <Modal
-        open={confirmDelete != null}
-        onClose={() => setConfirmDelete(null)}
-        title="Delete model profile"
-        footer={
-          <>
-            <Btn onClick={() => setConfirmDelete(null)}>Cancel</Btn>
-            <Btn variant="danger" onClick={doDelete} disabled={del.loading}>
-              Delete
-            </Btn>
-          </>
-        }
-      >
-        <p>
-          Delete <code>{confirmDelete?.id}</code>? Any agent that names this
-          profile will fail to start until it is repointed.
-        </p>
-        {deleteErr && <div className="field-help warn">{deleteErr}</div>}
-      </Modal>
+      {/* Modal has no `open` prop: it renders whenever it is mounted, so the
+          caller gates it. Every other page's confirm does the same. */}
+      {confirmDelete && (
+        <Modal
+          onClose={() => setConfirmDelete(null)}
+          title="Delete model profile"
+          footer={
+            <>
+              <Btn onClick={() => setConfirmDelete(null)}>Cancel</Btn>
+              <Btn variant="danger" onClick={doDelete} disabled={del.loading}>
+                Delete
+              </Btn>
+            </>
+          }
+        >
+          <p>
+            Delete <code>{confirmDelete.id}</code>? Any agent that names this
+            profile will fail to start until it is repointed.
+          </p>
+          {deleteErr && <div className="field-help warn">{deleteErr}</div>}
+        </Modal>
+      )}
     </>
   );
 }
