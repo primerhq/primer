@@ -344,6 +344,16 @@ class GraphSessionBinding(BaseModel):
         description="Discriminator tag for the SessionBinding union.",
     )
     graph_id: str = Field(..., min_length=1)
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override for this run, mirroring "
+            ":attr:`AgentSessionBinding.profile_id`. ``None`` leaves each "
+            "agent node to resolve its own profile. Both binding kinds "
+            "carry the override so a switch can change the model and the "
+            "target in one gesture."
+        ),
+    )
     graph_snapshot: "Graph | None" = Field(
         default=None,
         description=(
@@ -372,6 +382,19 @@ class WorkspaceSession(Identifiable):
 
     workspace_id: str = Field(..., min_length=1)
     binding: SessionBinding
+    binding_epoch: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Monotonic counter bumped every time :attr:`binding` is "
+            "reapplied. A session is an agent-independent workstream, so "
+            "the binding is a mutable pointer; the epoch fences writes "
+            "against it. Terminal-turn and park-resume writes carry the "
+            "epoch they started under and are void when it no longer "
+            "matches the row, which is what keeps a switch from being "
+            "clobbered by work that began under the previous binding."
+        ),
+    )
     status: SessionStatus
     name: str | None = Field(
         default=None,
@@ -569,8 +592,24 @@ class SessionMessageKind(StrEnum):
 
     USER_INPUT = "user_input"
     ASSISTANT_TOKEN = "assistant_token"
+    # Model reasoning / thinking text, streamed alongside the answer by
+    # providers that expose it. Persisted for DISPLAY only: it is skipped
+    # when rebuilding the prompt, because replaying a model's own
+    # reasoning back to it is either rejected outright or degrades the
+    # next turn.
+    REASONING = "reasoning"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    # Push-frame for an invoker-supplied (external) tool call, written
+    # when a turn soft-yields on one so a live client sees the call
+    # immediately and again on reconnect replay. Display/protocol only:
+    # the paired tool_call/tool_result rows carry the history.
+    EXTERNAL_TOOL_CALL = "external_tool_call"
+    # Attribution row appended when a session's binding switches, so a
+    # shared transcript stays readable across hand-offs. Payload:
+    # ``{"from_binding": {...}, "to_binding": {...}, "actor": str,
+    #    "binding_epoch": int}``. Display only, never sent to the model.
+    AGENT_MARKER = "agent_marker"
     YIELDED = "yielded"
     RESUMED = "resumed"
     DONE = "done"
@@ -599,6 +638,12 @@ class SessionMessageKind(StrEnum):
     # physically at/before the LAST marker into one synthetic assistant
     # summary; the event log and pre-compaction messages are NEVER deleted.
     COMPACTION_MARKER = "compaction_marker"
+    # Structural marker appended by a rewind. Payload: ``{"to_seq": int,
+    # "actor": str}``. The read-time replay walk drops every currently
+    # visible row with ``seq > to_seq``; nothing is ever deleted, so the
+    # append-only invariant above holds for rewinds too. Consumed by the
+    # replay rule only, never sent to the model.
+    REWIND_MARKER = "rewind_marker"
 
 
 class SessionMessageRecord(BaseModel):
@@ -625,6 +670,31 @@ class SessionMessageRecord(BaseModel):
             "originating node so the UI node inspector can stream live."
         ),
     )
+
+
+class PendingSessionMessage(Identifiable):
+    """A follow-up steer received while the session already had a turn.
+
+    Held as its OWN row rather than a list on the session so the enqueue
+    (an API process) and the drain (a worker) can never lose-update or
+    reorder each other on a last-writer-wins store.
+
+    The row deliberately carries NO seq. Allocating one at receipt is
+    what collided with the in-flight turn's assistant_token seqs; the
+    drain turns each pending row into a real seq'd ``user_input`` at the
+    drain-empty checkpoint, AFTER the active turn's terminal record, so
+    the follow-up stays ordered after the response it followed.
+
+    ``id`` shape: ``"{session_id}:pending:{enqueued_at}:{counter}"``. The
+    drain orders by ``(enqueued_at, id)``.
+    """
+
+    session_id: str = Field(..., min_length=1)
+    parts: list[dict[str, Any]] = Field(default_factory=list)
+    attribution: dict[str, Any] | None = Field(default=None)
+    client_msg_id: str | None = Field(default=None)
+    enqueued_at: datetime = Field(...)
+    created_at: datetime = Field(...)
 
 
 # ===========================================================================
