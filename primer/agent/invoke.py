@@ -259,11 +259,17 @@ async def run_subagent(
     # truth for the AgentFrame's mid-flight history.
     produced: list[Message] = []
     try:
+        from primer.session.delegation import current_delegation_sink
+
+        _sink = current_delegation_sink()
         async for _ev in run_agent_turn(
             agent=agent, llm=llm, llm_model=llm_model, tool_manager=tool_manager,
             prompt=prompt_msgs, principal=principal, messages_out=produced,
         ):
-            pass
+            if _sink is not None:
+                await _sink.on_event(
+                    _ev, delegate_tool_call_id=invoke_tool_call_id,
+                )
     except YieldToWorker as yld:
         _push_agent_frame_on_yield(
             yld,
@@ -378,12 +384,21 @@ async def resume_subagent(
     produced: list[Message] = []
     try:
         with _depth_set(depth):
+            from primer.session.delegation import current_delegation_sink
+
+            _sink = current_delegation_sink()
             async for _ev in run_agent_turn(
                 agent=agent, llm=llm, llm_model=llm_model,
                 tool_manager=tool_manager, prompt=resume_prompt,
                 principal=context.principal, messages_out=produced,
             ):
-                pass
+                if _sink is not None:
+                    await _sink.on_event(
+                        _ev,
+                        delegate_tool_call_id=getattr(
+                            context, "tool_call_id", None,
+                        ),
+                    )
     except YieldToWorker as yld:
         _push_agent_frame_on_yield(
             yld,

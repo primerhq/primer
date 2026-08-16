@@ -47,6 +47,11 @@ from primer.model.turn_log import (
 )
 from primer.model.yield_ import YieldToWorker
 from primer.session.enqueue import SessionWakeDeps
+from primer.session.delegation import (
+    DelegationRecorder,
+    reset_delegation_sink,
+    set_delegation_sink,
+)
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.pending_messages import realize_next_pending
 from primer.session.persistence import (
@@ -340,6 +345,14 @@ async def run_one_session_turn(
     # ------------------------------------------------------------------
     coalesce_state = _CoalesceState()
 
+    # Subagent runs execute inline in this turn with no writer of
+    # their own, so the recorder is published here and picked up by
+    # the invoke loops through a contextvar. Without it a delegated
+    # run leaves only an opaque tool call in the transcript.
+    _delegation_token = set_delegation_sink(DelegationRecorder(
+        writer=writer, event_bus=deps.event_bus, session_id=session_id,
+    ))
+
     try:
         async for event in executor.invoke([]):
             # Translate StreamEvent → SessionMessageRecord(s)
@@ -589,6 +602,7 @@ async def run_one_session_turn(
         return ReleaseOutcome(success=False, drop_lease=True)
 
     finally:
+        reset_delegation_sink(_delegation_token)
         cancel_task.cancel()
         try:
             await cancel_task
