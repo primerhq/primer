@@ -497,6 +497,8 @@ class WorkerPool:
             channel_dispatcher=self._channel_dispatcher,
             workspace_registry=self._workspace_registry,
             artifact_registry=self._artifact_storage_registry,
+            scheduler=self._scheduler,
+            claim_engine=self._engine,
         )
 
         outcome = ReleaseOutcome(success=False, drop_lease=True)

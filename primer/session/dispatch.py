@@ -46,7 +46,9 @@ from primer.model.turn_log import (
     TurnLogYielded,
 )
 from primer.model.yield_ import YieldToWorker
+from primer.session.enqueue import SessionWakeDeps
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.pending_messages import realize_next_pending
 from primer.session.persistence import (
     WorkspaceIO,
     WorkspaceMessageWriter,
@@ -108,6 +110,14 @@ class SessionDispatchDeps:
     # resolve; None -> files are ignored.
     workspace_registry: Any | None = None
     artifact_registry: Any | None = None
+
+    # Wake wiring for the drain checkpoint: realizing a queued steer goes
+    # through wake_session, which needs the scheduler and claim engine to
+    # arm the next turn. Optional because unit-test pools build deps
+    # without them; absent means queued steers simply wait for the next
+    # checkpoint that does have the wiring.
+    scheduler: Any | None = None
+    claim_engine: Any | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -670,6 +680,12 @@ async def run_one_session_turn(
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
         await _advance_drain_cursor(session_storage, session_id)
 
+    # The queue drains only on a clean finish. A failed turn would be
+    # reopened by the wake, risking a loop on a persistently failing
+    # session, and a cancelled turn was stopped on purpose, so its
+    # follow-up waits for the user rather than auto-running.
+    await _realize_pending_at_checkpoint(deps, session)
+
     await _safe_turn_log(turn_log, TurnLogCompleted(
         seq=0,
         ts=_now(),
@@ -905,6 +921,49 @@ async def _advance_drain_cursor(session_storage, session_id: str) -> None:
     if target > fresh.next_unprocessed_seq:
         await session_storage.update(
             fresh.model_copy(update={"next_unprocessed_seq": target})
+        )
+
+
+async def _realize_pending_at_checkpoint(
+    deps: "SessionDispatchDeps", session, 
+) -> None:
+    """Turn exactly one queued steer into a real turn.
+
+    A steer that arrived while this turn was open was stored as a
+    seq-less pending row rather than written into the log. The turn has
+    now terminated, so the queue head can safely become a USER_INPUT and
+    arm the next turn.
+
+    Exactly one, because realizing the whole queue would write several
+    user messages against a single turn and break the 1:1 pairing the
+    drain counts. The rest follow at later checkpoints.
+
+    Failures are swallowed: the turn already reached a terminal state and
+    released its lease, so a storage hiccup here must not unwind that.
+    The row stays queued for the next checkpoint.
+    """
+    if deps.scheduler is None or deps.claim_engine is None:
+        return
+    if deps.workspace_registry is None:
+        return
+    try:
+        wake_deps = SessionWakeDeps(
+            storage_provider=deps.storage_provider,
+            scheduler=deps.scheduler,
+            claim_engine=deps.claim_engine,
+            workspace_registry=deps.workspace_registry,
+            event_bus=deps.event_bus,
+        )
+        await realize_next_pending(
+            storage_provider=deps.storage_provider,
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            wake_deps=wake_deps,
+        )
+    except Exception:
+        logger.exception(
+            "drain checkpoint: realizing a queued steer failed for %s",
+            session.id,
         )
 
 
