@@ -27,8 +27,17 @@ class TapEventClass(StrEnum):
     # -- mirrored from SessionMessageKind (values must match exactly) --------
     USER_INPUT = "user_input"
     ASSISTANT_TOKEN = "assistant_token"
+    # Model reasoning text, streamed alongside the answer by providers
+    # that expose it. Display only, like its SessionMessageKind twin.
+    REASONING = "reasoning"
     TOOL_CALL = "tool_call"
     TOOL_RESULT = "tool_result"
+    # Push-frame for an invoker-supplied (external) tool call, so a live
+    # client sees the call as it happens and again on reconnect replay.
+    EXTERNAL_TOOL_CALL = "external_tool_call"
+    # Binding hand-off attribution, so a shared transcript stays
+    # readable when the agent behind a session changes mid-workstream.
+    AGENT_MARKER = "agent_marker"
     YIELDED = "yielded"
     RESUMED = "resumed"
     DONE = "done"
@@ -41,6 +50,9 @@ class TapEventClass(StrEnum):
     # not activity: the tap reader skips it (see primer/tap/reader.py) so it is
     # never surfaced on the activity rail.
     COMPACTION_MARKER = "compaction_marker"
+    # Structural marker for a rewind: the replay walk drops visible rows
+    # past its to_seq. Nothing is deleted, so the log stays append-only.
+    REWIND_MARKER = "rewind_marker"
 
     # -- tap-layer extension -------------------------------------------------
     GRAPH_TRANSITION = "graph_transition"
