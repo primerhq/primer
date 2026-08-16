@@ -544,6 +544,18 @@ class WorkspaceSession(Identifiable):
             "message writer (see primer.session.persistence)."
         ),
     )
+    next_unprocessed_seq: int = Field(
+        default=0,
+        ge=0,
+        description=(
+            "Drain checkpoint cursor: the seq the next turn scan starts "
+            "from. Advanced ONLY at a fully drained checkpoint, to "
+            "max-seen-seq + 1, never to a re-read last_seq. Ported from "
+            "the chat drain, where advancing it mid-turn let a crash "
+            "replay records the previous turn had already consumed. "
+            "Read with primer.session.turns.count_turn_state."
+        ),
+    )
     turn_status: Literal["idle", "claimable", "running"] = Field(
         default="idle",
         description=(
