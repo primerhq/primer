@@ -585,6 +585,7 @@ async def run_one_session_turn(
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
         await turn_log.aclose()
+        await _realize_pending_at_checkpoint(deps, session)
         return ReleaseOutcome(success=False, drop_lease=True)
 
     finally:
@@ -647,6 +648,7 @@ async def run_one_session_turn(
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
         await turn_log.aclose()
+        await _realize_pending_at_checkpoint(deps, session)
         return ReleaseOutcome(success=True, drop_lease=True)
 
     # ------------------------------------------------------------------
@@ -680,10 +682,11 @@ async def run_one_session_turn(
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
         await _advance_drain_cursor(session_storage, session_id)
 
-    # The queue drains only on a clean finish. A failed turn would be
-    # reopened by the wake, risking a loop on a persistently failing
-    # session, and a cancelled turn was stopped on purpose, so its
-    # follow-up waits for the user rather than auto-running.
+    # Every terminal exit drains, not just this one: a queued steer is
+    # the user's message, and dropping it because their turn errored
+    # or they hit Stop loses work silently. Realization deletes the
+    # row and the queue is finite, so a failing session retries each
+    # queued message at most once rather than looping.
     await _realize_pending_at_checkpoint(deps, session)
 
     await _safe_turn_log(turn_log, TurnLogCompleted(

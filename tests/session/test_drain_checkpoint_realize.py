@@ -79,3 +79,19 @@ async def test_realization_failure_never_breaks_the_turn(monkeypatch):
     deps = _deps(scheduler=object(), claim_engine=object(),
                  workspace_registry=object())
     await _realize_pending_at_checkpoint(deps, _row())  # must not raise
+
+async def test_every_terminal_exit_drains_the_queue():
+    """A queued steer is the user's message; losing it on a failed or
+    cancelled turn drops work silently. Realization deletes the row and
+    the queue is finite, so a failing session retries each queued
+    message at most once rather than looping.
+    """
+    import inspect
+
+    from primer.session.dispatch import run_one_session_turn
+
+    src = inspect.getsource(run_one_session_turn)
+    assert src.count("_realize_pending_at_checkpoint(deps, session)") == 3, (
+        "expected the drain at all three terminal exits "
+        "(executor failure, cancel/interrupt, clean completion)"
+    )
