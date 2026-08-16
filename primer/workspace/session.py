@@ -133,8 +133,14 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
     neither replays uncompacted history after a compaction.
     """
     summary_text: str | None = None
-    msgs: list[Message] = []
+    # Each Message is carried with the last seq seen before it was
+    # written. Message lines are seqless, so that is the only way to
+    # decide later whether a rewind naming a seq covers them.
+    carried: list[tuple[int, Message]] = []
+    summary_seq = -1
+    seen_seq = 0
     marker_kind = SessionMessageKind.COMPACTION_MARKER.value
+    rewind_kind = SessionMessageKind.REWIND_MARKER.value
     for line in raw_lines:
         line = line.strip()
         if not line:
@@ -145,14 +151,30 @@ def reconstruct_compacted_history(raw_lines: "list[str]") -> list[Message]:
             continue
         if not isinstance(obj, dict):
             continue
+        seq = obj.get("seq")
+        if isinstance(seq, int):
+            seen_seq = seq
         if obj.get("kind") == marker_kind:
             # A marker replaces everything read so far (head AND tail).
             summary_text = (obj.get("payload") or {}).get("summary") or None
-            msgs = []
+            summary_seq = seen_seq
+            carried = []
+            continue
+        if obj.get("kind") == rewind_kind:
+            to_seq = (obj.get("payload") or {}).get("to_seq")
+            if isinstance(to_seq, int):
+                carried = [(s, m) for s, m in carried if s <= to_seq]
+                # A compaction inside the rewound span goes with it:
+                # its summary stood in for messages that are now cut,
+                # so replaying it would resurrect them as prose.
+                if summary_text is not None and summary_seq > to_seq:
+                    summary_text = None
+                    summary_seq = -1
             continue
         if "role" in obj and "parts" in obj:
-            msgs.append(Message.model_validate(obj))
+            carried.append((seen_seq, Message.model_validate(obj)))
         # else: a non-marker event-log record -> not LLM history, skip.
+    msgs = [m for _s, m in carried]
     if summary_text:
         return [
             Message(role="assistant", parts=[TextPart(text=summary_text)]),
