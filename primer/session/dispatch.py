@@ -573,6 +573,7 @@ async def run_one_session_turn(
             )
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _advance_drain_cursor(session_storage, session_id)
         await turn_log.aclose()
         return ReleaseOutcome(success=False, drop_lease=True)
 
@@ -634,6 +635,7 @@ async def run_one_session_turn(
             )
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
+            await _advance_drain_cursor(session_storage, session_id)
         await turn_log.aclose()
         return ReleaseOutcome(success=True, drop_lease=True)
 
@@ -666,6 +668,7 @@ async def run_one_session_turn(
         )
         await _clear_interrupt_requested(session_storage, session_id)
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
+        await _advance_drain_cursor(session_storage, session_id)
 
     await _safe_turn_log(turn_log, TurnLogCompleted(
         seq=0,
@@ -877,6 +880,31 @@ async def _persist_last_seq(
     if fresh is not None and seq > fresh.last_seq:
         await session_storage.update(
             fresh.model_copy(update={"last_seq": seq})
+        )
+
+
+async def _advance_drain_cursor(session_storage, session_id: str) -> None:
+    """Advance the drain checkpoint cursor at a fully drained turn.
+
+    The cursor marks where the next turn scan starts. It moves ONLY
+    here, at a checkpoint the loop reached by finishing a turn, and only
+    forwards: on the chat surface, advancing it mid-turn let a crash
+    replay records the previous turn had already consumed.
+
+    ``last_seq`` is by definition the highest seq assigned to this
+    session, so the next unconsumed record is the one after it. That is
+    why this needs no log read (plan errata E5): the loop already knows
+    the turn terminated, and the row already carries the high-water
+    mark. Re-reads fresh and never downgrades, so a concurrent steer
+    that pushed the cursor further is not clobbered.
+    """
+    fresh = await session_storage.get(session_id)
+    if fresh is None:
+        return
+    target = fresh.last_seq + 1
+    if target > fresh.next_unprocessed_seq:
+        await session_storage.update(
+            fresh.model_copy(update={"next_unprocessed_seq": target})
         )
 
 
