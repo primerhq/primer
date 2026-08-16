@@ -38,4 +38,18 @@ def derive_session_title(parts: list) -> str:
     return "[attachment]"
 
 
-__all__ = ["TITLE_MAX_CHARS", "derive_session_title"]
+class _TextPart:
+    """Minimal part shape for callers that hold a bare string."""
+
+    __slots__ = ("text",)
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+
+
+def derive_title_from_text(text: str) -> str:
+    """Title a session from a plain instruction string."""
+    return derive_session_title([_TextPart(text)])
+
+
+__all__ = ["TITLE_MAX_CHARS", "derive_session_title", "derive_title_from_text"]

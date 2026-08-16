@@ -1063,6 +1063,8 @@ async def steer_session(
         apply_tool_results,
         cancel_pending_external,
     )
+    from primer.session.pending_messages import store_pending_steer
+    from primer.session.steer_routing import ROUTE_PENDING, route_steer
     from primer.session.yields import durably_wake_session
     from primer.worker.yield_runtime import make_cancelled_payload
 
@@ -1121,6 +1123,30 @@ async def steer_session(
                     logger.exception(
                         "external tool cancel publish failed for %r", key
                     )
+
+        # A session runs one turn at a time, so an instruction that
+        # arrives while a turn is still open is queued rather than
+        # written as a second user message, which would break the
+        # 1:1 user-message-to-terminal pairing the drain counts. The
+        # drain realizes it at the next checkpoint. Results-carrying
+        # bodies are exempt: those resume the open turn on purpose, and
+        # the instruction is meant to steer that same resumed turn.
+        # Bodies carrying tool defs are exempt alongside results: a
+        # pending row has nowhere to hold external_tools, so deferring
+        # one would silently drop the registration for the turn it was
+        # meant to arm.
+        if (
+            row is not None
+            and not body.tool_results
+            and not body.external_tools
+            and route_steer(row) == ROUTE_PENDING
+        ):
+            await store_pending_steer(
+                storage_provider=storage_provider,
+                session_id=session_id,
+                text=body.instruction,
+            )
+            return await sessions.get(session_id)
 
         deps = SessionWakeDeps(
             storage_provider=storage_provider,

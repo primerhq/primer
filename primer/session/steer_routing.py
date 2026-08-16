@@ -16,20 +16,30 @@ ROUTE_PENDING = "pending"
 ROUTE_WAKE = "wake"
 
 
-def route_steer(row: WorkspaceSession, *, raw_lines: list[str]) -> str:
+def route_steer(
+    row: WorkspaceSession, *, raw_lines: list[str] | None = None
+) -> str:
     """Return ROUTE_PENDING when a turn is open, else ROUTE_WAKE.
 
-    The row carries the fast path: a claimable or running turn_status,
-    or any parked_status, means a turn is in flight. The log is the slow
-    path behind it, because the row can read idle for a turn whose
-    terminal record has not landed yet, and queueing on the row alone
-    would let that window produce a colliding second user message.
+    turn_status is the authoritative per-turn flag: claimable means a
+    turn is armed, running means one is executing, idle means neither.
+    A parked session counts as busy too, since it waits on a human
+    rather than being finished.
+
+    Session status is deliberately NOT consulted. It is coarser: a
+    RUNNING session commonly sits idle between turns, so treating it as
+    busy would defer steers that should have run immediately.
+
+    ``raw_lines`` is an optional slow path for callers that already
+    hold the log, such as the drain. It closes the small window where
+    turn_status has gone idle but the terminal record has not landed.
+    Omitting it only forgoes that extra check.
     """
     if row.turn_status in ("claimable", "running"):
         return ROUTE_PENDING
     if row.parked_status is not None:
         return ROUTE_PENDING
-    if has_open_turn(raw_lines, cursor=row.next_unprocessed_seq):
+    if raw_lines and has_open_turn(raw_lines, cursor=row.next_unprocessed_seq):
         return ROUTE_PENDING
     return ROUTE_WAKE
 

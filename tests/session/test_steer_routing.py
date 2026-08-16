@@ -44,12 +44,22 @@ class TestRouteSteer:
     def test_idle_routes_to_wake(self):
         assert route_steer(_row(turn_status="idle"), raw_lines=[]) == ROUTE_WAKE
 
-    def test_idle_row_with_open_log_turn_routes_to_pending(self):
-        """The row can read idle before the terminal record lands."""
+    def test_running_status_alone_does_not_defer(self):
+        """status is coarser than turn_status: RUNNING sits idle between
+        turns, so deferring on it would delay steers that should run."""
         row = _row(status=SessionStatus.RUNNING, turn_status="idle")
+        assert route_steer(row, raw_lines=[]) == ROUTE_WAKE
+
+    def test_idle_row_with_open_log_turn_routes_to_pending(self):
+        """Callers holding the log get the extra check."""
+        row = _row(status=SessionStatus.WAITING, turn_status="idle")
         lines = [json.dumps({"seq": 1, "kind": "user_input", "payload": {},
                              "created_at": "2026-08-16T00:00:00+00:00"})]
         assert route_steer(row, raw_lines=lines) == ROUTE_PENDING
+
+    def test_raw_lines_is_optional(self):
+        """The hot API path routes on the row alone."""
+        assert route_steer(_row(turn_status="idle")) == ROUTE_WAKE
 
     def test_cursor_excludes_already_drained_turns(self):
         """Records before the checkpoint belong to finished turns."""
