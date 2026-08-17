@@ -13,6 +13,8 @@ Lifecycle:
   ``router.publish(cid, Tick(seq=payload['seq']))``.
 * WS handlers call ``router.subscribe(cid)`` to get an
   ``AsyncIterator[Tick]`` for the chat they're streaming.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

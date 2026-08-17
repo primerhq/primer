@@ -7,6 +7,8 @@ Multi-type: a thread maps 1:1 to a Chat whose channel_binding ==
 The room's default agent + chat-enablement come from the room ``Channel``'s
 ``config.chats`` (``ChatConfig``); routing/active-chat state lives in the
 ``CorrelationStore`` rather than a per-channel association row.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

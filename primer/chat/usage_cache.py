@@ -3,6 +3,8 @@
 Lives in its own module to avoid the import cycle that would arise
 if either ``primer.chat.executor`` or ``primer.api.routers.chats``
 owned it.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

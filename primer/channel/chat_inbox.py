@@ -5,6 +5,8 @@ A chat does NOT park; its pending gate is resolved by the next user_message
 appended user_message + a claimable flip; the worker's resume logic
 (_find_resume_reply -> ChatTurnRunner.resume_pending) consumes it. This is the
 chat analogue of ChannelInbox, but it targets chats, NOT the session bus.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

@@ -24,6 +24,8 @@ The runner is constructed per WebSocket frame (cheap — holds storage
 + resolver handles only). All heavy resolution (LLM client, model
 config, tool manager) happens once when the WS handler builds the
 runner.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

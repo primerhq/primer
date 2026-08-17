@@ -11,6 +11,8 @@ The firing :class:`ChannelEvent` is reconstructed from
 ``fire_context["event"]``; its ``channel_id`` + ``thread_anchor`` become
 the new chat's :class:`ChatChannelBinding` so outbound relay and
 inbound thread->chat correlation line up.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

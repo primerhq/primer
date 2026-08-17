@@ -17,6 +17,8 @@ API process re-derives the payload from storage (the source of truth)
 and posts via its own warm adapter. The bus payload carries only a
 ``kind`` discriminator — never the text/envelope — to stay well under
 the 8000-byte ``pg_notify`` limit.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

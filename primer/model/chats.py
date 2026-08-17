@@ -12,6 +12,8 @@ and the message log. There is no park/resume machinery on the chat
 surface.
 
 Spec: ``docs/superpowers/specs/2026-05-22-yielding-tools-design.md`` §8.5.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

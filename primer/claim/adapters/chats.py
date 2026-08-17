@@ -1,3 +1,4 @@
+"""S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4)."""
 from __future__ import annotations
 
 from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome

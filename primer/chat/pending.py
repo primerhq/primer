@@ -6,6 +6,8 @@ agent-switch endpoint (auto-reject the pending gate before switching agents).
 Keeps the append-only chat history valid: the unpaired ``tool_use`` gets a
 synthetic rejected ``tool_result``, and a terminal ``cancelled`` row closes the
 parked turn so the next drain advances past the prompting user_message.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

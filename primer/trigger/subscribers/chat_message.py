@@ -12,6 +12,8 @@ Parallelism: ``skip`` returns a no-op skip when the chat is already
 mid-turn (``turn_status == "running"``); ``queue`` always appends and
 relies on the chat's FIFO message log to deliver the turn after the
 in-flight one drains.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

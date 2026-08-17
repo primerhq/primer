@@ -32,6 +32,8 @@ verbatim onto the persisted row's ``payload["response_format"]`` for
 The caller is responsible for the next steps: flipping
 ``chat.turn_status`` to ``"claimable"`` and publishing the
 ``chat-claimable`` bus event so a worker picks the turn up.
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations

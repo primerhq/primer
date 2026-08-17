@@ -6,6 +6,8 @@ each task drains the FIFO queue of user_messages on its claimed
 chat, runs the LLM stream per message, persists rows to storage,
 publishes tick events on the bus, honours interrupt requests, and
 releases the lease when done (or when parking on a yielding tool).
+
+S6 P5 deletes this file (S1 P7 carve-out, crosscheck C4).
 """
 
 from __future__ import annotations
