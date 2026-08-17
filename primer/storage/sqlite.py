@@ -329,7 +329,8 @@ class SqliteStorageProvider(StorageProvider):
                 "  last_migration_at      TEXT,"
                 "  session_secret         TEXT,"
                 "  sso_jit_enabled        INTEGER NOT NULL DEFAULT 0,"
-                "  sso_default_access     TEXT"
+                "  sso_default_access     TEXT,"
+                "  default_agent_id       TEXT"
                 ")"
             )
             # Schema-evolution shim: for installs created before
@@ -349,6 +350,10 @@ class SqliteStorageProvider(StorageProvider):
             if "sso_default_access" not in cols:
                 await self._conn.execute(
                     "ALTER TABLE system_state ADD COLUMN sso_default_access TEXT"
+                )
+            if "default_agent_id" not in cols:
+                await self._conn.execute(
+                    "ALTER TABLE system_state ADD COLUMN default_agent_id TEXT"
                 )
             await self._conn.execute(
                 "INSERT INTO system_state (id) VALUES ('singleton') "
@@ -395,7 +400,7 @@ class SqliteStorageProvider(StorageProvider):
         sql = (
             "SELECT id, bootstrap_completed_at, schema_version, "
             "       last_migration_at, session_secret, "
-            "       sso_jit_enabled, sso_default_access "
+            "       sso_jit_enabled, sso_default_access, default_agent_id "
             "FROM system_state WHERE id = ?"
         )
         cur = await self.connection.execute(sql, ("singleton",))
@@ -410,6 +415,7 @@ class SqliteStorageProvider(StorageProvider):
             session_secret,
             sso_jit_enabled,
             sso_default_access,
+            default_agent_id,
         ) = row
 
         def _parse_ts(s: str | None) -> datetime | None:
@@ -429,7 +435,16 @@ class SqliteStorageProvider(StorageProvider):
             session_secret=session_secret,
             sso_jit_enabled=bool(sso_jit_enabled),
             sso_default_access=sso_default_access,
+            default_agent_id=default_agent_id,
         )
+
+    async def set_default_agent_id(self, agent_id: str | None) -> None:
+        """Set (or clear, with None) the system default agent."""
+        await self.connection.execute(
+            "UPDATE system_state SET default_agent_id = ? WHERE id = ?",
+            (agent_id, "singleton"),
+        )
+        await self.connection.commit()
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         """Stamp ``bootstrap_completed_at`` on the singleton row."""

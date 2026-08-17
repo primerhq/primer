@@ -97,6 +97,14 @@ class StorageProvider(ABC):
         """
 
     @abstractmethod
+    async def set_default_agent_id(self, agent_id: str | None) -> None:
+        """Set the agent a binding-less session create resolves to.
+
+        ``None`` clears it, which leaves such a create with nothing to
+        resolve and therefore rejected rather than guessing.
+        """
+
+    @abstractmethod
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         """Stamp ``bootstrap_completed_at`` on the singleton row.
 
