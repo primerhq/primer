@@ -32,12 +32,14 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.model.workspace_session import (
+    PendingSessionMessage,
     WorkspaceSession,
     SessionBinding,
     SessionStatus,
 )
 from primer.model.storage import (
     FieldRef,
+    OffsetPage,
     Op,
     OrderBy,
     PageRequest,
@@ -640,20 +642,65 @@ async def find_sessions(
     return await sessions.find(body.predicate, body.page, order_by=body.order_by)
 
 
+class SessionDetail(WorkspaceSession):
+    """A session row plus the follow-ups it has not run yet.
+
+    Subclasses rather than wraps, so every existing field stays a
+    literal sibling and no client reading WorkspaceSession today has to
+    change. Only ever constructed for a response, never stored.
+    """
+
+    pending_messages: list[PendingSessionMessage] = Field(
+        default_factory=list,
+        description=(
+            "Steers that arrived while a turn was running and have not "
+            "been realized yet, oldest first. Each carries parts rather "
+            "than a flattened string, matching what the drain joins back "
+            "out when it realizes one."
+        ),
+    )
+
+
+# A pathological queue must not make a detail read unbounded.
+_PENDING_PAGE = 100
+
+
 @top_session_router.get(
     "/sessions/{session_id}",
-    response_model=WorkspaceSession,
+    response_model=SessionDetail,
     summary="Get session by id (no workspace context required)",
     responses=common_responses(404, 500),
 )
 async def get_session_by_id(
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
-) -> WorkspaceSession:
+    storage_provider=Depends(get_storage_provider),
+) -> SessionDetail:
     s = await sessions.get(session_id)
     if s is None:
         raise NotFoundError(f"Session {session_id!r} does not exist")
-    return s
+
+    pending: list[PendingSessionMessage] = []
+    try:
+        page = await storage_provider.get_storage(PendingSessionMessage).find(
+            Predicate(
+                left=FieldRef(name="session_id"), op=Op.EQ,
+                right=Value(value=session_id),
+            ),
+            OffsetPage(offset=0, length=_PENDING_PAGE),
+            order_by=[
+                OrderBy(field="enqueued_at", direction="asc"),
+                OrderBy(field="id", direction="asc"),
+            ],
+        )
+        pending = list(page.items)
+    except Exception:  # noqa: BLE001 - the row is the answer; the queue is extra
+        logger.exception(
+            "session detail: reading pending messages failed for %s",
+            session_id,
+        )
+
+    return SessionDetail(**s.model_dump(), pending_messages=pending)
 
 
 @top_session_router.get(

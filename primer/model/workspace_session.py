@@ -206,6 +206,16 @@ class SessionInfo(BaseModel):
     session_id: str = Field(..., min_length=1)
     agent_id: str = Field(..., min_length=1)
     workspace_id: str = Field(..., min_length=1)
+    binding: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Current binding, served from the DB row: {kind, agent_id | "
+            "graph_id, profile_id, binding_epoch}. The on-disk session.json "
+            "projection is rewritten only at the next turn boundary, so "
+            "this field is what readers trust. agent_id above stays "
+            "populated but is display-legacy once a session has switched."
+        ),
+    )
     name: str | None = Field(
         default=None,
         description=(
