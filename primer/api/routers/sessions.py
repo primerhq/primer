@@ -750,6 +750,7 @@ async def _read_workspace_turn_log(
     offset: int,
     since_seq: int | None,
     tail: bool = False,
+    visible: bool = False,
 ) -> dict:
     """JSONL-parse the file at ``relative_path`` inside ``workspace``.
 
@@ -764,6 +765,12 @@ async def _read_workspace_turn_log(
     most-recent ``limit`` rows, ``offset=limit`` the next-older page — so
     paging is anchored to the end of the log, not a shifting start. Rows are
     always returned in ascending ``seq`` order.
+
+    ``visible`` folds the log through the replay walk first, so the
+    caller sees what the conversation currently shows: rewound rows
+    disappear and a compacted span collapses to its marker. It defaults
+    off because the audit and trace views need the raw stream, and a
+    rewound span has to stay fetchable to render as a collapsed region.
     """
     try:
         raw = await workspace.read_file(relative_path)
@@ -781,6 +788,16 @@ async def _read_workspace_turn_log(
         if since_seq is not None and int(obj.get("seq", 0)) <= since_seq:
             continue
         items.append(obj)
+    if visible:
+        # Folded BEFORE paging, so offsets describe the conversation the
+        # caller asked to see rather than the raw file underneath it.
+        from primer.session.replay import visible_records
+
+        visible_seqs = {
+            rec.get("seq")
+            for rec in visible_records([json.dumps(obj) for obj in items])
+        }
+        items = [obj for obj in items if obj.get("seq") in visible_seqs]
     total = len(items)
     if tail:
         end = max(0, total - offset)
@@ -806,6 +823,16 @@ async def get_session_messages(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     after_seq: int | None = Query(default=None, ge=0),
+    visible: bool = Query(
+        False,
+        description=(
+            "Fold the log through the replay walk before paging: rewound "
+            "rows disappear and a compacted span collapses to its marker. "
+            "Off by default, because the audit and trace views need the "
+            "raw stream and a rewound span must stay fetchable to render "
+            "as a collapsed region."
+        ),
+    ),
     tail: bool = Query(
         default=False,
         description=(
@@ -840,6 +867,7 @@ async def get_session_messages(
         offset=offset,
         since_seq=after_seq,
         tail=tail,
+        visible=visible,
     )
 
 
