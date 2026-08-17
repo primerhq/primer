@@ -85,13 +85,6 @@ from primer.model.workspace import (
 )
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.mutation_lock import session_lifecycle_lock
-from primer.workspace import mount_manifest as mm
-from primer.workspace.collection_expand import (
-    build_base_snapshot,
-    expand_collection,
-    sanitize_dest,
-)
-from primer.workspace.mount_manifest import MountManifest, load_manifest
 
 
 logger = logging.getLogger(__name__)
@@ -100,22 +93,6 @@ logger = logging.getLogger(__name__)
 # ===========================================================================
 # Request / response bodies
 # ===========================================================================
-
-
-class MountRequest(BaseModel):
-    """Body of ``POST /v1/workspaces/{id}/mounts``.
-
-    Also reused as an item of ``WorkspaceCreateBody.mounts`` (Task 6) to
-    mount collections at workspace-creation time — defined here (ahead of
-    ``WorkspaceCreateBody``) so the create-time field can reference it
-    directly.
-    """
-
-    collection_id: str = Field(..., min_length=1)
-    dest: str | None = Field(
-        default=None,
-        description="Dir name under the workspace root; defaults to a sanitized collection id.",
-    )
 
 
 class WorkspaceCreateBody(BaseModel):
@@ -154,10 +131,6 @@ class WorkspaceCreateBody(BaseModel):
             "When set, the workspace row is created with this "
             "reply_binding already populated."
         ),
-    )
-    mounts: list[MountRequest] = Field(
-        default_factory=list,
-        description="Collections to mount at creation time.",
     )
 
 
@@ -589,48 +562,6 @@ async def create_workspace(
         )
 
     overrides = body.overrides or WorkspaceTemplateOverrides()
-    mount_records = []  # (collection_id, collection_name, dest, base: list[BaseFile])
-    if body.mounts:
-        # Built lazily (only when mounts are actually requested) rather than
-        # as FastAPI Depends() parameters: get_document_service() eagerly
-        # constructs a DocumentService that calls
-        # storage_provider.get_content_store(), which not every
-        # StorageProvider stand-in implements (e.g. lightweight in-memory
-        # fakes used elsewhere in the test suite for workspace-only tests).
-        # Resolving these only inside the mounts branch keeps the no-mounts
-        # create path byte-for-byte unchanged.
-        service = get_document_service(request)
-        collections = get_collection_storage(get_storage_provider(request))
-        extra_files = list(overrides.files)
-        seen_collection_ids: set[str] = set()
-        seen_dests: set[str] = set()
-        for req in body.mounts:
-            if req.collection_id in seen_collection_ids:
-                raise ConflictError(
-                    f"Collection {req.collection_id!r} listed more than once in mounts"
-                )
-            seen_collection_ids.add(req.collection_id)
-            coll = await collections.get(req.collection_id)
-            if coll is None:
-                raise NotFoundError(
-                    f"Collection {req.collection_id!r} does not exist"
-                )
-            # Use the collection id, never its (long) description, for the
-            # dir name / manifest collection_name -- a Collection has no name
-            # field. Mirrors the runtime create_mount path.
-            dest = sanitize_dest(req.dest or coll.id)
-            if dest in seen_dests:
-                raise ConflictError(
-                    f"Multiple mounts resolve to the same directory {dest!r}"
-                )
-            seen_dests.add(dest)
-            extra_files += await expand_collection(service, req.collection_id, dest)
-            base = await build_base_snapshot(service, req.collection_id)
-            mount_records.append(
-                (req.collection_id, coll.id, dest, base)
-            )
-        overrides = overrides.model_copy(update={"files": extra_files})
-
     # Pin the live instance to the caller-supplied id (same id the row is
     # keyed by, below) so re-attach after cache eviction resolves the SAME
     # backend object instead of 404ing.
@@ -646,33 +577,6 @@ async def create_workspace(
     # effort tears the live workspace back down before re-raising the original
     # error unchanged.
     try:
-        if mount_records:
-            manifest = await mm.load_manifest(live)
-            for cid, cname, dest, base in mount_records:
-                if not base:
-                    # Zero-document collection: expand_collection produced no
-                    # FileMounts, so materialise() never created dest on disk.
-                    # Create it explicitly (mirrors the runtime create_mount
-                    # path in workspace_mounts.py) so GET /mounts doesn't 500 /
-                    # show a phantom dir with no backing directory. Only do
-                    # this when base is empty -- for non-empty collections the
-                    # dir already exists from materialise, and make_dir on an
-                    # existing dir raises.
-                    await live.make_dir(dest)
-                    await live.write_file(f"{dest}/.gitkeep", b"")
-                manifest = mm.add_mount(
-                    manifest,
-                    mm.MountEntry(
-                        mount_id=f"wsmnt-{uuid.uuid4().hex[:12]}",
-                        collection_id=cid,
-                        collection_name=cname,
-                        dest=dest,
-                        mounted_at=datetime.now(timezone.utc),
-                        base=base,
-                    ),
-                )
-            await mm.save_manifest(live, manifest)
-
         row_id = body.id if body.id is not None else live.id
         # Mark the row "running" immediately — materialise() returned a live
         # handle, so the workspace IS up. The probe loop transitions from
@@ -1748,17 +1652,6 @@ async def interrupt_session(
 files_router = APIRouter(tags=["workspace-files"])
 
 
-def _decorate_origins(
-    entries: list[FileEntry], manifest: MountManifest
-) -> list[FileEntry]:
-    """Mark each entry whose path is a mount root's ``dest`` with origin='collection'."""
-    dests = {m.dest for m in manifest.mounts}
-    for e in entries:
-        if e.kind == "dir" and e.path in dests:
-            e.origin = "collection"
-    return entries
-
-
 @files_router.get(
     "/workspaces/{workspace_id}/files/tree",
     summary="Return a one-level directory tree",
@@ -1772,8 +1665,9 @@ async def file_tree(
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
+    # No origin decoration: with collection mounting retired, every entry
+    # is workspace-native and nothing is collection-backed.
     entries = await ws.list_files(path, recursive=False)
-    entries = _decorate_origins(entries, await load_manifest(ws))
     items = []
     for entry in entries:
         name = entry.path.rsplit("/", 1)[-1] if "/" in entry.path else entry.path
@@ -1808,8 +1702,9 @@ async def list_files(
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
+    # No origin decoration: with collection mounting retired, every
+    # entry is workspace-native and nothing is collection-backed.
     entries = await ws.list_files(path, recursive=recursive)
-    entries = _decorate_origins(entries, await load_manifest(ws))
     sliced = entries[offset : offset + limit]
     return {
         "items": [e.model_dump(mode="json") for e in sliced],
