@@ -1165,6 +1165,116 @@ async def compact_session_endpoint(
     }
 
 
+class BindingSwitchBody(BaseModel):
+    """Body of ``POST .../sessions/{sid}/binding``."""
+
+    kind: Literal["agent", "graph"] = Field(
+        ...,
+        description="Which kind of target this session should run next.",
+    )
+    agent_id: str | None = Field(default=None)
+    graph_id: str | None = Field(default=None)
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override to apply with the switch, so "
+            "target and model change in one gesture."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _target_matches_kind(self) -> "BindingSwitchBody":
+        if self.kind == "agent" and not self.agent_id:
+            raise ValueError("kind 'agent' requires agent_id")
+        if self.kind == "graph" and not self.graph_id:
+            raise ValueError("kind 'graph' requires graph_id")
+        return self
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/binding",
+    response_model=WorkspaceSession,
+    summary="Switch which agent or graph runs this session's next turn",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def switch_session_binding(
+    body: BindingSwitchBody,
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> WorkspaceSession:
+    """Point a session at a different agent or graph.
+
+    An idle session switches immediately. A busy one queues the request
+    and the drain checkpoint applies it before the next turn, so the
+    running turn finishes under the binding it started with.
+    """
+    from primer.model.agent import Agent
+    from primer.model.graph import Graph
+    from primer.session.binding_switch import apply_binding_switch
+    from primer.worker.io_shim import _WorkspaceIOShim
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    if row.status is SessionStatus.ENDED:
+        raise ConflictError(
+            f"session {session_id!r} has ended; reopen it before switching"
+        )
+
+    # Verified before anything is written: a switch to a target that
+    # does not exist would strand the session on an unbuildable binding.
+    if body.kind == "graph":
+        target = await storage_provider.get_storage(Graph).get(body.graph_id)
+        if target is None:
+            raise NotFoundError(f"Graph {body.graph_id!r} does not exist")
+    else:
+        target = await storage_provider.get_storage(Agent).get(body.agent_id)
+        if target is None:
+            raise NotFoundError(f"Agent {body.agent_id!r} does not exist")
+
+    request = {
+        "kind": body.kind,
+        "agent_id": body.agent_id,
+        "graph_id": body.graph_id,
+        "profile_id": body.profile_id,
+        "actor": "user",
+    }
+
+    if row.parked_status is not None:
+        # A parked session waits on a human, and the gate is addressed to
+        # the OUTGOING agent. Queueing here would leave the switch
+        # pending behind a gate only the agent being replaced can
+        # resolve. Refused explicitly until the abandon chokepoint
+        # (P3 Task 21) can retire that gate and apply the switch.
+        raise ConflictError(
+            f"session {session_id!r} is parked on a pending gate; resolve "
+            "or cancel it before switching binding"
+        )
+
+    if row.turn_status in ("claimable", "running"):
+        queued = row.model_copy(update={"pending_binding_switch": request})
+        await sessions.update(queued)
+        return queued
+
+    io_shim = _WorkspaceIOShim(workspace_registry=registry)
+    io_shim.register_session(session_id, workspace_id)
+
+    async def _resolve(_binding):
+        return target
+
+    return await apply_binding_switch(
+        sessions=sessions,
+        workspace_io=io_shim,
+        row=row,
+        request=request,
+        actor="user",
+        resolve_snapshot=_resolve,
+    )
+
+
 class ResponseFormatBody(BaseModel):
     """Body of ``PUT .../sessions/{sid}/response_format``."""
 
