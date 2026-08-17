@@ -66,7 +66,7 @@ ask_user). Everything historically imported as
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -86,6 +86,7 @@ from primer.model.except_ import (
     PrimerError,
 )
 from primer.model.graph import Graph, GraphThread
+from primer.model.workspace_session import WorkspaceSession
 from primer.model.provider import (
     ArtifactStorageProvider,
     CrossEncoderProvider,
@@ -805,6 +806,113 @@ def build_system_toolset(
             yields=True,
         ),
         _switch_to_agent_handler,
+    )
+
+    # ---- switch_binding (session hand-off; never yields) -------------
+    class _SwitchBindingArgs(BaseModel):
+        kind: Literal["agent", "graph"] = Field(
+            ..., description="Whether to hand off to an agent or a graph."
+        )
+        agent_id: str | None = Field(
+            default=None, description="Agent to hand off to (kind='agent')."
+        )
+        graph_id: str | None = Field(
+            default=None, description="Graph to hand off to (kind='graph')."
+        )
+        profile_id: str | None = Field(
+            default=None,
+            description="Optional model profile to apply with the switch.",
+        )
+        reason: str | None = Field(
+            default=None,
+            description="Why the hand-off is happening, for the transcript.",
+        )
+
+    async def _switch_binding_handler(
+        arguments: dict[str, Any], *, ctx: ToolContext,
+    ) -> ToolCallResult:
+        try:
+            args = _SwitchBindingArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        if ctx.session_id is None:
+            return _err(
+                "switch_binding is only available in workspace sessions",
+                error_type="bad-request",
+            )
+        if args.kind == "agent" and not args.agent_id:
+            return _err("kind 'agent' requires agent_id",
+                        error_type="bad-request")
+        if args.kind == "graph" and not args.graph_id:
+            return _err("kind 'graph' requires graph_id",
+                        error_type="bad-request")
+
+        # Verified before the request is stored: a queued switch to a
+        # target that does not exist would fail at the checkpoint, long
+        # after the agent that asked for it could react.
+        if args.kind == "graph":
+            if await storage_provider.get_storage(Graph).get(
+                args.graph_id
+            ) is None:
+                return _err(f"graph {args.graph_id!r} does not exist",
+                            error_type="not-found")
+        elif await storage_provider.get_storage(Agent).get(
+            args.agent_id
+        ) is None:
+            return _err(f"agent {args.agent_id!r} does not exist",
+                        error_type="not-found")
+
+        sessions = storage_provider.get_storage(WorkspaceSession)
+        row = await sessions.get(ctx.session_id)
+        if row is None:
+            return _err(f"session {ctx.session_id!r} does not exist",
+                        error_type="not-found")
+
+        await sessions.update(row.model_copy(update={
+            "pending_binding_switch": {
+                "kind": args.kind,
+                "agent_id": args.agent_id,
+                "graph_id": args.graph_id,
+                "profile_id": args.profile_id,
+                "actor": "agent",
+                "reason": args.reason,
+            },
+        }))
+        target = args.graph_id if args.kind == "graph" else args.agent_id
+        return ToolCallResult(
+            output=(
+                f"binding switch to {target!r} queued; applies at the end "
+                "of this turn"
+            ),
+            is_error=False,
+        )
+
+    registry["switch_binding"] = (
+        make_tool(
+            id="switch_binding",
+            toolset_id=toolset_id,
+            purpose=(
+                "Hand this session off to a different agent or graph from "
+                "the next turn onward."
+            ),
+            when=(
+                "Use when the rest of THIS session should be handled by "
+                "someone else; for a one-off subtask use invoke_agent "
+                "instead, which returns here when it finishes."
+            ),
+            args_schema=_SwitchBindingArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"kind": "agent", "agent_id": "agent-coder",
+                          "reason": "implementation work from here"},
+                    returns="binding switch queued; applies at the end of "
+                            "this turn",
+                    note="sessions only; the current turn finishes first",
+                ),
+            ],
+            yields=False,
+        ),
+        _switch_binding_handler,
     )
 
     # ---- ask_user (yielding; available everywhere incl. chats) -------
