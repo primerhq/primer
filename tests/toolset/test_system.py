@@ -34,7 +34,6 @@ from primer.model.storage import (
     CursorPageResponse,
     OffsetPageResponse,
 )
-from primer.model.thread import Thread
 from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
 
 
@@ -263,17 +262,6 @@ def _collection() -> Collection:
     )
 
 
-def _thread() -> Thread:
-    now = datetime.now(timezone.utc)
-    return Thread(
-        id="th-1",
-        agent_id="agt-1",
-        title="hello",
-        created_at=now,
-        last_activity_at=now,
-    )
-
-
 # The (entity_label, entity_label_plural) pairs the CRUD factory generates a
 # six-verb tool set for. Mirrors ``crud_specs`` in build_system_toolset.
 _CRUD_ENTITIES = [
@@ -285,7 +273,6 @@ _CRUD_ENTITIES = [
     ("graph", "graphs"),
     ("collection", "collections"),
     ("document", "documents"),
-    ("agent_thread", "agent_threads"),
     ("graph_thread", "graph_threads"),
     ("semantic_search_provider", "semantic_search_providers"),
     ("tool_approval_policy", "tool_approval_policies"),
@@ -318,7 +305,6 @@ class TestCatalog:
             ("graph", "graphs"),
             ("collection", "collections"),
             ("document", "documents"),
-            ("agent_thread", "agent_threads"),
             ("graph_thread", "graph_threads"),
             ("semantic_search_provider", "semantic_search_providers"),
         ]:
@@ -641,26 +627,6 @@ class TestToolsetExtras:
 
 
 # ===========================================================================
-# Threads CRUD (Agent thread is the exemplar)
-# ===========================================================================
-
-
-class TestAgentThreads:
-    @pytest.mark.asyncio
-    async def test_create_then_get_thread(self, system_toolset) -> None:
-        body = _thread().model_dump(mode="json")
-        result = await system_toolset.call(
-            tool_name="create_agent_thread", arguments={"entity": body}
-        )
-        assert not result.is_error, result.output
-        result = await system_toolset.call(
-            tool_name="get_agent_thread", arguments={"id": "th-1"}
-        )
-        assert not result.is_error
-        assert json.loads(result.output)["agent_id"] == "agt-1"
-
-
-# ===========================================================================
 # Collection extras + deferred stubs
 # ===========================================================================
 
@@ -855,7 +821,7 @@ class TestProviderRegistrySystemHandling:
 # ===========================================================================
 # Per-entity smoke - every CRUD set actually dispatches to storage
 # (covers the closures generated for embedding/cross_encoder/toolset/agent/
-# graph/collection/document/vector_store_config/agent_thread/graph_thread)
+# graph/collection/document/vector_store_config/graph_thread)
 # ===========================================================================
 
 

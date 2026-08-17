@@ -12,7 +12,7 @@ Tool catalog
 
 Per-entity CRUD set (10 entities × 6 tools = 60 tools) for:
     llm_provider, embedding_provider, cross_encoder_provider, toolset,
-    agent, graph, collection, document, agent_thread, graph_thread,
+    agent, graph, collection, document, graph_thread,
     semantic_search_provider
 
 Plus entity-specific operations:
@@ -20,7 +20,6 @@ Plus entity-specific operations:
   ``fetch_cross_encoder_provider_models`` — live model lists.
 * ``list_toolset_tools`` — enumerate the tools a toolset exposes.
 * ``call_tool`` — meta-dispatch: invoke any tool from any toolset.
-* Agent threads CRUD — ``list/get/create/update/delete_agent_thread``.
 * Graph threads CRUD — ``list/get/create/update/delete_graph_thread``.
 * Collection extras — ``list_collection_documents``,
   ``find_collection_documents_by_meta``, ``search_collection``,
@@ -95,7 +94,6 @@ from primer.model.provider import (
     SemanticSearchProvider,
     Toolset,
 )
-from primer.model.thread import Thread
 from primer.model.channel import (
     Channel,
     ChannelProvider,
@@ -238,7 +236,6 @@ def build_system_toolset(
         ("graph", "graphs", Graph, None, None, None, "user"),
         ("collection", "collections", Collection, None, None, None, "user"),
         ("document", "documents", Document, None, None, None, "user"),
-        ("agent_thread", "agent_threads", Thread, None, None, None, "user"),
         ("graph_thread", "graph_threads", GraphThread, None, None, None, "user"),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin"),
         ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, None, None, "admin"),

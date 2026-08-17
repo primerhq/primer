@@ -21,7 +21,6 @@ CHAT_TESTS = ROOT / "tests" / "chat"
 DELETED_SURFACE = (
     "primer.api.routers.chats",
     "primer.chat.rewind",
-    "switch_to_agent",
     "primer.model.thread",
     "ThreadMessage",
 )

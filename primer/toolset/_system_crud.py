@@ -198,15 +198,6 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
             "path": "doc-1.md",
         },
     ),
-    "agent_thread": _EntityHint(
-        sample_id="thread-1",
-        create_body={
-            "id": "thread-1",
-            "agent_id": "code-reviewer",
-            "created_at": "2026-01-01T00:00:00Z",
-            "last_activity_at": "2026-01-01T00:00:00Z",
-        },
-    ),
     "graph_thread": _EntityHint(
         sample_id="gthread-1",
         create_body={
