@@ -496,6 +496,11 @@ async def run_one_session_turn(
             yielded=yielded_stamped,
             llm_messages=llm_message_dicts,
             turn_no=session.turn_no,
+            # Captured at park, not at resume: a switch applied while the
+            # session waits bumps the row's epoch, and the resume must be
+            # able to notice it is running for a binding that has been
+            # replaced.
+            binding_epoch=session.binding_epoch,
             # started_at is the true turn start (for resume latency reporting),
             # not the park moment; _turn_started_at was captured before the
             # executor began streaming.
@@ -593,6 +598,7 @@ async def run_one_session_turn(
                 session,
                 new_status=SessionStatus.ENDED,
                 ended_reason="failed",
+                expected_epoch=session.binding_epoch,
             )
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
@@ -658,6 +664,7 @@ async def run_one_session_turn(
                 new_status=new_status,
                 ended_reason=ended_reason,
                 executor=executor,
+                expected_epoch=session.binding_epoch,
             )
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
@@ -693,6 +700,7 @@ async def run_one_session_turn(
             new_status=new_status,
             ended_reason=ended_reason,
             executor=executor,
+            expected_epoch=session.binding_epoch,
         )
         await _clear_interrupt_requested(session_storage, session_id)
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
@@ -1077,6 +1085,7 @@ async def _transition_session_status(
     new_status: SessionStatus,
     ended_reason: str | None = None,
     executor=None,
+    expected_epoch: int | None = None,
 ) -> None:
     """Update the WorkspaceSession row in storage. Idempotent on no-op.
 
@@ -1097,6 +1106,17 @@ async def _transition_session_status(
     # Re-read the current row so we don't overwrite concurrent changes.
     fresh = await session_storage.get(session.id)
     if fresh is None:
+        return
+    if expected_epoch is not None and fresh.binding_epoch != expected_epoch:
+        # The binding switched while this turn ran. The terminal status
+        # describes work done for a binding the session has left, so
+        # writing it would clobber the switch that replaced it. The next
+        # turn writes its own status under the current binding.
+        logger.info(
+            "session %s: voiding a terminal write from epoch %s "
+            "(row is at epoch %s)",
+            session.id, expected_epoch, fresh.binding_epoch,
+        )
         return
     if fresh.status == new_status and (
         ended_reason is None or fresh.ended_reason == ended_reason
