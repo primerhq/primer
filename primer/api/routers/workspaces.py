@@ -57,6 +57,7 @@ from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_
 from primer.api.routers._crud import make_crud_router
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 from primer.model.except_ import (
+    ConfigError,
     BadRequestError,
     ConflictError,
     NotFoundError,
@@ -542,6 +543,9 @@ async def get_workspace(
 async def create_workspace(
     body: WorkspaceCreateBody,
     request: Request,
+    storage_provider=Depends(get_storage_provider),
+    scheduler=Depends(get_scheduler),
+    engine=Depends(get_claim_engine),
     workspace_storage=Depends(get_workspace_storage),
     template_storage=Depends(get_workspace_template_storage),
     provider_storage=Depends(get_workspace_provider_storage),
@@ -708,6 +712,62 @@ async def create_workspace(
                 "workspace %s after a post-materialise error", live.id,
             )
         raise
+
+    from primer.session.default_binding import resolve_initial_binding
+    from primer.workspace.session_factory import (
+        SessionFactoryDeps,
+        create_session,
+    )
+
+    # A new workspace arrives with somewhere to talk. "main" is an
+    # ordinary session: deletable, no reserved id, no flag, and nothing
+    # downstream special-cases it. Its only distinction is existing.
+    #
+    # Best effort on purpose. Before a default agent is configured there
+    # is nothing to bind to, and failing workspace creation over a
+    # convenience would make the product unusable in exactly the window
+    # where someone is setting it up.
+    try:
+        binding = await resolve_initial_binding(
+            requested=None, storage_provider=storage_provider,
+        )
+    except ConfigError:
+        logger.info(
+            "create_workspace: no default agent configured, so workspace "
+            "%s starts with no session", row.id,
+        )
+        return row
+    except Exception:  # noqa: BLE001 - the workspace is the deliverable
+        # A provider that cannot report system state is indistinguishable
+        # from one with no default configured. Either way the workspace
+        # is created and usable; only the convenience is skipped.
+        logger.exception(
+            "create_workspace: could not resolve a default binding for %s; "
+            "starting with no session", row.id,
+        )
+        return row
+
+    try:
+        await create_session(
+            workspace_id=row.id,
+            binding=binding,
+            initial_instructions=None,
+            graph_input=None,
+            auto_start=False,
+            metadata=None,
+            name="main",
+            deps=SessionFactoryDeps(
+                storage_provider=storage_provider,
+                claim_engine=engine,
+                scheduler=scheduler,
+                workspace_registry=registry,
+            ),
+        )
+    except Exception:  # noqa: BLE001 - the workspace exists and is usable
+        logger.exception(
+            "create_workspace: seeding the main session failed for %s",
+            row.id,
+        )
     return row
 
 
