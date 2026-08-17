@@ -30,8 +30,9 @@ from datetime import datetime
 from enum import Enum, StrEnum
 from typing import TYPE_CHECKING, Annotated, Any, Literal, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
+from primer.model.agent import _validate_response_format_schema
 from primer.model.common import Identifiable
 from primer.model.principal import PrincipalRef
 
@@ -427,6 +428,10 @@ class WorkspaceSession(Identifiable):
             "system principal (PrincipalRef.system())."
         ),
     )
+    _validate_response_format = field_validator("response_format")(
+        _validate_response_format_schema
+    )
+
     created_at: datetime
     started_at: datetime | None = Field(default=None)
     last_turn_at: datetime | None = Field(default=None)
@@ -542,6 +547,16 @@ class WorkspaceSession(Identifiable):
             "WS reconnect; the WS endpoint emits records with "
             "``seq > cursor`` in order.  Bumped atomically by the "
             "message writer (see primer.session.persistence)."
+        ),
+    )
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Persistent per-session structured-output JSON Schema. "
+            "Overrides the agent default for this session. An ephemeral "
+            "per-steer override rides "
+            "metadata['ephemeral_response_format'] and beats this for "
+            "exactly one turn. Mirrors Chat.response_format."
         ),
     )
     next_unprocessed_seq: int = Field(
