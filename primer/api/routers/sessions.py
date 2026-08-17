@@ -31,6 +31,7 @@ from primer.model.except_ import (
     ConflictError,
     NotFoundError,
 )
+from primer.session.default_binding import resolve_initial_binding
 from primer.model.workspace_session import (
     PendingSessionMessage,
     WorkspaceSession,
@@ -64,7 +65,15 @@ class SessionCreateBody(BaseModel):
     the row to ``RUNNING`` and enqueues with the scheduler in one call.
     """
 
-    binding: SessionBinding
+    binding: SessionBinding | None = Field(
+        default=None,
+        description=(
+            "Agent or graph this session runs. Omit it to use the system "
+            "default agent, which is what lets a caller open a session "
+            "without choosing. With no default configured, omitting it "
+            "is an error rather than a guess."
+        ),
+    )
     name: str | None = Field(
         default=None,
         description=(
@@ -174,9 +183,13 @@ async def create_session(
         if actor is not None
         else PrincipalRef.system()
     )
+    # Explicit wins; the default is a fallback, never an override.
+    binding = await resolve_initial_binding(
+        requested=body.binding, storage_provider=storage_provider,
+    )
     return await start_workspace_session(
         workspace_id=workspace_id,
-        binding=body.binding,
+        binding=binding,
         initial_instructions=body.initial_instructions,
         graph_input=body.graph_input,
         auto_start=body.auto_start,

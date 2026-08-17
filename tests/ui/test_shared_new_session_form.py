@@ -87,3 +87,23 @@ def test_bundle_transpiles_with_shared_new_session_form() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body
     assert "/* === components/new-session-form.jsx === */" in body.decode("utf-8")
+
+
+def test_agent_binding_may_be_left_unpicked() -> None:
+    """Submitting with no agent selected means "the system default".
+
+    The gate used to require a pick, which made a default agent
+    unreachable from the console even once one was configured.
+    """
+    src = _shared()
+    assert 'kind === "agent" ? true : !!graphId' in src, (
+        "the agent branch of canSubmit must not require an agentId"
+    )
+
+
+def test_unpicked_agent_omits_binding_rather_than_sending_null() -> None:
+    """{kind:"agent", agent_id:null} would ask to bind to an agent
+    named null; omitting the key is what requests the default."""
+    src = _shared()
+    assert "if (binding) body.binding = binding;" in src
+
