@@ -39,6 +39,7 @@ from primer.api.deps import (
     get_collection_storage,
     get_document_service,
     get_event_bus,
+    get_provider_registry,
     get_scheduler,
     get_session_storage,
     get_storage_provider,
@@ -1029,6 +1030,129 @@ async def rename_session(
         )
 
     return info.model_dump(mode="json")
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/compact",
+    summary="Compact a session's history into a summary marker",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def compact_session_endpoint(
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+    provider_registry=Depends(get_provider_registry),
+    event_bus=Depends(get_event_bus),
+) -> dict:
+    """Summarise the visible history and append the fold marker.
+
+    The summarising call takes seconds, so the session row is re-read
+    afterwards: a concurrent write may have moved last_seq while the
+    model was working, and the marker has to land after it.
+    """
+    from primer.agent.compaction import CompactionStrategy
+    from primer.agent.compaction_mixin import force_compact
+    from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
+    from primer.model.agent import Agent
+    from primer.model_profile import resolve_model
+    from primer.session.compaction import compact_session, guard_compactable
+    from primer.workspace.session import reconstruct_compacted_history
+    from primer.worker.io_shim import _WorkspaceIOShim
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    guard_compactable(row)  # 409: graph-bound, or a turn in flight
+
+    # Snapshot-first, matching build_agent_executor: a frozen session
+    # compacts under the definition it has been running with.
+    agent = getattr(row.binding, "agent_snapshot", None)
+    if agent is None:
+        agent = await storage_provider.get_storage(Agent).get(
+            row.binding.agent_id
+        )
+    if agent is None:
+        raise NotFoundError(
+            f"Agent {row.binding.agent_id!r} for session {session_id!r} "
+            "no longer exists"
+        )
+
+    try:
+        llm_model = await resolve_model(
+            storage_provider,
+            default_profile_id=agent.model.profile_id,
+            override_profile_id=getattr(row.binding, "profile_id", None),
+        )
+    except NotFoundError as exc:
+        raise ConfigError(
+            f"Agent {agent.id!r} names model profile "
+            f"{agent.model.profile_id!r}, which does not exist: {exc}"
+        ) from exc
+    try:
+        llm = await provider_registry.get_llm(llm_model.provider_id)
+    except (NotFoundError, ConfigError) as exc:
+        raise ConfigError(
+            f"Agent {agent.id!r} has no resolvable LLM provider "
+            f"({llm_model.provider_id!r}): {exc}"
+        ) from exc
+
+    workspace = await registry.get_workspace(workspace_id)
+    if workspace is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} is not available")
+    state_path = getattr(workspace, "state_path", ".state")
+    rel = f"{state_path}/sessions/{session_id}/messages.jsonl"
+    try:
+        raw = await workspace.read_file(rel)
+    except Exception as exc:  # noqa: BLE001 - absent log is a 422, not a 5xx
+        raise SemanticValidationError(
+            "session has no recorded history to compact"
+        ) from exc
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    history = reconstruct_compacted_history(text.splitlines())
+    if not history:
+        raise SemanticValidationError(
+            "session has no visible history to compact"
+        )
+
+    prompt_field = getattr(agent, "compaction_prompt", None)
+    compaction_prompt = (
+        "\n\n".join(prompt_field) if prompt_field else DEFAULT_COMPACTION_PROMPT
+    )
+
+    async def _run(hist):
+        return await force_compact(
+            llm=llm,
+            strategy=CompactionStrategy(),
+            history=list(hist),
+            compaction_prompt=compaction_prompt,
+            model_name=llm_model.model_name,
+            context_length=llm_model.context_length,
+        )
+
+    io_shim = _WorkspaceIOShim(workspace_registry=registry)
+    io_shim.register_session(session_id, workspace_id)
+    fresh = await sessions.get(session_id) or row
+    outcome = await compact_session(
+        row=fresh, workspace_io=io_shim, history=history, run_compaction=_run,
+    )
+    await sessions.update(
+        fresh.model_copy(update={"last_seq": outcome.compaction_marker_seq})
+    )
+    try:
+        await event_bus.publish(
+            f"session:{session_id}:tick",
+            {"seq": outcome.compaction_marker_seq},
+        )
+    except Exception:  # noqa: BLE001 - the marker landed; the tick is a hint
+        logger.exception("compaction tick publish failed for %s", session_id)
+    return {
+        "compaction_marker_seq": outcome.compaction_marker_seq,
+        "summary": outcome.summary,
+        "tokens_before": outcome.tokens_before,
+        "tokens_after": outcome.tokens_after,
+    }
 
 
 class RewindBody(BaseModel):
