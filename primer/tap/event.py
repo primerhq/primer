@@ -50,6 +50,15 @@ class TapEventClass(StrEnum):
     # not activity: the tap reader skips it (see primer/tap/reader.py) so it is
     # never surfaced on the activity rail.
     COMPACTION_MARKER = "compaction_marker"
+    # ---- tap-only classes -------------------------------------------
+    # Derived frames, not records. The SSE loop builds these from the
+    # session row plus the log and they never advance the tap cursor,
+    # so a reconnecting client re-derives the current snapshot instead
+    # of replaying a historical one. They are idempotent by design:
+    # receiving the same frame twice must render twice with no effect,
+    # which is why they carry state rather than deltas.
+    USAGE = "usage"
+    PENDING_STEER = "pending_steer"
     # Structural marker for a rewind: the replay walk drops visible rows
     # past its to_seq. Nothing is deleted, so the log stays append-only.
     REWIND_MARKER = "rewind_marker"
