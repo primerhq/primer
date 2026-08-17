@@ -22,8 +22,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
+SHARED_DIR = UI / "components" / "shared"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
-TRANSCRIPT = CHAT_DIR / "transcript.jsx"
+TRANSCRIPT = SHARED_DIR / "transcript.jsx"
 
 
 def _src(path: Path) -> str:
@@ -70,4 +71,4 @@ def test_bundle_transpiles_with_approve_deny_changes() -> None:
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
     assert "/* === components/chat/conversation.jsx === */" in text
-    assert "/* === components/chat/transcript.jsx === */" in text
+    assert "/* === components/shared/transcript.jsx === */" in text

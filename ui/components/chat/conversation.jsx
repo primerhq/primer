@@ -19,14 +19,14 @@
 // CT_ExpandableToolRow, CT_AttachmentPart, CompactionMarker,
 // CT_ThinkingBubble, plus the scrollable container itself) out of this
 // file into the pure <Transcript> renderer
-// (ui/components/chat/transcript.jsx). This component still owns
+// (ui/components/shared/transcript.jsx). This component still owns
 // coalescing (window.chatCoalesce) and hands the result to <Transcript>
 // as props — no data fetching or WS in that file.
 //
 // Task B4 moved the input surface (textarea + attachment strip + send
 // control) out of this file into the pure <Composer> shell
-// (ui/components/chat/composer.jsx) and added the collapsible
-// <SchemaPanel> shell (ui/components/chat/schema-panel.jsx, R3) as an
+// (ui/components/shared/composer.jsx) and added the collapsible
+// <SchemaPanel> shell (ui/components/shared/schema-panel.jsx, R3) as an
 // optional right-hand sibling, gated by `showSchemaPanel`. This
 // component still owns the composer text/attachments state and the
 // send/attach handlers — <Composer> is a controlled, pure-rendering

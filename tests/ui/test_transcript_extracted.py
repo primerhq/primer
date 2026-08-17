@@ -1,7 +1,7 @@
 """Task B3 of docs/superpowers/plans/2026-07-05-chat-refactor.md —
 extract the single-column agent-timeline out of <Conversation>
 (ui/components/chat/conversation.jsx) into a pure renderer,
-<Transcript> (ui/components/chat/transcript.jsx). The row renderers
+<Transcript> (ui/components/shared/transcript.jsx). The row renderers
 (Message, CT_ExpandableToolRow, CT_AttachmentPart, CompactionMarker,
 CT_ThinkingBubble) move into the new file with it.
 
@@ -17,7 +17,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
-TRANSCRIPT = CHAT_DIR / "transcript.jsx"
+SHARED_DIR = UI / "components" / "shared"
+TRANSCRIPT = SHARED_DIR / "transcript.jsx"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 CHATS = UI / "components" / "chats.jsx"
 INDEX = UI / "index.html"
@@ -34,7 +35,7 @@ def _order() -> list[str]:
 
 
 def test_transcript_module_exists_and_exports() -> None:
-    assert TRANSCRIPT.exists(), "ui/components/chat/transcript.jsx is missing"
+    assert TRANSCRIPT.exists(), "ui/components/shared/transcript.jsx is missing"
     src = TRANSCRIPT.read_text(encoding="utf-8")
     assert "function Transcript(" in src
     assert "window.Transcript = Transcript;" in src
@@ -95,8 +96,8 @@ def test_transcript_is_pure_no_data_fetching_or_ws() -> None:
 
 def test_new_chat_scripts_registered_before_chats_jsx() -> None:
     order = _order()
-    assert "components/chat/transcript.jsx" in order
-    assert order.index("components/chat/transcript.jsx") < order.index("components/chats.jsx")
+    assert "components/shared/transcript.jsx" in order
+    assert order.index("components/shared/transcript.jsx") < order.index("components/chats.jsx")
 
 
 def test_bundle_transpiles_with_transcript_file() -> None:
@@ -105,4 +106,4 @@ def test_bundle_transpiles_with_transcript_file() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/transcript.jsx === */" in text
+    assert "/* === components/shared/transcript.jsx === */" in text

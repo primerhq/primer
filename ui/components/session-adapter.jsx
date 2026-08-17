@@ -5,7 +5,7 @@
 // reused chat UI without a second parallel renderer.
 //
 // SA_ = Session Adapter. No-build scope rule: top-level `var`/`function`
-// declarations (mirrors ui/components/chat/transcript.jsx's own top-level
+// declarations (mirrors ui/components/shared/transcript.jsx's own top-level
 // style, not the IIFE-wrapped helper style of use-transcript.js) with
 // every exported symbol assigned to `window.X` at file end.
 //

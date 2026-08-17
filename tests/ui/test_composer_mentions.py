@@ -4,7 +4,7 @@ sessions; selecting an entry inserts a structured `@type:id` ref token into
 the message text.
 
 Split the same way as D2's slash-command menu:
-* ui/components/chat/composer.jsx — the menu itself (cursor-relative "@"
+* ui/components/shared/composer.jsx — the menu itself (cursor-relative "@"
   detection, prefix filtering, keyboard nav, token insertion). Stays a
   pure, non-fetching shell per Task B4/D1/D2 (no `apiFetch`/`WebSocket`
   here) — it just renders and matches against whatever `mentionSources`
@@ -29,7 +29,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
-COMPOSER = CHAT_DIR / "composer.jsx"
+SHARED_DIR = UI / "components" / "shared"
+COMPOSER = SHARED_DIR / "composer.jsx"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 
 
@@ -99,5 +100,5 @@ def test_bundle_transpiles_with_composer_mention_changes() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/composer.jsx === */" in text
+    assert "/* === components/shared/composer.jsx === */" in text
     assert "/* === components/chat/conversation.jsx === */" in text

@@ -154,7 +154,7 @@ function CT_keyArgPreview(args) {
 // Helpers: thinking indicator + attachment part
 // ============================================================================
 //
-// Assistant-token coalescing lives in ui/components/chat/use-transcript.js
+// Assistant-token coalescing lives in ui/components/shared/use-transcript.js
 // (window.chatCoalesce) as of Task B2 — shared with <Conversation> and
 // unit-testable on its own.
 

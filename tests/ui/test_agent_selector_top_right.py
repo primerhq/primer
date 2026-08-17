@@ -29,6 +29,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
+SHARED_DIR = UI / "components" / "shared"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 CHATS = UI / "components" / "chats.jsx"
 

@@ -6,7 +6,7 @@ command menu; the initial set maps to existing chat actions: `/compact`
 registry is a plain, extensible `{name, hint, run}` array.
 
 Split across two files, same as the actions it wires up:
-* ui/components/chat/composer.jsx — the menu itself (leading-"/"
+* ui/components/shared/composer.jsx — the menu itself (leading-"/"
   detection, prefix filtering, Enter-to-run matching). Stays a pure,
   non-fetching shell per Task B4/D1 (no `apiFetch`/`WebSocket` here) —
   it just renders and matches against whatever `slashCommands` array
@@ -29,7 +29,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
-COMPOSER = CHAT_DIR / "composer.jsx"
+SHARED_DIR = UI / "components" / "shared"
+COMPOSER = SHARED_DIR / "composer.jsx"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 
 
@@ -113,5 +114,5 @@ def test_bundle_transpiles_with_composer_slash_changes() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/composer.jsx === */" in text
+    assert "/* === components/shared/composer.jsx === */" in text
     assert "/* === components/chat/conversation.jsx === */" in text

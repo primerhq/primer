@@ -324,8 +324,8 @@ def test_index_html_registers_chat_primitives_and_session_adapter() -> None:
     text = INDEX.read_text(encoding="utf-8")
     for src in (
         "components/session-adapter.jsx",
-        "components/chat/transcript.jsx",
-        "components/chat/composer.jsx",
+        "components/shared/transcript.jsx",
+        "components/shared/composer.jsx",
         "components/studio-center.jsx",
     ):
         assert src in text, f"{src} missing from index.html"

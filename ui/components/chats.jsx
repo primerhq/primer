@@ -6,7 +6,7 @@
 // ends its turn with a normal assistant message asking for a yes/no,
 // and the human replies via the normal composer like any other turn.
 //
-// CT_roleForKind / CT_textOf moved to ui/components/chat/transcript.jsx
+// CT_roleForKind / CT_textOf moved to ui/components/shared/transcript.jsx
 // (Task B3) — they're private helpers of the Message row renderer,
 // which lives there now.
 
@@ -814,10 +814,10 @@ function ChatDetail({ chatId, onBack, pushToast }) {
 // ============================================================================
 //
 // Assistant-token coalescing moved to
-// ui/components/chat/use-transcript.js (window.chatCoalesce) as part
+// ui/components/shared/use-transcript.js (window.chatCoalesce) as part
 // of Task B2 — it's now shared with <Conversation> and unit-testable
 // on its own. CT_ThinkingBubble (and the rest of the row renderers)
-// moved to ui/components/chat/transcript.jsx as part of Task B3.
+// moved to ui/components/shared/transcript.jsx as part of Task B3.
 
 // Chip rendered in the pending-attachments strip. Image kind shows a
 // 36px thumbnail; document kind shows a file icon + filename.
@@ -871,7 +871,7 @@ function CT_AttachmentChip({ attachment, onRemove }) {
 }
 
 // CT_ExpandableToolRow, Message, CT_AttachmentPart, and CompactionMarker
-// moved to ui/components/chat/transcript.jsx as part of Task B3
+// moved to ui/components/shared/transcript.jsx as part of Task B3
 // (chat-refactor plan) — they are the transcript's row renderers now.
 window.ChatsPage = ChatsPage;
 window.ChatDetail = ChatDetail;

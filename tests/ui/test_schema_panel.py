@@ -1,7 +1,7 @@
 """Task F2 of docs/superpowers/plans/2026-07-05-chat-refactor.md — the
 structured-output schema side panel's Builder + JSON tabs (R3/§8.3),
 filling in the Task B4 <SchemaPanel> shell
-(ui/components/chat/schema-panel.jsx) and wiring persistent/ephemeral
+(ui/components/shared/schema-panel.jsx) and wiring persistent/ephemeral
 application into <Conversation> (ui/components/chat/conversation.jsx).
 
 Static-source + transpile-build checks only (the ui/ suite convention,
@@ -16,7 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
-SCHEMA_PANEL = CHAT_DIR / "schema-panel.jsx"
+SHARED_DIR = UI / "components" / "shared"
+SCHEMA_PANEL = SHARED_DIR / "schema-panel.jsx"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 
 
@@ -279,5 +280,5 @@ def test_bundle_transpiles_with_schema_panel_f2_changes() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/schema-panel.jsx === */" in text
+    assert "/* === components/shared/schema-panel.jsx === */" in text
     assert "/* === components/chat/conversation.jsx === */" in text

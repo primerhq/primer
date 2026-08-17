@@ -1,7 +1,7 @@
 """Task E1 of docs/superpowers/plans/2026-07-05-chat-refactor.md — inline
 artifact previews + collapsible sections (D6, §4.4).
 
-Extends ``CT_AttachmentPart`` (ui/components/chat/transcript.jsx) so a
+Extends ``CT_AttachmentPart`` (ui/components/shared/transcript.jsx) so a
 media part that carries only an ``artifact_id`` (no inline ``data`` — the
 tool-produced-media shape persisted by
 ``primer/chat/executor.py::_tool_media_parts``; see
@@ -27,7 +27,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
-TRANSCRIPT = UI / "components" / "chat" / "transcript.jsx"
+TRANSCRIPT = UI / "components" / "shared" / "transcript.jsx"
 
 
 def _src() -> str:
@@ -103,4 +103,4 @@ def test_bundle_transpiles_with_rich_content_changes() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/transcript.jsx === */" in text
+    assert "/* === components/shared/transcript.jsx === */" in text

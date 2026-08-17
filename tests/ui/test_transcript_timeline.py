@@ -1,5 +1,5 @@
 """Task C1 of docs/superpowers/plans/2026-07-05-chat-refactor.md —
-redesign <Transcript> (ui/components/chat/transcript.jsx) into the
+redesign <Transcript> (ui/components/shared/transcript.jsx) into the
 single-column agent-timeline: per-message agent attribution (`m.agent_id`,
 stamped by backend Task A4) + timestamp (`m.created_at`), first-class
 marker rows for `agent_marker` (switch/handoff/joined) and `cancelled`
@@ -16,7 +16,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
-TRANSCRIPT = UI / "components" / "chat" / "transcript.jsx"
+TRANSCRIPT = UI / "components" / "shared" / "transcript.jsx"
 
 
 def _src() -> str:
@@ -66,4 +66,4 @@ def test_bundle_transpiles_with_updated_transcript() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/transcript.jsx === */" in text
+    assert "/* === components/shared/transcript.jsx === */" in text

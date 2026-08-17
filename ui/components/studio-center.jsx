@@ -239,7 +239,7 @@ function ST_isAutonomous(session) {
 // ---------------------------------------------------------------------------
 // ST_sessionRowToTranscript / ST_coalesceAssistantRows / ST_sessionTranscriptRows
 //   — adapt SA_toTranscript's rows (Task 11) to what chat-refactor's
-//   <Transcript>/<Message> row renderer (ui/components/chat/transcript.jsx)
+//   <Transcript>/<Message> row renderer (ui/components/shared/transcript.jsx)
 //   actually reads off the top level of each row (m.text, m.arguments,
 //   m.result, m.id, ...) — mirroring window.chatFlatten's `{...payload,
 //   ...row}` spread for a ChatMessage. SA_toTranscript deliberately keeps
@@ -279,7 +279,7 @@ function ST_sessionRowToTranscript(row) {
 // Merges a run of consecutive per-token "assistant_message" rows (each
 // SA_toTranscript's 1:1 mapping of one ASSISTANT_TOKEN SessionMessageRecord)
 // into a single bubble — same idea as window.chatCoalesce
-// (ui/components/chat/use-transcript.js), but keyed off `text` (the
+// (ui/components/shared/use-transcript.js), but keyed off `text` (the
 // session's own payload field, primer/session/persistence.py) rather than
 // `delta` (the chat WS frame's field), and stamping startSeq/endSeq the same
 // way — <Transcript>'s row key (`am-${startSeq}-${endSeq}`) needs them, or

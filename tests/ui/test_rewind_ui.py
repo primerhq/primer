@@ -1,6 +1,6 @@
 """Task F3 of docs/superpowers/plans/2026-07-05-chat-refactor.md —
 R4: a small rewind icon at the end of each user message
-(ui/components/chat/transcript.jsx), gated by the compaction boundary
+(ui/components/shared/transcript.jsx), gated by the compaction boundary
 <Conversation> computes and passes down (ui/components/chat/
 conversation.jsx), confirming before POSTing A7's truncation endpoint.
 
@@ -16,8 +16,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
+SHARED_DIR = UI / "components" / "shared"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
-TRANSCRIPT = CHAT_DIR / "transcript.jsx"
+TRANSCRIPT = SHARED_DIR / "transcript.jsx"
 
 
 def _src(path: Path) -> str:
@@ -88,4 +89,4 @@ def test_bundle_transpiles_with_rewind_changes() -> None:
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
     assert "/* === components/chat/conversation.jsx === */" in text
-    assert "/* === components/chat/transcript.jsx === */" in text
+    assert "/* === components/shared/transcript.jsx === */" in text

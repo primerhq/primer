@@ -2,7 +2,7 @@
 extract the WS/data lifecycle + optimistic-echo out of ChatDetail
 (ui/components/chats.jsx) into a self-contained <Conversation> core
 (ui/components/chat/conversation.jsx) that Studio can later embed, plus
-shared flat/coalesce helpers (ui/components/chat/use-transcript.js).
+shared flat/coalesce helpers (ui/components/shared/use-transcript.js).
 
 Static-source + transpile-build checks only (the ui/ suite convention,
 e.g. test_graph_canvas_extracted.py / test_highlight_code_vendor.py) —
@@ -16,8 +16,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
+SHARED_DIR = UI / "components" / "shared"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
-USE_TRANSCRIPT = CHAT_DIR / "use-transcript.js"
+USE_TRANSCRIPT = SHARED_DIR / "use-transcript.js"
 CHATS = UI / "components" / "chats.jsx"
 INDEX = UI / "index.html"
 
@@ -97,7 +98,7 @@ def test_conversation_schema_effects_are_gated_on_show_schema_panel() -> None:
 
 
 def test_use_transcript_exports_flatten_and_coalesce() -> None:
-    assert USE_TRANSCRIPT.exists(), "ui/components/chat/use-transcript.js is missing"
+    assert USE_TRANSCRIPT.exists(), "ui/components/shared/use-transcript.js is missing"
     src = USE_TRANSCRIPT.read_text(encoding="utf-8")
     assert "window.chatFlatten = chatFlatten;" in src
     assert "window.chatCoalesce = chatCoalesce;" in src
@@ -146,9 +147,9 @@ def test_conversation_uses_shared_helpers() -> None:
 
 def test_new_chat_scripts_registered_before_chats_jsx() -> None:
     order = _order()
-    assert "components/chat/use-transcript.js" in order
+    assert "components/shared/use-transcript.js" in order
     assert "components/chat/conversation.jsx" in order
-    assert order.index("components/chat/use-transcript.js") < order.index("components/chats.jsx")
+    assert order.index("components/shared/use-transcript.js") < order.index("components/chats.jsx")
     assert order.index("components/chat/conversation.jsx") < order.index("components/chats.jsx")
 
 
@@ -158,5 +159,5 @@ def test_bundle_transpiles_with_new_chat_files() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/use-transcript.js === */" in text
+    assert "/* === components/shared/use-transcript.js === */" in text
     assert "/* === components/chat/conversation.jsx === */" in text
