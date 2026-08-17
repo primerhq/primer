@@ -24,6 +24,44 @@ The two are allowed to diverge for at most one turn (the at-least-once trade-off
 
 History and the per-turn audit log live as two append-only JSONL files inside the workspace, not in the database. The `WorkspaceSession` row holds only lifecycle and claim state.
 
+### The v2 model: a session is a workstream, not an agent's conversation
+
+A session is no longer bound to one agent for its lifetime. `binding` is a
+mutable pointer (`AgentSessionBinding` or `GraphSessionBinding`, each
+carrying an optional `profile_id` override), and `binding_epoch` counts
+every reapplication. History belongs to the SESSION: whichever agent runs
+the next turn sees the whole transcript, attributed per turn.
+
+Four rules make that safe:
+
+- **Switch timing is next-turn.** A switch requested mid-turn is queued on
+  `pending_binding_switch` and applied at the drain checkpoint, so the
+  running turn finishes under the binding it started with.
+- **The checkpoint order is switch-then-drain.** The applier runs
+  immediately before a queued steer is realized, at all three terminal
+  exits (executor failure, cancel/interrupt, clean completion), so a
+  follow-up runs under the INCOMING binding.
+- **Epochs fence stale writes.** A terminal status, a park and a resume
+  each carry the epoch they began under; the row rejects a write from an
+  epoch it has moved past, so a turn finishing under a replaced binding
+  cannot clobber the switch.
+- **One run per session.** A steer arriving while a turn is open becomes a
+  seq-less `PendingSessionMessage`, realized at the checkpoint. Allocating
+  a seq at receipt is what collided with in-flight token seqs on the chat
+  surface.
+
+The message log stays append-only under all of this. Compaction appends a
+`compaction_marker` carrying its summary and the span it replaced; rewind
+appends a `rewind_marker` naming the seq to keep. Neither deletes a line,
+so the read-time replay walk (`primer/session/replay.py`) computes what a
+reader currently sees by folding markers in order. That is why rewind is
+auditable but not undoable, and why a rewind whose target lies inside a
+compacted span is rejected rather than performed: the folded rows are
+already gone from the visible set, so the turn would rebuild from nothing.
+
+Usage is folded from the same records rather than counted into a column,
+which is what makes a rewound turn stop counting for free.
+
 ```mermaid
 erDiagram
     WorkspaceSession ||--|| AgentSession : "live handle for"
@@ -190,6 +228,25 @@ The scheduler-visible `WorkspaceSession` row holds only lifecycle and claim stat
 Compaction of session history retains the prefix-string convention: a synthetic assistant message in `messages.jsonl` carries `[earlier conversation compacted on <ts>]`. Workspace sessions are auto-compaction only (the `compaction_mixin.should_compact` pre-turn pass in the executor); there is no on-demand `/compact` REST endpoint and no structured `compaction_marker` row, both of which are chat-only.
 
 ## 8. Public surfaces
+
+S1 adds, on the workspace-scoped sessions router:
+
+| endpoint | purpose |
+| --- | --- |
+| `POST .../sessions/{sid}/binding` | switch which agent or graph runs the next turn; applies immediately when idle, queues when busy, and abandons an open gate first when parked |
+| `POST .../sessions/{sid}/rewind` | append a rewind marker; 409 when busy or when the target lies inside compacted history, 422 for a malformed target |
+| `POST .../sessions/{sid}/compact` | summarise the visible history into a fold marker; 409 for a graph binding or a turn in flight |
+| `PUT .../sessions/{sid}/response_format` | persist a structured-output schema for later turns; a steer may carry a one-turn override that outranks it |
+
+`GET /v1/sessions/{sid}` returns the row plus its unrealized
+`pending_messages`, flat rather than wrapped, so existing readers of
+`WorkspaceSession` are unaffected. `GET /v1/sessions/{sid}/messages`
+takes `visible=true` to fold the log through the replay walk, and the
+tap carries derived usage, compaction and queued-steer envelopes that
+never advance its cursor.
+
+The `switch_binding` tool gives an agent the same hand-off, and never
+yields: it records the request and the checkpoint applies it.
 
 The REST + WebSocket surface lives in `primer/api/routers/sessions.py`, split across `nested_session_router` (workspace-scoped) and `top_session_router` (top-level).
 

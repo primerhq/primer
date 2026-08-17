@@ -1,5 +1,11 @@
 # Chats
 
+> **Status (S1 C4 carve-out).** The user-facing chat surfaces are being
+> retired in favour of workspace sessions, but the headless chat engine
+> described here is still LIVE: channels drive it until S6 replaces
+> channel conversations with thread-mapped sessions. What follows is an
+> accurate description of something that still runs.
+
 ## 1. Purpose
 
 The chats subsystem is the WebSocket-driven conversational surface: a long-lived `Chat` row pairs one agent with an append-only `ChatMessage` log, and a worker drives each user turn through the LLM plus tool stack detached from any single client connection. It is lighter than a workspace session (no workspace, no graph binding, no git-backed message store), and unlike a session it never parks - `ask_user` and `_approval` gates soft-yield conversationally instead. It does reuse the same `ClaimEngine` lease model and the same compaction mixin that the agent runtime uses.
