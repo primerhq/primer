@@ -37,11 +37,37 @@
 // Pure mapping: SessionMessageKind -> transcript row kind
 // ---------------------------------------------------------------------------
 
+// Kinds that are structural instructions rather than content, and so
+// never reach the reader. ONE table by design: S3 adds client_action
+// and S7 adds llm_call HERE rather than each introducing its own
+// registry at this same insertion point (cross-plan findings F26/F36).
+// S8 HAND-OFF: SH_TurnList replaces this renderer at the flag day, and
+// the S8 plan names none of the four kinds P1 added. Carry these four
+// decisions across or they regress: reasoning collapses muted,
+// agent_marker is a binding row, external_tool_call folds into the tool
+// rendering, and rewind_marker is skipped entirely.
+
+var SA_SKIP_IN_TRANSCRIPT = {
+  // A rewind marker tells the replay walk what to drop. Rendering it
+  // would show the reader an instruction about their history instead of
+  // their history.
+  rewind_marker: true,
+};
+
 var SA_KIND_TO_TRANSCRIPT = {
   user_input: "user_message",
   assistant_token: "assistant_message",
+  // Model thinking, shown collapsed and muted. Never an assistant
+  // message: replaying reasoning back as an answer misreads what it is.
+  reasoning: "reasoning",
   tool_call: "tool_call",
   tool_result: "tool_result",
+  // An invoker-supplied tool call renders as a tool call. It differs in
+  // WHO executes it, which the reader does not care about, so a third
+  // row shape would be noise.
+  external_tool_call: "tool_call",
+  // Binding hand-off: which agent took over, and at which epoch.
+  agent_marker: "binding_change",
   graph_transition: "divider",
   invocation_divider: "divider",
   // Lifecycle rows map to the SAME-named kinds <Transcript>'s Message()
@@ -80,6 +106,7 @@ function SA_toTranscript(records, session) {
   var out = [];
   for (var i = 0; i < records.length; i++) {
     var rec = records[i];
+    if (SA_SKIP_IN_TRANSCRIPT[rec.kind]) continue;
     var kind = SA_KIND_TO_TRANSCRIPT[rec.kind] || "lifecycle";
     out.push({
       seq: rec.seq,

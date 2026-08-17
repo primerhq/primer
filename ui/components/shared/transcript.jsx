@@ -594,6 +594,48 @@ function Message({ m, pairedResult, chatId, onRewind, rewindDisabled, compaction
     );
   }
 
+  // Model thinking, collapsed by default. Never an assistant message:
+  // reasoning is how the answer was reached, not the answer, and
+  // rendering it as one misreads what the model produced.
+  if (kind === "reasoning") {
+    const text = m.text || "";
+    if (!text) return null;
+    return (
+      <details
+        className="reasoning-row"
+        data-testid="transcript-reasoning"
+        style={{ marginLeft: 60, marginTop: 4, marginBottom: 4 }}
+      >
+        <summary className="muted text-sm mono">reasoning</summary>
+        <div className="muted text-sm" style={{ whiteSpace: "pre-wrap" }}>
+          {text}
+        </div>
+      </details>
+    );
+  }
+
+  // A binding hand-off: which agent or graph took the session over, and
+  // at which epoch. Epochs are what distinguish one hand-off from the
+  // next when a session changes hands more than once.
+  if (kind === "binding_change") {
+    const to = m.to_binding || {};
+    const from = m.from_binding || {};
+    const name = to.agent_id || to.graph_id || "unknown";
+    const prev = from.agent_id || from.graph_id || null;
+    return (
+      <div
+        data-testid="transcript-binding-change"
+        style={{ marginLeft: 60, marginTop: 6, marginBottom: 6 }}
+      >
+        <span className="muted text-sm mono">
+          {"\u21C4 handed off to " + name}
+          {prev ? " (from " + prev + ")" : ""}
+          {m.binding_epoch ? " \u00B7 v" + m.binding_epoch : ""}
+        </span>
+      </div>
+    );
+  }
+
   if (kind === "yielded" || kind === "resumed" || kind === "done") {
     return (
       <div style={{ marginLeft: 60, marginTop: 4, marginBottom: 4 }}>
