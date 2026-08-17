@@ -229,6 +229,20 @@ function ST_TokenMeterInline({ session }) {
 // set (autonomous, SessionGraphPanel).
 // ---------------------------------------------------------------------------
 
+// Newest compaction boundary visible in a transcript, or 0 when nothing
+// has been folded. Rows at or before it were replaced by a summary, so
+// they are not valid rewind targets and the affordance is withheld.
+function ST_compactionBoundary(rows) {
+  var boundary = 0;
+  for (var i = 0; i < (rows || []).length; i++) {
+    var r = rows[i];
+    if (r && r.kind === "compaction_marker" && typeof r.seq === "number") {
+      if (r.seq > boundary) boundary = r.seq;
+    }
+  }
+  return boundary;
+}
+
 function ST_isAutonomous(session) {
   if (!session) return false;
   if (session.autonomous != null) return !!session.autonomous;
@@ -525,12 +539,12 @@ function SessionAgentPanel({ wid, sid, session, pushToast }) {
         pendingToolCall={null}
         sendMessage={conv.sendMessage}
         onRewind={null}
-        // No compaction concept for a session transcript — a boundary of
-        // +Infinity means "nothing is ever past it", which keeps
-        // <Transcript>'s per-message rewind icon (a chat-only affordance,
-        // Task F3) from rendering on every user row for a surface that has
-        // no POST /rewind endpoint to back it.
-        compactionBoundarySeq={Number.MAX_SAFE_INTEGER}
+        // Derived from the transcript's own compaction rows rather than
+        // guessed. The +Infinity sentinel here existed only because
+        // sessions had no rewind endpoint to back the affordance; S1 P2
+        // added POST .../rewind, and real compaction_marker rows now
+        // tell the client exactly where the boundary sits.
+        compactionBoundarySeq={ST_compactionBoundary(rows)}
         scrollRef={scrollRef}
         onScroll={function () {}}
         loadingOlder={false}
@@ -860,7 +874,7 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
         onRewind={null}
         // Same rationale as the agent panel: no compaction concept for a
         // session transcript, and no per-message rewind endpoint here either.
-        compactionBoundarySeq={Number.MAX_SAFE_INTEGER}
+        compactionBoundarySeq={ST_compactionBoundary(rows)}
         scrollRef={scrollRef}
         onScroll={function () {}}
         loadingOlder={false}
