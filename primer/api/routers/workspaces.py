@@ -33,6 +33,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
+from pydantic import ValidationError as PydanticValidationError
 
 from primer.api.deps import (
     get_claim_engine,
@@ -232,6 +233,15 @@ class SteerBody(BaseModel):
     ``allow_external_tools``).
     """
 
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Structured-output JSON Schema for THIS turn only. Beats the "
+            "session's persistent response_format, which beats the "
+            "agent default. Consumed once: a retry of the same turn "
+            "falls back rather than silently re-applying it."
+        ),
+    )
     instruction: str | None = Field(
         default=None,
         min_length=1,
@@ -1155,6 +1165,58 @@ async def compact_session_endpoint(
     }
 
 
+class ResponseFormatBody(BaseModel):
+    """Body of ``PUT .../sessions/{sid}/response_format``."""
+
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "JSON Schema to constrain this session's turns, or null to "
+            "clear it and fall back to the agent default."
+        ),
+    )
+
+
+@sessions_router.put(
+    "/workspaces/{workspace_id}/sessions/{session_id}/response_format",
+    response_model=WorkspaceSession,
+    summary="Set or clear a session's persistent structured-output schema",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def set_session_response_format(
+    body: ResponseFormatBody,
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    storage_provider=Depends(get_storage_provider),
+) -> WorkspaceSession:
+    """Persist a schema for every later turn of this session.
+
+    Refused mid-turn: the in-flight turn already resolved its format,
+    so accepting would suggest an effect this call cannot have.
+    """
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    if row.turn_status != "idle":
+        raise ConflictError(
+            "session has a turn in flight; response_format applies from "
+            "the next turn, so set it once the current one finishes"
+        )
+    # model_copy skips validation, so the schema is re-validated here and
+    # the pydantic error converted: raw, it escapes as a 500 instead of
+    # the 422 an invalid schema deserves.
+    updated = row.model_copy(update={"response_format": body.response_format})
+    try:
+        WorkspaceSession.model_validate(updated.model_dump(mode="json"))
+    except PydanticValidationError as exc:
+        raise SemanticValidationError(
+            f"response_format is not a valid JSON Schema: {exc}"
+        ) from exc
+    await sessions.update(updated)
+    return updated
+
+
 class RewindBody(BaseModel):
     """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/rewind``."""
 
@@ -1354,6 +1416,16 @@ async def steer_session(
                 text=body.instruction,
             )
             return await sessions.get(session_id)
+
+        # Stamp the per-turn schema where the dispatch pops it. Written
+        # before the wake so the turn it arms is the one that sees it.
+        if body.response_format is not None and row is not None:
+            from primer.session.response_format import EPHEMERAL_KEY
+
+            meta = dict(row.metadata or {})
+            meta[EPHEMERAL_KEY] = body.response_format
+            row = row.model_copy(update={"metadata": meta})
+            await sessions.update(row)
 
         deps = SessionWakeDeps(
             storage_provider=storage_provider,
