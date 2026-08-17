@@ -88,10 +88,17 @@ function ST_sessionStatus(session) {
 
 function ST_sessionKind(session) {
   if (!session) return "agent";
+  // The row's binding is sole truth and is checked FIRST. agent_id can
+  // still carry the historical "graph:<id>" slot sentinel from how the
+  // session STARTED, so reading it first would misclassify a session
+  // that has since switched to an agent.
+  if (session.binding && session.binding.kind) {
+    return session.binding.kind === "graph" ? "graph" : "agent";
+  }
+  if (session.binding_kind === "graph") return "graph";
+  // Fallbacks for rows served before SessionInfo.binding existed.
   var aid = session.agent_id || "";
   if (typeof aid === "string" && aid.indexOf("graph:") === 0) return "graph";
-  if (session.binding && session.binding.kind === "graph") return "graph";
-  if (session.binding_kind === "graph") return "graph";
   if (session.graph_id && !session.agent_id) return "graph";
   return "agent";
 }

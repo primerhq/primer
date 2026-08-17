@@ -247,10 +247,12 @@ class AgentSession:
         truncation_store: "LocalTruncationStore",
         workspace_tools: "list[WorkspaceTool] | tuple[WorkspaceTool, ...]" = (),
     ) -> None:
-        if session_info.agent_id != agent_binding.agent_id:
-            raise ValueError(
-                "session_info.agent_id and agent_binding.agent_id disagree"
-            )
+        # Identity is deliberately NOT asserted here. A session's binding
+        # is mutable and the DB row is its sole truth, so a slot written
+        # when the session started under one agent legitimately
+        # disagrees with a row that has since switched to another.
+        # Raising would make a switched session fail to rehydrate after
+        # a restart, which is the durability half of the switch.
         self._info = session_info
         self._binding = agent_binding
         self._state = state_repo
