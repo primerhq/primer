@@ -549,6 +549,17 @@ class WorkspaceSession(Identifiable):
             "message writer (see primer.session.persistence)."
         ),
     )
+    pending_binding_switch: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "A binding switch requested while a turn was active. Shape: "
+            "{kind: 'agent'|'graph', agent_id?|graph_id?, profile_id?, "
+            "actor}. Applied and cleared at the next drain checkpoint, "
+            "BEFORE any queued steer is realized, so the follow-up runs "
+            "under the incoming binding rather than the one it was "
+            "waiting behind."
+        ),
+    )
     response_format: dict[str, Any] | None = Field(
         default=None,
         description=(

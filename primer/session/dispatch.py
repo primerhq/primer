@@ -598,6 +598,7 @@ async def run_one_session_turn(
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
         await turn_log.aclose()
+        await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
         return ReleaseOutcome(success=False, drop_lease=True)
 
@@ -662,6 +663,7 @@ async def run_one_session_turn(
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
         await turn_log.aclose()
+        await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
         return ReleaseOutcome(success=True, drop_lease=True)
 
@@ -701,6 +703,7 @@ async def run_one_session_turn(
     # or they hit Stop loses work silently. Realization deletes the
     # row and the queue is finite, so a failing session retries each
     # queued message at most once rather than looping.
+    await _apply_pending_switch_at_checkpoint(deps, session)
     await _realize_pending_at_checkpoint(deps, session)
 
     await _safe_turn_log(turn_log, TurnLogCompleted(
@@ -938,6 +941,68 @@ async def _advance_drain_cursor(session_storage, session_id: str) -> None:
     if target > fresh.next_unprocessed_seq:
         await session_storage.update(
             fresh.model_copy(update={"next_unprocessed_seq": target})
+        )
+
+
+def _snapshot_resolver(deps: "SessionDispatchDeps"):
+    """Resolve the live definition of a switch's incoming target.
+
+    Returns None when the row is gone rather than raising, so a switch
+    to a since-deleted agent degrades to a snapshot-less binding the
+    executor builder resolves live instead of wedging the session.
+    """
+
+    async def _resolve(binding):
+        from primer.model.agent import Agent
+        from primer.model.graph import Graph
+
+        try:
+            if getattr(binding, "kind", None) == "graph":
+                return await deps.storage_provider.get_storage(Graph).get(
+                    binding.graph_id
+                )
+            return await deps.storage_provider.get_storage(Agent).get(
+                binding.agent_id
+            )
+        except Exception:  # noqa: BLE001 - a missing target is not fatal
+            return None
+
+    return _resolve
+
+
+async def _apply_pending_switch_at_checkpoint(
+    deps: "SessionDispatchDeps", session,
+) -> None:
+    """Apply a switch queued during this turn, before the queue drains.
+
+    Ordering is the point: realizing a queued steer first would run the
+    user's follow-up under the OUTGOING binding, which is exactly what
+    next-turn switch semantics forbid.
+
+    Runs outside the lifecycle lock for the same reason the realize
+    does, and swallows failures for the same reason too: the turn has
+    already terminated and released its lease. The request stays queued
+    and applies at the next checkpoint.
+    """
+    try:
+        sessions = deps.storage_provider.get_storage(WorkspaceSession)
+        fresh = await sessions.get(session.id)
+        if fresh is None or fresh.pending_binding_switch is None:
+            return
+        from primer.session.binding_switch import apply_binding_switch
+
+        await apply_binding_switch(
+            sessions=sessions,
+            workspace_io=deps.workspace_io,
+            row=fresh,
+            request=fresh.pending_binding_switch,
+            actor=str(fresh.pending_binding_switch.get("actor") or "system"),
+            resolve_snapshot=_snapshot_resolver(deps),
+        )
+    except Exception:
+        logger.exception(
+            "drain checkpoint: applying a queued binding switch failed for %s",
+            session.id,
         )
 
 
