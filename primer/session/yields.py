@@ -190,6 +190,43 @@ def _tool_call_id_for(blob: dict[str, Any]) -> str | None:
     return metadata.get("tool_call_id")
 
 
+# Tokens that read as an affirmative approval. Matched case-folded
+# against the reply's whitespace-split tokens.
+_AFFIRMATIVE = {"yes", "y", "approve", "approved", "ok", "okay", "sure", "go"}
+# Tokens that read as a refusal. A negative anywhere in the reply vetoes
+# a co-occurring affirmative ("no yes" -> rejected) so the parse fails
+# closed against ambiguous intent, which is the only safe direction for
+# something that decides whether a tool runs.
+_NEGATIVE = {
+    "no", "n", "nope", "nah", "deny", "denied", "reject", "rejected",
+    "cancel", "stop", "dont", "don't", "do not",
+}
+
+
+def classify_approval_text(text: str) -> bool | None:
+    """Read a free-text reply to an approval gate.
+
+    Returns True to approve, False to reject, and None when the reply
+    is not a decision at all, so the caller can keep asking rather than
+    guess.
+
+    Ported verbatim from the chat surface, including its tokenisation:
+    replies are lowercased and split on whitespace, with no punctuation
+    stripping. "yes." therefore does not approve, and the multi-word
+    "do not" entry above can never match. Both are worth fixing, but not
+    silently inside a port, because either change alters which replies
+    approve a tool call.
+    """
+    tokens = (text or "").strip().lower().split()
+    if not tokens:
+        return None
+    if any(t in _NEGATIVE for t in tokens):
+        return False
+    if any(t in _AFFIRMATIVE for t in tokens):
+        return True
+    return None
+
+
 async def respond_to_yield(
     *,
     session_id: str,
