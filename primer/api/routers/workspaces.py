@@ -1031,6 +1031,89 @@ async def rename_session(
     return info.model_dump(mode="json")
 
 
+class RewindBody(BaseModel):
+    """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/rewind``."""
+
+    to_seq: int = Field(
+        ...,
+        ge=1,
+        description=(
+            "Seq of the user_input record to keep. Every visible record "
+            "after it is dropped from the reconstructed history; nothing "
+            "is deleted from the log."
+        ),
+    )
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/rewind",
+    summary="Rewind a session's visible history to a kept user_input",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def rewind_session(
+    body: RewindBody,
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Cut a session's visible history back to an earlier user message.
+
+    Appends a rewind marker; nothing is deleted. The read-time replay
+    walk drops what follows, so the cut is auditable and the log stays
+    append-only.
+
+    Rejects unless the session is fully idle: rewinding under a running
+    or parked turn would race the writer that turn is still using, and
+    the seq the marker names could move underneath it.
+    """
+    from primer.session.rewind import append_rewind_marker, check_rewind_target
+    from primer.worker.io_shim import _WorkspaceIOShim
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    if row.turn_status != "idle" or row.parked_status is not None:
+        raise ConflictError(
+            "session is not idle; rewind requires no turn in flight"
+        )
+
+    workspace = await registry.get_workspace(workspace_id)
+    if workspace is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} is not available")
+    state_path = getattr(workspace, "state_path", ".state")
+    rel = f"{state_path}/sessions/{session_id}/messages.jsonl"
+    try:
+        raw = await workspace.read_file(rel)
+    except Exception as exc:  # noqa: BLE001 - absent log is a 422, not a 5xx
+        raise SemanticValidationError(
+            "session has no recorded history to rewind"
+        ) from exc
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    lines = text.splitlines()
+
+    # Raises ConflictError for the compaction case (amendment C2) and
+    # ValidationError for a malformed target; both before any write.
+    check_rewind_target(lines, to_seq=body.to_seq)
+
+    io_shim = _WorkspaceIOShim(workspace_registry=registry)
+    io_shim.register_session(session_id, workspace_id)
+    marker_seq = await append_rewind_marker(
+        workspace_io=io_shim,
+        session_id=session_id,
+        start_seq=row.last_seq,
+        to_seq=body.to_seq,
+        actor="user",
+    )
+    await sessions.update(row.model_copy(update={"last_seq": marker_seq}))
+    return {
+        "session_id": session_id,
+        "to_seq": body.to_seq,
+        "marker_seq": marker_seq,
+    }
+
+
 @sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/steer",
     response_model=WorkspaceSession,
