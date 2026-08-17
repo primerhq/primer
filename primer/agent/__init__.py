@@ -11,7 +11,7 @@ Public surface added by sub-project F1 (Foundation):
 * :class:`AgentEventSubscriber`, :class:`Subscription` -- streaming-tap
   scaffolding.
 
-F2/F3/F4 add :class:`CompactionStrategy`, :class:`AgentExecutor`, and
+F2/F4 add :class:`CompactionStrategy` and
 :class:`WorkspaceAgentExecutor` (plus their dependencies).
 """
 
@@ -27,7 +27,6 @@ from primer.agent.events import (
     AgentEventSubscriber,
     Subscription,
 )
-from primer.agent.executor import AgentExecutor
 from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
 from primer.agent.workspace_executor import WorkspaceAgentExecutor
 from primer.agent.tail import tail_split
@@ -39,7 +38,6 @@ from primer.agent.tool_manager import (
 
 __all__ = [
     "AgentEventSubscriber",
-    "AgentExecutor",
     "CompactedTurn",
     "CompactionStrategy",
     "DEFAULT_COMPACTION_PROMPT",
