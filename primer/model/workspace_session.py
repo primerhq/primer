@@ -564,11 +564,14 @@ class WorkspaceSession(Identifiable):
         ge=0,
         description=(
             "Drain checkpoint cursor: the seq the next turn scan starts "
-            "from. Advanced ONLY at a fully drained checkpoint, to "
-            "max-seen-seq + 1, never to a re-read last_seq. Ported from "
-            "the chat drain, where advancing it mid-turn let a crash "
-            "replay records the previous turn had already consumed. "
-            "Read with primer.session.turns.count_turn_state."
+            "from. Advanced only at fully-drained checkpoints, to the "
+            "row's own last_seq + 1 re-read fresh under the lifecycle "
+            "lock, and only ever forwards. Advancing it mid-turn let a "
+            "crash replay records the previous turn had already "
+            "consumed, which is what the chat drain got wrong. "
+            "count_turn_state's max_seen_seq is the separate tool for "
+            "callers that already hold the log lines, not for this "
+            "cursor."
         ),
     )
     turn_status: Literal["idle", "claimable", "running"] = Field(
