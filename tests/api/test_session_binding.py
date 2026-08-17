@@ -162,17 +162,32 @@ async def test_ended_session_is_409(client, app):
 
 
 @pytest.mark.asyncio
-async def test_parked_session_is_refused_explicitly(client, app):
-    """The gate belongs to the OUTGOING agent, so queueing would leave
-    the switch behind a gate only the agent being replaced can clear.
-    P3 Task 21 replaces this with abandon-then-apply."""
-    await _seed(app, "b-parked", parked_status="parked")
+async def test_parked_session_abandons_its_gate_then_switches(client, app):
+    """The gate belongs to the OUTGOING agent, so waiting for it would
+    deadlock exactly the situation switching exists to escape."""
+    import json as _json
+
+    ws = await _seed(
+        app, "b-parked", parked_status="parked",
+        parked_state={"tool_call_id": "tc-9", "mode": "ask_user"},
+    )
     r = await client.post(
         "/v1/workspaces/ws-1/sessions/b-parked/binding",
         json={"kind": "agent", "agent_id": "agent-b"},
     )
-    assert r.status_code == 409, r.text
-    assert "parked" in r.text
+    assert r.status_code == 200, r.text
+
+    fresh = await _row(app, "b-parked")
+    assert fresh.binding.agent_id == "agent-b"
+    assert fresh.parked_status is None
+    assert fresh.parked_state is None
+
+    blob = ws.read(".state/sessions/b-parked/messages.jsonl")
+    kinds = [_json.loads(line)["kind"]
+             for line in blob.splitlines() if line.strip()]
+    # The gate is closed as rejected before the terminal, then the
+    # hand-off is recorded.
+    assert kinds == ["tool_result", "cancelled", "agent_marker"]
 
 
 @pytest.mark.asyncio

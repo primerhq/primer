@@ -1212,6 +1212,7 @@ async def switch_session_binding(
     """
     from primer.model.agent import Agent
     from primer.model.graph import Graph
+    from primer.session.abandon import abandon_session_gate
     from primer.session.binding_switch import apply_binding_switch
     from primer.worker.io_shim import _WorkspaceIOShim
 
@@ -1243,27 +1244,44 @@ async def switch_session_binding(
         "actor": "user",
     }
 
-    if row.parked_status is not None:
-        # A parked session waits on a human, and the gate is addressed to
-        # the OUTGOING agent. Queueing here would leave the switch
-        # pending behind a gate only the agent being replaced can
-        # resolve. Refused explicitly until the abandon chokepoint
-        # (P3 Task 21) can retire that gate and apply the switch.
-        raise ConflictError(
-            f"session {session_id!r} is parked on a pending gate; resolve "
-            "or cancel it before switching binding"
-        )
-
-    if row.turn_status in ("claimable", "running"):
-        queued = row.model_copy(update={"pending_binding_switch": request})
-        await sessions.update(queued)
-        return queued
-
     io_shim = _WorkspaceIOShim(workspace_registry=registry)
     io_shim.register_session(session_id, workspace_id)
 
     async def _resolve(_binding):
         return target
+
+    if row.parked_status is not None:
+        # A parked session waits on a human, and the gate belongs to the
+        # OUTGOING agent. Queueing would leave the switch stuck behind a
+        # gate only the agent being replaced can answer, which is the
+        # deadlock switching exists to escape. Close the gate, then
+        # switch, both under the lifecycle lock so a racing resume
+        # cannot interleave between them.
+        async with session_lifecycle_lock().acquire(session_id):
+            fresh = await sessions.get(session_id)
+            if fresh is None:
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist"
+                )
+            abandoned = await abandon_session_gate(
+                sessions=sessions,
+                workspace_io=io_shim,
+                row=fresh,
+                reason="binding switched",
+            )
+            return await apply_binding_switch(
+                sessions=sessions,
+                workspace_io=io_shim,
+                row=abandoned,
+                request=request,
+                actor="user",
+                resolve_snapshot=_resolve,
+            )
+
+    if row.turn_status in ("claimable", "running"):
+        queued = row.model_copy(update={"pending_binding_switch": request})
+        await sessions.update(queued)
+        return queued
 
     return await apply_binding_switch(
         sessions=sessions,
