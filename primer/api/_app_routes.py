@@ -12,7 +12,6 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from primer.api.routers import (
-    chats as chats_router,
     compute,
     health,
     internal_collections,
@@ -192,12 +191,6 @@ def _mount_routers(
     # Feature => require_user, same tier as yields.
     from primer.api.routers.external_tools import external_tools_router
     app.include_router(external_tools_router, prefix=prefix, dependencies=user_dep)
-    # Chat REST + WS — feature => require_user. NOTE: the WS endpoint
-    # inside this router cannot use the include-time dep (FastAPI does not
-    # enforce deps on WebSocket routes the same way); the WS handler
-    # enforces its own role gate via require_auth_ws + accept-then-close
-    # 4403 — see chats.py / Task 8.
-    app.include_router(chats_router.chats_router, prefix=prefix, dependencies=user_dep)
     # Workspace integrated terminal — bidirectional PTY WebSocket (Studio
     # spec §6.5). Feature => require_user at include time; the WS handler
     # additionally admin-OR-explicit-enable gates (Task 8).

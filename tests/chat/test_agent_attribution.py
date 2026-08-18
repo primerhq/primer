@@ -220,23 +220,3 @@ async def test_dispatch_terminals_and_next_user_message_unaffected_by_agent_mark
     assert next_um.seq == 1
 
 
-def test_message_to_wire_passes_agent_marker_through_unchanged():
-    """`_message_to_wire` only special-cases `compaction_marker`; an
-    `agent_marker` row must merge its payload to the top level like every
-    other ordinary kind, NOT be caught by the compaction branch."""
-    from primer.api.routers.chats import _message_to_wire
-
-    row = ChatMessage(
-        id=ChatMessage.make_id("c4", 1), chat_id="c4", seq=1,
-        kind="agent_marker",
-        payload={"marker": "switch", "agent_id": "ag-2", "from_agent_id": "ag-1"},
-        created_at=_now(),
-    )
-    wire = _message_to_wire(row)
-    assert wire["kind"] == "agent_marker"
-    assert wire["seq"] == 1
-    assert wire["marker"] == "switch"
-    assert wire["agent_id"] == "ag-2"
-    assert wire["from_agent_id"] == "ag-1"
-    # The compaction envelope shape (e.g. a `summary` key) must NOT appear.
-    assert "summary" not in wire

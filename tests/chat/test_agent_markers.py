@@ -1,14 +1,11 @@
 """Task A5 (chat-refactor plan): emit ``agent_marker`` rows at each
-attribution boundary — an operator-driven switch
-(``POST /v1/chats/{id}/agent``) or a ``switch_to_agent`` tool handoff
-(``_apply_switch_handoff`` in :mod:`primer.chat.dispatch``).
+attribution boundary. The operator-driven REST switch was deleted with
+the chats router in S1 P7; what remains is the ``switch_to_agent`` tool
+handoff (``_apply_switch_handoff`` in :mod:`primer.chat.dispatch``).
 
 Covers:
 * the shared helper :func:`primer.chat.enqueue.append_agent_marker`
   persists an ``agent_marker`` row and bumps ``chat.last_seq``.
-* ``switch_chat_agent`` (the REST endpoint) appends exactly one
-  ``agent_marker{marker:"switch"}`` row with the correct from/to agent
-  ids, and publishes a ``chat:{id}:tick``.
 * ``_apply_switch_handoff`` (the ``switch_to_agent`` tool path) appends
   an ``agent_marker{marker:"handoff"}`` row with the correct from/to
   agent ids, and publishes a ``chat:{id}:tick``.
@@ -96,61 +93,6 @@ async def test_append_agent_marker_omits_from_agent_id_when_none(
         chat, fake_storage_provider, marker="switch", agent_id="ag-2",
     )
     assert "from_agent_id" not in row.payload
-
-
-# ===========================================================================
-# switch_chat_agent (REST endpoint) — marker="switch"
-# ===========================================================================
-
-
-@pytest.mark.asyncio
-async def test_switch_chat_agent_endpoint_appends_switch_marker_and_ticks(
-    fake_storage_provider,
-):
-    from primer.api.routers.chats import ChatSwitchAgentBody, switch_chat_agent
-
-    chat_store = fake_storage_provider.get_storage(Chat)
-    agent_store = fake_storage_provider.get_storage(Agent)
-    msg_store = fake_storage_provider.get_storage(ChatMessage)
-
-    await agent_store.create(Agent(
-        id="ag-1", description="a",
-        model=AgentModel(profile_id="p--m"),
-    ))
-    await agent_store.create(Agent(
-        id="ag-2", description="b",
-        model=AgentModel(profile_id="p--m"),
-    ))
-    chat = Chat(id="c2", agent_id="ag-1", created_at=_now())
-    await chat_store.create(chat)
-
-    bus = InMemoryEventBus()
-    await bus.initialize()
-    sub = bus.subscribe()
-    fake_request = SimpleNamespace(
-        app=SimpleNamespace(state=SimpleNamespace(event_bus=bus)),
-    )
-
-    result = await switch_chat_agent(
-        ChatSwitchAgentBody(agent_id="ag-2"),
-        fake_request,
-        chat_id="c2",
-        sp=fake_storage_provider,
-        agents=agent_store,
-    )
-    assert result.agent_id == "ag-2"
-
-    rows = await _all_marker_rows(msg_store, "c2")
-    assert len(rows) == 1
-    assert rows[0].payload == {
-        "marker": "switch", "agent_id": "ag-2", "from_agent_id": "ag-1",
-    }
-
-    event = await sub.__anext__()
-    assert event.event_key == "chat:c2:tick"
-    assert event.payload["seq"] == rows[0].seq
-    await sub.aclose()
-    await bus.aclose()
 
 
 # ===========================================================================

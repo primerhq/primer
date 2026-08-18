@@ -6,10 +6,12 @@ S6 P5 replaces it with thread-mapped sessions. Deleting all 34 would
 leave a live subsystem completely untested across four specs, which is
 how a carve-out rots (cross-plan finding F47).
 
-Measured, not assumed: 32 of the 34 modules import the RETAINED engine
-and none import only a deleted surface. The split is therefore heavily
-weighted toward "stays", and this test makes that machine-checked so a
-later sweep cannot quietly delete the lot.
+Measured, not assumed. Before P7 deleted the chats REST router, 32 of
+34 modules imported the RETAINED engine and none imported only a
+deleted surface. P7 then removed the two that covered the router
+(test_cancel_endpoint, test_rewind); the 30 that remain all cover the
+engine. This test keeps that machine-checked so a later sweep cannot
+quietly delete the lot.
 """
 
 from pathlib import Path
@@ -96,13 +98,15 @@ def test_the_retained_engine_keeps_substantial_coverage():
     )
 
 
-def test_no_module_covers_only_a_deleted_surface_yet():
-    """Measured today: the chats REST router still exists, so nothing
-    here is orphaned. When P7 deletes the router this flips, and the
-    modules that move into 'goes' are exactly the ones to delete with
-    it."""
+def test_no_module_is_orphaned_on_a_deleted_surface():
+    """P7 has deleted the chats REST router and rewind module. Every
+    test that covered only those went with them, so this bucket must
+    now be empty. A module appearing here later means a surface was
+    deleted without its tests."""
     goes, _, _ = _classify()
-    assert isinstance(goes, list)
+    assert goes == [], (
+        f"these tests cover only deleted surfaces and are orphaned: {goes}"
+    )
 
 
 def test_the_engine_modules_are_not_deleted_before_s6():

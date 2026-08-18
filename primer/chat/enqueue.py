@@ -1,8 +1,9 @@
 """Append-user-message service helper.
 
-Extracted from :mod:`primer.api.routers.chats` so both the WS recv loop
-and the trigger dispatcher (Phase 4+) call into the same canonical
-``user_message`` persist path. Spec §12.4 (Plan §3.1).
+Originally extracted from the chats REST router (deleted in S1 P7) so
+every producer shares one canonical ``user_message`` persist path. The
+remaining caller is the trigger dispatcher, which drives channel turns
+on the carved-out engine. Spec §12.4 (Plan §3.1).
 
 Responsibilities:
 

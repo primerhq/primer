@@ -4,9 +4,9 @@ A ``chat_message`` subscription points at an existing :class:`Chat`
 row. On fire, the dispatcher appends one ``user_message`` to the
 chat (carrying the rendered payload as a single text part), flips
 ``turn_status`` to ``"claimable"``, and pulses the claim engine so a
-worker picks the chat up. Mirrors what
-:mod:`primer.api.routers.chats` does when a human sends a WS frame —
-the canonical persist path lives in :mod:`primer.chat.enqueue`.
+worker picks the chat up. This mirrored the chats REST router's WS
+frame handling before S1 P7 deleted it; the canonical persist path
+lives in :mod:`primer.chat.enqueue`.
 
 Parallelism: ``skip`` returns a no-op skip when the chat is already
 mid-turn (``turn_status == "running"``); ``queue`` always appends and
