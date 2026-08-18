@@ -113,8 +113,6 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
         create_body={
             "id": "kb-1",
             "description": "Knowledge base",
-            "embedder": {"provider_id": "hf-1", "model": "all-MiniLM-L6-v2"},
-            "search_provider_id": "ssp-1",
         },
     ),
     "model_profile": _EntityHint(
@@ -194,7 +192,7 @@ _ENTITY_HINTS: dict[str, _EntityHint] = {
         create_body={
             "id": "doc-1",
             "collection_id": "kb-1",
-            "name": "Onboarding guide",
+            "slug": "doc-1.md",
             "path": "doc-1.md",
         },
     ),

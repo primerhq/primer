@@ -40,10 +40,10 @@ from primer.model.chat import TextPart
 from primer.model.collection import Collection, Document
 from primer.model.except_ import (
     BadRequestError,
+    ConflictError,
     DimensionMismatchError,
     NotFoundError,
 )
-from primer.model.provider import SemanticSearchProvider
 from primer.search.run import run_collection_search
 
 
@@ -95,85 +95,6 @@ class _CollectionSearchBody(BaseModel):
     )
 
 
-# ---- Collection validation hooks -------------------------------------------
-
-
-async def _validate_ssp_exists(entity: Collection, request: Request) -> None:
-    """on_pre_create hook: verify search_provider_id points at an existing SSP."""
-    storage_provider = request.app.state.storage_provider
-    ssp_storage = storage_provider.get_storage(SemanticSearchProvider)
-    existing = await ssp_storage.get(entity.search_provider_id)
-    if existing is None:
-        raise NotFoundError(
-            f"Collection {entity.id!r}: search_provider_id "
-            f"{entity.search_provider_id!r} does not refer to a "
-            "known SemanticSearchProvider."
-        )
-
-
-async def _validate_ssp_immutable(
-    entity: Collection, existing: Collection, request: Request
-) -> None:
-    """on_pre_update hook: reject changes to search_provider_id after create."""
-    if existing.search_provider_id != entity.search_provider_id:
-        raise RequestValidationError(
-            errors=[
-                {
-                    "type": "value_error",
-                    "loc": ("body", "search_provider_id"),
-                    "msg": "field is immutable after create",
-                    "input": entity.search_provider_id,
-                }
-            ]
-        )
-
-
-async def _validate_embedder_immutable(
-    entity: Collection, existing: Collection, request: Request
-) -> None:
-    """on_pre_update hook: reject changes to embedder after create.
-
-    Changing the embedder would invalidate every existing chunk's vector
-    dimensions, so we treat both ``embedder.provider_id`` and
-    ``embedder.model`` as create-bound.
-    """
-    if existing.embedder.provider_id != entity.embedder.provider_id:
-        raise RequestValidationError(
-            errors=[
-                {
-                    "type": "value_error",
-                    "loc": ("body", "embedder", "provider_id"),
-                    "msg": "field is immutable after create",
-                    "input": entity.embedder.provider_id,
-                }
-            ]
-        )
-    if existing.embedder.model != entity.embedder.model:
-        raise RequestValidationError(
-            errors=[
-                {
-                    "type": "value_error",
-                    "loc": ("body", "embedder", "model"),
-                    "msg": "field is immutable after create",
-                    "input": entity.embedder.model,
-                }
-            ]
-        )
-
-
-async def _collection_pre_create(entity: Collection, request: Request) -> None:
-    """Composed on_pre_create: SSP reference check."""
-    await _validate_ssp_exists(entity, request)
-
-
-async def _collection_pre_update(
-    entity: Collection, existing: Collection, request: Request
-) -> None:
-    """Composed on_pre_update: SSP + embedder immutability checks."""
-    await _validate_ssp_immutable(entity, existing, request)
-    await _validate_embedder_immutable(entity, existing, request)
-
-
 # ---- Collection router -----------------------------------------------------
 
 collection_router = make_crud_router(
@@ -183,8 +104,6 @@ collection_router = make_crud_router(
     tag="collections",
     cdc_kind="collection",
     managed_by_field="harness_id",
-    on_pre_create=_collection_pre_create,
-    on_pre_update=_collection_pre_update,
 )
 
 
@@ -340,17 +259,23 @@ async def search_collection(
     if coll is None:
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
 
+    if coll.search is None:
+        raise ConflictError(
+            f"semantic search is not enabled on collection {collection_id!r}; "
+            "enable it with PUT /v1/collections/{id}/search. grep and the "
+            "document tree remain available."
+        )
+
     # Vectorise the query with the collection's own embedder so query
     # and index vectors agree on dimensionality + distance metric.
-    embedder = await registry.get_embedder(coll.embedder.provider_id)
+    embedder = await registry.get_embedder(coll.search.embedder.provider_id)
     response = await embedder.embed(
-        model=coll.embedder.model,
+        model=coll.search.embedder.model,
         inputs=[TextPart(text=body.query)],
     )
     vector = list(response.embeddings[0].vector)
 
-    # Resolve the vector store via the collection's search_provider_id.
-    store = await ssr.get_store(coll.search_provider_id)
+    store = await ssr.get_store(coll.search.vector_store_provider_id)
     # SSP registration is lazy: the vector store's collection is created
     # only when the first chunk is indexed. A collection that has Document
     # rows but no indexed vectors yet (live embedding on create is a
@@ -360,10 +285,9 @@ async def search_collection(
     # than surfacing a 400, matching list_indexed_documents and the
     # docstring's empty-collection contract.
     #
-    # run_collection_search honours the collection's `search` config
-    # (cross-encoder rerank + MMR) when set, falling back to a plain
-    # vector search otherwise -- reusing the query vector we already
-    # embedded above so the no-config path does not double-embed.
+    # run_collection_search honours the collection's cross-encoder when
+    # configured and runs a plain vector search otherwise, reusing the
+    # query vector we already embedded so that path does not double-embed.
     try:
         hits = await run_collection_search(
             collection=coll,
@@ -385,6 +309,7 @@ async def search_collection(
                 "chunk_id": h.record.chunk_id,
                 "score": h.score,
                 "text": h.record.text,
+                "path": h.record.meta.get("path"),
                 "meta": h.record.meta,
             }
             for h in hits
@@ -437,7 +362,13 @@ async def list_indexed_documents(
     if coll is None:
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
 
-    store = await ssr.get_store(coll.search_provider_id)
+    if coll.search is None:
+        raise ConflictError(
+            f"semantic search is not enabled on collection {collection_id!r}; "
+            "enable it with PUT /v1/collections/{id}/search. grep and the "
+            "document tree remain available."
+        )
+    store = await ssr.get_store(coll.search.vector_store_provider_id)
     # SSP registration is lazy: VectorStore.create_collection runs only
     # when the first document is ingested. A freshly-created Collection
     # row is therefore unknown to the vector store's catalogue until
