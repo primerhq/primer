@@ -20,14 +20,14 @@ from typing import Any
 
 import pytest
 
-from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+)
 from primer.model.embedding import EmbedResponse, Embedding
 from primer.model.except_ import BadRequestError, NotFoundError
-from primer.model.search import (
-    CollectionCrossEncoder,
-    CollectionSearch,
-    MmrConfig,
-)
+from primer.model.search import CollectionCrossEncoder
 from primer.model.vector import EmbeddingRecord, SearchResult, Vector
 from primer.search.run import run_collection_search
 
@@ -105,13 +105,17 @@ def _hit(chunk_id: str, *, text: str, vector: Vector, score: float | None) -> Se
     )
 
 
-def _collection(*, search: CollectionSearch | None = None) -> Collection:
+def _collection(
+    *, cross_encoder: CollectionCrossEncoder | None = None, model: str = "m"
+) -> Collection:
     return Collection(
         id="c1",
         description="t",
-        embedder=CollectionEmbedder(provider_id="p", model="m"),
-        search_provider_id="ssp-test",
-        search=search,
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="p", model=model),
+            vector_store_provider_id="ssp-test",
+            cross_encoder=cross_encoder,
+        ),
     )
 
 
@@ -180,12 +184,12 @@ async def test_cer_config_reranks_and_resolves_cross_encoder() -> None:
     store = _FakeVectorStore(cands)
     ce = _FakeCrossEncoder([0.1, 0.9])  # a -> 0.1, b -> 0.9
     resolver = _FakeResolver(ce)
-    search = CollectionSearch(
-        cer=CollectionCrossEncoder(provider_id="ce-1", model="ce", top_n=50)
-    )
-
     out = await run_collection_search(
-        collection=_collection(search=search),
+        collection=_collection(
+            cross_encoder=CollectionCrossEncoder(
+                provider_id="ce-1", model="ce", top_n=50
+            )
+        ),
         embedder=embedder,
         store=store,
         query="q",
@@ -203,41 +207,6 @@ async def test_cer_config_reranks_and_resolves_cross_encoder() -> None:
 
 
 @pytest.mark.asyncio
-async def test_cer_and_mmr_both_apply() -> None:
-    cands = [
-        _hit("a", text="a", vector=[1.0, 0.0], score=0.9),
-        _hit("b", text="b", vector=[1.0, 0.0], score=0.8),  # near-dup of a
-        _hit("c", text="c", vector=[0.0, 1.0], score=0.4),
-    ]
-    embedder = _FakeEmbedder([1.0, 0.0])
-    store = _FakeVectorStore(cands)
-    # After rerank a,b stay top; MMR (diversity-weighted) should then prefer the
-    # diverse c over the near-duplicate b for the 2nd slot. b is an exact vector
-    # duplicate of a, so its diversity penalty sinks it below the orthogonal c.
-    ce = _FakeCrossEncoder([0.9, 0.85, 0.3])
-    resolver = _FakeResolver(ce)
-    search = CollectionSearch(
-        cer=CollectionCrossEncoder(provider_id="ce-1", model="ce", top_n=50),
-        mmr=MmrConfig(lambda_mult=0.1, fetch_k=50),
-    )
-
-    out = await run_collection_search(
-        collection=_collection(search=search),
-        embedder=embedder,
-        store=store,
-        query="q",
-        top_k=2,
-        cross_encoder_resolver=resolver,
-        query_vector=[1.0, 0.0],
-    )
-
-    ids = [h.record.chunk_id for h in out]
-    assert ids[0] == "a"  # top reranked hit
-    assert ids[1] == "c"  # MMR diversified away from the near-duplicate b
-    assert resolver.calls == ["ce-1"]
-
-
-@pytest.mark.asyncio
 async def test_invalid_top_k_raises() -> None:
     with pytest.raises(BadRequestError):
         await run_collection_search(
@@ -248,3 +217,17 @@ async def test_invalid_top_k_raises() -> None:
             top_k=0,
             cross_encoder_resolver=_FakeResolver(None),
         )
+
+
+async def test_plain_path_uses_search_block_model():
+    embedder = _FakeEmbedder([0.1, 0.2])
+    store = _FakeVectorStore([_hit("0", text="t", vector=[0.1, 0.2], score=None)])
+    await run_collection_search(
+        collection=_collection(model="mod-x"),
+        embedder=embedder,
+        store=store,
+        query="q",
+        top_k=3,
+        cross_encoder_resolver=None,
+    )
+    assert embedder.calls[0]["model"] == "mod-x"
