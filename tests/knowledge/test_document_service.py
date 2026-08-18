@@ -150,7 +150,7 @@ async def test_read_falls_back_to_entity_only_doc(svc):
     doc = Document(
         id="doc-entity-only",
         collection_id="c1",
-        name="legacy",
+        slug="only.md",
         path="legacy/only.md",
         meta={"content": "X"},
     )

@@ -186,7 +186,7 @@ def test_rag_qa_cli(base_url, mock_llm, unique_suffix, tmp_path):
         assert "system__search_collection" in transcript, transcript
         assert '"role":"tool"' in transcript or '"role": "tool"' in transcript, transcript
         # The live search surfaced the correct source path to the agent.
-        assert "document_name" in transcript and _PRINTER_PATH in transcript, transcript
+        assert "path" in transcript and _PRINTER_PATH in transcript, transcript
 
         # The FINAL assistant message grounds on that hit and cites the source.
         last_assistant = ""

@@ -61,7 +61,7 @@ async def test_index_document_reads_body_from_content_store(tmp_path: Path) -> N
 
         # meta is EMPTY - the old meta-read would yield no chunks.
         document = Document(
-            id="doc-1", collection_id="kb-1", name="d", path="doc-1.md", meta={}
+            id="doc-1", collection_id="kb-1", slug="doc-1.md", path="doc-1.md", meta={}
         )
 
         store = _Store()
@@ -106,7 +106,7 @@ async def test_index_document_falls_back_to_meta_when_no_content_row(
         document = Document(
             id="doc-2",
             collection_id="kb-1",
-            name="d",
+            slug="doc-2.md",
             path="doc-2.md",
             meta={"text": "from meta fallback"},
         )
@@ -160,7 +160,7 @@ async def test_index_document_falls_back_to_meta_on_empty_content_row(
         document = Document(
             id="doc-3",
             collection_id="kb-1",
-            name="d",
+            slug="doc-3.md",
             path="doc-3.md",
             meta={"content": "real body still in meta"},
         )

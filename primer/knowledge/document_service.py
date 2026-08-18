@@ -80,7 +80,7 @@ def _new_document_id() -> str:
     """
     # Minimal placeholder fields; only the generated id is consumed.
     return Document(
-        collection_id="_", name="_", path="_"
+        collection_id="_", slug="x", path="x"
     ).id  # type: ignore[return-value]
 
 
@@ -163,7 +163,7 @@ class DocumentService:
             doc = Document(
                 id=doc_id,
                 collection_id=collection_id,
-                name=title or _leaf(path),
+                slug=path.rsplit("/", 1)[-1],
                 path=path,
                 title=title,
                 meta=meta or {},

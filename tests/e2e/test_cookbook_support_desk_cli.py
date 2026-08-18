@@ -179,12 +179,12 @@ def _wait_search_hit(
         r = client.post(f"/v1/collections/{cid}/search", json={"query": query, "top_k": 3})
         r.raise_for_status()
         last = r.json().get("hits", [])
-        if last and str(last[0].get("meta", {}).get("document_name", "")) == expect_path:
+        if last and str(last[0].get("meta", {}).get("path", "")) == expect_path:
             return
         time.sleep(delay_s)
     raise AssertionError(
         f"search never ranked {expect_path!r} first for {query!r}: "
-        f"{[h.get('meta', {}).get('document_name') for h in last]}"
+        f"{[h.get('meta', {}).get('path') for h in last]}"
     )
 
 

@@ -17,7 +17,7 @@ Asserts (the recipe's verified outcome):
     grounding on what it found.
 
 The PUT-by-path route mints an autogen ``document-<hex>`` id; the source PATH
-the recipe cites travels on the hit's ``meta.document_name`` (the document name
+the recipe cites travels on the hit's ``meta.path`` (the document path
 defaults to the path), so source assertions key on that, not ``document_id``.
 
 The embedding model is real and non-deterministic, so the assertion is on
@@ -173,10 +173,10 @@ async def test_qa_agent_cites_source(
 
         # --- Semantic relevance, asserted directly on the live search ----
         # "add a printer" -> printer.md on top, even without keyword overlap.
-        # The source path lives on the hit's meta.document_name (the autogen
+        # The source path lives on the hit's meta.path (the autogen
         # document_id is opaque), so rank assertions key on that.
         def _src(hit: dict) -> str:
-            return str(hit.get("meta", {}).get("document_name", ""))
+            return str(hit.get("meta", {}).get("path", ""))
 
         printer_hits = await _search_with_retry(authed_client, cid, _PRINTER_QUERY)
         assert printer_hits, "real semantic search returned no hits for the KB"
@@ -247,7 +247,7 @@ async def test_qa_agent_cites_source(
             "agent did not call search_collection"
         )
         # The search hit surfaced the correct source path in its meta.
-        assert "document_name" in transcript and _PRINTER_PATH in transcript, (
+        assert "path" in transcript and _PRINTER_PATH in transcript, (
             f"search_collection did not surface {_PRINTER_PATH} to the agent: {transcript!r}"
         )
 

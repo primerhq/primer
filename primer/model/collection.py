@@ -14,12 +14,21 @@ against a vector index.
 
 from __future__ import annotations
 
+import re as _re
+from datetime import datetime, timezone
 from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from primer.model.common import Describeable, Identifiable
 from primer.model.search import CollectionCrossEncoder
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+_SLUG_RE = _re.compile(r"[a-z0-9._-]+")
 
 
 class CollectionEmbedder(BaseModel):
@@ -123,45 +132,34 @@ class Document(Identifiable):
 
     _id_prefix: ClassVar[str] = "document"
 
-    collection_id: str = Field(
-        ...,
-        min_length=1,
-        description="Identifier of the Collection this document belongs to.",
+    collection_id: str = Field(..., min_length=1)
+    parent_id: str | None = Field(
+        default=None, description="Parent document id; None = collection root.",
     )
-    name: str = Field(
-        ...,
-        min_length=1,
-        description="Human-readable name of the document.",
-    )
-    path: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "POSIX-like address of the document within its collection "
-            "(e.g. 'concepts/slo.md'). Unique per collection; the "
-            "agent-facing handle. Validated: no leading/trailing slash, "
-            "no empty or '.'/'..' segments, no '//'."
-        ),
+    slug: str = Field(
+        ..., min_length=1,
+        description="Path segment under the parent. Strict charset [a-z0-9-] "
+        "is enforced at the API/tree-service edge; the model accepts "
+        "[a-z0-9._-] for transitional and harness-managed rows.",
     )
     title: str | None = Field(
-        default=None,
-        description="Optional human display title; defaults to the path leaf when unset.",
+        default=None, description="Display title; defaults to the slug when unset.",
     )
-    meta: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Free-form metadata. Useful for filtering search results, "
-            "tagging, audit trails, etc. Schema is application-defined."
-        ),
+    path: str = Field(
+        ..., min_length=1,
+        description="Derived slug-chain mirror maintained by the tree service.",
     )
-    harness_id: str | None = Field(
-        default=None,
-        description=(
-            "When set, this row is managed by the named harness. "
-            "Mutation through the public CRUD endpoints returns 409 — "
-            "use the harness's sync/uninstall flow instead."
-        ),
-    )
+    meta: dict[str, Any] = Field(default_factory=dict)
+    harness_id: str | None = Field(default=None)
+    created_at: datetime = Field(default_factory=_utcnow)
+    updated_at: datetime = Field(default_factory=_utcnow)
+
+    @field_validator("slug")
+    @classmethod
+    def _validate_slug(cls, v: str) -> str:
+        if not _SLUG_RE.fullmatch(v):
+            raise ValueError("slug must match [a-z0-9._-]+")
+        return v
 
     @field_validator("path")
     @classmethod

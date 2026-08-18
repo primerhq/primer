@@ -30,7 +30,7 @@ The embedder + cross-encoder are REAL (LM Studio nomic embed + a local
 HuggingFace ``cross-encoder/ms-marco-MiniLM-L-6-v2`` reranker), so the
 assertions are on the RANKING FLIP / de-duplication between the modes and on the
 cited source PATH, never on exact scores or answer wording. The source PATH
-travels on each hit's ``meta.document_name`` (PUT-by-path mints an opaque
+travels on each hit's ``meta.path`` (PUT-by-path mints an opaque
 ``document-<hex>`` id), so rank assertions key on that.
 
 Gated on the ``cross_encoder`` capability (plus ``embedder`` + ``pgvector``):
@@ -237,7 +237,7 @@ async def _search_with_retry(
 
 
 def _src(hit: dict) -> str:
-    return str(hit.get("meta", {}).get("document_name", ""))
+    return str(hit.get("meta", {}).get("path", ""))
 
 
 async def _make_collection(

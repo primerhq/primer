@@ -102,7 +102,7 @@ def _corpus() -> dict[str, str]:
 
 
 def _src(hit: dict) -> str:
-    return str(hit.get("meta", {}).get("document_name", ""))
+    return str(hit.get("meta", {}).get("path", ""))
 
 
 def _search(pc: Primectl, tmp_path, cid: str, query: str, *, top_k: int,

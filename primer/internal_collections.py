@@ -976,8 +976,9 @@ class InternalCollectionsSubsystem:
                 doc = Document(
                     id=slug,
                     collection_id=AI_DOCS_COLLECTION_ID,
-                    name=title,
+                    slug=slug,
                     path=f"{slug}.md",
+                    title=title,
                     meta=doc_meta,
                 )
                 if existing is None:

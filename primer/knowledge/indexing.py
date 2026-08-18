@@ -227,7 +227,7 @@ async def index_document(
                     chunk_id=str(idx),
                     text=chunk,
                     vector=list(emb.vector),
-                    meta={"document_name": document.name},
+                    meta={"path": document.path},
                 )
             )
 
