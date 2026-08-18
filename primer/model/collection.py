@@ -14,12 +14,12 @@ against a vector index.
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from primer.model.common import Describeable, Identifiable
-from primer.model.search import CollectionSearch
+from primer.model.search import CollectionCrossEncoder
 
 
 class CollectionEmbedder(BaseModel):
@@ -52,63 +52,57 @@ class CollectionEmbedder(BaseModel):
     )
 
 
-class Collection(Describeable):
-    """A set of documents searchable by similarity / semantic / hybrid search.
+class ChunkingConfig(BaseModel):
+    """Chunk sizing for the markdown heading-aware splitter (section 6)."""
 
-    Inherits ``id`` and ``description`` from :class:`Describeable`. The
-    ``embedder`` field selects how the collection's documents are
-    vectorised; all documents in a collection share the same embedding
-    space.
-    """
+    max_chars: int = Field(
+        default=1500, ge=200, le=20000,
+        description="Target maximum characters per chunk.",
+    )
+    overlap: int = Field(
+        default=200, ge=0, le=2000,
+        description="Tail characters carried over between adjacent chunks.",
+    )
+
+
+class CollectionSearchConfig(BaseModel):
+    """Per-collection semantic-search opt-in block. None on the parent
+    Collection means grep-only (the default)."""
+
+    embedder: CollectionEmbedder = Field(
+        ..., description="Embedding provider + model for this collection.",
+    )
+    vector_store_provider_id: str = Field(
+        ..., min_length=1,
+        description="Id of the SemanticSearchProvider holding the vectors.",
+    )
+    cross_encoder: CollectionCrossEncoder | None = Field(
+        default=None,
+        description="Optional cross-encoder rerank provider + model.",
+    )
+    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+    state: Literal["ready", "indexing", "error"] = Field(default="indexing")
+    error: str | None = Field(
+        default=None, description="Human-readable hint when state == 'error'.",
+    )
+
+
+class Collection(Describeable):
+    """A wiki of pure-text documents; optionally vectorised via `search`."""
 
     _id_prefix: ClassVar[str] = "collection"
 
-    embedder: CollectionEmbedder = Field(
-        ...,
-        description=(
-            "Embedding provider and model used to vectorise this "
-            "collection's documents."
-        ),
-    )
-    search_provider_id: str = Field(
-        ...,
-        min_length=1,
-        description=(
-            "Id of the SemanticSearchProvider backing this collection's "
-            "vector index. Bound at create; immutable thereafter (see "
-            "Collection PUT validator — wired in Task 5)."
-        ),
-    )
-    search: CollectionSearch | None = Field(
+    search: CollectionSearchConfig | None = Field(
         default=None,
-        description=(
-            "Optional retrieval-augmentation toggles applied on top "
-            "of the base vector search. ``None`` (default) means "
-            "vanilla vector ranking; setting ``mmr`` adds Maximal "
-            "Marginal Relevance diversification; setting ``cer`` "
-            "adds cross-encoder reranking; setting both runs "
-            "``vector → cross-encoder rerank → MMR``. See "
-            ":class:`primer.model.search.CollectionSearch`."
-        ),
+        description="Semantic-search opt-in. None = grep-only.",
     )
     system: bool = Field(
         default=False,
-        description=(
-            "Marks the collection as system-managed (created and "
-            "owned by an internal subsystem like the "
-            "SemanticCatalog). Future Collection-CRUD APIs MUST "
-            "refuse delete and update on system collections. "
-            "Defaults to False; legacy rows without this field "
-            "deserialise as user collections."
-        ),
+        description="System-owned; read-only to users through every path.",
     )
     harness_id: str | None = Field(
         default=None,
-        description=(
-            "When set, this row is managed by the named harness. "
-            "Mutation through the public CRUD endpoints returns 409 — "
-            "use the harness's sync/uninstall flow instead."
-        ),
+        description="When set, this row is managed by the named harness.",
     )
 
 
