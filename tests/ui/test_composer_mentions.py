@@ -80,25 +80,3 @@ def test_composer_stays_pure_no_direct_fetch_or_ws() -> None:
     assert "apiFetch" not in src
 
 
-def test_conversation_builds_agent_file_session_mention_sources() -> None:
-    src = _src(CONVERSATION)
-    assert "/agents?limit=200" in src
-    assert 'type: "agent"' in src
-    assert 'type: "session"' in src
-    assert 'type: "file"' in src
-
-
-def test_composer_no_longer_passed_an_empty_mention_source_list() -> None:
-    conv = _src(CONVERSATION)
-    assert "mentionSources={[]}" not in conv
-    assert "mentionSources={mentionSources}" in conv
-
-
-def test_bundle_transpiles_with_composer_mention_changes() -> None:
-    from primer.api._jsx_bundle import build_jsx_bundle
-
-    etag, body = build_jsx_bundle(UI)
-    assert etag and body, "bundle did not build (Babel/vendor missing?)"
-    text = body.decode("utf-8")
-    assert "/* === components/shared/composer.jsx === */" in text
-    assert "/* === components/chat/conversation.jsx === */" in text

@@ -32,7 +32,6 @@
   //                       render standalone without a parent).
   //   api-token-create -> AT_ApiTokensPage (page-level; AT_CreateTokenDialog is
   //                       a modal that requires onClose/onCreated/onDone).
-  //   chat-stream      -> ChatsPage (page-level list + detail stream).
   //   collection-list  -> CollectionsPage (page-level knowledge list).
   const REGISTRY = {
     "agents-page": {
@@ -63,11 +62,6 @@
         initialOpen: "session:sess-briefwriter",
         pushToast: function () {},
       },
-    },
-    "chat-stream": {
-      component: "ChatsPage",
-      fixtures: "chat-stream",
-      props: { onOpen: function () {}, pushToast: function () {} },
     },
     "workspaces": {
       component: "WorkspacesPage",
@@ -130,20 +124,6 @@
       component: "AgentsPage",
       fixtures: "quickstart-agents",
       props: { onOpen: function () {}, pushToast: function () {} },
-    },
-    "chat-agent-switch": {
-      // ChatDetail renders the conversation view WITH the composer, which
-      // is where CT_AgentSwitcher (the agent selector chip) lives. The list
-      // page (ChatsPage) never shows the selector, so the embed mounts the
-      // detail directly. chatId must match the concrete keys in the fixture
-      // (the stub resolves "GET /chats/chat-blog-launch-001" et al.).
-      component: "ChatDetail",
-      fixtures: "chat-agent-switch",
-      props: {
-        chatId: "chat-blog-launch-001",
-        pushToast: function () {},
-        onBack: function () {},
-      },
     },
     "internal-collections-enable": {
       component: "InternalCollectionsPage",

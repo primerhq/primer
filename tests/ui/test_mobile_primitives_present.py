@@ -17,7 +17,6 @@ MOBILE_AWARE_PAGES = [
     "workspaces/templates.jsx",
     "agents.jsx",
     "graphs.jsx",
-    "chats.jsx",
     "knowledge.jsx",
     "internal-collections.jsx",
     "semantic-search.jsx",

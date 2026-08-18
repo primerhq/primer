@@ -1067,20 +1067,22 @@ function AgentDetail({ agentId, pushToast }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
 
-  // New "Chat" button: skip the workspace-session ceremony and just
-  // open an interactive chat with this agent — POST /chats then
-  // navigate to /chats/{id}. The chat detail page handles initial
-  // message + streaming.
+  // "Chat" button: open an interactive session bound to this agent.
+  // No auto_start - the session detail view takes the first message,
+  // the same way the old chat detail page did.
   const startChatMut = useMutation(
-    () => apiFetch("POST", "/chats", { agent_id: id }),
+    () => apiFetch("POST", "/sessions", {
+      binding: { kind: "agent", agent_id: id },
+      auto_start: false,
+    }),
     {
-      invalidates: ["chats:list"],
-      onSuccess: (row) => navigate("/chats/" + row.id),
+      invalidates: ["sessions:list"],
+      onSuccess: (row) => navigate("/sessions/" + row.id),
       onError: (err) => {
         if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
-            title: err?.title || "Couldn't start chat",
+            title: err?.title || "Couldn't start session",
             detail: err?.detail || err?.message,
             requestId: err?.requestId,
           });

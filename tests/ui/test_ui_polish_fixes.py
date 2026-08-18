@@ -106,52 +106,6 @@ def test_app_sessions_page_does_not_read_mock_counts() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_chats_ws_backoff_constants() -> None:
-    src = _chats()
-    assert "MAX_BACKOFF_MS" in src, "chats.jsx WS effect must define MAX_BACKOFF_MS cap"
-    assert "backoffMs" in src, "chats.jsx WS effect must use a backoffMs variable"
-
-
-def test_chats_ws_reconnect_on_unexpected_close() -> None:
-    src = _chats()
-    assert "reconnectTimer" in src, (
-        "chats.jsx must schedule reconnect via a timer on unexpected close"
-    )
-    assert "Math.min(backoffMs * 2" in src or "Math.min(backoffMs*2" in src, (
-        "chats.jsx backoff must double each attempt and cap at MAX_BACKOFF_MS"
-    )
-
-
-def test_chats_ws_no_reconnect_on_intentional_close() -> None:
-    src = _chats()
-    assert "intentional" in src, (
-        "chats.jsx must use an intentional flag to skip reconnect on unmount"
-    )
-    assert "clearTimeout(reconnectTimer)" in src, (
-        "chats.jsx cleanup must cancel any pending reconnect timer"
-    )
-
-
-def test_chats_ws_resume_from_latest_seq() -> None:
-    src = _chats()
-    assert "latestSeq" in src, (
-        "chats.jsx must track latestSeq in the WS effect closure and use it "
-        "as the reconnect cursor so no frames are missed"
-    )
-    assert "cursor=${latestSeq}" in src, (
-        "chats.jsx WS URL must use cursor=${latestSeq} for reconnects"
-    )
-
-
-# NOTE: the session-detail LIVE view was re-expressed as a single-session
-# workspace TAP (SSE/EventSource), replacing the bespoke session WebSocket
-# and its hand-rolled exponential-backoff reconnect (Task 6.2). The reconnect
-# machinery these tests used to assert (MAX_BACKOFF_MS / reconnectTimer /
-# intentional / latestSeq cursor) no longer exists: EventSource owns reconnect
-# natively via Last-Event-ID. The assertions below preserve the original
-# intent — live tail with gap-free resume and unmount cleanup — over the tap.
-
-
 def test_sdet_live_via_tap_eventsource() -> None:
     src = _sdet()
     assert "EventSource" in src, (
@@ -217,30 +171,3 @@ def test_graphs_page_has_accurate_subtitle() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_chats_send_message_returns_bool() -> None:
-    # Task G1 (queue-on-reconnect, §4.5) superseded the old "return false
-    # when the socket is not open" branch: sendMessage now queues the
-    # frame (outboxRef) and still returns true, so onSubmitComposer's
-    # optimistic-echo/clear path always runs — the queued frame flushes
-    # in ws.onopen once the socket reopens instead of being dropped.
-    src = _chats()
-    assert "return true" in src, (
-        "sendMessage must return true on a successful enqueue"
-    )
-    assert "outboxRef.current.push(frame)" in src, (
-        "sendMessage must queue the frame (Task G1) rather than hard-reject "
-        "when the socket is not open"
-    )
-
-
-def test_chats_composer_clear_gated_on_send_success() -> None:
-    src = _chats()
-    # The composer must only be cleared after a successful send.
-    # sendMessage is assigned to `sent`; setComposer("") must appear
-    # inside the if(sent) branch, not unconditionally after the call.
-    assert 'const sent = sendMessage(' in src, (
-        "onSubmitComposer must capture the return value of sendMessage"
-    )
-    assert 'if (sent)' in src, (
-        "setComposer('') and setAttachments([]) must be guarded by if (sent)"
-    )

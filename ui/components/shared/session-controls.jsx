@@ -6,7 +6,7 @@
 // tomorrow, so anything ambient here would have to be rewritten rather
 // than re-hosted.
 //
-// Ported from CT_AgentSwitcher (chats.jsx), with two changes the
+// Ported from CT_AgentSwitcher (the chat UI), with two changes the
 // session surface forces: graphs are offered as well as agents, because
 // the binding endpoint takes both; and the switch is NOT applied
 // optimistically, because a busy session queues it and the row does not

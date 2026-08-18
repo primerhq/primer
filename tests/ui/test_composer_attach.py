@@ -68,16 +68,6 @@ def test_paste_and_drop_onto_the_textarea_trigger_attach() -> None:
     assert "onAttach" in src
 
 
-def test_the_8mib_cap_constant_survives_the_refactor() -> None:
-    # This task only modifies composer.jsx (Files: composer.jsx per the
-    # plan) — handleFilesPicked + MAX_ATTACHMENT_BYTES stay in
-    # conversation.jsx and are passed down as the `onAttach` prop, so the
-    # size cap must still be intact there.
-    src = _src(CONVERSATION)
-    assert "MAX_ATTACHMENT_BYTES" in src
-    assert "8 * 1024 * 1024" in src
-
-
 def test_attachment_chips_are_still_reused() -> None:
     src = _src(COMPOSER)
     assert "CT_AttachmentChip" in src

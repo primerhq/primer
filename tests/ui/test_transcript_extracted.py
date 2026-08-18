@@ -69,35 +69,10 @@ def test_transcript_contains_the_row_renderers() -> None:
     assert "function CT_ThinkingBubble(" in src
 
 
-def test_row_renderers_no_longer_defined_in_chats_jsx() -> None:
-    # Behavior moved, not changed — the row renderers must be defined
-    # exactly once, in transcript.jsx now.
-    src = CHATS.read_text(encoding="utf-8")
-    assert "function Message(" not in src
-    assert "function CT_ExpandableToolRow(" not in src
-    assert "function CT_AttachmentPart(" not in src
-    assert "function CompactionMarker(" not in src
-    assert "function CT_ThinkingBubble(" not in src
-
-
-def test_conversation_renders_transcript_and_no_longer_owns_row_rendering() -> None:
-    src = CONVERSATION.read_text(encoding="utf-8")
-    assert "<Transcript" in src, "<Conversation> must mount <Transcript> for the timeline"
-    assert "window.chatCoalesce(" in src, "<Conversation> still owns coalescing before handing off"
-    assert "function Message(" not in src
-    assert "function CompactionMarker(" not in src
-
-
 def test_transcript_is_pure_no_data_fetching_or_ws() -> None:
     src = TRANSCRIPT.read_text(encoding="utf-8")
     assert "new WebSocket(" not in src
     assert "apiFetch" not in src
-
-
-def test_new_chat_scripts_registered_before_chats_jsx() -> None:
-    order = _order()
-    assert "components/shared/transcript.jsx" in order
-    assert order.index("components/shared/transcript.jsx") < order.index("components/chats.jsx")
 
 
 def test_bundle_transpiles_with_transcript_file() -> None:

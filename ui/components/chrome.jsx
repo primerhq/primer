@@ -14,7 +14,6 @@ const NAV = [
     items: [
       { id: "agents", label: "Agents", icon: "agent" },
       { id: "graphs", label: "Graphs", icon: "graph" },
-      { id: "chats", label: "Chats", icon: "send", countKey: "chats" },
       { id: "approvals", label: "Approvals", icon: "check-circle", countKey: "approvals_pending", adminOnly: true },
     ],
   },

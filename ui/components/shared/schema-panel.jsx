@@ -2,7 +2,7 @@
 //
 // <SchemaPanel> — the collapsible structured-output side panel
 // (Task F2 of the chat-refactor plan, R3/§8.3). <Conversation>
-// (ui/components/chat/conversation.jsx) mounts this as an optional
+// (the chat mount, deleted in S1 P7) mounted this as an optional
 // right-hand sibling of the timeline + composer, gated by its
 // `showSchemaPanel` prop (Task B2). Collapsed by default; a header
 // toggle opens it.

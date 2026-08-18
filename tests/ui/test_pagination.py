@@ -110,7 +110,6 @@ def test_loads_after_shared_before_pages() -> None:
     for page in (
         "components/agents.jsx",
         "components/providers.jsx",
-        "components/chats.jsx",
     ):
         assert order.index(page) > pager_at, f"{page} loads before pager.jsx"
 
@@ -120,7 +119,6 @@ def test_loads_after_shared_before_pages() -> None:
 REPRESENTATIVE = [
     "agents.jsx",
     "graphs.jsx",
-    "chats.jsx",
     "providers.jsx",
     "channels.jsx",
     "triggers.jsx",

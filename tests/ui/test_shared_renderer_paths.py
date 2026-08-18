@@ -52,7 +52,3 @@ def test_helpers_still_load_before_the_renderer_that_uses_them():
     assert helpers < transcript
 
 
-def test_conversation_deliberately_did_not_move():
-    """It dies in P7 rather than relocating, so moving it would be
-    churn on a file with no future."""
-    assert (UI / "components" / "chat" / "conversation.jsx").exists()

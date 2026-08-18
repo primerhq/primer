@@ -9,9 +9,10 @@ def _read(rel: str) -> str:
     return (UI / rel).read_text(encoding="utf-8")
 
 
-def test_eleven_groups_with_chords() -> None:
+def test_ten_groups_with_chords() -> None:
+    # The chats rail entry went with the chat UI in S1 P7.
     src = _read("components/studio2/s2-rail.jsx")
-    for gid, chord in [("work", "s"), ("chats", "c"), ("agents", "a"),
+    for gid, chord in [("work", "s"), ("agents", "a"),
                        ("graphs", "g"), ("knowledge", "k"), ("files", "f"),
                        ("compute", "m"), ("toolsets", "t"), ("autom", "u"),
                        ("services", "v"), ("system", "y")]:

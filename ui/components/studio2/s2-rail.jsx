@@ -3,7 +3,6 @@
 // console IA (spec section 4). Chords g+<letter> registered here.
 window.S2_NAV_GROUPS = [
   { id: "work",      glyph: "▣", label: "Work",        chord: "s" },
-  { id: "chats",     glyph: "◍", label: "Chats",       chord: "c" },
   { id: "agents",    glyph: "◆", label: "Agents",      chord: "a" },
   { id: "graphs",    glyph: "◈", label: "Graphs",      chord: "g" },
   { id: "knowledge", glyph: "▤", label: "Knowledge",   chord: "k" },

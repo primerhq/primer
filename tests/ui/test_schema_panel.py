@@ -72,11 +72,6 @@ def test_invalid_state_surfaces_an_inline_banner() -> None:
     assert "send disabled" in src
 
 
-def test_conversation_gates_composer_send_off_schema_validity() -> None:
-    src = _conv_src()
-    assert 'schemaInvalid={showSchemaPanel ? !schemaValid : false}' in src
-
-
 # ---------------------------------------------------------------------------
 # Builder tab — subset (§8.3): flat + nested objects/arrays, scalar types,
 # required, enum, with a graceful "edit in JSON" escape.
@@ -136,44 +131,6 @@ def test_json_edits_rehydrate_the_builder_when_representable() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_persistent_on_puts_the_chat_response_format_endpoint() -> None:
-    src = _conv_src()
-    assert "const handleSchemaPersistentChange = React.useCallback((next) => {" in src
-    assert '`/chats/${encodeURIComponent(cid)}/response_format`' in src
-    assert 'apiFetch("PUT", `/chats/${encodeURIComponent(cid)}/response_format`' in src
-
-
-def test_persistent_off_clears_the_persisted_schema_with_null() -> None:
-    src = _conv_src()
-    assert "schema: next ? schemaValue : null" in src
-
-
-def test_persistent_off_carries_schema_on_the_next_send_frame_only() -> None:
-    src = _conv_src()
-    assert "frame.response_format = schemaValue" in src
-    assert "!schemaPersistent && schemaValid && schemaValue" in src
-
-
-def test_edits_while_persistent_on_are_re_synced_to_the_server() -> None:
-    src = _conv_src()
-    # A debounced effect keeps the server in sync with further
-    # Builder/JSON edits made while Persistent is already ON.
-    assert "schemaPersistTimerRef" in src
-    assert "if (!schemaPersistent || !schemaValid) return undefined;" in src
-
-
-def test_conversation_wires_schema_panel_persistent_change_handler() -> None:
-    src = _conv_src()
-    assert "onPersistentChange={handleSchemaPersistentChange}" in src
-
-
-def test_conversation_hydrates_existing_persistent_schema_from_chat_row() -> None:
-    src = _conv_src()
-    assert "schemaHydratedRef" in src
-    assert "chatRow.response_format != null" in src
-    assert "setSchemaPersistent(true)" in src
-
-
 # ---------------------------------------------------------------------------
 # Panel stays a pure, controlled shell — no data fetching/WS of its own
 # (regression guard against the persistence logic leaking into it).
@@ -193,24 +150,6 @@ def test_schema_panel_still_pure_no_data_fetching_or_ws() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_conversation_always_mounts_schema_panel_fully_open() -> None:
-    src = _conv_src()
-    assert "collapsed={false}" in src
-    # The old double-gating internal state is gone — mounting IS visible now.
-    assert "schemaCollapsed" not in src
-
-
-def test_conversation_wires_its_own_toggle_chevron_to_fully_close_the_panel() -> None:
-    src = _conv_src()
-    assert "onToggle={onCloseSchemaPanel}" in src
-    assert "onCloseSchemaPanel" in src
-
-
-def test_chats_jsx_closes_the_panel_via_the_same_state_the_chip_toggles() -> None:
-    chats_src = (CHAT_DIR.parent / "chats.jsx").read_text(encoding="utf-8")
-    assert "onCloseSchemaPanel={() => setShowSchemaPanel(false)}" in chats_src
-
-
 # ---------------------------------------------------------------------------
 # studio-ux fix 3: a chat with no response_format override of its own still
 # shows the EFFECTIVE (agent build-time) schema, labeled as inherited and
@@ -221,22 +160,6 @@ def test_chats_jsx_closes_the_panel_via_the_same_state_the_chip_toggles() -> Non
 def test_schema_panel_accepts_inherited_schema_prop() -> None:
     src = _panel_src()
     assert "inheritedSchema = null," in src
-
-
-def test_conversation_fetches_the_bound_agents_response_format() -> None:
-    src = _conv_src()
-    assert "const agentIdForSchema = chatRow?.agent_id || null;" in src
-    assert "apiFetch(\"GET\", `/agents/${encodeURIComponent(agentIdForSchema)}`" in src
-    assert "inheritedSchema={agentResponseFormat}" in src
-
-
-def test_conversation_only_fetches_agent_detail_while_schema_panel_is_open() -> None:
-    # Guarded exactly like agents.jsx's AG_ReferencesPanel (cache key AND
-    # fetcher both gate on the condition) so a hidden panel never fires an
-    # extra GET on every chat.
-    src = _conv_src()
-    assert 'showSchemaPanel && agentIdForSchema ? `agent-detail:${agentIdForSchema}` : "agent-detail:none"' in src
-    assert "deps: [showSchemaPanel, agentIdForSchema]" in src
 
 
 def test_schema_panel_shows_inherited_only_without_a_chat_override() -> None:
@@ -274,11 +197,3 @@ def test_schema_panel_edit_override_button_unlocks_editing() -> None:
     assert "onClick={() => setOverriding(true)}" in src
 
 
-def test_bundle_transpiles_with_schema_panel_f2_changes() -> None:
-    from primer.api._jsx_bundle import build_jsx_bundle
-
-    etag, body = build_jsx_bundle(UI)
-    assert etag and body, "bundle did not build (Babel/vendor missing?)"
-    text = body.decode("utf-8")
-    assert "/* === components/shared/schema-panel.jsx === */" in text
-    assert "/* === components/chat/conversation.jsx === */" in text

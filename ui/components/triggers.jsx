@@ -938,6 +938,8 @@ function TR_FireErrorChip({ error, testId }) {
 function TR_SubTargetLabel({ sub }) {
   const cfg = sub?.config || {};
   const kind = cfg.kind;
+  // Legacy rows only: chat_message is no longer creatable, but existing
+  // subscriptions (and channel-internal ones) must still render.
   if (kind === "chat_message") {
     return <span className="mono">{cfg.chat_id || "—"}</span>;
   }
@@ -1655,7 +1657,6 @@ function TR_TriggerDetail({ id }) {
 // ============================================================================
 
 const TR_SUB_KIND_OPTIONS = [
-  { value: "chat_message", label: "chat_message", description: "Append a user message to an existing chat." },
   { value: "agent_fresh_session", label: "agent_fresh_session", description: "Start a fresh workspace session bound to an agent." },
   { value: "graph_fresh_session", label: "graph_fresh_session", description: "Start a fresh workspace session bound to a graph." },
 ];
@@ -1671,14 +1672,13 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
   const { apiFetch, useResource } = window.primerApi;
   const isEdit = mode === "edit" && initial != null;
 
-  // Lock the kind in edit mode; default to chat_message in create mode.
-  const initialKind = isEdit ? (initial?.config?.kind || "chat_message") : "chat_message";
+  // Lock the kind in edit mode; default to agent_fresh_session in create
+  // mode. chat_message is no longer offered: the chat surface was deleted
+  // in S1 P7 and the subscriber now serves channels internally only.
+  const initialKind = isEdit ? (initial?.config?.kind || "agent_fresh_session") : "agent_fresh_session";
   const [kind, setKind] = React.useState(initialKind);
 
   // Per-kind config state.
-  const [chatId, setChatId] = React.useState(
-    isEdit && initial?.config?.kind === "chat_message" ? (initial.config.chat_id || "") : "",
-  );
   const [workspaceId, setWorkspaceId] = React.useState(
     isEdit && initial?.config?.workspace_id ? initial.config.workspace_id : "",
   );
@@ -1715,13 +1715,8 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
 
   // Picker data (always queried so hook count stays fixed; the form
   // only renders the relevant picker for the selected kind). We use the
-  // standard `?limit=200` pattern adopted by the chats / agents / graphs
-  // pages so the dropdown isn't capped to a default page size.
-  const chats = useResource(
-    "tr-sub-chats",
-    (signal) => apiFetch("GET", "/chats?limit=200", null, { signal }),
-    { pollMs: null },
-  );
+  // standard `?limit=200` pattern adopted by the agents / graphs pages
+  // so the dropdown isn't capped to a default page size.
   const workspaces = useResource(
     "tr-sub-workspaces",
     (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
@@ -1738,7 +1733,6 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
     { pollMs: null },
   );
 
-  const chatItems = chats.data?.items ?? [];
   const workspaceItems = workspaces.data?.items ?? [];
   // Filter agents/graphs by workspace if the workspace picker is set.
   // Many agent/graph rows carry a workspace_id; if not, show the full list.
@@ -1751,17 +1745,13 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
 
   // Validation gates.
   const configValid = (
-    kind === "chat_message" ? !!chatId
-      : kind === "agent_fresh_session" ? (!!workspaceId && !!agentId)
-        : kind === "graph_fresh_session" ? (!!workspaceId && !!graphId)
-          : false
+    kind === "agent_fresh_session" ? (!!workspaceId && !!agentId)
+      : kind === "graph_fresh_session" ? (!!workspaceId && !!graphId)
+        : false
   );
   const canSubmit = isEdit ? !busy : (!busy && configValid);
 
   const buildConfig = () => {
-    if (kind === "chat_message") {
-      return { kind: "chat_message", chat_id: chatId };
-    }
     if (kind === "agent_fresh_session") {
       return { kind: "agent_fresh_session", workspace_id: workspaceId, agent_id: agentId };
     }
@@ -1885,29 +1875,6 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
         </div>
 
         {/* Per-kind config */}
-        {kind === "chat_message" && !isEdit && (
-          <div className="field">
-            <label className="field-label" htmlFor="tr-sub-chat">Chat</label>
-            <select
-              id="tr-sub-chat"
-              className="input mono"
-              value={chatId}
-              onChange={(e) => setChatId(e.target.value)}
-              style={{ width: "100%" }}
-            >
-              <option value="">Select a chat…</option>
-              {chatItems.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.title ? `${c.title} · ${c.id}` : c.id}
-                </option>
-              ))}
-            </select>
-            {chats.loading && (
-              <div className="field-help muted text-sm">Loading chats…</div>
-            )}
-          </div>
-        )}
-
         {(kind === "agent_fresh_session" || kind === "graph_fresh_session") && !isEdit && (
           <div className="field">
             <label className="field-label" htmlFor="tr-sub-workspace">Workspace</label>

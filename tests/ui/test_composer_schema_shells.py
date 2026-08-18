@@ -154,36 +154,9 @@ def test_schema_panel_is_pure_no_data_fetching_or_ws() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_conversation_renders_composer() -> None:
-    src = CONVERSATION.read_text(encoding="utf-8")
-    assert "<Composer" in src, "<Conversation> must mount <Composer> as its input surface"
-
-
-def test_conversation_no_longer_owns_the_raw_composer_jsx() -> None:
-    # Behavior moved, not duplicated — the raw textarea/attach controls
-    # must be defined exactly once, in composer.jsx now.
-    src = CONVERSATION.read_text(encoding="utf-8")
-    assert "<textarea" not in src
-    assert 'data-testid="chat-attach-btn"' not in src
-
-
-def test_conversation_accepts_schema_panel_sibling() -> None:
-    src = CONVERSATION.read_text(encoding="utf-8")
-    assert "<SchemaPanel" in src, "<Conversation> should mount <SchemaPanel> behind showSchemaPanel"
-    assert "showSchemaPanel" in src
-
-
 # ---------------------------------------------------------------------------
 # Registration + transpile
 # ---------------------------------------------------------------------------
-
-
-def test_new_chat_scripts_registered_before_chats_jsx() -> None:
-    order = _order()
-    assert "components/shared/composer.jsx" in order
-    assert "components/shared/schema-panel.jsx" in order
-    assert order.index("components/shared/composer.jsx") < order.index("components/chats.jsx")
-    assert order.index("components/shared/schema-panel.jsx") < order.index("components/chats.jsx")
 
 
 def test_bundle_transpiles_with_composer_and_schema_panel_files() -> None:

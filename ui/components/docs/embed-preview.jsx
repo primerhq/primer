@@ -5,7 +5,7 @@
 //
 // PURPOSE
 //   The user-docs revamp embeds REAL console page components (window.AgentsPage,
-//   window.ChatsPage, ...) inside documentation pages, rendered against frozen
+//   window.SessionsPage, ...) inside documentation pages, rendered against frozen
 //   fixture data instead of the live API. This file provides the stub that
 //   feeds those components their data, plus the helper that mounts a real
 //   component under that stub.

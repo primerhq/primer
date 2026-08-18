@@ -17,9 +17,10 @@ def test_banner_component_defined_and_bundled() -> None:
     assert 'src="components/external-tools.jsx"' in _read("index.html")
 
 
-def test_banner_mounted_on_session_and_chat_detail() -> None:
+def test_banner_mounted_on_session_detail() -> None:
+    # The chats.jsx mount went with the chat UI in S1 P7; studio-center
+    # is the surviving surface that shows pending external tool calls.
     assert "ExternalPendingBanner" in _read("components/studio-center.jsx")
-    assert "ExternalPendingBanner" in _read("components/chats.jsx")
 
 
 def test_agents_editor_has_flag_toggle() -> None:

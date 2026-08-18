@@ -1,10 +1,10 @@
 /* global React, Icon, Btn, CT_AttachmentChip */
 //
-// <Composer> — the chat input surface shell (Task B4 of the
-// chat-refactor plan). Moved out of <Conversation>
-// (ui/components/chat/conversation.jsx): the pending-attachments
-// strip, the attach-file control, the message textarea, and the
-// context-aware Send/Stop control. <Conversation> still OWNS all the
+// <Composer> — the conversation input surface shell (Task B4 of the
+// chat-refactor plan). Moved out of <Conversation>, the chat mount
+// deleted in S1 P7: the pending-attachments strip, the attach-file
+// control, the message textarea, and the context-aware Send/Stop
+// control. The MOUNT owns all the
 // state and handlers (composer text, attachments list, send/attach
 // logic) — this component is a controlled, pure-rendering shell that
 // forwards events, so this move is structural, not a behavior change.
@@ -15,9 +15,9 @@
 // here — it arrives via the `slashCommands` prop (already reserved
 // since Task B4) as a plain `{name, hint, run, takesArg}` array, kept
 // external so this component stays a pure, non-fetching shell (no
-// network calls or WebSocket code live here — see conversation.jsx,
-// which builds the registry against its own existing REST actions:
-// /compact, /agent, chat creation, chat deletion). Selecting/confirming a
+// network calls or WebSocket code live here — the mount builds the
+// registry against its own REST actions: /compact, binding switch,
+// session creation and deletion). Selecting/confirming a
 // no-arg command runs it immediately and clears the composer;
 // argument-taking commands (e.g. `/agent <name>`) fill in the command
 // word plus a trailing space so the operator can type the argument —
@@ -30,8 +30,8 @@
 // it looks backward from the caret for the nearest "@" that starts a
 // whitespace-bounded token. `mentionSources` arrives as a flat,
 // already-fetched `{type, id, label, hint}` array built in
-// conversation.jsx (agents via GET /agents, sessions via the chats
-// list, files via this chat's attachments) — this shell stays pure
+// the mount (agents via GET /agents, sessions via the session list,
+// files via the session's attachments) — this shell stays pure
 // (no network calls or WebSocket code live here either); it only
 // filters by prefix, renders a keyboard-navigable popover mirroring
 // the slash menu, and on selection splices a structured `@type:id`
@@ -305,8 +305,11 @@ function Composer({
   };
 
   // Drag-and-drop onto the textarea forwards the dropped files through
-  // the same `onAttach` callback the hidden file input uses — the cap +
-  // encoding logic (handleFilesPicked, <Conversation>) is unchanged.
+  // the same `onAttach` callback the hidden file input uses. The mount
+  // owns the size cap and encoding: <Conversation> did until S1 P7
+  // deleted it, and the surviving mounts still pass a no-op onAttach.
+  // Whoever wires attachments for real must reinstate the 8MiB cap
+  // (MAX_ATTACHMENT_BYTES) that lived in the chat mount.
   const handleDrop = (e) => {
     e.preventDefault();
     const files = e.dataTransfer && e.dataTransfer.files;

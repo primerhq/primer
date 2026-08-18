@@ -31,11 +31,6 @@ def _src(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-def test_conversation_threads_send_message_into_transcript() -> None:
-    src = _src(CONVERSATION)
-    assert "sendMessage={sendMessage}" in src
-
-
 def test_transcript_renders_gate_only_in_approval_mode() -> None:
     src = _src(TRANSCRIPT)
     assert 'pendingToolCall.mode === "approval"' in src
@@ -64,11 +59,3 @@ def test_gate_buttons_disable_while_a_send_is_in_flight() -> None:
     assert "if (!enqueued) setSending(false)" in src
 
 
-def test_bundle_transpiles_with_approve_deny_changes() -> None:
-    from primer.api._jsx_bundle import build_jsx_bundle
-
-    etag, body = build_jsx_bundle(UI)
-    assert etag and body, "bundle did not build (Babel/vendor missing?)"
-    text = body.decode("utf-8")
-    assert "/* === components/chat/conversation.jsx === */" in text
-    assert "/* === components/shared/transcript.jsx === */" in text

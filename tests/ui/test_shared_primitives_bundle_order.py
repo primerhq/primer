@@ -40,7 +40,6 @@ def test_primitives_load_before_page_components() -> None:
         "components/dashboard.jsx",
         "components/sessions-list.jsx",
         "components/workspaces.jsx",
-        "components/chats.jsx",
     ):
         assert order.index(page) > last_primitive, (
             f"{page} loads before all primitives"

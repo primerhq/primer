@@ -34,7 +34,7 @@
 
 // ---------------------------------------------------------------------------
 // ST_termWsUrl — ws(s)://<host>/v1/workspaces/<wid>/terminal?cols=&rows=
-// Mirrors the scheme-selection pattern in chats.jsx's chat WS (~L748).
+// Mirrors the scheme-selection pattern the chat WS used before S1 P7.
 // ---------------------------------------------------------------------------
 
 function ST_termWsUrl(wid, cols, rows) {

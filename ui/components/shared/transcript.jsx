@@ -4,12 +4,12 @@
 // B3 of the chat-refactor plan). Consumes an already-coalesced message
 // list (window.chatCoalesce(messages), called by <Conversation> before
 // handing off) and renders it — no data fetching, no WebSocket, props
-// only. <Conversation> (ui/components/chat/conversation.jsx) owns the
+// only. <Conversation> (the chat mount, deleted in S1 P7) owned the
 // WS/data lifecycle and mounts this component for the scrollable
 // message area.
 //
 // The row renderers that used to live inline in ChatDetail
-// (ui/components/chats.jsx) move here wholesale: Message,
+// (the chat UI, deleted in S1 P7) moved here wholesale: Message,
 // CT_ExpandableToolRow, CT_AttachmentPart, CompactionMarker,
 // CT_ThinkingBubble — plus Message's two private text/role helpers,
 // CT_roleForKind and CT_textOf. Behavior is byte-identical to the
@@ -989,7 +989,7 @@ function CompactionMarker({ m }) {
 //
 // <Transcript> is the pure core Studio embeds directly (no ChatDetail page
 // chrome) — the WS badge that already lives in the /chats page host
-// (ui/components/chats.jsx's wsBadge) isn't guaranteed to be visible to
+// (the chat UI's wsBadge) isn't guaranteed to be visible to
 // every host. This renders the SAME wsState (open/connecting/closed) pill
 // styling inline in the transcript itself, plus a `turn_status`
 // (idle/claimable/running) pill right alongside it — "surface turn_status
@@ -1188,6 +1188,6 @@ function Transcript({
 }
 
 window.Transcript = Transcript;
-// CompactionMarker was window.CompactionMarker-exported from chats.jsx
+// CompactionMarker was window.CompactionMarker-exported from the chat UI
 // before Task B3; preserved here now that it lives in this file.
 window.CompactionMarker = CompactionMarker;

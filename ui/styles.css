@@ -2503,7 +2503,7 @@ input, textarea, select { font: inherit; color: inherit; }
 /* ============================================================================
    Chat header control cluster + agent-switch overlay (fix/studio-ux, PR #114)
    ----------------------------------------------------------------------------
-   C1/C2: the /chats desktop ChatDetail header is one row now. The agent
+   C1/C2: the session detail header is one row now. The agent
    selector, the schema toggle, and the TokenMeter (token pill + compact
    button) are grouped into a single subtle bordered cluster inside
    `.panel-h .right`; the connection badge + status pill trail it.

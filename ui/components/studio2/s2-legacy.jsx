@@ -7,7 +7,6 @@ window.S2_LEGACY_ROUTES = [
   { ref: "/",                                title: "Dashboard",            group: "system" },
   { ref: "/agents",                          title: "Agents",               group: "agents" },
   { ref: "/graphs",                          title: "Graphs",               group: "graphs" },
-  { ref: "/chats",                           title: "Chats",                group: "chats" },
   { ref: "/workspaces",                      title: "Workspaces",           group: "work" },
   { ref: "/workspaces/templates",            title: "Templates",            group: "work" },
   { ref: "/workspaces/providers",            title: "WS Providers",         group: "work" },

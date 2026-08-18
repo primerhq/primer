@@ -86,11 +86,6 @@ def test_connection_status_state_pill_shows_ended_when_chat_ended() -> None:
     assert '"pill pill-ended"' in src
 
 
-def test_conversation_forwards_chat_status_to_transcript() -> None:
-    src = _src(CONVERSATION)
-    assert "chatStatus={chatStatus}" in src
-
-
 def test_connection_status_covers_every_turn_status_value() -> None:
     # primer/model/chats.py: Chat.turn_status is Literal["idle",
     # "claimable", "running"] — all three must map to a distinct pill so
@@ -106,34 +101,6 @@ def test_connection_status_covers_every_turn_status_value() -> None:
 # ---------------------------------------------------------------------------
 # Queue-on-reconnect: buffer instead of hard-reject; flush on reopen.
 # ---------------------------------------------------------------------------
-
-
-def test_send_message_queues_instead_of_hard_rejecting() -> None:
-    src = _src(CONVERSATION)
-    assert "outboxRef" in src
-    assert "outboxRef.current.push(frame)" in src
-    # The old hard-reject branch is gone entirely.
-    assert '"Not connected"' not in src
-    assert "return false" not in src
-    # The queued path still reports success so onSubmitComposer's
-    # optimistic echo + composer-clear behavior proceeds unchanged.
-    assert "return true" in src
-
-
-def test_queued_frames_flush_once_the_socket_reopens() -> None:
-    src = _src(CONVERSATION)
-    onopen_idx = src.index("ws.onopen = () => {")
-    snippet = src[onopen_idx:onopen_idx + 800]
-    assert "outboxRef.current.length > 0" in snippet
-    assert "outboxRef.current = [];" in snippet
-    assert "ws.send(JSON.stringify(frame))" in snippet
-
-
-def test_outbox_is_reset_on_chat_switch() -> None:
-    # A queued frame belongs to the PREVIOUS chat's socket — the tail-load
-    # effect resets it alongside messages/lastSeq/etc. when `cid` changes.
-    src = _src(CONVERSATION)
-    assert "outboxRef.current = [];" in src
 
 
 def test_composer_accepts_ws_state_and_renders_a_queue_hint() -> None:
@@ -153,17 +120,3 @@ def test_send_is_never_hard_disabled_by_connection_state() -> None:
     assert "wsNotOpen" not in send_gate_line
 
 
-def test_conversation_wires_ws_state_into_composer() -> None:
-    src = _src(CONVERSATION)
-    assert "wsState={wsState}" in src
-
-
-def test_bundle_transpiles_with_a11y_changes() -> None:
-    from primer.api._jsx_bundle import build_jsx_bundle
-
-    etag, body = build_jsx_bundle(UI)
-    assert etag and body, "bundle did not build (Babel/vendor missing?)"
-    text = body.decode("utf-8")
-    assert "/* === components/chat/conversation.jsx === */" in text
-    assert "/* === components/shared/transcript.jsx === */" in text
-    assert "/* === components/shared/composer.jsx === */" in text

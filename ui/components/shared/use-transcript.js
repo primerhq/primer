@@ -1,10 +1,10 @@
-// Shared transcript helpers — pulled out of chats.jsx (Task B2 of the
+// Shared transcript helpers — pulled out of the chat UI (deleted in S1 P7) (Task B2 of the
 // chat-refactor plan) so they're unit-testable and reusable by
 // <Conversation> (and, later, <Transcript>). Behavior is byte-identical
 // to the inline versions that used to live inside ChatDetail.
 //
 // Loaded via <script type="text/babel"> in ui/index.html, before
-// components/chat/conversation.jsx (see index.html for the load-order
+// the session surfaces (see index.html for the load-order
 // note). Plain helpers, no React/JSX — exported as window.chatFlatten /
 // window.chatCoalesce so callers reference them via the full path,
 // mirroring the window.primerVendor.highlightCode convention.
@@ -13,7 +13,7 @@
   // REST rows carry kind-specific fields nested under `payload`; WS
   // frames spread payload into the top-level (see chats router
   // _message_to_wire). Flatten REST rows on load so both sources are
-  // homogeneous. Moved verbatim from the REST-load map in chats.jsx.
+  // homogeneous. Moved verbatim from the chat UI's REST-load map.
   function chatFlatten(rows) {
     return (rows || []).map((row) => {
       const payload = row.payload && typeof row.payload === "object" ? row.payload : {};

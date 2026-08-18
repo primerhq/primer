@@ -51,8 +51,6 @@
     { pattern: "/channels/providers",              page: "ChannelProvidersPage" },
     { pattern: "/channels/providers/:id",          page: "ChannelProviderDetailPage" },
     { pattern: "/channels/channels",               page: "ChannelsListPage" },
-    { pattern: "/chats",                           page: "ChatsListPage" },
-    { pattern: "/chats/:id",                       page: "ChatDetailPage" },
     { pattern: "/harnesses",                       page: "HarnessesPage" },
     { pattern: "/studio2",                          page: "Studio2Page" },
     { pattern: "/services",                        page: "ServicesPage" },

@@ -52,7 +52,6 @@ function App() {
     if (root === "graphs") return params.id ? "graph-detail" : "graphs";
     if (root === "model-profiles") return "model-profiles";
     if (root === "ssp") return params.id ? "ssp-detail" : "semantic-search";
-    if (root === "chats") return params.id ? "chat-detail" : "chats";
     if (root === "channels") {
       if (path === "/channels/rules") return "channel-rules";
       if (path.startsWith("/channels/providers/") && params.id) return "channel-provider-detail";
@@ -106,7 +105,6 @@ function App() {
   const currentAgentId = page === "agent-detail" ? params.id : null;
   const currentGraphId = page === "graph-detail" ? params.id : null;
   const currentSspId = page === "ssp-detail" ? params.id : null;
-  const currentChatId = page === "chat-detail" ? params.id : null;
   const currentChannelProviderId = page === "channel-provider-detail" ? params.id : null;
   const currentToolsetId = page === "toolset-detail" ? params.id : null;
   const docsFilterCollection = query.collection || "";
@@ -193,19 +191,14 @@ function App() {
     { pollMs: 5000 }
   );
 
-  // Sidebar Sessions / Chats / Channels counts — small probes that only
-  // need ``total`` (limit=1 keeps the response minimal). Task 15 wires
-  // these so the nav badges reflect global counts instead of the mock
-  // sessions-array length. U0002 pins Sessions; chats/channels have no
+  // Sidebar Sessions / Channels counts — small probes that only need
+  // ``total`` (limit=1 keeps the response minimal). Task 15 wires these
+  // so the nav badges reflect global counts instead of the mock
+  // sessions-array length. U0002 pins Sessions; channels has no
   // dedicated test yet (manual smoke).
   const sessionsCount = window.primerApi.useResource(
     "sidebar:sessions",
     (signal) => window.primerApi.apiFetch("GET", "/sessions?limit=1", null, { signal }),
-    { pollMs: 5000 }
-  );
-  const chatsCount = window.primerApi.useResource(
-    "sidebar:chats",
-    (signal) => window.primerApi.apiFetch("GET", "/chats?limit=1", null, { signal }),
     { pollMs: 5000 }
   );
   const channelsCount = window.primerApi.useResource(
@@ -223,11 +216,9 @@ function App() {
     { pollMs: 30000 }
   );
   const userRole = authStatus.data?.role || null;
-  // Approvals_pending — client-side aggregation: parked sessions
-  // (`/sessions/find` with parked_status=parked predicate) +
-  // parked chats (no /chats/find route; GET + client filter, matching
-  // the ApprovalsPage approach in approvals.jsx). The predicate uses
-  // ``kind`` discriminators per the Task 12 wiring.
+  // Approvals_pending — parked sessions only, via `/sessions/find` with
+  // a parked_status=parked predicate. The predicate uses ``kind``
+  // discriminators per the Task 12 wiring.
   const parkedSessionsCount = window.primerApi.useResource(
     "sidebar:parked-sessions",
     (signal) => window.primerApi.apiFetch(
@@ -244,11 +235,6 @@ function App() {
       },
       { signal },
     ),
-    { pollMs: 5000 }
-  );
-  const parkedChatsList = window.primerApi.useResource(
-    "sidebar:parked-chats",
-    (signal) => window.primerApi.apiFetch("GET", "/chats?limit=200", null, { signal }),
     { pollMs: 5000 }
   );
 
@@ -320,12 +306,7 @@ function App() {
   // the badge entirely (chrome.jsx:98). The live API counts use the
   // OffsetPageResponse ``total`` field — None when the backend can't
   // produce it cheaply, but our storage layers always do.
-  const parkedChatsItems = parkedChatsList.data?.items;
-  const approvalsPending =
-    (parkedSessionsCount.data?.total ?? 0) +
-    (Array.isArray(parkedChatsItems)
-      ? parkedChatsItems.filter((c) => c.parked_status === "parked").length
-      : 0);
+  const approvalsPending = parkedSessionsCount.data?.total ?? 0;
   const counts = {
     sessions: sessionsCount.data?.total,
     workspaces: Array.isArray(realWorkspaces.data?.items)
@@ -333,7 +314,6 @@ function App() {
       : 0,
     workers: workerStats.total,
     ssps: ssps.length,
-    chats: chatsCount.data?.total,
     channels: channelsCount.data?.total,
     approvals_pending: approvalsPending,
   };
@@ -438,8 +418,6 @@ function App() {
       "channel-rules": "/channels/rules",
       channels: "/channels/channels",
       "channel-provider-detail": (e) => `/channels/providers/${e}`,
-      chats: "/chats",
-      "chat-detail": (e) => `/chats/${e}`,
       harnesses: "/harnesses",
       "harness-detail": (e) => `/harnesses/${e}`,
       services: "/services",
@@ -571,28 +549,6 @@ function App() {
       </>
     );
     pageBody = <ApprovalsPage pushToast={pushToast} onNavigate={navigate} />;
-  } else if (page === "chats") {
-    pageHeader = (
-      <>
-        <div>
-          <div className="crumb"><a onClick={() => navigate("dashboard")}>Compute</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Chats</span></div>
-          <h1 className="page-title">Chats</h1>
-          <div className="page-sub">Conversational sessions with an agent · WS-backed</div>
-        </div>
-      </>
-    );
-    pageBody = <ChatsPage onOpen={(id) => navigate("chat-detail", id)} pushToast={pushToast} />;
-  } else if (page === "chat-detail" && currentChatId) {
-    pageHeader = (
-      <>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div className="crumb"><a onClick={() => navigate("chats")}>Chats</a><span className="sep">/</span><span className="mono" style={{ color: "var(--text)" }}>{currentChatId}</span></div>
-          <h1 className="page-title mono">{currentChatId}</h1>
-        </div>
-        <div className="page-actions"><Btn icon="chevron-left" kind="ghost" onClick={() => navigate("chats")}>Back</Btn></div>
-      </>
-    );
-    pageBody = <ChatDetail chatId={currentChatId} onBack={() => navigate("chats")} pushToast={pushToast} />;
   } else if (page === "channel-providers") {
     pageHeader = (
       <>
@@ -1236,7 +1192,6 @@ function App() {
           : page === "agent-detail" ? "agents"
           : page === "graph-detail" ? "graphs"
           : page === "ssp-detail" ? "semantic-search"
-          : page === "chat-detail" ? "chats"
           : page === "channel-provider-detail" ? "channel-providers"
           : page === "toolset-detail" ? "toolsets"
           : page === "trigger-detail" ? "triggers"
