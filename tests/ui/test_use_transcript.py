@@ -23,7 +23,7 @@ def test_chat_coalesce_forwards_agent_id_and_created_at_from_first_token() -> No
     """Task C2 fold-in fix: C1 already threads `agent_id`/`created_at`
     through REST-loaded history (read straight off the persisted
     ChatMessage row), but a LIVE-STREAMED reply only carries those fields
-    on the raw `assistant_token` frames that `chatCoalesce` merges away —
+    on the raw `assistant_token` frames that `chatCoalesce` merges away -
     without forwarding them onto the synthetic assistant_message, a
     live reply's attribution label + timestamp went missing until the
     next full reload. Runs the actual helper via py_mini_racer rather

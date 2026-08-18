@@ -901,7 +901,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
 }
 
 // =============================================================
-// ApprovalBanner — embedded in session-detail.jsx
+// ApprovalBanner - embedded in session-detail.jsx
 // =============================================================
 
 function ApprovalBanner({ data, scope, id, pushToast }) {

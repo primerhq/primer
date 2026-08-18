@@ -1,4 +1,4 @@
-// Shared transcript helpers — pulled out of the chat UI (deleted in S1 P7) (Task B2 of the
+// Shared transcript helpers - pulled out of the chat UI (deleted in S1 P7) (Task B2 of the
 // chat-refactor plan) so they're unit-testable and reusable by
 // <Conversation> (and, later, <Transcript>). Behavior is byte-identical
 // to the inline versions that used to live inside ChatDetail.

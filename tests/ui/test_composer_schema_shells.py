@@ -1,14 +1,14 @@
 """Task B4 of docs/superpowers/plans/2026-07-05-chat-refactor.md —
 extract two shells out of <Conversation> (ui/components/chat/conversation.jsx):
 
-* <Composer> (ui/components/shared/composer.jsx) — the input surface
+* <Composer> (ui/components/shared/composer.jsx) - the input surface
   (textarea + attachment strip + send control), moved verbatim out of
   the inline JSX that used to live in <Conversation>. Wires the
   Send/Stop context-aware control (`running ? Stop : Send`) and the
   `disabled || schemaInvalid` send-gate (a hook for Task F2). Slash
   commands / mention autocomplete land in Task D1-D3 — the shell only
   needs to accept the props, not implement the behavior yet.
-* <SchemaPanel> (ui/components/shared/schema-panel.jsx) — a collapsible
+* <SchemaPanel> (ui/components/shared/schema-panel.jsx) - a collapsible
   right panel shell with a [Builder|JSON] tab strip + placeholder
   body, collapsed by default. Builder/JSON bodies land in Task F2.
 

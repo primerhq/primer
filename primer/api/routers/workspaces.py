@@ -1,23 +1,23 @@
-"""Workspace REST surface — providers, templates, workspaces + sub-resources.
+"""Workspace REST surface - providers, templates, workspaces + sub-resources.
 
 Three entity routers and three sub-resources on Workspace:
 
-* ``WorkspaceProvider`` — list / get / create / update / delete. Reserved
+* ``WorkspaceProvider`` - list / get / create / update / delete. Reserved
   bootstrap-managed providers (see
   :data:`~primer.api.registries.provider_registry.RESERVED_WORKSPACE_PROVIDER_IDS`)
   are read-only: PUT and DELETE against a reserved id return 403.
-* ``WorkspaceTemplate`` — full CRUD (list / get / create / update /
+* ``WorkspaceTemplate`` - full CRUD (list / get / create / update /
   delete).
-* ``Workspace`` — list / get / create / delete (no update). Body of
+* ``Workspace`` - list / get / create / delete (no update). Body of
   ``POST`` is :class:`WorkspaceCreateBody` (template id + optional
   overrides).
 
 Sub-resources on ``/v1/workspaces/{id}``:
 
-* Sessions — list, get, pause, resume, steer.
-* Files — list (paginated ls), info, read, download, delete, write.
-* Log — git log over the ``.state`` repo.
-* Yields — aggregated pending yields across all sessions (Studio A3).
+* Sessions - list, get, pause, resume, steer.
+* Files - list (paginated ls), info, read, download, delete, write.
+* Log - git log over the ``.state`` repo.
+* Yields - aggregated pending yields across all sessions (Studio A3).
 """
 
 from __future__ import annotations
@@ -141,7 +141,7 @@ class FileWriteBody(BaseModel):
         ...,
         description=(
             "File content. Decoded according to ``encoding``. Empty "
-            "string is permitted — it produces an empty file."
+            "string is permitted - it produces an empty file."
         ),
     )
     encoding: Literal["text", "base64"] = Field(
@@ -174,7 +174,7 @@ class DiagnosticExecBody(BaseModel):
         description=(
             "Shell command to run. Must start with one of the "
             "whitelisted command names (``echo``, ``pwd``, ``whoami``, "
-            "``uname``, ``ls``) — anything else is rejected with 400. "
+            "``uname``, ``ls``) - anything else is rejected with 400. "
             "This is a read-only diagnostic surface, not arbitrary RCE."
         ),
     )
@@ -184,7 +184,7 @@ class DiagnosticExecBody(BaseModel):
         le=30.0,
         description=(
             "Per-call timeout ceiling. Defaults to 5.0 if omitted. "
-            "Hard-capped at 30s — the route is for liveness smokes, "
+            "Hard-capped at 30s - the route is for liveness smokes, "
             "not long-running jobs."
         ),
     )
@@ -377,7 +377,7 @@ provider_router = make_crud_router(
 # Template router (full CRUD)
 # ===========================================================================
 
-# Reserved template ids — bootstrapped by BootstrapRunner on first boot
+# Reserved template ids - bootstrapped by BootstrapRunner on first boot
 # and protected against API mutation/deletion to keep runtime state in
 # sync with the bootstrap defaults.
 RESERVED_WORKSPACE_TEMPLATE_IDS: frozenset[str] = frozenset(
@@ -536,7 +536,7 @@ async def create_workspace(
                 f"Workspace with id {body.id!r} already exists"
             )
 
-    # Reserve agent_sandbox slot — k8s provider variant=agent_sandbox is
+    # Reserve agent_sandbox slot - k8s provider variant=agent_sandbox is
     # accepted at provider-create time but workspace materialisation is
     # not implemented in v1 (see redesign spec §9).
     provider = await provider_storage.get(template.provider_id)
@@ -578,7 +578,7 @@ async def create_workspace(
     # error unchanged.
     try:
         row_id = body.id if body.id is not None else live.id
-        # Mark the row "running" immediately — materialise() returned a live
+        # Mark the row "running" immediately - materialise() returned a live
         # handle, so the workspace IS up. The probe loop transitions from
         # running <-> failed thereafter; without this initial mark the row
         # would sit at the default "pending" forever and the probe skips it.
@@ -811,7 +811,7 @@ async def delete_workspace(
 @workspace_router.post(
     "/workspaces/{workspace_id}/pause",
     status_code=501,
-    summary="Pause a workspace (reserved — not implemented in v1)",
+    summary="Pause a workspace (reserved - not implemented in v1)",
 )
 async def pause_workspace(workspace_id: str) -> dict:
     raise HTTPException(
@@ -830,7 +830,7 @@ async def pause_workspace(workspace_id: str) -> dict:
 @workspace_router.post(
     "/workspaces/{workspace_id}/resume",
     status_code=501,
-    summary="Resume a workspace (reserved — not implemented in v1)",
+    summary="Resume a workspace (reserved - not implemented in v1)",
 )
 async def resume_workspace(workspace_id: str) -> dict:
     raise HTTPException(
@@ -966,8 +966,8 @@ async def rename_session(
     """Set (or clear) a session's friendly name.
 
     Rewrites the ``name`` on the on-disk :class:`SessionInfo`
-    (``session.json``) via :meth:`AgentSession.set_name` — the authoritative
-    display source for the workspace sessions list — and best-effort mirrors
+    (``session.json``) via :meth:`AgentSession.set_name` - the authoritative
+    display source for the workspace sessions list - and best-effort mirrors
     it onto the scheduler-visible :class:`WorkspaceSession` row so the
     top-level ``GET /sessions/{id}`` read agrees. An empty / null name clears
     the label (the console falls back to the id). Returns the updated
@@ -992,7 +992,7 @@ async def rename_session(
         if row is not None and row.workspace_id == workspace_id:
             row.name = info.name
             await session_storage.update(row)
-    except Exception as exc:  # noqa: BLE001 — advisory mirror, never fatal
+    except Exception as exc:  # noqa: BLE001 - advisory mirror, never fatal
         logger.warning(
             "rename_session: failed to mirror name onto scheduler row",
             extra={
@@ -1395,7 +1395,7 @@ async def rewind_session(
 @sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/steer",
     response_model=WorkspaceSession,
-    summary="Send a message — invoke / steer / resume (auto-wake)",
+    summary="Send a message - invoke / steer / resume (auto-wake)",
     responses=common_responses(404, 409, 422, 500),
 )
 async def steer_session(
@@ -1911,7 +1911,7 @@ async def write_file(
     else:
         try:
             raw = base64.b64decode(body.content, validate=True)
-        except Exception as exc:  # noqa: BLE001 — base64.binascii.Error
+        except Exception as exc:  # noqa: BLE001 - base64.binascii.Error
             raise BadRequestError(f"invalid base64 content: {exc}") from exc
     if_unmodified_since_hdr = request.headers.get("if-unmodified-since")
     if etag is not None or if_unmodified_since_hdr is not None:
@@ -1934,7 +1934,7 @@ async def write_file(
                     )
                     if entry.modified_at > parsed_date:
                         conflict = True
-                except Exception:  # noqa: BLE001 — ignore malformed header
+                except Exception:  # noqa: BLE001 - ignore malformed header
                     pass
             if conflict:
                 problem = ProblemDetails(
@@ -1964,7 +1964,7 @@ async def write_file(
             scheduler=scheduler,
             event_bus=event_bus,
         )
-    except Exception:  # noqa: BLE001 — wake is best-effort
+    except Exception:  # noqa: BLE001 - wake is best-effort
         logger.exception(
             "wake_watch_files_on_write failed for workspace=%r path=%r",
             workspace_id,
@@ -2263,7 +2263,7 @@ async def list_workspace_events(
 
     Each item is a wire-shape :class:`~primer.tap.event.TapEvent`
     (``class`` / ``ts`` / ``seq`` / ``session_id`` / ``payload`` …) so it merges
-    1:1 with live tap frames — the same reader (:func:`read_session_since`) that
+    1:1 with live tap frames - the same reader (:func:`read_session_since`) that
     backs the SSE tick loop produces these, just drained from byte 0.
 
     Response shape::

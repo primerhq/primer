@@ -49,7 +49,7 @@ if TYPE_CHECKING:
 class SessionStatus(str, Enum):
     """Lifecycle state of an :class:`AgentSession`.
 
-    :attr:`CREATED` is the pre-execution state — the session row exists
+    :attr:`CREATED` is the pre-execution state - the session row exists
     but no worker has been told to run it yet. ``POST .../resume`` (or
     ``auto_start=True`` on session create) signals the scheduler to
     transition into :attr:`RUNNING`.
@@ -315,7 +315,7 @@ class Instruction(BaseModel):
 class AgentSessionBinding(BaseModel):
     """Bind a persisted Session to a single Agent (discriminated-union member).
 
-    Distinct from the existing on-disk :class:`AgentBinding` snapshot —
+    Distinct from the existing on-disk :class:`AgentBinding` snapshot -
     this one identifies which Agent a scheduler-managed Session is
     bound to, with an optional frozen snapshot field for immutability
     against later edits to the Agent row.
@@ -382,7 +382,7 @@ SessionBinding = Annotated[
 
 
 class WorkspaceSession(Identifiable):
-    """Persisted session row — scheduler's source of truth.
+    """Persisted session row - scheduler's source of truth.
 
     Distinct from :class:`SessionInfo`, which is the on-disk projection
     inside the workspace's ``.state/`` repo. The two are synchronised
@@ -603,7 +603,7 @@ class WorkspaceSession(Identifiable):
             "user instruction has landed (or a parked session just became "
             "resumable) and a worker should pick the session up. "
             "``running`` means a worker holds the claim and is actively "
-            "processing.  Orthogonal to :attr:`parked_status` — a claimed "
+            "processing.  Orthogonal to :attr:`parked_status` - a claimed "
             "session that parks on a yielding tool keeps ``turn_status`` "
             "where it is while ``parked_status`` flips."
         ),
@@ -717,7 +717,7 @@ class SessionMessageRecord(BaseModel):
             "originates from a graph run (set by the session translator from "
             "the forwarded ``_GraphNodeEvent`` / graph lifecycle events). "
             "``None`` for plain agent sessions. Lets the tap attribute every "
-            "record — including per-node agent tokens/tool calls — to its "
+            "record - including per-node agent tokens/tool calls - to its "
             "originating node so the UI node inspector can stream live."
         ),
     )

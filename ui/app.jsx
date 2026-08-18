@@ -191,7 +191,7 @@ function App() {
     { pollMs: 5000 }
   );
 
-  // Sidebar Sessions / Channels counts — small probes that only need
+  // Sidebar Sessions / Channels counts - small probes that only need
   // ``total`` (limit=1 keeps the response minimal). Task 15 wires these
   // so the nav badges reflect global counts instead of the mock
   // sessions-array length. U0002 pins Sessions; channels has no
@@ -216,7 +216,7 @@ function App() {
     { pollMs: 30000 }
   );
   const userRole = authStatus.data?.role || null;
-  // Approvals_pending — parked sessions only, via `/sessions/find` with
+  // Approvals_pending - parked sessions only, via `/sessions/find` with
   // a parked_status=parked predicate. The predicate uses ``kind``
   // discriminators per the Task 12 wiring.
   const parkedSessionsCount = window.primerApi.useResource(

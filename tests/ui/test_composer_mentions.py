@@ -4,7 +4,7 @@ sessions; selecting an entry inserts a structured `@type:id` ref token into
 the message text.
 
 Split the same way as D2's slash-command menu:
-* ui/components/shared/composer.jsx — the menu itself (cursor-relative "@"
+* ui/components/shared/composer.jsx - the menu itself (cursor-relative "@"
   detection, prefix filtering, keyboard nav, token insertion). Stays a
   pure, non-fetching shell per Task B4/D1/D2 (no `apiFetch`/`WebSocket`
   here) — it just renders and matches against whatever `mentionSources`

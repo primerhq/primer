@@ -1,4 +1,4 @@
-"""Session REST surface — nested create + cancel + top-level routes."""
+"""Session REST surface - nested create + cancel + top-level routes."""
 
 from __future__ import annotations
 
@@ -151,7 +151,7 @@ async def create_session(
        row and the workspace's ``.state/sessions/<sid>/`` directory
        share the same id (spec §11.4 step 5). Agent bindings get a
        slot keyed by the resolved agent. Graph bindings get a *holder*
-       slot whose synthetic agent_id is ``graph:<graph_id>`` — the
+       slot whose synthetic agent_id is ``graph:<graph_id>`` - the
        graph executor (primer/worker/pool.py) looks the holder up via
        :meth:`Workspace.get_session` and composes the workspace's
        tools into every per-node ``ToolExecutionManager``. Without the
@@ -204,7 +204,7 @@ async def create_session(
 
 
 # ===========================================================================
-# Task 20 — resume / pause / cancel + top-level list / find / get
+# Task 20 - resume / pause / cancel + top-level list / find / get
 # ===========================================================================
 
 
@@ -235,7 +235,7 @@ async def resume_session(
     # Serialize against a concurrent cancel/pause on the same session: the
     # status read-modify-write and the lease upsert must not interleave with
     # a cancel's ENDED write + delete_lease, or the row can land RUNNING with
-    # no lease — a stuck session no worker can claim (T0432). See
+    # no lease - a stuck session no worker can claim (T0432). See
     # primer.session.mutation_lock.
     async with session_lifecycle_lock().acquire(session_id):
         s = await sessions.get(session_id)
@@ -280,7 +280,7 @@ async def pause_session(
 
     * For sessions that no worker is holding a lease on (CREATED /
       WAITING) we transition directly to PAUSED.
-    * For RUNNING sessions we set ``pause_requested=True`` and return —
+    * For RUNNING sessions we set ``pause_requested=True`` and return -
       the worker will observe the flag at the next turn boundary and
       transition the row itself.
     * 409 when the session is already ENDED.
@@ -308,7 +308,7 @@ async def pause_session(
 @nested_session_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/cancel",
     response_model=WorkspaceSession,
-    summary="Hard cancel — transitions to ENDED/cancelled",
+    summary="Hard cancel - transitions to ENDED/cancelled",
     responses=common_responses(404, 409, 500),
 )
 async def cancel_session(
@@ -325,7 +325,7 @@ async def cancel_session(
     * For sessions no worker is leasing (CREATED / WAITING / PAUSED) we
       transition directly to ENDED with ``ended_reason='cancelled'``.
     * For RUNNING sessions we set the cancel flag and publish the
-      ``session:{sid}:cancel`` event bus key — the engine-path worker's
+      ``session:{sid}:cancel`` event bus key - the engine-path worker's
       ``_cancel_watcher`` (``primer/session/dispatch.py``) listens on
       that key and preempts the running turn. We also call the
       legacy ``scheduler.signal_cancel`` for backward compat with the
@@ -377,7 +377,7 @@ async def delete_session(
     force: bool = Query(
         False,
         description=(
-            "Force-delete a RUNNING session — bypass the 409 gate that "
+            "Force-delete a RUNNING session - bypass the 409 gate that "
             "normally protects against a worker writing back to a "
             "deleted row. Use only to evict orphaned / stuck rows where "
             "no worker is actually executing (e.g. after the previous "
@@ -397,7 +397,7 @@ async def delete_session(
     For CREATED/WAITING/PAUSED rows we transition to ENDED inline (no
     worker is holding the lease, so the cleanup is safe to do in this
     request). ENDED / FAILED / CANCELLED rows are removed as-is.
-    RUNNING rows return 409 — a worker holds the lease and would
+    RUNNING rows return 409 - a worker holds the lease and would
     write back to a deleted row; the caller must POST /cancel and
     wait for the worker to land in ENDED first. Pass ``?force=true``
     to override (e.g. when the worker is provably dead).
@@ -429,7 +429,7 @@ async def delete_session(
         )
     if s.status == SessionStatus.RUNNING and force:
         # Publish cancel so any worker actually holding the lease
-        # preempts cleanly before its complete_turn CAS. Best-effort —
+        # preempts cleanly before its complete_turn CAS. Best-effort -
         # if the bus publish fails we still proceed with the delete
         # (force semantics).
         if event_bus is not None:
@@ -453,7 +453,7 @@ async def delete_session(
 
     # CREATED / WAITING / PAUSED: nobody's holding a lease, so we can
     # transition to ENDED inline. Drop any stale lease and signal the
-    # scheduler — symmetric with cancel_session's CREATED/WAITING/PAUSED
+    # scheduler - symmetric with cancel_session's CREATED/WAITING/PAUSED
     # branch, then the row gets removed below.
     if s.status in {
         SessionStatus.CREATED,
@@ -768,14 +768,14 @@ async def _read_workspace_turn_log(
     """JSONL-parse the file at ``relative_path`` inside ``workspace``.
 
     Missing file is treated as an empty log (a fresh session that's
-    written nothing yet). Bogus lines are skipped silently — the turn
+    written nothing yet). Bogus lines are skipped silently - the turn
     log is observability data, not a contract.
 
     ``tail`` flips the window to the *end* of the log: the console loads a
     session transcript newest-page-first (most-recent ``limit`` rows) and pages
     older rows on demand, instead of pulling the whole file at once (#3/#7).
-    With ``tail`` the ``offset`` counts rows from the tail — ``offset=0`` is the
-    most-recent ``limit`` rows, ``offset=limit`` the next-older page — so
+    With ``tail`` the ``offset`` counts rows from the tail - ``offset=0`` is the
+    most-recent ``limit`` rows, ``offset=limit`` the next-older page - so
     paging is anchored to the end of the log, not a shifting start. Rows are
     always returned in ascending ``seq`` order.
 
@@ -787,7 +787,7 @@ async def _read_workspace_turn_log(
     """
     try:
         raw = await workspace.read_file(relative_path)
-    except Exception:  # noqa: BLE001 — NotFoundError / IO / decode
+    except Exception:  # noqa: BLE001 - NotFoundError / IO / decode
         raw = b""
     items: list[dict] = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
