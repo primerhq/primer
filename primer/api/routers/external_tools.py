@@ -86,18 +86,6 @@ async def session_pending(
 
 
 @external_tools_router.get(
-    "/chats/{chat_id}/external_tools/pending",
-    summary="Pending external tool calls for one chat",
-    responses=common_responses(500),
-)
-async def chat_pending(
-    chat_id: str = Path(...),
-    storage=Depends(get_external_tool_call_storage),
-) -> dict:
-    return await _pending_for(storage, field="chat_id", value=chat_id)
-
-
-@external_tools_router.get(
     "/external_tool_calls",
     summary="Global external tool call list (audit + orchestrator poll)",
     responses=common_responses(500),
