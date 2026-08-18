@@ -54,26 +54,6 @@ def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
     return fallback
 
 
-def document_body_text(doc: Document) -> str:
-    """Extract the indexable body text from a Document.
-
-    The REST create form stores prose under ``meta['text']``; the
-    system toolset's ``put_document`` uses ``meta['content']``. The
-    name is metadata, not body, so it is not indexed: a document with
-    no text body produces no chunks.
-    """
-    meta = doc.meta or {}
-    for key in ("text", "content"):
-        val = meta.get(key)
-        if isinstance(val, str) and val.strip():
-            return val
-    return ""
-
-
-# Back-compat alias: existing callers import the private name.
-_document_text = document_body_text
-
-
 def chunk_text(text: str) -> list[str]:
     """Split text into embedding-sized chunks, paragraph-aware.
 
@@ -138,13 +118,8 @@ async def index_document(
         return 0
 
     text = await content_store.get(document.id)
-    if text is None or not text.strip():
-        # Transitional: no content row yet, OR a blank/empty-string content
-        # row (the real body still lives in meta during the migration
-        # window). Either way, fall back to the legacy meta body. An empty
-        # string is NOT None, so the previous `is None` guard would have
-        # indexed zero chunks for a doc whose body was still in meta.
-        text = _document_text(document)
+    if text is None:
+        text = ""
     chunks = chunk_text(text)
 
     embedder = await provider_registry.get_embedder(

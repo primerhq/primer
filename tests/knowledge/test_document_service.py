@@ -144,9 +144,9 @@ async def test_no_orphan_entity_when_content_write_fails(svc, monkeypatch):
     assert await svc._content.resolve_id("c1", "orphan.md") is None
 
 
-async def test_read_falls_back_to_entity_only_doc(svc):
-    # Create a Document ENTITY directly (no content row), as the generic
-    # CRUD route POST/PUT /v1/documents does: body lives in meta only.
+async def test_entity_without_content_row_is_invisible(svc):
+    # v2: the content store is the ONLY body location. An entity row with
+    # no content row (the old generic-CRUD shape) is not served or listed.
     doc = Document(
         id="doc-entity-only",
         collection_id="c1",
@@ -155,19 +155,9 @@ async def test_read_falls_back_to_entity_only_doc(svc):
         meta={"content": "X"},
     )
     await svc._docs.create(doc)
-    # No content row exists for this path.
-    assert await svc._content.resolve_id("c1", "legacy/only.md") is None
-
-    # read() must fall back to the entity + its meta body.
-    res = await svc.read(collection_id="c1", path="legacy/only.md")
-    assert res.content == "X"
-    assert res.document.id == doc.id
-
-    # list() must surface the entity-only doc too.
-    entries = await svc.list(collection_id="c1")
-    paths = [e.path for e in entries]
-    assert "legacy/only.md" in paths
-
+    with pytest.raises(NotFoundError):
+        await svc.read(collection_id="c1", path="legacy/only.md")
+    assert [e.path for e in await svc.list(collection_id="c1")] == []
 
 async def test_read_truly_missing_still_404(svc):
     with pytest.raises(NotFoundError):
