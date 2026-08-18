@@ -60,6 +60,7 @@ class CollectionSearcher:
         embedder: "Embedder",
         vector_store: "VectorStore",
         cross_encoder: "CrossEncoder | None" = None,
+        embedding_model: str | None = None,
     ) -> None:
         search_cfg = collection.search
         if (
@@ -73,6 +74,17 @@ class CollectionSearcher:
                 "CollectionSearcher; pass `cross_encoder=` or remove "
                 "`collection.search.cross_encoder`"
             )
+        # The model normally comes from the collection's search block.
+        # System collections (the semantic catalog, internal collections)
+        # carry no such block and pass their configured model explicitly.
+        if embedding_model is None:
+            if search_cfg is None:
+                raise ConfigError(
+                    f"collection {collection.id!r} has no search block; pass "
+                    "embedding_model= to search it"
+                )
+            embedding_model = search_cfg.embedder.model
+        self._embedding_model = embedding_model
         self._collection = collection
         self._embedder = embedder
         self._vector_store = vector_store
@@ -126,7 +138,7 @@ class CollectionSearcher:
 
     async def _embed_query(self, query: str) -> Vector:
         response = await self._embedder.embed(
-            model=self._collection.search.embedder.model,
+            model=self._embedding_model,
             inputs=[TextPart(text=query)],
         )
         if not response.embeddings:

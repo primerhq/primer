@@ -4,9 +4,10 @@ Follows the same pattern as :mod:`primer.api.routers.providers` —
 wraps :func:`make_crud_router` with per-entity hooks for invalidation
 and cascade-block-on-delete.
 
-Cascade-block (§5 reference-integrity):
-    DELETE /v1/ssp/{id} is rejected with 409 when any Collection row
-    references ``search_provider_id == id``.
+Deleting an SSP is allowed even when collections point at it: S2 moved
+the vector-store reference inside ``Collection.search``, and a broken
+reference surfaces through that block's error state rather than by
+blocking the delete.
 """
 
 from __future__ import annotations
@@ -17,7 +18,6 @@ from primer.api.deps import get_semantic_search_registry, get_semantic_search_st
 from primer.api.errors import common_responses
 from primer.api.registries.provider_registry import RESERVED_SSP_IDS
 from primer.api.routers._crud import make_crud_router
-from primer.api.routers._references import ReferenceCheck
 from primer.model.provider import SemanticSearchProvider
 
 
@@ -85,15 +85,6 @@ async def _on_update(entity_id: str, request: Request) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Storage helper for Collection reference check
-# ---------------------------------------------------------------------------
-
-
-def _get_collection_storage(request: Request):
-    from primer.model.collection import Collection
-    return request.app.state.storage_provider.get_storage(Collection)
-
-
 # ---------------------------------------------------------------------------
 # Router
 # ---------------------------------------------------------------------------
@@ -109,13 +100,6 @@ semantic_search_router = make_crud_router(
     on_delete=_on_update,
     on_pre_create=_reject_reserved_ssp_create,
     on_pre_delete_id=_reject_reserved_ssp_delete,
-    references=[
-        ReferenceCheck(
-            child_kind="collection",
-            child_storage=_get_collection_storage,
-            child_field="search_provider_id",
-        ),
-    ],
 )
 
 

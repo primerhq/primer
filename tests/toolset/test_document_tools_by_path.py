@@ -51,8 +51,6 @@ async def tools(tmp_path):
             "entity": Collection(
                 id="c1",
                 description="test",
-                embedder=CollectionEmbedder(provider_id="hf-1", model="m"),
-                search_provider_id="ssp-1",
             ).model_dump(mode="json")
         },
     )

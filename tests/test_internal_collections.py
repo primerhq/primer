@@ -287,8 +287,6 @@ def _collection(id="kb-1") -> Collection:
     return Collection(
         id=id,
         description="knowledge base of articles",
-        embedder=CollectionEmbedder(provider_id="hf-1", model="m"),
-        search_provider_id="ssp-test",
     )
 
 
@@ -681,11 +679,12 @@ def _ingester_factory_for_test():
             text = path.read_text(encoding="utf-8")
             return LoadedDocument(text=text, meta={"bytes_loaded": len(text)})
 
-    def factory(*, collection, embedder, vector_store):
+    def factory(*, collection, embedder, vector_store, embedding_model=None):
         return DocumentIngester(
             collection=collection,
             embedder=embedder,
             vector_store=vector_store,
+            embedding_model=embedding_model,
             loader=_PathTextLoader(),
             splitter=RecursiveSplitter(chunk_size=512, chunk_overlap=32),
         )
@@ -747,13 +746,13 @@ class TestAiDocsBootstrap:
         chats_doc = await doc_storage.get("chats")
         assert agents_doc is not None
         assert agents_doc.collection_id == AI_DOCS_COLLECTION_ID
-        assert agents_doc.name == "Agents"
+        assert agents_doc.title == "Agents"
         assert agents_doc.meta["title"] == "Agents"
         assert agents_doc.meta["summary"] == "Agent runtime."
         assert agents_doc.meta["slug"] == "agents"
         assert "content_hash" in agents_doc.meta
         assert chats_doc is not None
-        assert chats_doc.name == "Chats"
+        assert chats_doc.title == "Chats"
 
     @pytest.mark.asyncio
     async def test_content_hash_skips_unchanged_files(

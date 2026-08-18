@@ -11,7 +11,12 @@ import pytest
 from primer.ingest.ingester import DocumentIngester
 from primer.ingest.loader import DocumentLoader
 from primer.ingest.splitters.recursive import RecursiveSplitter
-from primer.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+    Document,
+)
 from primer.model.embedding import Embedding, EmbedResponse
 from primer.model.except_ import BadRequestError
 from primer.model.ingest import LoadedDocument
@@ -151,11 +156,10 @@ def _collection() -> Collection:
     return Collection(
         id="kb-research",
         description="research kb",
-        embedder=CollectionEmbedder(
-            provider_id="emb-1",
-            model="fake-model",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="p", model="m"),
+            vector_store_provider_id="ssp-test",
         ),
-        search_provider_id="ssp-test",
     )
 
 
@@ -163,7 +167,7 @@ def _document(*, collection_id: str = "kb-research") -> Document:
     return Document(
         id="doc-001",
         collection_id=collection_id,
-        name="test.pdf",
+        slug="test.pdf",
         path="test.pdf",
         meta={"source": "synthetic"},
     )

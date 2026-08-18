@@ -517,7 +517,6 @@ class TestBackfill:
                        meta={"text": "hello"})
         sys_coll = Collection(
             id="sys", description="t",
-            embedder=CollectionEmbedder(provider_id="emb", model="m"),
             search_provider_id="ssp", system=True,
         )
         reg = AsyncMock()

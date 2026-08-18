@@ -244,16 +244,17 @@ async def search_collection(
     ssr: SemanticSearchRegistry = Depends(get_semantic_search_registry),
 ) -> dict:
     """Vectorise ``body.query`` with the collection's embedder and run a
-    similarity search against the collection's vector store (resolved
-    via the collection's ``search_provider_id``), scoped to this
-    collection. Returns ``{"hits": [{document_id, chunk_id, score,
-    text, meta}, ...]}``.
+    similarity search against the collection's vector store (both
+    resolved from ``Collection.search``), scoped to this collection.
+    Returns ``{"hits": [{document_id, chunk_id, score, text, path,
+    meta}, ...]}``.
 
-    The collection must exist and have indexed documents; an empty
-    collection returns an empty hits list. The embedder used is the
-    one declared on ``Collection.embedder`` (provider id + model name)
-    — the same one the ingest pipeline used when storing chunks, so
-    query and index vectors live in the same embedding space.
+    The collection must have semantic search enabled: without a search
+    block this answers 409. An enabled collection with nothing indexed
+    yet returns an empty hits list. The embedder is the one declared on
+    ``Collection.search.embedder``, the same one the ingest pipeline
+    used when storing chunks, so query and index vectors live in the
+    same embedding space.
     """
     coll = await collections.get(collection_id)
     if coll is None:

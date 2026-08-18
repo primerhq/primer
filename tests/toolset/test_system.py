@@ -18,7 +18,11 @@ from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry
 from primer.model.agent import Agent, AgentModel
-from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+)
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.provider import (
     AnthropicConfig,
@@ -253,12 +257,20 @@ def _agent() -> Agent:
     )
 
 
-def _collection() -> Collection:
+def _collection(*, with_search: bool = False) -> Collection:
+    search = None
+    if with_search:
+        search = CollectionSearchConfig(
+            embedder=CollectionEmbedder(
+                provider_id="hf-1",
+                model="sentence-transformers/all-MiniLM-L6-v2",
+            ),
+            vector_store_provider_id="ssp-1",
+        )
     return Collection(
         id="kb-1",
         description="test collection",
-        embedder=CollectionEmbedder(provider_id="hf-1", model="all-MiniLM-L6-v2"),
-        search_provider_id="ssp-test",
+        search=search,
     )
 
 
@@ -1234,7 +1246,9 @@ class TestSearchCollectionWired:
         )
         await wired_toolset.call(
             tool_name="create_collection",
-            arguments={"entity": _collection().model_dump(mode="json")},
+            arguments={
+                "entity": _collection(with_search=True).model_dump(mode="json")
+            },
         )
         result = await wired_toolset.call(
             tool_name="search_collection",

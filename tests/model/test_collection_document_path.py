@@ -4,7 +4,7 @@ from primer.model.collection import Document
 
 
 def _doc(**kw):
-    base = dict(id="document-abc", collection_id="col1", name="SLO", path="concepts/slo.md")
+    base = dict(id="document-abc", collection_id="col1", slug="slo.md", path="concepts/slo.md")
     base.update(kw)
     return Document(**base)
 

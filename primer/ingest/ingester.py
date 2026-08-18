@@ -48,6 +48,7 @@ class DocumentIngester:
         collection: "Collection",
         embedder: "Embedder",
         vector_store: "VectorStore",
+        embedding_model: str | None = None,
         loader: DocumentLoader | None = None,
         splitter: DocumentSplitter | None = None,
         batch_size: int = DEFAULT_BATCH_SIZE,
@@ -55,6 +56,17 @@ class DocumentIngester:
     ) -> None:
         if batch_size <= 0:
             raise ValueError(f"batch_size must be > 0, got {batch_size!r}")
+        # The model name comes from the collection's search block when it
+        # has one; callers driving a system collection (which carries no
+        # search block) pass it explicitly instead.
+        if embedding_model is None:
+            if collection.search is None:
+                raise ValueError(
+                    "embedding_model is required for a collection with no "
+                    "search block"
+                )
+            embedding_model = collection.search.embedder.model
+        self._embedding_model = embedding_model
         if loader is None:
             # Route through the lazy package re-export so a missing 'docling'
             # extra surfaces the install hint rather than a bare import error.
@@ -164,7 +176,7 @@ class DocumentIngester:
     async def _embed_one(self, text: str) -> list[float]:
         """Embed a single text and return its vector."""
         response = await self._embedder.embed(
-            model=self._collection.embedder.model,
+            model=self._embedding_model,
             inputs=[TextPart(text=text)],
         )
         if not response.embeddings:
@@ -174,7 +186,7 @@ class DocumentIngester:
     async def _embed_batch(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts; preserve input order."""
         response = await self._embedder.embed(
-            model=self._collection.embedder.model,
+            model=self._embedding_model,
             inputs=[TextPart(text=t) for t in texts],
         )
         if len(response.embeddings) != len(texts):

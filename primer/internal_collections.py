@@ -648,10 +648,6 @@ class InternalCollectionsSubsystem:
 
     async def _materialise_collection_rows(self) -> None:
         collections = self._sp.get_storage(Collection)
-        embedder = CollectionEmbedder(
-            provider_id=self._config.embedding_provider_id,
-            model=self._config.embedding_model,
-        )
         for entity_type, coll_id in INTERNAL_COLLECTION_IDS.items():
             row = Collection(
                 id=coll_id,
@@ -659,9 +655,7 @@ class InternalCollectionsSubsystem:
                     f"Reserved internal collection for {entity_type} "
                     "semantic search."
                 ),
-                embedder=embedder,
                 system=True,
-                search_provider_id=self._config.search_provider_id,
             )
             existing = await collections.get(coll_id)
             if existing is None:
@@ -678,7 +672,6 @@ class InternalCollectionsSubsystem:
                 "platform documentation. Sourced from the markdown "
                 "files shipped in primer.ai_docs."
             ),
-            embedder=embedder,
             system=True,
             search_provider_id=self._config.search_provider_id,
         )
@@ -877,12 +870,14 @@ class InternalCollectionsSubsystem:
                 collection=ai_docs_collection,
                 embedder=embedder,
                 vector_store=store,
+                embedding_model=self._config.embedding_model,
             )
         else:
             ingester = ingester_factory(
                 collection=ai_docs_collection,
                 embedder=embedder,
                 vector_store=store,
+                embedding_model=self._config.embedding_model,
             )
 
         # Lightweight frontmatter extractor — YAML between leading
@@ -973,10 +968,13 @@ class InternalCollectionsSubsystem:
                 if mcp_tools:
                     doc_meta["mcp_tools"] = mcp_tools
 
+                # ``slug`` here is the doc's full relative path (it may
+                # contain '/'), which is what Document.path wants; the
+                # Document.slug field is the single path segment.
                 doc = Document(
                     id=slug,
                     collection_id=AI_DOCS_COLLECTION_ID,
-                    slug=slug,
+                    slug=f"{slug.rsplit('/', 1)[-1]}.md",
                     path=f"{slug}.md",
                     title=title,
                     meta=doc_meta,

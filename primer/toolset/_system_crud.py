@@ -1026,23 +1026,29 @@ def _collection_extras(
         # Mirror POST /v1/collections/{id}/search (the console / SSP path):
         # vectorise the query with the collection's OWN embedder so query
         # and index vectors share dimensionality + metric, then run the
-        # similarity search against the collection's vector store, resolved
-        # via the collection's search_provider_id.
+        # similarity search against the collection's vector store.
         from primer.model.chat import TextPart
         from primer.model.except_ import BadRequestError
         from primer.search.run import run_collection_search
 
+        if coll.search is None:
+            return _err(
+                "semantic search is not enabled on this collection; grep "
+                "and the document tree remain available",
+                error_type="conflict",
+            )
+
         try:
             embedder = await provider_registry.get_embedder(
-                coll.embedder.provider_id
+                coll.search.embedder.provider_id
             )
             response = await embedder.embed(
-                model=coll.embedder.model,
+                model=coll.search.embedder.model,
                 inputs=[TextPart(text=args.query)],
             )
             vector = list(response.embeddings[0].vector)
             store = await semantic_search_registry.get_store(
-                coll.search_provider_id
+                coll.search.vector_store_provider_id
             )
         except NotFoundError as exc:
             return _err_from_primer(exc, error_type="not-found")

@@ -315,11 +315,6 @@ forbidden_modules = [
     "primer.workspace.k8s",
 ]
 allow_indirect_imports = true
-ignore_imports = [
-    # Sanctioned lazy seam: the migration wrapper resolves knowledge at
-    # apply() time; a core-only install never runs it against documents.
-    "primer.storage.migrations.m001_document_content -> primer.knowledge.migration",
-]
 
 [[tool.importlinter.contracts]]
 name = "agent/worker reach channel only through sanctioned dispatch seams"
