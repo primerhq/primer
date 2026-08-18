@@ -17,8 +17,8 @@ def test_studio2_shell_journey(page, console_url, console_messages) -> None:
                 "s2-right", "s2-status", "s2-term"]:
         assert page.locator(f'[data-testid="{tid}"]').count() == 1, tid
 
-    # Eleven rail groups.
-    assert page.locator('[data-testid="s2-rail-list"] [role="tab"]').count() == 11
+    # Ten rail groups: the chats entry went with the chat UI in S1 P7.
+    assert page.locator('[data-testid="s2-rail-list"] [role="tab"]').count() == 10
 
     # Palette opens and runs a command (navigator switch to Agents).
     page.keyboard.press("Control+k")
