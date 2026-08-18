@@ -908,6 +908,8 @@ def build_system_toolset(
                 ),
             ],
             yields=False,
+            # must be explicit: tests/mcp/test_required_role_completeness.py
+            required_role="user",
         ),
         _switch_binding_handler,
     )
