@@ -13,7 +13,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from primer.knowledge.indexing import index_document
-from primer.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+    Document,
+)
 from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
@@ -29,8 +34,10 @@ def _collection() -> Collection:
     return Collection(
         id="kb-1",
         description="test",
-        embedder=CollectionEmbedder(provider_id="emb", model="m"),
-        search_provider_id="ssp",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="emb", model="m"),
+            vector_store_provider_id="ssp",
+        ),
         system=False,
     )
 

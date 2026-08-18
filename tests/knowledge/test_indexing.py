@@ -11,7 +11,12 @@ from primer.knowledge.indexing import (
     chunk_text,
     index_document,
 )
-from primer.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+    Document,
+)
 from primer.model.except_ import ConflictError, DimensionMismatchError, PrimerError
 from primer.model.storage import OffsetPage, OffsetPageResponse
 
@@ -20,19 +25,25 @@ def _collection(system: bool = False) -> Collection:
     return Collection(
         id="kb-1",
         description="test",
-        embedder=CollectionEmbedder(provider_id="emb", model="m"),
-        search_provider_id="ssp",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="emb", model="m"),
+            vector_store_provider_id="ssp",
+        ),
         system=system,
     )
 
 
 def _document(text: str | None = None, content: str | None = None) -> Document:
-    meta = {}
-    if text is not None:
-        meta["text"] = text
-    if content is not None:
-        meta["content"] = content
-    return Document(id="doc-1", collection_id="kb-1", slug="doc-1.md", path="doc-1.md", meta=meta)
+    # text/content are retained as call-site sugar; the body itself is
+    # served by _ContentStore now, not by meta.
+    return Document(
+        id="doc-1", collection_id="kb-1", slug="doc-1.md", path="doc-1.md", meta={}
+    )
+
+
+def _body_store(text: str | None = None, content: str | None = None):
+    body = text if text is not None else content
+    return _NullContentStore() if body is None else _ContentStore(body)
 
 
 class TestChunkText:
@@ -58,12 +69,22 @@ class TestChunkText:
 
 
 class _NullContentStore:
-    """Content store with no rows: every ``get`` returns None so the indexer
-    falls back to the legacy ``meta`` body. Lets these meta-driven tests keep
-    exercising the chunk/embed pipeline unchanged."""
+    """Content store with no rows: every ``get`` returns None, so the
+    document has no body at all (S2: the content store is the only body
+    location)."""
 
     async def get(self, document_id, *, conn=None):
         return None
+
+
+class _ContentStore:
+    """Content store serving one body for every document id."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+
+    async def get(self, document_id, *, conn=None):
+        return self._text
 
 
 class _Emb:
@@ -123,7 +144,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800])),
         )
         assert n == 2
         assert store.created == ("kb-1", 4)
@@ -144,7 +165,7 @@ class TestIndexDocument:
             collection=_collection(system=True),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="anything"),
         )
         assert n == 0
         ssr.get_store.assert_not_called()
@@ -162,7 +183,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(content="from content key"),
         )
         assert n == 1
         assert store.puts[0].text == "from content key"
@@ -180,7 +201,7 @@ class TestIndexDocument:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text=""),
         )
         assert n == 0
         # The dim-mismatch probe registers the collection (dim=3) even for
@@ -235,7 +256,7 @@ class TestBatchEmbedEquivalence:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="\n\n".join(chunks)),
         )
         assert n == 3
         # chunk_id is the positional index, text is the chunk, and the vector's
@@ -269,7 +290,7 @@ class TestBatchEmbedEquivalence:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text=text),
         )
         assert n == n_chunks
         assert len(store.puts) == n_chunks
@@ -329,7 +350,7 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=ok_reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800])),
         )
         before = await store.get("kb-1", "doc-1")
         assert len(before) == 2
@@ -343,7 +364,7 @@ class TestReindexFailureKeepsOldChunks:
                 collection=_collection(),
                 provider_registry=bad_reg,
                 semantic_search_registry=ssr,
-                content_store=_NullContentStore(),
+                content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800])),
             )
 
         # The old chunks must still be present/searchable.
@@ -364,7 +385,7 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="\n\n".join(["a" * 800, "b" * 800, "c" * 800])),
         )
         assert len(await store.get("kb-1", "doc-1")) == 3
 
@@ -374,7 +395,7 @@ class TestReindexFailureKeepsOldChunks:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="just one short chunk"),
         )
         final = await store.get("kb-1", "doc-1")
         assert len(final) == 1
@@ -406,10 +427,25 @@ class _CollStore:
         return self._c.get(id)
 
 
+class _PerDocContentStore:
+    """Serves each document's body by id, the way the real content store
+    does. Bodies are declared alongside the docs these tests build."""
+
+    def __init__(self, bodies: dict[str, str]) -> None:
+        self._bodies = bodies
+
+    async def get(self, document_id, *, conn=None):
+        return self._bodies.get(document_id)
+
+
 class _StorageProvider:
-    def __init__(self, docs, collections):
+    def __init__(self, docs, collections, bodies=None):
         self._doc_store = _DocStore(docs)
         self._coll_store = _CollStore(collections)
+        # Default: every doc has a body, so backfill has something to index.
+        self._bodies = bodies if bodies is not None else {
+            d.id: f"body of {d.id}" for d in docs
+        }
 
     def get_storage(self, model_cls):
         if model_cls is Document:
@@ -419,9 +455,7 @@ class _StorageProvider:
         raise AssertionError(f"unexpected model {model_cls!r}")
 
     def get_content_store(self):
-        # No content rows in these meta-driven backfill tests; the indexer
-        # falls back to the legacy meta body.
-        return _NullContentStore()
+        return _PerDocContentStore(self._bodies)
 
 
 class TestBackfill:
@@ -521,7 +555,11 @@ class TestBackfill:
         reg.get_embedder = AsyncMock(return_value=_FlakyEmb())
         ssr = AsyncMock()
         ssr.get_store = AsyncMock(return_value=store)
-        sp = _StorageProvider([doc_bad, doc_ok], [_collection()])
+        sp = _StorageProvider(
+            [doc_bad, doc_ok],
+            [_collection()],
+            bodies={"ok": "fine", "bad": "boom"},
+        )
 
         # Should not raise; the good doc still gets indexed.
         n = await backfill_missing_document_vectors(
@@ -586,7 +624,7 @@ class TestDimensionMismatchDetection:
                 collection=_collection(),
                 provider_registry=reg,
                 semantic_search_registry=ssr,
-                content_store=_NullContentStore(),
+                content_store=_body_store(text="some text to index"),
             )
 
         err = exc_info.value
@@ -612,7 +650,7 @@ class TestDimensionMismatchDetection:
             collection=_collection(),
             provider_registry=reg,
             semantic_search_registry=ssr,
-            content_store=_NullContentStore(),
+            content_store=_body_store(text="short text"),
         )
         assert n == 1
         assert len(store.puts) == 1
@@ -639,9 +677,20 @@ class TestDimensionMismatchDetection:
                 collection=_collection(),
                 provider_registry=reg,
                 semantic_search_registry=ssr,
-                content_store=_NullContentStore(),
+                content_store=_body_store(text="text"),
             )
 
         assert exc_info.value.status_code == 422
         assert "re-ingest" in exc_info.value.message.lower() or \
                "re-index" in exc_info.value.message.lower()
+
+
+async def test_index_document_noop_when_search_off():
+    coll = Collection(id="c-off", description="grep only")  # search=None
+    doc = Document(collection_id="c-off", slug="a", path="a")
+    n = await index_document(
+        document=doc, collection=coll,
+        provider_registry=None, semantic_search_registry=None,
+        content_store=_NullContentStore(),
+    )
+    assert n == 0

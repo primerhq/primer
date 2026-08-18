@@ -114,8 +114,9 @@ async def index_document(
     System collections are skipped (returns 0). On embedder/store failure it
     raises; the caller treats indexing as best-effort and swallows it.
     """
-    if collection.system:
+    if collection.system or collection.search is None:
         return 0
+    cfg = collection.search
 
     text = await content_store.get(document.id)
     if text is None:
@@ -123,10 +124,10 @@ async def index_document(
     chunks = chunk_text(text)
 
     embedder = await provider_registry.get_embedder(
-        collection.embedder.provider_id
+        cfg.embedder.provider_id
     )
     store = await semantic_search_registry.get_store(
-        collection.search_provider_id
+        cfg.vector_store_provider_id
     )
 
     # Probe the embedder's output dimensionality with a single cheap call
@@ -136,7 +137,7 @@ async def index_document(
     # stored. We register (or validate) the collection in the store now so
     # that a ConflictError (dim mismatch) surfaces here, not after work.
     probe_response = await embedder.embed(
-        model=collection.embedder.model,
+        model=cfg.embedder.model,
         inputs=[TextPart(text="dimensionality probe")],
     )
     if not probe_response.embeddings:
@@ -183,7 +184,7 @@ async def index_document(
     for batch_start in range(0, len(chunks), _EMBED_BATCH_SIZE):
         batch = chunks[batch_start : batch_start + _EMBED_BATCH_SIZE]
         response = await embedder.embed(
-            model=collection.embedder.model,
+            model=cfg.embedder.model,
             inputs=[TextPart(text=chunk) for chunk in batch],
         )
         if len(response.embeddings) != len(batch):
@@ -248,10 +249,10 @@ async def remove_document_index(
     semantic_search_registry,
 ) -> None:
     """Delete every indexed chunk for a document. Best-effort, idempotent."""
-    if collection.system:
+    if collection.system or collection.search is None:
         return
     store = await semantic_search_registry.get_store(
-        collection.search_provider_id
+        collection.search.vector_store_provider_id
     )
     try:
         await store.delete(collection.id, document_id)
@@ -312,14 +313,14 @@ async def backfill_missing_document_vectors(
             collection = await coll_storage.get(collection_id)
         except PrimerError:
             collection = None
-        if collection is None or collection.system:
+        if collection is None or collection.system or collection.search is None:
             continue
 
         # Which documents already have chunks? One query per collection.
         # An unregistered collection (never embedded) raises; treat as empty.
         try:
             store = await semantic_search_registry.get_store(
-                collection.search_provider_id
+                collection.search.vector_store_provider_id
             )
             existing = await store.search_by_meta(collection.id, meta={})
             indexed_doc_ids = {r.document_id for r in existing}
