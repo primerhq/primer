@@ -37,3 +37,54 @@ async def test_capabilities_reflects_missing_extras(
         "telegram": False,
         "discord": False,
     }
+class TestSpeechPresence:
+    """M11g: speech presence is a PROVIDER FACT, not an extra.
+
+    Speech is plain HTTP, so there is no extra to install; the honest
+    signal is whether a provider row exists, which is what the console's
+    mic and speaker gating reads.
+    """
+
+    @pytest.mark.asyncio
+    async def test_speech_is_absent_on_a_fresh_install(self, client) -> None:
+        r = await client.get("/v1/capabilities")
+        assert r.status_code == 200, r.text
+        speech = r.json()["speech"]
+        assert speech == {"stt_configured": False, "tts_configured": False}
+
+    @pytest.mark.asyncio
+    async def test_registering_an_stt_provider_flips_stt_configured(self, client) -> None:
+        await client.post(
+            "/v1/stt_providers",
+            json={
+                "id": "stt-a",
+                "provider": "openai",
+                "default_model": "whisper-1",
+                "config": {"url": "http://asr.local:8006/v1"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        r = await client.get("/v1/capabilities")
+        assert r.json()["speech"]["stt_configured"] is True
+        assert r.json()["speech"]["tts_configured"] is False
+
+    @pytest.mark.asyncio
+    async def test_registering_a_tts_provider_flips_tts_configured(self, client) -> None:
+        await client.post(
+            "/v1/tts_providers",
+            json={
+                "id": "tts-a",
+                "provider": "openai",
+                "default_model": "kokoro",
+                "default_voice": "af_heart",
+                "config": {"url": "http://tts.local:8004/v1"},
+                "limits": {"max_concurrency": 1},
+            },
+        )
+        r = await client.get("/v1/capabilities")
+        assert r.json()["speech"]["tts_configured"] is True
+
+    @pytest.mark.asyncio
+    async def test_speech_is_not_reported_as_an_extra(self, client) -> None:
+        r = await client.get("/v1/capabilities")
+        assert "speech" not in r.json()["extras"]
