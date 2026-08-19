@@ -112,7 +112,7 @@ async def test_lance_ssp_collection_search_journey(
                 "parent": "", "slug": stem, "body": body,
             })
             assert r.status_code in (200, 201), r.text
-            doc_ids[stem] = r.json()["id"]
+            doc_ids[stem] = r.json()["document"]["id"]
 
         # Indexing is best-effort on write, so a silent failure would
         # otherwise show up only as an empty search. Check the state.

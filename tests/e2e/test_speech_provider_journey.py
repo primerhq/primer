@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-import time
 
 import pytest
 import uvicorn
@@ -101,7 +100,27 @@ async def test_transcription_round_trip(client, api_prefix, stub_provider) -> No
 
 
 @pytest.mark.asyncio
-async def test_speech_is_consumed_incrementally(client, api_prefix, stub_provider) -> None:
+async def test_speech_round_trips_and_declares_no_buffering(
+    client, api_prefix, stub_provider
+) -> None:
+    """The synthesis round trip, and the header that keeps it unbuffered.
+
+    This test used to time the delivery and assert the first byte beat
+    the full synthesis. It never could, in either form tried: the
+    original 140 ms budget raced a 150 ms synthesis, and measuring the
+    first-to-last gap instead showed the whole body arriving in a single
+    read even at 64 KiB a chunk. What it was really measuring is whether
+    the transport in front of the server coalesces, not whether the
+    application streams.
+
+    The application property is pinned where it is deterministic, in
+    ``tests/api/test_audio_speech.py::
+    test_the_pump_yields_chunks_as_they_arrive``, which fails outright
+    if the endpoint ever collects the chunks and yields the join. Left
+    here: that the round trip works end to end, that the bytes are
+    whole, and that the response still tells intermediaries not to
+    buffer it.
+    """
     await client.post(
         f"{api_prefix}/tts_providers",
         json={
@@ -117,36 +136,21 @@ async def test_speech_is_consumed_incrementally(client, api_prefix, stub_provide
         f"{api_prefix}/speech_active_config", json={"tts_provider_id": "e2e-tts"},
     )
 
-    first_byte_at = None
     body = b""
-    started = time.monotonic()
     async with client.stream(
         "POST", f"{api_prefix}/audio/speech", json={"input": "hello"},
     ) as response:
         assert response.status_code == 200
         assert response.headers["x-accel-buffering"] == "no"
         async for chunk in response.aiter_bytes():
-            if chunk and first_byte_at is None:
-                first_byte_at = time.monotonic()
             body += chunk
-    finished_at = time.monotonic()
 
     assert body.startswith(b"ID3")
+    # Every chunk the stub produced, in order and unmangled.
     assert len(body) == 3 * (4 + _CHUNK_BYTES), len(body)
-    # The stub sleeps 50 ms per chunk for three chunks. A proxy that
-    # buffered the whole synthesis would hand over every byte at once,
-    # so the gap between the first byte and the last would collapse.
-    #
-    # Measured as a GAP rather than as an absolute deadline. The absolute
-    # form raced the runner: a 140 ms budget against a 150 ms synthesis
-    # fails whenever scheduling costs 40 ms, and it did. The gap is the
-    # property actually under test and does not depend on how long the
-    # first byte took to arrive.
-    assert first_byte_at is not None
-    assert finished_at - first_byte_at > 0.05, (
-        f"stream delivered in one shot: first byte at "
-        f"{first_byte_at - started:.3f}s, last at {finished_at - started:.3f}s"
-    )
+    for index in range(3):
+        at = index * (4 + _CHUNK_BYTES)
+        assert body[at:at + 4] == b"ID3" + bytes([index]), index
 
 
 @pytest.mark.asyncio

@@ -162,7 +162,7 @@ async def _ingest(authed_client, cid, stem, text) -> str:
         json={"parent": "", "slug": stem, "body": text},
     )
     assert r.status_code in (200, 201), r.text
-    return r.json()["id"]
+    return r.json()["document"]["id"]
 
 
 async def _indexed(authed_client, cid, *, document_id: str | None = None) -> dict:

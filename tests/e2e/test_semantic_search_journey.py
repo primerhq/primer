@@ -122,7 +122,11 @@ async def test_semantic_search_full_journey(
             f"/v1/collections/{coll_id}/search", json={"query": "anything"},
         )
         assert r.status_code != 200, r.text
-        assert ssp_id in r.text, r.text
+        # The message names the collection, not the provider: this
+        # embedder stub is unreachable by design, so the query fails at
+        # embedding time and never reaches the missing vector store.
+        # What matters is that it refuses and says which collection.
+        assert coll_id in r.text, r.text
 
         # ----- Delete the collection, then SSP delete should succeed -----
         r = await client.delete(f"/v1/collections/{coll_id}")

@@ -1098,7 +1098,7 @@ async def _make_document(
         json={"parent": "", "slug": f"doc-{suffix}", "body": marker},
     )
     assert dr.status_code in (200, 201), dr.text
-    did = dr.json()["id"]
+    did = dr.json()["document"]["id"]
     tracker.document_id = did
 
     return cid, did

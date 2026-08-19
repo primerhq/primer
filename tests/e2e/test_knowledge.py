@@ -496,7 +496,7 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
                 },
             )
             assert r.status_code in (200, 201), r.text
-            created_docs.append(r.json()["id"])
+            created_docs.append(r.json()["document"]["id"])
 
         # Whole-collection listing in one response (no pagination).
         page = await client.get(
@@ -733,7 +733,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
                 json={"parent": "", "slug": did, "body": "x"},
             )
             assert r.status_code in (200, 201), r.text
-            docs_created.append(r.json()["id"])
+            docs_created.append(r.json()["document"]["id"])
 
         # Also seed an unrelated document under a different collection
         # (which is orphan-tolerated per T0068) — must NOT appear in
@@ -749,7 +749,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
             json={"parent": "", "slug": unrelated, "body": "x"},
         )
         if other.status_code in (200, 201):
-            docs_created.append(other.json()["id"])
+            docs_created.append(other.json()["document"]["id"])
 
         page = await client.get(
             f"/v1/collections/{coll_id}/documents",
