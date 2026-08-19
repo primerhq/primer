@@ -349,3 +349,50 @@ async def test_standard_calls_emit_no_delivery_event() -> None:
     )
     assert actions == []
     assert msgs and msgs[0].parts[0].output == "ran"
+
+
+async def test_api_caller_external_tools_are_never_notifying() -> None:
+    """Spec section 7 regression pin, scoped to S1's epoch-fenced park path.
+
+    Invoker-supplied tools stay STANDARD and stay yielding: registering a
+    notifying vocabulary must not reroute them out of the park protocol.
+    """
+    import pytest
+
+    from primer.agent.external_tools import EXTERNAL_PARK_TOOL_NAME
+    from primer.model.external_tool import ExternalToolDef
+    from primer.toolset.client import CLIENT_TOOLSET_ID, ClientToolsetProvider
+
+    class _MemStorage:
+        def __init__(self) -> None:
+            self.rows: dict[str, Any] = {}
+
+        async def create(self, row):
+            self.rows[row.id] = row
+            return row
+
+    defs = [
+        ExternalToolDef(
+            name="lookup_customer",
+            description="Look up a customer.",
+            args_schema={"type": "object"},
+            timeout_seconds=30.0,
+        )
+    ]
+    mgr = ToolExecutionManager(
+        toolset_providers={CLIENT_TOOLSET_ID: ClientToolsetProvider()},
+        external_tools=defs,
+        external_call_storage=_MemStorage(),
+        workspace_session=_FakeAgentSession(),  # type: ignore[arg-type]
+        initiated_by=_SYSTEM,
+    )
+    await mgr.list_tools()
+    assert mgr.is_notifying("external__lookup_customer") is False
+    assert mgr.is_notifying("client__open_file") is True
+    with pytest.raises(YieldToWorker) as ei:
+        await mgr.execute(
+            ToolCallPart(
+                id="tc-x", name="external__lookup_customer", arguments={}
+            )
+        )
+    assert ei.value.yielded.tool_name == EXTERNAL_PARK_TOOL_NAME
