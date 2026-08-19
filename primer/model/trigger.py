@@ -7,7 +7,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, SecretStr, field_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
 
 from primer.model.common import Identifiable
 from primer.model.event_matcher import EventMatcher
@@ -31,11 +31,18 @@ class TriggerKind(str, Enum):
 
 
 class DelayedTriggerConfig(BaseModel):
+    # extra="forbid" is what makes the API reject ``interactive`` on the
+    # intrinsically non-interactive kinds (S6 section 3) with a 422 rather
+    # than silently dropping it.
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal["delayed"] = "delayed"
     fire_at: datetime  # UTC instant
 
 
 class ScheduledTriggerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     kind: Literal["scheduled"] = "scheduled"
     cron: str  # validated by croniter (in trigger/cron.py)
     timezone: str = "UTC"  # IANA name (e.g. "Asia/Dubai")
@@ -65,12 +72,28 @@ class WebhookTriggerConfig(BaseModel):
     # persisting. Stored tokens are always exactly 32 hex chars.
     token: str = Field(default="", max_length=64)
     hmac_secret: SecretStr | None = None
+    interactive: bool = Field(
+        default=False,
+        description=(
+            "When True the POST holds its HTTP response until the fired "
+            "run(s) reach a terminal state and returns their final text. "
+            "Defaults off so today's 202-immediately behaviour is unchanged."
+        ),
+    )
 
 
 class ChannelTriggerConfig(BaseModel):
     kind: Literal["channel"] = "channel"
     provider_id: str
     channel_id: str | None = None
+    interactive: bool = Field(
+        default=True,
+        description=(
+            "When True the run's result posts back into the mapped platform "
+            "thread after every drained turn. Defaults on: a channel "
+            "conversation that never answers is not a conversation."
+        ),
+    )
 
 
 TriggerConfig = Annotated[
