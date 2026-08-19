@@ -16,6 +16,7 @@ it folds the transcript without renumbering the turns.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
 
 from primer.model.turn_log import TurnLogKind
@@ -176,7 +177,178 @@ def envelopes_for_window(
     return runs[index]
 
 
+_LLM_CALL = SessionMessageKind.LLM_CALL.value
+_TOOL_CALL = SessionMessageKind.TOOL_CALL.value
+_TOOL_RESULT = SessionMessageKind.TOOL_RESULT.value
+# S3's notifying-call delivery record, written into the same log one spec
+# earlier. A leaf under the call it delivered, not a root child.
+_CLIENT_ACTION = SessionMessageKind.CLIENT_ACTION.value
+
+_TURN_LOG_TERMINALS = frozenset({
+    TurnLogKind.COMPLETED.value,
+    TurnLogKind.FAILED.value,
+    TurnLogKind.CANCELLED.value,
+})
+
+
+def _parse_ts(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _delta_ms(start: Any, end: Any) -> int | None:
+    a, b = _parse_ts(start), _parse_ts(end)
+    if a is None or b is None:
+        return None
+    return max(0, int((b - a).total_seconds() * 1000))
+
+
+def _turn_status(
+    events: list[dict[str, Any]], records: list[dict[str, Any]],
+) -> str:
+    for event in reversed(events):
+        kind = event.get("kind")
+        if kind == TurnLogKind.COMPLETED.value:
+            return "completed"
+        if kind == TurnLogKind.FAILED.value:
+            return "failed"
+        if kind == TurnLogKind.CANCELLED.value:
+            return "cancelled"
+        if kind == _YIELDED:
+            return "parked"
+    kind = records[-1].get("kind") if records else None
+    if kind == _ERROR:
+        return "failed"
+    if kind == _CANCELLED:
+        return "cancelled"
+    if kind == _DONE and closes_turn(records[-1]):
+        return "completed"
+    return "running"
+
+
+def _started_at(
+    events: list[dict[str, Any]], records: list[dict[str, Any]],
+) -> Any:
+    for event in events:
+        if event.get("kind") == TurnLogKind.STARTED.value and event.get("ts"):
+            return event["ts"]
+    return records[0].get("created_at") if records else None
+
+
+def _ended_at(
+    events: list[dict[str, Any]], records: list[dict[str, Any]],
+) -> Any:
+    for event in reversed(events):
+        if event.get("kind") in _TURN_LOG_TERMINALS and event.get("ts"):
+            return event["ts"]
+    return records[-1].get("created_at") if records else None
+
+
+def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Fold a window's records into ordered child nodes.
+
+    tool_result rows are not children of their own: they close the
+    tool_call they answer (paired on the call id the two payloads share).
+    """
+    roots: list[dict[str, Any]] = []
+    calls: dict[str, dict[str, Any]] = {}
+    for rec in records:
+        kind = rec.get("kind")
+        payload = rec.get("payload") or {}
+        if kind == _LLM_CALL:
+            roots.append({
+                "kind": "llm_call",
+                "seq": rec.get("seq"),
+                "ts": rec.get("created_at"),
+                "node_id": rec.get("node_id"),
+                "profile_id": payload.get("profile_id"),
+                "provider_id": payload.get("provider_id"),
+                "model": payload.get("model"),
+                "input_tokens": payload.get("input_tokens"),
+                "output_tokens": payload.get("output_tokens"),
+                "duration_ms": payload.get("duration_ms"),
+                "status": payload.get("status"),
+                "children": [],
+            })
+        elif kind == _TOOL_CALL:
+            entry = {
+                "kind": "tool_call",
+                "seq": rec.get("seq"),
+                "ts": rec.get("created_at"),
+                "node_id": rec.get("node_id"),
+                "tool_call_id": payload.get("id"),
+                "name": payload.get("name"),
+                "status": None,
+                "duration_ms": None,
+                "children": [],
+            }
+            if payload.get("id"):
+                calls[payload["id"]] = entry
+            roots.append(entry)
+        elif kind == _TOOL_RESULT:
+            parent = calls.get(payload.get("call_id"))
+            if parent is not None:
+                parent["status"] = "error" if payload.get("error") else "ok"
+                parent["duration_ms"] = _delta_ms(
+                    parent["ts"], rec.get("created_at"),
+                )
+        elif kind == _CLIENT_ACTION:
+            # S3: the runner delivered a notifying call to the browser.
+            # A leaf under the call it belongs to, dropped if that call is
+            # outside this window.
+            parent = calls.get(payload.get("call_id"))
+            if parent is not None:
+                parent["children"].append({
+                    "kind": "client_action",
+                    "seq": rec.get("seq"),
+                    "ts": rec.get("created_at"),
+                    "name": payload.get("name"),
+                    "children": [],
+                })
+    return roots
+
+
+def build_turn_timeline(
+    *,
+    message_lines: list[str],
+    turn_log_lines: list[str],
+    turn_no: int,
+) -> dict[str, Any] | None:
+    """Fold one turn into its execution tree, or None if it does not exist.
+
+    ``turn_no`` is the window ordinal from :func:`turn_windows`, counted
+    by terminals over the unfolded record stream, and it selects the
+    turn-log envelope RUN at the same ordinal. It is NOT an index into a
+    folded list and it is NOT generally the envelope's own turn_no: a
+    parked turn absorbs its continuation envelope.
+    """
+    windows = turn_windows(message_lines)
+    if turn_no < 0 or turn_no >= len(windows):
+        return None
+    window = windows[turn_no]
+    records = window["records"]
+    groups = envelopes_for_window(turn_envelopes(turn_log_lines), turn_no)
+    events = [event for group in groups for event in group]
+    started_at = _started_at(events, records)
+    ended_at = _ended_at(events, records)
+    return {
+        "turn_no": turn_no,
+        "terminal_seq": window["terminal_seq"],
+        "status": _turn_status(events, records),
+        "started_at": started_at,
+        "ended_at": ended_at,
+        "duration_ms": _delta_ms(started_at, ended_at),
+        "waits": [],
+        "children": _tree(records),
+    }
+
+
 __all__ = [
+    "build_turn_timeline",
     "closes_turn",
     "envelopes_for_window",
     "turn_envelopes",
