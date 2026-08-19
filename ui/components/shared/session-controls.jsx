@@ -189,3 +189,135 @@ function SessionSwitcher({
 
 window.SessionBindingChip = SessionBindingChip;
 window.SessionSwitcher = SessionSwitcher;
+
+
+// Stream a completed assistant turn as chunked mp3.
+//
+// The proxy is a POST with a JSON body, so an <audio src=...> cannot
+// fetch it directly; the response body is instead pumped into a
+// MediaSource as it arrives, which is what makes playback start on the
+// first frames instead of after the last one. Awaiting response.blob()
+// would collect the whole synthesis first and hand back exactly the
+// latency Task 13's yield-through pump exists to remove. MediaSource
+// with "audio/mpeg" is the incremental path; the blob is the fallback
+// for engines that do not advertise it. Nothing here touches the
+// transcript -- audio is ephemeral, text is the record.
+function SC_speakTurn(text, agentId) {
+  const element = new Audio();
+  element.autoplay = true;
+
+  const request = () =>
+    fetch(window.primerApi.resolvePath("/audio/speech"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+      body: JSON.stringify({ input: text, agent_id: agentId || null }),
+    }).then((response) => {
+      if (!response.ok) throw new Error(`speech proxy returned ${response.status}`);
+      return response;
+    });
+
+  const canStream =
+    typeof window.MediaSource === "function" &&
+    window.MediaSource.isTypeSupported("audio/mpeg");
+
+  if (!canStream) {
+    request()
+      .then((response) => response.blob())
+      .then((blob) => {
+        element.src = URL.createObjectURL(blob);
+        element.addEventListener("ended", () => URL.revokeObjectURL(element.src));
+      })
+      .catch(() => { /* playback is best-effort; the text already landed */ });
+    return element;
+  }
+
+  const media = new window.MediaSource();
+  element.src = URL.createObjectURL(media);
+  element.addEventListener("ended", () => URL.revokeObjectURL(element.src));
+
+  media.addEventListener("sourceopen", () => {
+    let buffer;
+    try {
+      buffer = media.addSourceBuffer("audio/mpeg");
+    } catch {
+      return;
+    }
+    // SourceBuffer.appendBuffer is single-flight: a second append before
+    // "updateend" throws InvalidStateError, so chunks queue here.
+    const queue = [];
+    let done = false;
+    const drain = () => {
+      if (buffer.updating) return;
+      if (queue.length > 0) {
+        buffer.appendBuffer(queue.shift());
+        return;
+      }
+      if (done && media.readyState === "open") media.endOfStream();
+    };
+    buffer.addEventListener("updateend", drain);
+
+    request()
+      .then((response) => {
+        const reader = response.body.getReader();
+        const pump = () =>
+          reader.read().then(({ done: finished, value }) => {
+            if (finished) {
+              done = true;
+              drain();
+              return;
+            }
+            queue.push(value);
+            drain();
+            return pump();
+          });
+        return pump();
+      })
+      .catch(() => {
+        done = true;
+        try { drain(); } catch { /* the element is already detached */ }
+      });
+  });
+
+  return element;
+}
+
+
+// Props-only, like SessionBindingChip and SessionSwitcher beside it (S1 P6
+// Task 33): no ROUTES, no window.location, no studio import, so S8's session
+// doc re-hosts it unchanged. The host passes the session's own conversation
+// state; today that host is studio-center.jsx's session panels.
+function SessionSpeakerToggle({ agentId, messages, turnInFlight }) {
+  const caps = window.primerApi.useCapabilities();
+  const speechCaps = (caps.data && caps.data.speech) || {};
+  const [speakerOn, setSpeakerOn] = React.useState(false);
+  const spokenRef = React.useRef(new Set());
+
+  React.useEffect(() => {
+    if (!speakerOn || turnInFlight) return;
+    const last = (messages || [])[(messages || []).length - 1];
+    if (!last || last.role !== "assistant" || !last.content) return;
+    if (spokenRef.current.has(last.id)) return;
+    spokenRef.current.add(last.id);
+    SC_speakTurn(last.content, agentId);
+  }, [speakerOn, turnInFlight, messages, agentId]);
+
+  return (
+    <div className="row" style={{ gap: 6, alignItems: "center" }}>
+        {!!speechCaps.tts_configured && (
+          <button
+            type="button"
+            data-testid="chat-speaker-toggle"
+            className={"icon-btn" + (speakerOn ? " is-active" : "")}
+            title={speakerOn ? "Turn speech off" : "Read replies aloud"}
+            onClick={() => setSpeakerOn((on) => !on)}
+          >
+            <Icon name={speakerOn ? "volume" : "volume-off"} size={18} />
+          </button>
+        )}
+    </div>
+  );
+}
+
+
+window.SessionSpeakerToggle = SessionSpeakerToggle;
