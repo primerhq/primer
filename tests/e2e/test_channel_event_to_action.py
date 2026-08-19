@@ -14,12 +14,12 @@ dispatchers - no spies, no HTTP, no LLM, no Postgres.
 
 Two action surfaces are covered:
 
-  1. ``start_chat`` - a ``command.invoked`` event whose
+  1. thread-mapped session - a ``command.invoked`` event whose
      ``command_name == "deploy"`` matches the binding ``Subscription``'s
-     :class:`EventMatcher` and the dispatcher creates a :class:`Chat`
-     bound to the source thread, seeding the event text as the first
-     ``user_message``. A non-matching event (``command_name="status"``)
-     creates NO chat.
+     :class:`EventMatcher` fires the channel trigger; the created
+     :class:`WorkspaceSession` is mapped to the source thread and its
+     reply binding anchors there. A non-matching event
+     (``command_name="status"``) creates NO session.
 
   2. ``agent_fresh_session`` - a matching ``command.invoked`` event
      creates a :class:`WorkspaceSession` attributed to the subscription,
@@ -45,10 +45,12 @@ from pydantic import SecretStr
 
 # Importing the action dispatcher modules registers them under their kind.
 import primer.trigger.subscribers.agent_fresh_session  # noqa: F401
-import primer.trigger.subscribers.start_chat  # noqa: F401
 from primer.channel.correlation import CorrelationStore
 from primer.channel.event_dispatch import ChannelEventRouter
-from primer.channel.reply_binding import resolve_reply_binding
+from primer.channel.reply_binding import (
+    SESSION_REPLY_BINDING_KEY,
+    resolve_reply_binding,
+)
 from primer.model.agent import Agent, AgentModel
 from primer.model.channel import (
     Channel,
@@ -60,14 +62,12 @@ from primer.model.channel_event import (
     EventSender,
     NormalizedEventType,
 )
-from primer.model.chats import Chat, ChatMessage
 from primer.model.event_matcher import EventMatcher
 from primer.model.provider import SqliteConfig
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import (
     AgentFreshSubConfig,
     ChannelTriggerConfig,
-    StartChatSubConfig,
     Subscription,
     Trigger,
 )
@@ -153,7 +153,7 @@ async def _seed_channel(p) -> Channel:
         provider=ChannelProviderType.TELEGRAM,
         external_id="555",
         config=TelegramChannelConfig(
-            chats={"enabled": False, "default_agent": None},
+            chats={"enabled": False},
         ),
     )
     await p.get_storage(Channel).create(ch)
@@ -197,31 +197,44 @@ def _command_event(
 
 
 # ===========================================================================
-# (1) command.invoked -> start_chat: chat bound to source thread + seeded
+# (1) command.invoked -> a session mapped to the source thread
 # ===========================================================================
 
 
 @pytest.mark.asyncio
-async def test_command_event_starts_bound_chat(tmp_path: Path) -> None:
+async def test_command_event_starts_a_mapped_session(tmp_path: Path) -> None:
     """A ``command.invoked`` event matching the binding's
     ``EventMatcher`` (command_name == "deploy") fires the channel
-    trigger; the ``start_chat`` dispatcher creates a Chat bound to the
-    source ``(channel_id, thread_anchor)`` and seeds the event text as
-    the first user_message. A non-matching ``status`` command creates no
-    chat.
+    trigger; the created session is mapped to the source
+    ``(channel_id, thread_anchor)`` and carries a reply binding anchored
+    there (S6 section 5). A non-matching ``status`` command creates no
+    session.
     """
     p = await _provider(tmp_path)
     agent = await _seed_agent(p)
     ch = await _seed_channel(p)
     store = CorrelationStore(p)
 
+    ws = Workspace(
+        id="ws-e2a-map",
+        description="thread-mapped workspace",
+        template_id="t-e2a",
+        provider_id="p-e2a",
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(
+            url="ws://127.0.0.1:5959/", token=SecretStr("t"),
+        ),
+        reply_binding=WorkspaceChannelLink(channel_id=ch.id),
+    )
+    await p.get_storage(Workspace).create(ws)
+
     await p.get_storage(Trigger).create(Trigger(
-        id="trg-e2a", slug="evt-start-chat", name="start-chat rule",
+        id="trg-e2a", slug="evt-mapped-session", name="mapped-session rule",
         config=ChannelTriggerConfig(provider_id="cp-e2a", channel_id=ch.id),
         created_at=datetime.now(timezone.utc)))
     await p.get_storage(Subscription).create(Subscription(
         id="sub-e2a", trigger_id="trg-e2a",
-        config=StartChatSubConfig(agent_id=agent.id),
+        config=AgentFreshSubConfig(workspace_id=ws.id, agent_id=agent.id),
         payload_template="{{ event.text }}",
         event_matcher=EventMatcher(
             event_type=NormalizedEventType.COMMAND_INVOKED,
@@ -234,7 +247,7 @@ async def test_command_event_starts_bound_chat(tmp_path: Path) -> None:
     bus = _RecordingBus()
     router = _build_router(p, store, bus=bus)
 
-    # ----- matching command -> one bound chat with the seeded text -----
+    # ----- matching command -> one session, mapped to the thread -----
     await router.route_event(
         event=_command_event(
             channel_id=ch.id, command_name="deploy", text="deploy now",
@@ -243,27 +256,25 @@ async def test_command_event_starts_bound_chat(tmp_path: Path) -> None:
         channel=ch,
     )
 
-    chats = (await p.get_storage(Chat).find(
+    sessions = (await p.get_storage(WorkspaceSession).find(
         None, OffsetPage(offset=0, length=50),
     )).items
-    assert len(chats) == 1, f"expected exactly one chat; got {len(chats)}"
-    chat = chats[0]
-    # (a) bound to the source thread.
-    assert chat.channel_binding is not None
-    assert chat.channel_binding.channel_id == ch.id
-    assert chat.channel_binding.thread_external_id == "thr-e2a"
-    assert chat.agent_id == agent.id
+    assert len(sessions) == 1, f"expected exactly one session; got {sessions}"
+    session = sessions[0]
 
-    # (b) the firing event's text seeded the first user_message.
-    msgs = (await p.get_storage(ChatMessage).find(
-        Q(ChatMessage).where_op("chat_id", Op.EQ, chat.id).build(),
-        OffsetPage(offset=0, length=50),
-    )).items
-    user_msgs = [m for m in msgs if m.kind == "user_message"]
-    assert len(user_msgs) == 1, f"expected one seeded message; got {user_msgs}"
-    assert "deploy now" in str(user_msgs[0].payload)
+    # (a) the thread is mapped to it.
+    record = await store.lookup(ch.id, "thr-e2a")
+    assert record is not None, "the thread must map to the created session"
+    assert record.kind == "session"
+    assert record.session_id == session.id
 
-    # (c) a non-matching command creates NO chat.
+    # (b) the outbound half: the session replies into that same thread.
+    binding = (session.metadata or {}).get(SESSION_REPLY_BINDING_KEY)
+    assert binding is not None, "the session must carry a reply binding"
+    assert binding["channel_id"] == ch.id
+    assert binding["anchor"] == "thr-e2a"
+
+    # (c) a non-matching command creates NO session.
     await router.route_event(
         event=_command_event(
             channel_id=ch.id, command_name="status", text="status",
@@ -272,12 +283,12 @@ async def test_command_event_starts_bound_chat(tmp_path: Path) -> None:
         ),
         channel=ch,
     )
-    chats_after = (await p.get_storage(Chat).find(
+    after = (await p.get_storage(WorkspaceSession).find(
         None, OffsetPage(offset=0, length=50),
     )).items
-    assert len(chats_after) == 1, (
-        "a non-matching command must not create a chat; "
-        f"got {len(chats_after)} chats"
+    assert len(after) == 1, (
+        "a non-matching command must not create a session; "
+        f"got {len(after)} sessions"
     )
 
 
