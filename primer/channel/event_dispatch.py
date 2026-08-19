@@ -120,10 +120,10 @@ class ChannelEventRouter:
         channel_id = event.channel_id or (channel.id if channel is not None else None)
 
         # The SDK-free normalizers only set ``room_external_id`` (the platform
-        # room id), not the internal ``channel_id``. Stamp the resolved internal
-        # id onto the event so downstream subscribers - notably ``start_chat`` -
-        # can build a ChatChannelBinding the outbound relay resolves back to
-        # this channel's adapter. Without it the bound chat has no reply route.
+        # room id), not the internal ``channel_id``. Stamp the resolved
+        # internal id onto the event so the thread mapper and the reply
+        # binding it writes resolve back to this channel's adapter. Without
+        # it the created session has no reply route.
         if channel is not None and not event.channel_id:
             event.channel_id = channel.id
 

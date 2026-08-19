@@ -196,10 +196,10 @@ class DiscordChannelAdapter(ChannelAdapter):
 
 
 
-    async def post_chat_message(
+    async def post_thread_message(
         self, text: str, *, thread_ts: str | None = None
     ) -> dict[str, Any]:
-        """Full-payload outbound relay into the chat's thread."""
+        """Full-payload outbound relay into the session's thread."""
         target = await self._resolve_chat_thread(thread_ts)
         await target.send(content=text)
         return {"thread_id": thread_ts}
@@ -222,11 +222,11 @@ class DiscordChannelAdapter(ChannelAdapter):
         filename = getattr(part, "filename", None) or "file"
         await target.send(file=discord.File(io.BytesIO(data), filename=filename))
 
-    async def post_chat_media(
+    async def post_thread_media(
         self, parts: list, *, thread_ts: str | None = None,
     ) -> dict[str, Any]:
         """Outbound media relay: upload each hydrated media part as a file into
-        the chat's thread."""
+        the session's thread."""
         target = await self._resolve_chat_thread(thread_ts)
         sent = await self._send_media_parts(target, parts)
         return {"sent": sent, "thread_id": thread_ts}

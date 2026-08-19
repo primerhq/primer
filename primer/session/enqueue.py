@@ -2,7 +2,7 @@
 
 An inbound user message re-arms a session's scheduler claim so the worker
 runs a fresh turn, regardless of the session's current lifecycle state.
-Mirrors ``primer/chat/enqueue.py`` + ``send_chat_message``'s persist+wake
+Mirrors the deleted chat surface's persist+wake
 tail: the session's on-disk ``messages.jsonl`` IS the FIFO queue
 (``AgentSession.append_instruction``); the scheduler-visible
 ``WorkspaceSession`` row carries the claim state (``turn_status`` +

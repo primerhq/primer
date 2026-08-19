@@ -7,8 +7,8 @@ dispatchers share a result envelope and a deps bundle so the fire
 orchestrator (Phase 6) treats them uniformly.
 
 Kind-specific dispatchers live in sibling modules
-(``chat_message.py``, ``agent_fresh_session.py``,
-``graph_fresh_session.py``, ``parked_session.py``) and self-register at
+(``agent_fresh_session.py``, ``graph_fresh_session.py``,
+``parked_session.py``, ``session_append.py``) and self-register at
 import time by calling :func:`register`.
 """
 
@@ -78,9 +78,9 @@ class DispatchDeps:
     absent-scheduler enqueue best-effort.
 
     ``workspace_registry`` and ``event_bus`` are optional because not
-    every dispatcher uses them -- ``chat_message`` doesn't need either,
-    ``parked_session`` reaches for the event bus, the fresh-session
-    dispatchers may want the workspace registry for slot allocation.
+    every dispatcher uses them -- ``parked_session`` reaches for the event
+    bus, the fresh-session and ``session_append`` dispatchers want the
+    workspace registry for slot allocation.
     """
 
     storage_provider: Any

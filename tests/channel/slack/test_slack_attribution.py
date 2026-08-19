@@ -73,7 +73,7 @@ async def test_no_attribution_when_fields_absent():
 
 
 @pytest.mark.asyncio
-async def test_post_chat_message_no_attribution(monkeypatch):
+async def test_post_thread_message_no_attribution(monkeypatch):
     """Chat relay must not include attribution."""
     captured: list[str] = []
 
@@ -84,7 +84,7 @@ async def test_post_chat_message_no_attribution(monkeypatch):
     monkeypatch.setattr(_streaming_mod, "stream_or_post", _fake_stream_or_post)
 
     a = _adapter()
-    await a.post_chat_message("hi")
+    await a.post_thread_message("hi")
 
     assert captured == ["hi"]
     assert "Workspace:" not in captured[0]

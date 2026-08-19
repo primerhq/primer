@@ -465,8 +465,8 @@ def build_system_toolset(
         config: SubscriptionConfig = Field(
             ...,
             description=(
-                "Action discriminated union: start_chat / chat_message / "
-                "agent_fresh_session / graph_fresh_session."
+                "Action discriminated union: agent_fresh_session / "
+                "graph_fresh_session / session_append."
             ),
         )
         reply_target: ReplyTarget | None = Field(
@@ -517,8 +517,8 @@ def build_system_toolset(
             ),
             when=(
                 "Use when mapping a normalized channel event (message.posted "
-                "/ command.invoked) to a platform action (start_chat / "
-                "chat_message / agent_fresh_session / graph_fresh_session). "
+                "/ command.invoked) to a platform action (agent_fresh_session "
+                "/ graph_fresh_session / session_append). "
                 "The trigger must already exist as a channel-kind trigger; "
                 "unknown trigger returns ``type=trigger_not_found``."
             ),

@@ -251,7 +251,7 @@ class TelegramChannelAdapter(ChannelAdapter):
 
 
 
-    async def post_chat_message(self, text: str) -> dict[str, Any]:
+    async def post_thread_message(self, text: str) -> dict[str, Any]:
         """Outbound chat relay: send a plain message to the channel."""
         if self._app is None:
             raise ProviderError("TelegramChannelAdapter used before initialize()")
@@ -268,9 +268,9 @@ class TelegramChannelAdapter(ChannelAdapter):
         from primer.channel.media import hydrate_media_dicts
         parts = await hydrate_media_dicts(self._artifacts, media)
         if parts:
-            await self.post_chat_media(parts)
+            await self.post_thread_media(parts)
 
-    async def post_chat_media(
+    async def post_thread_media(
         self, parts: list, *, thread_ts: str | None = None,
     ) -> dict[str, Any]:
         """Outbound media relay: upload each hydrated media part (inline bytes)

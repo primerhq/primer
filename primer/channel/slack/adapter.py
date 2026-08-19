@@ -127,7 +127,7 @@ class SlackChannelAdapter(ChannelAdapter):
             from primer.channel.media import hydrate_media_dicts
             parts = await hydrate_media_dicts(self._artifacts, media)
             if parts:
-                await self.post_chat_media(parts, thread_ts=root_ts)
+                await self.post_thread_media(parts, thread_ts=root_ts)
         header = attribution_header(envelope)
         if envelope.kind == "inform":
             await client.chat_postMessage(
@@ -171,7 +171,7 @@ class SlackChannelAdapter(ChannelAdapter):
                     )
         return {"ts": ts, "channel": resp.get("channel", ""), "thread_ts": root_ts}
 
-    async def post_chat_message(
+    async def post_thread_message(
         self, text: str, *, thread_ts: str | None = None,
     ) -> dict:
         """Outbound chat relay: post the reply to the channel/thread.
@@ -188,7 +188,7 @@ class SlackChannelAdapter(ChannelAdapter):
             thread_ts=thread_ts, text=text)
         return {"ok": True}
 
-    async def post_chat_media(
+    async def post_thread_media(
         self, parts: list, *, thread_ts: str | None = None,
     ) -> dict:
         """Outbound media relay: upload each hydrated media part to the channel
