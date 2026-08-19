@@ -425,7 +425,6 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
 
 - [yielding](yielding.md) - `subscribe_to_trigger` is the
   yielding tool that parks on trigger fire events.
-- [chats](chats.md) - `chat_message` subscriptions append to
   chats.
 - [sessions](sessions.md) - `agent_fresh_session` and
   `graph_fresh_session` subscriptions spin up new sessions.

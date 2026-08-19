@@ -98,7 +98,7 @@ The executor responsibilities, per turn:
 6. When a non-tool stop arrives: persist the assistant message, end
    the turn.
 
-Auto-compaction (see [chats](chats.md) for chat-specific details):
+Auto-compaction:
 before each LLM call, the executor counts tokens. If over 90% of
 the model's context window, run a compaction strategy - typically
 summarise the head, keep the tail. The resulting summary replaces
@@ -115,7 +115,7 @@ replays the complete messages, not the tokens.
 
 An Agent row has no lifecycle of its own - it's a CRUD entity.
 **Agent invocations** have lifecycle, but that lifecycle is owned
-by the wrapping context (chat or session). See [chats](chats.md)
+by the wrapping session. See [sessions](sessions.md)
 and [sessions](sessions.md).
 
 What's worth knowing:
@@ -285,7 +285,6 @@ Read the description + system_prompt to confirm fit.
 ## Related
 
 - [graphs](graphs.md) - graphs orchestrate multiple agents.
-- [chats](chats.md) - the multi-turn human-in-the-loop wrapper.
 - [sessions](sessions.md) - the headless wrapper.
 - [workspaces](workspaces.md) - what sessions run inside.
 - [tool-approval](tool-approval.md) - gating individual tool calls.

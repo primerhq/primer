@@ -237,5 +237,4 @@ but require human review for any other host.
 - [channels](channels.md) - channels can forward approval prompts to
   Slack/Telegram/Discord so the operator doesn't have to watch the
   console.
-- [chats](chats.md) - the "new turn supersedes pending approval"
   semantics live in the chat-turn drain loop.

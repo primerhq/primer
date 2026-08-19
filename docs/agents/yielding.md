@@ -21,7 +21,7 @@ against. A worker then claims the resumable row, calls the tool's
 result the agent will see on its next turn. (The chat surface is the
 exception: there `ask_user` and approval gates soft-yield - the turn
 ends conversationally and the human's next message resolves the call,
-with no park slot. See [chats](chats.md).)
+with no park slot.)
 
 This is the primitive behind every "wait for the user to do X" tool
 in primer. In a session or graph, `ask_user` parks on an
@@ -253,5 +253,4 @@ session.
 - [channels](channels.md) - receives operator/user replies that wake
   up `ask_user` and `_approval` parks.
 - [sessions](sessions.md) - owns the parked-status state fields.
-- [chats](chats.md) - chat turns can also park; same primitive,
   different storage column.
