@@ -1,4 +1,4 @@
-/* global React, CT_createExecutor */
+/* global React, CT_createExecutor, ST2_api */
 // Classic Studio host adapter for client tools (S3 spec section 5).
 //
 // Headless: renders null. It owns exactly three things, all of them host
@@ -21,18 +21,7 @@ var ST_CT_HEARTBEAT_MS = 10000;
 // therefore a new fence) rather than a heartbeat on the old one.
 var ST_CT_CLIENT_ID = "tab-" + Math.random().toString(36).slice(2, 12);
 
-// One place the attach URL is built, so POST (attach + heartbeat) and
-// DELETE (detach) can never drift apart. apiFetch prepends /v1.
-function ST_CT_attachUrl(wid, sessionId) {
-  return (
-    "/workspaces/" + encodeURIComponent(wid) +
-    "/sessions/" + encodeURIComponent(sessionId) + "/attach"
-  );
-}
-
 function ST_ClientTools({ wid, sid, studio }) {
-  var apiFetch = window.primerApi.apiFetch;
-
   var studioRef = React.useRef(studio);
   studioRef.current = studio;
 
@@ -74,20 +63,13 @@ function ST_ClientTools({ wid, sid, studio }) {
       },
       attachLifecycle: {
         attach: function (sessionId) {
-          return apiFetch("POST", ST_CT_attachUrl(wid, sessionId), {
-            client_id: ST_CT_CLIENT_ID,
-          });
+          return ST2_api.attachClient(wid, sessionId, ST_CT_CLIENT_ID);
         },
         heartbeat: function (sessionId) {
-          return apiFetch("POST", ST_CT_attachUrl(wid, sessionId), {
-            client_id: ST_CT_CLIENT_ID,
-          });
+          return ST2_api.attachClient(wid, sessionId, ST_CT_CLIENT_ID);
         },
         detach: function (sessionId) {
-          var url =
-            ST_CT_attachUrl(wid, sessionId) +
-            "?client_id=" + encodeURIComponent(ST_CT_CLIENT_ID);
-          return apiFetch("DELETE", url);
+          return ST2_api.detachClient(wid, sessionId, ST_CT_CLIENT_ID);
         },
       },
     });

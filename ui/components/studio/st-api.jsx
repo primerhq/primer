@@ -3,6 +3,13 @@
 // Bodies are exactly what the shipped endpoints accept; do not "improve" them.
 // Every read takes an optional AbortSignal so useResource can cancel it.
 
+function ST2_attachUrl(wid, sid) {
+  return (
+    "/workspaces/" + encodeURIComponent(wid) +
+    "/sessions/" + encodeURIComponent(sid) + "/attach"
+  );
+}
+
 var ST2_api = {
   // ---- reads ---------------------------------------------------------------
 
@@ -96,6 +103,21 @@ var ST2_api = {
       "POST", "/sessions/" + encodeURIComponent(sid) + "/yields/"
         + encodeURIComponent(tcid) + "/cancel",
       { reason: reason || "operator cancelled" });
+  },
+
+  // ---- client-tool attachment (S3) ------------------------------------------
+  // One place the attach URL is built, so POST (attach + heartbeat) and
+  // DELETE (detach) can never drift apart.
+  // primer/api/routers/sessions.py (attach endpoint)
+  attachClient: function (wid, sid, clientId) {
+    return window.primerApi.apiFetch(
+      "POST", ST2_attachUrl(wid, sid), { client_id: clientId });
+  },
+
+  detachClient: function (wid, sid, clientId) {
+    return window.primerApi.apiFetch(
+      "DELETE",
+      ST2_attachUrl(wid, sid) + "?client_id=" + encodeURIComponent(clientId));
   },
 
   // ---- cache keys ---------------------------------------------------------

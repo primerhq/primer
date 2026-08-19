@@ -9,6 +9,7 @@ UI = ROOT / "ui"
 ADAPTER = UI / "components" / "studio" / "st-client-tools.jsx"
 STUDIO = UI / "components" / "studio.jsx"
 CENTER = UI / "components" / "studio-center.jsx"
+ST_API = UI / "components" / "studio" / "st-api.jsx"
 INDEX = UI / "index.html"
 
 
@@ -77,13 +78,23 @@ def test_inform_binds_the_single_global_toast_entry_point() -> None:
 
 
 def test_lifecycle_hits_the_attach_endpoints_and_heartbeats() -> None:
+    """Attach / heartbeat / detach go through ST2_api.
+
+    The URL itself lives in st-api.jsx, the one Studio file allowed to name
+    one (enforced repo-wide by tests/ui/test_studio_attention.py), so the
+    adapter is asserted on the calls and st-api on the path.
+    """
     src = _adapter()
-    assert '"/workspaces/" + encodeURIComponent(wid)' in src
-    assert "/attach" in src
-    assert 'apiFetch("POST"' in src
-    assert 'apiFetch("DELETE"' in src
+    assert "ST2_api.attachClient" in src
+    assert "ST2_api.detachClient" in src
     assert "ST_CT_HEARTBEAT_MS" in src
     assert "setInterval" in src
+
+    api = ST_API.read_text(encoding="utf-8")
+    assert '"/workspaces/" + encodeURIComponent(wid)' in api
+    assert "/attach" in api
+    assert 'apiFetch(\n      "POST", ST2_attachUrl' in api
+    assert '"DELETE",' in api
 
 
 def test_adapter_reuses_the_shared_tap_and_opens_no_socket() -> None:

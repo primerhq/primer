@@ -142,8 +142,7 @@ async def _setup(tmp_path, *, with_artifacts=True, files=None):
     ch = Channel(
         id="ch-1", provider_id="cp-1", provider=ChannelProviderType.TELEGRAM,
         external_id="555",
-        config=TelegramChannelConfig(chats={
-            "enabled": True, "default_agent": "agent-x"}))
+        config=TelegramChannelConfig(chats={"enabled": True}))
     await p.get_storage(ChannelProvider).create(cp)
     await p.get_storage(Channel).create(ch)
 

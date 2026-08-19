@@ -117,15 +117,14 @@ def _make_channel() -> Channel:
     return Channel(
         id="ch-1", provider_id="prov-1", provider=ChannelProviderType.SLACK,
         external_id="C123", label="primer-testing",
-        config=SlackChannelConfig(chats={
-            "enabled": True, "default_agent": "agent-x"}),
+        config=SlackChannelConfig(chats={"enabled": True}),
     )
 
 
 async def _make_sp(tmp_path) -> SqliteStorageProvider:
     sp = SqliteStorageProvider(SqliteConfig(path=tmp_path / "media.sqlite"))
     await sp.initialize()
-    # Channel ch-1 needs chats enabled (config.chats.default_agent) + a real
+    # Channel ch-1 needs chats enabled + a real
     # agent so the router can resolve-or-create a chat for the inbound message.
     await sp.get_storage(Agent).create(Agent(
         id="agent-x", description="Xavier",

@@ -522,7 +522,8 @@ function KN_GrepBox({ collection, onJump }) {
 // ---------------------------------------------------------------------------
 
 function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProviders, pushToast, onChanged }) {
-  const { useResource, apiFetch } = window.primerApi;
+  const { useResource, apiFetch, useCapabilities, capabilityHint } = window.primerApi;
+  const caps = useCapabilities();
   const cid = collection.id;
   const [embedder, setEmbedder] = React.useState("");
   const [model, setModel] = React.useState("");
@@ -571,6 +572,14 @@ function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProvid
   const st = status.data;
   const embedRows = embedProviders?.data?.items ?? [];
   const sspRows = sspProviders?.data?.items ?? [];
+  // An embedded (lance) vector store needs the extra installed on the
+  // server; picking one that is missing fails at enable time with a 409
+  // naming it, so say so at the point of choice instead.
+  const selectedSspRow = sspRows.find((p) => p.id === ssp);
+  const selectedSspMissing =
+    !!selectedSspRow &&
+    selectedSspRow.provider === "lance" &&
+    caps.data?.extras?.lance === false;
 
   return (
     <div className="col" style={{ gap: 10 }}>
@@ -621,6 +630,12 @@ function KN_SearchSettings({ collection, embedProviders, sspProviders, cerProvid
             <option value="">Vector store…</option>
             {sspRows.map((p) => <option key={p.id} value={p.id}>{p.id}</option>)}
           </select>
+          {selectedSspMissing ? (
+            <div className="field-help" style={{ color: "var(--amber)" }}
+              data-capability-hint="lance">
+              {capabilityHint("lance")}
+            </div>
+          ) : null}
           <Btn onClick={enable} disabled={busy || !embedder || !model || !ssp}>
             Enable search
           </Btn>

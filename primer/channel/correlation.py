@@ -35,7 +35,6 @@ from primer.storage.q import Q
 logger = logging.getLogger(__name__)
 
 
-ACTIVE_CHAT_ANCHOR = "__active_chat__"
 
 # Name of the JSONB table the ChannelCorrelation model is stored in
 # (model class name lowercased -- see primer.storage.{postgres,sqlite}
@@ -276,28 +275,6 @@ class CorrelationStore:
             if len(page.items) < 200:
                 return removed
 
-    async def upsert_chat(
-        self,
-        *,
-        channel_id: str,
-        anchor: str,
-        chat_id: str,
-    ) -> ChannelCorrelation:
-        """Create or update a ``kind="chat"`` correlation record.
-
-        Atomic on (channel_id, anchor) -- see :meth:`upsert_session`."""
-        now = datetime.now(timezone.utc)
-        record = ChannelCorrelation(
-            channel_id=channel_id,
-            anchor=anchor,
-            kind="chat",
-            chat_id=chat_id,
-            updated_at=now,
-        )
-        if self._backend() == "other":
-            return await self._fallback_upsert(record)
-        return await self._atomic_upsert(record)
-
     async def _fallback_upsert(
         self, record: ChannelCorrelation
     ) -> ChannelCorrelation:
@@ -307,7 +284,6 @@ class CorrelationStore:
         if existing is not None:
             update = {
                 "kind": record.kind,
-                "chat_id": record.chat_id,
                 "workspace_id": record.workspace_id,
                 "session_id": record.session_id,
                 "tool_call_id": record.tool_call_id,
@@ -318,14 +294,6 @@ class CorrelationStore:
             return updated
         await self._storage().create(record)
         return record
-
-    async def set_active_chat(self, channel_id: str, chat_id: str) -> ChannelCorrelation:
-        """Set the ``ACTIVE_CHAT_ANCHOR`` record for *channel_id* to *chat_id*."""
-        return await self.upsert_chat(
-            channel_id=channel_id,
-            anchor=ACTIVE_CHAT_ANCHOR,
-            chat_id=chat_id,
-        )
 
     async def list_for_channel(self, channel_id: str) -> list[ChannelCorrelation]:
         """Return all correlation records for *channel_id*.
@@ -352,4 +320,4 @@ class CorrelationStore:
             await self._storage().delete(existing.id)
 
 
-__all__ = ["CorrelationStore", "ACTIVE_CHAT_ANCHOR"]
+__all__ = ["CorrelationStore"]

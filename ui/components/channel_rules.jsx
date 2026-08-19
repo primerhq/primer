@@ -3,7 +3,7 @@
 // Channel rule-editor page: a capability-aware event -> action binding
 // editor. Lists channel triggers per provider/room and lets an operator
 // create bindings (Subscriptions) that map a NormalizedEventType + an
-// EventMatcher to an action (start_chat / chat_message / *_fresh_session)
+// EventMatcher to an action (session_append / *_fresh_session)
 // and a ReplyTarget. The event picker is capability-aware: it reads the
 // per-provider capability taxonomy and warns about prerequisites (Discord
 // MESSAGE CONTENT intent, Telegram privacy-mode-off, Slack scopes).
@@ -91,8 +91,7 @@ const CR_SURFACES = ["dm", "channel", "thread"];
 // SubscriptionConfig is posted (config: { action } alone is rejected by the
 // SubscriptionConfig discriminated union).
 const CR_ACTIONS = [
-  { value: "start_chat", label: "start_chat", fields: [{ key: "agent_id", label: "Agent id" }] },
-  { value: "chat_message", label: "chat_message", fields: [{ key: "chat_id", label: "Chat id" }] },
+  { value: "session_append", label: "session_append", fields: [{ key: "session_id", label: "Session id" }] },
   {
     value: "agent_fresh_session",
     label: "agent_fresh_session",
@@ -329,7 +328,7 @@ function CR_RuleModal({ providers, allTriggers, initialProviderId, onClose, onCh
   const [mentionsBot, setMentionsBot] = React.useState(false);
   const [textPattern, setTextPattern] = React.useState("");
   const [senderRoles, setSenderRoles] = React.useState("");
-  const [action, setAction] = React.useState("start_chat");
+  const [action, setAction] = React.useState("agent_fresh_session");
   const [actionFields, setActionFields] = React.useState({});
   const [replyTarget, setReplyTarget] = React.useState("source_thread");
   const [creating, setCreating] = React.useState(false);

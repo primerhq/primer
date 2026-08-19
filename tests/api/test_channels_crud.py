@@ -78,7 +78,6 @@ async def test_create_channel_with_chats_config_and_get_shows_config(client):
             "config": {
                 "chats": {
                     "enabled": True,
-                    "default_agent": "agent-x",
                 }
             },
         },
@@ -86,10 +85,8 @@ async def test_create_channel_with_chats_config_and_get_shows_config(client):
     assert r.status_code == 201, r.text
     created = r.json()
     assert created["config"]["chats"]["enabled"] is True
-    assert created["config"]["chats"]["default_agent"] == "agent-x"
 
     r2 = await client.get("/v1/channels/ch-cfg")
     assert r2.status_code == 200, r2.text
     fetched = r2.json()
     assert fetched["config"]["chats"]["enabled"] is True
-    assert fetched["config"]["chats"]["default_agent"] == "agent-x"

@@ -80,7 +80,7 @@ async def _channel(p, channel_id="ch-1", external_id="555"):
         provider_id="cp-1",
         provider=ChannelProviderType.TELEGRAM,
         external_id=external_id,
-        config=TelegramChannelConfig(chats={"enabled": False, "default_agent": None}),
+        config=TelegramChannelConfig(chats={"enabled": False}),
     )
     await p.get_storage(Channel).create(ch)
     return ch
