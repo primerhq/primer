@@ -55,3 +55,18 @@ def test_the_defaults_panels_carry_test_ids() -> None:
     src = _read("components/provider-catalog.jsx")
     assert 'data-testid="active-speech-config"' in src
     assert 'data-testid="active-web-search-config"' in src
+
+
+def test_the_web_search_panel_edits_both_config_modes() -> None:
+    """ActiveWebSearchConfig is a discriminated union of single and
+    aggregated; a panel that only writes single silently downgrades an
+    aggregated install the first time an operator touches it."""
+    src = _read("components/provider-catalog.jsx")
+    assert '"aggregated"' in src
+    assert "provider_ids" in src
+    assert 'data-testid="active-web-search-mode"' in src
+
+
+def test_the_aggregated_branch_sends_a_list_not_a_single_id() -> None:
+    src = _read("components/provider-catalog.jsx")
+    assert "provider_ids: " in src

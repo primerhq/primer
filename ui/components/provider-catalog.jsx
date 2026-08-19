@@ -298,36 +298,83 @@ function PC_ActiveSpeechPanel() {
 }
 
 function PC_ActiveWebSearchPanel() {
-  const { useResource, apiFetch } = window.primerApi;
-  const [reloadKey, setReloadKey] = React.useState(0);
-  const [draft, setDraft] = React.useState(null);
+  const { apiFetch, useResource } = window.primerApi;
 
   const active = useResource(
-    `pc:websearch-active:${reloadKey}`,
+    "catalog:active-web-search",
     (signal) => apiFetch("GET", "/web_search_active_config", null, { signal }),
-    { pollMs: null },
+    { pollMs: 0 },
   );
-  React.useEffect(() => {
-    if (active.data && draft === null) setDraft(active.data);
-  }, [active.data, draft]);
-  const row = draft || active.data || {};
+  const rows = useResource(
+    "catalog:web-search-rows",
+    (signal) => apiFetch("GET", "/web_search_providers?limit=200", null, { signal }),
+    { pollMs: 0 },
+  );
 
-  const save = async () => {
-    await apiFetch("PUT", "/web_search_active_config", row);
-    setReloadKey((k) => k + 1);
+  const config = (active.data && active.data.config) || {};
+  const mode = config.mode || "single";
+  const items = (rows.data && rows.data.items) || [];
+
+  const save = async (next) => {
+    await apiFetch("PUT", "/web_search_active_config", { config: next });
+    active.refetch();
+  };
+
+  const toggleMember = (id, on) => {
+    const current = config.provider_ids || [];
+    const next = on ? current.concat([id]) : current.filter((x) => x !== id);
+    save({ mode: "aggregated", provider_ids: next });
   };
 
   return (
-    <div className="col" style={{ gap: 8 }} data-testid="active-web-search-config">
-      <div className="muted text-sm">Install-wide web search default.</div>
-      <input
-        className="input mono"
-        placeholder="provider_id"
-        value={row.provider_id || ""}
-        onChange={(e) => setDraft({ ...row, provider_id: e.target.value })}
-      />
-      <Btn onClick={save}>Save default</Btn>
-    </div>
+    <section className="catalog-defaults" data-testid="active-web-search-config">
+      <h3>Active web search provider</h3>
+      <label className="field">
+        <span>Mode</span>
+        <select
+          data-testid="active-web-search-mode"
+          value={mode}
+          onChange={(e) =>
+            save(
+              e.target.value === "aggregated"
+                ? { mode: "aggregated", provider_ids: config.provider_id ? [config.provider_id] : [] }
+                : { mode: "single", provider_id: (config.provider_ids || [])[0] || "" },
+            )
+          }
+        >
+          <option value="single">single</option>
+          <option value="aggregated">aggregated</option>
+        </select>
+      </label>
+      {mode === "single" ? (
+        <label className="field">
+          <span>Provider</span>
+          <select
+            value={config.provider_id || ""}
+            onChange={(e) => e.target.value && save({ mode: "single", provider_id: e.target.value })}
+          >
+            <option value="">(none)</option>
+            {items.map((row) => (
+              <option key={row.id} value={row.id}>{row.id}</option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <div className="field" data-testid="active-web-search-members">
+          <span>Providers (results are merged across all of them)</span>
+          {items.map((row) => (
+            <label key={row.id} className="check">
+              <input
+                type="checkbox"
+                checked={(config.provider_ids || []).indexOf(row.id) >= 0}
+                onChange={(e) => toggleMember(row.id, e.target.checked)}
+              />
+              <span className="mono">{row.id}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
