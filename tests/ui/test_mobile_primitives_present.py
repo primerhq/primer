@@ -22,6 +22,7 @@ MOBILE_AWARE_PAGES = [
     "semantic-search.jsx",
     "toolsets.jsx",
     "providers.jsx",
+    "provider-catalog.jsx",
     "approvals.jsx",
     "channels.jsx",
     "harnesses.jsx",

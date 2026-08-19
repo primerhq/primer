@@ -47,36 +47,63 @@ function PC_ClassRail({ classes, selected, onSelect }) {
   );
 }
 
-function PC_InstanceList({ cls, selectedId, onSelect, reloadKey }) {
-  const { useResource, apiFetch } = window.primerApi;
-  const rows = useResource(
-    `pc:list:${cls.plural}:${reloadKey}`,
-    (signal) => apiFetch("GET", `/${cls.plural}?limit=200`, null, { signal }),
-    { pollMs: null },
-  );
-  const items = rows.data?.items ?? [];
+function PC_InstanceList({ klass, selectedId, onSelect }) {
+  const { usePagedList, useViewport } = window.primerApi;
+  const { isMobile } = useViewport();
+  const list = usePagedList({
+    key: `catalog:${klass.plural}`,
+    path: `/${klass.plural}`,
+    pageSize: 25,
+    pollMs: null,
+    resetKey: { plural: klass.plural },
+  });
 
-  if (rows.error) {
+  if (list.error) {
     return (
-      <Banner kind="error" title={`Could not load ${cls.label}`}>
-        {String(rows.error.detail || rows.error.message || rows.error)}
-      </Banner>
+      <Banner
+        kind="error"
+        title={`Could not load ${klass.label}`}
+        detail={String(list.error.detail || list.error.title || list.error)}
+      />
     );
   }
+  const items = list.items || [];
+  if (!list.loading && items.length === 0) {
+    return (
+      <div className="empty-state" data-testid={`provider-empty-${klass.key}`}>
+        <h3>No {klass.label} providers yet</h3>
+        <p>Add one to make this capability available.</p>
+      </div>
+    );
+  }
+
+  // Card takes no className (ui/components/shared/card-list.jsx:22), so
+  // selection rides `pill`; CardList is items+renderCard, never children.
+  const renderRow = (row) => (
+    <Card
+      title={<span className="mono">{row.id}</span>}
+      subtitle={row.provider || null}
+      pill={row.id === selectedId ? "selected" : null}
+      onClick={() => onSelect(row.id)}
+    />
+  );
+
   return (
-    <div className="col" style={{ gap: 2, minWidth: 200 }}>
-      {items.length === 0 ? (
-        <div className="muted text-sm">No {cls.label} providers yet.</div>
-      ) : null}
-      {items.map((row) => (
-        <a
-          key={row.id}
-          className={`pc-instance${row.id === selectedId ? " selected" : ""} mono text-sm`}
-          onClick={() => onSelect(row.id)}
-        >
-          {row.id}
-        </a>
-      ))}
+    <div data-testid={`provider-instances-${klass.key}`}>
+      {isMobile ? (
+        <CardList
+          items={items}
+          empty={`No ${klass.label} providers yet.`}
+          renderCard={renderRow}
+        />
+      ) : (
+        <div className="provider-rows">
+          {items.map((row) => (
+            <React.Fragment key={row.id}>{renderRow(row)}</React.Fragment>
+          ))}
+        </div>
+      )}
+      <Pager pager={list} label="providers" />
     </div>
   );
 }
@@ -273,10 +300,9 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     body = (
       <div className="row" style={{ gap: 16, alignItems: "flex-start" }}>
         <PC_InstanceList
-          cls={cls}
+          klass={cls}
           selectedId={instanceId}
           onSelect={selectInstance}
-          reloadKey={reloadKey}
         />
         <div className="col" style={{ flex: 1, minWidth: 0 }}>
           <window.PC_ProviderForm
