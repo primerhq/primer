@@ -10,9 +10,12 @@ SemanticSearchProvider row as of the current API), calls bootstrap
 (which creates the vector tables), then exercises either the CDC sync
 path (T0034) or the deactivation path (T0053).
 
-Bootstrap is now asynchronous: POST /bootstrap returns 202 immediately;
-callers must poll GET /bootstrap/status until status == 'succeeded'
-(or 'failed', which causes a test skip).
+Bootstrap is SYNCHRONOUS as of S2: POST /bootstrap runs the pipeline
+inline and returns 200 carrying the terminal outcome, so there is
+nothing to poll and no in-flight state to race on. S2 also froze the
+vector-space fields (embedding provider, embedding model, search
+provider) once the subsystem is active, so re-configuring means
+DELETE-ing the config first.
 
 Both tests are SLOW: the embedder model load can take 30-60 s on the
 first bootstrap. The pytest timeouts are sized accordingly.
@@ -81,44 +84,37 @@ async def _wait_bootstrap(
     timeout_seconds: float = 180.0,
     poll_interval: float = 0.5,
 ) -> dict:
-    """Poll GET /v1/internal_collections/bootstrap/status until terminal.
+    """Read the terminal bootstrap status row back.
 
-    Returns the final status row dict on success. Calls pytest.skip if
-    the bootstrap fails (e.g. embedder model unavailable) or times out.
+    Bootstrap is synchronous now, so once POST /bootstrap has returned
+    there is nothing left to wait for. This reads the row and skips when
+    the run failed (typically the embedder model being unavailable on
+    the runner), which is what every caller relied on the old polling
+    loop to do.
     """
-    deadline = asyncio.get_event_loop().time() + timeout_seconds
-    while asyncio.get_event_loop().time() < deadline:
-        r = await client.get(
-            "/v1/internal_collections/bootstrap/status",
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        assert r.status_code == 200, f"bootstrap/status returned {r.status_code}: {r.text}"
-        row = r.json()
-        status = row.get("status")
-        if status == "succeeded":
-            return row
-        if status == "failed":
-            pytest.skip(
-                f"bootstrap failed (embedder model may be unavailable). "
-                f"Error: {row.get('error', 'unknown')!r}"
-            )
-        await asyncio.sleep(poll_interval)
-    pytest.skip(
-        f"bootstrap did not complete within {timeout_seconds}s "
-        f"(last status: {row.get('status')!r})"
+    del timeout_seconds, poll_interval  # kept so call sites need no edit
+    r = await client.get(
+        "/v1/internal_collections/bootstrap/status",
+        timeout=httpx.Timeout(30.0, connect=10.0),
     )
+    assert r.status_code == 200, f"bootstrap/status returned {r.status_code}: {r.text}"
+    row = r.json()
+    if row.get("status") == "failed":
+        pytest.skip(
+            f"bootstrap failed (embedder model may be unavailable). "
+            f"Error: {row.get('error', 'unknown')!r}"
+        )
+    return row
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _drain_inflight_bootstrap(client: httpx.AsyncClient):
     """Ensure no internal-collections bootstrap is in-flight before each test.
 
-    The bootstrap status row is a global singleton. The in-flight and
-    concurrent cases below intentionally leave a bootstrap running, which
-    makes the NEXT test's POST /bootstrap return 409 instead of 202. Wait
-    for any running bootstrap to reach a terminal state first so every test
-    starts from a clean global state, independent of embedder speed or how
-    a prior test left the subsystem.
+    Bootstrap is synchronous now, so a run cannot outlive the request
+    that started it and there is normally nothing to drain. Kept as a
+    cheap guard: a row left ``running`` by an older build, or by a
+    process killed mid-run, would otherwise strand every test behind it.
     """
     deadline = asyncio.get_event_loop().time() + 180.0
     while asyncio.get_event_loop().time() < deadline:
@@ -163,13 +159,13 @@ async def test_t0053_config_delete_deactivates_subsystem(
         assert put.status_code == 200, put.text
         config_created = True
 
-        # 4. Bootstrap (async: returns 202, then poll status).
+        # 4. Bootstrap (synchronous: 200 carries the outcome).
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -269,8 +265,8 @@ async def test_t0034_cdc_new_agent_appears_in_search(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -328,11 +324,14 @@ async def _bootstrap_subsystem(
     embedder_id: str,
     ssp_id: str,
 ) -> None:
-    """PUT config + POST bootstrap + poll until succeeded.
+    """DELETE any active config, PUT a fresh one, then bootstrap.
 
-    Used by many tests. Bootstrap is now async (202); this helper
-    waits for the terminal 'succeeded' state before returning.
+    Used by many tests. The DELETE is what makes re-configuration legal:
+    S2 freezes the vector-space fields while the subsystem is active, so
+    a PUT naming different providers 409s until it is deactivated.
     """
+    # Idempotent: 404 when nothing is configured yet, which is fine.
+    await client.delete("/v1/internal_collections/config")
     put = await client.put(
         "/v1/internal_collections/config",
         json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
@@ -342,8 +341,8 @@ async def _bootstrap_subsystem(
         "/v1/internal_collections/bootstrap",
         timeout=httpx.Timeout(30.0, connect=10.0),
     )
-    assert boot.status_code == 202, (
-        f"bootstrap should return 202 (accepted); got "
+    assert boot.status_code == 200, (
+        f"bootstrap should return 200 with its outcome; got "
         f"{boot.status_code}: {boot.text}"
     )
     await _wait_bootstrap(client)
@@ -1256,10 +1255,10 @@ async def test_t0167_bootstrap_is_idempotent(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0167 — POST /v1/internal_collections/bootstrap a second time
-    after the first succeeds is idempotent (spec §11). Bootstrap now
-    returns 202 (async); both calls must accept 202 (new attempt
-    queued) or 409 (first still running). After both settle, search
-    routes must remain consistent.
+    after the first succeeds is idempotent (spec §11). Bootstrap runs
+    inline, so the second call returns 200 with its own outcome rather
+    than racing the first. Search routes must remain consistent
+    afterwards.
     """
     embedder_id = f"emb-t0167-{unique_suffix}"
     ssp_id = f"ssp-t0167-{unique_suffix}"
@@ -1282,12 +1281,11 @@ async def test_t0167_bootstrap_is_idempotent(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        # 202 = new async attempt accepted; 409 = still running (also fine)
-        assert boot2.status_code in (202, 409), (
-            f"second bootstrap should be idempotent (202 or 409); got "
+        assert boot2.status_code == 200, (
+            f"second bootstrap should be idempotent and return 200; got "
             f"{boot2.status_code}: {boot2.text}"
         )
-        if boot2.status_code == 202:
+        if boot2.status_code == 200:
             await _wait_bootstrap(client)
         body = boot2.json()
         assert isinstance(body, dict), body
@@ -1532,8 +1530,8 @@ async def test_t0203_bootstrap_on_empty_db_returns_sane_envelope(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, (
-            f"bootstrap on empty DB should return 202 (accepted), got "
+        assert boot.status_code == 200, (
+            f"bootstrap on empty DB should return 200 with its outcome, got "
             f"{boot.status_code}: {boot.text}"
         )
         status_row = await _wait_bootstrap(client)
@@ -1607,14 +1605,14 @@ async def test_t0224_bootstrap_envelope_counts_shape(
         assert ag.status_code == 201, ag.text
         agent_created = True
 
-        # Bootstrap (async: 202 + poll) and pin the status-row shape
+        # Bootstrap (synchronous) and pin the status-row shape
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, boot.text
+        assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
-        # Counts come from the terminal status row, not the 202 body
+        # Counts come from the persisted status row
         body = status_row
         assert isinstance(body, dict), body
         # Shape: status row has counts with at least one int value
@@ -1868,12 +1866,12 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
         assert coll.status_code in (200, 201), coll.text
         seeded.append(("collections", coll_id))
 
-        # Bootstrap (async: 202 + poll); counts come from the status row
+        # Bootstrap (synchronous); counts come from the status row
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, boot.text
+        assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
         body = status_row
         # Counts live in status_row["counts"] after the terminal state
@@ -2046,7 +2044,7 @@ async def test_t0269_ic_config_put_with_empty_collections_list(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, boot.text
+        assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
         assert isinstance(status_row, dict), status_row
 
@@ -2097,9 +2095,9 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
         assert put.status_code == 200, put.text
         config_created = True
 
-        # Fire two parallel bootstraps. Both return 202 (accepted) or
-        # the second returns 409 (first already running). Neither may
-        # return /errors/internal.
+        # Fire two parallel bootstraps. Bootstrap runs inline, so both
+        # return 200 with their own outcome. The invariant that matters
+        # is that neither returns /errors/internal.
         r1, r2 = await asyncio.gather(
             client.post(
                 "/v1/internal_collections/bootstrap",
@@ -2115,8 +2113,8 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
             assert envelope.get("type") != "/errors/internal", (
                 f"{label} returned /errors/internal: {r.text}"
             )
-            # 202 (accepted) or 409 (already running) are both valid
-            assert r.status_code in (202, 409), (
+            # bootstrap runs inline, so 200 is the only valid outcome
+            assert r.status_code == 200, (
                 f"{label} unexpected status: {r.status_code}: {r.text}"
             )
 
@@ -2140,7 +2138,7 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
                     "/v1/internal_collections/bootstrap",
                     timeout=httpx.Timeout(30.0, connect=10.0),
                 )
-                if br.status_code == 202:
+                if br.status_code == 200:
                     await _wait_bootstrap(client)
             await asyncio.sleep(0.5)
         assert last is not None
@@ -2950,10 +2948,10 @@ async def test_t0303_bootstrap_concurrent_with_search_clean(
             assert envelope.get("type") != "/errors/internal", (
                 f"task {i} returned /errors/internal: {r.text}"
             )
-            # Bootstrap result is at index 0 — must be 202 (accepted)
+            # Bootstrap result is at index 0 — must be 200
             # or 409 (already running from the first bootstrap)
             if i == 0:
-                assert r.status_code in (202, 409), (
+                assert r.status_code == 200, (
                     f"concurrent bootstrap unexpected status: {r.text}"
                 )
             else:
@@ -3021,8 +3019,8 @@ async def test_t0400_cdc_agent_to_search_latency_recorded(
             # it to settle before treating our PUT-scoped run as done.
             await _wait_bootstrap(client)
         else:
-            assert boot.status_code == 202, (
-                f"bootstrap should return 202 (accepted); got "
+            assert boot.status_code == 200, (
+                f"bootstrap should return 200 with its outcome; got "
                 f"{boot.status_code}: {boot.text}"
             )
             await _wait_bootstrap(client)
@@ -3148,9 +3146,9 @@ async def test_t0411_concurrent_bootstrap_and_delete_config_clean(
                 f"{label} race returned 5xx: {r.status_code}: {r.text}"
             )
 
-        # bootstrap: 202 (accepted before delete) or 409/503
+        # bootstrap: 200 (ran before delete) or 409/503
         # (subsystem already gone)
-        assert boot.status_code in (202, 409, 503, 404), (
+        assert boot.status_code in (200, 409, 503, 404), (
             f"bootstrap race: unexpected code {boot.status_code}: "
             f"{boot.text}"
         )
@@ -3234,8 +3232,8 @@ async def test_t0412_cdc_burst_create_with_concurrent_delete_config_clean(
             # it to settle before treating our PUT-scoped run as done.
             await _wait_bootstrap(client)
         else:
-            assert boot.status_code == 202, (
-                f"bootstrap should return 202 (accepted); got "
+            assert boot.status_code == 200, (
+                f"bootstrap should return 200 with its outcome; got "
                 f"{boot.status_code}: {boot.text}"
             )
             await _wait_bootstrap(client)
@@ -3444,8 +3442,8 @@ async def test_t0443_rapid_deactivate_reactivate_cycles_clean(
                 "/v1/internal_collections/bootstrap",
                 timeout=httpx.Timeout(30.0, connect=10.0),
             )
-            assert boot.status_code == 202, (
-                f"cycle {cycle}: bootstrap should return 202 (accepted); "
+            assert boot.status_code == 200, (
+                f"cycle {cycle}: bootstrap should return 200 with its outcome; "
                 f"got {boot.status_code}: {boot.text}"
             )
             await _wait_bootstrap(client)
@@ -3566,8 +3564,8 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot_a.status_code == 202, (
-            f"first bootstrap should return 202 (accepted); got "
+        assert boot_a.status_code == 200, (
+            f"first bootstrap should return 200 with its outcome; got "
             f"{boot_a.status_code}: {boot_a.text}"
         )
         await _wait_bootstrap(client)
@@ -3596,8 +3594,8 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot_b.status_code == 202, (
-            f"second bootstrap should return 202 (accepted); got "
+        assert boot_b.status_code == 200, (
+            f"second bootstrap should return 200 with its outcome; got "
             f"{boot_b.status_code}: {boot_b.text}"
         )
         await _wait_bootstrap(client)
@@ -3707,7 +3705,7 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
         boot_resp = all_results[0]
         agent_results = all_results[1:]
 
-        # Bootstrap may have been accepted (202) or rejected if already
+        # Bootstrap may have been run (200) or been rejected if already
         # running (409). Either is acceptable; what matters is no
         # /errors/internal anywhere.
         boot_envelope = boot_resp.json() if boot_resp.content else {}
@@ -3715,12 +3713,12 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
             f"in-flight bootstrap leaked /errors/internal: "
             f"{boot_resp.text}"
         )
-        if boot_resp.status_code not in (202, 409):
+        if boot_resp.status_code not in (200, 409):
             pytest.skip(
                 f"bootstrap returned {boot_resp.status_code} during "
-                f"race (expected 202/409): {boot_resp.text[:300]}"
+                f"race (expected 200/409): {boot_resp.text[:300]}"
             )
-        if boot_resp.status_code == 202:
+        if boot_resp.status_code == 200:
             await _wait_bootstrap(client)
 
         # Every agent CREATE clean
@@ -3850,7 +3848,7 @@ async def test_t0502_three_consecutive_bootstraps_identical_shape(
         assert put.status_code == 200, put.text
         config_created = True
 
-        # Three consecutive bootstraps (async: 202 + poll each time).
+        # Three consecutive bootstraps (each runs inline).
         # Status rows come from GET /bootstrap/status after each settles.
         status_rows: list[dict] = []
         for i in range(3):
@@ -3865,8 +3863,8 @@ async def test_t0502_three_consecutive_bootstraps_identical_shape(
                     "/v1/internal_collections/bootstrap",
                     timeout=httpx.Timeout(30.0, connect=10.0),
                 )
-            assert r.status_code == 202, (
-                f"bootstrap[{i}] should return 202 (accepted); "
+            assert r.status_code == 200, (
+                f"bootstrap[{i}] should return 200 with its outcome; "
                 f"got {r.status_code}: {r.text[:300]}"
             )
             row = await _wait_bootstrap(client)
@@ -3930,8 +3928,8 @@ async def test_t0537_search_post_bootstrap_empty_db_returns_empty_hits(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -4011,8 +4009,8 @@ async def test_t0538_search_top_k_100_documented_hit_shape(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -4114,8 +4112,8 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -4252,19 +4250,19 @@ async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
         boot_resp = results[0]
         del_resps = results[1:]
 
-        # Bootstrap: 202 (accepted async), 4xx (configured but couldn't
+        # Bootstrap: 200 (ran), 4xx (configured but couldn't
         # start), or skip on unexpected status.
         assert not isinstance(boot_resp, BaseException), boot_resp
         boot_env = boot_resp.json() if boot_resp.content else {}
         assert boot_env.get("type") != "/errors/internal", (
             f"bootstrap leaked /errors/internal: {boot_resp.text}"
         )
-        if boot_resp.status_code not in (202, 400, 409, 422):
+        if boot_resp.status_code not in (200, 400, 409, 422):
             pytest.skip(
                 f"bootstrap returned {boot_resp.status_code} — embedder "
                 f"may be unavailable. Body: {boot_resp.text[:300]}"
             )
-        if boot_resp.status_code == 202:
+        if boot_resp.status_code == 200:
             await _wait_bootstrap(client)
 
         # DELETEs: each 204 (success), 404 (already gone), or 4xx.
@@ -4368,7 +4366,7 @@ async def test_t0602_ic_re_bootstrap_cycle_x5_clean_envelopes(
                 f"cycle {cycle} PUT failed: {put.status_code}: {put.text}"
             )
 
-            # Bootstrap (async: 202 + poll to succeeded).
+            # Bootstrap (synchronous).
             boot = await client.post(
                 "/v1/internal_collections/bootstrap",
                 timeout=httpx.Timeout(30.0, connect=10.0),
@@ -4378,8 +4376,8 @@ async def test_t0602_ic_re_bootstrap_cycle_x5_clean_envelopes(
                 f"cycle {cycle} bootstrap leaked /errors/internal: "
                 f"{boot.text}"
             )
-            assert boot.status_code == 202, (
-                f"cycle {cycle} bootstrap should return 202 (accepted); "
+            assert boot.status_code == 200, (
+                f"cycle {cycle} bootstrap should return 200 with its outcome; "
                 f"got {boot.status_code}: {boot.text[:300]}"
             )
             await _wait_bootstrap(client)
@@ -4455,8 +4453,8 @@ async def test_t0586_agents_search_top_k_1_empty_post_bootstrap(
             "/v1/internal_collections/bootstrap",
             timeout=httpx.Timeout(30.0, connect=10.0),
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
