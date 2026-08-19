@@ -14,11 +14,13 @@ when zero bytes have been yielded (Task 8 extends the loop).
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 from collections.abc import AsyncIterator
 
 import httpx
-from openai import AsyncOpenAI
+from openai import APIConnectionError, AsyncOpenAI
 
 from primer.int.tts import TTS
 from primer.model.except_ import ConfigError
@@ -80,27 +82,54 @@ class OpenAITTS(TTS):
         voice: str,
         response_format: str = "mp3",
     ) -> AsyncIterator[bytes | SpeechError]:
-        try:
-            async with self._get_client().audio.speech.with_streaming_response.create(
-                model=model,
-                voice=voice,
-                input=text,
-                response_format=response_format,
-                timeout=self._timeout(),
-            ) as response:
-                async for chunk in response.iter_bytes(_CHUNK_BYTES):
-                    if chunk:
-                        yield chunk
-        except Exception as exc:  # noqa: BLE001 -- error is a value here
-            logger.warning(
-                "TTS synthesis failed",
-                extra={
-                    "provider_id": self._provider.id,
-                    "model": model,
-                    "exception": type(exc).__name__,
-                },
-            )
-            yield speech_error_from_exception(exc)
+        limits = self._provider.limits
+        attempts = limits.max_retries + 1
+        for attempt in range(attempts):
+            yielded = 0
+            try:
+                async with self._get_client().audio.speech.with_streaming_response.create(
+                    model=model,
+                    voice=voice,
+                    input=text,
+                    response_format=response_format,
+                    timeout=self._timeout(),
+                ) as response:
+                    async for chunk in response.iter_bytes(_CHUNK_BYTES):
+                        if chunk:
+                            yielded += len(chunk)
+                            yield chunk
+                return
+            except Exception as exc:  # noqa: BLE001 -- error is a value here
+                # A failed CONNECT is safe to replay. A half-consumed
+                # audio stream is not: replaying it would concatenate two
+                # partial syntheses into one incoherent clip.
+                replayable = (
+                    yielded == 0
+                    and attempt < attempts - 1
+                    and isinstance(exc, APIConnectionError)
+                )
+                logger.warning(
+                    "TTS synthesis failed",
+                    extra={
+                        "provider_id": self._provider.id,
+                        "model": model,
+                        "exception": type(exc).__name__,
+                        "bytes_yielded": yielded,
+                        "will_retry": replayable,
+                    },
+                )
+                if not replayable:
+                    yield speech_error_from_exception(exc)
+                    return
+                await asyncio.sleep(
+                    random.uniform(
+                        0.0,
+                        min(
+                            limits.retry_backoff_seconds * (2 ** attempt),
+                            limits.retry_backoff_max_seconds,
+                        ),
+                    )
+                )
 
     async def aclose(self) -> None:
         if self._client is not None:
