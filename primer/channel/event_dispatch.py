@@ -22,12 +22,13 @@ provider's inbound gateway and is routed here. The precedence is:
      channel, and fire each via the injected ``fire_trigger`` with the event in
      ``extra_context["event"]``. Per-trigger failures are isolated.
 
-Side-effects only; returns ``None``.
+Returns a :class:`ChannelRouteOutcome` naming what it did.
 """
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 from primer.channel.chat_router import ChatChannelRouter
 from primer.channel.correlation import CorrelationStore
@@ -42,6 +43,35 @@ from primer.trigger.subscribers import DispatchDeps
 
 
 logger = logging.getLogger(__name__)
+
+
+def mapping_anchor(event: ChannelEvent) -> str | None:
+    """The correlation key for this event's conversation, or None.
+
+    A threaded message keys on its platform thread id. A DM has no thread,
+    but S6 section 5 makes the DM itself the thread for mapping purposes, so
+    it keys on the sender inside that channel. A bare room post that opened
+    no thread has no conversation to continue and always fires fresh.
+    """
+    if event.thread_anchor:
+        return event.thread_anchor
+    if event.surface == "dm" and event.sender is not None:
+        return f"dm:{event.sender.external_id}"
+    return None
+
+
+@dataclass
+class ChannelRouteOutcome:
+    """What routing one inbound event actually did.
+
+    ``kind`` is ``"gate"`` (resumed a parked gate), ``"steer"`` (appended to
+    the thread's mapped session), ``"fired"`` (no mapping: fired the channel
+    triggers) or ``"ignored"`` (nothing matched).
+    """
+
+    kind: str
+    session_id: str | None = None
+    fire_ids: list[str] = field(default_factory=list)
 
 
 class ChannelEventRouter:
@@ -71,8 +101,8 @@ class ChannelEventRouter:
 
     async def route_event(
         self, *, event: ChannelEvent, channel: Channel | None
-    ) -> None:
-        """Route one normalized inbound event. Side-effects only."""
+    ) -> ChannelRouteOutcome:
+        """Route one normalized inbound event and report what it did."""
         channel_id = event.channel_id or (channel.id if channel is not None else None)
 
         # The SDK-free normalizers only set ``room_external_id`` (the platform
@@ -84,18 +114,27 @@ class ChannelEventRouter:
             event.channel_id = channel.id
 
         # ----- (1) Correlation-first -----------------------------------
-        if event.thread_anchor and channel_id is not None:
-            record = await self._correlation.lookup(channel_id, event.thread_anchor)
-            if record is not None and record.kind == "session":
+        anchor = mapping_anchor(event)
+        if anchor and channel_id is not None:
+            record = await self._correlation.lookup(channel_id, anchor)
+            if record is not None and record.kind == "session" and record.tool_call_id:
                 if self._bus is None:
                     logger.warning(
                         "channel event: session correlation for %s but no "
                         "event bus; dropping reply", channel_id,
                     )
-                    return
-                event_key = f"ask_user:{record.session_id}:{record.tool_call_id}"
+                    return ChannelRouteOutcome(kind="ignored")
+                event_key = (
+                    f"ask_user:{record.session_id}:{record.tool_call_id}"
+                )
                 await self._bus.publish(event_key, {"response": event.text})
-                return
+                # One reply answers one gate. Clearing it here is what lets
+                # the NEXT reply in the same thread steer the session
+                # instead of re-publishing onto a dead resume key.
+                await self._correlation.clear_gate(channel_id, anchor)
+                return ChannelRouteOutcome(
+                    kind="gate", session_id=record.session_id,
+                )
             if record is not None and record.kind == "chat":
                 await self._chat_router().deliver_message(
                     channel_id=channel_id,
@@ -106,16 +145,17 @@ class ChannelEventRouter:
                     text=event.text or "",
                     media_parts=None,
                 )
-                return
+                return ChannelRouteOutcome(kind="ignored")
 
         # ----- (2) Fresh event -> fire channel triggers ----------------
         triggers = await self._resolve_channel_triggers(
             event.provider_id, channel_id,
         )
         extra_context = {"event": event.model_dump(mode="json")}
+        fire_ids: list[str] = []
         for trigger in triggers:
             try:
-                await self._fire_trigger(
+                result = await self._fire_trigger(
                     trigger_id=trigger.id,
                     scheduled_for=None,
                     deps=self._fire_deps,
@@ -125,6 +165,13 @@ class ChannelEventRouter:
                 logger.exception(
                     "channel event: fire_trigger raised for %s", trigger.id,
                 )
+                continue
+            fire_id = getattr(result, "fire_id", None)
+            if fire_id is not None:
+                fire_ids.append(fire_id)
+        if fire_ids:
+            return ChannelRouteOutcome(kind="fired", fire_ids=fire_ids)
+        return ChannelRouteOutcome(kind="ignored")
 
     async def _resolve_channel_triggers(
         self, provider_id: str, channel_id: str | None,
@@ -152,4 +199,4 @@ class ChannelEventRouter:
         return matched
 
 
-__all__ = ["ChannelEventRouter"]
+__all__ = ["ChannelEventRouter", "ChannelRouteOutcome", "mapping_anchor"]
