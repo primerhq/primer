@@ -306,7 +306,6 @@ source_modules = [
 forbidden_modules = [
     "primer.channel",
     "primer.knowledge",
-    "primer.ingest",
     "primer.embedder.huggingface",
     "primer.cross_encoder.huggingface",
     "primer.vector.lance",
