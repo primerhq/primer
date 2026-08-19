@@ -28,6 +28,7 @@ _ERROR = SessionMessageKind.ERROR.value
 _CANCELLED = SessionMessageKind.CANCELLED.value
 
 _TERMINAL_KINDS = frozenset({_DONE, _ERROR, _CANCELLED})
+_GRAPH_TRANSITION = SessionMessageKind.GRAPH_TRANSITION.value
 
 # Turn-log kind (primer/model/turn_log.py:26). Same wire value as the
 # YIELDED record kind, but a different vocabulary: this one names a
@@ -248,19 +249,74 @@ def _ended_at(
     return records[-1].get("created_at") if records else None
 
 
+def _attach(
+    entry: dict[str, Any],
+    rec: dict[str, Any],
+    payload: dict[str, Any],
+    roots: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    calls: dict[str, dict[str, Any]],
+) -> None:
+    """Place one child entry: delegation wins, then node, else the root.
+
+    Delegated records (C1: an inline subagent run appends to the PARENT
+    log) carry the delegating tool_call_id, so they nest under that call
+    rather than sitting beside it.
+    """
+    delegate = payload.get("delegate_tool_call_id")
+    if payload.get("delegated") and delegate in calls:
+        calls[delegate]["children"].append(entry)
+        return
+    node = nodes.get(rec.get("node_id"))
+    if node is not None:
+        node["children"].append(entry)
+        return
+    roots.append(entry)
+
+
 def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Fold a window's records into ordered child nodes.
 
-    tool_result rows are not children of their own: they close the
-    tool_call they answer (paired on the call id the two payloads share).
+    Three grouping rules, applied in order: a delegated record nests under
+    the tool_call that delegated it, a node-attributed record nests under
+    its graph node, everything else is a root child. tool_result rows are
+    never children of their own: they close the tool_call they answer.
     """
     roots: list[dict[str, Any]] = []
+    nodes: dict[str, dict[str, Any]] = {}
     calls: dict[str, dict[str, Any]] = {}
     for rec in records:
         kind = rec.get("kind")
         payload = rec.get("payload") or {}
+        if kind == _GRAPH_TRANSITION:
+            # persistence.py:310-321 writes the node id twice (payload and
+            # record field); read the payload copy, fall back to the record.
+            nid = payload.get("node_id") or rec.get("node_id")
+            if payload.get("phase") == "enter":
+                entry = {
+                    "kind": "node",
+                    "seq": rec.get("seq"),
+                    "node_id": nid,
+                    "node_kind": payload.get("node_kind"),
+                    "started_at": rec.get("created_at"),
+                    "ended_at": None,
+                    "duration_ms": None,
+                    "status": None,
+                    "children": [],
+                }
+                nodes[nid] = entry
+                roots.append(entry)
+                continue
+            open_node = nodes.get(nid)
+            if open_node is not None:
+                open_node["ended_at"] = rec.get("created_at")
+                open_node["status"] = payload.get("status")
+                open_node["duration_ms"] = _delta_ms(
+                    open_node["started_at"], open_node["ended_at"],
+                )
+            continue
         if kind == _LLM_CALL:
-            roots.append({
+            entry = {
                 "kind": "llm_call",
                 "seq": rec.get("seq"),
                 "ts": rec.get("created_at"),
@@ -273,7 +329,7 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "duration_ms": payload.get("duration_ms"),
                 "status": payload.get("status"),
                 "children": [],
-            })
+            }
         elif kind == _TOOL_CALL:
             entry = {
                 "kind": "tool_call",
@@ -288,7 +344,6 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
             }
             if payload.get("id"):
                 calls[payload["id"]] = entry
-            roots.append(entry)
         elif kind == _TOOL_RESULT:
             parent = calls.get(payload.get("call_id"))
             if parent is not None:
@@ -296,10 +351,11 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 parent["duration_ms"] = _delta_ms(
                     parent["ts"], rec.get("created_at"),
                 )
+            continue
         elif kind == _CLIENT_ACTION:
-            # S3: the runner delivered a notifying call to the browser.
-            # A leaf under the call it belongs to, dropped if that call is
-            # outside this window.
+            # Task 13's leaf rule, preserved through this rewrite: the S3
+            # delivery record belongs to the call it delivered, so it is
+            # never routed through _attach.
             parent = calls.get(payload.get("call_id"))
             if parent is not None:
                 parent["children"].append({
@@ -309,6 +365,10 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
                     "name": payload.get("name"),
                     "children": [],
                 })
+            continue
+        else:
+            continue
+        _attach(entry, rec, payload, roots, nodes, calls)
     return roots
 
 
