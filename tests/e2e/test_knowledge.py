@@ -147,6 +147,7 @@ async def test_t0108_document_put_replaces_name_and_metadata(
         replacement = {
             "id": doc_id,
             "slug": "x.md", "path": f"{doc_id}.md",
+            "title": "replaced",
             "collection_id": f"unenforced-{unique_suffix}",
             "meta": {"version": 2, "tag": "new"},
         }
@@ -157,7 +158,7 @@ async def test_t0108_document_put_replaces_name_and_metadata(
         assert got.status_code == 200, got.text
         body = got.json()
         assert body["id"] == doc_id  # id unchanged
-        assert body["name"] == "replaced", body
+        assert body["title"] == "replaced", body
         assert body["meta"] == {"version": 2, "tag": "new"}, body
     finally:
         await client.delete(f"/v1/documents/{doc_id}")
@@ -172,11 +173,14 @@ async def test_t0087_multi_key_order_by_breaks_ties(
     and reversing the secondary's direction flips just the tied pair.
     """
     prefix = f"doc-t0087-{unique_suffix}"
-    # Two docs share name "alpha" (the tie); a third has "bravo"
+    # Two docs share title "alpha" (the tie); a third has "bravo"
     rows = [
-        {"id": f"{prefix}-1", "name": "alpha"},
-        {"id": f"{prefix}-2", "name": "alpha"},
-        {"id": f"{prefix}-3", "name": "bravo"},
+        {"id": f"{prefix}-1", "title": "alpha",
+         "slug": f"{prefix}-1.md", "path": f"{prefix}-1.md"},
+        {"id": f"{prefix}-2", "title": "alpha",
+         "slug": f"{prefix}-2.md", "path": f"{prefix}-2.md"},
+        {"id": f"{prefix}-3", "title": "bravo",
+         "slug": f"{prefix}-3.md", "path": f"{prefix}-3.md"},
     ]
     created: list[str] = []
     try:
@@ -203,11 +207,11 @@ async def test_t0087_multi_key_order_by_breaks_ties(
             "page": {"kind": "offset", "offset": 0, "length": 50},
         }
 
-        # Primary asc by name; secondary desc by id
+        # Primary asc by title; secondary desc by id
         body_a = {
             **find_body_template,
             "order_by": [
-                {"field": "name", "direction": "asc"},
+                {"field": "title", "direction": "asc"},
                 {"field": "id", "direction": "desc"},
             ],
         }
@@ -218,13 +222,13 @@ async def test_t0087_multi_key_order_by_breaks_ties(
         # Then the "bravo" row → -3
         assert ids_a == [
             f"{prefix}-2", f"{prefix}-1", f"{prefix}-3",
-        ], f"unexpected order with [name asc, id desc]: {ids_a!r}"
+        ], f"unexpected order with [title asc, id desc]: {ids_a!r}"
 
         # Now flip secondary to id asc: only the tied pair flips
         body_b = {
             **find_body_template,
             "order_by": [
-                {"field": "name", "direction": "asc"},
+                {"field": "title", "direction": "asc"},
                 {"field": "id", "direction": "asc"},
             ],
         }
@@ -386,26 +390,37 @@ async def test_t0177_collection_with_missing_embedder_provider_orphan_tolerated(
     """
     coll_id = f"coll-t0177-{unique_suffix}"
     missing_embedder = f"never-existed-emb-{unique_suffix}"
-    body = {
-        "id": coll_id,
-        "description": "orphan-embedder probe",
-        "embedder": {
-            "provider_id": missing_embedder,
-            "model": "sentence-transformers/all-MiniLM-L6-v2",
-        },
-    }
 
-    resp = await client.post("/v1/collections", json=body)
+    created = await client.post(
+        "/v1/collections",
+        json={"id": coll_id, "description": "orphan-embedder probe"},
+    )
+    assert created.status_code in (200, 201), created.text
+
+    # S2 moved the embedder into the per-collection search config, so the
+    # orphan reference is made there.
+    resp = await client.put(
+        f"/v1/collections/{coll_id}/search",
+        json={
+            "embedder": {
+                "provider_id": missing_embedder,
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+            "vector_store_provider_id": f"never-existed-ssp-{unique_suffix}",
+        },
+    )
     assert resp.status_code != 500, resp.text
     assert resp.status_code < 500, resp.text
 
-    if resp.status_code in (200, 201):
+    if resp.status_code in (200, 201, 202):
         # Permissive: orphan accepted
         try:
             # GET the row back
             got = await client.get(f"/v1/collections/{coll_id}")
             assert got.status_code == 200, got.text
-            assert got.json()["embedder"]["provider_id"] == missing_embedder
+            assert got.json()["search"]["embedder"]["provider_id"] == (
+                missing_embedder
+            )
 
             # Document list under the orphan collection must respond
             # cleanly (empty list OR a clean 4xx)
@@ -417,9 +432,12 @@ async def test_t0177_collection_with_missing_embedder_provider_orphan_tolerated(
         finally:
             await client.delete(f"/v1/collections/{coll_id}")
     else:
-        envelope = resp.json()
-        assert envelope["type"].startswith("/errors/"), envelope
-        assert envelope["type"] != "/errors/internal", envelope
+        try:
+            envelope = resp.json()
+            assert envelope["type"].startswith("/errors/"), envelope
+            assert envelope["type"] != "/errors/internal", envelope
+        finally:
+            await client.delete(f"/v1/collections/{coll_id}")
 
 
 # ============================================================================
@@ -481,18 +499,21 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
         assert coll.status_code in (200, 201), coll.text
         coll_created = True
 
+        # S2: a document is a node with a body, created under a parent.
+        # The flat /v1/documents route makes an entity row with no
+        # content, which never appears in a PATH listing.
         for did in doc_ids:
             r = await client.post(
-                "/v1/documents",
+                f"/v1/collections/{collection_id}/docs",
                 json={
-                    "id": did,
-                    "slug": "x.md", "path": f"{did}.md",
-                    "collection_id": collection_id,
-                    "meta": {"seq": int(did.split("-")[-1])},
+                    "parent": "",
+                    "slug": f"{did}.md",
+                    "title": did,
+                    "body": f"body for {did}",
                 },
             )
             assert r.status_code in (200, 201), r.text
-            created_docs.append(did)
+            created_docs.append(r.json()["id"])
 
         # Whole-collection listing in one response (no pagination).
         page = await client.get(
@@ -500,12 +521,13 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
         )
         assert page.status_code == 200, page.text
         documents = page.json()["documents"]
-        seen = [d["document_id"] for d in documents]
+        seen = [d["path"] for d in documents]
+        expected = sorted(f"{did}.md" for did in doc_ids)
 
-        # Every seeded id appears exactly once
-        assert sorted(seen) == sorted(doc_ids), (
+        # Every seeded path appears exactly once
+        assert sorted(seen) == expected, (
             f"listing missed or duplicated docs. "
-            f"seeded={sorted(doc_ids)!r}, seen={sorted(seen)!r}"
+            f"seeded={expected!r}, seen={sorted(seen)!r}"
         )
         assert len(seen) == len(set(seen)), (
             f"duplicates in listing: {seen!r}"
@@ -744,51 +766,48 @@ async def test_t0253_collection_documents_items_carry_collection_id(
 
         for did in doc_ids:
             r = await client.post(
-                "/v1/documents",
-                json={
-                    "id": did,
-                    "slug": "x.md", "path": f"{did}.md",
-                    "collection_id": coll_id,
-                    "meta": {},
-                },
+                f"/v1/collections/{coll_id}/docs",
+                json={"parent": "", "slug": f"{did}.md", "body": "x"},
             )
             assert r.status_code in (200, 201), r.text
-            docs_created.append(did)
+            docs_created.append(r.json()["id"])
 
         # Also seed an unrelated document under a different collection
         # (which is orphan-tolerated per T0068) — must NOT appear in
         # the listing for coll_id
         unrelated = f"doc-unrelated-{unique_suffix}"
+        other_coll = f"other-{unique_suffix}"
         await client.post(
-            "/v1/documents",
-            json={
-                "id": unrelated,
-                "slug": "x.md", "path": f"{unrelated}.md",
-                "collection_id": f"other-{unique_suffix}",
-                "meta": {},
-            },
+            "/v1/collections",
+            json={"id": other_coll, "description": "foreign collection"},
         )
-        docs_created.append(unrelated)
+        other = await client.post(
+            f"/v1/collections/{other_coll}/docs",
+            json={"parent": "", "slug": f"{unrelated}.md", "body": "x"},
+        )
+        if other.status_code in (200, 201):
+            docs_created.append(other.json()["id"])
 
         page = await client.get(
             f"/v1/collections/{coll_id}/documents",
         )
         assert page.status_code == 200, page.text
         documents = page.json()["documents"]
-        returned_ids = {d["document_id"] for d in documents}
-        # The unrelated document (different collection_id) must NOT appear.
-        assert unrelated not in returned_ids, (
+        returned_ids = {d["path"] for d in documents}
+        # The unrelated document (different collection) must NOT appear.
+        assert f"{unrelated}.md" not in returned_ids, (
             f"unrelated doc {unrelated!r} (different collection_id) "
             f"surfaced in {coll_id!r} listing: {returned_ids!r}"
         )
         # All 3 seeded docs ARE present
         for did in doc_ids:
-            assert did in returned_ids, (
+            assert f"{did}.md" in returned_ids, (
                 f"seeded doc {did!r} missing from listing: {returned_ids!r}"
             )
     finally:
         for did in docs_created:
             await client.delete(f"/v1/documents/{did}")
+        await client.delete(f"/v1/collections/other-{unique_suffix}")
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
         if ssp_created:
@@ -842,18 +861,23 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
     try:
         coll = await client.post(
             "/v1/collections",
+            json={"id": coll_id, "description": "T0264 referencing-collection"},
+        )
+        assert coll.status_code in (200, 201), coll.text
+        coll_created = True
+        # S2: the embedder lives in the per-collection search config, which
+        # is what makes it a reference that can be orphaned.
+        enable = await client.put(
+            f"/v1/collections/{coll_id}/search",
             json={
-                "id": coll_id,
-                "description": "T0264 referencing-collection",
                 "embedder": {
                     "provider_id": embedder_id,
                     "model": "sentence-transformers/all-MiniLM-L6-v2",
                 },
-                "search_provider_id": ssp_id,
+                "vector_store_provider_id": ssp_id,
             },
         )
-        assert coll.status_code in (200, 201), coll.text
-        coll_created = True
+        assert enable.status_code in (200, 201, 202), enable.text
 
         # DELETE the embedder while the collection still references it
         rm = await client.delete(f"/v1/embedding_providers/{embedder_id}")
@@ -862,7 +886,7 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
         # Collection row remains readable
         got = await client.get(f"/v1/collections/{coll_id}")
         assert got.status_code == 200, got.text
-        assert got.json()["embedder"]["provider_id"] == embedder_id, (
+        assert got.json()["search"]["embedder"]["provider_id"] == embedder_id, (
             got.json()
         )
 
@@ -905,27 +929,27 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
     )
     assert ssp_r.status_code in (200, 201), ssp_r.text
 
-    body_a = {
-        "id": coll_id,
-        "description": "first incarnation",
+    body_a = {"id": coll_id, "description": "first incarnation"}
+    body_b = {"id": coll_id, "description": "second incarnation"}
+    search_a = {
         "embedder": {
             "provider_id": f"emb-a-{unique_suffix}",
             "model": "sentence-transformers/all-MiniLM-L6-v2",
         },
-        "search_provider_id": ssp_id,
+        "vector_store_provider_id": ssp_id,
     }
-    body_b = {
-        "id": coll_id,
-        "description": "second incarnation",
+    search_b = {
         "embedder": {
             "provider_id": f"emb-b-{unique_suffix}",
             "model": "sentence-transformers/all-mpnet-base-v2",
         },
-        "search_provider_id": ssp_id,
+        "vector_store_provider_id": ssp_id,
     }
 
     create_a = await client.post("/v1/collections", json=body_a)
     assert create_a.status_code in (200, 201), create_a.text
+    enable_a = await client.put(f"/v1/collections/{coll_id}/search", json=search_a)
+    assert enable_a.status_code in (200, 201, 202), enable_a.text
 
     rm = await client.delete(f"/v1/collections/{coll_id}")
     assert rm.status_code == 204, rm.text
@@ -935,15 +959,17 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
         f"re-POST after DELETE with different body should succeed; "
         f"got {create_b.status_code}: {create_b.text}"
     )
+    enable_b = await client.put(f"/v1/collections/{coll_id}/search", json=search_b)
+    assert enable_b.status_code in (200, 201, 202), enable_b.text
     try:
         got = await client.get(f"/v1/collections/{coll_id}")
         assert got.status_code == 200, got.text
         row = got.json()
         assert row["description"] == "second incarnation", row
-        assert row["embedder"]["provider_id"] == f"emb-b-{unique_suffix}", (
-            row
-        )
-        assert row["embedder"]["model"] == (
+        assert row["search"]["embedder"]["provider_id"] == (
+            f"emb-b-{unique_suffix}"
+        ), row
+        assert row["search"]["embedder"]["model"] == (
             "sentence-transformers/all-mpnet-base-v2"
         ), row
     finally:
