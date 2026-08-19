@@ -26,25 +26,16 @@ from httpx import ASGITransport
 async def _bootstrap_and_wait(
     client: httpx.AsyncClient, *, timeout_s: float = 30.0,
 ) -> dict:
-    """POST /bootstrap (async now) + poll /bootstrap/status until done.
+    """POST /bootstrap and return the resulting status.
 
-    Returns the final status row dict. Asserts the POST succeeded with
-    202 or 409 (409 if a previous test left one running — surfaces as a
-    racy test, not a silently-broken assertion). Raises TimeoutError if
-    bootstrap doesn't reach a terminal state in the budget.
+    S2: "bootstrap" is now "enable semantic search on the system
+    collection", which runs inline, so there is nothing to poll. The
+    signature keeps its name and timeout kwarg so call sites read the
+    same.
     """
     resp = await client.post("/v1/internal_collections/bootstrap")
-    assert resp.status_code in (202, 409), resp.text
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        s = await client.get("/v1/internal_collections/bootstrap/status")
-        body = s.json()
-        if body["status"] in ("succeeded", "failed"):
-            return body
-        await asyncio.sleep(0.05)
-    raise TimeoutError(
-        f"bootstrap did not complete within {timeout_s}s; last status={body}"
-    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
 
 from pydantic import SecretStr
 
@@ -96,26 +87,60 @@ def _stub_ingest_ai_docs():
 # ===========================================================================
 
 
+def _predicate_equalities(predicate) -> list[tuple[str, Any]]:
+    """Pull (field, value) equality / IS NULL pairs out of a built predicate.
+
+    Q builds a BINARY tree of Predicate nodes: an AND node's left and right
+    are themselves predicates, and only leaves carry a field. Treating the
+    root as a leaf silently yields no filters, which makes find() return
+    everything and every document look like a child of every parent.
+    """
+    out: list[tuple[str, Any]] = []
+
+    def walk(node) -> None:
+        if node is None:
+            return
+        op = getattr(node, "op", None)
+        op_value = getattr(op, "value", op)
+        if op_value == "and":
+            walk(getattr(node, "left", None))
+            walk(getattr(node, "right", None))
+            return
+        left = getattr(node, "left", None)
+        name = getattr(left, "name", None)
+        if name is None:
+            return
+        if op_value == "is_null":
+            out.append((name, None))
+            return
+        if op_value == "=":
+            right = getattr(node, "right", None)
+            out.append((name, getattr(right, "value", None)))
+
+    walk(predicate)
+    return out
+
+
 class _Storage:
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}
 
-    async def get(self, id: str):
+    async def get(self, id: str, *, conn=None):
         return self._data.get(id)
 
-    async def create(self, e):
+    async def create(self, e, *, conn=None):
         if e.id in self._data:
             raise ConflictError(f"id {e.id!r} already exists")
         self._data[e.id] = e
         return e
 
-    async def update(self, e):
+    async def update(self, e, *, conn=None):
         if e.id not in self._data:
             raise NotFoundError(f"no entity with id {e.id!r}")
         self._data[e.id] = e
         return e
 
-    async def delete(self, id):
+    async def delete(self, id, *, conn=None):
         if id not in self._data:
             raise NotFoundError(f"no entity with id {id!r}")
         del self._data[id]
@@ -134,15 +159,40 @@ class _Storage:
         )
 
     async def find(self, predicate, page, *, order_by=None):
-        return await self.list(page, order_by=order_by)
+        # The document tree filters by collection_id + parent_id; a fake
+        # that ignores the predicate makes every node a child of every
+        # other one, so honour the simple equality clauses.
+        items = list(self._data.values())
+        for field, value in _predicate_equalities(predicate):
+            items = [
+                i for i in items
+                if (getattr(i, field, None) == value)
+                or (value is None and getattr(i, field, None) is None)
+            ]
+        sliced = items[page.offset : page.offset + page.length]
+        return OffsetPageResponse(
+            offset=page.offset, length=len(sliced), total=len(items), items=sliced,
+        )
 
 
 class _SP:
     def __init__(self) -> None:
         self._stores: dict[type, _Storage] = {}
+        # The document tree (and so the system-collection regeneration the
+        # lifespan runs) needs a content store and a transaction context.
+        from tests.conftest import _FakeContentStore, _NoOpTransaction
+
+        self._content_store = _FakeContentStore()
+        self._txn = _NoOpTransaction
 
     def get_storage(self, cls):
         return self._stores.setdefault(cls, _Storage())
+
+    def get_content_store(self):
+        return self._content_store
+
+    def transaction(self):
+        return self._txn()
 
     async def initialize(self):
         return
@@ -284,6 +334,11 @@ async def app(sp, pr, store):
     # Override the semantic_search_registry with a fake that returns the
     # test store so bootstrap can resolve vectors without a real database.
     test_app.state.semantic_search_registry = _FakeSSR(store)
+    # Regenerate the system collection (parity with the lifespan, which
+    # does this unconditionally). This module builds its own app, so the
+    # shared conftest mirror does not reach it.
+    from primer.knowledge.system_collection import regenerate_system_collection
+    await regenerate_system_collection(sp, toolset_providers={})
     return test_app
 
 
@@ -376,15 +431,13 @@ class TestConfigCRUD:
     async def test_delete_clears_config_and_detaches_subsystem(
         self, client, app, store
     ) -> None:
-        from primer.model.internal import INTERNAL_COLLECTION_IDS
-
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
         assert app.state.internal_collections is not None
-        # Sanity: bootstrap should have materialised the four reserved
-        # collections on the fake store.
-        for coll_id in INTERNAL_COLLECTION_IDS.values():
-            assert coll_id in store.collections
+        # S2: activation enables search on the ONE system collection
+        # rather than materialising five reserved _internal_* namespaces.
+        coll = await client.get("/v1/collections/system")
+        assert coll.json()["search"] is not None
 
         delete = await client.delete("/v1/internal_collections/config")
         assert delete.status_code == 204
@@ -393,16 +446,6 @@ class TestConfigCRUD:
             "/v1/agents/search", json={"query": "anything"}
         )
         assert search.status_code == 503
-
-        # The four reserved collections were dropped from the SSP's
-        # backing store — not just detached. Without this, a subsequent
-        # re-activation with a different embedding model would surface
-        # dimension-mismatched stale vectors.
-        for coll_id in INTERNAL_COLLECTION_IDS.values():
-            assert coll_id in store.dropped, (
-                f"collection {coll_id!r} was not dropped on deactivate"
-            )
-            assert coll_id not in store.collections
 
     @pytest.mark.asyncio
     async def test_delete_then_reput_with_different_dimensions_succeeds(
@@ -417,24 +460,24 @@ class TestConfigCRUD:
 
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
-        for coll_id in INTERNAL_COLLECTION_IDS.values():
-            assert coll_id in store.collections
+        enabled = await client.get("/v1/collections/system")
+        assert enabled.json()["search"] is not None
 
         delete = await client.delete("/v1/internal_collections/config")
         assert delete.status_code == 204
-        for coll_id in INTERNAL_COLLECTION_IDS.values():
-            assert coll_id not in store.collections
+        disabled = await client.get("/v1/collections/system")
+        assert disabled.json()["search"] is None
 
-        # Re-PUT + re-bootstrap — same fake (so dimensions don't actually
-        # mismatch here, but the surface contract is that the second
-        # bootstrap doesn't see the prior collections).
+        # Re-PUT + re-enable: the second activation starts from a
+        # disabled collection, so a different embedding model cannot
+        # surface dimension-mismatched stale vectors.
         put2 = await client.put(
             "/v1/internal_collections/config", json=_config_body()
         )
         assert put2.status_code == 200, put2.text
         await _bootstrap_and_wait(client)
-        for coll_id in INTERNAL_COLLECTION_IDS.values():
-            assert coll_id in store.collections
+        again = await client.get("/v1/collections/system")
+        assert again.json()["search"] is not None
 
 
 # ===========================================================================
@@ -456,46 +499,25 @@ class TestBootstrap:
         await sp.get_storage(Agent).create(_agent("agt-2"))
         await client.put("/v1/internal_collections/config", json=_config_body())
 
-        # POST returns 202 + the freshly-claimed status row, then the
-        # background task runs to completion.
+        # S2: enabling runs inline and reports the outcome directly.
         resp = await client.post("/v1/internal_collections/bootstrap")
-        assert resp.status_code == 202, resp.text
-        initial = resp.json()
-        assert initial["status"] == "running"
-        assert initial["attempt_id"]
-
-        final = await _bootstrap_and_wait(client)
+        assert resp.status_code == 200, resp.text
+        final = resp.json()
         assert final["status"] == "succeeded"
-        assert final["counts"]["agents"] == 2
-        assert app.state.internal_collections is not None
-        assert app.state.search_toolset is not None
+        assert final["state"] == "ready"
+        assert final["collection_id"] == "system"
+        assert final["search"]["vector_store_provider_id"] == "ssp-test"
 
     @pytest.mark.asyncio
-    async def test_bootstrap_409_when_already_running(
-        self, client, sp
-    ) -> None:
-        """A second POST while the first is in-flight returns 409 with
-        the in-flight status row so the UI can render it without
-        re-claiming."""
+    async def test_bootstrap_is_idempotent(self, client) -> None:
+        """Enabling twice is a no-op re-index, not a conflict: there is no
+        in-flight row to race on now that the work is inline."""
         await client.put("/v1/internal_collections/config", json=_config_body())
-
-        # Kick off the first bootstrap. Don't await completion yet —
-        # but the in-memory backend can finish fast, so race.
-        r1 = await client.post("/v1/internal_collections/bootstrap")
-        assert r1.status_code == 202
-
-        # The conflict either fires (still running) or we win the race
-        # and get another fresh 202. Either is fine — what we're
-        # asserting is that 409 *is* the response when running is True.
-        r2 = await client.post("/v1/internal_collections/bootstrap")
-        assert r2.status_code in (202, 409)
-        if r2.status_code == 409:
-            ext = r2.json()["extensions"]
-            assert ext["error"] == "bootstrap_already_running"
-            assert ext["status"]["status"] == "running"
-
-        # Settle so other tests don't inherit a half-baked state.
-        await _bootstrap_and_wait(client)
+        first = await client.post("/v1/internal_collections/bootstrap")
+        assert first.status_code == 200, first.text
+        second = await client.post("/v1/internal_collections/bootstrap")
+        assert second.status_code == 200, second.text
+        assert second.json()["state"] == "ready"
 
     @pytest.mark.asyncio
     async def test_status_returns_idle_before_any_bootstrap(
@@ -505,8 +527,8 @@ class TestBootstrap:
         assert resp.status_code == 200
         body = resp.json()
         assert body["status"] == "idle"
-        assert body["started_at"] is None
-        assert body["finished_at"] is None
+        assert body["state"] == "disabled"
+        assert body["documents_indexed"] == 0
 
     @pytest.mark.asyncio
     async def test_status_reflects_terminal_state(
@@ -517,7 +539,7 @@ class TestBootstrap:
         resp = await client.get("/v1/internal_collections/bootstrap/status")
         body = resp.json()
         assert body["status"] == "succeeded"
-        assert body["finished_at"] is not None
+        assert body["state"] == "ready"
         assert body["error"] is None
 
 
@@ -537,7 +559,15 @@ class TestSearchEndpoints:
             assert resp.json()["type"] == "/errors/subsystem-inactive"
 
     @pytest.mark.asyncio
-    async def test_search_returns_hits_when_active(self, client, sp) -> None:
+    async def test_search_resolves_but_is_inert_when_active(
+        self, client, sp
+    ) -> None:
+        """S2 pinned decision 15: the per-entity IC search surface stays
+        REGISTERED BUT INERT until P5 deletes it. Activation no longer
+        populates the five _internal_* namespaces - agent and graph
+        material lives in the system collection now, reachable through
+        collections.semantic_search - so these routes resolve and answer
+        with no hits rather than 503."""
         await sp.get_storage(Agent).create(_agent("agt-1"))
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
@@ -546,9 +576,7 @@ class TestSearchEndpoints:
             "/v1/agents/search", json={"query": "research"}
         )
         assert resp.status_code == 200, resp.text
-        body = resp.json()
-        ids = {h["document_id"] for h in body["hits"]}
-        assert "agt-1" in ids
+        assert resp.json()["hits"] == []
 
 
 # ===========================================================================
@@ -572,6 +600,9 @@ class TestSearchToolset:
         assert "search_collections" in names
         assert "search_tools" in names
 
+        # Registered but inert (pinned decision 15): the tools resolve and
+        # answer cleanly, with nothing indexed behind them until P5 removes
+        # the toolset. collections.semantic_search is the live path.
         result = await provider.call(
             tool_name="search_agents",
             arguments={"query": "research", "top_k": 5},
@@ -579,9 +610,7 @@ class TestSearchToolset:
         assert not result.is_error, result.output
         import json
 
-        body = json.loads(result.output)
-        ids = [h["document_id"] for h in body["hits"]]
-        assert "agt-1" in ids
+        assert json.loads(result.output)["hits"] == []
 
     @pytest.mark.asyncio
     async def test_search_toolset_unavailable_before_bootstrap(
@@ -589,3 +618,21 @@ class TestSearchToolset:
     ) -> None:
         with pytest.raises(NotFoundError):
             await pr.get_toolset("search")
+
+
+async def test_system_collection_exists_without_ic_activation(client):
+    # M12: regeneration is unconditional; no embedder, no IC config needed.
+    r = await client.get("/v1/collections/system")
+    assert r.status_code == 200
+    assert r.json()["system"] is True
+    docs = await client.get("/v1/collections/system/docs",
+                            params={"parent": "", "depth": 1})
+    assert docs.status_code == 200
+    roots = {n["slug"] for n in docs.json()["nodes"]}
+    assert {"agents", "graphs", "tools", "collections", "docs"} <= roots
+
+
+async def test_user_write_to_system_collection_403(client):
+    r = await client.post("/v1/collections/system/docs",
+                          json={"parent": "", "slug": "x", "body": "y"})
+    assert r.status_code == 403

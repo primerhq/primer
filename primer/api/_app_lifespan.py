@@ -787,6 +787,31 @@ def _make_lifespan(config: AppConfig):
             logger.info("lifespan: worker_pool.start() done")
         app.state.worker_pool = worker_pool
 
+        # --- System collection regeneration ------------------------------
+        # Unconditional (amendment M12): the system collection is a
+        # grep-and-read wiki describing the platform to its own agents, so
+        # it needs no embedder and no internal-collections config. It only
+        # gains vectors if an operator enables search on it explicitly.
+        try:
+            from primer.knowledge.system_collection import (  # noqa: PLC0415
+                regenerate_system_collection,
+            )
+            await regenerate_system_collection(
+                storage_provider,
+                toolset_providers={
+                    "system": system_toolset,
+                    "workspaces": ws_toolset,
+                    "misc": misc_toolset,
+                    "web": web_toolset,
+                    "harness": harness_toolset,
+                    "trigger": trigger_toolset,
+                    "workspace_ext": workspace_ext_toolset,
+                    "collections": collections_toolset,
+                },
+            )
+        except Exception:
+            logger.exception("lifespan: system collection regeneration failed")
+
         # Internal collections subsystem auto-activation: if a config
         # row already exists in storage, build the live subsystem +
         # search toolset and start the CDC worker. We do NOT auto-run
@@ -800,7 +825,7 @@ def _make_lifespan(config: AppConfig):
         # previous API process exited, its asyncio task is gone but the
         # status row still says "running". Mark it as failed so the
         # UI surfaces the interruption and the operator can re-trigger.
-        await recover_ic_bootstrap(storage_provider)
+        # Bootstrap recovery went with the boot-time vector pass.
         if ic_config is not None:
             ic_subsystem = build_subsystem(
                 config=ic_config,
@@ -826,7 +851,9 @@ def _make_lifespan(config: AppConfig):
             provider_registry._search_toolset_provider = search_toolset  # noqa: SLF001
             app.state.internal_collections = ic_subsystem
             app.state.search_toolset = search_toolset
-            ic_subsystem.start_worker()
+            # The CDC vector worker no longer starts: vectorisation is
+            # the explicit search lifecycle now. The subsystem stays
+            # constructed so the reserved `search` toolset resolves.
         # Startup invariant: every kind the harness service manages must
         # appear in the CDC kinds registry.  _harness_kind_models() ensures
         # the registry is fully populated (handles test-reset and lazy-import

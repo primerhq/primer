@@ -282,6 +282,21 @@ async def delete_config(
             "internal collections subsystem is not configured; nothing "
             "to delete."
         )
+    # S2: deactivating also disables semantic search on the system
+    # collection and drops its vectors, so a re-activation with a
+    # different embedding model cannot surface stale dimensions.
+    from primer.knowledge.lifecycle import disable_search
+    from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
+
+    try:
+        await disable_search(
+            request.app.state.storage_provider,
+            request.app.state.semantic_search_registry,
+            collection_id=SYSTEM_COLLECTION_ID,
+        )
+    except NotFoundError:
+        pass  # nothing to disable
+
     # Detach the live subsystem first so the CDC worker stops writing
     # and so the search routes flip to 503 before we touch the vectors.
     subsystem = _get_subsystem_or_none(request)
@@ -499,7 +514,6 @@ async def _run_bootstrap_in_background(
 
 @router.post(
     "/internal_collections/bootstrap",
-    status_code=status.HTTP_202_ACCEPTED,
     summary="Start (or restart) the bootstrap pipeline",
     responses=common_responses(404, 409, 500),
 )
@@ -508,13 +522,13 @@ async def bootstrap(
     config_storage=Depends(get_internal_collections_config_storage),
     status_storage=Depends(get_internal_collections_bootstrap_status_storage),
 ) -> dict:
-    """Kick off the bootstrap pipeline as a background task.
+    """Enable semantic search on the system collection and index it.
 
-    Returns 202 immediately with the freshly-claimed status row.
-    Subsequent polls of ``GET /bootstrap/status`` watch progress. A
-    second POST while one is already running returns 409 with the
-    in-flight row — preventing concurrent attempts that would race on
-    the vector tables.
+    S2: the old asynchronous bootstrap pipeline is gone. Enabling runs
+    inline and returns the outcome, so there is nothing to poll and no
+    in-flight row to race on. The system collection itself is regenerated
+    unconditionally at startup and is readable without any of this; this
+    toggle governs vectorisation only.
     """
     cfg = await config_storage.get(INTERNAL_COLLECTIONS_CONFIG_ID)
     if cfg is None:
@@ -523,55 +537,51 @@ async def bootstrap(
             "/v1/internal_collections/config first."
         )
 
-    current = await _read_status(status_storage)
-    if current.status == "running":
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "bootstrap_already_running",
-                "message": (
-                    "A bootstrap is already in progress. Poll "
-                    "GET /v1/internal_collections/bootstrap/status."
-                ),
-                "status": current.model_dump(mode="json"),
-            },
-        )
+    # Stamp activation FIRST: the subsystem snapshots its config at
+    # construction, so stamping afterwards leaves its is_activated gate
+    # shut and the per-entity search routes answering 503.
+    if cfg.activated_at is None:
+        cfg = cfg.model_copy(update={"activated_at": _now()})
+        await config_storage.update(cfg)
 
+    # The subsystem is still CONSTRUCTED (never started): the reserved
+    # `search` toolset resolves through it, and pinned decision 15 keeps
+    # that window open until P5 removes the toolset itself.
     subsystem = _get_subsystem_or_none(request)
     if subsystem is None:
-        subsystem = await _build_subsystem_for_request(request, cfg)
+        await _build_subsystem_for_request(request, cfg)
 
-    attempt_id = uuid.uuid4().hex
-    fresh = InternalCollectionsBootstrapStatus(
-        id=INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID,
-        status="running",
-        phase=None,
-        phase_done=0,
-        phase_total=None,
-        counts={"agents": 0, "graphs": 0, "collections": 0, "tools": 0},
-        started_at=_now(),
-        finished_at=None,
-        error=None,
-        attempt_id=attempt_id,
+    # S2: "bootstrap" is now exactly "enable semantic search on the system
+    # collection". The collection itself is regenerated unconditionally at
+    # startup and is readable without any of this; the toggle only governs
+    # vectorisation, and the config's provider ids map straight onto a
+    # CollectionSearchConfig.
+    from primer.knowledge.lifecycle import enable_search
+    from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
+    from primer.model.collection import CollectionEmbedder, CollectionSearchConfig
+
+    search_cfg = CollectionSearchConfig(
+        embedder=CollectionEmbedder(
+            provider_id=cfg.embedding_provider_id, model=cfg.embedding_model,
+        ),
+        vector_store_provider_id=cfg.search_provider_id,
+        cross_encoder=cfg.cross_encoder,
     )
-    await _upsert_status(status_storage, fresh)
-
-    # Hold a reference to the task on app.state so it doesn't get GC'd
-    # mid-run (asyncio only weak-refs background tasks otherwise).
-    task = asyncio.create_task(_run_bootstrap_in_background(
-        app=request.app,
-        subsystem=subsystem,
-        attempt_id=attempt_id,
-        status_storage=status_storage,
-    ))
-    bg_tasks: set[asyncio.Task] = getattr(
-        request.app.state, "ic_bootstrap_tasks", None,
-    ) or set()
-    bg_tasks.add(task)
-    task.add_done_callback(bg_tasks.discard)
-    request.app.state.ic_bootstrap_tasks = bg_tasks
-
-    return fresh.model_dump(mode="json")
+    updated = await enable_search(
+        request.app.state.storage_provider,
+        request.app.state.provider_registry,
+        request.app.state.semantic_search_registry,
+        collection_id=SYSTEM_COLLECTION_ID,
+        cfg=search_cfg,
+    )
+    state = updated.search.state if updated.search else "disabled"
+    return {
+        "status": "succeeded" if state == "ready" else "failed",
+        "state": state,
+        "collection_id": SYSTEM_COLLECTION_ID,
+        "error": updated.search.error if updated.search else None,
+        "search": updated.search.model_dump(mode="json") if updated.search else None,
+    }
 
 
 @router.get(
@@ -580,6 +590,7 @@ async def bootstrap(
     responses=common_responses(500),
 )
 async def bootstrap_status(
+    request: Request,
     status_storage=Depends(get_internal_collections_bootstrap_status_storage),
 ) -> dict:
     """Return the singleton status row.
@@ -588,8 +599,22 @@ async def bootstrap_status(
     ``status='idle'`` row is returned so the UI doesn't need to
     distinguish "no row yet" from "row says idle".
     """
-    row = await _read_status(status_storage)
-    return row.model_dump(mode="json")
+    from primer.knowledge.lifecycle import search_status
+    from primer.knowledge.system_collection import SYSTEM_COLLECTION_ID
+
+    status = await search_status(
+        request.app.state.storage_provider,
+        request.app.state.semantic_search_registry,
+        collection_id=SYSTEM_COLLECTION_ID,
+    )
+    body = status.model_dump(mode="json")
+    # ``status`` mirrors the lifecycle state in the terminal vocabulary the
+    # console already polls on; ``state`` is the authoritative field.
+    body["status"] = {
+        "ready": "succeeded", "error": "failed",
+        "indexing": "running", "disabled": "idle",
+    }[status.state]
+    return body
 
 
 # ===========================================================================

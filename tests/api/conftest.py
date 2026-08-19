@@ -82,6 +82,12 @@ async def app(
     from primer.api.app import _bootstrap_web_fetch
     await _bootstrap_web_fetch(fake_storage_provider)
 
+    # Regenerate the system collection (parity with the lifespan). It is
+    # unconditional in production, so the API suite must have it too or
+    # every /v1/collections/system route 404s here only.
+    from primer.knowledge.system_collection import regenerate_system_collection
+    await regenerate_system_collection(fake_storage_provider, toolset_providers={})
+
     # Construct the web-fetch registry + service from the bootstrapped rows.
     from primer.api.registries.web_fetch_registry import (
         WebFetchRegistry,
