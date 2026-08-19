@@ -198,6 +198,7 @@ _WEB_TOOLSET_ID = "web"
 _HARNESS_TOOLSET_ID = "harness"
 _TRIGGER_TOOLSET_ID = "trigger"
 _WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
+_COLLECTIONS_TOOLSET_ID = "collections"
 
 # Public: ids that are always resolvable by the live registry (built-in
 # providers), so external reference-integrity checks can skip the
@@ -211,6 +212,7 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _HARNESS_TOOLSET_ID,
     _TRIGGER_TOOLSET_ID,
     _WORKSPACE_EXT_TOOLSET_ID,
+    _COLLECTIONS_TOOLSET_ID,
 })
 
 # ---------------------------------------------------------------------------
@@ -330,6 +332,7 @@ class ProviderRegistry:
         search_toolset_provider: ToolsetProvider | None = None,
         workspaces_toolset_provider: ToolsetProvider | None = None,
         misc_toolset_provider: ToolsetProvider | None = None,
+        collections_toolset_provider: ToolsetProvider | None = None,
         web_toolset_provider: ToolsetProvider | None = None,
         harness_toolset_provider: ToolsetProvider | None = None,
         trigger_toolset_provider: ToolsetProvider | None = None,
@@ -372,6 +375,11 @@ class ProviderRegistry:
         # always built at app startup. Stateless utilities
         # (get_datetime, sleep, uuid_v4, hash, calculate).
         self._misc_toolset_provider = misc_toolset_provider
+        # Reserved id ``collections`` resolves to the always-on
+        # document-tree toolset: list / tree / read / grep and the
+        # write side, with semantic_search pointing at grep when a
+        # collection has no search block.
+        self._collections_toolset_provider = collections_toolset_provider
         # Reserved id ``web`` (no underscore prefix) resolves to the
         # immutable web toolset built at app startup.
         # DuckDuckGo search + http-request primitives.
@@ -490,6 +498,13 @@ class ProviderRegistry:
             and toolset_id == _MISC_TOOLSET_ID
         ):
             return self._misc_toolset_provider
+        # Reserved id `collections` resolves to the always-on document
+        # tree toolset built at app startup.
+        if (
+            self._collections_toolset_provider is not None
+            and toolset_id == _COLLECTIONS_TOOLSET_ID
+        ):
+            return self._collections_toolset_provider
         # Reserved id `web` resolves to the always-on web toolset
         # built at app startup.
         if (

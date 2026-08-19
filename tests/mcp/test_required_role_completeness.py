@@ -25,6 +25,7 @@ import pytest
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
 from primer.api.registries.provider_registry import RESERVED_TOOLSET_IDS
 from primer.mcp.safety import is_exposable, tool_scoped_id
+from primer.toolset.collections import build_collections_toolset
 from primer.toolset.harness import build_harness_toolset_provider
 from primer.toolset.misc import build_misc_toolset
 from primer.toolset.search import build_search_toolset
@@ -56,6 +57,13 @@ def reserved_provider_registry(fake_storage_provider) -> ProviderRegistry:
 
     misc_toolset = build_misc_toolset()
     registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
+
+    collections_toolset = build_collections_toolset(
+        storage_provider=fake_storage_provider,
+        provider_registry=registry,
+        semantic_search_registry=None,
+    )
+    registry._collections_toolset_provider = collections_toolset  # noqa: SLF001
 
     web_toolset = build_web_toolset(
         # list_tools() never calls either service; only call() would.

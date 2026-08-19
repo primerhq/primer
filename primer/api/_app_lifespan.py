@@ -226,6 +226,13 @@ def _make_lifespan(config: AppConfig):
         # Build the always-on _misc toolset (stateless utilities).
         misc_toolset = build_misc_toolset()
         provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
+        from primer.toolset.collections import build_collections_toolset
+        collections_toolset = build_collections_toolset(
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
+        )
+        provider_registry._collections_toolset_provider = collections_toolset  # noqa: SLF001
         # Bootstrap web-search reserved rows BEFORE building the toolset.
         await _bootstrap_web_search(storage_provider)
         logger.info("bootstrap: web-search rows materialised")
@@ -811,6 +818,7 @@ def _make_lifespan(config: AppConfig):
                     "harness": harness_toolset,
                     "trigger": trigger_toolset,
                     "workspace_ext": workspace_ext_toolset,
+                    "collections": collections_toolset,
                 },
             )
             search_toolset = build_search_toolset(ic_subsystem)
