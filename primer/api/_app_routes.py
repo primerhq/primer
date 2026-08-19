@@ -152,6 +152,20 @@ def _mount_routers(
     app.include_router(web_fetch_providers_helpers_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(web_fetch_providers_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(web_fetch_active_config_router, prefix=prefix, dependencies=admin_dep)
+    # Speech providers (ASR / TTS) - system configuration => admin.
+    # helpers BEFORE CRUD so /_test and /_types beat /{id}.
+    from primer.api.routers.speech import (
+        speech_active_config_router,
+        stt_providers_helpers_router,
+        stt_providers_router,
+        tts_providers_helpers_router,
+        tts_providers_router,
+    )
+    app.include_router(stt_providers_helpers_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(stt_providers_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(tts_providers_helpers_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(tts_providers_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(speech_active_config_router, prefix=prefix, dependencies=admin_dep)
     # Phase 2 — compute (Agent + Graph) — authoring feature => require_user.
     app.include_router(compute.agent_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=user_dep)

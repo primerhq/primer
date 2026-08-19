@@ -252,6 +252,26 @@ def create_test_app(
         )
         app.state.web_fetch_registry = _test_wf_registry
         app.state.web_fetch_service = _test_wf_service
+        from primer.api.registries.speech_registry import (
+            SpeechRegistry,
+            default_stt_factory,
+            default_tts_factory,
+        )
+        from primer.model.provider import (
+            SpeechToTextProvider as _STT,
+            TextToSpeechProvider as _TTS,
+        )
+
+        app.state.stt_registry = SpeechRegistry(
+            storage=storage_provider.get_storage(_STT),
+            factory=default_stt_factory,
+            label="stt",
+        )
+        app.state.tts_registry = SpeechRegistry(
+            storage=storage_provider.get_storage(_TTS),
+            factory=default_tts_factory,
+            label="tts",
+        )
         web_toolset = build_web_toolset(
             web_search_service=_test_ws_service,
             web_fetch_service=_test_wf_service,

@@ -277,6 +277,30 @@ def _make_lifespan(config: AppConfig):
         )
         app.state.web_fetch_registry = web_fetch_registry
         app.state.web_fetch_service = web_fetch_service
+        from primer.api.registries.speech_registry import (
+            SpeechRegistry,
+            default_stt_factory,
+            default_tts_factory,
+        )
+        from primer.model.provider import (
+            SpeechToTextProvider as _STT,
+            TextToSpeechProvider as _TTS,
+        )
+
+        stt_registry = SpeechRegistry(
+            storage=storage_provider.get_storage(_STT),
+            factory=default_stt_factory,
+            label="stt",
+        )
+        tts_registry = SpeechRegistry(
+            storage=storage_provider.get_storage(_TTS),
+            factory=default_tts_factory,
+            label="tts",
+        )
+        app.state.stt_registry = stt_registry
+        app.state.tts_registry = tts_registry
+        logger.info("lifespan: speech registries constructed")
+
         logger.info("lifespan: web-fetch registry + service constructed")
         # Build the always-on `web` toolset (web-search dispatching via
         # the WebSearchService + http-request primitives). Reserved id
@@ -1003,6 +1027,14 @@ def _make_lifespan(config: AppConfig):
                 await web_fetch_registry.aclose()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("lifespan: web_fetch_registry aclose failed: %s", exc)
+            try:
+                await stt_registry.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("lifespan: stt_registry aclose failed: %s", exc)
+            try:
+                await tts_registry.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("lifespan: tts_registry aclose failed: %s", exc)
             try:
                 await channel_registry.aclose()
             except Exception:

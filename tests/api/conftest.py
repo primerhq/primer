@@ -111,6 +111,26 @@ async def app(
     )
     _app.state.web_fetch_registry = wf_registry
     _app.state.web_fetch_service = wf_service
+    from primer.api.registries.speech_registry import (
+        SpeechRegistry,
+        default_stt_factory,
+        default_tts_factory,
+    )
+    from primer.model.provider import (
+        SpeechToTextProvider as _STT,
+        TextToSpeechProvider as _TTS,
+    )
+
+    _app.state.stt_registry = SpeechRegistry(
+        storage=fake_storage_provider.get_storage(_STT),
+        factory=default_stt_factory,
+        label="stt",
+    )
+    _app.state.tts_registry = SpeechRegistry(
+        storage=fake_storage_provider.get_storage(_TTS),
+        factory=default_tts_factory,
+        label="tts",
+    )
 
     forwarder = await _app.state.start_chat_tick_forwarder()
 
