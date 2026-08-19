@@ -672,6 +672,19 @@ class Tool(Describeable):
             "serialization."
         ),
     )
+    tool_class: Literal["standard", "notifying"] = Field(
+        default="standard",
+        validation_alias="class",
+        exclude=True,
+        description=(
+            "Tool class. 'standard' tools return a result the model reads. "
+            "'notifying' tools are declared no-response: the runner answers "
+            "them itself with a successful synthetic tool_result and "
+            "continues the turn, and their delivery to any responder is "
+            "best-effort. Wire alias is 'class'. In-memory metadata only; "
+            "excluded from serialization."
+        ),
+    )
     required_role: str | None = Field(
         default=None,
         exclude=True,
@@ -1241,6 +1254,14 @@ class SafetyRatings(BaseModel):
         ge=0,
         description="Flat per-block index when the rating applies to a specific output block; None if it applies to the whole response.",
     )
+
+
+NOTIFYING_TOOL_RESULT = '{"delivered": true}'
+"""Canonical synthetic tool_result body for a notifying-class tool call.
+
+Delivered semantics, not rendered: it says the runner handed the action
+off, never that a client acted on it.
+"""
 
 
 class _ExecutorToolResult(BaseModel):
