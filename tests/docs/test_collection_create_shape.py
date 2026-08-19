@@ -20,9 +20,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-# Keys S2 removed from the create body. ``search`` is legitimate on the
-# model but is not accepted at create either: it is written by the
-# search route, which validates the providers being bound.
+# The flat pair S2 removed from the create body. A nested ``search``
+# block IS accepted there, so it is not listed: the difference is that
+# creating with one leaves the collection in state "indexing" with
+# nothing indexed, while PUT /collections/{id}/search validates the
+# providers and backfills, which is why the route is the better default.
 RETIRED_CREATE_KEYS = frozenset({"embedder", "search_provider_id"})
 
 _CREATE_URL = "/v1/collections"
