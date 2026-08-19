@@ -87,6 +87,23 @@ class AuthStatus(BaseModel):
         description="True if the logged-in user must rotate their password "
         "before using the app.",
     )
+    setup_complete: bool = Field(
+        default=False,
+        description=(
+            "True when this install is configured: an LLM provider, a model "
+            "profile, and the S5 seeded objects all exist. Derived live; "
+            "there is no stamp."
+        ),
+    )
+    setup_missing: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Setup pieces that are still missing, in wizard order "
+            "(llm_provider, model_profile, default_workspace, "
+            "operator_agent, builder_agent, system_collection). Empty when "
+            "setup_complete is true."
+        ),
+    )
 
 
 class AuthOk(BaseModel):
@@ -173,8 +190,11 @@ def _set_session_cookie(
 @auth_router.get("/status", response_model=AuthStatus)
 async def auth_status(request: Request) -> AuthStatus:
     """Probe used by the UI to pick register / login / main flow."""
+    from primer.bootstrap.setup_state import evaluate_setup_state
+
     user = getattr(request.state, "user", None)
     has_user = await _has_any_user(request)
+    setup = await evaluate_setup_state(get_storage_provider(request))
     return AuthStatus(
         has_user=has_user,
         authenticated=user is not None,
@@ -183,6 +203,8 @@ async def auth_status(request: Request) -> AuthStatus:
         must_change_password=(
             user.must_change_password if user is not None else False
         ),
+        setup_complete=setup.complete,
+        setup_missing=setup.missing,
     )
 
 
