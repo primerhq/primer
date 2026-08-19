@@ -321,6 +321,27 @@ function SH_SessionDoc(props) {
     { pollMs: 0, deps: [sid] }
   );
 
+  // The gate at the pause point, and who approved what (the "on behalf
+  // of" stamp). Both are S1/approvals reads; S6 is never consulted.
+  var gates = window.primerApi.useResource(
+    SH_api.keys.sessionPending(sid),
+    function (signal) {
+      return SH_api.sessionPendingYields(shell.wid, sid, signal);
+    },
+    { pollMs: 5000, deps: [shell.wid, sid] }
+  );
+  var records = window.primerApi.useResource(
+    SH_api.keys.records(),
+    function (signal) { return SH_api.approvalRecords(signal); },
+    { pollMs: 0 }
+  );
+  var gateItems = window.SH_toAttentionItems({
+    pending: (gates.data && gates.data.items) || [], records: [],
+  });
+  var approvedBy = window.SH_approvedByMap(
+    (records.data && records.data.items) || []
+  );
+
   if (!shell.registry.get("session.rewind")) SH_registerSessionVerbs(shell);
 
   // "Mounted IMMEDIATELY on send": the tap frame that would produce a
@@ -410,7 +431,8 @@ function SH_SessionDoc(props) {
 
       <div className="sh-transcript" data-testid="shell-transcript" ref={scrollRef}
         onScroll={function () { if (decision.follow) setSeen(rows.length); }}>
-        <SH_TurnList rows={rows} sid={sid} agentId={agentId} />
+        <SH_TurnList rows={rows} sid={sid}
+          agentId={agentId} approvedBy={approvedBy} />
         <SH_QueuedSteers rows={pending} onDismiss={function (row) {
           SH_api.dismissQueuedSteer(shell.wid, sid, row.id)
             .then(function () { detail.refetch(); })
@@ -418,6 +440,12 @@ function SH_SessionDoc(props) {
               shell.toast("Dismiss failed: " + (err && err.message ? err.message : err));
             });
         }} />
+        {gateItems.map(function (item) {
+          return (
+            <window.SH_DecisionCard key={item.id} item={item}
+              onResolved={function () { gates.refetch(); detail.refetch(); }} />
+          );
+        })}
       </div>
 
       {decision.showJump ? (
