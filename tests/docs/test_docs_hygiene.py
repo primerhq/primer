@@ -30,6 +30,7 @@ ARCHITECTURE_DOCS = [
     "rest-api",
     "observability",
     "auto-bootstrap",
+    "python-tool-isolation",
 ]
 
 SUBSYSTEM_DOCS = [
@@ -49,6 +50,9 @@ SUBSYSTEM_DOCS = [
     "ui-pages",
     "modularity",
     "bootstrap-operator",
+    "external-tools",
+    "python-runner-toolset",
+    "services",
 ]
 
 ARCH_HEADINGS = [
@@ -347,3 +351,24 @@ def test_channels_doc_covers_s6(term):
 def test_channels_doc_drops_the_deleted_plumbing(stale):
     text = (DOCS_DEV / "subsystems" / "channels.md").read_text()
     assert stale not in text, f"channels.md still references {stale}"
+
+
+def test_registries_cover_the_whole_tree() -> None:
+    """The registries are the doc set, not a subset of it.
+
+    Before this, a subsystem doc could be added (or a deleted subsystem's
+    doc could be left behind) without any test noticing. S9 section 6
+    makes the registry pass exact.
+    """
+    on_disk_arch = {p.stem for p in (DOCS_DEV / "architecture").glob("*.md")}
+    on_disk_subsys = {p.stem for p in (DOCS_DEV / "subsystems").glob("*.md")}
+    assert on_disk_arch == set(ARCHITECTURE_DOCS), (
+        f"architecture registry drift: only on disk "
+        f"{sorted(on_disk_arch - set(ARCHITECTURE_DOCS))}; only registered "
+        f"{sorted(set(ARCHITECTURE_DOCS) - on_disk_arch)}"
+    )
+    assert on_disk_subsys == set(SUBSYSTEM_DOCS), (
+        f"subsystem registry drift: only on disk "
+        f"{sorted(on_disk_subsys - set(SUBSYSTEM_DOCS))}; only registered "
+        f"{sorted(set(SUBSYSTEM_DOCS) - on_disk_subsys)}"
+    )
