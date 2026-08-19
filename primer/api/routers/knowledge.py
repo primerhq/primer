@@ -21,13 +21,23 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import Body, Depends, File, Path, Query, Request, UploadFile
+from fastapi import (
+    Body,
+    Depends,
+    File,
+    HTTPException,
+    Path,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
 
 from primer.api.deps import (
     get_collection_storage,
     get_document_service,
+    get_document_tree_service,
     get_document_storage,
     get_provider_registry,
     get_semantic_search_registry,
@@ -44,6 +54,7 @@ from primer.model.except_ import (
     DimensionMismatchError,
     NotFoundError,
 )
+from primer.knowledge.grep import grep_collection
 from primer.search.run import run_collection_search
 
 
@@ -105,6 +116,193 @@ collection_router = make_crud_router(
     cdc_kind="collection",
     managed_by_field="harness_id",
 )
+
+
+_BODY_CAP = 1024 * 1024  # 1 MiB, enforced at the API edge (spec section 3)
+
+
+class _DocCreateBody(BaseModel):
+    parent: str = Field(default="", description="Parent path; '' = root.")
+    slug: str = Field(..., min_length=1)
+    title: str | None = None
+    body: str = Field(...)
+
+
+class _DocPatchBody(BaseModel):
+    body: str | None = None
+    title: str | None = None
+
+
+class _DocMoveBody(BaseModel):
+    path: str = Field(..., min_length=1)
+    new_parent: str = Field(default="")
+    new_slug: str | None = None
+
+
+async def _require_writable(collections, collection_id: str) -> None:
+    coll = await collections.get(collection_id)
+    if coll is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    if coll.system:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"Collection {collection_id!r} is system-owned and "
+                "read-only; it is regenerated from platform state."
+            ),
+        )
+
+
+def _check_body_cap(body: str) -> None:
+    if len(body.encode("utf-8")) > _BODY_CAP:
+        raise RequestValidationError(errors=[{
+            "type": "value_error", "loc": ("body", "body"),
+            "msg": "document body exceeds the 1 MiB cap", "input": "<omitted>",
+        }])
+
+
+def _doc_json(document) -> dict:
+    return document.model_dump(mode="json")
+
+
+@collection_router.get(
+    "/collections/{collection_id}/docs",
+    summary="Read one document by slug path, or list the tree under a parent",
+    responses=common_responses(404, 500),
+)
+async def get_or_list_docs(
+    collection_id: str = Path(..., description="Collection id"),
+    path: str | None = Query(
+        default=None,
+        description="Read the single document at this slug path.",
+    ),
+    parent: str | None = Query(
+        default=None,
+        description="List the tree under this parent path ('' = root).",
+    ),
+    depth: int = Query(default=1, ge=1, le=10),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_tree_service),
+) -> dict:
+    """Read a node (body + children) or walk the tree under a parent."""
+    coll = await collections.get(collection_id)
+    if coll is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    if path is not None:
+        res = await service.read(collection_id=collection_id, path=path)
+        return {
+            "document": _doc_json(res.document),
+            "body": res.body,
+            "children": [c.model_dump() for c in res.children],
+        }
+    nodes = await service.tree(
+        collection_id=collection_id, parent=parent or "", depth=depth,
+    )
+    return {"nodes": [n.model_dump() for n in nodes]}
+
+
+@collection_router.post(
+    "/collections/{collection_id}/docs",
+    status_code=201,
+    summary="Create a document node under a parent",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def create_doc(
+    collection_id: str = Path(..., description="Collection id"),
+    body: _DocCreateBody = Body(...),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_tree_service),
+) -> dict:
+    await _require_writable(collections, collection_id)
+    _check_body_cap(body.body)
+    doc = await service.create(
+        collection_id=collection_id, parent=body.parent, slug=body.slug,
+        body=body.body, title=body.title,
+    )
+    return {"document": _doc_json(doc)}
+
+
+@collection_router.patch(
+    "/collections/{collection_id}/docs",
+    summary="Update a document's body and/or title",
+    responses=common_responses(404, 422, 500),
+)
+async def patch_doc(
+    collection_id: str = Path(..., description="Collection id"),
+    path: str = Query(..., description="Slug path of the document"),
+    body: _DocPatchBody = Body(...),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_tree_service),
+) -> dict:
+    await _require_writable(collections, collection_id)
+    if body.body is not None:
+        _check_body_cap(body.body)
+    doc = await service.update(
+        collection_id=collection_id, path=path, body=body.body, title=body.title,
+    )
+    return {"document": _doc_json(doc)}
+
+
+@collection_router.post(
+    "/collections/{collection_id}/docs/move",
+    summary="Move a document (and its subtree) to a new parent and/or slug",
+    responses=common_responses(400, 404, 409, 500),
+)
+async def move_doc(
+    collection_id: str = Path(..., description="Collection id"),
+    body: _DocMoveBody = Body(...),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_tree_service),
+) -> dict:
+    await _require_writable(collections, collection_id)
+    doc = await service.move(
+        collection_id=collection_id, path=body.path,
+        new_parent=body.new_parent, new_slug=body.new_slug,
+    )
+    return {"document": _doc_json(doc)}
+
+
+@collection_router.delete(
+    "/collections/{collection_id}/docs",
+    status_code=204,
+    summary="Delete a document, optionally with its subtree",
+    responses=common_responses(404, 409, 500),
+)
+async def delete_doc(
+    collection_id: str = Path(..., description="Collection id"),
+    path: str = Query(..., description="Slug path of the document"),
+    recursive: bool = Query(default=False),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_tree_service),
+) -> None:
+    await _require_writable(collections, collection_id)
+    await service.delete(
+        collection_id=collection_id, path=path, recursive=recursive,
+    )
+
+
+@collection_router.get(
+    "/collections/{collection_id}/grep",
+    summary="Regex line search across the collection's document bodies",
+    responses=common_responses(400, 404, 500),
+)
+async def grep_docs(
+    request: Request,
+    collection_id: str = Path(..., description="Collection id"),
+    q: str = Query(..., min_length=1, description="Regex pattern"),
+    path_prefix: str | None = Query(default=None),
+    max_results: int = Query(default=50, ge=1, le=500),
+    collections=Depends(get_collection_storage),
+) -> dict:
+    coll = await collections.get(collection_id)
+    if coll is None:
+        raise NotFoundError(f"Collection {collection_id!r} does not exist")
+    result = await grep_collection(
+        request.app.state.storage_provider.get_content_store(),
+        collection_id=collection_id, pattern=q,
+        path_prefix=path_prefix, max_results=max_results,
+    )
+    return result.model_dump(mode="json")
 
 
 @collection_router.get(
@@ -529,6 +727,52 @@ async def _reject_system_collection(
             f"cannot be {verb} into it. Internal collections are "
             f"reconciled automatically from their source entities."
         )
+
+
+def build_document_indexer(request: Request):
+    """Return the best-effort indexer the path-addressed routes wire into
+    :class:`DocumentService`.
+
+    The returned async callable ``(document=..., content=...)`` is invoked by
+    the service AFTER its atomic entity + content write commits, so the body
+    is durable in the content store before any embedding work begins. It
+    mirrors the CRUD ``_index_document_hook`` best-effort contract: a missing
+    collection is a no-op, a dimension mismatch surfaces as 422, and any
+    other embedder/store failure is logged and swallowed so the write still
+    succeeds. There is no double-index risk: the path-addressed routes do not
+    go through ``make_crud_router``, so the Document CDC hook never fires for
+    these writes.
+    """
+    from primer.knowledge.indexing import index_document
+
+    storage_provider = request.app.state.storage_provider
+
+    async def _indexer(*, document: Document, content: str) -> None:
+        collection = await storage_provider.get_storage(Collection).get(
+            document.collection_id
+        )
+        if collection is None:
+            return
+        try:
+            provider_registry = get_provider_registry(request)
+            ssr = get_semantic_search_registry(request)
+            await index_document(
+                document=document,
+                collection=collection,
+                provider_registry=provider_registry,
+                semantic_search_registry=ssr,
+                content_store=storage_provider.get_content_store(),
+            )
+        except DimensionMismatchError:
+            # Operator-configuration error: surface as 422, do not swallow.
+            raise
+        except Exception:  # noqa: BLE001 - best-effort indexing
+            logger.exception(
+                "document %s: indexing failed; row persisted but not searchable",
+                document.id,
+            )
+
+    return _indexer
 
 
 async def _document_pre_create(entity: Document, request: Request) -> None:

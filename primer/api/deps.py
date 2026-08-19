@@ -252,24 +252,34 @@ def get_document_storage(
 
 
 def get_document_service(request: Request):
-    """Build a request-scoped :class:`DocumentService` for the path-addressed
+    """Request-scoped :class:`DocumentService` for the path-addressed
     document routes.
 
-    The path-addressed routes do NOT go through ``make_crud_router`` (and so
-    do not fire the Document CDC ``on_create`` / ``on_update`` indexing hook).
-    We therefore wire the service with an explicit best-effort ``indexer``
-    that re-indexes the body AFTER the atomic entity + content write commits
-    (the service calls the hook only after its ``transaction()`` block exits),
-    so a path-addressed PUT still indexes the document when search is on -
-    behaviour-preserving relative to the CRUD path. The indexer is wired here
-    rather than in the route so the dependency owns the registry lookups.
+    Retained alongside :func:`get_document_tree_service` until S2 Task 21
+    ports the console off the flat document surface; deleting the routes
+    before their UI moves would break every knowledge page.
     """
     from primer.api.routers.knowledge import build_document_indexer
-
-    sp = get_storage_provider(request)
     from primer.knowledge.document_service import DocumentService
 
+    sp = get_storage_provider(request)
     return DocumentService(sp, indexer=build_document_indexer(request))
+
+
+def get_document_tree_service(request: Request):
+    """Build a request-scoped :class:`DocumentTreeService` for the docs routes.
+
+    The tree routes do NOT go through ``make_crud_router`` (and so do not
+    fire a CDC indexing hook), so the service is wired with an explicit
+    best-effort ``indexer`` that re-indexes the body AFTER the atomic
+    entity + content write commits. The indexer is wired here rather than
+    in the route so the dependency owns the registry lookups.
+    """
+    from primer.api.routers.knowledge import build_document_indexer
+    from primer.knowledge.tree import DocumentTreeService
+
+    sp = get_storage_provider(request)
+    return DocumentTreeService(sp, indexer=build_document_indexer(request))
 
 
 def get_workspace_provider_storage(
@@ -618,6 +628,7 @@ __all__ = [
     "get_collection_storage",
     "get_cross_encoder_provider_storage",
     "get_document_service",
+    "get_document_tree_service",
     "get_document_storage",
     "get_embedding_provider_storage",
     "get_event_bus",

@@ -38,7 +38,6 @@ from pydantic import ValidationError as PydanticValidationError
 from primer.api.deps import (
     get_claim_engine,
     get_collection_storage,
-    get_document_service,
     get_event_bus,
     get_provider_registry,
     get_scheduler,

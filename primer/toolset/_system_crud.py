@@ -1267,7 +1267,7 @@ def _document_service_factory(
     does not touch ``get_content_store`` / ``transaction`` until a document
     tool is actually invoked.
 
-    Mirrors :func:`primer.api.deps.get_document_service`: when a
+    Mirrors :func:`primer.api.deps.get_document_tree_service`: when a
     SemanticSearchRegistry is wired (search on) the service gets a
     best-effort indexer that re-embeds the body AFTER the atomic entity +
     content write commits, so a ``put_document`` into a search-on collection
