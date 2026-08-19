@@ -82,6 +82,11 @@ async def app(
     from primer.api.app import _bootstrap_web_fetch
     await _bootstrap_web_fetch(fake_storage_provider)
 
+    # Seed the default crud approval policies (parity with the lifespan).
+    from primer.bootstrap.seed import ensure_crud_approval_policies
+
+    await ensure_crud_approval_policies(fake_storage_provider)
+
     # Regenerate the system collection (parity with the lifespan). It is
     # unconditional in production, so the API suite must have it too or
     # every /v1/collections/system route 404s here only.

@@ -742,6 +742,10 @@ def _make_lifespan(config: AppConfig):
         provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
         app.state.crud_toolset = crud_toolset
 
+        from primer.bootstrap.seed import ensure_crud_approval_policies
+
+        await ensure_crud_approval_policies(storage_provider)
+
         # (The workspace tap router is constructed earlier, before the
         # workspaces toolset, so the ``workspace_tap`` drain tool can
         # capture it. See above.)
