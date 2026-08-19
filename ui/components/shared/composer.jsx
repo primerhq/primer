@@ -97,6 +97,65 @@ function CT_activeMentionQuery(text, cursor) {
   return { start: at, query };
 }
 
+// Capture one push-to-talk segment and hand back 16 kHz mono PCM16 WAV.
+// The conversion happens HERE, in the browser, because the services on
+// the other side commonly reject anything else outright rather than
+// resampling for us, and because sending 48 kHz stereo would triple the
+// upload for audio the model cannot use.
+async function CT_captureMicSegment(stream, audioContext) {
+  const source = audioContext.createMediaStreamSource(stream);
+  const processor = audioContext.createScriptProcessor(4096, 1, 1);
+  const chunks = [];
+  return await new Promise((resolve) => {
+    processor.onaudioprocess = (event) => {
+      const input = event.inputBuffer;
+      const channels = [];
+      for (let c = 0; c < input.numberOfChannels; c++) {
+        channels.push(new Float32Array(input.getChannelData(c)));
+      }
+      chunks.push(channels);
+      // Past roughly a minute, cut at the next silence rather than
+      // letting one upload grow unbounded: a failure then costs one
+      // segment, not the whole recording.
+      const merged = CT_mergeChannels(chunks);
+      const at = window.PRIMER_findSilenceSplit(
+        window.PRIMER_downmixToMono(merged), input.sampleRate, 60,
+      );
+      if (at >= 0) {
+        processor.disconnect();
+        source.disconnect();
+        resolve(window.PRIMER_toMono16kWav(merged, input.sampleRate));
+      }
+    };
+    source.connect(processor);
+    processor.connect(audioContext.destination);
+    stream.addEventListener("primer-stop", () => {
+      processor.disconnect();
+      source.disconnect();
+      const merged = CT_mergeChannels(chunks);
+      resolve(window.PRIMER_toMono16kWav(merged, audioContext.sampleRate));
+    });
+  });
+}
+
+function CT_mergeChannels(chunks) {
+  if (chunks.length === 0) return [new Float32Array(0)];
+  const channelCount = chunks[0].length;
+  const total = chunks.reduce((n, frame) => n + frame[0].length, 0);
+  const out = [];
+  for (let c = 0; c < channelCount; c++) {
+    const merged = new Float32Array(total);
+    let offset = 0;
+    for (const frame of chunks) {
+      merged.set(frame[c], offset);
+      offset += frame[c].length;
+    }
+    out.push(merged);
+  }
+  return out;
+}
+
+
 function Composer({
   value,
   onChange,
@@ -106,12 +165,48 @@ function Composer({
   disabled,
   attachments,
   onAttach,
+  onTranscribed,
   onRemoveAttachment,
   slashCommands,
   mentionSources,
   schemaInvalid,
   wsState,
 }) {
+  const caps = window.primerApi.useCapabilities();
+  const micEnabled = !!(caps.data && caps.data.speech && caps.data.speech.stt_configured);
+  const [recording, setRecording] = React.useState(false);
+  const micStreamRef = React.useRef(null);
+
+  const startMic = async () => {
+    setRecording(true);
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    micStreamRef.current = stream;
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const wav = await CT_captureMicSegment(stream, audioContext);
+    stream.getTracks().forEach((track) => track.stop());
+    await audioContext.close();
+    setRecording(false);
+
+    const form = new FormData();
+    form.append("file", new Blob([wav], { type: "audio/wav" }), "capture.wav");
+    const response = await fetch(
+      window.primerApi.resolvePath("/audio/transcriptions"),
+      { method: "POST", body: form, credentials: "same-origin" },
+    );
+    const body = await response.json();
+    // v1 puts the text in the draft for review. The operator sends.
+    // With no host sink, append to the draft through the onChange the
+    // composer already owns, so the mic works under every host.
+    const text = body.text || "";
+    if (typeof onTranscribed === "function") onTranscribed(text);
+    else if (typeof onChange === "function") onChange(value ? value + " " + text : text);
+  };
+
+  const stopMic = () => {
+    const stream = micStreamRef.current;
+    if (stream) stream.dispatchEvent(new Event("primer-stop"));
+  };
+
   const fileInputRef = React.useRef(null);
   const textareaRef = React.useRef(null);
   const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
@@ -404,6 +499,19 @@ function Composer({
           >
             <Icon name="paperclip" size={18} />
           </button>
+          {micEnabled && (
+            <button
+              type="button"
+              data-testid="chat-mic-btn"
+              className={"icon-btn" + (recording ? " is-recording" : "")}
+              title={recording ? "Release to transcribe" : "Hold to talk"}
+              onMouseDown={startMic}
+              onMouseUp={stopMic}
+              onMouseLeave={recording ? stopMic : undefined}
+            >
+              <Icon name="mic" size={18} />
+            </button>
+          )}
           <input
             ref={fileInputRef}
             type="file"
@@ -537,3 +645,5 @@ function Composer({
 }
 
 window.Composer = Composer;
+
+window.CT_captureMicSegment = CT_captureMicSegment;
