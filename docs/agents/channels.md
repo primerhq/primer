@@ -1,7 +1,7 @@
 ---
 slug: channels
 title: Channels - multi-platform messaging
-summary: How primer routes ask_user / tool approval prompts to Slack, Telegram, and Discord, and how channel events drive chats and workspace session gates.
+summary: How primer routes ask_user / tool approval prompts to Slack, Telegram, and Discord, and how channel events drive sessions and their gates.
 related: [triggers-and-subscriptions, tool-approval, yielding, graphs]
 mcp_tools:
   - system::list_channel_providers
@@ -30,15 +30,15 @@ tools instead of forcing them into the operator console. Three
 adapter implementations exist today - Slack, Telegram, and Discord -
 each backed by an external app/bot integration the operator
 configures via a `ChannelProvider` row. A Channel is per-room: one
-Slack channel, one Discord guild channel, one Telegram chat. Its
-`config.chats` block controls whether incoming messages on that room
-start primer chats (with which agent, allowed switches, and output
-verbosity).
+Slack channel, one Discord guild channel, one Telegram conversation.
+Its `config.chats` block controls whether incoming messages on that
+room start primer sessions, and how much of the output is relayed
+back.
 
 A channel is one room used by two independent surfaces. **Inbound:**
 a raw provider event is normalized into a `ChannelEvent`, matched
-against bindings, and dispatched to an action (start a chat, run a
-session, resume a parked session). **Outbound:** whatever a session
+against bindings, and dispatched to an action (start a session,
+deliver to an existing one, resume a parked session). **Outbound:** whatever a session
 sends back (an `ask_user` yield, a tool-approval gate, an `inform`,
 the final result) follows a reply binding to a channel and thread.
 
@@ -58,9 +58,9 @@ a Channel; session traffic from that workspace forwards there.
 
 A **ChannelCorrelation** is the persistent routing record keyed on
 `(channel_id, anchor)` where anchor is a thread id (Slack/Discord)
-or a gate message id (Telegram). It maps to either a chat or a
+or a gate message id (Telegram). It maps to either a session or a
 pending session gate. This is the durable store that lets a single
-channel serve many workspaces and standalone chats simultaneously
+channel serve many workspaces and sessions simultaneously
 while still routing replies to the right target.
 
 ## Mental model
@@ -81,21 +81,20 @@ Channel:
   `SlackChannelConfig | DiscordChannelConfig | TelegramChannelConfig`.
   Each has a `chats: ChatConfig` block.
 
-ChatConfig (inside `config.chats`):
+ChatConfig (inside `config.chats`, named for the platform it faces
+rather than for a primer entity):
 - `enabled` (bool, default false) - whether incoming messages on this
-  room start primer chats.
-- `default_agent` - agent each new chat begins with; required when
-  `enabled=true`.
-- `allow_agent_switch` (bool, default false) - whether users may change
-  a chat's agent with `/agent`. Off by default, so enabling chats does
-  not implicitly let anyone reassign the agent. `allowed_agents` only
-  applies when this is on.
-- `allowed_agents` (list of agent ids, default `[]`) - when agent
-  switching is allowed, restricts `/agent` to these agents; empty means
-  any agent is allowed. Ignored when `allow_agent_switch` is off.
+  room start primer sessions.
 - `relay_mode` (`"final"` | `"all"`, default `"final"`) - controls
-  which chat messages are relayed back to the platform. `"final"`
+  which session messages are relayed back to the platform. `"final"`
   sends only the last assistant turn; `"all"` streams every turn.
+
+The model has no other keys and rejects unknown ones (`extra="forbid"`),
+so a body carrying `default_agent`, `allow_agent_switch` or
+`allowed_agents` returns `422`. **Which agent a thread starts under is
+the channel trigger's binding, not the room's config**: one room can
+route to different agents by rule, which a single per-room default could
+not express.
 
 Workspace:
 - `reply_binding: {channel_id} | null` - the single Channel this
@@ -129,7 +128,7 @@ ChannelCorrelation (DB, internal):
   / `"__active_chat__"` for single-type channels.
 
 One channel can simultaneously serve many workspaces (session gates)
-and standalone chats. Each open thread or gate has its own
+and their sessions. Each open thread or gate has its own
 ChannelCorrelation row; the inbound router resolves the anchor from
 the incoming message and dispatches to the right destination.
 
@@ -202,9 +201,10 @@ system toolset for completeness but agents rarely need to touch them.
   `config`. Omit `id` and the server assigns `channel-<hex>`.
   `provider` must match the referenced provider's platform. The pair
   `(provider_id, external_id)` must be unique.
-- `config.chats` controls chat enablement for the room. Set
-  `config.chats.enabled=true` and `config.chats.default_agent=<id>`
-  to allow incoming messages to start chats on this room.
+- `config.chats` controls inbound enablement for the room. Set
+  `config.chats.enabled=true` to allow incoming messages to start
+  sessions on it; the agent they run under comes from the channel
+  trigger's binding.
 
 ### Workspace reply binding
 
@@ -293,12 +293,12 @@ Slack channel #ops-pager.
    / Session: <label>` header) with the question. A reply resumes
    the session.
 
-### Workflow 2 - enable chats on a Telegram room
+### Workflow 2 - let a Telegram room start sessions
 
-**Goal.** Incoming DMs to a Telegram bot start a chat with a
+**Goal.** Incoming DMs to a Telegram bot start a session with a
 `helpdesk` agent.
 
-1. Create the channel with chats enabled:
+1. Create the channel with inbound enabled:
 
    ```json
    {
@@ -313,7 +313,6 @@ Slack channel #ops-pager.
          "config": {
            "chats": {
              "enabled": true,
-             "default_agent": "helpdesk",
              "relay_mode": "final"
            }
          }
@@ -322,8 +321,13 @@ Slack channel #ops-pager.
    }
    ```
 
-2. Incoming DMs now start a chat with the `helpdesk` agent. The
-   conversation persists across messages in the same Telegram chat.
+2. Create a `channel`-kind trigger whose binding names the `helpdesk`
+   agent. The binding lives on the trigger, so the same room can route
+   to different agents by rule.
+
+3. Incoming DMs now start a session under `helpdesk`. The thread and
+   the session are one to one, so the conversation persists across
+   messages in the same Telegram conversation.
 
 ### Workflow 3 - inspect channels and check the reply binding
 
@@ -455,26 +459,26 @@ the trigger.
   the originating thread, which takes precedence over the workspace
   `reply_binding`.
 - **Correlation-first inbound.** A reply that continues an existing
-  conversation (a known thread with a parked session or a bound chat)
+  conversation (a known thread already mapped to a session)
   is handled by the correlation store and never reaches the rules;
   only fresh events are matched against bindings.
 - **One channel, many workspaces.** A single channel can serve
   multiple workspaces simultaneously. Each workspace's session gates
   open a separate thread or message on the channel, attributed with
   a `Workspace: <name> / Session: <label>` header.
-- **Chats and session gates coexist on the same channel.** A channel
-  with `config.chats.enabled=true` handles both incoming user
-  messages (chats) and session gate replies from reply bindings.
-  ChannelCorrelation rows keep them separate.
-- **`config.chats.default_agent` is required when
-  `config.chats.enabled=true`.** Omitting it returns `422`.
-- **`/agent` switching is gated by `allow_agent_switch`.** It is off by
-  default; while off, `/agent` (and the in-thread / modal picker)
-  returns "Agent switching is disabled on this channel." Turn it on to
-  let users reassign a chat's agent.
-- **`allowed_agents` restricts `/agent` switching.** Applies only when
-  `allow_agent_switch` is on. An empty list allows any agent; a
-  non-empty list restricts `/agent <id>` to those ids only.
+- **Inbound messages and session gates coexist on the same channel.** A
+  channel with `config.chats.enabled=true` handles both fresh incoming
+  messages and gate replies from reply bindings. ChannelCorrelation
+  rows keep them separate.
+- **The binding lives on the trigger, not the room.** `config.chats`
+  says whether a room accepts inbound messages and how much it relays;
+  which agent or graph a thread runs under is the channel trigger's
+  binding. `config` rejects unknown keys, so a body carrying the
+  retired `default_agent`, `allow_agent_switch` or `allowed_agents`
+  returns `422`.
+- **Rebinding is a session operation.** A thread's session can be
+  rebound like any other, from the shell or by the agent itself; there
+  are no in-thread slash commands for it.
 - **Dispatch is fire-and-forget.** A slow channel post does NOT block
   the worker's lease release. The session parks immediately.
 - **First reply wins, late replies no-op.** If a Slack reply and a
