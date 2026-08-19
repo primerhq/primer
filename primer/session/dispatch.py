@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable
 from primer.int.claim import ClaimKind, Lease, ParkRequest, ReleaseOutcome
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
+from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
     SessionMessageKind,
@@ -741,15 +742,19 @@ async def run_one_session_turn(
     ))
     await turn_log.aclose()
 
-    # Final-result relay: on a clean terminal completion, post the last-turn
-    # assistant text to the session's reply binding so a channel-triggered
-    # session reports its outcome. Derived from the just-flushed
-    # messages.jsonl (the source of truth) via the ported window scan. No-ops
-    # for non-channel / quiet bindings and when the derived text is empty.
-    if (
-        new_status == SessionStatus.ENDED
-        and ended_reason == "completed"
-        and deps.channel_dispatcher is not None
+    # Final-result relay: on a clean finish, post the last-turn assistant
+    # text to the session's reply binding. A thread-mapped interactive
+    # session (crosscheck M4) relays after EVERY drained turn, not only at
+    # session end, because a channel conversation continues turn by turn.
+    relay_every_turn = bool(
+        (session.metadata or {}).get(RELAY_EVERY_TURN_KEY)
+    )
+    if deps.channel_dispatcher is not None and (
+        relay_every_turn
+        or (
+            new_status == SessionStatus.ENDED
+            and ended_reason == "completed"
+        )
     ):
         try:
             from primer.channel.session_relay import (
