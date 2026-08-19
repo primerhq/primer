@@ -121,8 +121,13 @@ class DocumentTreeService:
     # ---- mutations -------------------------------------------------------
 
     async def create(self, *, collection_id: str, parent: str, slug: str,
-                     body: str, title: str | None = None) -> Document:
-        if not STRICT_SLUG_RE.fullmatch(slug):
+                     body: str, title: str | None = None,
+                     strict_slugs: bool = True) -> Document:
+        # The API edge enforces the strict charset. The system-collection
+        # regenerator writes entity ids (agent-a, graph_x) that satisfy the
+        # model charset but not the strict one, so it opts out here rather
+        # than mangling the ids users search by.
+        if strict_slugs and not STRICT_SLUG_RE.fullmatch(slug):
             raise BadRequestError(f"slug {slug!r} must match [a-z0-9-]+")
         parent_id, parent_path = await self._resolve_parent(collection_id, parent)
         path = f"{parent_path}/{slug}" if parent_path else slug
@@ -168,10 +173,11 @@ class DocumentTreeService:
         return updated
 
     async def move(self, *, collection_id: str, path: str,
-                   new_parent: str, new_slug: str | None = None) -> Document:
+                   new_parent: str, new_slug: str | None = None,
+                   strict_slugs: bool = True) -> Document:
         doc = await self.resolve(collection_id=collection_id, path=path)
         slug = new_slug or doc.slug
-        if not STRICT_SLUG_RE.fullmatch(slug):
+        if strict_slugs and not STRICT_SLUG_RE.fullmatch(slug):
             raise BadRequestError(f"slug {slug!r} must match [a-z0-9-]+")
         parent_id, parent_path = await self._resolve_parent(collection_id, new_parent)
         if parent_path == doc.path or parent_path.startswith(doc.path + "/"):
