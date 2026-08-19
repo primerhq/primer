@@ -390,6 +390,7 @@ async def delete_session(
     workspace_registry=Depends(get_workspace_registry),
     event_bus=Depends(get_event_bus),
     call_storage=Depends(get_external_tool_call_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> None:
     """Permanently remove a session row + best-effort cleanup of its
     on-disk slot under ``<workspace>/.state/sessions/<sid>/``.
@@ -503,6 +504,19 @@ async def delete_session(
                 # best-effort log into a 500 that skips the row delete below.
                 "error": str(exc),
             },
+        )
+
+    # Drop the thread mappings that pointed here. Best-effort: the row must
+    # still be deleted if the correlation table is unreachable, but a leaked
+    # mapping would steer a session that no longer exists (S6 section 9).
+    try:
+        from primer.channel.correlation import CorrelationStore
+
+        await CorrelationStore(storage_provider).clear_for_session(session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "delete_session: correlation cleanup failed (row still removed)",
+            extra={"session_id": session_id, "error": str(exc)},
         )
 
     await sessions.delete(session_id)
