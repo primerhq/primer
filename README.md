@@ -21,6 +21,20 @@
 
 </div>
 
+<!-- transition-banner:start -->
+> **Primer is mid-revamp.** `main` is landing the operator-first UX revamp:
+> agent-independent sessions, wiki-style collections, agent-driven client
+> tools, voice, and a single IDE-style shell. Plain chat and the classic
+> console are being removed.
+>
+> **v0.6.x is the last stable pre-revamp release.** Pin it if you want the
+> behaviour the published docs describe. There are no transition releases
+> between v0.6.x and v2.0.0: the revamp lands as one branch, and the next
+> tag is v2.0.0, when this notice goes away.
+>
+> Programme summary: [docs/ux-revamp.md](https://github.com/primerhq/primer/blob/main/docs/ux-revamp.md)
+<!-- transition-banner:end -->
+
 ---
 
 ## Why Primer
