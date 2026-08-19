@@ -476,4 +476,60 @@ async def receive_webhook(
     return {"delivery_id": delivery_id, "status": "accepted"}
 
 
+@webhooks_router.get(
+    "/v1/webhooks/{token}/deliveries/{delivery_id}",
+    summary="Poll one webhook delivery for its result",
+    include_in_schema=True,
+)
+async def get_webhook_delivery(
+    token: str,
+    delivery_id: str,
+    request: Request,
+) -> dict:
+    """Return a delivery's status and, once complete, its run results.
+
+    Same capability token and same per-token rate-limit bucket as the POST
+    (S6 section 4), so a caller that received a 202 can finish the exchange
+    with the credentials it already has.
+    """
+    if not _check_rate_limit(token):
+        raise HTTPException(
+            status_code=429,
+            detail={
+                "code": "rate_limited",
+                "message": "Too many requests for this webhook",
+            },
+        )
+    sp = get_storage_provider(request)
+    try:
+        trigger = await get_trigger_by_webhook_token(
+            token=token, deps=ServiceDeps(storage_provider=sp),
+        )
+    except WebhookTokenNotFound:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "webhook_not_found",
+                "message": "No webhook found for this token",
+            },
+        )
+    from primer.model.webhook_delivery import WebhookDelivery
+
+    row = await sp.get_storage(WebhookDelivery).get(delivery_id)
+    if row is None or row.trigger_id != trigger.id:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "code": "delivery_not_found",
+                "message": "No delivery found for this webhook",
+            },
+        )
+    return {
+        "delivery_id": row.id,
+        "status": row.status,
+        "fire_id": row.fire_id,
+        "results": row.results or [],
+    }
+
+
 __all__ = ["webhooks_router"]
