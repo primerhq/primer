@@ -2749,3 +2749,35 @@ input, textarea, select { font: inherit; color: inherit; }
 @media (prefers-reduced-motion: reduce) {
   .switch-toggle, .switch-knob { transition: none; }
 }
+/* First-run setup wizard (S5). Hosted inside .auth-card by
+   SetupWizardGate and, from S8, inside the studio shell; the classes
+   below deliberately style ONLY the step sequence's own chrome so the
+   embeddable component looks right in either host. */
+.setup-steps { display: block; }
+.setup-progress {
+  padding: 14px 22px 0;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.auth-field select {
+  width: 100%;
+  padding: 8px 11px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  outline: none;
+  font-size: 13px;
+  box-sizing: border-box;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.auth-field select.mono {
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 12.5px;
+}
+.auth-field select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
