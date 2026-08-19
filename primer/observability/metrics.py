@@ -236,6 +236,53 @@ sessions_active = Gauge(
 
 
 # ---------------------------------------------------------------------------
+# Cardinality guard (S7 section 4, crosscheck m2)
+# ---------------------------------------------------------------------------
+
+ALLOWED_LABEL_NAMES = frozenset({
+    # S7 taxonomy (12-s7-design.md section 4).
+    "worker",
+    "kind",
+    "status",
+    "binding_ref",
+    "provider_id",
+    "profile_id",
+    "direction",
+    "toolset",
+    "tool",
+    "workspace_id",
+    # Pre-S7 house labels already on this registry.
+    "provider",
+    "error_type",
+    "name",
+    "outcome",
+    "event_type",
+    "scope",
+})
+"""Every label name any Primer instrument is permitted to carry.
+
+The guard test (tests/observability/test_label_allowlist.py) fails on any
+label outside this set. session_id is deliberately absent: it is unbounded
+by session volume, and session-scoped stats come from the derived timeline
+(GET /sessions/{id}/turns/{n}/timeline) instead.
+"""
+
+
+def registered_label_names() -> set[str]:
+    """Every label name on every instrument registered on ``registry``.
+
+    Reads ``_labelnames`` off each collector rather than walking
+    ``registry.collect()``: a labelled instrument that has never been
+    incremented yields no samples, so collect() would silently miss it.
+    """
+    names: set[str] = set()
+    for collector in list(registry._collector_to_names):  # noqa: SLF001
+        for label in getattr(collector, "_labelnames", ()) or ():
+            names.add(label)
+    return names
+
+
+# ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
 
@@ -419,6 +466,8 @@ def reset_for_test() -> None:
 __all__ = [
     "registry",
     "reset_for_test",
+    "ALLOWED_LABEL_NAMES",
+    "registered_label_names",
     # LLM
     "llm_tokens_total",
     "llm_duration_seconds",
