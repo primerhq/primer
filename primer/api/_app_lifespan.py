@@ -742,10 +742,29 @@ def _make_lifespan(config: AppConfig):
         provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
         app.state.crud_toolset = crud_toolset
 
-        from primer.bootstrap.seed import ensure_crud_approval_policies
+        from primer.bootstrap.seed import run_ensure_pass
 
-        await ensure_crud_approval_policies(storage_provider)
-
+        _ensure = await run_ensure_pass(
+            storage_provider,
+            workspace_registry=workspace_registry,
+            toolset_providers={
+                "system": system_toolset,
+                "crud": crud_toolset,
+                "workspaces": ws_toolset,
+                "misc": misc_toolset,
+                "web": web_toolset,
+                "harness": harness_toolset,
+                "trigger": trigger_toolset,
+                "workspace_ext": workspace_ext_toolset,
+                # The superseded standalone call also passed this one; the
+                # /tools subtree loses the collections toolset without it.
+                "collections": collections_toolset,
+            },
+        )
+        if _ensure.errors:
+            logger.warning("seed: ensure pass finished with errors", extra={
+                "seed_errors": _ensure.errors,
+            })
         # (The workspace tap router is constructed earlier, before the
         # workspaces toolset, so the ``workspace_tap`` drain tool can
         # capture it. See above.)
@@ -774,31 +793,6 @@ def _make_lifespan(config: AppConfig):
             await worker_pool.start()
             logger.info("lifespan: worker_pool.start() done")
         app.state.worker_pool = worker_pool
-
-        # --- System collection regeneration ------------------------------
-        # Unconditional (amendment M12): the system collection is a
-        # grep-and-read wiki describing the platform to its own agents, so
-        # it needs no embedder and no internal-collections config. It only
-        # gains vectors if an operator enables search on it explicitly.
-        try:
-            from primer.knowledge.system_collection import (  # noqa: PLC0415
-                regenerate_system_collection,
-            )
-            await regenerate_system_collection(
-                storage_provider,
-                toolset_providers={
-                    "system": system_toolset,
-                    "workspaces": ws_toolset,
-                    "misc": misc_toolset,
-                    "web": web_toolset,
-                    "harness": harness_toolset,
-                    "trigger": trigger_toolset,
-                    "workspace_ext": workspace_ext_toolset,
-                    "collections": collections_toolset,
-                },
-            )
-        except Exception:
-            logger.exception("lifespan: system collection regeneration failed")
 
         # Internal collections subsystem auto-activation: if a config
         # row already exists in storage, build the live subsystem +

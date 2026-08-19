@@ -82,16 +82,17 @@ async def app(
     from primer.api.app import _bootstrap_web_fetch
     await _bootstrap_web_fetch(fake_storage_provider)
 
-    # Seed the default crud approval policies (parity with the lifespan).
-    from primer.bootstrap.seed import ensure_crud_approval_policies
-
-    await ensure_crud_approval_policies(fake_storage_provider)
-
-    # Regenerate the system collection (parity with the lifespan). It is
-    # unconditional in production, so the API suite must have it too or
-    # every /v1/collections/system route 404s here only.
-    from primer.knowledge.system_collection import regenerate_system_collection
-    await regenerate_system_collection(fake_storage_provider, toolset_providers={})
+    # Run the S5 ensure pass (parity with the lifespan). Supersedes the
+    # standalone system-collection regeneration: the pass ends with it.
+    from primer.bootstrap.seed import run_ensure_pass
+    await run_ensure_pass(
+        fake_storage_provider,
+        workspace_registry=_app.state.workspace_registry,
+        toolset_providers={
+            "system": _app.state.system_toolset,
+            "crud": _app.state.crud_toolset,
+        },
+    )
 
     # Construct the web-fetch registry + service from the bootstrapped rows.
     from primer.api.registries.web_fetch_registry import (

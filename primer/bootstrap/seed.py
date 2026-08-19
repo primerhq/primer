@@ -11,6 +11,8 @@ repaired on the next boot.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+
 import logging
 
 from primer.model.except_ import ConflictError
@@ -177,10 +179,96 @@ async def ensure_seeded_agents(storage_provider) -> list[str]:
     return created
 
 
+@dataclass
+class EnsureResult:
+    """Outcome of one :func:`run_ensure_pass` call.
+
+    ``errors`` carries ``(step, repr(exception))`` pairs. Unlike
+    BootstrapRunner there is no marker to withhold: the next boot simply
+    runs the pass again.
+    """
+
+    created: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    errors: list[tuple[str, str]] = field(default_factory=list)
+
+
+async def run_ensure_pass(
+    storage_provider,
+    *,
+    workspace_registry=None,
+    toolset_providers: dict | None = None,
+) -> EnsureResult:
+    """Run every S5 ensure step. Idempotent, marker-independent.
+
+    Called at every startup AND explicitly by the setup wizard's completion
+    step, which is what closes amendment C3's ordering hole: the agents
+    need a model profile that only exists after the wizard, so the wizard
+    re-runs the pass the moment it has created one.
+
+    Each step is independent: a failure is recorded and the others still
+    run, mirroring :class:`primer.bootstrap.runner.BootstrapRunner`.
+    """
+    from primer.bootstrap.defaults import (
+        RESERVED_BUILDER_AGENT,
+        RESERVED_OPERATOR_AGENT,
+    )
+    from primer.knowledge.system_collection import regenerate_system_collection
+
+    result = EnsureResult()
+
+    async def _step(name: str, coro_factory):
+        try:
+            return await coro_factory()
+        except Exception as exc:  # noqa: BLE001 - one bad step must not stop the rest
+            logger.exception("seed: step %s failed: %s", name, exc)
+            result.errors.append((name, repr(exc)))
+            return None
+
+    created_policies = await _step(
+        "crud_approval_policies",
+        lambda: ensure_crud_approval_policies(storage_provider),
+    )
+    result.created.extend(created_policies or [])
+
+    created_agents = await _step(
+        "seeded_agents", lambda: ensure_seeded_agents(storage_provider),
+    )
+    result.created.extend(created_agents or [])
+    # `skipped` means DEFERRED, not "nothing to do": an already-seeded
+    # install creates nothing and is not skipped. The only deferral is
+    # amendment C3's, and its cause is the absent profile.
+    if await default_profile_id(storage_provider) is None:
+        result.skipped.extend(
+            [RESERVED_OPERATOR_AGENT, RESERVED_BUILDER_AGENT]
+        )
+
+    created_workspace = await _step(
+        "default_workspace",
+        lambda: ensure_default_workspace(
+            storage_provider, workspace_registry=workspace_registry,
+        ),
+    )
+    if created_workspace:
+        result.created.append(created_workspace)
+
+    written = await _step(
+        "system_collection",
+        lambda: regenerate_system_collection(
+            storage_provider, toolset_providers=toolset_providers or {},
+        ),
+    )
+    if written:
+        logger.info("seed: system collection wrote %d documents", written)
+    return result
+
+
 __all__ = [
     "crud_policy_id",
     "ensure_crud_approval_policies",
     "ensure_default_workspace",
     "ensure_seeded_agents",
     "default_profile_id",
+    "EnsureResult",
+    "run_ensure_pass",
 ]
