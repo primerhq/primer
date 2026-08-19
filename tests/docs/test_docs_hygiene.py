@@ -45,6 +45,7 @@ SUBSYSTEM_DOCS = [
     "triggers",
     "harness",
     "model-providers",
+    "speech",
     "ui-foundation",
     "ui-pages",
     "modularity",
