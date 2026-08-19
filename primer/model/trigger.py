@@ -153,6 +153,7 @@ class SubscriptionKind(str, Enum):
     GRAPH_FRESH_SESSION = "graph_fresh_session"
     PARKED_SESSION = "parked_session"
     START_CHAT = "start_chat"
+    SESSION_APPEND = "session_append"
 
 
 class ChatMessageSubConfig(BaseModel):
@@ -179,6 +180,19 @@ class ParkedSessionSubConfig(BaseModel):
     parked_at: datetime
 
 
+class SessionAppendSubConfig(BaseModel):
+    """Steer an EXISTING session instead of creating a fresh one.
+
+    The rendered payload becomes a user message on ``session_id``. When the
+    target already has a non-terminal turn the steer is queued as a
+    ``PendingSessionMessage`` (parallelism="queue") or dropped
+    (parallelism="skip"); see S6 section 3 and S1 section 4's routing rule.
+    """
+
+    kind: Literal["session_append"] = "session_append"
+    session_id: str
+
+
 class StartChatSubConfig(BaseModel):
     kind: Literal["start_chat"] = "start_chat"
     agent_id: str
@@ -186,7 +200,8 @@ class StartChatSubConfig(BaseModel):
 
 SubscriptionConfig = Annotated[
     ChatMessageSubConfig | AgentFreshSubConfig
-    | GraphFreshSubConfig | ParkedSessionSubConfig | StartChatSubConfig,
+    | GraphFreshSubConfig | ParkedSessionSubConfig | StartChatSubConfig
+    | SessionAppendSubConfig,
     Field(discriminator="kind"),
 ]
 
@@ -217,6 +232,7 @@ __all__ = [
     "ParkedSessionSubConfig",
     "ScheduledTriggerConfig",
     "StartChatSubConfig",
+    "SessionAppendSubConfig",
     "Subscription",
     "SubscriptionConfig",
     "SubscriptionKind",
