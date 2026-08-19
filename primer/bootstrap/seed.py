@@ -121,8 +121,66 @@ async def ensure_default_workspace(
     return RESERVED_DEFAULT_WORKSPACE
 
 
+async def default_profile_id(storage_provider) -> str | None:
+    """Id of the profile seeded agents bind to, or None when none exists.
+
+    On a wizard-provisioned install exactly one profile exists at seeding
+    time, so the first row is unambiguous.
+    """
+    from primer.model.model_profile import ModelProfile
+    from primer.model.storage import OffsetPage
+
+    page = await storage_provider.get_storage(ModelProfile).list(
+        OffsetPage(offset=0, length=1)
+    )
+    return page.items[0].id if page.items else None
+
+
+async def ensure_seeded_agents(storage_provider) -> list[str]:
+    """Ensure the operator and builder rows, then stamp default_agent_id.
+
+    No-op while no ModelProfile exists (amendment C3): the wizard creates
+    one, and the next pass repairs the agents. Existing rows are NEVER
+    overwritten here; POST /v1/setup/reset_agents is the explicit,
+    admin-only way back to these defaults.
+    """
+    from primer.bootstrap.defaults import (
+        RESERVED_BUILDER_AGENT,
+        RESERVED_OPERATOR_AGENT,
+    )
+    from primer.bootstrap.operator_defaults import builder_agent, operator_agent
+    from primer.model.agent import Agent
+
+    profile_id = await default_profile_id(storage_provider)
+    if profile_id is None:
+        logger.info("seed: no model profile yet; agent seeding deferred")
+        return []
+    agents = storage_provider.get_storage(Agent)
+    created: list[str] = []
+    for agent_id, factory in (
+        (RESERVED_OPERATOR_AGENT, operator_agent),
+        (RESERVED_BUILDER_AGENT, builder_agent),
+    ):
+        if await agents.get(agent_id) is not None:
+            continue
+        try:
+            await agents.create(factory(profile_id))
+        except ConflictError:
+            logger.debug("seed: agent %r created concurrently", agent_id)
+            continue
+        created.append(agent_id)
+    state = await storage_provider.get_system_state()
+    if state.default_agent_id != RESERVED_OPERATOR_AGENT:
+        await storage_provider.set_default_agent_id(RESERVED_OPERATOR_AGENT)
+    if created:
+        logger.info("seed: created agents %r", created)
+    return created
+
+
 __all__ = [
     "crud_policy_id",
     "ensure_crud_approval_policies",
     "ensure_default_workspace",
+    "ensure_seeded_agents",
+    "default_profile_id",
 ]
