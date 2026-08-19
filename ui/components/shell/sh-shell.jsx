@@ -39,6 +39,15 @@ function SH_Shell(props) {
     { pollMs: 5000, deps: [wid] }
   );
 
+  var status = window.primerApi.useResource(
+    "auth-status",
+    function (signal) {
+      return window.primerApi.apiFetch("GET", "/auth/status", null,
+        { signal: signal });
+    },
+    { pollMs: 0 }
+  );
+
   // Voice gating (amendment M11g) and the binding chip's options. Both
   // are static-per-process, so pollMs 0.
   var caps = window.primerApi.useCapabilities();
@@ -160,6 +169,7 @@ function SH_Shell(props) {
         window.primerApi.toastPush({ kind: "info", text: String(msg) });
       }
     },
+    role: (status.data && status.data.role) || "user",
     speech: (caps.data && caps.data.speech) || {},
     agents: (agentList.data && agentList.data.items) || [],
     jumpLatestRef: jumpLatestRef,
