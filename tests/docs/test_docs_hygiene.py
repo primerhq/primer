@@ -325,3 +325,25 @@ def test_triage_coverage_if_cards_present():
             if not target_file.exists():
                 missing.append(f"{card_path.name} -> {target}")
     assert not missing, f"Unsatisfied triage targets: {missing}"
+
+
+S6_TRIGGER_TERMS = ["interactive", "session_append", "wait_timeout_seconds"]
+S6_CHANNEL_TERMS = ["thread", "session", "media/<fire_id>"]
+
+
+@pytest.mark.parametrize("term", S6_TRIGGER_TERMS)
+def test_triggers_doc_covers_s6(term):
+    text = (DOCS_DEV / "subsystems" / "triggers.md").read_text()
+    assert term in text, f"triggers.md must document {term}"
+
+
+@pytest.mark.parametrize("term", S6_CHANNEL_TERMS)
+def test_channels_doc_covers_s6(term):
+    text = (DOCS_DEV / "subsystems" / "channels.md").read_text()
+    assert term in text, f"channels.md must document {term}"
+
+
+@pytest.mark.parametrize("stale", ["ChatChannelRouter", "chat_dispatcher"])
+def test_channels_doc_drops_the_deleted_plumbing(stale):
+    text = (DOCS_DEV / "subsystems" / "channels.md").read_text()
+    assert stale not in text, f"channels.md still references {stale}"
