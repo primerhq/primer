@@ -67,9 +67,15 @@ from primer.api.routers._crud import make_crud_router
 from primer.model.provider import (
     AnthropicConfig,
     CrossEncoderProvider,
+    CrossEncoderProviderType,
     EmbeddingProvider,
+    EmbeddingProviderType,
     GoogleConfig,
     LLMProvider,
+    LLMProviderType,
+    OpenAIEmbeddingFlavor,
+    OpenChatFlavor,
+    OpenResponsesFlavor,
     OpenRouterConfig,
     Toolset,
     ToolsetProviderType,
@@ -204,6 +210,300 @@ _invalidate_toolset = _make_invalidator("invalidate_toolset")
 
 
 # ---- LLMProvider router ----------------------------------------------------
+
+# ---------- _types: form metadata for the console's provider form ---------
+#
+# The console used to carry this table itself (ui/components/providers.jsx
+# PROVIDER_KINDS_FIELDS: "single source of truth mirroring the backend's
+# provider enums + per-provider Config models ... Keep these in sync when
+# the backend grows a new provider type"). Keeping them in sync by hand
+# failed: the table offered openresponses flavors ["openai", "lmstudio",
+# "other"] while OpenResponsesFlavor has carried VLLM all along. The enums
+# live here, so the field shape is served from here.
+#
+# Shape follows the web-search helper (routers/web_search.py:209-222):
+#   {provider_type: {label, config_fields, row_fields, discoverable}}
+# The field lists carry descriptor dicts rather than bare names; the
+# console normalises a bare string to {"key": <name>}, so the older
+# string-list helpers stay valid unchanged.
+#
+# These routers MUST be mounted before their CRUD siblings in
+# _app_routes.py, or GET /{provider_id} swallows "_types".
+
+
+def _form_field(
+    key: str,
+    label: str,
+    type_: str,
+    *,
+    required: bool = False,
+    help_: str = "",
+    options: list[str] | None = None,
+    placeholder: str = "",
+) -> dict[str, Any]:
+    """One form-field descriptor for the console's parameterized form."""
+    field: dict[str, Any] = {
+        "key": key,
+        "label": label,
+        "type": type_,
+        "required": required,
+    }
+    if help_:
+        field["help"] = help_
+    if options is not None:
+        field["options"] = options
+    if placeholder:
+        field["placeholder"] = placeholder
+    return field
+
+
+def _base_url_field() -> dict[str, Any]:
+    return _form_field(
+        "url",
+        "Base URL",
+        "url",
+        required=True,
+        placeholder="https://api.openai.com/v1",
+    )
+
+
+def _optional_api_key_field() -> dict[str, Any]:
+    return _form_field(
+        "api_key",
+        "API key (optional)",
+        "password",
+        help_=(
+            "Leave blank for unauthenticated endpoints (LM Studio, "
+            "self-hosted vLLM); the upstream returns 401 at call time if "
+            "it does require auth."
+        ),
+    )
+
+
+def _vendor_api_key_field(vendor: str) -> dict[str, Any]:
+    return _form_field(
+        "api_key",
+        "API key (optional)",
+        "password",
+        help_=(
+            f"Required for the real {vendor} API; leave blank only when an "
+            "upstream proxy supplies auth."
+        ),
+    )
+
+
+def _models_row_field(example: str) -> dict[str, Any]:
+    return _form_field(
+        "models",
+        "Models",
+        "model_list",
+        required=True,
+        help_=(
+            f"At least one model name (for example {example}); the row is "
+            "rejected without one."
+        ),
+    )
+
+
+def _with_limits(types: dict[str, dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Mark every type as carrying a Limits block.
+
+    ``limits`` is required on every model-family provider row and
+    ``max_concurrency`` inside it has no default
+    (primer/model/providers/_shared.py:44-49), so a form that omits it
+    can only ever produce a 422. Flagged once here rather than repeated
+    on every entry.
+    """
+    for meta in types.values():
+        meta["limits"] = True
+    return types
+
+
+llm_provider_types_router = APIRouter(tags=["providers"])
+embedding_provider_types_router = APIRouter(tags=["providers"])
+cross_encoder_provider_types_router = APIRouter(tags=["providers"])
+
+
+@llm_provider_types_router.get(
+    "/llm_providers/_types",
+    summary=(
+        "Provider-type metadata for the console form: the field shape an "
+        "operator fills in per LLM provider type."
+    ),
+)
+async def list_llm_provider_types() -> dict[str, dict[str, Any]]:
+    return _with_limits({
+        LLMProviderType.OPENRESPONSES.value: {
+            "label": "OpenAI Responses API (openresponses)",
+            "config_fields": [
+                _base_url_field(),
+                _optional_api_key_field(),
+                _form_field(
+                    "flavor",
+                    "Flavor",
+                    "enum",
+                    options=[f.value for f in OpenResponsesFlavor],
+                ),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.OPENCHAT.value: {
+            "label": "OpenAI-compatible Chat Completions (openchat)",
+            "config_fields": [
+                _base_url_field(),
+                _optional_api_key_field(),
+                _form_field(
+                    "flavor",
+                    "Flavor",
+                    "enum",
+                    options=[f.value for f in OpenChatFlavor],
+                ),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.GEMINI.value: {
+            "label": "Google Gemini",
+            "config_fields": [_vendor_api_key_field("Gemini")],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.ANTHROPIC.value: {
+            "label": "Anthropic",
+            "config_fields": [_vendor_api_key_field("Anthropic")],
+            "row_fields": [],
+            "discoverable": False,
+        },
+        LLMProviderType.OLLAMA.value: {
+            "label": "Ollama",
+            "config_fields": [
+                _form_field(
+                    "url",
+                    "Base URL",
+                    "url",
+                    required=True,
+                    placeholder="http://localhost:11434",
+                ),
+                _optional_api_key_field(),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.OPENROUTER.value: {
+            "label": "OpenRouter",
+            "config_fields": [
+                _form_field(
+                    "api_key",
+                    "API key",
+                    "password",
+                    required=True,
+                    help_=(
+                        "Required: the OpenRouter upstream is always remote "
+                        "and always authenticated."
+                    ),
+                ),
+                _form_field(
+                    "app_name",
+                    "App name (optional)",
+                    "text",
+                    placeholder="primer-staging",
+                    help_="Sent as X-Title for OpenRouter app attribution.",
+                ),
+                _form_field(
+                    "app_url",
+                    "App URL (optional)",
+                    "url",
+                    placeholder="https://primer.example",
+                    help_="Sent as HTTP-Referer for OpenRouter attribution.",
+                ),
+            ],
+            "row_fields": [],
+            "discoverable": True,
+        },
+        LLMProviderType.AGGREGATED.value: {
+            "label": "Aggregated",
+            # An ordered member list with routing and failover switches is
+            # not a flat field set; the console mounts its own editor.
+            "variant": "aggregated",
+            "config_fields": [],
+            "row_fields": [],
+            "discoverable": False,
+        },
+    })
+
+
+@embedding_provider_types_router.get(
+    "/embedding_providers/_types",
+    summary="Provider-type metadata for the embedding provider form.",
+)
+async def list_embedding_provider_types() -> dict[str, dict[str, Any]]:
+    return _with_limits({
+        EmbeddingProviderType.OPENAI.value: {
+            "label": "OpenAI / OpenAI-compatible",
+            "config_fields": [
+                _base_url_field(),
+                _optional_api_key_field(),
+                _form_field(
+                    "flavor",
+                    "Flavor",
+                    "enum",
+                    options=[f.value for f in OpenAIEmbeddingFlavor],
+                ),
+            ],
+            "row_fields": [_models_row_field("text-embedding-3-small")],
+            "discoverable": True,
+        },
+        EmbeddingProviderType.HUGGINGFACE.value: {
+            "label": "HuggingFace (local sentence-transformers)",
+            "config_fields": [
+                _form_field(
+                    "token",
+                    "HF token",
+                    "password",
+                    required=True,
+                    help_=(
+                        "Required to pull the transformer model, even for "
+                        "public models."
+                    ),
+                ),
+            ],
+            "row_fields": [_models_row_field("BAAI/bge-base-en-v1.5")],
+            "discoverable": False,
+        },
+        EmbeddingProviderType.GEMINI.value: {
+            "label": "Google Gemini",
+            "config_fields": [_vendor_api_key_field("Gemini")],
+            "row_fields": [_models_row_field("gemini-embedding-001")],
+            "discoverable": False,
+        },
+    })
+
+
+@cross_encoder_provider_types_router.get(
+    "/cross_encoder_providers/_types",
+    summary="Provider-type metadata for the cross-encoder provider form.",
+)
+async def list_cross_encoder_provider_types() -> dict[str, dict[str, Any]]:
+    return _with_limits({
+        CrossEncoderProviderType.HUGGINGFACE.value: {
+            "label": "HuggingFace (local sentence-transformers)",
+            "config_fields": [
+                _form_field(
+                    "token",
+                    "HF token (optional for public repos)",
+                    "password",
+                    help_=(
+                        "Needed only for gated repositories; BAAI and "
+                        "cross-encoder/* rerankers are public."
+                    ),
+                ),
+            ],
+            "row_fields": [_models_row_field("BAAI/bge-reranker-v2-m3")],
+            "discoverable": False,
+        },
+    })
+
 
 llm_provider_router = make_crud_router(
     model_cls=LLMProvider,

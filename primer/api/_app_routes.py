@@ -120,6 +120,11 @@ def _mount_routers(
     app.include_router(sso_authed_router, prefix=prefix, dependencies=user_dep)
 
     # Phase 1 — providers (system configuration => admin only).
+    # helpers BEFORE CRUD so the literal /_types path wins over /{id},
+    # same ordering rule as web_search / web_fetch below.
+    app.include_router(providers.llm_provider_types_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(providers.embedding_provider_types_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(providers.cross_encoder_provider_types_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.llm_provider_router, prefix=prefix, dependencies=admin_dep)
 
     # First-run setup: explicit seeding + the operator/builder reset.
