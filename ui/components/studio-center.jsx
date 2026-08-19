@@ -555,6 +555,17 @@ function SessionAgentPanel({ wid, sid, session, pushToast }) {
           Required list (studio-activity.jsx). Renders nothing when there's
           nothing parked. */}
       <ST_InlineYields wid={wid} sid={sid} pending={conv.pending} messages={conv.messages} pushToast={pushToast} />
+      {/* S7: the read-side Trace view for the turn that just finished.
+          turn_no on the row counts COMPLETED turns, so the newest
+          finished turn is turn_no - 1; a session with no finished turn
+          yet has nothing to trace. */}
+      {window.SessionTracePanel && (session.turn_no || 0) > 0 && (
+        <window.SessionTracePanel
+          sid={sid}
+          turnNo={(session.turn_no || 0) - 1}
+          sessionStatus={session.status}
+        />
+      )}
       <div
         style={{
           borderTop: "1px solid var(--border)", padding: 14,
@@ -885,6 +896,15 @@ function SessionGraphPanel({ wid, sid, gid, rid, session, pushToast }) {
           way (studio-agents-interact §5.4), so it needs the same inline
           Approve/Deny/respond surface over its own chat stream. */}
       <ST_InlineYields wid={wid} sid={sid} pending={conv.pending} messages={conv.messages} pushToast={pushToast} />
+      {/* S7: same read-side Trace view; graph turns render the node
+          hierarchy because the builder groups per-node children. */}
+      {window.SessionTracePanel && (session.turn_no || 0) > 0 && (
+        <window.SessionTracePanel
+          sid={sid}
+          turnNo={(session.turn_no || 0) - 1}
+          sessionStatus={session.status}
+        />
+      )}
       <div
         style={{
           borderTop: "1px solid var(--border)", padding: 14,
