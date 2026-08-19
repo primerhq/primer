@@ -23,9 +23,6 @@ from primer.api._app_bootstrap import (
 )
 from primer.api._app_lifespan_phases import (
     assert_harness_kinds_registered,
-    forward_chat_relays,
-    forward_chat_ticks,
-    recover_chats,
     recover_ic_bootstrap,
     recover_sessions,
     recover_webhook_deliveries,
@@ -421,7 +418,6 @@ def _make_lifespan(config: AppConfig):
         timer_scheduler = None
         timeout_sweeper = None
         stuck_session_sweeper = None
-        chat_sweeper = None
         harness_sweeper = None
         watcher_manager = None
         mcp_task_bridge = None
@@ -504,13 +500,7 @@ def _make_lifespan(config: AppConfig):
             )
             stuck_session_sweeper.start(coordinator.leader_elector)
 
-            from primer.bus.scheduler_tasks import ChatSweeper, HarnessSweeper
-            chat_sweeper = ChatSweeper(
-                storage_provider=storage_provider,
-                scheduler=scheduler,
-                event_bus=event_bus,
-            )
-            chat_sweeper.start(coordinator.leader_elector)
+            from primer.bus.scheduler_tasks import HarnessSweeper
 
             harness_sweeper = HarnessSweeper(
                 storage_provider=storage_provider,
@@ -600,8 +590,7 @@ def _make_lifespan(config: AppConfig):
         # socket / Discord gateway); doing that in a worker-only process would
         # be a SECOND inbound connection competing with the API's (Telegram 409
         # Conflict; duplicate Slack/Discord deliveries). Worker-only processes
-        # relay outbound over the bus instead (see _forward_chat_relays_from_bus
-        # below + ChatChannelDispatcher), so they must NOT warm.
+        # do not open inbound at all, so they must NOT warm.
         owns_inbound = config.runtime_mode in (
             RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
         )
@@ -667,9 +656,6 @@ def _make_lifespan(config: AppConfig):
         # eligibility predicate requires turn_status in {claimable,
         # running} and chat.status='active', so we only re-arm rows
         # that match.
-        if claim_engine is not None:
-            await recover_chats(claim_engine, storage_provider)
-
         # --- Webhook delivery recovery on startup --------------------------
         # The webhook endpoint persists a pending WebhookDelivery row before
         # its fire-and-forget BackgroundTask dispatches. A crash between the
@@ -743,45 +729,6 @@ def _make_lifespan(config: AppConfig):
         )
         app.state.workspace_ext_toolset = workspace_ext_toolset
 
-        # Process-local router for chat tick events. One bus subscription
-        # per process feeds it; WS handlers subscribe per-chat.
-        from primer.chat.tick_router import ChatTickRouter
-
-        chat_tick_router = ChatTickRouter()
-        app.state.chat_tick_router = chat_tick_router
-
-        if event_bus is not None:
-            chat_tick_task = asyncio.create_task(
-                forward_chat_ticks(event_bus, chat_tick_router),
-                name="chat-tick-forwarder",
-            )
-            app.state.chat_tick_forwarder_task = chat_tick_task
-        else:
-            chat_tick_task = None
-            app.state.chat_tick_forwarder_task = None
-
-        # Chat -> channel relay forwarder. An out-of-proc worker cannot post to
-        # a channel (it deliberately does not own the inbound gateway), so it
-        # publishes a tiny ``chat:<id>:relay`` signal; the inbound-owning
-        # process re-derives the text/gate from storage and posts via its warm
-        # adapter. Only runs where inbound lives (API / api+worker). In a
-        # single api+worker process the worker posts directly via the shared
-        # warm registry and never publishes, so this stays idle there.
-        if event_bus is not None and owns_inbound:
-            chat_relay_task = asyncio.create_task(
-                forward_chat_relays(
-                    event_bus,
-                    storage_provider,
-                    channel_registry,
-                    artifact_storage_registry,
-                ),
-                name="chat-relay-forwarder",
-            )
-            app.state.chat_relay_forwarder_task = chat_relay_task
-        else:
-            chat_relay_task = None
-            app.state.chat_relay_forwarder_task = None
-
         # (The workspace tap router is constructed earlier, before the
         # workspaces toolset, so the ``workspace_tap`` drain tool can
         # capture it. See above.)
@@ -803,7 +750,6 @@ def _make_lifespan(config: AppConfig):
                 approval_resolver=approval_resolver,
                 channel_dispatcher=channel_dispatcher,
                 event_bus=event_bus,
-                chat_tick_router=chat_tick_router,
                 artifact_storage_registry=artifact_storage_registry,
                 engine=claim_engine,
             )
@@ -948,7 +894,6 @@ def _make_lifespan(config: AppConfig):
                 (mcp_task_bridge, "mcp_task_bridge"),
                 (watcher_manager, "watcher_manager"),
                 (harness_sweeper, "harness_sweeper"),
-                (chat_sweeper, "chat_sweeper"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),
                 (timer_scheduler, "timer_scheduler"),
@@ -959,29 +904,11 @@ def _make_lifespan(config: AppConfig):
                         await task.stop()
                     except Exception:
                         logger.exception("%s.stop failed", name)
-            if chat_tick_task is not None:
-                try:
-                    chat_tick_task.cancel()
-                    try:
-                        await chat_tick_task
-                    except asyncio.CancelledError:
-                        pass
-                except Exception:
-                    logger.exception("chat_tick_task teardown failed")
             if workspace_tap_router is not None:
                 try:
                     await workspace_tap_router.aclose()
                 except Exception:
                     logger.exception("workspace_tap_router teardown failed")
-            if chat_relay_task is not None:
-                try:
-                    chat_relay_task.cancel()
-                    try:
-                        await chat_relay_task
-                    except asyncio.CancelledError:
-                        pass
-                except Exception:
-                    logger.exception("chat_relay_task teardown failed")
             if _claim_depth_task is not None:
                 try:
                     _claim_depth_task.cancel()

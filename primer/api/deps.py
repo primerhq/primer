@@ -324,13 +324,6 @@ def get_external_tool_call_storage(
     return sp.get_storage(ExternalToolCall)
 
 
-def get_chat_storage(
-    sp: "StorageProvider" = Depends(get_storage_provider),
-):
-    from primer.model.chats import Chat
-    return sp.get_storage(Chat)
-
-
 def get_internal_collections_config_storage(
     sp: "StorageProvider" = Depends(get_storage_provider),
 ) -> "Storage[InternalCollectionsConfig]":
@@ -632,7 +625,6 @@ __all__ = [
     "get_channel_dispatcher",
     "get_channel_inbox",
     "get_channel_registry",
-    "get_chat_storage",
     "get_claim_engine",
     "get_collection_storage",
     "get_cross_encoder_provider_storage",

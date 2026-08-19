@@ -14,12 +14,10 @@ import pytest_asyncio
 
 from primer.int.claim import ClaimKind, ReleaseOutcome
 from primer.model.harness import Harness, HarnessOperation, HarnessStatus
-from primer.model.chats import Chat
 from primer.model.workspace_session import WorkspaceSession, SessionStatus, AgentSessionBinding
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
 from primer.claim.adapters.sessions import SessionClaimAdapter
-from primer.claim.adapters.chats import ChatClaimAdapter
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
 
 
@@ -118,79 +116,16 @@ async def test_session_on_release_none_storage_raises(sqlite_provider):
         await adapter.on_release(conn=None, entity_id="sess-1", outcome=outcome)
 
 
-# ---------------------------------------------------------------------------
-# ChatClaimAdapter.on_release
-# ---------------------------------------------------------------------------
-
-def _make_chat(id: str = "chat-1") -> Chat:
-    return Chat(
-        id=id,
-        agent_id="agent-1",
-        created_at=datetime.now(UTC),
-        status="active",
-        turn_status="running",
-    )
 
 
-@pytest.mark.asyncio
-async def test_chat_on_release_success_drop_sets_idle(sqlite_provider):
-    storage = sqlite_provider.get_storage(Chat)
-    chat = _make_chat()
-    await storage.create(chat)
-
-    adapter = ChatClaimAdapter(chat_storage=storage)
-    outcome = ReleaseOutcome(success=True, drop_lease=True)
-    await adapter.on_release(conn=None, entity_id="chat-1", outcome=outcome)
-
-    updated = await storage.get("chat-1")
-    assert updated is not None
-    assert updated.turn_status == "idle"
 
 
-@pytest.mark.asyncio
-async def test_chat_on_release_success_no_drop_sets_claimable(sqlite_provider):
-    storage = sqlite_provider.get_storage(Chat)
-    chat = _make_chat()
-    await storage.create(chat)
-
-    adapter = ChatClaimAdapter(chat_storage=storage)
-    outcome = ReleaseOutcome(success=True, drop_lease=False)
-    await adapter.on_release(conn=None, entity_id="chat-1", outcome=outcome)
-
-    updated = await storage.get("chat-1")
-    assert updated is not None
-    assert updated.turn_status == "claimable"
 
 
-@pytest.mark.asyncio
-async def test_chat_on_release_failure_sets_claimable(sqlite_provider):
-    storage = sqlite_provider.get_storage(Chat)
-    chat = _make_chat()
-    await storage.create(chat)
-
-    adapter = ChatClaimAdapter(chat_storage=storage)
-    outcome = ReleaseOutcome(success=False, last_error="boom")
-    await adapter.on_release(conn=None, entity_id="chat-1", outcome=outcome)
-
-    updated = await storage.get("chat-1")
-    assert updated is not None
-    assert updated.turn_status == "claimable"
 
 
-@pytest.mark.asyncio
-async def test_chat_on_release_missing_entity_returns_silently(sqlite_provider):
-    storage = sqlite_provider.get_storage(Chat)
-    adapter = ChatClaimAdapter(chat_storage=storage)
-    outcome = ReleaseOutcome(success=True, drop_lease=True)
-    await adapter.on_release(conn=None, entity_id="nonexistent", outcome=outcome)
 
 
-@pytest.mark.asyncio
-async def test_chat_on_release_none_storage_raises(sqlite_provider):
-    adapter = ChatClaimAdapter(chat_storage=None)
-    outcome = ReleaseOutcome(success=True)
-    with pytest.raises(RuntimeError, match="chat_storage"):
-        await adapter.on_release(conn=None, entity_id="chat-1", outcome=outcome)
 
 
 # ---------------------------------------------------------------------------

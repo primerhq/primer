@@ -27,20 +27,6 @@ class _RecordingStorage:
         return entity
 
 
-@pytest.mark.asyncio
-async def test_chat_adapter_forwards_conn():
-    from primer.claim.adapters.chats import ChatClaimAdapter
-    from primer.model.chats import Chat
-
-    row = Chat(id="c1", agent_id="a1", created_at=_now(), turn_status="running")
-    storage = _RecordingStorage(row)
-    adapter = ChatClaimAdapter(chat_storage=storage)
-    sentinel = object()
-    await adapter.on_release(
-        sentinel, "c1", outcome=ReleaseOutcome(success=True, drop_lease=True)
-    )
-    assert storage.get_conns == [sentinel]
-    assert storage.update_conns == [sentinel]
 
 
 @pytest.mark.asyncio
@@ -101,7 +87,7 @@ async def test_in_memory_release_is_fenced_on_ownership():
     calls = []
 
     class _Adapter:
-        kind = ClaimKind.CHAT
+        kind = ClaimKind.HARNESS
         entity_table = "chat"
 
         def eligibility_sql(self):
@@ -110,16 +96,16 @@ async def test_in_memory_release_is_fenced_on_ownership():
         async def on_release(self, conn, entity_id, *, outcome):
             calls.append(entity_id)
 
-    engine = InMemoryClaimEngine(adapters={ClaimKind.CHAT: _Adapter()})
-    await engine.upsert(ClaimKind.CHAT, "c1")
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Adapter()})
+    await engine.upsert(ClaimKind.HARNESS, "c1")
     leases = await engine.claim_due("worker-A", max_count=1)
     lease_a = leases[0]
     assert lease_a.claimed_by == "worker-A"
     # Simulate re-claim by worker B.
-    engine._leases[(ClaimKind.CHAT, "c1")].claimed_by = "worker-B"
+    engine._leases[(ClaimKind.HARNESS, "c1")].claimed_by = "worker-B"
     await engine.release(lease_a, outcome=ReleaseOutcome(success=True, drop_lease=True))
     assert calls == []  # on_release NOT called (stale worker fenced out)
-    assert engine._leases[(ClaimKind.CHAT, "c1")].claimed_by == "worker-B"  # lease untouched
+    assert engine._leases[(ClaimKind.HARNESS, "c1")].claimed_by == "worker-B"  # lease untouched
 
 
 @pytest.mark.asyncio
@@ -129,7 +115,7 @@ async def test_in_memory_release_runs_when_still_owned():
     calls = []
 
     class _Adapter:
-        kind = ClaimKind.CHAT
+        kind = ClaimKind.HARNESS
         entity_table = "chat"
 
         def eligibility_sql(self):
@@ -138,8 +124,8 @@ async def test_in_memory_release_runs_when_still_owned():
         async def on_release(self, conn, entity_id, *, outcome):
             calls.append(entity_id)
 
-    engine = InMemoryClaimEngine(adapters={ClaimKind.CHAT: _Adapter()})
-    await engine.upsert(ClaimKind.CHAT, "c2")
+    engine = InMemoryClaimEngine(adapters={ClaimKind.HARNESS: _Adapter()})
+    await engine.upsert(ClaimKind.HARNESS, "c2")
     leases = await engine.claim_due("worker-A", max_count=1)
     await engine.release(leases[0], outcome=ReleaseOutcome(success=True, drop_lease=True))
     assert calls == ["c2"]  # owned -> on_release ran

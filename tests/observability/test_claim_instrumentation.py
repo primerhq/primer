@@ -44,7 +44,7 @@ def _make_in_memory_engine():
     from primer.int.claim import ClaimAdapter, ClaimKind, ReleaseOutcome
 
     class FakeChatAdapter(ClaimAdapter):
-        kind = ClaimKind.CHAT
+        kind = ClaimKind.HARNESS
         entity_table = "chats"
 
         def eligibility_sql(self) -> str:
@@ -53,7 +53,7 @@ def _make_in_memory_engine():
         async def on_release(self, conn, entity_id, *, outcome: ReleaseOutcome):
             pass
 
-    return InMemoryClaimEngine(adapters={ClaimKind.CHAT: FakeChatAdapter()})
+    return InMemoryClaimEngine(adapters={ClaimKind.HARNESS: FakeChatAdapter()})
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +70,7 @@ async def test_claim_due_span_attributes(in_memory_tracer):
 
     # Insert 3 leases
     for i in range(3):
-        await engine.upsert(ClaimKind.CHAT, f"chat-{i}")
+        await engine.upsert(ClaimKind.HARNESS, f"chat-{i}")
 
     with _patch_tracer(provider):
         leases = await engine.claim_due("worker-1", max_count=10)
@@ -91,8 +91,8 @@ async def test_claim_due_latency_histogram(in_memory_tracer):
     from primer.int.claim import ClaimKind
 
     engine = _make_in_memory_engine()
-    await engine.upsert(ClaimKind.CHAT, "chat-0")
-    await engine.upsert(ClaimKind.CHAT, "chat-1")
+    await engine.upsert(ClaimKind.HARNESS, "chat-0")
+    await engine.upsert(ClaimKind.HARNESS, "chat-1")
 
     with _patch_tracer(provider):
         leases = await engine.claim_due("worker-1", max_count=10)
@@ -104,7 +104,7 @@ async def test_claim_due_latency_histogram(in_memory_tracer):
         s.name: s.value
         for metric in m.claim_enqueue_latency_seconds.collect()
         for s in metric.samples
-        if s.labels.get("kind") == "chat"
+        if s.labels.get("kind") == "harness"
     }
     count = samples.get("claim_enqueue_latency_seconds_count", 0)
     assert count == 2, f"expected 2 observations; samples={samples}"
@@ -116,8 +116,8 @@ async def test_claim_due_span_events_per_lease(in_memory_tracer):
     from primer.int.claim import ClaimKind
 
     engine = _make_in_memory_engine()
-    await engine.upsert(ClaimKind.CHAT, "chat-0")
-    await engine.upsert(ClaimKind.CHAT, "chat-1")
+    await engine.upsert(ClaimKind.HARNESS, "chat-0")
+    await engine.upsert(ClaimKind.HARNESS, "chat-1")
 
     with _patch_tracer(provider):
         leases = await engine.claim_due("worker-1", max_count=10)
@@ -128,7 +128,7 @@ async def test_claim_due_span_events_per_lease(in_memory_tracer):
     assert len(spans[0].events) == 2
     for event in spans[0].events:
         assert event.name == "claim_assigned"
-        assert event.attributes.get("kind") == "chat"
+        assert event.attributes.get("kind") == "harness"
 
 
 @pytest.mark.asyncio
@@ -158,7 +158,7 @@ async def test_claim_due_enqueue_latency_positive(in_memory_tracer):
     engine = _make_in_memory_engine()
     # Register a lease that was due 5 seconds ago
     past = datetime.now(UTC) - timedelta(seconds=5)
-    await engine.upsert(ClaimKind.CHAT, "chat-old", next_attempt_at=past)
+    await engine.upsert(ClaimKind.HARNESS, "chat-old", next_attempt_at=past)
 
     with _patch_tracer(provider):
         leases = await engine.claim_due("worker-1", max_count=10)
@@ -170,7 +170,7 @@ async def test_claim_due_enqueue_latency_positive(in_memory_tracer):
         s.name: s.value
         for metric in m.claim_enqueue_latency_seconds.collect()
         for s in metric.samples
-        if s.labels.get("kind") == "chat"
+        if s.labels.get("kind") == "harness"
     }
     latency_sum = samples.get("claim_enqueue_latency_seconds_sum", 0)
     assert latency_sum >= 4.0, f"expected latency >= 4s; got {latency_sum}"

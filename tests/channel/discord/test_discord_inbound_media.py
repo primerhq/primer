@@ -17,7 +17,6 @@ from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     DiscordChannelConfig, DiscordChannelProviderConfig,
 )
-from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import SqliteConfig
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q

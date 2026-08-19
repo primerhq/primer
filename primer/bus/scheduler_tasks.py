@@ -395,46 +395,6 @@ def _never_started(session, grace_seconds: float) -> bool:
     return age >= grace_seconds
 
 
-class ChatSweeper(_BackgroundTask):
-    """Periodically reclaims chats whose worker died mid-turn.
-
-    Wraps :func:`primer.chat.dispatch.sweep_chats` in the same
-    background-task harness used by TimeoutSweeper.
-    """
-
-    role = ROLE_CHAT_SWEEPER
-
-    def __init__(
-        self,
-        *,
-        storage_provider,
-        scheduler,
-        event_bus,
-        poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
-    ) -> None:
-        super().__init__(name="chat-sweeper")
-        self._storage_provider = storage_provider
-        self._scheduler = scheduler
-        self._event_bus = event_bus
-        self._poll = poll_seconds
-
-    async def _run(self) -> None:
-        from primer.chat.dispatch import sweep_chats
-        while not self._stopping:
-            try:
-                await sweep_chats(
-                    storage_provider=self._storage_provider,
-                    scheduler=self._scheduler,
-                    event_bus=self._event_bus,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("chat-sweeper: tick failed: %s", exc)
-            try:
-                await asyncio.sleep(self._poll)
-            except asyncio.CancelledError:
-                break
-
-
 class HarnessSweeper(_BackgroundTask):
     """Periodically reclaims harnesses whose worker died mid-operation."""
 
@@ -549,7 +509,6 @@ async def _find_expired_non_timer_keys(session_storage: Storage) -> list[str]:
 
 
 __all__ = [
-    "ChatSweeper",
     "DEFAULT_SWEEPER_POLL_SECONDS",
     "DEFAULT_TIMER_POLL_SECONDS",
     "HarnessSweeper",

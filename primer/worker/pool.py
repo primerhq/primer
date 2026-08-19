@@ -1,8 +1,8 @@
-"""Background worker pool — claims sessions, chats and harnesses and runs one turn each.
+"""Background worker pool — claims sessions and harnesses and runs one turn each.
 
 Claim loop architecture:
 * A single ``_engine_claim_loop`` and ``_engine_bus_loop`` handle all claim
-  kinds (session, chat, harness) via the injected ``ClaimEngine``.
+  kinds (session, harness) via the injected ``ClaimEngine``.
 
 One unified ``_in_flight: set[tuple[ClaimKind, str]]`` tracks all in-flight
 items regardless of kind.  Capacity: ``free = max_concurrency - len(_in_flight)``.
@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from primer.int.claim import ClaimEngine
     from primer.int.event_bus import EventBus
     from primer.int.storage_provider import StorageProvider
-    from primer.chat.tick_router import ChatTickRouter
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +64,6 @@ class WorkerPool:
         approval_resolver: "ApprovalResolver | None" = None,
         channel_dispatcher=None,
         event_bus: "EventBus | None" = None,
-        chat_tick_router: "ChatTickRouter | None" = None,
         artifact_storage_registry: Any | None = None,
         engine: "ClaimEngine",
     ) -> None:
@@ -85,7 +83,6 @@ class WorkerPool:
         self._approval_resolver = approval_resolver
         self._channel_dispatcher = channel_dispatcher
         self._event_bus = event_bus
-        self._chat_tick_router = chat_tick_router
         self._artifact_storage_registry = artifact_storage_registry
         self._engine = engine
 
@@ -151,7 +148,6 @@ class WorkerPool:
         # Build the dispatch table now that _worker_id is known.
         self._dispatch = {
             ClaimKind.SESSION: self._run_engine_session,
-            ClaimKind.CHAT:    self._run_engine_chat,
             ClaimKind.HARNESS: self._run_engine_harness,
             ClaimKind.TRIGGER: self._run_engine_trigger,
         }
@@ -316,8 +312,8 @@ class WorkerPool:
     async def _engine_claim_loop(self) -> None:
         """Unified claim loop driven by ClaimEngine.claim_due.
 
-        Replaces _claim_loop + _claim_chat_loop + _claim_harness_loop when
-        an engine is injected. Claims any eligible lease (session, chat, or
+        Replaces _claim_loop + _claim_harness_loop when
+        an engine is injected. Claims any eligible lease (session or
         harness) and dispatches via self._dispatch[lease.kind].
         """
         assert self._engine is not None
@@ -599,13 +595,8 @@ class WorkerPool:
     async def _maybe_rearm_session(self, session_id: str) -> None:
         """Re-arm a fresh SESSION claim lease if a turn is still queued.
 
-        Mirrors the CHAT lane's keep-the-lease-while-there's-more-work rule
-        (``primer.worker.pool._run_engine_chat`` maps its turn's
-        disposition to ``drop_lease``, and ``ChatClaimAdapter.on_release``
-        is the single writer of the resulting ``turn_status``). Sessions
-        can't reuse that exact shape because every session
-        ``ReleaseOutcome`` drops the lease unconditionally (see
-        ``primer.session.dispatch``), so instead of keeping the old lease
+        Every session ``ReleaseOutcome`` drops the lease unconditionally
+        (see ``primer.session.dispatch``), so instead of keeping the old lease
         alive this re-upserts a brand-new one, once release has actually
         dropped the old one -- calling upsert first would just touch the
         (still held-by-us, about to be dropped) lease's priority and be
@@ -769,9 +760,6 @@ class WorkerPool:
         return session_resume_coordinator.repark_resumed_yield_outcome(
             self, session, parked, yld,
         )
-
-    async def _run_engine_chat(self, engine_lease: ClaimLease) -> None:
-        return await engine_handlers.run_engine_chat(self, engine_lease)
 
     async def _run_engine_harness(self, engine_lease: ClaimLease) -> None:
         return await engine_handlers.run_engine_harness(self, engine_lease)

@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from primer.bus.in_memory import InMemoryEventBus
-from primer.claim.adapters.chats import ChatClaimAdapter
 from primer.claim.adapters.harnesses import HarnessClaimAdapter
 from primer.claim.adapters.sessions import SessionClaimAdapter
 from primer.claim.adapters.triggers import TriggerClaimAdapter
@@ -45,16 +44,12 @@ class ClaimEngineFactory:
         ``Storage[T]`` handle from *storage_provider*.
         """
         from primer.model.workspace_session import WorkspaceSession
-        from primer.model.chats import Chat
         from primer.model.harness import Harness
         from primer.model.trigger import Trigger
 
         adapters = {
             ClaimKind.SESSION: SessionClaimAdapter(
                 session_storage=storage_provider.get_storage(WorkspaceSession),
-            ),
-            ClaimKind.CHAT: ChatClaimAdapter(
-                chat_storage=storage_provider.get_storage(Chat),
             ),
             ClaimKind.HARNESS: HarnessClaimAdapter(
                 harness_storage=storage_provider.get_storage(Harness),

@@ -182,65 +182,6 @@ async def recover_sessions(claim_engine, scheduler, storage_provider) -> None:
         logger.exception("lifespan: session recovery failed")
 
 
-async def recover_chats(claim_engine, storage_provider) -> None:
-    """Chat recovery on startup.
-
-    Same shape as session recovery above but for the chat surface. A chat row
-    at turn_status='claimable' or 'running' with no lease (because the worker
-    died between writing a chat message and releasing) would otherwise sit
-    stuck forever — see bug-2026-06-02T192011Z-8feeba2a. ChatClaimAdapter's
-    eligibility predicate requires turn_status in {claimable, running} and
-    chat.status='active', so we only re-arm rows that match.
-    """
-    try:
-        from primer.int.claim import ClaimKind as _ClaimKind
-        from primer.model.chats import Chat as _Chat
-        from primer.model.storage import OffsetPage as _OffsetPage
-        from primer.storage.q import Q as _Q
-
-        _chats_storage = storage_provider.get_storage(_Chat)
-        # Push the eligibility filter into the query (mirrors session
-        # recovery above) instead of list()-ing every chat and dropping
-        # non-matching rows in Python: at scale that loads the entire chat
-        # history into memory. ChatClaimAdapter only accepts rows with
-        # status='active' AND turn_status in {claimable, running}, so we
-        # re-arm exactly those. The new chat.(status,turn_status) B-tree
-        # index keeps the scan cheap.
-        _chat_predicate = (
-            _Q(_Chat)
-            .where("status", "active")
-            .where_in("turn_status", ["claimable", "running"])
-            .build()
-        )
-        _recovered_chats = 0
-        _chat_offset = 0
-        while True:
-            _page = await _chats_storage.find(
-                _chat_predicate,
-                _OffsetPage(offset=_chat_offset, length=200),
-            )
-            _items = list(_page.items)
-            for _chat in _items:
-                try:
-                    await claim_engine.upsert(_ClaimKind.CHAT, _chat.id)
-                    _recovered_chats += 1
-                except Exception:
-                    logger.exception(
-                        "chat recovery: failed to upsert lease for %s",
-                        _chat.id,
-                    )
-            if len(_items) < 200:
-                break
-            _chat_offset += 200
-        if _recovered_chats:
-            logger.info(
-                "lifespan: chat recovery — re-armed %d chat lease(s) "
-                "from persisted state", _recovered_chats,
-            )
-    except Exception:  # noqa: BLE001 -- never break startup
-        logger.exception("lifespan: chat recovery failed")
-
-
 # Grace window: only pending rows OLDER than this are re-fired. It is the only
 # thing separating a re-fire from a live sibling's in-flight dispatch.
 #
@@ -249,7 +190,7 @@ async def recover_chats(claim_engine, storage_provider) -> None:
 # a rolling deploy the booting replica re-fires the draining replica's still
 # pending rows whenever their dispatch outlives this window - and an
 # agent_fresh_session dispatch (workspace + session creation) plausibly exceeds
-# the old 30s default. Unlike recover_sessions / recover_chats, whose
+# the old 30s default. Unlike recover_sessions, whose
 # idempotent lease re-arms are harmless to repeat, this phase has real external
 # side effects (it spawns chats/sessions), so a spurious re-fire is a duplicate
 # delivery rather than a no-op.
@@ -731,91 +672,3 @@ async def sample_claim_queue_depth(claim_engine) -> None:
             logger.debug(
                 "claim queue-depth sample failed", exc_info=True
             )
-
-
-async def forward_chat_ticks(event_bus, chat_tick_router) -> None:
-    """Forward ``chat:<id>:tick`` bus events into the process-local tick router.
-
-    One bus subscription per process feeds the router; WS handlers subscribe
-    per-chat off the router.
-    """
-    from primer.chat.tick_router import Tick
-
-    sub = event_bus.subscribe()
-    try:
-        async for event in sub:
-            key = event.event_key
-            if not key.startswith("chat:") or not key.endswith(":tick"):
-                continue
-            cid = key[len("chat:"):-len(":tick")]
-            if not cid:
-                continue
-            seq = event.payload.get("seq") if event.payload else None
-            if not isinstance(seq, int):
-                continue
-            chat_tick_router.publish(cid, Tick(seq=seq))
-    except asyncio.CancelledError:
-        pass
-    finally:
-        await sub.aclose()
-
-
-async def forward_chat_relays(
-    event_bus, storage_provider, channel_registry, artifact_storage_registry
-) -> None:
-    """Chat -> channel relay forwarder.
-
-    An out-of-proc worker cannot post to a channel (it deliberately does not
-    own the inbound gateway), so it publishes a tiny ``chat:<id>:relay`` signal;
-    the inbound-owning process re-derives the text/gate from storage and posts
-    via its warm adapter. Only runs where inbound lives (API / api+worker). In a
-    single api+worker process the worker posts directly via the shared warm
-    registry and never publishes, so this stays idle there.
-    """
-    from primer.channel.chat_dispatcher import (
-        ChatChannelDispatcher,
-        derive_chat_gate_envelope,
-        derive_final_relay_media,
-        derive_final_relay_text,
-        parse_relay_event_key,
-    )
-
-    relayer = ChatChannelDispatcher(
-        storage_provider=storage_provider,
-        registry=channel_registry,
-        event_bus=None,  # never republish: terminal, no bus loop
-        allow_build=True,  # inbound-owning: may warm the adapter
-        artifact_registry=artifact_storage_registry,
-    )
-    sub = event_bus.subscribe()
-    try:
-        async for event in sub:
-            cid = parse_relay_event_key(event.event_key)
-            if cid is None:
-                continue
-            kind = (event.payload or {}).get("kind")
-            try:
-                if kind == "text":
-                    text = await derive_final_relay_text(
-                        storage_provider, cid)
-                    if text:
-                        await relayer.relay_text(chat_id=cid, text=text)
-                elif kind == "gate":
-                    env = await derive_chat_gate_envelope(
-                        storage_provider, cid)
-                    if env is not None:
-                        await relayer.dispatch_gate(
-                            chat_id=cid, envelope=env)
-                elif kind == "media":
-                    mparts = await derive_final_relay_media(
-                        storage_provider, cid)
-                    if mparts:
-                        await relayer.relay_media(
-                            chat_id=cid, parts=mparts)
-            except Exception:
-                logger.exception(
-                    "chat relay forwarder: post for %s failed", cid)
-    except asyncio.CancelledError:
-        pass
-    finally:
-        await sub.aclose()

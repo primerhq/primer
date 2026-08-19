@@ -148,17 +148,10 @@ class Trigger(Identifiable):
 
 
 class SubscriptionKind(str, Enum):
-    CHAT_MESSAGE = "chat_message"
     AGENT_FRESH_SESSION = "agent_fresh_session"
     GRAPH_FRESH_SESSION = "graph_fresh_session"
     PARKED_SESSION = "parked_session"
-    START_CHAT = "start_chat"
     SESSION_APPEND = "session_append"
-
-
-class ChatMessageSubConfig(BaseModel):
-    kind: Literal["chat_message"] = "chat_message"
-    chat_id: str
 
 
 class AgentFreshSubConfig(BaseModel):
@@ -193,14 +186,8 @@ class SessionAppendSubConfig(BaseModel):
     session_id: str
 
 
-class StartChatSubConfig(BaseModel):
-    kind: Literal["start_chat"] = "start_chat"
-    agent_id: str
-
-
 SubscriptionConfig = Annotated[
-    ChatMessageSubConfig | AgentFreshSubConfig
-    | GraphFreshSubConfig | ParkedSessionSubConfig | StartChatSubConfig
+    AgentFreshSubConfig | GraphFreshSubConfig | ParkedSessionSubConfig
     | SessionAppendSubConfig,
     Field(discriminator="kind"),
 ]
@@ -226,12 +213,10 @@ class Subscription(Identifiable):
 __all__ = [
     "AgentFreshSubConfig",
     "ChannelTriggerConfig",
-    "ChatMessageSubConfig",
     "DelayedTriggerConfig",
     "GraphFreshSubConfig",
     "ParkedSessionSubConfig",
     "ScheduledTriggerConfig",
-    "StartChatSubConfig",
     "SessionAppendSubConfig",
     "Subscription",
     "SubscriptionConfig",

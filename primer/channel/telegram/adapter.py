@@ -16,7 +16,6 @@ from primer.channel.telegram.render import (
     compute_tag,
 )
 from primer.model.channel import Channel, ChannelProvider
-from primer.model.chats import Chat
 from primer.model.except_ import ProviderError
 
 

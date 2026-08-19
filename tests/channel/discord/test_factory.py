@@ -23,7 +23,6 @@ from discord import app_commands
 from pydantic import SecretStr
 
 from primer.channel.discord import factory as discord_factory
-from primer.channel.commands import CommandResult
 from primer.model.channel import (
     Channel,
     ChannelProvider,
@@ -389,117 +388,20 @@ async def test_on_interaction_reject_unknown_channel_is_noop(monkeypatch):
     inter.response.send_modal.assert_not_awaited()
 
 
-# --------------------------------------------------------------------------- #
-# /agent application command
-# --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_cmd_agent_not_configured(monkeypatch):
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({}))
-    cmd = tree.get_command("agent")
-    inter = _interaction(channel_id=1)
-    await cmd.callback(inter, value="")
-    inter.response.send_message.assert_awaited_once()
-    assert "not configured" in inter.response.send_message.await_args.args[0]
 
 
-@pytest.mark.asyncio
-async def test_cmd_agent_requires_thread(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    cmd = tree.get_command("agent")
-    inter = _interaction(channel_id=1)  # channel is not a Thread
-    await cmd.callback(inter, value="")
-    msg = inter.response.send_message.await_args.args[0]
-    assert "chat thread" in msg
 
 
-@pytest.mark.asyncio
-async def test_cmd_agent_notice(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    monkeypatch.setattr(
-        discord_factory, "handle_app_command",
-        AsyncMock(return_value=CommandResult(kind="notice", text="Switched.")))
-    cmd = tree.get_command("agent")
-    inter = _interaction()
-    inter.channel = _fake_thread(50, 1)
-    await cmd.callback(inter, value="a1")
-    inter.response.send_message.assert_awaited_once()
-    assert inter.response.send_message.await_args.args[0] == "Switched."
 
 
-@pytest.mark.asyncio
-async def test_cmd_agent_renders_picker(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    monkeypatch.setattr(
-        discord_factory, "handle_app_command",
-        AsyncMock(return_value=CommandResult(
-            kind="agent_picker",
-            items=[{"label": "Agent A", "agent_id": "a1"}])))
-    cmd = tree.get_command("agent")
-    inter = _interaction()
-    inter.channel = _fake_thread(50, 1)
-    await cmd.callback(inter, value="")
-    inter.response.send_message.assert_awaited_once()
-    assert "view" in inter.response.send_message.await_args.kwargs
 
 
-@pytest.mark.asyncio
-async def test_cmd_agent_picker_empty(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    monkeypatch.setattr(
-        discord_factory, "handle_app_command",
-        AsyncMock(return_value=CommandResult(kind="agent_picker", items=[])))
-    cmd = tree.get_command("agent")
-    inter = _interaction()
-    inter.channel = _fake_thread(50, 1)
-    await cmd.callback(inter, value="")
-    assert inter.response.send_message.await_args.args[0] == "No agents."
 
 
-@pytest.mark.asyncio
-async def test_cmd_agent_handler_error_surfaced(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    monkeypatch.setattr(
-        discord_factory, "handle_app_command",
-        AsyncMock(side_effect=RuntimeError("boom")))
-    cmd = tree.get_command("agent")
-    inter = _interaction()
-    inter.channel = _fake_thread(50, 1)
-    await cmd.callback(inter, value="a1")
-    assert inter.response.send_message.await_args.args[0] == "boom"
 
 
-# --------------------------------------------------------------------------- #
-# /help application command
-# --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_cmd_help_notice(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    monkeypatch.setattr(
-        discord_factory, "handle_app_command",
-        AsyncMock(return_value=CommandResult(kind="notice", text="help stuff")))
-    cmd = tree.get_command("help")
-    inter = _interaction()
-    await cmd.callback(inter)
-    assert inter.response.send_message.await_args.args[0] == "help stuff"
 
 
-@pytest.mark.asyncio
-async def test_cmd_help_fallback_on_error(monkeypatch):
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({}))
-    monkeypatch.setattr(
-        discord_factory, "handle_app_command",
-        AsyncMock(side_effect=RuntimeError("x")))
-    cmd = tree.get_command("help")
-    inter = _interaction()
-    await cmd.callback(inter)
-    text = inter.response.send_message.await_args.args[0]
-    assert "Commands:" in text  # local help_text() fallback
 
 
 # --------------------------------------------------------------------------- #
@@ -509,82 +411,16 @@ def _autocomplete(tree):
     return tree.get_command("agent")._params["value"].autocomplete
 
 
-@pytest.mark.asyncio
-async def test_agent_autocomplete_no_storage_returns_empty(monkeypatch):
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({}))
-    ac = _autocomplete(tree)
-    assert await ac(SimpleNamespace(), "a") == []
 
 
-@pytest.mark.asyncio
-async def test_agent_autocomplete_maps_choices(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    monkeypatch.setattr(
-        discord_factory, "agent_autocomplete_choices",
-        AsyncMock(return_value=[{"name": "Agent A", "value": "a1"}]))
-    ac = _autocomplete(tree)
-    out = await ac(SimpleNamespace(), "ag")
-    assert len(out) == 1
-    assert out[0].name == "Agent A"
-    assert out[0].value == "a1"
 
 
-@pytest.mark.asyncio
-async def test_agent_autocomplete_error_returns_empty(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    monkeypatch.setattr(
-        discord_factory, "agent_autocomplete_choices",
-        AsyncMock(side_effect=RuntimeError("x")))
-    ac = _autocomplete(tree)
-    assert await ac(SimpleNamespace(), "ag") == []
 
 
-# --------------------------------------------------------------------------- #
-# tree sync via on_ready
-# --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_on_ready_syncs_to_guild(monkeypatch):
-    adapter = _mock_adapter()
-    _, client, tree = _install_tree(
-        monkeypatch, _FakeEntry({"1": adapter}), channel=_channel(ext="500"))
-    guild = SimpleNamespace(id=99)
-    monkeypatch.setattr(client, "get_channel", lambda cid: SimpleNamespace(guild=guild))
-    monkeypatch.setattr(tree, "copy_global_to", MagicMock())
-    monkeypatch.setattr(tree, "sync", AsyncMock())
-    await client.on_ready()
-    tree.copy_global_to.assert_called_once()
-    tree.sync.assert_awaited_once()
-    # Second on_ready is a no-op (guarded so we sync once per provider).
-    await client.on_ready()
-    tree.sync.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_on_ready_global_sync_when_no_guild(monkeypatch):
-    _, client, tree = _install_tree(monkeypatch, _FakeEntry({}))
-    # get_channel returns an object with no guild attribute -> global sync.
-    monkeypatch.setattr(client, "get_channel", lambda cid: SimpleNamespace())
-    monkeypatch.setattr(tree, "sync", AsyncMock())
-    await client.on_ready()
-    tree.sync.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_on_ready_sync_error_resets_flag(monkeypatch):
-    _, client, tree = _install_tree(monkeypatch, _FakeEntry({}))
-    monkeypatch.setattr(client, "get_channel", lambda cid: SimpleNamespace())
-    calls = {"n": 0}
-
-    async def _boom(*a, **k):
-        calls["n"] += 1
-        raise RuntimeError("sync failed")
-
-    monkeypatch.setattr(tree, "sync", _boom)
-    await client.on_ready()  # error swallowed, flag reset
-    await client.on_ready()  # retried because previous attempt failed
-    assert calls["n"] == 2
 
 
 # --------------------------------------------------------------------------- #
@@ -669,35 +505,8 @@ async def test_on_message_thread_clear_error_swallowed(monkeypatch):
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_cmd_agent_no_channel_not_configured(monkeypatch):
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": _mock_adapter()}))
-    cmd = tree.get_command("agent")
-    inter = _interaction(channel_id=None)  # channel_id None -> parent None
-    await cmd.callback(inter, value="")
-    assert "not configured" in inter.response.send_message.await_args.args[0]
 
 
-@pytest.mark.asyncio
-async def test_cmd_agent_pick_applies_switch(monkeypatch):
-    adapter = _mock_adapter()
-    _, _, tree = _install_tree(monkeypatch, _FakeEntry({"1": adapter}))
-    handler = AsyncMock(return_value=CommandResult(
-        kind="agent_picker", items=[{"label": "A", "agent_id": "a1"}]))
-    monkeypatch.setattr(discord_factory, "handle_app_command", handler)
-    cmd = tree.get_command("agent")
-    inter = _interaction()
-    inter.channel = _fake_thread(50, 1)
-    await cmd.callback(inter, value="")
-    view = inter.response.send_message.await_args.kwargs["view"]
-    select = view.children[0]
-    # Simulate the user choosing agent "a1" from the dropdown.
-    handler.return_value = CommandResult(kind="notice", text="Switched to a1.")
-    pick_inter = SimpleNamespace(response=SimpleNamespace(
-        edit_message=AsyncMock(), send_message=AsyncMock()))
-    await select._on_pick(pick_inter, "a1")
-    pick_inter.response.edit_message.assert_awaited_once()
-    assert "Switched to a1." in pick_inter.response.edit_message.await_args.kwargs["content"]
 
 
 def test_install_handlers_tree_failure_is_safe(monkeypatch):
@@ -714,20 +523,6 @@ def test_install_handlers_tree_failure_is_safe(monkeypatch):
     assert hasattr(client, "on_message")  # handlers bound before tree creation
 
 
-@pytest.mark.asyncio
-async def test_on_ready_syncs_via_fetch_channel(monkeypatch):
-    _, client, tree = _install_tree(
-        monkeypatch, _FakeEntry({}), channel=_channel(ext="500"))
-    guild = SimpleNamespace(id=7)
-    monkeypatch.setattr(client, "get_channel", lambda cid: None)
-    monkeypatch.setattr(
-        client, "fetch_channel",
-        AsyncMock(return_value=SimpleNamespace(guild=guild)))
-    monkeypatch.setattr(tree, "copy_global_to", MagicMock())
-    monkeypatch.setattr(tree, "sync", AsyncMock())
-    await client.on_ready()
-    client.fetch_channel.assert_awaited_once()
-    tree.sync.assert_awaited_once()
 
 
 # --------------------------------------------------------------------------- #

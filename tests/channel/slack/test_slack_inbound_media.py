@@ -21,7 +21,6 @@ from primer.model.channel import (
     SlackChannelConfig, SlackChannelProviderConfig,
 )
 from primer.model.agent import Agent
-from primer.model.chats import Chat, ChatMessage
 from primer.model.provider import SqliteConfig
 from primer.storage.sqlite import SqliteStorageProvider
 

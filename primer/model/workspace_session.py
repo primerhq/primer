@@ -546,7 +546,7 @@ class WorkspaceSession(Identifiable):
     )
 
     # ------------------------------------------------------------------
-    # Streaming lifecycle fields (mirrors Chat model in primer.model.chats).
+    # Streaming lifecycle fields.
     # See docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
     # ------------------------------------------------------------------
     last_seq: int = Field(
@@ -636,7 +636,7 @@ class WorkspaceSession(Identifiable):
 class SessionMessageKind(StrEnum):
     """Wire-level message kinds emitted by the session executor.
 
-    Mirrors :data:`primer.model.chats.ChatMessageKind` for the workspace
+    The record vocabulary for the workspace
     session streaming surface.  Each record in the per-session message
     log carries the kind plus a kind-specific ``payload`` JSON blob.
     """
@@ -704,7 +704,7 @@ class SessionMessageKind(StrEnum):
 class SessionMessageRecord(BaseModel):
     """One row in the per-session append-only message log.
 
-    Mirrors :class:`primer.model.chats.ChatMessage` for the workspace
+    One durable record row for the workspace
     session streaming surface.  ``seq`` is monotonically increasing per
     session; the composite ``(session_id, seq)`` is the natural primary
     key (the storage layer composes an ``id`` from these two).

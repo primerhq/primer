@@ -324,5 +324,4 @@ allow_indirect_imports = true
 ignore_imports = [
     "primer.agent.inform -> primer.channel.media",
     "primer.worker.yield_runtime -> primer.channel.media",
-    "primer.worker.engine_handlers -> primer.channel.chat_dispatcher",
 ]

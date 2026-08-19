@@ -27,7 +27,6 @@ from primer.model.channel import (
     Channel, ChannelProvider, ChannelProviderType,
     TelegramChannelConfig, TelegramChannelProviderConfig,
 )
-from primer.model.chats import Chat, ChatMessage
 from primer.model.storage import OffsetPage
 from primer.storage.q import Q
 from primer.storage.sqlite import SqliteStorageProvider

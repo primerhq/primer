@@ -336,41 +336,8 @@ def create_test_app(
     from primer.bus.in_memory import InMemoryEventBus
     _test_event_bus = InMemoryEventBus()
     app.state.event_bus = _test_event_bus
-
-    from primer.chat.tick_router import ChatTickRouter as _CTR, Tick as _Tick
-
-    _chat_tick_router = _CTR()
-    app.state.chat_tick_router = _chat_tick_router
-
-    async def _start_chat_tick_forwarder() -> asyncio.Task:
-        """Async helper for the test fixture — create_test_app
-        intentionally skips the lifespan, so the test must call this
-        from within an active event loop to spin the forwarder task."""
-        sub = app.state.event_bus.subscribe()
-
-        async def _loop() -> None:
-            try:
-                async for event in sub:
-                    key = event.event_key
-                    if not key.startswith("chat:") or not key.endswith(":tick"):
-                        continue
-                    cid = key[len("chat:"):-len(":tick")]
-                    if not cid:
-                        continue
-                    seq = event.payload.get("seq") if event.payload else None
-                    if isinstance(seq, int):
-                        _chat_tick_router.publish(cid, _Tick(seq=seq))
-            except asyncio.CancelledError:
-                pass
-            finally:
-                await sub.aclose()
-
-        return asyncio.create_task(_loop(), name="chat-tick-forwarder")
-
-    app.state.start_chat_tick_forwarder = _start_chat_tick_forwarder
-
-    # Optional worker pool for integration tests that need the chat
-    # claim loop (start_chat_worker=True).
+    # Optional worker pool for integration tests that need a live claim
+    # loop (start_chat_worker=True).
     if start_chat_worker:
         from primer.model.scheduler import WorkerConfig as _WorkerConfig
         from primer.worker.pool import WorkerPool as _WorkerPool
@@ -396,7 +363,6 @@ def create_test_app(
             provider_registry=provider_registry,
             semantic_search_registry=_test_ssp_registry,
             event_bus=_test_event_bus,
-            chat_tick_router=_chat_tick_router,
             artifact_storage_registry=app.state.artifact_storage_registry,
             engine=_claim_engine,
         )
@@ -440,7 +406,7 @@ def create_test_app(
     # MCP mount helpers. ASGITransport doesn't drive the lifespan, so
     # we expose explicit start/stop coroutines and let the test
     # fixture call them around the yield. Mirrors the
-    # start_chat_tick_forwarder pattern above.
+    # start_worker_pool pattern above.
     app.state.mcp_session_manager = None
     _mcp_teardown_holder: dict[str, object] = {"fn": None}
 
@@ -465,14 +431,11 @@ def create_test_app(
     app.state.stop_mcp_mount = _stop_mcp
 
     # When start_chat_worker=True, attach a lifespan so SyncTestClient
-    # (which drives the ASGI lifespan) starts the forwarder + worker pool
-    # in the same event loop as the app. This ensures the WS tick
-    # subscription and the worker pool share the same asyncio event loop,
-    # preventing cross-loop asyncio.Queue issues.
+    # (which drives the ASGI lifespan) starts the worker pool in the same
+    # event loop as the app, preventing cross-loop asyncio.Queue issues.
     if start_chat_worker:
         @asynccontextmanager
         async def _test_lifespan(_a: FastAPI) -> AsyncIterator[None]:
-            fwd_task = await _a.state.start_chat_tick_forwarder()
             await _a.state.start_worker_pool()
             try:
                 yield
@@ -480,11 +443,6 @@ def create_test_app(
                 try:
                     await _a.state.stop_worker_pool()
                 except Exception:
-                    pass
-                fwd_task.cancel()
-                try:
-                    await fwd_task
-                except asyncio.CancelledError:
                     pass
 
         app.router.lifespan_context = _test_lifespan  # type: ignore[assignment]

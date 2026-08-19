@@ -485,7 +485,7 @@ async def post_cancel_yielded_tool(
     # An _external park additionally resolves its audit row so the
     # pending endpoints and the global list reflect the cancel.
     if yielded.get("tool_name") == "_external":
-        from primer.chat.pending import flip_external_row
+        from primer.session.external_calls import flip_external_row
 
         meta = yielded.get("resume_metadata") or {}
         await flip_external_row(
