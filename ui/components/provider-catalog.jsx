@@ -208,6 +208,32 @@ function PC_ProfilesPanel({ providerId }) {
     { pollMs: null },
   );
   const discovered_models = models.data?.models ?? [];
+  const rows = useResource(
+    `catalog:profile-rows:${providerId}`,
+    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    { deps: [providerId] },
+  );
+  const [profileDeleteErr, setProfileDeleteErr] = React.useState("");
+  const [confirmProfile, setConfirmProfile] = React.useState(null);
+  const mine = ((rows.data && rows.data.items) || []).filter(
+    (r) => r.provider_id === providerId,
+  );
+
+  const removeProfile = async (row) => {
+    setProfileDeleteErr("");
+    try {
+      await apiFetch("DELETE", `/model_profiles/${encodeURIComponent(row.id)}`);
+      setConfirmProfile(null);
+      rows.refetch();
+    } catch (e) {
+      // 409: an Agent still references it. The backend refuses rather
+      // than cascading, so the operator has to go repoint that agent.
+      const detail = e && e.detail ? e.detail : null;
+      setProfileDeleteErr(
+        (detail && (detail.message || detail)) || (e && e.title) || String(e),
+      );
+    }
+  };
 
   return (
     <div className="col" style={{ gap: 8 }} data-testid="provider-profiles">
@@ -220,6 +246,45 @@ function PC_ProfilesPanel({ providerId }) {
           <span key={m} className="mono text-sm chip">{m}</span>
         ))}
       </div>
+      <ul className="profile-rows">
+        {mine.map((row) => (
+          <li key={row.id}>
+            <span className="mono">{row.id}</span>
+            <span className="muted"> {row.model_name}</span>
+            {row.harness_id ? (
+              <span className="pill" title="managed by a harness">{row.harness_id}</span>
+            ) : confirmProfile === row.id ? (
+              <>
+                <Btn
+                  type="button"
+                  kind="danger"
+                  data-testid="profile-delete-confirm"
+                  onClick={() => removeProfile(row)}
+                >
+                  Confirm delete
+                </Btn>
+                <Btn type="button" kind="ghost" onClick={() => setConfirmProfile(null)}>
+                  Cancel
+                </Btn>
+              </>
+            ) : (
+              <Btn
+                type="button"
+                kind="ghost"
+                data-testid="profile-delete"
+                onClick={() => { setProfileDeleteErr(""); setConfirmProfile(row.id); }}
+              >
+                Delete
+              </Btn>
+            )}
+          </li>
+        ))}
+      </ul>
+      {profileDeleteErr && (
+        <div className="field-help" data-testid="profile-delete-error">
+          {profileDeleteErr}
+        </div>
+      )}
       <Btn icon="plus" kind="ghost" onClick={() => setOpen(true)}>New profile</Btn>
       {open && window.MP_ProfileModal ? (
         <window.MP_ProfileModal

@@ -48,3 +48,42 @@ def test_no_speech_class_offers_a_profile_affordance() -> None:
     for key in ('key: "stt"', 'key: "tts"', 'key: "embedding"', 'key: "cross_encoder"'):
         entry = src[src.index(key): src.index(key) + 200]
         assert "profiles" not in entry, f"{key} must not carry a profiles flag"
+
+
+def test_the_panel_lists_profile_rows_not_just_model_names() -> None:
+    """A profile is the deletable entity; a bare model-name list gives an
+    operator nothing to act on."""
+    src = _read("components/provider-catalog.jsx")
+    assert "/model_profiles" in src
+    assert "r.provider_id === providerId" in src or "provider_id ===" in src
+    assert "model_name" in src
+
+
+def test_profiles_can_be_deleted_from_the_panel() -> None:
+    src = _read("components/provider-catalog.jsx")
+    assert 'data-testid="profile-delete"' in src
+    # The id is interpolated, so the path is a template literal.
+    assert "/model_profiles/${" in src
+
+
+def test_harness_managed_rows_hide_mutation() -> None:
+    """Mirrors the backend's 409-on-public-CRUD discipline
+    (managed_by_field="harness_id")."""
+    src = _read("components/provider-catalog.jsx")
+    assert "harness_id" in src
+
+
+def test_a_delete_conflict_renders_inline_not_as_a_toast() -> None:
+    """409 means an agent still points at it; the operator needs to act on
+    that without losing their place."""
+    src = _read("components/provider-catalog.jsx")
+    assert "profileDeleteErr" in src
+    assert 'data-testid="profile-delete-error"' in src
+
+
+def test_profile_delete_is_gated_behind_a_confirm() -> None:
+    """The dialog that regressed on the old page
+    (tests/ui/test_modal_open_prop.py:61-66) stays gated here."""
+    src = _read("components/provider-catalog.jsx")
+    assert "confirmProfile" in src
+    assert 'data-testid="profile-delete-confirm"' in src
