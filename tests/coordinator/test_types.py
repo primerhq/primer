@@ -14,7 +14,7 @@ from primer.int.coordinator import (
     RateLimiterLease,
     ROLE_TIMER_SCHEDULER,
     ROLE_TIMEOUT_SWEEPER,
-    ROLE_CHAT_SWEEPER,
+    ROLE_STUCK_SESSION_SWEEPER,
     ROLE_HARNESS_SWEEPER,
     ROLE_WATCHER_MANAGER,
     ROLE_MCP_BRIDGE,
@@ -35,7 +35,7 @@ def test_invalidation_topic_members():
 
 def test_role_constants_distinct():
     roles = {
-        ROLE_TIMER_SCHEDULER, ROLE_TIMEOUT_SWEEPER, ROLE_CHAT_SWEEPER,
+        ROLE_TIMER_SCHEDULER, ROLE_TIMEOUT_SWEEPER, ROLE_STUCK_SESSION_SWEEPER,
         ROLE_HARNESS_SWEEPER, ROLE_WATCHER_MANAGER, ROLE_MCP_BRIDGE,
         ROLE_COORDINATOR_SWEEPER,
     }

@@ -44,7 +44,6 @@ class InvalidationTopic(str, Enum):
 
 ROLE_TIMER_SCHEDULER = "timer-scheduler"
 ROLE_TIMEOUT_SWEEPER = "timeout-sweeper"
-ROLE_CHAT_SWEEPER = "chat-sweeper"
 ROLE_HARNESS_SWEEPER = "harness-sweeper"
 ROLE_WATCHER_MANAGER = "watcher-manager"
 ROLE_MCP_BRIDGE = "mcp-bridge"
@@ -180,7 +179,6 @@ __all__ = [
     "LeadershipLease",
     "RateLimiter",
     "RateLimiterLease",
-    "ROLE_CHAT_SWEEPER",
     "ROLE_COORDINATOR_SWEEPER",
     "ROLE_HARNESS_SWEEPER",
     "ROLE_MCP_BRIDGE",

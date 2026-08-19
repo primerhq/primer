@@ -31,7 +31,6 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from primer.int.coordinator import (
-    ROLE_CHAT_SWEEPER,
     ROLE_HARNESS_SWEEPER,
     ROLE_STUCK_SESSION_SWEEPER,
     ROLE_TIMEOUT_SWEEPER,

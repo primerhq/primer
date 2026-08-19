@@ -1,6 +1,10 @@
-"""Unit tests for Collection / CollectionSearchConfig and the retrieval
-knobs (CollectionSearch / MmrConfig / CollectionCrossEncoder), which the
-Collection no longer wires but Task 25 still owns."""
+"""Unit tests for Collection / CollectionSearchConfig and the surviving
+retrieval knob, CollectionCrossEncoder.
+
+S2 removed CollectionSearch and MmrConfig outright. The classes that
+covered them went with them; what is left is the Collection fields that
+still exist plus the cross-encoder config.
+"""
 
 from __future__ import annotations
 
@@ -12,11 +16,7 @@ from primer.model.collection import (
     CollectionEmbedder,
     CollectionSearchConfig,
 )
-from primer.model.search import (
-    CollectionCrossEncoder,
-    CollectionSearch,
-    MmrConfig,
-)
+from primer.model.search import CollectionCrossEncoder
 
 
 # ===========================================================================
@@ -55,39 +55,6 @@ class TestCollectionSearchField:
         legacy = {"id": "c1", "description": "t"}
         c = Collection.model_validate(legacy)
         assert c.search is None
-
-
-# ===========================================================================
-# MmrConfig defaults + validation
-# ===========================================================================
-
-
-class TestMmrConfig:
-    def test_defaults(self) -> None:
-        cfg = MmrConfig()
-        assert cfg.lambda_mult == 0.5
-        assert cfg.fetch_k is None
-
-    def test_lambda_mult_lower_bound(self) -> None:
-        with pytest.raises(ValidationError):
-            MmrConfig(lambda_mult=-0.1)
-
-    def test_lambda_mult_upper_bound(self) -> None:
-        with pytest.raises(ValidationError):
-            MmrConfig(lambda_mult=1.1)
-
-    def test_lambda_mult_zero_and_one_allowed(self) -> None:
-        # Boundaries are inclusive (ge=0, le=1).
-        assert MmrConfig(lambda_mult=0.0).lambda_mult == 0.0
-        assert MmrConfig(lambda_mult=1.0).lambda_mult == 1.0
-
-    def test_fetch_k_must_be_positive_when_set(self) -> None:
-        with pytest.raises(ValidationError):
-            MmrConfig(fetch_k=0)
-        with pytest.raises(ValidationError):
-            MmrConfig(fetch_k=-3)
-
-
 # ===========================================================================
 # CollectionCrossEncoder defaults + validation
 # ===========================================================================
@@ -114,18 +81,6 @@ class TestCollectionCrossEncoder:
     def test_batch_size_must_be_positive(self) -> None:
         with pytest.raises(ValidationError):
             CollectionCrossEncoder(provider_id="p", model="m", batch_size=0)
-
-
-# ===========================================================================
-# CollectionSearch defaults
-# ===========================================================================
-
-
-class TestCollectionSearch:
-    def test_both_optional(self) -> None:
-        s = CollectionSearch()
-        assert s.mmr is None
-        assert s.cer is None
 
 
 # ===========================================================================

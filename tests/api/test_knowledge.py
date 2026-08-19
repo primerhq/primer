@@ -11,7 +11,7 @@ from primer.model.collection import (
     CollectionSearchConfig,
     Document,
 )
-from primer.model.search import CollectionCrossEncoder, CollectionSearch, MmrConfig
+from primer.model.search import CollectionCrossEncoder
 
 
 _SSP_BODY = {
