@@ -52,6 +52,32 @@ def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
     return fallback
 
 
+async def probe_dimensions(*, collection: Collection, provider_registry) -> int:
+    """Ask the collection's embedder how wide its vectors are.
+
+    One cheap call. Split out so a backfill can do it once for the whole
+    collection instead of once per document: every document in a
+    collection shares one embedder, so the answer cannot differ between
+    them, and on a collection the size of the system map the repeated
+    probe doubled the number of embedder round-trips the pass made.
+    """
+    if collection.search is None:  # pragma: no cover -- callers check first
+        raise PrimerError(f"collection {collection.id!r} has no search config")
+    embedder = await provider_registry.get_embedder(
+        collection.search.embedder.provider_id
+    )
+    response = await embedder.embed(
+        model=collection.search.embedder.model,
+        inputs=[TextPart(text="dimensionality probe")],
+    )
+    if not response.embeddings:
+        raise PrimerError(
+            f"embedder returned no embedding for dimensionality probe "
+            f"(collection {collection.id!r})"
+        )
+    return len(response.embeddings[0].vector)
+
+
 async def index_document(
     *,
     document: Document,
@@ -59,6 +85,7 @@ async def index_document(
     provider_registry,
     semantic_search_registry,
     content_store: DocumentContentStore,
+    dimensions: int | None = None,
 ) -> int:
     """Chunk, embed, and upsert ``document`` into its collection's vector
     store. Returns the number of chunks indexed. Re-indexing embeds the new
@@ -78,6 +105,9 @@ async def index_document(
     zero documents indexed, and no vector-store collection ever created).
     The guard dates from when "system" meant the four _internal_* rows a
     separate ingest path owned. Search being unset is the real signal now.
+
+    ``dimensions`` skips the per-document probe when the caller already
+    knows the embedder's width (see :func:`probe_dimensions`).
 
     On embedder/store failure it raises; the caller treats indexing as
     best-effort and swallows it.
@@ -110,16 +140,19 @@ async def index_document(
     # -- without wasting a full embedding pass on a batch that cannot be
     # stored. We register (or validate) the collection in the store now so
     # that a ConflictError (dim mismatch) surfaces here, not after work.
-    probe_response = await embedder.embed(
-        model=cfg.embedder.model,
-        inputs=[TextPart(text="dimensionality probe")],
-    )
-    if not probe_response.embeddings:
-        raise PrimerError(
-            f"embedder returned no embedding for dimensionality probe "
-            f"(collection {collection.id!r})"
+    if dimensions is None:
+        probe_response = await embedder.embed(
+            model=cfg.embedder.model,
+            inputs=[TextPart(text="dimensionality probe")],
         )
-    probe_dim = len(probe_response.embeddings[0].vector)
+        if not probe_response.embeddings:
+            raise PrimerError(
+                f"embedder returned no embedding for dimensionality probe "
+                f"(collection {collection.id!r})"
+            )
+        probe_dim = len(probe_response.embeddings[0].vector)
+    else:
+        probe_dim = dimensions
     try:
         await store.create_collection(collection.id, dimensions=probe_dim)
     except ConflictError as exc:
@@ -234,11 +267,107 @@ async def remove_document_index(
         pass
 
 
-__all__ = [
-    "index_document",
-    "remove_document_index",
-    "rewrite_document_path_meta",
-]
+# ---------------------------------------------------------------------------
+# Write-through hooks
+# ---------------------------------------------------------------------------
+#
+# A document written into a collection with search enabled has to reach the
+# vector store, whichever path wrote it. Three paths do: the REST document
+# routes, the collections toolset an agent drives, and the startup pass that
+# regenerates the system collection. Only the first wired these up, so an
+# agent could write a document into a search-enabled collection and leave it
+# unsearchable, and the system map went stale in the index the moment an
+# entity changed.
+#
+# They live here, keyed off registries rather than a Request, so the two
+# non-HTTP callers can use the same ones instead of growing their own.
+
+
+def make_document_indexer(
+    *, storage_provider, provider_registry, semantic_search_registry,
+):
+    """Best-effort ``(document, content) -> None`` index-on-write hook.
+
+    A missing collection is a no-op and a dimension mismatch propagates
+    (it is an operator-configuration error the caller turns into a 422);
+    anything else is logged and swallowed, so a write still succeeds when
+    the embedding backend is down. The document simply is not searchable
+    until something indexes it again.
+    """
+
+    async def _indexer(*, document: Document, content: str) -> None:
+        collection = await storage_provider.get_storage(Collection).get(
+            document.collection_id
+        )
+        if collection is None:
+            return
+        try:
+            await index_document(
+                document=document,
+                collection=collection,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+                content_store=storage_provider.get_content_store(),
+            )
+        except DimensionMismatchError:
+            raise
+        except Exception:  # noqa: BLE001 - best-effort indexing
+            logger.exception(
+                "document %s: indexing failed; row persisted but not searchable",
+                document.id,
+            )
+
+    return _indexer
+
+
+def make_document_unindexer(*, storage_provider, semantic_search_registry):
+    """Best-effort per-document vector cleanup for deletes."""
+
+    async def _unindexer(*, document_id: str, collection_id: str) -> None:
+        collection = await storage_provider.get_storage(Collection).get(
+            collection_id
+        )
+        if collection is None:
+            return
+        try:
+            await remove_document_index(
+                document_id=document_id, collection=collection,
+                semantic_search_registry=semantic_search_registry,
+            )
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            logger.exception(
+                "document %s: unindexing failed; chunks may linger", document_id,
+            )
+
+    return _unindexer
+
+
+def make_document_path_rewriter(*, storage_provider, semantic_search_registry):
+    """Best-effort chunk path-metadata rewrite after a move."""
+
+    async def _rewriter(
+        *, document_id: str, collection_id: str, new_path: str
+    ) -> None:
+        collection = await storage_provider.get_storage(Collection).get(
+            collection_id
+        )
+        if collection is None:
+            return
+        try:
+            await rewrite_document_path_meta(
+                document_id=document_id, collection=collection,
+                semantic_search_registry=semantic_search_registry,
+                new_path=new_path,
+            )
+        except Exception:  # noqa: BLE001 - best-effort rewrite
+            logger.exception(
+                "document %s: path-meta rewrite failed; stale paths may "
+                "linger in the index", document_id,
+            )
+
+    return _rewriter
+
+
 
 
 async def rewrite_document_path_meta(
@@ -263,3 +392,14 @@ async def rewrite_document_path_meta(
             ))
     except PrimerError:
         pass
+
+
+__all__ = [
+    "index_document",
+    "make_document_indexer",
+    "make_document_path_rewriter",
+    "make_document_unindexer",
+    "probe_dimensions",
+    "remove_document_index",
+    "rewrite_document_path_meta",
+]

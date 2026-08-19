@@ -747,53 +747,22 @@ _TEXT_PASSTHROUGH_CONTENT_TYPES = (
 )
 def build_document_unindexer(request: Request):
     """Best-effort per-document vector cleanup for tree deletes."""
-    from primer.knowledge.indexing import remove_document_index
+    from primer.knowledge.indexing import make_document_unindexer
 
-    storage_provider = request.app.state.storage_provider
-
-    async def _unindexer(*, document_id: str, collection_id: str) -> None:
-        collection = await storage_provider.get_storage(Collection).get(collection_id)
-        if collection is None:
-            return
-        try:
-            ssr = get_semantic_search_registry(request)
-            await remove_document_index(
-                document_id=document_id, collection=collection,
-                semantic_search_registry=ssr,
-            )
-        except Exception:  # noqa: BLE001 - best-effort cleanup
-            logger.exception(
-                "document %s: unindexing failed; chunks may linger", document_id,
-            )
-
-    return _unindexer
+    return make_document_unindexer(
+        storage_provider=request.app.state.storage_provider,
+        semantic_search_registry=get_semantic_search_registry(request),
+    )
 
 
 def build_document_path_rewriter(request: Request):
     """Best-effort chunk path-metadata rewrite after a tree move."""
-    from primer.knowledge.indexing import rewrite_document_path_meta
+    from primer.knowledge.indexing import make_document_path_rewriter
 
-    storage_provider = request.app.state.storage_provider
-
-    async def _rewriter(
-        *, document_id: str, collection_id: str, new_path: str
-    ) -> None:
-        collection = await storage_provider.get_storage(Collection).get(collection_id)
-        if collection is None:
-            return
-        try:
-            ssr = get_semantic_search_registry(request)
-            await rewrite_document_path_meta(
-                document_id=document_id, collection=collection,
-                semantic_search_registry=ssr, new_path=new_path,
-            )
-        except Exception:  # noqa: BLE001 - best-effort metadata fix
-            logger.exception(
-                "document %s: path meta rewrite failed; hits may show the "
-                "pre-move path", document_id,
-            )
-
-    return _rewriter
+    return make_document_path_rewriter(
+        storage_provider=request.app.state.storage_provider,
+        semantic_search_registry=get_semantic_search_registry(request),
+    )
 
 
 async def _reject_system_collection(
@@ -834,36 +803,13 @@ def build_document_indexer(request: Request):
     go through ``make_crud_router``, so the Document CDC hook never fires for
     these writes.
     """
-    from primer.knowledge.indexing import index_document
+    from primer.knowledge.indexing import make_document_indexer
 
-    storage_provider = request.app.state.storage_provider
-
-    async def _indexer(*, document: Document, content: str) -> None:
-        collection = await storage_provider.get_storage(Collection).get(
-            document.collection_id
-        )
-        if collection is None:
-            return
-        try:
-            provider_registry = get_provider_registry(request)
-            ssr = get_semantic_search_registry(request)
-            await index_document(
-                document=document,
-                collection=collection,
-                provider_registry=provider_registry,
-                semantic_search_registry=ssr,
-                content_store=storage_provider.get_content_store(),
-            )
-        except DimensionMismatchError:
-            # Operator-configuration error: surface as 422, do not swallow.
-            raise
-        except Exception:  # noqa: BLE001 - best-effort indexing
-            logger.exception(
-                "document %s: indexing failed; row persisted but not searchable",
-                document.id,
-            )
-
-    return _indexer
+    return make_document_indexer(
+        storage_provider=request.app.state.storage_provider,
+        provider_registry=get_provider_registry(request),
+        semantic_search_registry=get_semantic_search_registry(request),
+    )
 
 
 async def _document_pre_create(entity: Document, request: Request) -> None:

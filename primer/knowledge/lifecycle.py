@@ -6,7 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from primer.knowledge.indexing import index_document
+from primer.knowledge.indexing import index_document, probe_dimensions
 from primer.model.collection import Collection, CollectionSearchConfig, Document
 from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.model.provider import (
@@ -92,12 +92,21 @@ async def enable_search(storage_provider, provider_registry, ssr, *,
     )
     content_store = storage_provider.get_content_store()
     try:
+        # One probe for the whole pass. Every document here shares the
+        # collection's embedder, so asking each time only doubled the
+        # round-trips: on a collection the size of the system map that
+        # was hundreds of extra calls, and it put the first bootstrap
+        # past the client timeout.
+        dimensions = await probe_dimensions(
+            collection=collection, provider_registry=provider_registry,
+        )
         for doc in await _collection_documents(storage_provider, collection_id):
             await index_document(
                 document=doc, collection=collection,
                 provider_registry=provider_registry,
                 semantic_search_registry=ssr,
                 content_store=content_store,
+                dimensions=dimensions,
             )
     except Exception as exc:  # noqa: BLE001 - partial index stays intact
         logger.exception("backfill failed for collection %s", collection_id)

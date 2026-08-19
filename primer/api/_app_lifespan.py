@@ -760,6 +760,8 @@ def _make_lifespan(config: AppConfig):
                 # /tools subtree loses the collections toolset without it.
                 "collections": collections_toolset,
             },
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
         )
         if _ensure.errors:
             logger.warning("seed: ensure pass finished with errors", extra={

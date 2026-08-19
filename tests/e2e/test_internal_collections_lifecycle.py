@@ -40,6 +40,13 @@ import pytest_asyncio
 from tests._support.model_profiles import agent_model, seed_llm_provider
 
 
+# Bootstrap is synchronous and now genuinely indexes the system
+# collection, so the call carries the whole first embedding pass: a few
+# hundred documents through a locally-loaded sentence-transformers model.
+# The 30 s that sufficed while it indexed nothing does not cover that.
+_BOOTSTRAP_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
+
+
 def _embedding_provider_body(entity_id: str) -> dict:
     """HuggingFace embedder using a tiny local model that
     sentence-transformers can pull on demand (already a transitive dep
@@ -171,7 +178,7 @@ async def test_t0053_config_delete_deactivates_subsystem(
         # 4. Bootstrap (synchronous: 200 carries the outcome).
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot.status_code == 200, (
             f"bootstrap should return 200 with its outcome; got "
@@ -254,7 +261,7 @@ async def _bootstrap_subsystem(
     assert put.status_code == 200, put.text
     boot = await client.post(
         "/v1/internal_collections/bootstrap",
-        timeout=httpx.Timeout(30.0, connect=10.0),
+        timeout=_BOOTSTRAP_TIMEOUT,
     )
     assert boot.status_code == 200, (
         f"bootstrap should return 200 with its outcome; got "
@@ -452,7 +459,7 @@ async def test_t0167_bootstrap_is_idempotent(
         # First call already happened in _bootstrap_subsystem. Second call:
         boot2 = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot2.status_code == 200, (
             f"second bootstrap should be idempotent and return 200; got "
@@ -701,7 +708,7 @@ async def test_t0203_bootstrap_on_empty_db_returns_sane_envelope(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot.status_code == 200, (
             f"bootstrap on empty DB should return 200 with its outcome, got "
@@ -781,7 +788,7 @@ async def test_t0224_bootstrap_envelope_counts_shape(
         # Bootstrap (synchronous) and pin the status-row shape
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
@@ -947,7 +954,7 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
         # Bootstrap (synchronous); counts come from the status row
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
@@ -1018,7 +1025,7 @@ async def test_t0269_ic_config_put_with_empty_collections_list(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
@@ -1077,11 +1084,11 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
         r1, r2 = await asyncio.gather(
             client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             ),
             client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             ),
         )
         for r, label in ((r1, "bootstrap A"), (r2, "bootstrap B")):
@@ -1112,7 +1119,7 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
                 # Subsystem may still be warming up; kick another bootstrap
                 br = await client.post(
                     "/v1/internal_collections/bootstrap",
-                    timeout=httpx.Timeout(30.0, connect=10.0),
+                    timeout=_BOOTSTRAP_TIMEOUT,
                 )
                 if br.status_code == 200:
                     await _wait_bootstrap(client)
@@ -1497,7 +1504,7 @@ async def test_t0303_bootstrap_concurrent_with_search_clean(
         async def _bootstrap() -> httpx.Response:
             return await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
 
         async def _search() -> httpx.Response:
@@ -1580,7 +1587,7 @@ async def test_t0411_concurrent_bootstrap_and_delete_config_clean(
         # Race bootstrap × delete-config
         boot_task = asyncio.create_task(client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         ))
         rm_task = asyncio.create_task(client.delete(
             "/v1/internal_collections/config",
@@ -1676,7 +1683,7 @@ async def test_t0412_cdc_burst_create_with_concurrent_delete_config_clean(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         if boot.status_code == 409:
             # Another bootstrap is still running from a prior test; wait for
@@ -1891,7 +1898,7 @@ async def test_t0443_rapid_deactivate_reactivate_cycles_clean(
 
             boot = await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
             assert boot.status_code == 200, (
                 f"cycle {cycle}: bootstrap should return 200 with its outcome; "
@@ -2008,7 +2015,7 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
 
         boot_a = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot_a.status_code == 200, (
             f"first bootstrap should return 200 with its outcome; got "
@@ -2038,7 +2045,7 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
 
         boot_b = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot_b.status_code == 200, (
             f"second bootstrap should return 200 with its outcome; got "
@@ -2291,14 +2298,14 @@ async def test_t0502_three_consecutive_bootstraps_identical_shape(
         for i in range(3):
             r = await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
             if r.status_code == 409:
                 # Second/third call may hit "already running" -- wait and retry
                 await _wait_bootstrap(client)
                 r = await client.post(
                     "/v1/internal_collections/bootstrap",
-                    timeout=httpx.Timeout(30.0, connect=10.0),
+                    timeout=_BOOTSTRAP_TIMEOUT,
                 )
             assert r.status_code == 200, (
                 f"bootstrap[{i}] should return 200 with its outcome; "
@@ -2363,7 +2370,7 @@ async def test_t0537_search_post_bootstrap_empty_db_returns_empty_hits(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot.status_code == 200, (
             f"bootstrap should return 200 with its outcome; got "
@@ -2448,7 +2455,7 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot.status_code == 200, (
             f"bootstrap should return 200 with its outcome; got "
@@ -2569,7 +2576,7 @@ async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
         async def _bootstrap() -> httpx.Response:
             return await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
 
         async def _del(aid: str) -> httpx.Response:
@@ -2702,7 +2709,7 @@ async def test_t0602_ic_re_bootstrap_cycle_x5_clean_envelopes(
             # Bootstrap (synchronous).
             boot = await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
             boot_env = boot.json() if boot.content else {}
             assert boot_env.get("type") != "/errors/internal", (
@@ -2784,7 +2791,7 @@ async def test_t0586_agents_search_top_k_1_empty_post_bootstrap(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         assert boot.status_code == 200, (
             f"bootstrap should return 200 with its outcome; got "

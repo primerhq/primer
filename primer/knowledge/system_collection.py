@@ -13,6 +13,10 @@ import logging
 
 from primer.ai_docs_path import resolve_ai_docs_dir
 from primer.knowledge.importer import slugify_segment
+from primer.knowledge.indexing import (
+    make_document_indexer,
+    make_document_unindexer,
+)
 from primer.knowledge.tree import DocumentTreeService
 from primer.model.agent import Agent
 from primer.model.collection import Collection
@@ -389,10 +393,36 @@ async def _desired(storage_provider, toolset_providers: dict) -> dict[str, str]:
 
 async def regenerate_system_collection(
     storage_provider, *, toolset_providers: dict,
+    provider_registry=None, semantic_search_registry=None,
 ) -> int:
-    """Rebuild the system collection from live state. Idempotent."""
+    """Rebuild the system collection from live state. Idempotent.
+
+    Returns the number of documents actually written: a path whose body
+    already matches is left alone. That matters beyond the write count,
+    because when the registries are supplied the writes carry indexing
+    hooks. Rewriting all of them would re-embed the entire map on every
+    boot, whereas converging only what changed keeps the vector index in
+    step with the platform at a cost proportional to the diff.
+
+    The registries are optional: with search off, or on a caller that has
+    no provider stack, this is the plain content-only regeneration.
+    """
     await _ensure_collection(storage_provider)
-    tree = DocumentTreeService(storage_provider)
+    indexer = unindexer = None
+    if semantic_search_registry is not None:
+        unindexer = make_document_unindexer(
+            storage_provider=storage_provider,
+            semantic_search_registry=semantic_search_registry,
+        )
+        if provider_registry is not None:
+            indexer = make_document_indexer(
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+            )
+    tree = DocumentTreeService(
+        storage_provider, indexer=indexer, unindexer=unindexer,
+    )
     desired = await _desired(storage_provider, toolset_providers)
 
     written = 0
@@ -400,6 +430,14 @@ async def regenerate_system_collection(
     for path in sorted(desired, key=lambda p: (p.count("/"), p)):
         parent, _, slug = path.rpartition("/")
         body = desired[path]
+        try:
+            current = await tree.read(
+                collection_id=SYSTEM_COLLECTION_ID, path=path,
+            )
+        except PrimerError:
+            current = None
+        if current is not None and current.body == body:
+            continue
         try:
             await tree.update(
                 collection_id=SYSTEM_COLLECTION_ID, path=path, body=body,

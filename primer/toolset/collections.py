@@ -19,6 +19,11 @@ from typing import Any
 from pydantic import BaseModel, Field, ValidationError
 
 from primer.knowledge.grep import grep_collection as _grep
+from primer.knowledge.indexing import (
+    make_document_indexer,
+    make_document_path_rewriter,
+    make_document_unindexer,
+)
 from primer.knowledge.tree import DocumentTreeService
 from primer.model.chat import Tool, ToolCallResult, ToolExample
 from primer.model.collection import Collection, Document
@@ -112,7 +117,34 @@ def build_collections_toolset(
     semantic_search_registry=None,
 ) -> InternalToolsetProvider:
     """Build the always-on collections navigation toolset."""
-    tree = DocumentTreeService(storage_provider)
+    # Writes through this toolset reach the vector store the same way the
+    # REST document routes do. Without these hooks an agent could add or
+    # edit a document in a search-enabled collection and leave it
+    # unsearchable, with nothing to say so: indexing is best-effort, so
+    # the write succeeded either way. The registries are optional only
+    # because the tests that exercise pure navigation build without them.
+    indexer = unindexer = rewriter = None
+    if semantic_search_registry is not None:
+        unindexer = make_document_unindexer(
+            storage_provider=storage_provider,
+            semantic_search_registry=semantic_search_registry,
+        )
+        rewriter = make_document_path_rewriter(
+            storage_provider=storage_provider,
+            semantic_search_registry=semantic_search_registry,
+        )
+        if provider_registry is not None:
+            indexer = make_document_indexer(
+                storage_provider=storage_provider,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+            )
+    tree = DocumentTreeService(
+        storage_provider,
+        indexer=indexer,
+        unindexer=unindexer,
+        path_rewriter=rewriter,
+    )
     colls = storage_provider.get_storage(Collection)
     docs = storage_provider.get_storage(Document)
     content = storage_provider.get_content_store()

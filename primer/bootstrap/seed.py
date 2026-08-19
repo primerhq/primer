@@ -198,6 +198,8 @@ async def run_ensure_pass(
     *,
     workspace_registry=None,
     toolset_providers: dict | None = None,
+    provider_registry=None,
+    semantic_search_registry=None,
 ) -> EnsureResult:
     """Run every S5 ensure step. Idempotent, marker-independent.
 
@@ -252,10 +254,16 @@ async def run_ensure_pass(
     if created_workspace:
         result.created.append(created_workspace)
 
+    # The registries let regeneration re-index the documents it rewrites,
+    # so a platform change shows up in search without a re-bootstrap. It
+    # writes only what actually differs, so the cost tracks the diff.
     written = await _step(
         "system_collection",
         lambda: regenerate_system_collection(
-            storage_provider, toolset_providers=toolset_providers or {},
+            storage_provider,
+            toolset_providers=toolset_providers or {},
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
         ),
     )
     if written:

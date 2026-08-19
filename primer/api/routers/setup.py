@@ -12,7 +12,12 @@ import logging
 
 from fastapi import APIRouter, Request
 
-from primer.api.deps import get_storage_provider, get_workspace_registry
+from primer.api.deps import (
+    get_provider_registry,
+    get_semantic_search_registry,
+    get_storage_provider,
+    get_workspace_registry,
+)
 from primer.api.errors import common_responses
 from primer.bootstrap.defaults import (
     RESERVED_BUILDER_AGENT,
@@ -47,6 +52,8 @@ async def seed_now(request: Request) -> dict:
         storage_provider,
         workspace_registry=get_workspace_registry(request),
         toolset_providers=toolsets,
+        provider_registry=get_provider_registry(request),
+        semantic_search_registry=get_semantic_search_registry(request),
     )
     state = await evaluate_setup_state(storage_provider)
     return {
