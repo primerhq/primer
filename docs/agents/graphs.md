@@ -592,7 +592,7 @@ room; the operator's reply there resumes the graph. See
 [channels](channels.md).
 
 Over REST: read the pending prompt and post the answer. These are the
-same parked-session resume endpoints sessions and chats use:
+same parked-session resume endpoints sessions use:
 
 ```text
 GET  /v1/sessions/{session_id}/ask_user/pending

@@ -63,8 +63,8 @@ operator console without an explicit token grant.
 
 ### WebSocket authentication
 
-The live session and chat streams are WebSockets
-(`/v1/workspaces/{wid}/sessions/{sid}/ws` and `/v1/chats/{cid}/ws`).
+The live session stream is a WebSocket
+(`/v1/workspaces/{wid}/sessions/{sid}/ws`).
 WebSocket handshakes carry auth the same way HTTP requests do - the
 signed session cookie, or an `Authorization: Bearer <token>` header -
 and the same middleware populates the connection's principal before
@@ -194,7 +194,7 @@ server side.
   If the agent is mid-streaming-tool-result, the current response
   completes; the *next* call gets 401.
 - **WebSocket auth failures close with 4401, not HTTP 401.** A bad or
-  missing cookie/bearer on a session/chat WS handshake does not get a
+  missing cookie/bearer on a session WS handshake does not get a
   401 response body - the socket is accepted then closed with code
   4401. Distinguish this in client code from the other documented WS
   close codes (4404 not-found, 4410 ended).

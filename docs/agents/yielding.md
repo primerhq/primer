@@ -2,7 +2,7 @@
 slug: yielding
 title: Yielding tools
 summary: How tools park an agent's session indefinitely on an external event and resume when the event fires.
-related: [tool-approval, triggers-and-subscriptions, channels, sessions, chats]
+related: [tool-approval, triggers-and-subscriptions, channels, sessions]
 mcp_tools: []
 ---
 
@@ -18,10 +18,7 @@ lease, and exits. The session stays parked, consuming zero compute,
 until some external event fires the event key the yield is registered
 against. A worker then claims the resumable row, calls the tool's
 `resume()` hook with the event payload, and the tool produces the
-result the agent will see on its next turn. (The chat surface is the
-exception: there `ask_user` and approval gates soft-yield - the turn
-ends conversationally and the human's next message resolves the call,
-with no park slot.)
+result the agent will see on its next turn.
 
 This is the primitive behind every "wait for the user to do X" tool
 in primer. In a session or graph, `ask_user` parks on an
@@ -38,7 +35,7 @@ single request/response. If primer exposed a yielding tool to an
 MCP client, the response would either time out or hang the client
 forever. Primer's MCP `is_exposable()` gate therefore drops every
 yielding tool from `tools/list`. Inside primer's own agent runtime
-(when a primer-hosted agent calls a tool during a chat or session
+(when a primer-hosted agent calls a tool during a session
 turn), yields work normally; outside, they aren't visible at all.
 
 ## Mental model
@@ -144,15 +141,15 @@ yields in primer:
   agent can call directly; it's a side effect of the dispatch gate).
 
 None of these appear in MCP `tools/list`. They are visible to
-agents running inside primer's own session/chat runtime.
+agents running inside primer's own session runtime.
 
 For external MCP-hosted agents who need wait-for-event behaviour:
 the right pattern is to **poll**. Call `trigger::get(id=...)` and
 inspect `last_fired_at`, or `trigger::list_subscriptions(trigger_id=...)`
 to observe subscription state. To check whether a SESSION is still
 parked, call `workspaces::get_workspace_session(id=...)` and read its
-status. A chat's waiting state is not an MCP tool; inspect it via the
-REST API or the operator console. Polling is ugly but works; yielding
+status. Whether a session is waiting is not otherwise exposed as an
+MCP tool; inspect it via the REST API or the workspace shell. Polling is ugly but works; yielding
 is a primer-internal optimisation.
 
 ## Workflows

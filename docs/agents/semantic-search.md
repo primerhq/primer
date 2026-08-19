@@ -89,7 +89,7 @@ A search call goes:
 For the first four collections, `document_id` is the entity id
 (`ag-foo`, `gr-bar`, `col-baz`, `system::list_agents`). For the docs
 collection, `document_id` is the slug of the markdown file
-(`agents`, `chats`, etc.). A docs hit carries the matched subsection
+(`agents`, `sessions`, etc.). A docs hit carries the matched subsection
 as its `text`; the internal AI-docs bodies are not stored in the
 user-document content store, so the slug is an index identifier for
 ranking and dedup, not a `(collection_id, path)` you can read back

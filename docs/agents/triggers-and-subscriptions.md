@@ -1,8 +1,8 @@
 ---
 slug: triggers-and-subscriptions
 title: Triggers and subscriptions
-summary: Event-scheduling primitive - time-based, webhook, or channel-driven triggers fire payloads to chats, fresh sessions, or parked-yield tools.
-related: [yielding, chats, sessions, channels]
+summary: Event-scheduling primitive - time-based, webhook, or channel-driven triggers fire payloads to existing sessions, fresh sessions, or parked-yield tools.
+related: [yielding, sessions, channels]
 mcp_tools:
   - trigger::list
   - trigger::get
@@ -23,8 +23,8 @@ mcp_tools:
 
 A **Trigger** is a recurring or one-shot event source in primer. A
 **Subscription** ties a trigger to something that consumes its
-fires - usually a chat (post the rendered payload as a user
-message), a fresh agent or graph session (spin one up with the
+fires - usually an existing session (append the rendered payload as a
+steer), a fresh agent or graph session (spin one up with the
 payload as input), or a parked yielding tool (resume the agent
 that's waiting). The pair is the primer answer to "wake my agent at
 3am every day", "kick off a new analysis when this Slack channel
@@ -86,7 +86,7 @@ A `Subscription` row:
   `subscribe_to_trigger`.
 - `payload_template` - optional Jinja2 template rendered against the
   fire context; the rendered text is what this subscription dispatches
-  (the chat user_message, the session's initial instruction, etc.).
+  (the steer text, the session's initial instruction, etc.).
 - `event_matcher` - optional `EventMatcher` (channel triggers only).
   When present, only channel events that match the predicate dispatch
   this subscription; `None` (the default, and the only option for
@@ -130,8 +130,8 @@ The fire pipeline:
 4. Every enabled subscription gets dispatched in parallel. Each
    subscription renders its own `payload_template` against the fire
    context, then runs its per-kind dispatcher:
-   - `chat_message` - appends a user_message to the chat. Drain
-     loop picks it up.
+   - `session_append` - appends the payload to an existing session as
+     a steer. The dispatch loop picks it up at the next turn.
    - `agent_fresh_session` - creates a new session for the agent in
      the configured workspace, with the rendered payload as initial
      instruction.
@@ -417,7 +417,7 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
   metadata; `trigger::list_subscriptions(trigger_id=X)` lets them
   observe state changes.
 - **Triggers and subscriptions are claimed via the same engine as
-  sessions and chats.** A backed-up worker pool can delay trigger
+  sessions.** A backed-up worker pool can delay trigger
   fires; this is rare in healthy systems but worth knowing when
   diagnosing "my 9am trigger fired at 9:03am".
 
@@ -425,7 +425,6 @@ To rotate the token: `POST /v1/triggers/{id}/rotate_token` (the old URL stops wo
 
 - [yielding](yielding.md) - `subscribe_to_trigger` is the
   yielding tool that parks on trigger fire events.
-  chats.
 - [sessions](sessions.md) - `agent_fresh_session` and
   `graph_fresh_session` subscriptions spin up new sessions.
 - [channels](channels.md) - `channel` triggers source events from
