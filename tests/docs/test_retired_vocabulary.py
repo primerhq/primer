@@ -80,3 +80,64 @@ def test_every_pattern_matches_its_sample() -> None:
     )
     for pattern, sample in samples.items():
         assert re.search(pattern, sample), f"pattern never matches: {pattern}"
+
+
+# The bare word "chat" is the hard case, because three kinds of use are
+# legitimate and must survive:
+#
+#   1. External API names. "Chat Completions" is OpenAI's endpoint and
+#      "/v1/chat/completions" is its path; a "chat LLM" is a model family.
+#   2. Real identifiers. primer/model/chat.py holds the universal Message
+#      types, and config.chats / ChatConfig is the channel field that says
+#      whether a room accepts inbound messages.
+#   3. Historical decisions recording the REMOVAL. A doc explaining why
+#      the chat surface went is not a doc describing it as present.
+#
+# Everything else is the deleted product surface.
+_CHAT_OK = re.compile(
+    r"[Cc]hat Completions"
+    r"|/v1/chat/completions"
+    r"|streaming chat LLM|\bchat LLMs?\b|\bchat model\b"
+    r"|model/chat\.py"
+    r"|AsyncClient` chat|AsyncClient chat"
+    r"|config\.chats|ChatConfig|chats\.enabled|chats\.relay_mode"
+    r'|`chats: |"chats": '  # the JSON config key in examples
+    r"|Telegram chat id"
+    r"|`chat:write`|`chat:read`"          # Slack OAuth scope names
+    r"|chat surface (was|it once|did)"
+    r"|chat engine"
+    r"|chat plumbing"
+    r"|outlived the surface it was first"
+    r"|chat-turn-detachment"
+    r"|chat_message"
+    r"|dropped `chats` keys"
+    r"|chat fallback"
+    r"|chat Part-union"
+    r"|claim fields were removed"          # the straight-cutover note
+    r"|Plain chat and the"          # the README transition banner
+    r"|messaging platform"
+)
+
+_CHAT_RE = re.compile(r"\b[Cc]hats?\b")
+
+
+def test_no_doc_describes_the_chat_surface() -> None:
+    """The chat product surface was deleted in S1 and S6.
+
+    The narrow patterns above miss the prose that still EXPLAINS chats as
+    a live concept, which is what an agent reading docs/agents/ would act
+    on: a subscription kind called by name, a WebSocket route, a second
+    park mechanism. All three existed in these docs until this gate.
+    """
+    hits: list[str] = []
+    for doc in _docs():
+        rel = doc.relative_to(REPO)
+        for lineno, line in enumerate(
+            doc.read_text(encoding="utf-8").splitlines(), 1
+        ):
+            if not _CHAT_RE.search(line) or _CHAT_OK.search(line):
+                continue
+            hits.append(f"{rel}:{lineno}: {line.strip()[:110]}")
+    assert not hits, (
+        f"{len(hits)} lines still describe chats:\n  " + "\n  ".join(hits[:40])
+    )

@@ -1,7 +1,7 @@
 ---
 slug: cookbook/telegram-personal-assistant
 title: Telegram Personal Assistant
-summary: Wire a Telegram bot to a persistent chat agent over MCP so DMing the bot continues one durable conversation across messages.
+summary: Wire a Telegram bot to an agent over MCP so DMing the bot continues one durable session across messages.
 mcp_tools:
   - system::create_channel_provider
   - system::create_channel
@@ -13,7 +13,7 @@ mcp_tools:
 ---
 
 ## Goal
-A Telegram bot you DM to get a personal assistant. The channel association routes each DM to the agent, and the chat thread keyed to your Telegram user ID persists across messages so the agent sees the full transcript every turn.
+A Telegram bot you DM to get a personal assistant. The channel trigger routes each DM to the agent, and the thread keyed to your Telegram user ID maps to one session that persists across messages, so the agent sees the full transcript every turn.
 
 ## Prerequisites
 - A Telegram bot token from `@BotFather`, in the `<id>:<hash>` shape (at least 20 characters).
@@ -38,7 +38,7 @@ Response:
 ```
 `bot_token` must contain a `:` and be at least 20 characters. `poll_timeout_seconds` is the long-poll window per getUpdates; lower it for faster delivery at the cost of more API calls.
 
-### 2. Add your private chat as a channel
+### 2. Add your private conversation as a channel
 `system::create_channel`
 ```json
 {
@@ -54,7 +54,7 @@ Response:
 ```json
 { "id": "personal-dm" }
 ```
-`external_id` is your numeric Telegram user ID from `@userinfobot`. Binding to a single private user ID (not a group chat ID) keeps the bot from acting on group messages.
+`external_id` is your numeric Telegram user ID from `@userinfobot`. Binding to a single private user ID (not a group ID) keeps the bot from acting on group messages.
 
 ### 3. Create the workspace
 `workspaces::create_workspace`
@@ -84,7 +84,7 @@ Response:
 ```json
 { "id": "personal-assistant" }
 ```
-Scope `tools` to the toolsets the assistant needs (here a `web` search tool). The chat thread carries history, so the agent sees prior turns without re-stating them.
+Scope `tools` to the toolsets the assistant needs (here a `web` search tool). The thread's session carries history, so the agent sees prior turns without re-stating them.
 
 ### 5. Bind the channel to the workspace
 `system::set_workspace_channel_association`
@@ -121,10 +121,10 @@ Response:
 ```json
 { "id": "ses-1", "status": "ended", "ended_reason": "completed" }
 ```
-Send a second DM. It lands in the same chat thread; the agent sees both messages.
+Send a second DM. It lands in the same thread and the same session; the agent sees both messages.
 
 ## Verify
-The bot replies within a few seconds, a session appears in `ws-1` per turn ending with `ended_reason: "completed"`, and a second DM continues the same chat thread rather than starting a fresh one.
+The bot replies within a few seconds, a session appears in `ws-1` per turn ending with `ended_reason: "completed"`, and a second DM continues the same session rather than starting a fresh one.
 
 ## Gotchas
 - Telegram bots receive every message in any group they are added to. Bind to a single private user ID, not a group channel ID, to keep the assistant DM-only.
@@ -132,6 +132,6 @@ The bot replies within a few seconds, a session appears in `ws-1` per turn endin
 - Creating the BotFather bot, enabling the Telegram adapter, and the inbound DM delivery are Telegram/operator steps, not MCP calls. The MCP tools here create the rows; the running adapter does the delivery.
 
 ## Related
-- `agents`, `chats`, `sessions`, `channels`
+- `agents`, `sessions`, `channels`
 - `cookbook/slack-question-answerer`
 - `cookbook/create-and-run-a-session`

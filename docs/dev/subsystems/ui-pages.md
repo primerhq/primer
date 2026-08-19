@@ -47,7 +47,7 @@ graph TD
     CM -.->|POST/PUT then invalidate| TBL
 ```
 
-A handful of surfaces break the mould: the dashboard and health and workers pages are read-only metric boards, the graph detail page is a drag-and-drop canvas editor rather than a tab strip, the chat detail page is a live WebSocket conversation, the internal-collections page is a three-state activation machine, and the docs page is a markdown reader. These are noted individually in the page index.
+A handful of surfaces break the mould: the dashboard and health and workers pages are read-only metric boards, the graph detail page is a drag-and-drop canvas editor rather than a tab strip, the internal-collections page is a three-state activation machine, and the docs page is a markdown reader. These are noted individually in the page index.
 
 ## 3. Architecture patterns implemented
 
@@ -131,7 +131,7 @@ The console's own data model is its URL grammar, which is the only thing it pers
 
 Five doc kinds are addressable: `session`, `file`, `diff`, `wiki`, `trace`. Fifteen overlay names are: `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`, `tools`, `workers`, `approvals`, `admin`, `harnesses`, `services`, `channels`, `workspaces`, `new-session`. An anchor is either `turn-<n>` or an `L<from>[-L<to>]` line range. Both lists are pinned against `ui/fixtures/shell/manifest.json` by a test, so the vocabulary cannot drift from what the designer package documents.
 
-Beyond that, pages own no durable server data of their own. The entity schemas they render (Agent, Graph, Collection, Toolset, the provider models, WorkspaceSession, Trigger, ApiToken, and so on) are owned by their backend subsystem docs. The only page-held state is ephemeral React state: the active filter/sort/page, the selected row, the open-modal draft and its `fieldErrors` map, and per-page UI-only data such as the graph editor's `x/y` node coordinates (stripped before `PUT`) and the chat detail's WebSocket frame log. Cache keys are page-scoped strings on the foundation `useResource` map, listed per page above; they are an index into the shared cache, not a data model.
+Beyond that, pages own no durable server data of their own. The entity schemas they render (Agent, Graph, Collection, Toolset, the provider models, WorkspaceSession, Trigger, ApiToken, and so on) are owned by their backend subsystem docs. The only page-held state is ephemeral React state: the active filter/sort/page, the selected row, the open-modal draft and its `fieldErrors` map, and per-page UI-only data such as the graph editor's `x/y` node coordinates (stripped before `PUT`). Cache keys are page-scoped strings on the foundation `useResource` map, listed per page above; they are an index into the shared cache, not a data model.
 
 ## 6. Lifecycle
 
@@ -171,7 +171,7 @@ sequenceDiagram
 
 Loader, empty, error, and confirmation conventions across pages: on first load a list shows a skeleton table (or simply renders zeros on metric boards); `loading=true` fires only on the first fetch for a key so background polls never flicker (a foundation guarantee). An empty result renders an entity-specific empty-state row or card with a "New X" call to action rather than a blank table. A fetch error retains the last good data (stale-while-error) and surfaces the error title; after three consecutive failures the poll halts until a manual Refresh. Destructive actions always go through a confirmation `Modal` whose body spells out consequences (in-flight counts, idempotency notes, the "second DELETE returns 404" caveat, the list of dependent rows for cascades) before the mutation fires.
 
-A few pages run non-CRUD lifecycles. The session detail page reads the authoritative top-level `GET /v1/sessions/{id}` (never the nested workspace path, which is known to drift) and routes signals through the workspace-scoped POSTs; its five tabs are Overview, Messages, State, Files, and Turn log, and it additionally mounts a live WebSocket stream panel plus the yielding-tool panels (AskUser, WatchFiles, Sleep, ApprovalBanner) and the `TurnLogTab` whose endpoint resolver picks the session route for agent bindings and the graph-run route for graph bindings. The chat detail page replays the message tail over REST then opens a WebSocket and streams tokens, usage, compaction markers, and inline tool-approval cards. The internal-collections page derives one of three states (Inactive / Configured / Active) from a single config probe and drives a phase-aware bootstrap progress panel with adaptive 1s/5s polling. The graph detail page seeds an editable draft, auto-lays-out node coordinates, runs a client-side topology validator that gates Save, and issues a destructive `PUT`-replace.
+A few pages run non-CRUD lifecycles. The session detail page reads the authoritative top-level `GET /v1/sessions/{id}` (never the nested workspace path, which is known to drift) and routes signals through the workspace-scoped POSTs; its five tabs are Overview, Messages, State, Files, and Turn log, and it additionally mounts a live WebSocket stream panel plus the yielding-tool panels (AskUser, WatchFiles, Sleep, ApprovalBanner) and the `TurnLogTab` whose endpoint resolver picks the session route for agent bindings and the graph-run route for graph bindings. The internal-collections page derives one of three states (Inactive / Configured / Active) from a single config probe and drives a phase-aware bootstrap progress panel with adaptive 1s/5s polling. The graph detail page seeds an editable draft, auto-lays-out node coordinates, runs a client-side topology validator that gates Save, and issues a destructive `PUT`-replace.
 
 ## 7. Persistence
 
@@ -208,7 +208,6 @@ Pages do not expose a programmatic API. A page navigates by calling `window.prim
 
 - **Session detail pins the authoritative read path.** It always reads top-level `GET /v1/sessions/{id}` (and polls it), never the nested `/v1/workspaces/{wid}/sessions/{sid}` path, which is known to drift after signals; signals themselves still go through the workspace-scoped POSTs.
 
-- **Chat tool-approval is conversational, not a banner.** A chat that hits an approval gate ends its turn with a normal assistant message asking for a yes/no; the operator replies through the normal composer like any other message. There is no inline approval card and no chat `/tool_approval/{pending,respond}` endpoint or `tool_approval_decide` frame. (Session detail still uses the polled banner for sessions.)
 
 ## 10. Testing patterns
 
@@ -237,7 +236,7 @@ The `tests/ui_e2e/` suite (gated behind `PRIMER_RUN_UI_E2E=1`, with mobile suite
 
 - **The internal-collections page derives its three-state machine from the server-side `activated_at` field, not a `localStorage` flag.** Why: a client-local flag would lie across browsers, clears, and multiple operators, while `activated_at` matches the backend's own truth source for whether the `/search` routes will 503. Spec: docs/superpowers/specs/2026-05-16-ui-internal-collections-design.md.
 
-- **The Approvals "Pending" panel aggregates parked sessions and chats client-side instead of using a dedicated endpoint, and the inline approval card polls rather than listening for WS broadcasts.** Why: there is no aggregate `/tool_approvals/pending` route and the chat WebSocket never emits proactive pending/resolved frames, so the UI fans out `sessions/find` plus the chats list and polls each row's pending endpoint, sharing one cache key across the Approvals page and the session/chat banners. Spec: docs/superpowers/specs/2026-05-24-tool-approval-system-design.md.
+- **The Approvals "Pending" panel aggregates parked sessions client-side instead of using a dedicated endpoint, and the inline approval card polls rather than listening for WS broadcasts.** Why: there is no aggregate `/tool_approvals/pending` route and the session WebSocket emits no proactive pending/resolved frames, so the UI fans out `sessions/find` and polls each row's pending endpoint, sharing one cache key across the Approvals surface and the session banner. Spec: docs/superpowers/specs/2026-05-24-tool-approval-system-design.md.
 
 - **Channel-provider config 422 errors are looked up by `body.{field}`, not `body.config.{field}`.** Why: the backend coerces the inner config in a `model_validator(mode='before')` that drops the `config` segment from the loc tuple, so the modal must match the flattened emission. Spec: docs/superpowers/specs/2026-05-25-designer-handoff-ui-spec.md.
 
