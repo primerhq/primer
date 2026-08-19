@@ -56,6 +56,11 @@ var SA_SKIP_IN_TRANSCRIPT = {
   // only. The paired tool_call/tool_result rows carry the history, so
   // rendering this too would show the same action twice.
   client_action: true,
+  // Per-model-call trace data (S7): the Trace panel reads it from the
+  // timeline endpoint, and the paged /messages read still returns it.
+  // Only this renderer skips it, so it cannot fall through to the
+  // generic "lifecycle" bubble the mapper gives every unmapped kind.
+  llm_call: true,
 };
 
 var SA_KIND_TO_TRANSCRIPT = {
