@@ -33,6 +33,7 @@ from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.turn import _CancelScope
 from primer.worker.drivers import _GraphTurnDriver, _TurnDriver  # noqa: F401  re-export
 from primer.worker.io_shim import _WorkspaceIOShim
+from primer.worker.identity import stable_worker_label
 from primer.worker._toolset_ids import _toolset_ids_from_scoped  # noqa: F401  re-export
 
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
@@ -87,6 +88,10 @@ class WorkerPool:
         self._engine = engine
 
         self._worker_id: str = ""
+        # Stable metric label (hostname + index). Computed here, not in
+        # start(), so unit tests that never start the pool still label
+        # their instrument samples.
+        self._worker_label: str = stable_worker_label(config)
         self._tasks: list[asyncio.Task] = []
         self._active_scopes: dict[tuple[ClaimKind, str], _CancelScope] = {}
 
@@ -118,6 +123,11 @@ class WorkerPool:
     @property
     def worker_id(self) -> str:
         return self._worker_id
+
+    @property
+    def worker_label(self) -> str:
+        """Stable, bounded metric label. See primer.worker.identity."""
+        return self._worker_label
 
     async def start(self) -> None:
         self._worker_id = f"wrk-{uuid.uuid4().hex[:12]}"
