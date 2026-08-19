@@ -275,7 +275,12 @@ class TestLinearGraph:
             if isinstance(e, ExtendedEvent)
             and isinstance(e.extended, _GraphNodeEvent)
         ]
-        assert len(wrapped) == 2
+        # The node's own stream events, wrapped and attributed. Asserted by
+        # kind rather than by count: S7 threads an _LlmCall observability
+        # event through the same path, and a bare count would make every
+        # future instrument a test failure.
+        inner = [w.extended.inner_type for w in wrapped]  # type: ignore[union-attr]
+        assert "text_delta" in inner and "done" in inner
         assert all(w.extended.node_id == "A" for w in wrapped)  # type: ignore[union-attr]
         loaded = await ts.get(thread.id)
         assert loaded is not None

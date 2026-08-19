@@ -802,6 +802,11 @@ def build_system_toolset(
                     note="applies at the end of this turn",
                 ),
             ],
+            yields=False,
+            # must be explicit: tests/mcp/test_required_role_completeness.py.
+            # It became exposable when the port dropped the chat-era yield,
+            # so it needs the same role its switch_binding twin declares.
+            required_role="user",
         ),
         _switch_to_agent_handler,
     )

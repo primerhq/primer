@@ -31,6 +31,7 @@ from primer.toolset.misc import build_misc_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.web import build_web_toolset
+from primer.toolset.crud import build_crud_toolset
 from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
 
@@ -91,6 +92,9 @@ def reserved_provider_registry(fake_storage_provider) -> ProviderRegistry:
         storage_provider=fake_storage_provider,
     )
     registry._workspace_ext_toolset_provider = workspace_ext_toolset  # noqa: SLF001
+
+    crud_toolset = build_crud_toolset(storage_provider=fake_storage_provider)
+    registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
 
     # search.py only needs a subsystem for its handlers (call()); list_tools()
     # never touches it, so a bare mock is a faithful stand-in here.
