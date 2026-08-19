@@ -88,3 +88,24 @@ class TestSpeechPresence:
     async def test_speech_is_not_reported_as_an_extra(self, client) -> None:
         r = await client.get("/v1/capabilities")
         assert "speech" not in r.json()["extras"]
+
+
+@pytest.mark.asyncio
+async def test_capabilities_has_no_docling_row(client) -> None:
+    """S2 removed the docling extra; the endpoint must not advertise it."""
+    body = (await client.get("/v1/capabilities")).json()
+    assert "docling" not in body["extras"]
+
+
+@pytest.mark.asyncio
+async def test_capabilities_carries_speech_presence(client) -> None:
+    """Crosscheck M11(g): speech presence is explicit, not extra-derived.
+
+    Speech adds no extra (S4), so a caller cannot infer it from `extras`;
+    the endpoint reports configured-ness from provider storage instead.
+    """
+    body = (await client.get("/v1/capabilities")).json()
+    speech = body["speech"]
+    assert set(speech) == {"stt_configured", "tts_configured"}
+    assert isinstance(speech["stt_configured"], bool)
+    assert isinstance(speech["tts_configured"], bool)
