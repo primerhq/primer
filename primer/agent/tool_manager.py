@@ -174,6 +174,12 @@ class ToolExecutionManager:
         # toolsets; dispatch splits the scope back to the bare name before
         # calling the underlying provider.
         self._tool_to_toolset: dict[str, tuple[str, str]] = {}
+        # Scoped ids of every VISIBLE tool declared ``tool_class="notifying"``.
+        # Filled beside the catalogue in ``list_tools`` (after the agent
+        # allowlist filter), so the notifying set can never name a tool this
+        # agent may not call; the agent loop reads it to pick the self-resume
+        # branch.
+        self._notifying: set[str] = set()
         # Scoped workspace-tool id (``workspace__bare_name``) -> bare_name.
         # Separate map so dispatch can look up the WorkspaceTool from
         # ``_workspace_tools`` (still keyed by bare name).
@@ -319,6 +325,8 @@ class ToolExecutionManager:
                         and scoped_id not in self._tools_allowlist
                     ):
                         continue
+                    if t.tool_class == "notifying":
+                        self._notifying.add(scoped_id)
                     scoped_tool = t.model_copy(update={"id": scoped_id})
                     catalogue.append(scoped_tool)
             # Workspace tools (always under the WORKSPACE_TOOLSET_ID scope).
@@ -342,6 +350,17 @@ class ToolExecutionManager:
                 self._workspace_scoped[scoped_id] = ws_tool.id
             self._catalogue = catalogue
             return list(self._catalogue)
+
+    def is_notifying(self, tool_name: str) -> bool:
+        """True iff the SCOPED ``tool_name`` was declared notifying.
+
+        The index is built beside the VISIBLE catalogue, so it is a subset
+        of what this agent may call. Anything else is False: a tool that
+        never entered the routing table, and a tool the agent's allowlist
+        hides, both fall through to the standard dispatch path and get the
+        usual not-registered rejection instead of a synthetic success.
+        """
+        return tool_name in self._notifying
 
     async def execute(
         self,
