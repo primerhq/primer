@@ -18,6 +18,10 @@ from fastapi import FastAPI, Request
 from starlette.responses import JSONResponse, StreamingResponse
 
 
+# Per-chunk payload for the streaming stub; see _chunks below.
+_CHUNK_BYTES = 64 * 1024
+
+
 def _stub_app() -> FastAPI:
     app = FastAPI()
 
@@ -41,9 +45,14 @@ def _stub_app() -> FastAPI:
         assert body["response_format"] == "mp3"
 
         async def _chunks():
+            # Big enough that each chunk is its own delivery. At four
+            # bytes a chunk the whole 12-byte body coalesces into one
+            # TCP segment, so a streaming proxy and a buffering one look
+            # identical from the client and the test could not tell them
+            # apart whichever way it asserted.
             for index in range(3):
                 await asyncio.sleep(0.05)
-                yield b"ID3" + bytes([index])
+                yield b"ID3" + bytes([index]) + b"\0" * _CHUNK_BYTES
 
         return StreamingResponse(_chunks(), media_type="audio/mpeg")
 
@@ -123,14 +132,15 @@ async def test_speech_is_consumed_incrementally(client, api_prefix, stub_provide
     finished_at = time.monotonic()
 
     assert body.startswith(b"ID3")
+    assert len(body) == 3 * (4 + _CHUNK_BYTES), len(body)
     # The stub sleeps 50 ms per chunk for three chunks. A proxy that
     # buffered the whole synthesis would hand over every byte at once,
     # so the gap between the first byte and the last would collapse.
     #
-    # Measured as a GAP rather than as an absolute deadline: the absolute
-    # form raced the runner (a 140 ms budget against a 150 ms synthesis
-    # fails whenever scheduling costs 40 ms), while the gap is the
-    # property actually under test and is unaffected by how long the
+    # Measured as a GAP rather than as an absolute deadline. The absolute
+    # form raced the runner: a 140 ms budget against a 150 ms synthesis
+    # fails whenever scheduling costs 40 ms, and it did. The gap is the
+    # property actually under test and does not depend on how long the
     # first byte took to arrive.
     assert first_byte_at is not None
     assert finished_at - first_byte_at > 0.05, (

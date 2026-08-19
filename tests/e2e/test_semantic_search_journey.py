@@ -100,18 +100,29 @@ async def test_semantic_search_full_journey(
         assert len(items) == 1, items
         assert items[0]["search"]["vector_store_provider_id"] == ssp_id, items[0]
 
-        # ----- Cascade-block: DELETE SSP while collection is live -----
-        # The hook raises ConflictError → RFC 7807 flat envelope.
+        # ----- DELETE the SSP while the collection still references it --
+        # This used to be blocked with a 409. S2 dropped that reference
+        # check deliberately: an operator retiring a provider should not
+        # have to hunt down every collection first. The collection is
+        # left pointing at something that is gone, and says so through
+        # its own search state rather than by vetoing the delete.
         r = await client.delete(f"/v1/ssp/{ssp_id}")
-        assert r.status_code == 409, r.text
-        body = r.json()
-        assert body.get("type") == "/errors/conflict", body
-        # Detail names the referencing collection id
-        assert coll_id in body.get("detail", ""), body
+        assert r.status_code == 204, r.text
 
-        # ----- Confirm SSP row is STILL present (cascade-block worked) -----
         r = await client.get(f"/v1/ssp/{ssp_id}")
+        assert r.status_code == 404, r.text
+
+        # The collection keeps the binding, and searching through it now
+        # reports the missing provider instead of pretending to work.
+        r = await client.get(f"/v1/collections/{coll_id}")
         assert r.status_code == 200, r.text
+        assert r.json()["search"]["vector_store_provider_id"] == ssp_id, r.text
+
+        r = await client.post(
+            f"/v1/collections/{coll_id}/search", json={"query": "anything"},
+        )
+        assert r.status_code != 200, r.text
+        assert ssp_id in r.text, r.text
 
         # ----- Delete the collection, then SSP delete should succeed -----
         r = await client.delete(f"/v1/collections/{coll_id}")
@@ -133,11 +144,17 @@ async def test_semantic_search_full_journey(
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_collection_with_unknown_ssp_returns_404(
+async def test_semantic_search_collection_with_unknown_ssp_is_rejected(
     client: httpx.AsyncClient, unique_suffix: str,
 ):
-    """Sister: enabling search against an unknown vector store is
-    rejected with 404 + /errors/not-found flat RFC 7807 envelope."""
+    """Sister: enabling search against an unknown vector store is refused.
+
+    409, not 404: the route reads it as a conflict with the platform's
+    current state rather than a missing route target, and answers the
+    same way for an unregistered embedder. Deleting a provider that
+    collections already reference stays allowed (see the journey above);
+    it is MAKING a reference to something absent that is refused.
+    """
     emb_id = f"emb-unk-{unique_suffix}"
     try:
         r = await client.post("/v1/embedding_providers", json=_emb_body(emb_id))
@@ -153,10 +170,9 @@ async def test_semantic_search_collection_with_unknown_ssp_returns_404(
             "embedder": {"provider_id": emb_id, "model": "stub-embed"},
             "vector_store_provider_id": "ssp-does-not-exist-xyz",
         })
-        assert r.status_code == 404, r.text
-        # _validate_ssp_exists raises NotFoundError → RFC 7807 flat envelope
+        assert r.status_code == 409, r.text
         body = r.json()
-        assert body.get("type") == "/errors/not-found", body
+        assert body.get("type") == "/errors/conflict", body
         assert "ssp-does-not-exist-xyz" in body.get("detail", ""), body
     finally:
         await client.delete(f"/v1/collections/coll-unk-{unique_suffix}")

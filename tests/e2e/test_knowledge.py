@@ -187,10 +187,13 @@ async def test_t0087_multi_key_order_by_breaks_ties(
         for r in rows:
             body = {
                 "id": r["id"],
+                # The titles are the whole point: without them every row
+                # sorts as one tie and the secondary key is doing all the
+                # work, which is what this test exists to disprove.
+                "title": r["title"],
                 "path": f'{r["id"]}.md',
                 "slug": f'{r["id"]}.md',
                 "collection_id": f"unenforced-{unique_suffix}",
-                "text": "x",
                 "meta": {},
             }
             resp = await client.post("/v1/documents", json=body)
@@ -487,7 +490,7 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
                 f"/v1/collections/{collection_id}/docs",
                 json={
                     "parent": "",
-                    "slug": f"{did}.md",
+                    "slug": did,
                     "title": did,
                     "body": f"body for {did}",
                 },
@@ -727,7 +730,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
         for did in doc_ids:
             r = await client.post(
                 f"/v1/collections/{coll_id}/docs",
-                json={"parent": "", "slug": f"{did}.md", "body": "x"},
+                json={"parent": "", "slug": did, "body": "x"},
             )
             assert r.status_code in (200, 201), r.text
             docs_created.append(r.json()["id"])
@@ -743,7 +746,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
         )
         other = await client.post(
             f"/v1/collections/{other_coll}/docs",
-            json={"parent": "", "slug": f"{unrelated}.md", "body": "x"},
+            json={"parent": "", "slug": unrelated, "body": "x"},
         )
         if other.status_code in (200, 201):
             docs_created.append(other.json()["id"])
@@ -856,7 +859,8 @@ async def test_t0264_delete_embedder_with_referencing_collection_clean(
     finally:
         if coll_created:
             await client.delete(f"/v1/collections/{coll_id}")
-        # Provider already deleted
+        await client.delete(f"/v1/ssp/{ssp_id}")
+        # Embedding provider already deleted by the test body
 
 
 # ============================================================================
@@ -886,18 +890,40 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
     )
     assert ssp_r.status_code in (200, 201), ssp_r.text
 
+    # Both embedders have to exist: binding one through the search route
+    # validates the reference, where the old create body took it on
+    # trust. They are never called, so an unreachable url is fine.
+    emb_a = f"emb-a-{unique_suffix}"
+    emb_b = f"emb-b-{unique_suffix}"
+    for eid in (emb_a, emb_b):
+        er = await client.post("/v1/embedding_providers", json={
+            "id": eid,
+            "provider": "openai",
+            "models": [
+                {"name": "sentence-transformers/all-MiniLM-L6-v2"},
+                {"name": "sentence-transformers/all-mpnet-base-v2"},
+            ],
+            "config": {
+                "url": "http://127.0.0.1:1",
+                "api_key": "sk-not-used",
+                "flavor": "other",
+            },
+            "limits": {"max_concurrency": 1},
+        })
+        assert er.status_code in (200, 201), er.text
+
     body_a = {"id": coll_id, "description": "first incarnation"}
     body_b = {"id": coll_id, "description": "second incarnation"}
     search_a = {
         "embedder": {
-            "provider_id": f"emb-a-{unique_suffix}",
+            "provider_id": emb_a,
             "model": "sentence-transformers/all-MiniLM-L6-v2",
         },
         "vector_store_provider_id": ssp_id,
     }
     search_b = {
         "embedder": {
-            "provider_id": f"emb-b-{unique_suffix}",
+            "provider_id": emb_b,
             "model": "sentence-transformers/all-mpnet-base-v2",
         },
         "vector_store_provider_id": ssp_id,
@@ -923,14 +949,15 @@ async def test_t0270_collection_delete_then_recreate_with_different_embedder(
         assert got.status_code == 200, got.text
         row = got.json()
         assert row["description"] == "second incarnation", row
-        assert row["search"]["embedder"]["provider_id"] == (
-            f"emb-b-{unique_suffix}"
-        ), row
+        assert row["search"]["embedder"]["provider_id"] == emb_b, row
         assert row["search"]["embedder"]["model"] == (
             "sentence-transformers/all-mpnet-base-v2"
         ), row
     finally:
         await client.delete(f"/v1/collections/{coll_id}")
+        await client.delete(f"/v1/embedding_providers/{emb_a}")
+        await client.delete(f"/v1/embedding_providers/{emb_b}")
+        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -1027,7 +1054,6 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
         assert envelope.get("type") != "/errors/internal", listing.text
     finally:
         await client.delete(f"/v1/documents/{doc_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -1186,7 +1212,6 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
         for did in created:
             await client.delete(f"/v1/documents/{did}")
         await client.delete(f"/v1/collections/{coll_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================

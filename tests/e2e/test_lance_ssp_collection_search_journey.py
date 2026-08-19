@@ -109,7 +109,7 @@ async def test_lance_ssp_collection_search_journey(
         doc_ids = {}
         for stem, body in _DOCS.items():
             r = await client.post(f"/v1/collections/{cid}/docs", json={
-                "parent": "", "slug": f"{stem}.md", "body": body,
+                "parent": "", "slug": stem, "body": body,
             })
             assert r.status_code in (200, 201), r.text
             doc_ids[stem] = r.json()["id"]

@@ -1095,7 +1095,7 @@ async def _make_document(
 
     dr = await client.post(
         f"/v1/collections/{cid}/docs",
-        json={"parent": "", "slug": f"doc-{suffix}.md", "body": marker},
+        json={"parent": "", "slug": f"doc-{suffix}", "body": marker},
     )
     assert dr.status_code in (200, 201), dr.text
     did = dr.json()["id"]

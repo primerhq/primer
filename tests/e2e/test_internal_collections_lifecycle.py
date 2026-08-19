@@ -1217,8 +1217,13 @@ async def test_t0289_concurrent_cdc_ingest_and_search_clean(
 ) -> None:
     """T0289 — Cross-entity concurrency: fire 5 Agent POSTs and 5
     /v1/agents/search calls concurrently. All responses have clean
-    envelopes (no /errors/internal); after the dust settles, all 5
-    seeded agents are findable in search.
+    envelopes (no /errors/internal) and every create still lands.
+
+    The tail that polled until all five turned up in that search is
+    gone: S2 left the per-entity routes inert, so nothing populates
+    them. Agents reaching search is covered against the system
+    collection instead, by
+    ``test_new_agent_is_searchable_through_the_system_collection``.
     """
     embedder_id = f"emb-t0289-{unique_suffix}"
     ssp_id = f"ssp-t0289-{unique_suffix}"
@@ -1282,23 +1287,14 @@ async def test_t0289_concurrent_cdc_ingest_and_search_clean(
             f"{agents_created!r}"
         )
 
-        # After load, all 5 indexed
-        last_ids: set[str] = set()
-        for _ in range(60):
-            s = await client.post(
-                "/v1/agents/search",
-                json={"query": common_marker, "top_k": 10},
-            )
-            assert s.status_code == 200, s.text
-            last_ids = {h["document_id"] for h in s.json()["hits"]}
-            if all(aid in last_ids for aid in agent_ids):
-                break
-            await asyncio.sleep(0.5)
-        else:
-            pytest.fail(
-                f"not all 5 agents indexed after concurrent load: "
-                f"last hits={last_ids!r}"
-            )
+        # The subsystem still answers cleanly after the concurrent load,
+        # which is what the race is here to check.
+        s = await client.post(
+            "/v1/agents/search",
+            json={"query": common_marker, "top_k": 10},
+        )
+        assert s.status_code == 200, s.text
+        assert isinstance(s.json()["hits"], list), s.text
     finally:
         for aid in agents_created:
             await client.delete(f"/v1/agents/{aid}")
@@ -2477,25 +2473,37 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
         assert cr.status_code == 201, cr.text
         coll_created = True
 
-        # Poll /v1/collections/search for the marker
-        last_ids: list[str] = []
-        for _ in range(60):
+        # The new collection gets a page in the system collection, and
+        # because bootstrap left search on there, the CRUD hook indexes
+        # it in the same write. Asserted here rather than through
+        # /v1/collections/search, which S2 left inert.
+        page = await client.get(
+            f"/v1/collections/{_SYSTEM_COLLECTION_ID}/documents",
+            params={"path": f"collections/{collection_id}"},
+        )
+        assert page.status_code == 200, page.text
+        assert distinctive in page.text, page.text
+
+        found = False
+        last: dict = {}
+        for _ in range(20):
             search = await client.post(
-                "/v1/collections/search",
+                f"/v1/collections/{_SYSTEM_COLLECTION_ID}/search",
                 json={"query": distinctive, "top_k": 5},
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=httpx.Timeout(60.0, connect=10.0),
             )
             assert search.status_code == 200, search.text
-            last_ids = [
-                h["document_id"] for h in search.json()["hits"]
-            ]
-            if collection_id in last_ids:
+            last = search.json()
+            if any(
+                h.get("meta", {}).get("path") == f"collections/{collection_id}"
+                for h in last["hits"]
+            ):
+                found = True
                 break
             await asyncio.sleep(0.5)
-        assert collection_id in last_ids, (
-            f"collection {collection_id!r} did not appear in "
-            f"/v1/collections/search results within 30s; last hits: "
-            f"{last_ids!r}"
+        assert found, (
+            f"collection {collection_id!r} was not searchable through the "
+            f"system collection; last response: {last!r}"
         )
     finally:
         if coll_created:

@@ -159,7 +159,7 @@ async def _ingest(authed_client, cid, stem, text) -> str:
     """
     r = await authed_client.post(
         f"/v1/collections/{cid}/docs",
-        json={"parent": "", "slug": f"{stem}.md", "body": text},
+        json={"parent": "", "slug": stem, "body": text},
     )
     assert r.status_code in (200, 201), r.text
     return r.json()["id"]
