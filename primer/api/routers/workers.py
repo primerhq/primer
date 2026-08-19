@@ -36,6 +36,51 @@ async def list_workers(scheduler=Depends(get_scheduler)) -> dict:
     return {"items": [w.model_dump(mode="json") for w in workers]}
 
 
+@router.get(
+    "/workers/stats",
+    summary="Per-lane task counters read from the in-process instruments",
+    responses=common_responses(500),
+)
+async def worker_lane_stats() -> dict:
+    """Aggregate ``worker_tasks_total`` + ``worker_task_duration_seconds``.
+
+    The workers page needs numbers, not Prometheus exposition text: the
+    text format is a scrape target, not a UI API (12-s7-design.md section
+    6). Values are this process's own instruments, so a multi-process
+    deployment reports per-process figures, exactly like /v1/health's
+    worker_pool block.
+    """
+    import primer.observability.metrics as _metrics
+
+    rows: dict[tuple[str, str, str], dict] = {}
+
+    def _row(labels: dict) -> dict:
+        key = (labels["worker"], labels["kind"], labels["status"])
+        if key not in rows:
+            rows[key] = {
+                "worker": key[0],
+                "kind": key[1],
+                "status": key[2],
+                "tasks": 0.0,
+                "duration_sum_seconds": 0.0,
+                "duration_count": 0.0,
+            }
+        return rows[key]
+
+    for metric in _metrics.worker_tasks_total.collect():
+        for sample in metric.samples:
+            if sample.name == "worker_tasks_total":
+                _row(sample.labels)["tasks"] = sample.value
+    for metric in _metrics.worker_task_duration_seconds.collect():
+        for sample in metric.samples:
+            if sample.name == "worker_task_duration_seconds_sum":
+                _row(sample.labels)["duration_sum_seconds"] = sample.value
+            elif sample.name == "worker_task_duration_seconds_count":
+                _row(sample.labels)["duration_count"] = sample.value
+
+    return {"items": [rows[key] for key in sorted(rows)]}
+
+
 @router.post(
     "/workers/{worker_id}/drain",
     status_code=204,
@@ -102,4 +147,4 @@ async def delete_worker(
     await scheduler.deregister_worker(worker_id)
 
 
-__all__ = ["router"]
+__all__ = ["router", "worker_lane_stats"]
