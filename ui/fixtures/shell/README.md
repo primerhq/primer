@@ -20,6 +20,10 @@ Four doc kinds, addressed by wire id:
   `commit-log.json`, `commit-diff.json`.
 - `wiki` : a collection document addressed by its slug path. Fixture:
   `wiki-document.json`.
+- `trace` : one turn's exhaustive record, addressed as
+  `trace:<session-id>:<turn-no>`. It opens BESIDE the transcript in a
+  split group, never in an overlay, and it is the only place raw tool
+  arguments are shown. Fixture: `turn-timeline.json`.
 
 ## Overlays
 

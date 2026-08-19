@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "ui" / "fixtures" / "shell"
 MANIFEST = FIXTURES / "manifest.json"
 
-DOC_KINDS = ["session", "file", "diff", "wiki"]
+DOC_KINDS = ["session", "file", "diff", "wiki", "trace"]
 OVERLAYS = [
     "providers", "collections", "agents", "graphs", "triggers",
     "toolsets", "tools", "workers", "approvals", "admin",
@@ -123,6 +123,9 @@ def test_every_doc_kind_has_at_least_one_fixture() -> None:
         "file": "file-read",
         "diff": "commit-diff",
         "wiki": "wiki-document",
+        # The trace doc renders S7's timeline, whose fixture Task 4 already
+        # shipped for the attention surfaces.
+        "trace": "turn-timeline",
     }
     ids = {e["id"] for e in man["surfaces"]}
     for kind in man["doc_kinds"]:

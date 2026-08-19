@@ -111,6 +111,30 @@ function SH_registerCoreVerbs(shell) {
     surfaces: ["tab-menu", "palette"],
     run: function () { shell.splitRight(); },
   });
+
+  // Comparison never goes in an overlay: the trace opens as a tab in a
+  // SECOND group, side by side with the transcript it explains.
+  shell.registry.register({
+    id: "trace.split", label: "Split Trace", chord: "Ctrl+Shift+t",
+    contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    run: function (arg) {
+      var group = shell.docs.groups[shell.docs.activeGroup];
+      var tab = null;
+      for (var i = 0; group && i < group.tabs.length; i++) {
+        if (group.tabs[i].id === group.activeId) tab = group.tabs[i];
+      }
+      if (!tab || tab.kind !== "session") return;
+      var turnNo = (arg && arg.turnNo) != null ? arg.turnNo : 0;
+      shell.splitRight();
+      shell.openDoc({
+        kind: "trace",
+        ref: window.SH_traceRef(tab.ref, turnNo),
+        title: "Trace " + turnNo,
+        preview: false,
+      });
+    },
+  });
+
   shell.registry.register({
     id: "session.create", label: "Create Session", surfaces: ["rail", "palette"],
     run: function () {
@@ -175,6 +199,9 @@ function SH_DocBody(props) {
   }
   if (tab.kind === "wiki" && typeof window.SH_WikiDoc === "function") {
     return <window.SH_WikiDoc slug={tab.ref} />;
+  }
+  if (tab.kind === "trace" && typeof window.SH_TraceTab === "function") {
+    return <window.SH_TraceTab docRef={tab.ref} />;
   }
   return <div className="sh-empty">Nothing open. Press Ctrl+K for verbs.</div>;
 }

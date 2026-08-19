@@ -65,6 +65,9 @@ function SH_Shell(props) {
   var jumpLatestRef = React.useRef(function () {});
   // The attention list fills this in; the triage verbs read it.
   var attentionRef = React.useRef({ items: [], resolve: function () {} });
+  // Open session docs publish their status here so the trace tab can pass
+  // it through to the S7 panel without opening a second read of its own.
+  var sessionStatusRef = React.useRef({});
 
   // ---- URL is the state ----------------------------------------------------
   var active = null;
@@ -181,6 +184,12 @@ function SH_Shell(props) {
     agents: (agentList.data && agentList.data.items) || [],
     username: (status.data && status.data.username) || "anon",
     attentionRef: attentionRef,
+    sessionStatus: function (sid) {
+      return sessionStatusRef.current[sid] || null;
+    },
+    setSessionStatus: function (sid, status) {
+      sessionStatusRef.current[sid] = status;
+    },
     jumpLatestRef: jumpLatestRef,
     focusComposer: function () {
       var el = document.querySelector('[data-testid="shell-composer"] textarea');
