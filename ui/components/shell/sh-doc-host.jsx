@@ -1,0 +1,234 @@
+/* global React, SH_api, SH_useShell, SH_statusLine, SH_statusFromTap,
+   SH_OVERLAYS */
+// Fresh shell center: tab bar, split groups, doc renderers, status bar.
+//
+// Comparison NEVER goes in an overlay (spec section 8): the trace tab and
+// diffs open as tabs in a second group, side by side with the transcript.
+
+var SH_OVERLAY_LABELS = {
+  providers: "Open Providers Catalog",
+  collections: "Open Collections",
+  agents: "Open Agents",
+  graphs: "Open Graphs",
+  triggers: "Open Triggers",
+  toolsets: "Open Toolsets",
+  tools: "Open Tools",
+  workers: "Open Workers",
+  approvals: "Open Approvals",
+  admin: "Open Admin Settings",
+  harnesses: "Open Harnesses",
+  services: "Open Services",
+  channels: "Open Channels",
+  workspaces: "Open Workspaces",
+};
+
+function SH_registerCoreVerbs(shell) {
+  shell.registry.register({
+    id: "doc.close", label: "Close Tab", chord: "Ctrl+w",
+    surfaces: ["tab-menu", "palette"],
+    run: function () {
+      var group = shell.docs.groups[shell.docs.activeGroup];
+      if (group && group.activeId) shell.closeDoc(group.activeId);
+    },
+  });
+  shell.registry.register({
+    id: "doc.cycleMru", label: "Switch Tab", chord: "Ctrl+Tab",
+    surfaces: ["tab-menu", "palette"],
+    run: function () { shell.cycleMru(1); },
+  });
+  shell.registry.register({
+    id: "doc.openQuick", label: "Open File", chord: "Ctrl+p",
+    surfaces: ["rail", "palette"],
+    run: function () { shell.openOverlay("collections"); },
+  });
+  shell.registry.register({
+    id: "doc.pin", label: "Pin Tab", surfaces: ["tab-menu"],
+    run: function () {
+      var group = shell.docs.groups[shell.docs.activeGroup];
+      if (group && group.activeId) shell.pinDoc(group.activeId, true);
+    },
+  });
+  shell.registry.register({
+    id: "layout.splitRight", label: "Split Right", chord: "Ctrl+\\",
+    surfaces: ["tab-menu", "palette"],
+    run: function () { shell.splitRight(); },
+  });
+  shell.registry.register({
+    id: "session.create", label: "Create Session", surfaces: ["rail", "palette"],
+    run: function () {
+      SH_api.createSession(shell.wid, {}).then(function (row) {
+        var sid = row && (row.session_id || row.id);
+        if (sid) shell.openDoc({ kind: "session", ref: sid, preview: false });
+        shell.sessions.refetch();
+      });
+    },
+  });
+  shell.registry.register({
+    id: "session.interrupt", label: "Interrupt Session", destructive: true,
+    contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    run: function () {
+      var group = shell.docs.groups[shell.docs.activeGroup];
+      var tab = null;
+      for (var i = 0; group && i < group.tabs.length; i++) {
+        if (group.tabs[i].id === group.activeId) tab = group.tabs[i];
+      }
+      if (tab && tab.kind === "session") SH_api.interrupt(shell.wid, tab.ref);
+    },
+  });
+  for (var i = 0; i < SH_OVERLAYS.length; i++) {
+    (function (name) {
+      shell.registry.register({
+        id: "overlay.open." + name,
+        label: SH_OVERLAY_LABELS[name],
+        surfaces: ["topbar", "palette"],
+        run: function () { shell.openOverlay(name); },
+      });
+    })(SH_OVERLAYS[i]);
+  }
+}
+
+function SH_TabMenu(props) {
+  var shell = SH_useShell();
+  return (
+    <span className="sh-tab-menu" data-testid={"shell-tab-menu:" + props.tab.id}>
+      {shell.registry.forSurface("tab-menu").map(function (verb) {
+        if (verb.contexts && verb.contexts.indexOf(props.tab.kind) < 0) return null;
+        return (
+          <button key={verb.id} type="button" className="sh-verb"
+            data-verb={verb.id} onClick={function () { verb.run(props.tab); }}>
+            {verb.label}
+          </button>
+        );
+      })}
+    </span>
+  );
+}
+
+function SH_DocBody(props) {
+  var tab = props.tab;
+  if (tab.kind === "session" && typeof window.SH_SessionDoc === "function") {
+    return <window.SH_SessionDoc sid={tab.ref} />;
+  }
+  if (tab.kind === "file" && typeof window.SH_FileDoc === "function") {
+    return <window.SH_FileDoc path={tab.ref} />;
+  }
+  if (tab.kind === "diff" && typeof window.SH_DiffDoc === "function") {
+    return <window.SH_DiffDoc sha={tab.ref} />;
+  }
+  if (tab.kind === "wiki" && typeof window.SH_WikiDoc === "function") {
+    return <window.SH_WikiDoc slug={tab.ref} />;
+  }
+  return <div className="sh-empty">Nothing open. Press Ctrl+K for verbs.</div>;
+}
+
+function SH_DocHost() {
+  var shell = SH_useShell();
+  var tap = window.useWorkspaceTap(shell.wid);
+  var registeredRef = React.useRef(false);
+  if (!registeredRef.current) {
+    registeredRef.current = true;
+    SH_registerCoreVerbs(shell);
+  }
+
+  return (
+    <div className="sh-groups">
+      {shell.docs.groups.map(function (group, gi) {
+        return (
+          <section key={gi} className="sh-group" data-testid={"shell-group:" + gi}>
+            <div className="sh-tabbar" role="tablist">
+              {group.tabs.map(function (tab) {
+                var live = tab.kind === "session"
+                  ? SH_statusFromTap(tap.events, tab.ref, Date.now())
+                  : null;
+                return (
+                  <span key={tab.id} className="sh-tab" data-preview={tab.preview}
+                    data-pinned={tab.pinned} data-badge={tab.badge}
+                    data-testid={"shell-tab:" + tab.id}>
+                    <button
+                      type="button"
+                      onClick={function () {
+                        shell.openDoc({
+                          kind: tab.kind, ref: tab.ref, preview: tab.preview,
+                        });
+                      }}
+                      onDoubleClick={function () { shell.promoteDoc(tab.id); }}
+                    >
+                      {tab.title}
+                      {live ? (
+                        <span className="sh-tab-status">
+                          {SH_statusLine({
+                            verb: live.verb, object: live.object,
+                            elapsedSec: Math.round((Date.now() - live.startedMs) / 1000),
+                          })}
+                        </span>
+                      ) : null}
+                    </button>
+                    <SH_TabMenu tab={tab} />
+                  </span>
+                );
+              })}
+            </div>
+            <div className="sh-doc">
+              {group.tabs.filter(function (t) { return t.id === group.activeId; })
+                .map(function (tab) {
+                  return <SH_DocBody key={tab.id} tab={tab} />;
+                })}
+            </div>
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+function SH_StatusBar() {
+  var shell = SH_useShell();
+  var tap = window.useWorkspaceTap(shell.wid);
+  var group = shell.docs.groups[shell.docs.activeGroup];
+  var tab = null;
+  for (var i = 0; group && i < group.tabs.length; i++) {
+    if (group.tabs[i].id === group.activeId) tab = group.tabs[i];
+  }
+  var live = tab && tab.kind === "session"
+    ? SH_statusFromTap(tap.events, tab.ref, Date.now())
+    : null;
+  return (
+    <div className="sh-status" data-testid="shell-status-line">
+      {live ? SH_statusLine({
+        verb: live.verb, object: live.object,
+        elapsedSec: Math.round((Date.now() - live.startedMs) / 1000),
+      }) : "idle"}
+      {live ? (
+        <button type="button" className="sh-verb" data-testid="shell-interrupt"
+          onClick={function () { shell.registry.get("session.interrupt").run(); }}>
+          Interrupt Session
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function SH_Topbar() {
+  var shell = SH_useShell();
+  return (
+    <div className="sh-topbar-inner">
+      <span className="sh-ws" data-testid="shell-workspace">{shell.wid}</span>
+      <span className="sh-topbar-verbs">
+        {shell.registry.forSurface("topbar").map(function (verb) {
+          return (
+            <button key={verb.id} type="button" className="sh-verb"
+              data-verb={verb.id} onClick={function () { verb.run(); }}>
+              {verb.label}
+            </button>
+          );
+        })}
+      </span>
+    </div>
+  );
+}
+
+window.SH_OVERLAY_LABELS = SH_OVERLAY_LABELS;
+window.SH_registerCoreVerbs = SH_registerCoreVerbs;
+window.SH_DocHost = SH_DocHost;
+window.SH_StatusBar = SH_StatusBar;
+window.SH_Topbar = SH_Topbar;
