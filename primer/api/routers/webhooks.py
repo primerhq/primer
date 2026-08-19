@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import asyncio
 import logging
 import time
 from collections import defaultdict
@@ -50,6 +51,7 @@ from typing import Any
 from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from primer.api.deps import (
     get_claim_engine,
@@ -58,6 +60,7 @@ from primer.api.deps import (
 )
 from primer.trigger.dispatch import fire_trigger
 from primer.trigger.fire_id import make_fire_id
+from primer.trigger.hold import HOLD_MAX_SECONDS, HeldFire, fire_and_hold
 from primer.trigger.service import (
     ServiceDeps,
     WebhookTokenNotFound,
@@ -169,6 +172,40 @@ async def _finalize_delivery(
             "webhook delivery finalize failed for %s", delivery_id,
             exc_info=True,
         )
+
+
+async def _finalize_hold(
+    storage_provider: Any, delivery_id: str | None, held: HeldFire,
+) -> None:
+    """Write a completed hold's outcome onto its delivery row."""
+    if delivery_id is None:
+        return
+    await _finalize_delivery(
+        storage_provider,
+        delivery_id,
+        ok=not held.timed_out,
+        fire_id=held.fire_result.fire_id if held.fire_result else None,
+        results=held.results,
+    )
+
+
+async def _finalize_when_done(
+    storage_provider: Any, delivery_id: str | None, hold_task: Any,
+) -> None:
+    """Await a hold that outlived its wait cap, then record its result.
+
+    Runs as a BackgroundTask after the 202 has been sent, so the poll
+    endpoint eventually serves the real result instead of a row stuck at
+    'pending'.
+    """
+    try:
+        held = await hold_task
+    except Exception:  # noqa: BLE001 - the response already went out
+        logger.exception("webhook hold task failed for %s", delivery_id)
+        if delivery_id is not None:
+            await _finalize_delivery(storage_provider, delivery_id, ok=False)
+        return
+    await _finalize_hold(storage_provider, delivery_id, held)
 
 
 async def _dispatch_webhook(
@@ -381,6 +418,49 @@ async def receive_webhook(
     claim_engine = get_claim_engine(request)
     scheduler = getattr(request.app.state, "scheduler", None)
     workspace_registry = getattr(request.app.state, "workspace_registry", None)
+    row_id = delivery_id if delivery_persisted else None
+
+    if getattr(trigger.config, "interactive", False):
+        # Interactive: hold the response until the fired run(s) terminate.
+        # The hold runs as its own task so the caller-visible wait cap can
+        # expire without abandoning the wait: past the cap the task keeps
+        # running and a BackgroundTask records its result on the row.
+        hold_task = asyncio.create_task(
+            fire_and_hold(
+                trigger_id=trigger.id,
+                extra_context=extra_context,
+                deps=DispatchDeps(
+                    storage_provider=sp,
+                    claim_engine=claim_engine,
+                    scheduler=scheduler,
+                    workspace_registry=workspace_registry,
+                    event_bus=event_bus,
+                ),
+                workspace_registry=workspace_registry,
+                wait_timeout=HOLD_MAX_SECONDS,
+            ),
+            name=f"webhook-hold-{delivery_id}",
+        )
+        cap = float(getattr(trigger.config, "wait_timeout_seconds", 60))
+        done, _still_running = await asyncio.wait({hold_task}, timeout=cap)
+        if hold_task in done:
+            held = hold_task.result()
+            await _finalize_hold(sp, row_id, held)
+            if not held.timed_out:
+                return JSONResponse(status_code=200, content={
+                    "fire_id": (
+                        held.fire_result.fire_id if held.fire_result else None
+                    ),
+                    "results": held.results,
+                })
+        else:
+            background_tasks.add_task(
+                _finalize_when_done, sp, row_id, hold_task,
+            )
+        return JSONResponse(status_code=202, content={
+            "delivery_id": delivery_id, "status": "pending",
+        })
+
     background_tasks.add_task(
         _dispatch_webhook,
         trigger.id,
@@ -390,7 +470,7 @@ async def receive_webhook(
         claim_engine,
         scheduler,
         workspace_registry,
-        delivery_id=delivery_id if delivery_persisted else None,
+        delivery_id=row_id,
     )
 
     return {"delivery_id": delivery_id, "status": "accepted"}
