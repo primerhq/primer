@@ -119,7 +119,6 @@ from primer.model.yield_ import ToolContext, Yielded
 from primer.toolset.internal import InternalToolsetProvider, ToolHandler
 
 # Re-exported helpers / argument models / parsers (shared surface).
-from primer.toolset._python_tools import build_python_toolset_tools
 from primer.toolset._system_common import (
     SYSTEM_TOOLSET_ID,
     logger,
@@ -986,15 +985,6 @@ def build_system_toolset(
         toolset_id,
     )
 
-    # ---- python toolsets ---------------------------------------------------
-    #
-    # Built by the shared factory so the S5 ``crud`` toolset can register the
-    # same three tools under its own scope without duplicating handlers.
-    registry.update(
-        build_python_toolset_tools(
-            storage_provider=storage_provider, toolset_id=toolset_id,
-        )
-    )
 
     return InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
 
