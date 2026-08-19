@@ -14,6 +14,31 @@
       "id": "tap-frames",
       "file": "tap-frames.json",
       "describes": "Workspace tap frames driving live turn rendering"
+    },
+    {
+      "id": "files-tree",
+      "file": "files-tree.json",
+      "describes": "Rail files list and the file picker"
+    },
+    {
+      "id": "file-read",
+      "file": "file-read.json",
+      "describes": "File doc: viewer/editor content"
+    },
+    {
+      "id": "commit-log",
+      "file": "commit-log.json",
+      "describes": "Changes list feeding diff docs"
+    },
+    {
+      "id": "commit-diff",
+      "file": "commit-diff.json",
+      "describes": "Diff doc: per-file patches"
+    },
+    {
+      "id": "wiki-document",
+      "file": "wiki-document.json",
+      "describes": "Wiki doc: a collection document with children"
     }
   ],
   "doc_kinds": [

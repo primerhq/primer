@@ -1,0 +1,15 @@
+{
+  "path": ".",
+  "entries": [
+    {"path": "src", "type": "dir", "children": [
+      {"path": "src/api.ts", "type": "file", "size": 4120},
+      {"path": "src/webhook.ts", "type": "file", "size": 1880},
+      {"path": "src/index.ts", "type": "file", "size": 320}
+    ]},
+    {"path": "tests", "type": "dir", "children": [
+      {"path": "tests/test_webhook.ts", "type": "file", "size": 990}
+    ]},
+    {"path": "README.md", "type": "file", "size": 740},
+    {"path": "package.json", "type": "file", "size": 512}
+  ]
+}

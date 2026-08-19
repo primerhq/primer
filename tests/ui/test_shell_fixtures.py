@@ -113,3 +113,26 @@ def test_session_detail_carries_the_queued_steer_read_surface() -> None:
 def test_the_parked_signal_rides_parked_status_not_the_lifecycle() -> None:
     detail = json.loads((FIXTURES / "session-detail.json").read_text(encoding="utf-8"))
     assert "parked_status" in detail
+
+
+def test_every_doc_kind_has_at_least_one_fixture() -> None:
+    """One doc kind with no stub data is one doc kind the designer guesses at."""
+    man = _manifest()
+    by_kind = {
+        "session": "session-detail",
+        "file": "file-read",
+        "diff": "commit-diff",
+        "wiki": "wiki-document",
+    }
+    ids = {e["id"] for e in man["surfaces"]}
+    for kind in man["doc_kinds"]:
+        assert by_kind[kind] in ids, f"doc kind {kind} has no fixture"
+
+
+def test_diff_fixture_carries_per_file_patches() -> None:
+    """st-api.jsx:58-65: the commit read is the only source of patch text."""
+    commit = json.loads((FIXTURES / "commit-diff.json").read_text(encoding="utf-8"))
+    assert commit["sha"]
+    assert commit["files"], "a diff doc with no files teaches nothing"
+    for f in commit["files"]:
+        assert set(f) >= {"path", "patch", "additions", "deletions"}
