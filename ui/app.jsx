@@ -1431,12 +1431,18 @@ function NewSessionModal({ onClose, onCreate }) {
 // classic console. One hook, unconditional, so hook order is stable.
 function S2_RootGate() {
   const { path } = window.primerApi.useRouter();
+  if (path.startsWith("/w/")) return <window.SH_RootGate />;
   if (path.startsWith("/studio2")) return <window.S2_Shell />;
   return <App />;
 }
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <window.AuthGate>
+    {/* AuthGate owns login, the forced password change and the setup
+        wizard; only then does anything below it mount. S2_RootGate then
+        dispatches by hash path: "/w/" renders window.SH_RootGate (the
+        fresh shell), "/studio2" renders S2_Shell, everything else the
+        classic App. S8 P5 collapses this to the shell unconditionally. */}
     <S2_RootGate />
   </window.AuthGate>
 );
