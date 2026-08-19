@@ -415,6 +415,7 @@ function App() {
       "ssp-detail": (e) => `/ssp/${e}`,
       "internal-collections": "/subsystems/internal-collections",
       approvals: "/approvals",
+      providers: "/providers",
       "channel-providers": "/channels/providers",
       "channel-rules": "/channels/rules",
       channels: "/channels/channels",
@@ -742,6 +743,27 @@ function App() {
         pushToast={pushToast}
         onOpen={(cid) => navigate("collections", cid)}
         onNavigate={navigate}
+      />
+    );
+  } else if (page === "providers") {
+    pageHeader = (
+      <>
+        <div>
+          <div className="crumb"><a onClick={() => navigate("dashboard")}>System</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Providers</span></div>
+          <h1 className="page-title">Providers</h1>
+          <div className="page-sub">Every provider class in one catalog</div>
+        </div>
+      </>
+    );
+    pageBody = (
+      <window.ProviderCatalog
+        initialClass={query.class || null}
+        initialInstanceId={query.id || null}
+        onNavigate={(ref) => {
+          if (ref && ref.kind === "provider-instance") {
+            navigate("providers", null);
+          }
+        }}
       />
     );
   } else if (page === "graphs") {

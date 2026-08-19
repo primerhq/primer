@@ -33,6 +33,7 @@
 { pattern: "/toolsets",                        page: "ToolsetsListPage" },
     { pattern: "/toolsets/:id",                    page: "ToolsetDetailPage" },
     { pattern: "/tools",                           page: "ToolsListPage" },
+    { pattern: "/providers",                       page: "ProviderCatalogPage" },
     { pattern: "/providers/llm",                   page: "LlmProvidersListPage" },
     { pattern: "/providers/llm/:id",               page: "LlmProviderDetailPage" },
     { pattern: "/providers/embedding",             page: "EmbeddingProvidersListPage" },
