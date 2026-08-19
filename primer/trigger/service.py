@@ -19,7 +19,6 @@ from primer.model.storage import OffsetPage, Op
 from primer.model.trigger import (
     Subscription,
     Trigger,
-    WebhookTriggerConfig,
 )
 from primer.storage.q import Q
 from primer.trigger.cron import (
@@ -173,13 +172,11 @@ async def create_trigger(
     if page.items:
         raise TriggerSlugConflict(f"slug {slug!r} already in use")
     # Webhook triggers always get a server-minted token regardless of what
-    # the caller supplied. This ensures the token is cryptographically random
-    # and prevents callers from choosing predictable tokens.
+    # the caller supplied. model_copy keeps every OTHER field (interactive,
+    # wait_timeout_seconds, hmac_secret) instead of re-listing them, which is
+    # what used to silently drop newly added config fields.
     if config.kind == "webhook":
-        config = WebhookTriggerConfig(
-            token=_mint_webhook_token(),
-            hmac_secret=config.hmac_secret,
-        )
+        config = config.model_copy(update={"token": _mint_webhook_token()})
     _validate_config(config)
 
     source = get_source(config.kind)
@@ -247,10 +244,7 @@ async def update_trigger(
         # caller has supplied a non-empty one (rotate path uses rotate_webhook_token
         # explicitly; update is only used for hmac_secret set/clear).
         if config.kind == "webhook" and not config.token:
-            config = WebhookTriggerConfig(
-                token=trigger.config.token,
-                hmac_secret=config.hmac_secret,
-            )
+            config = config.model_copy(update={"token": trigger.config.token})
         trigger.config = config
 
     source = get_source(trigger.config.kind)
@@ -467,10 +461,7 @@ async def rotate_webhook_token(
             f"rotate_webhook_token requires kind='webhook', got {trigger.config.kind!r}"
         )
     new_token = _mint_webhook_token()
-    trigger.config = WebhookTriggerConfig(
-        token=new_token,
-        hmac_secret=trigger.config.hmac_secret,
-    )
+    trigger.config = trigger.config.model_copy(update={"token": new_token})
     await storage.update(trigger)
     return trigger
 

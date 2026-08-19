@@ -80,6 +80,16 @@ class WebhookTriggerConfig(BaseModel):
             "Defaults off so today's 202-immediately behaviour is unchanged."
         ),
     )
+    wait_timeout_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=600,
+        description=(
+            "How long an interactive POST holds its response before falling "
+            "back to 202 + the delivery poll endpoint. Ignored when "
+            "interactive is False."
+        ),
+    )
 
 
 class ChannelTriggerConfig(BaseModel):
