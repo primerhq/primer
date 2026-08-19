@@ -52,10 +52,18 @@ function SH_toolChipLabel(row) {
   var bare = window.SH_bareToolName(payload.name);
   var spec = SH_TOOL_VERBS[bare] || { verb: "ran " + bare, tone: "other" };
   var object = SH_chipObject(payload.arguments);
-  var label = SH_TOOL_VERBS[bare] ? spec.verb : spec.verb;
+  var label = spec.verb;
+  // A write chip names the file it touched, and clicking it must open
+  // that file rather than re-deriving the path from the rendered label.
+  // Lifted only for writes: a read chip's object is already the answer.
+  var args = payload.arguments || {};
+  var path = spec.tone === "write" && typeof args.path === "string"
+    ? args.path
+    : null;
   return {
     label: object ? label + " " + object : label,
     tone: spec.tone,
+    path: path,
   };
 }
 

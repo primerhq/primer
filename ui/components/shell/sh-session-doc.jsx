@@ -1,0 +1,449 @@
+/* global React, SH_api, SH_useShell, SH_statusLine, SH_statusFromTap,
+   SH_scrollDecision, SH_collapseTurns, SH_nestSubagentRows,
+   SH_toolChipLabel */
+// The session doc: the surface every other surface exists to serve.
+//
+// Five section-8 rules land here, and each is delegated to the pure module
+// that owns it so the rule has exactly ONE implementation:
+//
+//   status  -> SH_statusLine / SH_statusFromTap (the same string the rail
+//              row chip and the tab label render)
+//   scroll  -> SH_scrollDecision (auto-follow only near the bottom;
+//              upward scroll freezes and offers "Jump to latest". The
+//              decision function owns whether the viewport moves; this
+//              file never forces it.)
+//   turns   -> SH_collapseTurns / SH_nestSubagentRows / SH_toolChipLabel
+//   steers  -> the composer never locks; Enter posts a steer and the
+//              unrealized PendingSessionMessage rows render as chips
+//              (amendment M14)
+//   voice   -> Composer's own micEnabled / onTranscribed (S4)
+//
+// The turn LIST is ours (pinned decision 16): transcript.jsx renders a
+// flat chat, and two-phase collapse plus subagent nesting are not flat.
+// The COMPOSER is reused verbatim.
+
+// Deliberately non-human: a glyph set, never an avatar or a person's
+// name. Section 8 prohibits human-passing agent identities.
+var SH_GLYPHS = ["■", "▲", "●", "◆", "★", "⬢", "◐", "✦"];
+var SH_HUES = [12, 45, 90, 140, 190, 225, 275, 320];
+
+function SH_identityIndex(agentId) {
+  var text = String(agentId || "agent");
+  var sum = 0;
+  for (var i = 0; i < text.length; i++) sum = (sum * 31 + text.charCodeAt(i)) % 997;
+  return sum;
+}
+
+function SH_IdentityChip(props) {
+  var idx = SH_identityIndex(props.agentId);
+  var glyph = SH_GLYPHS[idx % SH_GLYPHS.length];
+  var hue = SH_HUES[idx % SH_HUES.length];
+  return (
+    <span className="sh-identity" data-testid={"shell-identity:" + props.agentId}
+      style={{ color: "hsl(" + hue + ", 55%, 45%)" }}>
+      <span className="sh-identity-glyph" aria-hidden="true">{glyph}</span>
+      <span className="sh-identity-name">{props.agentId || "agent"}</span>
+      {props.onBehalfOf ? (
+        <span className="sh-identity-authority">
+          on behalf of {props.onBehalfOf}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// Two-phase: SH_collapseTurns emits {kind:"section"} rows for finished
+// turns and leaves the live turn expanded. Tool chips speak plain
+// language and never carry raw arguments; writes open their doc.
+//
+// Identity: tap-sourced rows carry payload.agent_id (see the tap fixture
+// in Task 4); REST history rows do not, so the session's agent_id is the
+// fallback. The "on behalf of" stamp needs the approval records, so it
+// arrives with the approvedBy map in P4 Task 21 and is {} until then.
+function SH_TurnList(props) {
+  var shell = SH_useShell();
+  var rows = props.rows || [];
+  var approvedBy = props.approvedBy || {};
+
+  function identityFor(row) {
+    return (row.payload && row.payload.agent_id) || props.agentId || "agent";
+  }
+
+  function authorityFor(row) {
+    var tcid = row.payload && row.payload.tool_call_id;
+    return tcid ? (approvedBy[tcid] || null) : null;
+  }
+
+  function chip(row) {
+    var info = SH_toolChipLabel(row);
+    return (
+      <button
+        type="button"
+        className="sh-chip"
+        data-tone={info.tone}
+        key={row.seq}
+        onClick={function () {
+          if (info.tone !== "write" || !info.path) return;
+          shell.openDoc({ kind: "file", ref: info.path, preview: true });
+        }}
+      >{info.label}</button>
+    );
+  }
+
+  function render(row, depth) {
+    if (row.kind === "section") {
+      return (
+        <details key={row.seq} className="sh-turn-section" data-depth={depth}
+          data-testid={"shell-turn:" + row.seq}>
+          <summary>{row.label} ({row.count})</summary>
+          {(row.rows || []).map(function (child) {
+            return render(child, depth + 1);
+          })}
+        </details>
+      );
+    }
+    return (
+      <div key={row.seq} className="sh-turn" data-depth={depth}
+        data-testid={"shell-turn:" + row.seq}>
+        <SH_IdentityChip agentId={identityFor(row)} onBehalfOf={authorityFor(row)} />
+        {row.kind === "tool_call" ? chip(row) : (
+          <span className="sh-turn-body">{row.label}</span>
+        )}
+        {(row.children || []).map(function (child) {
+          return render(child, depth + 1);
+        })}
+      </div>
+    );
+  }
+
+  return (
+    <div className="sh-turns">{rows.map(function (r) { return render(r, 0); })}</div>
+  );
+}
+
+function SH_BindingChip(props) {
+  var shell = SH_useShell();
+  var binding = props.binding || {};
+  var openState = React.useState(false);
+  var open = openState[0];
+  var setOpen = openState[1];
+  var label = binding.kind === "graph"
+    ? "graph " + (binding.graph_id || "?")
+    : "agent " + (binding.agent_id || "?");
+
+  return (
+    <span className="sh-binding" data-testid="shell-binding-chip"
+      data-epoch={props.epoch == null ? "" : props.epoch}>
+      <button type="button" className="sh-verb"
+        onClick={function () { setOpen(!open); }}>{label}</button>
+      {open ? (
+        <span className="sh-binding-menu">
+          {shell.agents.map(function (agent) {
+            return (
+              <button key={agent.id} type="button" className="sh-verb"
+                data-testid={"shell-binding-option:" + agent.id}
+                onClick={function () {
+                  setOpen(false);
+                  SH_api.switchBinding(shell.wid, props.sid, {
+                    kind: "agent", agent_id: agent.id,
+                  }).then(function () { shell.toast("Binding switched"); });
+                }}
+              >{agent.name || agent.id}</button>
+            );
+          })}
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+// The pending queue made visible (section 8, "Steering"). Each chip sits
+// at its insertion point; its consumption appears in the timeline as an
+// ordinary turn once the drain checkpoint realizes it.
+//
+// A PendingSessionMessage carries `parts`, never `content`: store_pending_steer
+// writes parts=[{type:"text", text}] and realize_next_pending joins the text
+// parts with "\n" (primer/session/pending_messages.py:41-52, :83-86). Render
+// the same join so the chip shows what the turn will actually say.
+//
+// Dismiss exists because realization is NOT guaranteed: shipped dispatch
+// realizes a queued row only on the clean-completion exit
+// (primer/session/dispatch.py:687); an executor failure (:586) or a
+// cancel/interrupt (:648) advances the cursor and leaves the row queued
+// forever. Without a dismiss verb the user is left staring at a chip that
+// will never resolve.
+function SH_steerText(row) {
+  return (row.parts || [])
+    .filter(function (p) { return p && p.type === "text" && p.text; })
+    .map(function (p) { return p.text; })
+    .join("\n");
+}
+
+function SH_QueuedSteers(props) {
+  var rows = props.rows || [];
+  if (!rows.length) return null;
+  return (
+    <ul className="sh-queued">
+      {rows.map(function (row) {
+        return (
+          <li key={row.id} className="sh-queued-chip"
+            data-testid={"shell-queued-steer:" + row.id}>
+            <span className="sh-queued-mark">queued</span>
+            <span className="sh-queued-text">{SH_steerText(row)}</span>
+            <button type="button" className="sh-queued-dismiss"
+              title="Dismiss this queued steer"
+              data-testid={"shell-queued-steer-dismiss:" + row.id}
+              onClick={function () { props.onDismiss(row); }}>x</button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+function SH_SessionComposer(props) {
+  var shell = SH_useShell();
+  var valueState = React.useState("");
+  var value = valueState[0];
+  var setValue = valueState[1];
+  var slash = value.charAt(0) === "/";
+
+  function send() {
+    var text = String(value || "").trim();
+    if (!text) return;
+    setValue("");
+    props.onSendStarted(text);
+    SH_api.steer(shell.wid, props.sid, text).catch(function (err) {
+      shell.toast("Steer failed: " + (err && err.message ? err.message : err));
+    });
+  }
+
+  return (
+    <div className="sh-composer" data-testid="shell-composer">
+      <div className="sh-composer-status" data-testid="shell-composer-status">
+        {props.status ? (
+          <React.Fragment>
+            <span>{props.status}</span>
+            <button type="button" className="sh-verb" data-verb="session.interrupt"
+              onClick={function () { shell.registry.get("session.interrupt").run(); }}
+            >Interrupt Session</button>
+          </React.Fragment>
+        ) : "idle"}
+      </div>
+      {slash && typeof window.SH_PaletteRows === "function" ? (
+        <window.SH_PaletteRows query={value.slice(1)}
+          onRun={function (verb) { setValue(""); verb.run(); }} />
+      ) : null}
+      <window.Composer
+        value={value}
+        onChange={setValue}
+        onSend={send}
+        running={!!props.running}
+        disabled={false}
+        micEnabled={!!props.micEnabled}
+        onTranscribed={function (text) {
+          // Dictation ALWAYS lands as editable text; release never sends.
+          setValue(function (prev) { return prev ? prev + " " + text : text; });
+        }}
+      />
+    </div>
+  );
+}
+
+function SH_registerSessionVerbs(shell) {
+  function activeSid() {
+    var group = shell.docs.groups[shell.docs.activeGroup];
+    for (var i = 0; group && i < group.tabs.length; i++) {
+      if (group.tabs[i].id === group.activeId
+          && group.tabs[i].kind === "session") {
+        return group.tabs[i].ref;
+      }
+    }
+    return null;
+  }
+
+  shell.registry.register({
+    id: "session.steer", label: "Send Steer", contexts: ["session"],
+    surfaces: ["composer-slash", "palette"],
+    run: function () { shell.focusComposer(); },
+  });
+  shell.registry.register({
+    id: "session.rewind", label: "Rewind Session", destructive: true,
+    contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    run: function (arg) {
+      var sid = activeSid();
+      var seq = arg && arg.seq;
+      if (!sid || seq == null) {
+        shell.toast("Pick the turn to rewind to first");
+        return;
+      }
+      SH_api.rewind(shell.wid, sid, seq).catch(function (err) {
+        shell.toast("Rewind refused: " + (err && err.message ? err.message : err));
+      });
+    },
+  });
+  shell.registry.register({
+    id: "session.compact", label: "Compact Session", contexts: ["session"],
+    surfaces: ["tab-menu", "palette"],
+    run: function () {
+      var sid = activeSid();
+      if (!sid) return;
+      SH_api.compact(shell.wid, sid).catch(function (err) {
+        shell.toast("Compact refused: " + (err && err.message ? err.message : err));
+      });
+    },
+  });
+  shell.registry.register({
+    id: "session.switchBinding", label: "Switch Binding",
+    contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    run: function () { shell.openOverlay("agents"); },
+  });
+  shell.registry.register({
+    id: "session.jumpLatest", label: "Jump Latest", contexts: ["session"],
+    surfaces: ["tab-menu", "palette"],
+    run: function () { shell.jumpLatestRef.current(); },
+  });
+}
+
+function SH_SessionDoc(props) {
+  var shell = SH_useShell();
+  var sid = props.sid;
+  var tap = window.useWorkspaceTap(shell.wid);
+
+  var detail = window.primerApi.useResource(
+    SH_api.keys.session(sid),
+    function (signal) { return SH_api.session(sid, signal); },
+    { pollMs: 5000, deps: [sid] }
+  );
+  var history = window.primerApi.useResource(
+    SH_api.keys.session(sid) + ":messages",
+    function (signal) { return SH_api.messages(sid, 200, null, signal); },
+    { pollMs: 0, deps: [sid] }
+  );
+
+  if (!shell.registry.get("session.rewind")) SH_registerSessionVerbs(shell);
+
+  // "Mounted IMMEDIATELY on send": the tap frame that would produce a
+  // status is still in flight when the user releases Enter, so send sets
+  // a local start time and the tap takes over as soon as it lands.
+  var optimisticStart = React.useState(null);
+  var optimistic = optimisticStart[0];
+  var setOptimistic = optimisticStart[1];
+
+  var live = SH_statusFromTap(tap.events, sid, Date.now());
+  React.useEffect(function () { if (live) setOptimistic(null); }, [!!live]);
+  var shown = live || (optimistic
+    ? { verb: "sending", object: "", startedMs: optimistic }
+    : null);
+  var status = shown
+    ? SH_statusLine({
+      verb: shown.verb, object: shown.object,
+      elapsedSec: Math.round((Date.now() - shown.startedMs) / 1000),
+    })
+    : null;
+
+  // GET /sessions/{sid} is response_model=WorkspaceSession: the row IS the
+  // envelope. There is no `session` sub-object, and no top-level agent_id
+  // either; the bound agent lives on the binding union's `agent` arm.
+  var session = detail.data || null;
+  var binding = (session && session.binding) || null;
+  var agentId = (binding && binding.agent_id) || null;
+  var pending = (session && session.pending_messages) || [];
+  var records = (history.data && history.data.items) || [];
+  var flat = SH_nestSubagentRows(window.SA_toTranscript(records, session));
+  // The live turn stays expanded; everything before it collapses to named
+  // sections. The boundary is the last user_message while a run is active
+  // (SA_KIND_TO_TRANSCRIPT maps user_input -> user_message,
+  // session-adapter.jsx:41). Infinity, not null, when nothing is running:
+  // SH_collapseTurns compares `row.seq >= liveFrom`, and null would read
+  // as 0 and leave every row expanded.
+  var liveFromSeq = Infinity;
+  if (shown) {
+    for (var i = flat.length - 1; i >= 0; i--) {
+      if (flat[i].kind === "user_message") { liveFromSeq = flat[i].seq; break; }
+    }
+  }
+  var rows = SH_collapseTurns(flat, { liveFromSeq: liveFromSeq });
+
+  // Scroll anchoring: the viewport is only ever moved by the decision
+  // function, and only when the reader is already near the bottom.
+  var scrollRef = React.useRef(null);
+  var seenState = React.useState(0);
+  var seen = seenState[0];
+  var setSeen = seenState[1];
+  var distance = 0;
+  if (scrollRef.current) {
+    distance = scrollRef.current.scrollHeight - scrollRef.current.scrollTop
+      - scrollRef.current.clientHeight;
+  }
+  var decision = SH_scrollDecision({
+    distanceFromBottom: distance,
+    newTurns: Math.max(0, rows.length - seen),
+  });
+
+  function jumpLatest() {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+    setSeen(rows.length);
+  }
+  shell.jumpLatestRef.current = jumpLatest;
+
+  React.useEffect(function () {
+    if (decision.follow) jumpLatest();
+  }, [rows.length, decision.follow]);
+
+  return (
+    <div className="sh-session" data-testid={"shell-session:" + sid}>
+      <header className="sh-session-head">
+        <SH_BindingChip sid={sid} binding={binding}
+          epoch={session && session.binding_epoch} />
+        {shell.registry.forSurface("tab-menu").map(function (verb) {
+          if (verb.contexts && verb.contexts.indexOf("session") < 0) return null;
+          return (
+            <button key={verb.id} type="button" className="sh-verb"
+              data-verb={verb.id} onClick={function () { verb.run(); }}
+            >{verb.label}</button>
+          );
+        })}
+      </header>
+
+      <div className="sh-transcript" data-testid="shell-transcript" ref={scrollRef}
+        onScroll={function () { if (decision.follow) setSeen(rows.length); }}>
+        <SH_TurnList rows={rows} sid={sid} agentId={agentId} />
+        <SH_QueuedSteers rows={pending} onDismiss={function (row) {
+          SH_api.dismissQueuedSteer(shell.wid, sid, row.id)
+            .then(function () { detail.refetch(); })
+            .catch(function (err) {
+              shell.toast("Dismiss failed: " + (err && err.message ? err.message : err));
+            });
+        }} />
+      </div>
+
+      {decision.showJump ? (
+        <button type="button" className="sh-jump" data-testid="shell-jump-latest"
+          onClick={jumpLatest}>{decision.jumpLabel}</button>
+      ) : null}
+
+      <SH_SessionComposer
+        sid={sid}
+        running={!!shown}
+        status={status}
+        micEnabled={!!shell.speech.stt_configured}
+        onSendStarted={function () {
+          setOptimistic(Date.now());
+          detail.refetch();
+        }}
+      />
+    </div>
+  );
+}
+
+window.SH_GLYPHS = SH_GLYPHS;
+window.SH_IdentityChip = SH_IdentityChip;
+window.SH_TurnList = SH_TurnList;
+window.SH_BindingChip = SH_BindingChip;
+window.SH_QueuedSteers = SH_QueuedSteers;
+window.SH_SessionComposer = SH_SessionComposer;
+window.SH_registerSessionVerbs = SH_registerSessionVerbs;
+window.SH_SessionDoc = SH_SessionDoc;

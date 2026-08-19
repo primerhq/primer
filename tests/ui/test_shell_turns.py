@@ -36,7 +36,8 @@ def test_tool_chips_speak_plain_language() -> None:
         }))
         """
     ))
-    assert out == {"label": "searched src/", "tone": "read"}
+    assert out["label"] == "searched src/"
+    assert out["tone"] == "read"
 
 
 def test_writes_are_prominent_and_reads_are_subdued() -> None:
@@ -45,7 +46,8 @@ def test_writes_are_prominent_and_reads_are_subdued() -> None:
         'JSON.stringify(SH_toolChipLabel({kind: "tool_call", payload: '
         '{name: "workspace__write_file", arguments: {path: "src/api.ts"}}}))'
     ))
-    assert write == {"label": "wrote src/api.ts", "tone": "write"}
+    assert write["label"] == "wrote src/api.ts"
+    assert write["tone"] == "write"
     read = json.loads(ctx.eval(
         'JSON.stringify(SH_toolChipLabel({kind: "tool_call", payload: '
         '{name: "workspace__read_file", arguments: {path: "README.md"}}}))'
@@ -74,7 +76,8 @@ def test_unknown_tools_still_get_a_verb() -> None:
         'JSON.stringify(SH_toolChipLabel({kind: "tool_call", payload: '
         '{name: "custom__do_thing", arguments: {}}}))'
     ))
-    assert out == {"label": "ran do_thing", "tone": "other"}
+    assert out["label"] == "ran do_thing"
+    assert out["tone"] == "other"
 
 
 def test_finished_turns_collapse_to_named_sections() -> None:
@@ -157,3 +160,15 @@ def test_flat_interleaving_is_not_produced_when_attribution_is_absent() -> None:
         ']).map(function (r) { return [r.seq, (r.children || []).length]; }))'
     ))
     assert out == [[1, 0]]
+
+
+def test_a_write_chip_carries_the_path_it_opens() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        'JSON.stringify(SH_toolChipLabel({kind: "tool_call", '
+        'label: "workspace__write_file", '
+        'payload: {name: "workspace__write_file", '
+        'arguments: {path: "src/api.ts"}}}))'
+    ))
+    assert out["tone"] == "write"
+    assert out["path"] == "src/api.ts"

@@ -117,6 +117,23 @@ var SH_api = {
         + encodeURIComponent(sid) + "/binding", binding);
   },
 
+  // S1 port of the chat rewind (primer/api/routers/chats.py:1072-1110,
+  // body {seq} at :1047-1058). Conversation-only: workspace files are
+  // git-committed already and scoped restore is a programme follow-up.
+  rewind: function (wid, sid, seq) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/rewind", { seq: seq });
+  },
+
+  // S1 plan pinned decision 14. 409 when a turn is open or the session is
+  // parked, which the caller surfaces as a toast, never a modal.
+  compact: function (wid, sid) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/compact", {});
+  },
+
   approve: function (sid, tcid) {
     return window.primerApi.apiFetch(
       "POST", "/sessions/" + encodeURIComponent(sid) + "/tool_approval/respond",

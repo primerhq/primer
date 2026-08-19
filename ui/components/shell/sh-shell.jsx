@@ -39,6 +39,22 @@ function SH_Shell(props) {
     { pollMs: 5000, deps: [wid] }
   );
 
+  // Voice gating (amendment M11g) and the binding chip's options. Both
+  // are static-per-process, so pollMs 0.
+  var caps = window.primerApi.useCapabilities();
+  var agentList = window.primerApi.useResource(
+    "shell-agents",
+    function (signal) {
+      return window.primerApi.apiFetch("GET", "/agents?limit=200", null,
+        { signal: signal });
+    },
+    { pollMs: 0 }
+  );
+  // The session doc owns the scroll container, so it fills this in and
+  // the jumpLatest verb reads it. A ref, not state: replacing it must not
+  // re-render the whole shell.
+  var jumpLatestRef = React.useRef(function () {});
+
   // ---- URL is the state ----------------------------------------------------
   var active = null;
   var group = docs.groups[docs.activeGroup];
@@ -143,6 +159,13 @@ function SH_Shell(props) {
       if (window.primerApi.toastPush) {
         window.primerApi.toastPush({ kind: "info", text: String(msg) });
       }
+    },
+    speech: (caps.data && caps.data.speech) || {},
+    agents: (agentList.data && agentList.data.items) || [],
+    jumpLatestRef: jumpLatestRef,
+    focusComposer: function () {
+      var el = document.querySelector('[data-testid="shell-composer"] textarea');
+      if (el) el.focus();
     },
   };
 
