@@ -355,6 +355,12 @@ async def run_one_session_turn(
         writer=writer, event_bus=deps.event_bus, session_id=session_id,
     ))
 
+    # Sessions currently executing a turn, by workspace. Six writers mutate
+    # SessionStatus outside the lifecycle lock, so a transition-delta gauge
+    # would drift; this try/finally is the one exact chokepoint (park,
+    # error, cancel and clean exits all run the finally below).
+    _metrics.sessions_active.labels(session.workspace_id).inc()
+
     try:
         async for event in executor.invoke([]):
             # Translate StreamEvent → SessionMessageRecord(s)
@@ -621,6 +627,7 @@ async def run_one_session_turn(
         return ReleaseOutcome(success=False, drop_lease=True)
 
     finally:
+        _metrics.sessions_active.labels(session.workspace_id).dec()
         reset_delegation_sink(_delegation_token)
         cancel_task.cancel()
         try:
