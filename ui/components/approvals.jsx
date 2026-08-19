@@ -845,7 +845,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
               <div className="field-help muted">Loading providers…</div>
             ) : providerItems.length === 0 ? (
               <div className="field-help warn">
-                No LLM providers configured yet. Create one under <span className="mono">/providers/llm</span>.
+                No LLM providers configured yet. Create one under <span className="mono">/providers?class=llm</span>.
               </div>
             ) : (
               <select

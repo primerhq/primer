@@ -49,10 +49,7 @@ const NAV = [
   {
     group: "Providers",
     items: [
-      { id: "llm", label: "LLM", icon: "llm", adminOnly: true },
       { id: "model-profiles", label: "Model Profiles", icon: "llm", adminOnly: true },
-      { id: "embedding", label: "Embedding", icon: "emb", adminOnly: true },
-      { id: "rerank", label: "Cross-Encoder", icon: "emb", adminOnly: true },
       { id: "semantic-search", label: "Semantic Search", icon: "subsystem", countKey: "ssps", adminOnly: true },
       { id: "channel-providers", label: "Channels", icon: "bell", adminOnly: true },
     ],

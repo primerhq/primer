@@ -23,7 +23,7 @@ def test_foundation_module_and_script_tag() -> None:
 
 
 def test_provider_forms_annotate_missing_extras() -> None:
-    src = _read("components/providers.jsx")
+    src = _read("components/provider-form.jsx")
     assert "useCapabilities" in src
     assert "EXTRA_FOR_PROVIDER_TYPE" in src or "capabilityHint" in src
 

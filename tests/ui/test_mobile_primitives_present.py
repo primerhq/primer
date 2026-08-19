@@ -21,7 +21,6 @@ MOBILE_AWARE_PAGES = [
     "internal-collections.jsx",
     "semantic-search.jsx",
     "toolsets.jsx",
-    "providers.jsx",
     "provider-catalog.jsx",
     "approvals.jsx",
     "channels.jsx",

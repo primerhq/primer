@@ -1419,7 +1419,7 @@ function AG_ReferencesPanel({ agent }) {
           <span className="label">LLM provider</span>
           <span className="val">
             <a
-              onClick={() => providerId && navigate("/providers/llm/" + providerId)}
+              onClick={() => providerId && navigate("/providers", { class: "llm", id: providerId })}
               style={{ cursor: providerId ? "pointer" : "default" }}
             >{providerId || "—"}</a>
           </span>

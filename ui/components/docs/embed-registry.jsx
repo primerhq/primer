@@ -116,9 +116,9 @@
       props: {},
     },
     "llm-provider-openrouter": {
-      component: "ProvidersPage",
+      component: "ProviderCatalog",
       fixtures: "llm-provider-openrouter",
-      props: { kind: "llm", pushToast: function () {} },
+      props: { initialClass: "llm", onNavigate: function () {} },
     },
     "quickstart-agents": {
       component: "AgentsPage",
@@ -136,9 +136,9 @@
       props: { onOpen: function () {}, pushToast: function () {} },
     },
     "embedding-provider": {
-      component: "ProvidersPage",
+      component: "ProviderCatalog",
       fixtures: "embedding-provider",
-      props: { kind: "embedding", pushToast: function () {} },
+      props: { initialClass: "embedding", onNavigate: function () {} },
     },
     "ssp": {
       component: "SSPListPage",
@@ -146,11 +146,9 @@
       props: { pushToast: function () {} },
     },
     "cross-encoder-provider": {
-      // ProvidersPage selects the cross_encoder_providers endpoint when
-      // kind is "rerank" (also accepts "cross_encoder").
-      component: "ProvidersPage",
+      component: "ProviderCatalog",
       fixtures: "cross-encoder-provider",
-      props: { kind: "rerank", pushToast: function () {} },
+      props: { initialClass: "cross_encoder", onNavigate: function () {} },
     },
     "web-search": {
       component: "WebSearchPage",

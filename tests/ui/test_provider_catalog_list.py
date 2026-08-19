@@ -16,8 +16,20 @@ def _src() -> str:
     return (UI / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
 
 
-def test_the_instance_list_is_server_paginated() -> None:
+def _instance_list_src() -> str:
+    """Just PC_InstanceList.
+
+    The file also holds panels whose small option dropdowns fetch a flat
+    list; the rule under test is about the INSTANCE list, so it is read
+    from the function that owns it rather than from the whole module.
+    """
     src = _src()
+    start = src.index("function PC_InstanceList(")
+    return src[start:src.index("\nfunction ", start + 1)]
+
+
+def test_the_instance_list_is_server_paginated() -> None:
+    src = _instance_list_src()
     assert "usePagedList" in src
     assert "<Pager" in src
     assert "limit=200" not in src, (
