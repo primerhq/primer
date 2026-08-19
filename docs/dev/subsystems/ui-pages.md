@@ -55,7 +55,11 @@ A handful of surfaces break the mould: the dashboard and health and workers page
 
 ## 4. Code layout
 
-All page components live under `ui/components/` as self-invoking `<script type="text/babel">` files that attach `window.<Name>Page` / `window.<Name>Detail` globals; `ui/app.jsx` dispatches to them. The workspaces sub-tree (`ui/components/workspaces/`) holds the providers, templates, and shared form-helper files. Page-by-page index (route, source file, primary REST data dependency) follows.
+All page components live under `ui/components/` as self-invoking `<script type="text/babel">` files that attach `window.<Name>Page` / `window.<Name>Detail` globals; `ui/app.jsx` dispatches to them. The workspaces sub-tree (`ui/components/workspaces/`) holds the providers, templates, and shared form-helper files.
+
+Three provider files are MOUNTED, not routed. `provider-form.jsx` is the one parameterized provider form: it renders whatever the class's own `_types` endpoint describes, so no field table lives in the console. `provider-aggregated-editor.jsx` is mounted by that form for the aggregated LLM variant, whose ordered member picker a flat field list cannot express. `model-profiles.jsx` now ships only `MP_ProfileModal`, which the catalog's profiles panel opens; its standalone page folded into the catalog.
+
+Page-by-page index (route, source file, primary REST data dependency) follows.
 
 | Route (hash) | Page component | Source file | Primary REST dependency |
 | --- | --- | --- | --- |
@@ -72,10 +76,7 @@ All page components live under `ui/components/` as self-invoking `<script type="
 | `/knowledge/documents[/:id]` | DocumentsListPage / Detail | `knowledge.jsx` | `GET /v1/documents`, `POST /v1/documents/_convert_file` |
 | `/toolsets[/:id]` | ToolsetsListPage / ToolsetDetailPage | `toolsets.jsx` | `GET /v1/tools`, `/v1/toolsets/{id}/tools`, `/v1/tool_approval_policies` |
 | `/tools` | ToolsListPage | `toolsets.jsx` | `GET /v1/tools/catalogue`, `/v1/tool_approval_policies` |
-| `/providers/llm[/:id]` | LlmProvidersListPage / Detail | `providers.jsx` | `GET /v1/llm_providers`, `.../{id}/discovered_models`, `POST .../_discover_models`, `GET /v1/model_profiles` |
-| `/model-profiles` | ModelProfilesPage | `model-profiles.jsx` | `GET/POST/PUT/DELETE /v1/model_profiles`, `GET /v1/llm_providers` |
-| `/providers/embedding[/:id]` | EmbeddingProvidersListPage / Detail | `providers.jsx` | `GET /v1/embedding_providers` |
-| `/providers/cross_encoder[/:id]` | CrossEncoderProvidersListPage / Detail | `providers.jsx` | `GET /v1/cross_encoder_providers` |
+| `/providers` | ProviderCatalog | `provider-catalog.jsx` | `GET /v1/{llm,embedding,cross_encoder,stt,tts,web_search,web_fetch,artifact_storage}_providers`, each class's `_types`, `/v1/model_profiles`, `/v1/speech_active_config`, `/v1/web_search_active_config` |
 | `/ssp[/:id]` | SemanticSearchListPage / Detail | `semantic-search.jsx` | `GET /v1/ssp`, `POST /v1/ssp/{id}/invalidate`, `/v1/collections` |
 | `/subsystems/internal-collections` | InternalCollectionsPage | `internal-collections.jsx` | `GET/PUT/DELETE /v1/internal_collections/config`, `/bootstrap[/status]` |
 | `/chats[/:id]` | ChatsListPage / ChatDetailPage | `chats.jsx` | `GET /v1/chats`, `/chats/{id}/messages`, chat WS |
@@ -85,7 +86,6 @@ All page components live under `ui/components/` as self-invoking `<script type="
 | `/approvals` | ApprovalsPage | `approvals.jsx` | `POST /v1/sessions/find`, `/v1/chats`, `.../tool_approval/pending`, `/v1/tool_approval_policies` |
 | `/triggers[/:id]` | TriggersListPage / TriggerDetailPage | `triggers.jsx` | `GET /v1/triggers`, `.../subscriptions`, `POST .../fire_now` |
 | `/harnesses[/:id]` | HarnessesPage | `harnesses.jsx` | `GET /v1/harnesses` (+ harness instance/outbound sub-forms) |
-| `/web-search` | WebSearchPage | `web_search.jsx` | `GET /v1/web_search_providers`, `/v1/web_search_active_config` |
 | `/settings/api-tokens` | ApiTokensPage | `api_tokens.jsx` | `GET/POST/DELETE /v1/auth/tokens` |
 | `/settings/mcp` | McpPage | `mcp.jsx` | `GET/PUT /v1/mcp_exposure`, `/v1/mcp_exposure/available` |
 | `/workers` | WorkersPage | `workers.jsx` | `GET /v1/workers`, `POST /v1/workers/{id}/drain` |

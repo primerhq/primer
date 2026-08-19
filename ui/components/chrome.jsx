@@ -135,6 +135,7 @@ function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapse
                 it.href ? (
                   <a
                     key={it.id}
+                    data-nav-id={it.id}
                     className="nav-item"
                     href={it.href}
                     target="_blank"
@@ -147,6 +148,7 @@ function Sidebar({ page, onNavigate, counts, subsystemOn, collapsed: navCollapse
                 ) : (
                   <div
                     key={it.id}
+                    data-nav-id={it.id}
                     className={`nav-item ${page === it.id ? "active" : ""}`}
                     onClick={() => onNavigate(it.id)}
                   >

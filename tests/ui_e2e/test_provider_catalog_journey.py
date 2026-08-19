@@ -37,3 +37,18 @@ def test_the_llm_class_offers_the_shared_form(page, console_url) -> None:
     open_provider_catalog(page, console_url, cls="llm")
     page.wait_for_selector('[data-testid="provider-form-llm_providers"]')
     page.wait_for_selector('[data-testid="provider-form-test"]')
+
+
+def test_the_catalog_is_reachable_from_the_sidebar(page, console_url) -> None:
+    open_provider_catalog(page, console_url, via="sidebar")
+
+
+def test_a_provider_row_can_be_created_and_deleted(page, console_url) -> None:
+    open_provider_catalog(page, console_url, cls="stt")
+    page.wait_for_selector('[data-testid="provider-form-stt_providers"]')
+    page.fill('[data-testid="provider-form-stt_providers"] input[type="text"]', "journey-stt")
+    page.click('[data-testid="provider-form-save"]')
+    page.wait_for_selector("text=journey-stt")
+    page.click("text=journey-stt")
+    page.click('[data-testid="provider-row-delete"]')
+    page.click('[data-testid="provider-row-delete-confirm"]')
