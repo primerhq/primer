@@ -53,16 +53,15 @@ The entities:
   `PGVECTORSCALE`, `LANCE`) and a discriminated `config` union
   (`PgVectorConfig | PgVectorScaleConfig | LanceConfig`); a `model_validator`
   enforces that the config class matches the discriminator.
-- `Collection` (`primer/model/collection.py`) carries `search_provider_id`
-  (required, immutable), an embedder reference, an optional `search`
-  (`CollectionSearch`), plus `system: bool` and `harness_id`.
+- `Collection` (`primer/model/collection.py`) carries an optional `search`
+  block (`CollectionSearchConfig`), plus `system: bool` and `harness_id`.
+  Without that block the collection is grep-only.
 - `VectorStore` (`primer/int/vector_store.py`) is the backend interface holding
   `EmbeddingRecord` rows keyed by `(collection_id, document_id, chunk_id)`.
 - `CrossEncoderProvider` (`primer/model/provider.py`) is a sibling provider row
-  for rerankers, referenced from `CollectionSearch.cer`.
-- The internal collections are real `Collection` rows under reserved ids in
-  `INTERNAL_COLLECTION_IDS` plus `AI_DOCS_COLLECTION_ID`
-  (`primer/model/internal.py`).
+  for rerankers, referenced from `CollectionSearchConfig.cross_encoder`.
+- The `system` collection is a real `Collection` row rebuilt from live state
+  by `primer/knowledge/system_collection.py`.
 
 ## 3. Architecture patterns implemented
 
@@ -99,8 +98,11 @@ The entities:
   `VectorStoreProviderType` / `VectorStoreProviderConfig` adapter shapes, and the
   `CrossEncoderProvider` family (`CrossEncoderProviderType`,
   `HuggingFaceCrossEncoderConfig`, `CrossEncoderModel`).
-- `primer/model/search.py`: `MmrConfig`, `CollectionCrossEncoder`, and the
-  umbrella `CollectionSearch` per-collection toggle.
+- `primer/model/search.py`: `CollectionCrossEncoder`.
+- `primer/model/collection.py`: `CollectionSearchConfig`, the per-collection
+  opt-in block, plus `ChunkingConfig`.
+- `primer/knowledge/lifecycle.py`: `enable_search`, `disable_search`,
+  `search_status`, `validate_search_config`.
 - `primer/int/vector_store.py`: the `VectorStore` ABC.
 - `primer/int/cross_encoder.py`: the `CrossEncoder` ABC.
 - `primer/vector/factory.py`: `VectorStoreProviderFactory.create` dispatches on
@@ -144,29 +146,31 @@ The entities:
   embedding models above 2000 dims, e.g. `text-embedding-3-large` (3072). The
   flag only affects collections created while it is on; existing collections
   keep their original type (tracked per collection, see section 7).
-- `Collection`: `search_provider_id` (required, `min_length=1`, immutable after
-  create), `system: bool`, `harness_id`, plus the embedder reference and optional
-  `search`.
-- `CollectionSearch` (`primer/model/search.py`): independently optional `mmr`
-  (`MmrConfig`) and `cer` (`CollectionCrossEncoder`). `MmrConfig` carries
-  `lambda_mult` (default 0.5, clamped to `[0, 1]`) and optional `fetch_k`
-  (`PositiveInt`). `CollectionCrossEncoder` carries `provider_id`, `model`,
-  `top_n` (default 100), and `batch_size` (default 32).
+- `Collection`: `description`, `system: bool`, `harness_id`, and an optional
+  `search` block. There is no required embedder or vector store: a collection
+  with `search is None` is grep-only, which is the default.
+- `CollectionSearchConfig` (`primer/model/collection.py`): `embedder`,
+  `vector_store_provider_id`, optional `cross_encoder`, a `ChunkingConfig`
+  (`max_chars`, `overlap`), and the lifecycle-owned `state`
+  (`indexing` / `ready` / `error`) with its `error` message.
+  `CollectionCrossEncoder` carries `provider_id`, `model`, `top_n`
+  (default 100), and `batch_size` (default 32).
 - `CrossEncoderProvider`: `provider` (`CrossEncoderProviderType`, only
   `HUGGINGFACE` today), a non-empty `models` list of `CrossEncoderModel`
   (`name` plus optional `max_pair_length`), `HuggingFaceCrossEncoderConfig`
   (optional `SecretStr` token), and a required `Limits` row.
 - `EmbeddingRecord` (`primer/model/vector.py`): keyed by
-  `(collection_id, document_id, chunk_id)` with `text`, `vector`, and `meta`. MMR
-  requires `record.vector` to be populated on every `SearchResult` the store
-  returns, since it reuses candidate vectors rather than re-embedding.
+  `(collection_id, document_id, chunk_id)` with `text`, `vector`, and `meta`.
+  `chunk_id` is `str(index)` and `meta` carries the document `path`, which a
+  move rewrites without re-embedding.
 - Internal-collections persistence: `InternalCollectionsConfig` (singleton id
   `_internal_collections_config`; `embedding_provider_id`, `embedding_model`,
-  `search_provider_id`, `cross_encoder`, `mmr`, `activated_at`),
+  `search_provider_id`, `cross_encoder`, `activated_at`),
   `InternalCollectionsBootstrapStatus` (singleton id
-  `_internal_collections_bootstrap_status`), and `IngestFailure` audit rows. The
-  five reserved collection ids are `_internal_agents`, `_internal_graphs`,
-  `_internal_collections`, `_internal_tools`, and `_internal_ai_docs`.
+  `_internal_collections_bootstrap_status`), and `IngestFailure` audit rows.
+  The five reserved `_internal_*` collections were replaced by the single
+  `system` collection, which the regenerator rebuilds from live state; the
+  config's toggle now governs vectorisation of that collection only.
 
 ## 6. Lifecycle
 
@@ -360,4 +364,5 @@ Python: `CollectionSearcher` (`primer/search/searcher.py`), the `VectorStore` an
 - **The default reserved cross-encoder shipped as `cross-encoder/ms-marco-MiniLM-L-6-v2` rather than the spec's `BAAI/bge-reranker-v2-m3`.** Why: the lighter English-only MiniLM model (~80MB) keeps the zero-config disk footprint small versus the multilingual ~2.3GB bge model. Spec: docs/superpowers/specs/2026-05-05-mmr-cross-encoder-reranking-design.md.
 - **The self-describing catalog reused the existing `Collection` / embedder / vector-store plumbing as `system=True` rows instead of a parallel index.** Why: it avoids divergent embedding pipelines and lets future MMR / CER apply to the catalog for free by toggling `Collection.search`. Spec: docs/superpowers/specs/2026-05-08-semantic-catalog-design.md.
 - **A larger production `InternalCollectionsSubsystem` (CDC worker, bootstrap state machine, AI-docs ingest, activation API) absorbed the activation surface the catalog spec deferred, leaving the smaller `primer/catalog` module as a lower layer exercised only by its own tests.** Why: the live runtime needed event-driven reconciliation, progress reporting, and a fifth AI-docs collection that the thin event-agnostic catalog deliberately did not cover. Spec: docs/superpowers/specs/2026-05-08-semantic-catalog-design.md.
-- **A fifth reserved collection `_internal_ai_docs` was added and ingested with asymmetric `retrieval_query` / `retrieval_document` task types.** Why: agent-facing platform docs needed semantic discovery alongside the four entity types, and the asymmetric task types ensure BGE / E5 / nomic embedders apply the right instruction prefix. Spec: docs/superpowers/specs/2026-05-03-document-ingestion-design.md.
+- **The five reserved `_internal_*` collections were replaced by one system collection.** Why: indexing the platform's own entities no longer needs a separate subsystem with its own namespaces and toolset. The system collection is a normal wiki that agents read and grep through the ordinary collections tools, and it needs no embedder to be useful.
+- **MMR was removed.** Why: the v2 collection model has no field that can express it, and an unreachable-but-tested code path is worse than a deleted one. Cross-encoder reranking survives because the search block still carries it.
