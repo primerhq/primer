@@ -119,15 +119,17 @@ class Document(Identifiable):
     """A single document stored in a :class:`Collection`.
 
     Inherits ``id`` from :class:`Identifiable`. ``collection_id`` is the
-    id of the parent :class:`Collection`; ``name`` is a human-readable
-    label (distinct from ``id``, which is the wire identifier);
-    ``meta`` is a free-form bag the application can use for filtering,
-    routing, or display.
+    id of the owning :class:`Collection`. Documents form a tree inside
+    that collection: ``parent_id`` names the parent (None at the root),
+    ``slug`` is this node's path segment, and ``path`` is the derived
+    slug chain the tree service maintains. ``title`` is a display label
+    that falls back to the slug, and ``meta`` is a free-form bag the
+    application can use for filtering, routing, or display.
 
-    The document's payload (the actual text being indexed) is not on
-    this model -- payload storage is the storage backend's concern, and
-    different backends model it differently (raw bytes, pre-chunked
-    spans, external URI, etc.).
+    The document's body is not on this model. It lives in the content
+    store keyed by the document id, which is its single location -- a
+    document with no content row genuinely has no body, rather than
+    having one stashed somewhere backend-specific.
     """
 
     _id_prefix: ClassVar[str] = "document"

@@ -646,11 +646,6 @@ async def test_t0128_collection_with_marker_searchable(
             json={
                 "id": coll_id,
                 "description": marker,
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code == 201, coll.text
@@ -1856,11 +1851,6 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
             json={
                 "id": coll_id,
                 "description": "T0243",
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
@@ -2248,11 +2238,6 @@ async def test_t0287_cdc_put_collection_updates_search(
             json={
                 "id": coll_id,
                 "description": initial_marker,
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
@@ -2777,11 +2762,6 @@ async def test_t0346_search_after_embedder_delete_clean_envelope(
             json={
                 "id": coll_id,
                 "description": f"T0346-{unique_suffix}",
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
@@ -4124,11 +4104,6 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
             json={
                 "id": collection_id,
                 "description": distinctive,
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert cr.status_code == 201, cr.text

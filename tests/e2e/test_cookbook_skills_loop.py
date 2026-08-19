@@ -189,11 +189,18 @@ async def test_skills_loop_improves_over_time(
         assert r.status_code in (201, 409), r.text
         r = await authed_client.post("/v1/collections", json={
             "id": coll_id, "description": "Reusable skills.",
-            "embedder": {"provider_id": emb_id, "model": "all-MiniLM-L6-v2"},
-            "search_provider_id": ssp_id,
         })
         assert r.status_code == 201, r.text
         cleanup.append(f"/v1/collections/{coll_id}")
+
+        # Bind the collection to (embedder, SSP). S2 moved this off
+        # the create body onto its own route; the old top-level keys
+        # were being dropped, leaving the KB grep-only.
+        r = await authed_client.put(f"/v1/collections/{coll_id}/search", json={
+            "embedder": {"provider_id": emb_id, "model": "all-MiniLM-L6-v2"},
+            "vector_store_provider_id": ssp_id,
+        })
+        assert r.status_code in (200, 201, 202), r.text
 
         r = await authed_client.put(
             f"/v1/collections/{coll_id}/documents",

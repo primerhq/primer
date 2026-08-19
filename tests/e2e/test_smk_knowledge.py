@@ -23,7 +23,6 @@ exact scores or a fixed ordering.
 """
 from __future__ import annotations
 
-import os
 
 import pytest
 
@@ -119,28 +118,51 @@ async def _make_cross_encoder(authed_client, suffix) -> str:
 async def _make_collection(
     authed_client, suffix, eid, sid, *, search: dict | None = None
 ) -> str:
+    """Create a collection and turn search on, bound to (eid, sid).
+
+    S2 split these into two calls: create takes no vector-space fields
+    any more, and PUT /collections/{id}/search is what binds them. The
+    old single-call form still returns 201, because the extra keys are
+    simply ignored, so every collection built that way came out
+    grep-only and every search below it answered 409.
+
+    ``search`` merges extra keys (a cross-encoder, chunking) into the
+    search config.
+    """
     cfg = _embedder_cfg()
     cid = f"col-{suffix}"
-    body = {
-        "id": cid,
-        "description": "smk real-embedder collection",
-        "embedder": {"provider_id": eid, "model": cfg["model"]},
-        "search_provider_id": sid,
-        "system": False,
-    }
-    if search is not None:
-        body["search"] = search
-    r = await authed_client.post("/v1/collections", json=body)
+    r = await authed_client.post(
+        "/v1/collections",
+        json={"id": cid, "description": "smk real-embedder collection",
+              "system": False},
+    )
     assert r.status_code in (200, 201), r.text
+
+    body = {
+        "embedder": {"provider_id": eid, "model": cfg["model"]},
+        "vector_store_provider_id": sid,
+        **(search or {}),
+    }
+    r = await authed_client.put(f"/v1/collections/{cid}/search", json=body)
+    assert r.status_code in (200, 201, 202), r.text
     return cid
 
 
-async def _ingest(authed_client, cid, doc_id, text) -> None:
+async def _ingest(authed_client, cid, stem, text) -> str:
+    """Write a document with a body and return its id.
+
+    The flat /v1/documents route this used to call writes an entity row
+    and nothing else: S2 moved bodies into the content store, so a
+    document created that way has no text to chunk and every indexing
+    assertion below it was reading an empty index. Ids are assigned by
+    the tree service, hence the return value.
+    """
     r = await authed_client.post(
-        "/v1/documents",
-        json={"id": doc_id, "slug": "x.md", "path": f"{doc_id}.md", "collection_id": cid, "name": doc_id, "meta": {"text": text}},
+        f"/v1/collections/{cid}/docs",
+        json={"parent": "", "slug": f"{stem}.md", "body": text},
     )
     assert r.status_code in (200, 201), r.text
+    return r.json()["id"]
 
 
 async def _indexed(authed_client, cid, *, document_id: str | None = None) -> dict:
@@ -178,13 +200,10 @@ async def _embedder_and_ssp(authed_client, suffix, tmp_path):
 
 @smk("SMK-KNW-01")
 async def test_collection_crud(authed_client, unique_suffix, tmp_path):
-    eid, sid = await _embedder_and_ssp(authed_client, unique_suffix, tmp_path)
     cid = f"col-{unique_suffix}"
     create = await authed_client.post(
         "/v1/collections",
-        json={"id": cid, "description": "smk collection",
-              "embedder": {"provider_id": eid, "model": "sentence-transformers/all-MiniLM-L6-v2"},
-              "search_provider_id": sid, "system": False},
+        json={"id": cid, "description": "smk collection", "system": False},
     )
     assert create.status_code in (200, 201), create.text
     got = await authed_client.get(f"/v1/collections/{cid}")
@@ -235,6 +254,8 @@ async def test_search_on_unindexed_collection_is_graceful(authed_client, unique_
     )
     assert r.status_code == 200, r.text
     assert r.json()["hits"] == []
+
+
 @smk("SMK-KNW-02", "SMK-KNW-04", "SMK-KNW-06")
 @requires("embedder", "pgvector")
 async def test_ingest_search_and_chunks(authed_client, unique_suffix):
@@ -243,9 +264,10 @@ async def test_ingest_search_and_chunks(authed_client, unique_suffix):
     sid = await _make_pgvector_ssp(authed_client, unique_suffix)
     cid = await _make_collection(authed_client, unique_suffix, eid, sid)
 
-    doc_ids = {name: f"doc-{name}-{unique_suffix}" for name in _DOCS}
-    for name, text in _DOCS.items():
-        await _ingest(authed_client, cid, doc_ids[name], text)
+    doc_ids = {
+        name: await _ingest(authed_client, cid, f"doc-{name}-{unique_suffix}", text)
+        for name, text in _DOCS.items()
+    }
 
     # KNW-02: documents are embedded synchronously on create -- chunks appear
     # in the indexed-documents listing with no separate re-index step.
@@ -282,10 +304,15 @@ async def test_ingest_search_and_chunks(authed_client, unique_suffix):
 
 @smk("SMK-KNW-08")
 @requires("embedder", "pgvector", "cross_encoder")
-async def test_rerank_plus_mmr(authed_client, unique_suffix):
-    """KNW-08: a collection with cross-encoder + MMR reranks and still returns
+async def test_cross_encoder_rerank(authed_client, unique_suffix):
+    """KNW-08: a collection with a cross-encoder reranks and still returns
     relevant hits. Ordering is loosened (real cross-encoder), but the on-topic
-    docs must surface above the off-topic one."""
+    docs must surface above the off-topic one.
+
+    MMR used to ride along here under a ``mmr`` key. It is not part of
+    the search config any more, and the key was being ignored, so this
+    covered the cross-encoder alone even while it claimed both.
+    """
     eid = await _make_real_embedder(authed_client, unique_suffix)
     sid = await _make_pgvector_ssp(authed_client, unique_suffix)
     ceid = await _make_cross_encoder(authed_client, unique_suffix)
@@ -296,8 +323,7 @@ async def test_rerank_plus_mmr(authed_client, unique_suffix):
         eid,
         sid,
         search={
-            "mmr": {"lambda_mult": 0.5},
-            "cer": {
+            "cross_encoder": {
                 "provider_id": ceid,
                 "model": cfg["model"],
                 "top_n": 10,
@@ -312,9 +338,10 @@ async def test_rerank_plus_mmr(authed_client, unique_suffix):
         "py3": "Python supports object-oriented and functional programming styles.",
         "garden": "Gardening involves planting flowers and vegetables in rich soil.",
     }
-    doc_ids = {k: f"doc-{k}-{unique_suffix}" for k in overlapping}
-    for k, text in overlapping.items():
-        await _ingest(authed_client, cid, doc_ids[k], text)
+    doc_ids = {
+        k: await _ingest(authed_client, cid, f"doc-{k}-{unique_suffix}", text)
+        for k, text in overlapping.items()
+    }
 
     r = await authed_client.post(
         f"/v1/collections/{cid}/search",
@@ -322,7 +349,7 @@ async def test_rerank_plus_mmr(authed_client, unique_suffix):
     )
     assert r.status_code == 200, r.text
     hits = r.json()["hits"]
-    assert hits, "rerank+MMR search returned no hits"
+    assert hits, "reranked search returned no hits"
     top_ids = [h["document_id"] for h in hits]
     # The cross-encoder must rank the on-topic Python doc first and push the
     # off-topic gardening doc out of the top spot.
@@ -343,10 +370,11 @@ async def test_update_reindexes_and_delete_removes_chunks(authed_client, unique_
     eid = await _make_real_embedder(authed_client, unique_suffix)
     sid = await _make_pgvector_ssp(authed_client, unique_suffix)
     cid = await _make_collection(authed_client, unique_suffix, eid, sid)
-    did = f"doc-upd-{unique_suffix}"
+    stem = f"doc-upd-{unique_suffix}"
+    path = f"{stem}.md"
 
-    await _ingest(
-        authed_client, cid, did,
+    did = await _ingest(
+        authed_client, cid, stem,
         "The original content is about volcanoes, magma chambers, and lava flows.",
     )
     before = await _indexed(authed_client, cid, document_id=did)
@@ -359,9 +387,13 @@ async def test_update_reindexes_and_delete_removes_chunks(authed_client, unique_
         "Completely new content about ocean tides, marine biology, coral "
         "reefs, and the migration of fish populations."
     )
+    # Path-addressed, and carrying a body: the flat /v1/documents PUT
+    # rewrites the entity row only, which leaves the indexed text exactly
+    # as it was and would pass this test without reindexing anything.
     r = await authed_client.put(
-        f"/v1/documents/{did}",
-        json={"id": did, "slug": "x.md", "path": f"{did}.md", "collection_id": cid, "name": did, "meta": {"text": new_text}},
+        f"/v1/collections/{cid}/documents",
+        params={"path": path},
+        json={"content": new_text},
     )
     assert r.status_code in (200, 201), r.text
 
@@ -373,7 +405,9 @@ async def test_update_reindexes_and_delete_removes_chunks(authed_client, unique_
     assert "volcano" not in merged and "lava" not in merged, merged
 
     # Delete removes all chunks + the doc disappears from search.
-    r = await authed_client.delete(f"/v1/documents/{did}")
+    r = await authed_client.delete(
+        f"/v1/collections/{cid}/documents", params={"path": path},
+    )
     assert r.status_code in (200, 204), r.text
     gone = await _indexed(authed_client, cid, document_id=did)
     assert gone["total"] == 0, gone
@@ -387,30 +421,32 @@ async def test_update_reindexes_and_delete_removes_chunks(authed_client, unique_
 
 @smk("SMK-KNW-09")
 @requires("embedder", "pgvector")
-async def test_startup_backfill_of_missing_vectors(authed_client, unique_suffix):
-    """KNW-09: a document stored without vectors gets indexed by the startup
-    backfill pass, and the pass is idempotent on a healthy second run.
+async def test_reenabling_search_backfills_missing_vectors(
+    authed_client, unique_suffix
+):
+    """KNW-09: documents that missed indexing are healed by a backfill.
 
-    The live e2e server is shared and must not be restarted, so this drives the
-    actual product backfill routine (``backfill_missing_document_vectors``)
-    in-process against the SAME Postgres + pgvector instance the server uses.
-    The precondition (a document row with no chunks) is created through the
-    live API by binding the collection to an UNREACHABLE embedder so the
-    best-effort embed-on-ingest hook fails; the embedder is then repaired and
-    the backfill is run, exactly mirroring the "restart with the embedder now
-    reachable" sequence in the spec.
+    S2 deleted the boot-time backfill pass this used to drive in-process
+    (``backfill_missing_document_vectors``) and made backfill part of an
+    explicit lifecycle instead: turning search on indexes whatever is
+    already in the collection. So the scenario is unchanged, but the
+    trigger is now a REST call rather than a restart, and the whole test
+    runs through the public API.
+
+    The precondition -- a document row with no chunks -- is still made
+    the same way: bind an unreachable embedder so the best-effort
+    embed-on-write hook fails, then repair it.
     """
     cfg = _embedder_cfg()
 
-    # 1) Ingest while the embedder is unreachable -> row persists, no chunks.
+    # 1) Write while the embedder is unreachable -> row persists, no chunks.
     bad_eid = await _make_real_embedder(
         authed_client, unique_suffix, url="http://127.0.0.1:9/v1"
     )
     sid = await _make_pgvector_ssp(authed_client, unique_suffix)
     cid = await _make_collection(authed_client, unique_suffix, bad_eid, sid)
-    did = f"doc-bf-{unique_suffix}"
-    await _ingest(
-        authed_client, cid, did,
+    did = await _ingest(
+        authed_client, cid, f"doc-bf-{unique_suffix}",
         "Photosynthesis converts sunlight, water, and carbon dioxide into "
         "glucose and oxygen inside chloroplasts.",
     )
@@ -428,8 +464,7 @@ async def test_startup_backfill_of_missing_vectors(authed_client, unique_suffix)
         assert r.status_code == 400, r.text
         assert "has not been created" in r.text or "not registered" in r.text, r.text
 
-    # 2) Repair the embedder (the equivalent of "restart with embedder now
-    #    reachable"): point it at the real LM Studio endpoint.
+    # 2) Repair the embedder: point it at the real LM Studio endpoint.
     rr = await authed_client.put(
         f"/v1/embedding_providers/{bad_eid}",
         json={
@@ -442,19 +477,36 @@ async def test_startup_backfill_of_missing_vectors(authed_client, unique_suffix)
     )
     assert rr.status_code in (200, 201), rr.text
 
-    # 3) Run the real backfill routine in-process against the shared DB.
-    indexed = await _run_backfill()
-    assert indexed >= 1, f"backfill indexed {indexed} docs; expected our doc"
+    # 3) Re-run the lifecycle: enabling search backfills the collection.
+    #    The config is unchanged; it is the pass over existing documents
+    #    that matters, and it now has a reachable embedder.
+    enabled = await authed_client.put(
+        f"/v1/collections/{cid}/search",
+        json={
+            "embedder": {"provider_id": bad_eid, "model": cfg["model"]},
+            "vector_store_provider_id": sid,
+        },
+    )
+    assert enabled.status_code in (200, 201, 202), enabled.text
+    # A backfill that failed reports itself rather than leaving the
+    # collection looking ready, so read the state instead of trusting 2xx.
+    status = await authed_client.get(f"/v1/collections/{cid}/search")
+    assert status.status_code == 200, status.text
+    assert status.json()["state"] != "error", status.text
 
-    # 4) The previously-unindexed document now has chunks (via the live API).
+    # 4) The previously-unindexed document now has chunks.
     healed = await _indexed(authed_client, cid, document_id=did)
     assert healed["total"] > 0, healed
 
-    # 5) Idempotent: a second pass re-embeds nothing for our (now-indexed) doc.
-    #    Other concurrent tests may leave their own unindexed docs, so assert
-    #    on OUR document rather than the global count: it stays indexed and the
-    #    search surfaces it.
-    await _run_backfill()
+    # 5) Idempotent: a second pass leaves our document indexed and findable.
+    again = await authed_client.put(
+        f"/v1/collections/{cid}/search",
+        json={
+            "embedder": {"provider_id": bad_eid, "model": cfg["model"]},
+            "vector_store_provider_id": sid,
+        },
+    )
+    assert again.status_code in (200, 201, 202), again.text
     still = await _indexed(authed_client, cid, document_id=did)
     assert still["total"] >= healed["total"], (still, healed)
     sr = await authed_client.post(
@@ -463,57 +515,3 @@ async def test_startup_backfill_of_missing_vectors(authed_client, unique_suffix)
     )
     assert sr.status_code == 200, sr.text
     assert any(h["document_id"] == did for h in sr.json()["hits"]), sr.json()
-
-
-async def _run_backfill() -> int:
-    """Invoke the product backfill routine against the live server's Postgres.
-
-    Builds a minimal in-process stack (StorageProvider + ProviderRegistry +
-    SemanticSearchRegistry) wired to the SAME Postgres/pgvector instance the
-    e2e server uses, then calls the real
-    ``backfill_missing_document_vectors``. Returns the number of documents it
-    (re)indexed. The embedder api_key is read from $LMSTUDIO_API_KEY via the
-    testconfig (never hardcoded).
-    """
-    from primer.api.registries import ProviderRegistry
-    from primer.api.registries.semantic_search_registry import SemanticSearchRegistry
-    from primer.knowledge.indexing import backfill_missing_document_vectors
-    from primer.model.provider import (
-        PostgresConfig,
-        SemanticSearchProvider,
-        StorageProviderConfig,
-        StorageProviderType,
-    )
-    from primer.storage.factory import StorageProviderFactory
-
-    assert os.environ.get("LMSTUDIO_API_KEY"), "LMSTUDIO_API_KEY must be set"
-
-    dsn = _pgvector_dsn_cfg()
-    storage_provider = StorageProviderFactory.create(
-        StorageProviderConfig(
-            provider=StorageProviderType.POSTGRES,
-            config=PostgresConfig(
-                hostname=dsn["hostname"],
-                port=dsn["port"],
-                username=dsn["username"],
-                password=dsn["password"],
-                database=dsn["database"],
-            ),
-        )
-    )
-    await storage_provider.initialize()
-    try:
-        provider_registry = ProviderRegistry(storage_provider)
-        ssr = SemanticSearchRegistry(
-            storage=storage_provider.get_storage(SemanticSearchProvider)
-        )
-        try:
-            return await backfill_missing_document_vectors(
-                storage_provider=storage_provider,
-                provider_registry=provider_registry,
-                semantic_search_registry=ssr,
-            )
-        finally:
-            await ssr.aclose()
-    finally:
-        await storage_provider.aclose()

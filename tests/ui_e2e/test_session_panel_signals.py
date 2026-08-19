@@ -269,9 +269,8 @@ def test_u0027_empty_collection_search_renders_no_matches(
             "limits": {"max_concurrency": 1},
         })
         assert r.status_code == 201, f"seed embed failed: {r.text}"
-        # Collections now require a SemanticSearchProvider bound at create
-        # (Collection.search_provider_id). A self-contained, empty local
-        # lance index keeps the seed offline and guarantees zero hits.
+        # A self-contained, empty local lance index keeps the seed
+        # offline and guarantees zero hits.
         r = c.post("/v1/ssp", json={
             "id": ssp_id,
             "provider": "lance",
@@ -281,10 +280,17 @@ def test_u0027_empty_collection_search_renders_no_matches(
         r = c.post("/v1/collections", json={
             "id": coll_id,
             "description": "ui-e2e empty",
-            "embedder": {"provider_id": embed_pid, "model": "fake-embed"},
-            "search_provider_id": ssp_id,
         })
         assert r.status_code == 201, f"seed collection failed: {r.text}"
+        # Search on, index empty. That is the state under test: a
+        # grep-only collection is a different signal, and it is what
+        # this seed silently produced while the binding still rode on
+        # the create body.
+        r = c.put(f"/v1/collections/{coll_id}/search", json={
+            "embedder": {"provider_id": embed_pid, "model": "fake-embed"},
+            "vector_store_provider_id": ssp_id,
+        })
+        assert r.status_code in (200, 201, 202), f"enable search: {r.text}"
     cleanup_urls = [
         f"/v1/collections/{coll_id}",
         f"/v1/ssp/{ssp_id}",

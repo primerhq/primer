@@ -193,10 +193,16 @@ async def _seed_kb(authed_client, sfx) -> tuple[str, str, str]:
     r = await authed_client.post("/v1/collections", json={
         "id": cid,
         "description": "Support knowledge base.",
-        "embedder": {"provider_id": eid, "model": cfg["model"]},
-        "search_provider_id": ssp_id,
     })
     assert r.status_code in (200, 201), r.text
+    # Search on BEFORE the docs land, so each one indexes as it is
+    # written. S2 moved this binding off the create body, where it was
+    # being dropped, leaving the KB grep-only.
+    r = await authed_client.put(f"/v1/collections/{cid}/search", json={
+        "embedder": {"provider_id": eid, "model": cfg["model"]},
+        "vector_store_provider_id": ssp_id,
+    })
+    assert r.status_code in (200, 201, 202), r.text
     for path, content in _DOCS.items():
         r = await authed_client.put(
             f"/v1/collections/{cid}/documents",

@@ -156,11 +156,19 @@ async def test_qa_agent_cites_source(
         r = await authed_client.post("/v1/collections", json={
             "id": cid,
             "description": "IT support knowledge base for question answering.",
-            "embedder": {"provider_id": eid, "model": cfg["model"]},
-            "search_provider_id": sid_ssp,
         })
         assert r.status_code in (200, 201), r.text
         cleanup.append(f"/v1/collections/{cid}")
+
+        # Search on BEFORE the docs land, so each one indexes as it is
+        # written. S2 moved this binding off the create body, where it
+        # was being dropped: the collection came out grep-only and the
+        # relevance assertions below had nothing to match against.
+        r = await authed_client.put(f"/v1/collections/{cid}/search", json={
+            "embedder": {"provider_id": eid, "model": cfg["model"]},
+            "vector_store_provider_id": sid_ssp,
+        })
+        assert r.status_code in (200, 201, 202), r.text
 
         # --- Ingest the docs path-addressed (the recipe's PUT?path= path) -
         for path, content in _DOCS.items():

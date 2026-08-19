@@ -69,9 +69,9 @@ def test_collection_document_path_browser_full_journey(
         })
         assert r.status_code == 201, f"seed embedding provider failed: {r.text}"
 
-        # Collections now require a SemanticSearchProvider bound at create
-        # (Collection.search_provider_id). A self-contained local lance
-        # index keeps this seed offline.
+        # Semantic search needs a provider to hold the vectors; it is
+        # bound below, through the search route. A self-contained local
+        # lance index keeps this seed offline.
         r = c.post("/v1/ssp", json={
             "id": ssp_id,
             "provider": "lance",
@@ -82,13 +82,19 @@ def test_collection_document_path_browser_full_journey(
         r = c.post("/v1/collections", json={
             "id": collection_id,
             "description": "task15 doc browser test",
+        })
+        assert r.status_code == 201, f"seed collection failed: {r.text}"
+
+        # Bind (embedder, SSP) through the search route: S2 moved this
+        # off the create body, where the old keys were silently dropped.
+        r = c.put(f"/v1/collections/{collection_id}/search", json={
             "embedder": {
                 "provider_id": provider_id,
                 "model": "sentence-transformers/all-MiniLM-L6-v2",
             },
-            "search_provider_id": ssp_id,
+            "vector_store_provider_id": ssp_id,
         })
-        assert r.status_code == 201, f"seed collection failed: {r.text}"
+        assert r.status_code in (200, 201, 202), f"enable search: {r.text}"
 
     try:
         open_legacy_route(page, console_url, "knowledge/collections")
