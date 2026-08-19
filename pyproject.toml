@@ -66,6 +66,10 @@ channels = [
     "python-telegram-bot>=22.8",
     "slack-bolt>=1.28.0",
     "slack-sdk>=3.42.0",
+    # Inbound image compression (primer/channel/media.py). It used to reach
+    # the tree transitively through the primectl workspace member; removing
+    # that member is what exposed the missing declaration.
+    "pillow>=11.0.0",
 ]
 # Everything: the batteries-included install.
 full = ["primer-ai[huggingface,lance,kubernetes,docker,channels]"]
