@@ -1261,7 +1261,7 @@ function ST_FilePreview({ wid, path, content }) {
       >
         {htmlLines.map(function (html, i) {
           return (
-            <div key={i} style={{ display: "flex" }}>
+            <div key={i} data-line={i + 1} style={{ display: "flex" }}>
               <span style={{ color: "var(--text-4)", width: 34, textAlign: "right", marginRight: 14, userSelect: "none", flexShrink: 0 }}>{i + 1}</span>
               <span style={{ whiteSpace: "pre-wrap", flex: 1 }} dangerouslySetInnerHTML={{ __html: html }} />
             </div>
@@ -1293,6 +1293,27 @@ function ST_FilePreview({ wid, path, content }) {
 // ---------------------------------------------------------------------------
 
 function FilePanel({ wid, tab, studio, pushToast }) {
+  // Scroll host for the open_file line jump (S3 spec section 5).
+  var ST_ctLineRef = React.useRef(null);
+
+  // open_file(path, line) scrolls the viewer once the content is in the
+  // DOM (S3 spec section 5). Best-effort, exactly like the delivery that
+  // asked for it: the anchors live in the highlighted-code preview, and
+  // any other file class simply opens at the top rather than erroring.
+  // Keyed on tab.line as well as the read, so a second open_file at a
+  // different line re-scrolls the tab the first one opened.
+  React.useEffect(function () {
+    var line = Number(tab.line);
+    if (!data || !ST_ctLineRef.current) return;
+    if (!isFinite(line) || line < 1) return;
+    var target = ST_ctLineRef.current.querySelector(
+      '[data-line="' + line + '"]'
+    );
+    if (target && typeof target.scrollIntoView === "function") {
+      target.scrollIntoView({ block: "center" });
+    }
+  }, [tab.line, data]);
+
   var { useResource, apiFetch } = window.primerApi;
   var path = tab.ref;
   var tabId = tab.id;
@@ -1566,7 +1587,7 @@ function FilePanel({ wid, tab, studio, pushToast }) {
       style={{ flex: 1, minHeight: 0, display: "flex", flexDirection: "column" }}
     >
       {header}
-      <div style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
+      <div ref={ST_ctLineRef} style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         {body}
       </div>
     </div>

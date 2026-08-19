@@ -1108,6 +1108,16 @@ function Studio({ wid, pushToast, initialOpen }) {
               sessionId={activeSessionId}
             />
           ) : null}
+          {/* Client tools (S3): headless. Attaches this browser to the
+              open session and executes agent-driven UI actions off the
+              shared tap. Renders nothing. */}
+          {typeof window.ST_ClientTools === "function" ? (
+            <window.ST_ClientTools
+              wid={wid}
+              sid={activeSessionId}
+              studio={studio}
+            />
+          ) : null}
         </div>
 
         {!isV2 && (
