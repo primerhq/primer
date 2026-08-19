@@ -173,6 +173,69 @@ reply_binding_resolutions_total = Counter(
 
 
 # ---------------------------------------------------------------------------
+# Worker / turn / session metrics (S7)
+# ---------------------------------------------------------------------------
+#
+# Turns and claim-lane tasks run for minutes, not the seconds the default
+# prometheus buckets cover, so both duration histograms share one explicit
+# bucket set.
+
+_TASK_BUCKETS = (0.5, 1, 2, 5, 10, 30, 60, 120, 300, 600)
+
+worker_tasks_total = Counter(
+    "worker_tasks_total",
+    "Total claim-lane tasks run, by stable worker label, claim kind and outcome.",
+    ["worker", "kind", "status"],
+    registry=registry,
+)
+
+worker_task_duration_seconds = Histogram(
+    "worker_task_duration_seconds",
+    "Claim-lane task duration in seconds, by worker, claim kind and outcome.",
+    ["worker", "kind", "status"],
+    buckets=_TASK_BUCKETS,
+    registry=registry,
+)
+
+turns_total = Counter(
+    "turns_total",
+    "Total session turns, by binding ref (agent or graph id) and outcome.",
+    ["binding_ref", "status"],
+    registry=registry,
+)
+
+turn_duration_seconds = Histogram(
+    "turn_duration_seconds",
+    "Session turn duration in seconds, by binding ref and outcome.",
+    ["binding_ref", "status"],
+    buckets=_TASK_BUCKETS,
+    registry=registry,
+)
+
+llm_calls_total = Counter(
+    "llm_calls_total",
+    "Total model calls at the agent-loop seam, by provider, profile and outcome.",
+    ["provider_id", "profile_id", "status"],
+    registry=registry,
+)
+
+llm_profile_tokens_total = Counter(
+    "llm_profile_tokens_total",
+    "Total LLM tokens by model profile and direction (in/out). The older "
+    "llm_tokens_total keeps the provider-kind view.",
+    ["profile_id", "direction"],
+    registry=registry,
+)
+
+sessions_active = Gauge(
+    "sessions_active",
+    "Sessions currently executing a turn, by workspace.",
+    ["workspace_id"],
+    registry=registry,
+)
+
+
+# ---------------------------------------------------------------------------
 # Test helpers
 # ---------------------------------------------------------------------------
 
@@ -197,6 +260,9 @@ def reset_for_test() -> None:
     global ws_session_duration_seconds, ws_replay_backlog_seconds  # noqa: PLW0603
     global channel_events_normalized_total, channel_events_matched_total  # noqa: PLW0603
     global channel_events_dispatched_total, reply_binding_resolutions_total  # noqa: PLW0603
+    global worker_tasks_total, worker_task_duration_seconds  # noqa: PLW0603
+    global turns_total, turn_duration_seconds  # noqa: PLW0603
+    global llm_calls_total, llm_profile_tokens_total, sessions_active  # noqa: PLW0603
 
     registry = CollectorRegistry(auto_describe=True)
 
@@ -303,6 +369,51 @@ def reset_for_test() -> None:
         ["scope"],
         registry=registry,
     )
+    worker_tasks_total = Counter(
+        "worker_tasks_total",
+        "Total claim-lane tasks run, by stable worker label, claim kind and outcome.",
+        ["worker", "kind", "status"],
+        registry=registry,
+    )
+    worker_task_duration_seconds = Histogram(
+        "worker_task_duration_seconds",
+        "Claim-lane task duration in seconds, by worker, claim kind and outcome.",
+        ["worker", "kind", "status"],
+        buckets=_TASK_BUCKETS,
+        registry=registry,
+    )
+    turns_total = Counter(
+        "turns_total",
+        "Total session turns, by binding ref (agent or graph id) and outcome.",
+        ["binding_ref", "status"],
+        registry=registry,
+    )
+    turn_duration_seconds = Histogram(
+        "turn_duration_seconds",
+        "Session turn duration in seconds, by binding ref and outcome.",
+        ["binding_ref", "status"],
+        buckets=_TASK_BUCKETS,
+        registry=registry,
+    )
+    llm_calls_total = Counter(
+        "llm_calls_total",
+        "Total model calls at the agent-loop seam, by provider, profile and outcome.",
+        ["provider_id", "profile_id", "status"],
+        registry=registry,
+    )
+    llm_profile_tokens_total = Counter(
+        "llm_profile_tokens_total",
+        "Total LLM tokens by model profile and direction (in/out). The older "
+        "llm_tokens_total keeps the provider-kind view.",
+        ["profile_id", "direction"],
+        registry=registry,
+    )
+    sessions_active = Gauge(
+        "sessions_active",
+        "Sessions currently executing a turn, by workspace.",
+        ["workspace_id"],
+        registry=registry,
+    )
 
 
 __all__ = [
@@ -330,4 +441,12 @@ __all__ = [
     "channel_events_matched_total",
     "channel_events_dispatched_total",
     "reply_binding_resolutions_total",
+    # Worker / turn / session (S7)
+    "worker_tasks_total",
+    "worker_task_duration_seconds",
+    "turns_total",
+    "turn_duration_seconds",
+    "llm_calls_total",
+    "llm_profile_tokens_total",
+    "sessions_active",
 ]
