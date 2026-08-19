@@ -26,8 +26,7 @@ import pytest
 def _document_body(*, doc_id: str, collection_id: str) -> dict:
     return {
         "id": doc_id,
-        "path": f"{doc_id}.md",
-        "name": "test doc",
+        "slug": "x.md", "path": f"{doc_id}.md",
         "collection_id": collection_id,
         "text": "hello world",
         "meta": {},
@@ -88,8 +87,7 @@ async def test_t0129_orphan_document_collection_documents_clean(
         "/v1/documents",
         json={
             "id": doc_id,
-            "path": f"{doc_id}.md",
-            "name": "orphan",
+            "slug": "x.md", "path": f"{doc_id}.md",
             "collection_id": orphan_cid,
             "meta": {},
         },
@@ -139,8 +137,7 @@ async def test_t0108_document_put_replaces_name_and_metadata(
     doc_id = f"doc-t0108-{unique_suffix}"
     initial = {
         "id": doc_id,
-        "path": f"{doc_id}.md",
-        "name": "initial",
+        "slug": "x.md", "path": f"{doc_id}.md",
         "collection_id": f"unenforced-{unique_suffix}",
         "meta": {"version": 1, "tag": "old"},
     }
@@ -149,8 +146,7 @@ async def test_t0108_document_put_replaces_name_and_metadata(
     try:
         replacement = {
             "id": doc_id,
-            "path": f"{doc_id}.md",
-            "name": "replaced",
+            "slug": "x.md", "path": f"{doc_id}.md",
             "collection_id": f"unenforced-{unique_suffix}",
             "meta": {"version": 2, "tag": "new"},
         }
@@ -188,7 +184,7 @@ async def test_t0087_multi_key_order_by_breaks_ties(
             body = {
                 "id": r["id"],
                 "path": f'{r["id"]}.md',
-                "name": r["name"],
+                "slug": f'{r["id"]}.md',
                 "collection_id": f"unenforced-{unique_suffix}",
                 "text": "x",
                 "meta": {},
@@ -269,7 +265,7 @@ async def test_t0088_order_by_jsonb_null_path_is_stable(
             body = {
                 "id": r["id"],
                 "path": f'{r["id"]}.md',
-                "name": "x",
+                "slug": f'{r["id"]}.md',
                 "collection_id": f"unenforced-{unique_suffix}",
                 "text": "x",
                 "meta": r["meta"],
@@ -337,7 +333,7 @@ async def test_t0074_order_by_jsonb_nested_path_sorts_deterministically(
             body = {
                 "id": d["id"],
                 "path": f'{d["id"]}.md',
-                "name": f"doc {d['tag']}",
+                "slug": f'{d["id"]}.md',
                 "collection_id": f"unenforced-{unique_suffix}",
                 "text": "ignored",
                 "meta": {"tag": d["tag"]},
@@ -490,8 +486,7 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
                 "/v1/documents",
                 json={
                     "id": did,
-                    "path": f"{did}.md",
-                    "name": f"doc-{did}",
+                    "slug": "x.md", "path": f"{did}.md",
                     "collection_id": collection_id,
                     "meta": {"seq": int(did.split("-")[-1])},
                 },
@@ -551,7 +546,7 @@ async def test_t0236_predicate_gt_on_jsonb_nested_numeric(
                 json={
                     "id": r["id"],
                     "path": f'{r["id"]}.md',
-                    "name": str(r["score"]),
+                    "slug": f'{r["id"]}.md',
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": r["score"]},
                 },
@@ -645,7 +640,7 @@ async def test_t0249_order_by_two_jsonb_keys_composite(
                 json={
                     "id": r["id"],
                     "path": f'{r["id"]}.md',
-                    "name": r["tag"],
+                    "slug": f'{r["id"]}.md',
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": r["tag"], "score": r["score"]},
                 },
@@ -752,8 +747,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
                 "/v1/documents",
                 json={
                     "id": did,
-                    "path": f"{did}.md",
-                    "name": did,
+                    "slug": "x.md", "path": f"{did}.md",
                     "collection_id": coll_id,
                     "meta": {},
                 },
@@ -769,8 +763,7 @@ async def test_t0253_collection_documents_items_carry_collection_id(
             "/v1/documents",
             json={
                 "id": unrelated,
-                "path": f"{unrelated}.md",
-                "name": unrelated,
+                "slug": "x.md", "path": f"{unrelated}.md",
                 "collection_id": f"other-{unique_suffix}",
                 "meta": {},
             },
@@ -974,8 +967,7 @@ async def test_t0335_document_get_after_delete_returns_404(
     doc_id = f"doc-t0335-{unique_suffix}"
     body = {
         "id": doc_id,
-        "path": f"{doc_id}.md",
-        "name": "T0335",
+        "slug": "x.md", "path": f"{doc_id}.md",
         "collection_id": f"unenforced-{unique_suffix}",
         "meta": {},
     }
@@ -1044,8 +1036,7 @@ async def test_t0336_collection_delete_does_not_break_child_document_get(
         "/v1/documents",
         json={
             "id": doc_id,
-            "path": f"{doc_id}.md",
-            "name": "T0336",
+            "slug": "x.md", "path": f"{doc_id}.md",
             "collection_id": coll_id,
             "meta": {},
         },
@@ -1098,8 +1089,7 @@ async def test_t0347_documents_find_predicate_by_collection_id(
                 "/v1/documents",
                 json={
                     "id": did,
-                    "path": f"{did}.md",
-                    "name": did,
+                    "slug": "x.md", "path": f"{did}.md",
                     "collection_id": collection,
                     "meta": {},
                 },
@@ -1189,8 +1179,7 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
                 "/v1/documents",
                 json={
                     "id": did,
-                    "path": f"{did}.md",
-                    "name": did,
+                    "slug": "x.md", "path": f"{did}.md",
                     "collection_id": coll_id, "meta": {},
                 },
             )
@@ -1202,8 +1191,7 @@ async def test_t0348_documents_find_cursor_over_orphan_and_real(
                 "/v1/documents",
                 json={
                     "id": did,
-                    "path": f"{did}.md",
-                    "name": did,
+                    "slug": "x.md", "path": f"{did}.md",
                     "collection_id": f"missing-coll-{unique_suffix}",
                     "meta": {},
                 },
@@ -1275,8 +1263,7 @@ async def test_t0595_predicate_lt_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1348,8 +1335,7 @@ async def test_t0596_predicate_lte_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1422,8 +1408,7 @@ async def test_t0597_predicate_eq_int_against_jsonb_string_field(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
-                    "path": f"{prefix}-{i}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{i}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
                 },
@@ -1502,8 +1487,7 @@ async def test_t0632_predicate_like_on_jsonb_nested_string_field(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
-                    "path": f"{prefix}-{i}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{i}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
                 },
@@ -1574,8 +1558,7 @@ async def test_t0633_predicate_in_on_jsonb_nested_numeric_int_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1657,8 +1640,7 @@ async def test_t0635_order_by_jsonb_mixed_type_values_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{tag}",
-                    "path": f"{prefix}-{tag}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{tag}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1745,8 +1727,7 @@ async def test_t0652_predicate_gte_float_on_jsonb_nested_numeric(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1839,8 +1820,7 @@ async def test_t0668_predicate_like_on_jsonb_nested_numeric_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1914,8 +1894,7 @@ async def test_t0669_predicate_in_on_jsonb_nested_numeric_float_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score}",
-                    "path": f"{prefix}-{score}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },
@@ -1987,8 +1966,7 @@ async def test_t0670_predicate_eq_bool_against_jsonb_string_clean_envelope(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
-                    "path": f"{prefix}-{i}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{i}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
                 },
@@ -2063,8 +2041,7 @@ async def test_t0653_predicate_in_on_jsonb_nested_string_with_string_list(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{i}",
-                    "path": f"{prefix}-{i}.md",
-                    "name": tag,
+                    "slug": "x-x.md", "path": f"{prefix}-{i}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"tag": tag},
                 },
@@ -2137,8 +2114,7 @@ async def test_t0700_cursor_walk_with_jsonb_predicate_and_order_by(
                 "/v1/documents",
                 json={
                     "id": f"{prefix}-{score:02d}",
-                    "path": f"{prefix}-{score:02d}.md",
-                    "name": str(score),
+                    "slug": "x-x.md", "path": f"{prefix}-{score:02d}.md",
                     "collection_id": f"unenforced-{unique_suffix}",
                     "meta": {"score": score},
                 },

@@ -119,7 +119,7 @@ def test_collection_carries_harness_id():
         harness_id="h1",
     )
     assert c.harness_id == "h1"
-    d = Document(id="d1", collection_id="c1", name="n", path="d1.md", meta={}, harness_id="h1")
+    d = Document(id="d1", collection_id="c1", slug="d1.md", path="d1.md", meta={}, harness_id="h1")
     assert d.harness_id == "h1"
 
 

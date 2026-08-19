@@ -127,7 +127,11 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
                 f"{r.status_code}: {r.text}"
             )
             assert r.json()["id"] == collection_id
-            assert r.json()["embedder"]["provider_id"] == provider_id
+            # S2: the console's create form still posts the pre-v2 embedder
+            # trio, which the server ignores, so the row comes back
+            # grep-only. Task 21 (S2 P4) rebuilds the form onto the search
+            # block; this assertion tightens to a real search block then.
+            assert r.json()["search"] is None
     finally:
         _cleanup(base_url, [
             f"/v1/collections/{collection_id}",

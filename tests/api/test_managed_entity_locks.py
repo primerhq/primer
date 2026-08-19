@@ -67,7 +67,7 @@ def _build_document(harness_id: str | None = "h-test") -> Document:
     return Document(
         id="managed-doc-1",
         collection_id="coll-1",
-        name="managed doc",
+        slug="managed-doc-1.md",
         path="managed-doc-1.md",
         harness_id=harness_id,
     )

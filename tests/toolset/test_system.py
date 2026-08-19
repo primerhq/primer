@@ -654,7 +654,7 @@ class TestCollectionExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "path": "hello.txt",
+                "slug": "hello.txt", "path": "hello.txt",
                 "content": "hello world",
             },
         )
@@ -720,7 +720,7 @@ class TestDocumentExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "path": "hello.txt",
+                "slug": "hello.txt", "path": "hello.txt",
                 "content": "this is the content",
                 "title": "Hello",
             },
@@ -728,7 +728,7 @@ class TestDocumentExtras:
         assert not result.is_error, result.output
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"collection_id": "kb-1", "path": "hello.txt"},
+            arguments={"collection_id": "kb-1", "slug": "hello.txt", "path": "hello.txt"},
         )
         assert not result.is_error
         body = json.loads(result.output)
@@ -747,14 +747,14 @@ class TestDocumentExtras:
                 tool_name="put_document",
                 arguments={
                     "collection_id": "kb-1",
-                    "path": "x.txt",
+                    "slug": "x.txt", "path": "x.txt",
                     "content": content,
                 },
             )
             assert not result.is_error, result.output
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"collection_id": "kb-1", "path": "x.txt"},
+            arguments={"collection_id": "kb-1", "slug": "x.txt", "path": "x.txt"},
         )
         assert json.loads(result.output)["content"] == "second"
 
@@ -969,7 +969,7 @@ class TestExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "path": "x.txt",
+                "slug": "x.txt", "path": "x.txt",
                 "content": "x",
                 "meta": {"author": "alice"},
             },
@@ -1016,7 +1016,7 @@ class TestExtras:
     async def test_get_document_content_404(self, system_toolset) -> None:
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"collection_id": "kb-1", "path": "missing.md"},
+            arguments={"collection_id": "kb-1", "slug": "missing.md", "path": "missing.md"},
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"
