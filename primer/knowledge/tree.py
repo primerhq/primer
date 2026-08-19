@@ -1,0 +1,191 @@
+"""Slug-path document tree service (S2 Collections v2).
+
+One node = one Document entity row (parent_id + slug + path mirror) plus
+one content row (the body, single location). All mutations write both
+rows in one backend transaction, mirroring DocumentService's contract.
+The content store's UNIQUE(collection_id, path) enforces sibling-slug
+uniqueness; an explicit pre-check turns it into a friendly 409.
+"""
+from __future__ import annotations
+
+import re
+from collections.abc import Awaitable, Callable
+
+from pydantic import BaseModel
+
+from primer.int.document_content import DocumentContentStore
+from primer.int.storage import Storage
+from primer.model.collection import Document, _utcnow
+from primer.model.except_ import BadRequestError, ConflictError, NotFoundError
+from primer.model.storage import OffsetPage
+from primer.storage.q import Q
+
+STRICT_SLUG_RE = re.compile(r"[a-z0-9-]+")
+
+Indexer = Callable[..., Awaitable[None]]
+Unindexer = Callable[..., Awaitable[None]]
+
+
+class TreeNode(BaseModel):
+    path: str
+    slug: str
+    title: str
+    document_id: str
+    has_children: bool
+
+
+class TreeReadResult(BaseModel):
+    document: Document
+    body: str
+    children: list[TreeNode]
+
+
+def _new_document_id() -> str:
+    return Document(collection_id="_", slug="x", path="x").id
+
+
+class DocumentTreeService:
+    def __init__(self, storage_provider, *, indexer: Indexer | None = None,
+                 unindexer: Unindexer | None = None) -> None:
+        self._sp = storage_provider
+        self._docs: Storage[Document] = storage_provider.get_storage(Document)
+        self._content: DocumentContentStore = storage_provider.get_content_store()
+        self._indexer = indexer
+        self._unindexer = unindexer
+
+    # ---- resolution ------------------------------------------------------
+
+    async def resolve(self, *, collection_id: str, path: str) -> Document:
+        """path -> entity, with sibling alternatives on miss."""
+        doc_id = await self._content.resolve_id(collection_id, path)
+        if doc_id is None:
+            raise NotFoundError(await self._miss(collection_id, path))
+        doc = await self._docs.get(doc_id)
+        if doc is None:
+            raise NotFoundError(
+                f"document entity {doc_id!r} missing for path {path!r}"
+            )
+        return doc
+
+    async def _miss(self, collection_id: str, path: str) -> str:
+        parent = path.rsplit("/", 1)[0] if "/" in path else ""
+        sibs = await self._child_slugs(collection_id, parent)
+        where = f"siblings of {parent}" if parent else "collection root has"
+        listing = ", ".join(sibs[:20]) if sibs else "(none)"
+        return f"no such path {path!r}; {where}: {listing}"
+
+    async def _child_slugs(self, collection_id: str, parent_path: str) -> list[str]:
+        parent_id = None
+        if parent_path:
+            pid = await self._content.resolve_id(collection_id, parent_path)
+            if pid is None:
+                return []
+            parent_id = pid
+        return sorted(c.slug for c in await self._children(collection_id, parent_id))
+
+    async def _children(
+        self, collection_id: str, parent_id: str | None
+    ) -> list[Document]:
+        q = Q(Document).where("collection_id", collection_id)
+        # where(field, None) compiles to `= NULL` (always false); root
+        # children need the dedicated IS NULL predicate.
+        q = (
+            q.where_null("parent_id")
+            if parent_id is None
+            else q.where("parent_id", parent_id)
+        )
+        predicate = q.build()
+        out: list[Document] = []
+        offset, page = 0, 200
+        while True:
+            resp = await self._docs.find(
+                predicate, OffsetPage(offset=offset, length=page)
+            )
+            out.extend(resp.items)
+            if len(resp.items) < page:
+                return out
+            offset += page
+
+    async def _resolve_parent(
+        self, collection_id: str, parent: str
+    ) -> tuple[str | None, str]:
+        """parent path ('' = root) -> (parent_id, parent_path)."""
+        if not parent:
+            return None, ""
+        doc = await self.resolve(collection_id=collection_id, path=parent)
+        return doc.id, doc.path
+
+    # ---- mutations -------------------------------------------------------
+
+    async def create(self, *, collection_id: str, parent: str, slug: str,
+                     body: str, title: str | None = None) -> Document:
+        if not STRICT_SLUG_RE.fullmatch(slug):
+            raise BadRequestError(f"slug {slug!r} must match [a-z0-9-]+")
+        parent_id, parent_path = await self._resolve_parent(collection_id, parent)
+        path = f"{parent_path}/{slug}" if parent_path else slug
+        if await self._content.resolve_id(collection_id, path) is not None:
+            sibs = await self._child_slugs(collection_id, parent_path)
+            raise ConflictError(
+                f"path {path!r} already exists; siblings: {', '.join(sibs)}"
+            )
+        doc = Document(
+            id=_new_document_id(),
+            collection_id=collection_id,
+            parent_id=parent_id,
+            slug=slug,
+            title=title,
+            path=path,
+        )
+        async with self._sp.transaction() as conn:
+            await self._docs.create(doc, conn=conn)
+            await self._content.upsert(
+                document_id=doc.id, collection_id=collection_id,
+                path=path, content=body, conn=conn,
+            )
+        if self._indexer is not None:
+            await self._indexer(document=doc, content=body)
+        return doc
+
+    async def update(self, *, collection_id: str, path: str,
+                     body: str | None = None, title: str | None = None) -> Document:
+        doc = await self.resolve(collection_id=collection_id, path=path)
+        updated = doc.model_copy(update={
+            "title": doc.title if title is None else title,
+            "updated_at": _utcnow(),
+        })
+        async with self._sp.transaction() as conn:
+            await self._docs.update(updated, conn=conn)
+            if body is not None:
+                await self._content.upsert(
+                    document_id=doc.id, collection_id=collection_id,
+                    path=doc.path, content=body, conn=conn,
+                )
+        if body is not None and self._indexer is not None:
+            await self._indexer(document=updated, content=body)
+        return updated
+
+    # ---- reads -----------------------------------------------------------
+
+    async def read(self, *, collection_id: str, path: str) -> TreeReadResult:
+        doc = await self.resolve(collection_id=collection_id, path=path)
+        body = await self._content.get(doc.id)
+        children = await self._child_nodes(collection_id, doc.id)
+        return TreeReadResult(document=doc, body=body or "", children=children)
+
+    async def _child_nodes(
+        self, collection_id: str, parent_id: str | None
+    ) -> list[TreeNode]:
+        kids = sorted(
+            await self._children(collection_id, parent_id), key=lambda d: d.slug
+        )
+        nodes: list[TreeNode] = []
+        for k in kids:
+            grand = await self._children(collection_id, k.id)
+            nodes.append(TreeNode(
+                path=k.path, slug=k.slug, title=k.title or k.slug,
+                document_id=k.id, has_children=bool(grand),
+            ))
+        return nodes
+
+
+__all__ = ["DocumentTreeService", "TreeNode", "TreeReadResult", "STRICT_SLUG_RE"]
