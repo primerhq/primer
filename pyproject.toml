@@ -139,6 +139,7 @@ markers = [
     "requires_llm: needs a reachable real LLM (set PRIMER_E2E_LLM_BASE_URL + PRIMER_E2E_LLM_MODEL + PRIMER_E2E_LLM_API_KEY); the mock-LLM lane deselects with -m 'not requires_llm'",
     "requires_cluster: e2e needs a live Kubernetes cluster (deselect with -m 'not requires_cluster')",
     "requires_channel: e2e needs live channel credentials (deselect with -m 'not requires_channel')",
+    "ui_e2e: Playwright journey against a live console; the lane selects tests/ui_e2e by path, so this marks intent and keeps a typo in it from passing unnoticed",
 ]
 
 
