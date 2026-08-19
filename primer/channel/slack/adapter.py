@@ -53,6 +53,8 @@ class SlackChannelAdapter(ChannelAdapter):
         event_bus=None,
         claim_engine=None,
         artifact_registry=None,
+        workspace_registry=None,
+        scheduler=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -64,6 +66,9 @@ class SlackChannelAdapter(ChannelAdapter):
         self._bus = event_bus
         self._claim_engine = claim_engine
         self._artifacts = artifact_registry
+        # S6 section 5: the inbound path creates and steers sessions.
+        self._workspace_registry = workspace_registry
+        self._scheduler = scheduler
         self._conn: Any | None = None
         # session_id → root message ts (the per-session conversation thread).
         # Bounded so a long-lived bot does not grow this map without limit; an

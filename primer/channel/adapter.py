@@ -106,6 +106,11 @@ class ChannelAdapter(ABC):
     _sp: Any
     _bus: Any
     _claim_engine: Any
+    # S6: the inbound path creates and steers sessions, so it needs the
+    # session collaborators too. Declared with None defaults on the ABC so an
+    # adapter that predates the wiring still builds.
+    _workspace_registry: Any = None
+    _scheduler: Any = None
 
     @abstractmethod
     async def initialize(self) -> None: ...
@@ -200,7 +205,11 @@ class ChannelAdapter(ABC):
             claim_engine=self._claim_engine)
         return ChannelInboundRouter(
             self._sp, CorrelationStore(self._sp), event_bus=self._bus,
-            claim_engine=self._claim_engine, gate_inbox=gate_inbox)
+            claim_engine=self._claim_engine, gate_inbox=gate_inbox,
+            scheduler=getattr(self, "_scheduler", None),
+            workspace_registry=getattr(self, "_workspace_registry", None),
+            artifact_registry=getattr(self, "_artifacts", None),
+        )
 
     def _event_router(self):
         """Alias of :meth:`_inbound_router` for the normalized-event path; the

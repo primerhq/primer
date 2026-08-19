@@ -46,6 +46,8 @@ def build_adapter(
     event_bus: object | None = None,
     claim_engine: object | None = None,
     artifact_registry: object | None = None,
+    workspace_registry: object | None = None,
+    scheduler: object | None = None,
 ) -> Awaitable[ChannelAdapter]:
     factory = _FACTORIES.get(provider_row.provider)
     if factory is None:
@@ -63,6 +65,7 @@ def build_adapter(
         provider_row, channel_row, inbox,
         storage_provider=storage_provider, event_bus=event_bus,
         claim_engine=claim_engine, artifact_registry=artifact_registry,
+        workspace_registry=workspace_registry, scheduler=scheduler,
     )
 
 

@@ -42,7 +42,7 @@ class DiscordChannelAdapter(ChannelAdapter):
     def __init__(
         self, *, provider: ChannelProvider, channel: Channel, inbox,
         storage_provider=None, event_bus=None, claim_engine=None,
-        artifact_registry=None,
+        artifact_registry=None, workspace_registry=None, scheduler=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -54,6 +54,9 @@ class DiscordChannelAdapter(ChannelAdapter):
         self._bus = event_bus
         self._claim_engine = claim_engine
         self._artifacts = artifact_registry
+        # S6 section 5: the inbound path creates and steers sessions.
+        self._workspace_registry = workspace_registry
+        self._scheduler = scheduler
         self._client: Any | None = None
         # session_id → discord Thread id (one conversation thread per session).
         # Bounded so a long-lived bot does not grow this map without limit; an

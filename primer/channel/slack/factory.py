@@ -397,12 +397,15 @@ async def _slack_factory(
     event_bus=None,
     claim_engine=None,
     artifact_registry=None,
+    workspace_registry=None,
+    scheduler=None,
     **_kw,
 ):
     adapter = SlackChannelAdapter(
         provider=provider, channel=channel, inbox=inbox,
         storage_provider=storage_provider, event_bus=event_bus,
         claim_engine=claim_engine, artifact_registry=artifact_registry,
+        workspace_registry=workspace_registry, scheduler=scheduler,
     )
     await adapter.initialize()
     # The connection is now acquired; install handlers on it once.

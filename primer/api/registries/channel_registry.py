@@ -44,6 +44,8 @@ class ChannelRegistry:
         event_bus: object | None = None,
         claim_engine: object | None = None,
         artifact_registry: object | None = None,
+        workspace_registry: object | None = None,
+        scheduler: object | None = None,
     ) -> None:
         self._channels = channel_storage
         self._providers = channel_provider_storage
@@ -52,6 +54,8 @@ class ChannelRegistry:
         self._event_bus = event_bus
         self._claim_engine = claim_engine
         self._artifact_registry = artifact_registry
+        self._workspace_registry = workspace_registry
+        self._scheduler = scheduler
         self._adapters: dict[str, ChannelAdapter] = {}
         self._lock = asyncio.Lock()
 
@@ -62,6 +66,17 @@ class ChannelRegistry:
     def set_artifact_registry(self, artifact_registry: object | None) -> None:
         """Late-bind the artifact registry (built after this registry at boot)."""
         self._artifact_registry = artifact_registry
+
+    def set_session_wiring(
+        self, *, workspace_registry: object | None, scheduler: object | None,
+    ) -> None:
+        """Late-bind the session collaborators (built after this registry).
+
+        Mirrors :meth:`set_claim_engine`. Adapters cached before this call
+        keep the wiring they were built with, so call it before warming.
+        """
+        self._workspace_registry = workspace_registry
+        self._scheduler = scheduler
 
     def peek_adapter(self, channel_id: str) -> ChannelAdapter | None:
         """Return the already-built adapter for ``channel_id``, or None.
@@ -100,6 +115,8 @@ class ChannelRegistry:
                 event_bus=self._event_bus,
                 claim_engine=self._claim_engine,
                 artifact_registry=self._artifact_registry,
+                workspace_registry=self._workspace_registry,
+                scheduler=self._scheduler,
             )
             await adapter.initialize()
             self._adapters[channel_id] = adapter

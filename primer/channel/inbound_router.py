@@ -36,12 +36,22 @@ class ChannelInboundRouter:
         event_bus=None,
         claim_engine=None,
         gate_inbox=None,
+        scheduler=None,
+        workspace_registry=None,
+        artifact_registry=None,
     ) -> None:
         self._sp = storage_provider
         self._correlation = correlation_store
         self._bus = event_bus
         self._claim_engine = claim_engine
         self._gate_inbox = gate_inbox
+        # S6 section 5: an inbound thread CREATES a session (needs the
+        # workspace registry to allocate its on-disk slot) and STEERS it
+        # (needs it again to append the instruction), so the inbound path
+        # can no longer route with these unset.
+        self._scheduler = scheduler
+        self._workspace_registry = workspace_registry
+        self._artifacts = artifact_registry
 
     def _chat_router(self) -> ChatChannelRouter:
         return ChatChannelRouter(
@@ -72,7 +82,8 @@ class ChannelInboundRouter:
         fire_deps = DispatchDeps(
             storage_provider=self._sp,
             claim_engine=self._claim_engine,
-            scheduler=None,
+            scheduler=self._scheduler,
+            workspace_registry=self._workspace_registry,
             event_bus=self._bus,
         )
         router = ChannelEventRouter(

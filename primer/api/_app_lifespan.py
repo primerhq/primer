@@ -591,6 +591,9 @@ def _make_lifespan(config: AppConfig):
         # readiness is not gated on bot gateway connects (a Discord gateway can
         # take seconds to reach READY).
         channel_registry.set_claim_engine(claim_engine)
+        channel_registry.set_session_wiring(
+            workspace_registry=workspace_registry, scheduler=scheduler,
+        )
 
         # Only a process that OWNS inbound may open channel gateways. Warming a
         # chat adapter opens its inbound listener (Telegram long-poll / Slack
