@@ -87,6 +87,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   );
   const [instanceId, setInstanceId] = React.useState(initialInstanceId || null);
   const [reloadKey, setReloadKey] = React.useState(0);
+  const [draft, setDraft] = React.useState({});
 
   const cls = PROVIDER_CLASSES.find((c) => c.key === classKey) || PROVIDER_CLASSES[0];
 
@@ -96,6 +97,16 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     if (typeof onNavigate === "function") {
       onNavigate({ kind: "provider-class", classKey: key });
     }
+  };
+
+  const save = async (body) => {
+    const { apiFetch } = window.primerApi;
+    const method = body.id && instanceId === body.id ? "PUT" : "POST";
+    const path = method === "PUT"
+      ? `/${cls.plural}/${encodeURIComponent(body.id)}`
+      : `/${cls.plural}`;
+    await apiFetch(method, path, body);
+    setReloadKey((k) => k + 1);
   };
 
   const selectInstance = (id) => {
@@ -128,11 +139,12 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
           reloadKey={reloadKey}
         />
         <div className="col" style={{ flex: 1, minWidth: 0 }}>
-          <window.ProviderForm
-            cls={cls}
-            instanceId={instanceId}
-            onSaved={() => setReloadKey((k) => k + 1)}
-            onDeleted={() => { setInstanceId(null); setReloadKey((k) => k + 1); }}
+          <window.PC_ProviderForm
+            plural={cls.plural}
+            typesPath={`/${cls.plural}/_types`}
+            value={draft}
+            onChange={setDraft}
+            onSubmit={save}
           />
         </div>
       </div>
