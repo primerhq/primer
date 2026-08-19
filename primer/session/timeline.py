@@ -29,6 +29,7 @@ _CANCELLED = SessionMessageKind.CANCELLED.value
 
 _TERMINAL_KINDS = frozenset({_DONE, _ERROR, _CANCELLED})
 _GRAPH_TRANSITION = SessionMessageKind.GRAPH_TRANSITION.value
+_YIELDED_RECORD = SessionMessageKind.YIELDED.value
 
 # Turn-log kind (primer/model/turn_log.py:26). Same wire value as the
 # YIELDED record kind, but a different vocabulary: this one names a
@@ -372,6 +373,56 @@ def _tree(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return roots
 
 
+_RESUME_EVENT_KINDS = frozenset({
+    TurnLogKind.RESUMED.value,
+    TurnLogKind.STARTED.value,
+})
+
+
+def _waits(
+    groups: list[list[dict[str, Any]]], records: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Wait segments between a park and the continuation that resumed it.
+
+    Primary source is the turn log: a group that closes with ``yielded``
+    is followed by the group that continued it, whose first resumed (or
+    started) event dates the resume. The record stream is the fallback for
+    sessions running the Noop turn-log writer.
+    """
+    out: list[dict[str, Any]] = []
+    for index, group in enumerate(groups[:-1]):
+        yielded = next(
+            (e for e in reversed(group) if e.get("kind") == _YIELDED), None,
+        )
+        if yielded is None:
+            continue
+        resumed = next(
+            (e for e in groups[index + 1] if e.get("kind") in _RESUME_EVENT_KINDS),
+            None,
+        )
+        if resumed is None:
+            continue
+        out.append({
+            "from": yielded.get("ts"),
+            "to": resumed.get("ts"),
+            "ms": _delta_ms(yielded.get("ts"), resumed.get("ts")),
+            "event_key": yielded.get("event_key"),
+        })
+    if out:
+        return out
+    for index, rec in enumerate(records[:-1]):
+        if rec.get("kind") != _YIELDED_RECORD:
+            continue
+        nxt = records[index + 1]
+        out.append({
+            "from": rec.get("created_at"),
+            "to": nxt.get("created_at"),
+            "ms": _delta_ms(rec.get("created_at"), nxt.get("created_at")),
+            "event_key": (rec.get("payload") or {}).get("event_key"),
+        })
+    return out
+
+
 def build_turn_timeline(
     *,
     message_lines: list[str],
@@ -402,7 +453,7 @@ def build_turn_timeline(
         "started_at": started_at,
         "ended_at": ended_at,
         "duration_ms": _delta_ms(started_at, ended_at),
-        "waits": [],
+        "waits": _waits(groups, records),
         "children": _tree(records),
     }
 
