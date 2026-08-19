@@ -12,6 +12,7 @@ had no API coverage and either delete it or rewrite it needlessly.
 
 from __future__ import annotations
 
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -104,3 +105,54 @@ def test_ci_sync_steps_do_not_install_the_cli() -> None:
 def test_dependabot_has_no_cli_entry() -> None:
     body = (REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8")
     assert "primectl" not in body
+
+
+_SEARCH_ROOTS = ("primer", "ui", "tests", "docs/dev", "docs/agents", "scripts")
+_SEARCH_FILES = ("README.md", "AGENTS.md", "CONTRIBUTING.md", "Makefile")
+_SUFFIXES = {".py", ".jsx", ".js", ".md", ".yml", ".yaml", ".toml", ".sh"}
+
+
+def _tracked_files() -> list[Path]:
+    """Git-tracked candidates only.
+
+    Walking the filesystem would sweep build artifacts in: the embed
+    harness bundle at scripts/docs/embed_harness/_app.js is gitignored,
+    is 1.7M of compiled JSX, and carries whatever the console said when
+    it was last built. Grepping it makes this gate pass in CI (fresh
+    checkout, no bundle) and fail on any developer machine that has run
+    the capture harness. `git ls-files` is the repo, which is what
+    "repo-wide grep-clean" means.
+    """
+    out = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files", "-z", *_SEARCH_ROOTS, *_SEARCH_FILES],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    return [
+        REPO / rel
+        for rel in out.split("\0")
+        if rel and (Path(rel).suffix in _SUFFIXES or Path(rel).name == "Makefile")
+    ]
+
+
+def _hits() -> list[str]:
+    found: list[str] = []
+    for path in _tracked_files():
+        # Excluded for the reason this file is: holding the name in
+        # order to forbid it is the whole job of both gates.
+        if not path.exists() or path.name in (
+            "test_primectl_removed.py",
+            "test_definition_of_done.py",
+        ):
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        for lineno, line in enumerate(text.splitlines(), 1):
+            if "primectl" in line:
+                found.append(f"{path.relative_to(REPO)}:{lineno}: {line.strip()}")
+    return found
+
+
+def test_no_primectl_reference_survives() -> None:
+    hits = _hits()
+    assert not hits, "primectl still referenced:\n  " + "\n  ".join(hits)

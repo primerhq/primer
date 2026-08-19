@@ -83,7 +83,6 @@ operator running Slack alone sees that rather than a bare "no".
 | `primer/common/optional.py` | `EXTRA_MODULES`, `CHANNEL_PLATFORM_MODULES`, `has_extra`, `channel_platforms`, `install_hint`, `require_extra`, and the `_find_spec` test seam |
 | `primer/api/routers/capabilities.py` | `GET /v1/capabilities` |
 | `ui/foundation/capabilities.js` | `useCapabilities`, `capabilityHint`, `extraInstalled`, `CapabilityGate`, `EXTRA_FOR_PROVIDER_TYPE` |
-| `primectl/primectl/commands/meta.py` | the `capabilities` command |
 | `scripts/measure_install.sh` | installed-size measurement per target |
 | `pyproject.toml` | the extras themselves plus the `[tool.importlinter]` contracts |
 | `.github/workflows/ci.yml` | the `core-install` lane and the `lint-imports` step |
@@ -136,9 +135,7 @@ SDKs to run them are absent.
 ## 8. Public surfaces
 
 - `GET /v1/capabilities` returns the version and the per-extra status.
-- `primectl capabilities` renders the same data as a table, with the
-  installed channel platforms in the detail column.
-- The console annotates unavailable provider types "(not installed)" and
+- The workspace shell annotates unavailable provider types "(not installed)" and
   explains underneath, across the LLM/embedding/cross-encoder provider
   forms, the workspace provider form, semantic search, and knowledge
   ingestion; channels gets a banner instead of a gate.

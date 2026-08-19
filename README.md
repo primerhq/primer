@@ -167,7 +167,7 @@ pipx install 'primer-ai[lance,channels]'    # a la carte
 pipx install 'primer-ai[full]'              # everything
 ```
 
-An extra is resolved at import time, so enabling one is install plus restart. Without it the feature is not hidden, just honest: the API returns a `ConfigError` naming the extra, the console labels the option "(not installed)", and `GET /v1/capabilities` (or `primectl capabilities`) reports exactly what this deployment has.
+An extra is resolved at import time, so enabling one is install plus restart. Without it the feature is not hidden, just honest: the API returns a `ConfigError` naming the extra, the console labels the option "(not installed)", and `GET /v1/capabilities` reports exactly what this deployment has.
 
 **Docker** (no Python toolchain required):
 

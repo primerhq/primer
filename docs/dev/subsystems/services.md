@@ -11,7 +11,7 @@ Design rationale and the full decision trail live in the (local, not
 committed) spec `docs/superpowers/specs/2026-08-08-services-design.md`.
 This page documents what is implemented: spec phases 1-2. Phase 3 (tool
 dispatch through a manifest allowlist, `viewer_auth="none"` end-to-end
-with an anonymous service principal) and phase 4 (system tools, primectl
+with an anonymous service principal) and phase 4 (system tools
 parity, agent-usage docs) are not built yet; where they change behaviour
 below it is called out.
 
@@ -93,7 +93,7 @@ client (`Primer.fn(name, args)`; `Primer.tool` arrives with phase 3).
 `/services` (list, create/edit/delete with the standard modal) and
 `/services/{id}` (Config + Versions tabs; activate/rollback; open-app
 link). Publishing is deliberately not a console affordance: agents use
-the phase-4 `publish_service` tool, operators primectl.
+the phase-4 `publish_service` tool.
 
 ## Tests
 

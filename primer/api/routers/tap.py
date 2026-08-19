@@ -14,7 +14,7 @@ end-to-end:
 * **Selector** arrives as an optional ``?selector=`` query parameter carrying a
   base64url- or raw-JSON-encoded :class:`TapSelector`. A GET stream has no
   body, so a query parameter keeps the surface cacheable, reconnect-friendly,
-  and CLI-trivial (``primectl tap`` just appends ``?selector=``).
+  and trivial for any client to build: append ``?selector=``.
 * **Cursor / reconnect** comes from the ``Last-Event-ID`` request header
   (SSE-native, set automatically by browsers/`httpx-sse` on reconnect) and
   falls back to ``?cursor=``; the header wins. Both decode via the tolerant

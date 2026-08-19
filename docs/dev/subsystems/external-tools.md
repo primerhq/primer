@@ -154,15 +154,16 @@ Session cancel / force-delete / restart, the yield-cancel endpoint
 rewind, and chat cancel-while-awaiting all resolve open rows to
 `cancelled` so the audit surface never dangles.
 
-## Console + primectl
+## Shell surface
 
 The console shows a pending banner (`ui/components/external-tools.jsx`,
 `window.ExternalPendingBanner`) on the shell's session document
 (`ui/components/shell/sh-session-doc.jsx`): read-only plus operator
 cancel; responding is the invoker's job. The agent editor
-(`ui/components/agents.jsx`) exposes the `allow_external_tools` toggle. `primectl external-tools list | pending |
-respond` covers scripting; `respond` resolves the owning workspace and
-posts the same `tool_results` body the API uses.
+(`ui/components/agents.jsx`) exposes the `allow_external_tools` toggle.
+Scripting goes through the REST surface directly: list and pending are
+reads, and responding posts a `tool_results` body to the invocation
+endpoint, which resolves the owning workspace itself.
 
 ## Tests
 
@@ -176,7 +177,7 @@ posts the same `tool_results` body the API uses.
 `tests/api/test_external_tools_graph.py` + 
 `tests/api/test_external_tools_graph_create.py` (graphs),
 `tests/ui/test_external_tools_ui.py`,
-`primectl/tests/test_cmd_external_tools.py`, and the fake-LLM
+and the fake-LLM
 round-trip in `tests/worker/test_external_tools_roundtrip.py`.
 
 > **Historical decisions.** The design spec called for a chat Part-union

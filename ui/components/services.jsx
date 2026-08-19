@@ -9,7 +9,7 @@
 //   GET  /services/{id}/versions             — published versions, newest first
 //   POST /services/{id}/_activate            — activate / roll back
 // Publishing itself is NOT a console affordance: agents publish via the
-// publish_service tool and operators via primectl (spec phase 4); the
+// publish_service tool (spec phase 4); the
 // Versions tab says so in its empty state.
 
 // ============================================================================
@@ -420,9 +420,9 @@ function SV_ServiceDetail({ serviceId }) {
               <div className="ico-wrap"><Icon name="box" size={22} /></div>
               <div className="head">No versions published</div>
               <div className="sub">
-                Publish from an agent with the publish_service tool, or with
-                primectl. Each publish is an immutable version; activation is
-                a pointer swap.
+                Publish from an agent with the publish_service tool. Each
+                publish is an immutable version; activation is a pointer
+                swap.
               </div>
             </div>
           )}

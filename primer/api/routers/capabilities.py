@@ -2,7 +2,7 @@
 
 Read-only and computed live from importability (primer.common.optional),
 so a pip install + restart is immediately reflected. Consumed by the
-console (capability-aware states) and primectl.
+workspace shell (capability-aware states).
 """
 
 from __future__ import annotations
