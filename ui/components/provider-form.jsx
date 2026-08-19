@@ -177,6 +177,36 @@ function PC_LimitsFieldset({ value, onChange }) {
   );
 }
 
+// Rendered only for the aggregated variant, so its hooks stay
+// unconditional. Candidates are the NON-aggregated LLM rows: an
+// aggregated member must resolve to a real upstream adapter, and nesting
+// is rejected server-side at resolve time.
+function PC_AggregatedMount({ value, onChange }) {
+  const { apiFetch, useResource } = window.primerApi;
+  const rows = useResource(
+    "provider-form:agg-member-candidates",
+    (signal) => apiFetch("GET", "/llm_providers?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+  const profiles = useResource(
+    "provider-form:agg-member-profiles",
+    (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
+    { pollMs: null },
+  );
+  const Editor = window.PC_AggregatedEditor;
+  if (typeof Editor !== "function") return null;
+  return (
+    <Editor
+      value={value || window.PC_AGG_CONFIG_DEFAULT}
+      onChange={onChange}
+      candidates={((rows.data && rows.data.items) || []).filter(
+        (p) => p.provider !== "aggregated",
+      )}
+      profiles={(profiles.data && profiles.data.items) || []}
+    />
+  );
+}
+
 function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest }) {
   const { useResource, apiFetch, useCapabilities, capabilityHint,
     EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
@@ -269,14 +299,21 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
         />
       ))}
 
-      {(shape.config_fields || []).map(PC_normalizeField).map((f) => (
-        <PC_Field
-          key={`config:${f.key}`}
-          field={f}
-          value={(draft.config || {})[f.key]}
-          onChange={(next) => setField("config", f.key, next)}
+      {shape.variant === "aggregated" ? (
+        <PC_AggregatedMount
+          value={draft.config}
+          onChange={(next) => onChange({ ...draft, config: next })}
         />
-      ))}
+      ) : (
+        (shape.config_fields || []).map(PC_normalizeField).map((f) => (
+          <PC_Field
+            key={`config:${f.key}`}
+            field={f}
+            value={(draft.config || {})[f.key]}
+            onChange={(next) => setField("config", f.key, next)}
+          />
+        ))
+      )}
 
       {shape.limits && (
         <PC_LimitsFieldset
