@@ -32,9 +32,11 @@ import logging
 from dataclasses import dataclass, field
 
 from primer.channel.correlation import CorrelationStore
+from primer.channel.reply_binding import SESSION_REPLY_BINDING_KEY
 from primer.int.storage_provider import StorageProvider
 from primer.model.channel import Channel
 from primer.model.channel_event import ChannelEvent
+from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Trigger
 from primer.session.steer_delivery import DELIVERED_MISSING, deliver_steer
@@ -73,6 +75,18 @@ class ChannelRouteOutcome:
     kind: str
     session_id: str | None = None
     fire_ids: list[str] = field(default_factory=list)
+
+
+def _first_artefact(result) -> str | None:
+    """The first session a fire actually created, if any."""
+    for envelope in result.results:
+        if (
+            envelope.get("ok")
+            and not envelope.get("skipped")
+            and envelope.get("artefact_id")
+        ):
+            return envelope["artefact_id"]
+    return None
 
 
 class ChannelEventRouter:
@@ -162,6 +176,7 @@ class ChannelEventRouter:
         )
         extra_context = {"event": event.model_dump(mode="json")}
         fire_ids: list[str] = []
+        mapped_session_id: str | None = None
         for trigger in triggers:
             try:
                 result = await self._fire_trigger(
@@ -178,9 +193,76 @@ class ChannelEventRouter:
             fire_id = getattr(result, "fire_id", None)
             if fire_id is not None:
                 fire_ids.append(fire_id)
+            # A conversation maps to exactly ONE session, so only the first
+            # created session binds the thread. An unthreaded room post has
+            # no conversation to bind at all.
+            if mapped_session_id is None and anchor and channel_id is not None:
+                created = _first_artefact(result)
+                if created is not None:
+                    await self._map_thread(
+                        channel_id=channel_id,
+                        anchor=anchor,
+                        reply_anchor=event.thread_anchor,
+                        session_id=created,
+                        interactive=bool(
+                            getattr(trigger.config, "interactive", True)
+                        ),
+                    )
+                    mapped_session_id = created
         if fire_ids:
-            return ChannelRouteOutcome(kind="fired", fire_ids=fire_ids)
+            return ChannelRouteOutcome(
+                kind="fired",
+                session_id=mapped_session_id,
+                fire_ids=fire_ids,
+            )
         return ChannelRouteOutcome(kind="ignored")
+
+    async def _map_thread(
+        self,
+        *,
+        channel_id: str,
+        anchor: str,
+        reply_anchor: str | None,
+        session_id: str,
+        interactive: bool,
+    ) -> None:
+        """Bind the conversation to the session the fire just created.
+
+        Writes the inbound index (anchor -> session) and the outbound one
+        (session.metadata reply binding -> thread), so the 1:1 holds from
+        both directions.
+
+        ``anchor`` is the MAPPING key from :func:`mapping_anchor` and may be
+        a synthetic ``dm:<sender>``; ``reply_anchor`` is the real platform
+        thread id (None in a DM, where the channel root IS the conversation),
+        so the outbound side never tries to resolve a synthetic key as a
+        thread.
+
+        ``quiet`` carries the trigger's interactive flag inverted: a
+        non-interactive channel trigger ingests silently (S6 section 4), and
+        ``_post_lifecycle`` already no-ops on a quiet binding.
+        """
+        from primer.model.workspace_session import WorkspaceSession
+
+        sessions = self._sp.get_storage(WorkspaceSession)
+        row = await sessions.get(session_id)
+        if row is None:
+            return
+        await self._correlation.upsert_thread_session(
+            channel_id=channel_id,
+            anchor=anchor,
+            workspace_id=row.workspace_id,
+            session_id=session_id,
+        )
+        metadata = dict(row.metadata or {})
+        metadata[SESSION_REPLY_BINDING_KEY] = {
+            "channel_id": channel_id,
+            "anchor": reply_anchor,
+            "quiet": not interactive,
+        }
+        if interactive:
+            metadata[RELAY_EVERY_TURN_KEY] = True
+        await sessions.update(row.model_copy(update={"metadata": metadata}))
 
     async def _resolve_channel_triggers(
         self, provider_id: str, channel_id: str | None,

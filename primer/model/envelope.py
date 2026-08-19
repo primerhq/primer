@@ -49,4 +49,13 @@ class ResponseEnvelope:
     platform_metadata: dict[str, Any] = field(default_factory=dict)
 
 
-__all__ = ["PromptEnvelope", "ResponseEnvelope"]
+RELAY_EVERY_TURN_KEY = "relay_every_turn"
+"""``WorkspaceSession.metadata`` flag: relay after EVERY drained turn.
+
+Set by the channel thread mapper when the source trigger is interactive
+(S6 section 4). Lives in core model so the worker turn loop reads it
+without importing the optional ``primer.channel`` package.
+"""
+
+
+__all__ = ["RELAY_EVERY_TURN_KEY", "PromptEnvelope", "ResponseEnvelope"]
