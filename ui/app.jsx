@@ -50,7 +50,6 @@ function App() {
     }
     if (root === "agents") return params.id ? "agent-detail" : "agents";
     if (root === "graphs") return params.id ? "graph-detail" : "graphs";
-    if (root === "model-profiles") return "model-profiles";
     if (root === "ssp") return params.id ? "ssp-detail" : "semantic-search";
     if (root === "channels") {
       if (path === "/channels/rules") return "channel-rules";
@@ -402,7 +401,6 @@ function App() {
       "toolset-detail": (e) => `/toolsets/${e}`,
       tools: "/tools",
       "web-search": "/web-search",
-      "model-profiles": "/model-profiles",
       "semantic-search": "/ssp",
       "ssp-detail": (e) => `/ssp/${e}`,
       "internal-collections": "/subsystems/internal-collections",
@@ -587,8 +585,6 @@ function App() {
       </>
     );
     pageBody = <ChannelsPage onNavigate={navigate} pushToast={pushToast} />;
-  } else if (page === "model-profiles") {
-    pageBody = <ModelProfilesPage />;
   } else if (page === "semantic-search") {
     pageHeader = (
       <>

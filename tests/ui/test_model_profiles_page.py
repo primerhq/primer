@@ -23,68 +23,39 @@ def _src() -> str:
     return SRC.read_text(encoding="utf-8")
 
 
-class TestWiring:
-    def test_route_is_registered(self) -> None:
-        assert '"/model-profiles"' in ROUTER.read_text(encoding="utf-8")
+class TestFoldedIn:
+    """The standalone page folded into the catalog; the modal did not.
 
-    def test_sidebar_entry_exists_and_is_admin_only(self) -> None:
-        chrome = CHROME.read_text(encoding="utf-8")
-        assert 'id: "model-profiles"' in chrome
-        # A profile names a provider and its tunables => provider config.
-        entry = chrome.split('id: "model-profiles"', 1)[1][:120]
-        assert "adminOnly: true" in entry
+    ModelProfile is LLM-only by design, so a profile belongs under its LLM
+    provider rather than on a page of its own. The editor is reused, not
+    reimplemented, so this module still guards the modal.
+    """
 
-    def test_app_dispatches_to_the_page(self) -> None:
+    def test_the_page_component_is_gone(self) -> None:
+        src = _src()
+        assert "function ModelProfilesPage(" not in src
+        assert "window.ModelProfilesPage" not in src
+
+    def test_the_modal_survives_and_is_still_exported(self) -> None:
+        src = _src()
+        assert "function MP_ProfileModal(" in src
+        assert "window.MP_ProfileModal = MP_ProfileModal;" in src
+
+    def test_the_route_and_nav_entry_are_gone(self) -> None:
+        assert '"/model-profiles"' not in ROUTER.read_text(encoding="utf-8")
+        assert 'id: "model-profiles"' not in CHROME.read_text(encoding="utf-8")
+
+    def test_the_app_no_longer_dispatches_to_it(self) -> None:
         app = APP.read_text(encoding="utf-8")
-        assert 'root === "model-profiles"' in app
-        assert "<ModelProfilesPage />" in app
+        assert 'root === "model-profiles"' not in app
+        assert "<ModelProfilesPage />" not in app
+        assert '"model-profiles": "/model-profiles"' not in app
 
-    def test_is_in_the_bundle_manifest(self) -> None:
-        """index.html is the source of truth for transpile + load order."""
+    def test_it_is_still_in_the_bundle_manifest(self) -> None:
+        """The file stays: the catalog mounts MP_ProfileModal from it."""
         assert "components/model-profiles.jsx" in INDEX.read_text(encoding="utf-8")
 
-    def test_exports_on_window(self) -> None:
-        assert "window.ModelProfilesPage = ModelProfilesPage;" in _src()
-
-
-class TestPageBehaviour:
-    def test_routes_io_through_the_hook_layer(self) -> None:
-        """Pages must not call apiFetch outside a hook -- that bypasses
-        polling, dedupe, cancellation, and stale-while-error."""
-        src = _src()
-        assert "useResource(" in src and "useMutation(" in src
-
-    def test_renders_loading_error_and_empty_states(self) -> None:
-        src = _src()
-        assert "list.loading" in src
-        assert "list.error" in src
-        assert "No model profiles yet" in src
-
-    def test_has_a_mobile_adaptation(self) -> None:
-        src = _src()
-        assert "useViewport" in src and "card-list" in src
-
-    def test_poll_pauses_while_filtering(self) -> None:
-        assert "pauseWhile: () => filterFocused" in _src()
-
-    def test_harness_managed_rows_hide_mutation(self) -> None:
-        """Mirrors the backend's 409-on-public-CRUD discipline."""
-        assert "!r.harness_id && (" in _src()
-
-    def test_delete_conflict_renders_inline_not_as_a_toast(self) -> None:
-        """A 409 means an agent still points at it; the operator needs to
-        act on that without losing the dialog."""
-        src = _src()
-        assert "setDeleteErr" in src
-        assert "{deleteErr && " in src
-
-    def test_reasoning_offers_the_full_neutral_scale(self) -> None:
-        src = _src()
-        assert 'MP_REASONING_LEVELS = ["off", "minimal", "low", "medium", "high"]' in src
-
-    def test_states_the_vendor_caveats(self) -> None:
-        """Not every vendor has a true off, and vLLM's Responses endpoint
-        ignores the setting entirely -- an operator setting this needs to
-        know before wondering why nothing changed."""
-        src = _src()
-        assert "floors at" in src and "openchat" in src
+    def test_nothing_still_links_to_the_dead_path(self) -> None:
+        for name in ("agents.jsx", "approvals.jsx", "graphs.jsx"):
+            src = (ROOT / "ui" / "components" / name).read_text(encoding="utf-8")
+            assert '"/model-profiles"' not in src, name

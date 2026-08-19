@@ -709,12 +709,12 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             {profileMissing && (
               <div className="field-help" style={{ color: "var(--red)" }}>
                 This agent names a profile that no longer exists. Pick another
-                one, or recreate it at <span className="mono">/model-profiles</span>.
+                one, or recreate it at <span className="mono">/providers?class=llm</span>.
               </div>
             )}
             {profileOptions.length === 0 && !profiles.loading && (
               <div className="field-help" style={{ color: "var(--amber)" }}>
-                No model profiles configured. Create one at <span className="mono">/model-profiles</span> first.
+                No model profiles configured. Create one at <span className="mono">/providers?class=llm</span> first.
               </div>
             )}
             {fieldErrors["body.model.profile_id"] && (
@@ -1399,7 +1399,7 @@ function AG_ReferencesPanel({ agent }) {
           <span className="label">Model profile</span>
           <span className="val">
             <a
-              onClick={() => profileId && navigate("/model-profiles")}
+              onClick={() => profileId && navigate("/providers", { class: "llm" })}
               style={{ cursor: profileId ? "pointer" : "default" }}
             >{profileId || "—"}</a>
             {profile.data ? (

@@ -38,7 +38,6 @@
     { pattern: "/workers",                         page: "WorkersPage" },
     { pattern: "/health",                          page: "HealthPage" },
     // Phase 1 additions for redesigned console pages.
-    { pattern: "/model-profiles",                  page: "ModelProfilesPage" },
     { pattern: "/ssp",                             page: "SemanticSearchListPage" },
     { pattern: "/ssp/:id",                         page: "SemanticSearchDetailPage" },
     { pattern: "/approvals",                       page: "ApprovalsPage" },
