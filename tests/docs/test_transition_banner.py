@@ -83,3 +83,29 @@ def test_readme_banner_sits_above_the_first_rule() -> None:
     if _version()[0] >= 2:
         return
     assert text.index(BANNER_START) < text.index("\n## Why Primer")
+
+
+def test_transition_versions_stay_below_v2() -> None:
+    """While the banner is up, the release line is a 0.x pre-release.
+
+    Spec section 3: transition releases are 0.x with a banner; v2.0.0 tags
+    only when S8's flag day completes and the banner comes off.
+    """
+    major, _minor, _patch = _version()
+    banner_present = _banner(README.read_text(encoding="utf-8")) is not None
+    if banner_present:
+        assert major == 0, (
+            f"banner is up but the version is {major}.x; "
+            "transition releases must stay on the 0.x line"
+        )
+    else:
+        assert major >= 2, (
+            f"banner is down but the version is {major}.x; "
+            "the banner only comes off at v2.0.0"
+        )
+
+
+def test_summary_link_target_exists() -> None:
+    """The banner's link is a real repo path, not a dead one."""
+    assert SUMMARY.exists()
+    assert SUMMARY.relative_to(REPO).as_posix() == "docs/ux-revamp.md"
