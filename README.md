@@ -218,7 +218,7 @@ Primer is a stack of layers, where each layer keeps the one below it from gettin
 - **Sharing** - harnesses package a working configuration into a versioned, git-backed bundle.
 - **Edges** - channels, web search, and approval gates handle where agents reach outside the platform.
 
-At runtime, requests arrive from many edges (REST/console, MCP clients, chat channels, triggers), become **sessions / chats / graph runs** that a worker pool claims and drives; each turn calls LLM providers, tools, workspaces, and collections, and can park on a human or event and resume later - all backed by Postgres.
+At runtime, requests arrive from many edges (REST/shell, MCP clients, messaging channels, triggers), become **sessions / graph runs** that a worker pool claims and drives; each turn calls LLM providers, tools, workspaces, and collections, and can park on a human or event and resume later - all backed by Postgres.
 
 ## Documentation
 

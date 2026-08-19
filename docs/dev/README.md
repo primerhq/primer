@@ -36,7 +36,6 @@ flowchart TD
         sessions[Sessions]
         agents[Agents]
         graphs[Graphs]
-        chats[Chats]
         harness[Harness]
         triggers[Triggers]
         exttools[External Tools]
@@ -74,10 +73,6 @@ flowchart TD
     graphs --> claim
     graphs --> obs
     graphs --> rest
-
-    chats --> worker
-    chats --> claim
-    chats --> rest
 
     harness --> claim
     harness --> worker
@@ -126,7 +121,7 @@ flowchart TD
   `create_app` factory, middleware order, the RFC 7807 error envelope,
   `make_crud_router`, cookie-plus-bearer auth, and the lifespan wiring seam.
 - [claim-machine](architecture/claim-machine.md) - the one polymorphic lease engine
-  that decides which worker runs the next unit of work for a session, chat, harness,
+  that decides which worker runs the next unit of work for a session, harness,
   or trigger, and for how long.
 - [worker-system](architecture/worker-system.md) - how Primer runs agent and graph
   work off the request path: the three coordination ABCs and the worker pool that

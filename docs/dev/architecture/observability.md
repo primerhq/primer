@@ -218,9 +218,8 @@ Tracing plus metrics are wired at these call sites:
   `claim_due` in `tracer.start_as_current_span("claim.due")`, set `claim.count`, add
   a `claim_assigned` span event per lease, and observe
   `claim_enqueue_latency_seconds{kind}`.
-- The chat and session WS routers (`primer/api/routers/chats.py`,
-  `primer/api/routers/sessions.py`) wrap their handler bodies in `ws.chat` / `ws.session`
-  spans, increment `ws_connections_active{kind}` on entry and decrement in `finally`,
+- The session WS router (`primer/api/routers/sessions.py`) wraps its
+  handler body in a `ws.session` span, increment `ws_connections_active{kind}` on entry and decrement in `finally`,
   observe `ws_session_duration_seconds{kind}`, set `ws.frames_sent`, and bump
   `ws_frames_sent_total{kind}` per frame.
 
