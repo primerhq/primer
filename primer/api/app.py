@@ -56,6 +56,7 @@ for _channel_factory_mod in (
 from primer.model.scheduler import RuntimeMode
 from primer.toolset.misc import build_misc_toolset
 from primer.toolset.system import build_system_toolset
+from primer.toolset.crud import build_crud_toolset
 from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.toolset.web import build_web_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
@@ -281,6 +282,14 @@ def create_test_app(
     workspace_ext_toolset = build_workspace_ext_toolset(
         storage_provider=storage_provider,
     )
+    # Always-on crud toolset (platform construction). No claim engine or
+    # event bus in the test app, matching how build_workspaces_toolset
+    # degrades here.
+    crud_toolset = build_crud_toolset(
+        storage_provider=storage_provider,
+        claim_engine=None,
+        event_bus=None,
+    )
     provider_registry._system_toolset_provider = system_toolset  # noqa: SLF001
     provider_registry._workspaces_toolset_provider = workspaces_toolset  # noqa: SLF001
     provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
@@ -288,6 +297,7 @@ def create_test_app(
     provider_registry._workspace_ext_toolset_provider = (  # noqa: SLF001
         workspace_ext_toolset
     )
+    provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
     app.state.storage_provider = storage_provider
     app.state.provider_registry = provider_registry
     app.state.workspace_registry = workspace_registry
@@ -296,6 +306,7 @@ def create_test_app(
     app.state.misc_toolset = misc_toolset
     app.state.web_toolset = web_toolset
     app.state.workspace_ext_toolset = workspace_ext_toolset
+    app.state.crud_toolset = crud_toolset
     app.state.semantic_search_registry = _test_ssp_registry
     # Artifact storage registry + reserved default (parity with the lifespan).
     from primer.api.registries.artifact_storage_registry import (

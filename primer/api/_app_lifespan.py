@@ -47,6 +47,7 @@ from primer.toolset.misc import build_misc_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.web import build_web_toolset
+from primer.toolset.crud import build_crud_toolset
 from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
 from primer.workspace.probe import WorkspaceProbeTask
@@ -728,6 +729,18 @@ def _make_lifespan(config: AppConfig):
             workspace_ext_toolset
         )
         app.state.workspace_ext_toolset = workspace_ext_toolset
+
+        # Build the always-on ``crud`` toolset (S5): agent/graph/trigger
+        # construction plus python-toolset management, all behind the
+        # seeded approval policies. Needs claim_engine/event_bus for the
+        # trigger handlers, so it is built alongside the trigger toolset.
+        crud_toolset = build_crud_toolset(
+            storage_provider=storage_provider,
+            claim_engine=claim_engine,
+            event_bus=event_bus,
+        )
+        provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
+        app.state.crud_toolset = crud_toolset
 
         # (The workspace tap router is constructed earlier, before the
         # workspaces toolset, so the ``workspace_tap`` drain tool can

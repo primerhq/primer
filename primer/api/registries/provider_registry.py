@@ -198,6 +198,7 @@ _HARNESS_TOOLSET_ID = "harness"
 _TRIGGER_TOOLSET_ID = "trigger"
 _WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
 _COLLECTIONS_TOOLSET_ID = "collections"
+_CRUD_TOOLSET_ID = "crud"
 
 # Public: ids that are always resolvable by the live registry (built-in
 # providers), so external reference-integrity checks can skip the
@@ -211,6 +212,7 @@ RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _TRIGGER_TOOLSET_ID,
     _WORKSPACE_EXT_TOOLSET_ID,
     _COLLECTIONS_TOOLSET_ID,
+    _CRUD_TOOLSET_ID,
 })
 
 # ---------------------------------------------------------------------------
@@ -334,6 +336,7 @@ class ProviderRegistry:
         harness_toolset_provider: ToolsetProvider | None = None,
         trigger_toolset_provider: ToolsetProvider | None = None,
         workspace_ext_toolset_provider: ToolsetProvider | None = None,
+        crud_toolset_provider: ToolsetProvider | None = None,
         rate_limiter: RateLimiter | None = None,
         trace_llm_io: bool = False,
     ) -> None:
@@ -396,6 +399,7 @@ class ProviderRegistry:
         # ONLY in a workspace session (filtered out on chats by the
         # ToolExecutionManager resolution choke point).
         self._workspace_ext_toolset_provider = workspace_ext_toolset_provider
+        self._crud_toolset_provider = crud_toolset_provider
 
         self._llm_cache: dict[str, LLM] = {}
         self._embedder_cache: dict[str, Embedder] = {}
@@ -522,6 +526,14 @@ class ProviderRegistry:
             and toolset_id == _WORKSPACE_EXT_TOOLSET_ID
         ):
             return self._workspace_ext_toolset_provider
+        # Reserved id `crud` resolves to the always-on platform-construction
+        # toolset built at app startup (S5). Approval policies keyed on
+        # toolset_id="crud" gate every tool in it.
+        if (
+            self._crud_toolset_provider is not None
+            and toolset_id == _CRUD_TOOLSET_ID
+        ):
+            return self._crud_toolset_provider
         async with self._lock:
             cached = self._toolset_cache.get(toolset_id)
             if cached is not None:
@@ -592,6 +604,7 @@ class ProviderRegistry:
             _HARNESS_TOOLSET_ID,
             _TRIGGER_TOOLSET_ID,
             _WORKSPACE_EXT_TOOLSET_ID,
+            _CRUD_TOOLSET_ID,
         ):
             return
         async with self._lock:
