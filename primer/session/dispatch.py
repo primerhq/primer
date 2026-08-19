@@ -30,6 +30,7 @@ from collections.abc import Awaitable, Callable
 from primer.int.claim import ClaimKind, Lease, ParkRequest, ReleaseOutcome
 from primer.int.event_bus import EventBus
 from primer.int.storage_provider import StorageProvider
+import primer.observability.metrics as _metrics
 from primer.model.envelope import RELAY_EVERY_TURN_KEY
 from primer.model.workspace import Workspace
 from primer.model.workspace_session import (
@@ -530,6 +531,7 @@ async def run_one_session_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
 
+        _observe_turn(session, "parked", _turn_started_at)
         return ReleaseOutcome(
             success=True,
             drop_lease=True,
@@ -615,6 +617,7 @@ async def run_one_session_turn(
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
+        _observe_turn(session, "failed", _turn_started_at)
         return ReleaseOutcome(success=False, drop_lease=True)
 
     finally:
@@ -684,6 +687,7 @@ async def run_one_session_turn(
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
+        _observe_turn(session, "cancelled", _turn_started_at)
         return ReleaseOutcome(success=True, drop_lease=True)
 
     # ------------------------------------------------------------------
@@ -697,6 +701,16 @@ async def run_one_session_turn(
     agent_status = await _read_agent_session_status(executor)
     new_status, ended_reason = _post_turn_status(
         last_done_reason, agent_status,
+    )
+    # _post_turn_status returns ended_reason "completed", "failed" or None
+    # (dispatch.py:833-842: max_tokens / content_filter park the session in
+    # WAITING with no ended_reason). Only "failed" is a failure; a None
+    # reason means the turn ran to a clean stop the session can continue
+    # from, so it counts as completed.
+    _observe_turn(
+        session,
+        "failed" if ended_reason == "failed" else "completed",
+        _turn_started_at,
     )
     # Serialize the terminal transition + interrupt-flag clear against a
     # concurrent resume/pause/cancel/interrupt API call (T0432-style lost
@@ -788,6 +802,35 @@ async def run_one_session_turn(
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _binding_ref(session: WorkspaceSession) -> str:
+    """Bounded turn label: the agent or graph the session is bound to.
+
+    Bounded by the number of agent/graph definitions, never by session
+    volume (12-s7-design.md section 2 decision 3).
+    """
+    binding = session.binding
+    return (
+        getattr(binding, "agent_id", None)
+        or getattr(binding, "graph_id", None)
+        or "unknown"
+    )
+
+
+def _observe_turn(
+    session: WorkspaceSession, status: str, started_at: datetime,
+) -> None:
+    """Record one turn against the S7 turn instruments.
+
+    Boundary is run_one_session_turn: called once on each of the four
+    exits a started turn can take (parked, failed, cancelled, completed).
+    """
+    ref = _binding_ref(session)
+    _metrics.turns_total.labels(ref, status).inc()
+    _metrics.turn_duration_seconds.labels(ref, status).observe(
+        max(0.0, (_now() - started_at).total_seconds())
+    )
 
 
 # Maps the actual event_key prefixes emitted by the toolset / tool_manager
