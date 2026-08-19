@@ -241,27 +241,15 @@ def make_read_doc_content_handler(
                 error_type="not-found",
             )
 
-        # GUARDED optional-extra import: docling is an optional dependency;
-        # importing the loader when it is not installed raises
-        # ModuleNotFoundError. Import lazily (never at module top) so the
-        # tool degrades to a clear install hint instead of crashing.
         try:
-            from primer.ingest.loaders import DoclingLoader
-        except ModuleNotFoundError:
+            text = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+        except UnicodeDecodeError:
             return _err(
-                "read_doc_content requires the 'docling' extra; install "
-                "primer-ai[docling]",
-                error_type="unavailable",
-            )
-
-        try:
-            loaded = await DoclingLoader().load(raw)
-        except (BadRequestError, UnsupportedContentError) as exc:
-            return _err(
-                f"read_doc_content: could not parse document: {exc}",
+                "read_doc_content supports UTF-8 text files only; binary "
+                "document conversion was removed in v2",
                 error_type="bad-request",
             )
 
-        return _ok({"text": loaded.text})
+        return _ok({"text": text})
 
     return _handle

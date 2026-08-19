@@ -88,7 +88,7 @@ class EmbeddingModel(BaseModel):
 
     Carries only the provider-side model identifier. Vector
     dimensionality is intentionally NOT recorded here -- it is learned
-    by :class:`primer.ingest.DocumentIngester` at run time from the
+    by the indexing pipeline at run time from the
     actual length of the first chunk's embedding vector and propagated
     to :meth:`primer.int.VectorStore.create_collection`. Recording the
     dimension twice (registry + actual) was a redundancy that could

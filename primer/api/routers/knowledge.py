@@ -777,60 +777,31 @@ def _is_text_passthrough(
 async def convert_uploaded_file(
     file: UploadFile = File(...),
 ) -> dict:
-    """Convert an uploaded file to markdown and return the result.
+    """Return an uploaded text file's contents as markdown.
 
-    For binary formats (PDF, DOCX, PPTX, XLSX, HTML, images with OCR,
-    ...) we round-trip through docling. For already-textual formats
-    (``.md`` / ``.markdown`` / ``.txt`` / ``text/markdown`` /
-    ``text/plain``) we decode the bytes as UTF-8 and return them
-    verbatim - docling can't reliably detect a markdown source from
-    raw bytes without a filename hint and previously raised
-    UnsupportedContentError.
+    v2 accepts UTF-8 text only. Binary document conversion (PDF, DOCX,
+    ...) was removed along with the ingest package: a collection holds
+    text, and converting binaries is a job for a tool the operator runs
+    before uploading.
 
-    The endpoint is non-destructive: it does NOT persist a Document
-    row. Operators upload, see the converted text in the create form,
-    optionally edit, then POST /documents through the normal CRUD path.
+    The endpoint is non-destructive: it does NOT persist a Document row.
     """
-    from primer.ingest.loaders.docling import DoclingLoader
-    from primer.model.except_ import UnsupportedContentError
-
     raw = await file.read()
     if not raw:
         raise BadRequestError("uploaded file is empty")
-    # 32 MB cap; raise to a bigger value once the worker pool can
-    # absorb the conversion cost.
     if len(raw) > 32 * 1024 * 1024:
         raise BadRequestError(
-            f"uploaded file is too large ({len(raw)} bytes); cap is "
-            f"32 MB. Split the file or paste the extracted text."
+            f"uploaded file is too large ({len(raw)} bytes); cap is 32 MB."
         )
-
-    if _is_text_passthrough(file.filename, file.content_type):
-        try:
-            text = raw.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise BadRequestError(
-                f"text upload is not valid UTF-8: {exc}"
-            ) from exc
-        return {
-            "filename": file.filename,
-            "content_type": file.content_type,
-            "bytes_loaded": len(raw),
-            "text": text,
-        }
-
-    loader = DoclingLoader()
     try:
-        loaded = await loader.load(raw)
-    except UnsupportedContentError as exc:
-        raise BadRequestError(str(exc)) from exc
-
-    return {
-        "filename": file.filename,
-        "content_type": file.content_type,
-        "bytes_loaded": len(raw),
-        "text": loaded.text,
-    }
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise BadRequestError(
+            "this endpoint accepts UTF-8 text files only; binary document "
+            "conversion was removed in v2. Convert the file first, then "
+            "paste or upload the text."
+        ) from exc
+    return {"markdown": text, "filename": file.filename}
 
 
 def build_document_unindexer(request: Request):
