@@ -71,6 +71,12 @@ function AgentsPage({ onOpen, pushToast }) {
   // is what carries the provider, the wire model name, and the API-level
   // config, so the list resolves it to show the vendor dot and the
   // underlying model -- two agents on different profiles may share a model.
+  const caps = window.primerApi.useCapabilities();
+  const voices = window.primerApi.useResource(
+    "agent-voices",
+    (signal) => window.primerApi.apiFetch("GET", "/audio/voices", null, { signal }),
+    { pollMs: 0 },
+  );
   const profiles = useResource(
     "agents:model-profiles",
     (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
@@ -402,6 +408,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
   const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
   const [allowExternalTools, setAllowExternalTools] = React.useState(existing?.allow_external_tools ?? false);
+  const [ttsVoice, setTtsVoice] = React.useState(existing?.tts_voice ?? null);
   // selectedScopedIds is a Set so toggles are O(1); persisted as a
   // sorted list at submit time for stable JSON.
   const [selectedScopedIds, setSelectedScopedIds] = React.useState(_initialTools);
@@ -586,6 +593,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
       compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
       compaction_tool_access: compactionToolAccess,
       allow_external_tools: allowExternalTools,
+      tts_voice: ttsVoice,
     };
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
@@ -937,6 +945,21 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             </p>
           </div>
           <div className="field">
+        {!!(caps.data && caps.data.speech && caps.data.speech.tts_configured) && (
+          <label className="field">
+            <span>tts_voice</span>
+            <select
+              data-testid="agent-tts-voice"
+              value={ttsVoice || ""}
+              onChange={(e) => setTtsVoice(e.target.value || null)}
+            >
+              <option value="">(use the global default)</option>
+              {((voices.data && voices.data.voices) || []).map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </label>
+        )}
             <AG_Toggle
               checked={compactionToolAccess}
               onChange={setCompactionToolAccess}
