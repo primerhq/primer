@@ -66,7 +66,7 @@ def test_url_is_the_state_and_verb_navigation_pushes_history() -> None:
 
 
 def test_no_router_dependency() -> None:
-    """The palette is the router; foundation/router.js dies in P5."""
+    """The palette is the router: the classic route table dies in P5."""
     src = _src()
     for banned in ("useRouter", "ROUTES", "navigate("):
         assert banned not in src, banned

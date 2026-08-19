@@ -51,8 +51,18 @@ var SH_OVERLAY_MOUNTS = {
       );
     },
   },
+  // List and record are ONE overlay: the id slot decides which renders,
+  // so clicking a row and pasting a link land in the same place.
   agents: {
-    render: function () {
+    render: function (state) {
+      if (state.id) {
+        return (
+          <window.AgentDetail
+            agentId={state.id}
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
       return (
         <window.AgentsPage
           pushToast={window.primerApi.toastPush}
@@ -64,7 +74,15 @@ var SH_OVERLAY_MOUNTS = {
     },
   },
   graphs: {
-    render: function () {
+    render: function (state) {
+      if (state.id) {
+        return (
+          <window.GraphDetail
+            graphId={state.id}
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
       return (
         <window.GraphsPage
           pushToast={window.primerApi.toastPush}
@@ -81,7 +99,15 @@ var SH_OVERLAY_MOUNTS = {
     },
   },
   toolsets: {
-    render: function () {
+    render: function (state) {
+      if (state.id) {
+        return (
+          <window.ToolsetDetail
+            toolsetId={state.id}
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
       return <window.ToolsetsPage pushToast={window.primerApi.toastPush} />;
     },
   },
@@ -111,6 +137,25 @@ var SH_OVERLAY_MOUNTS = {
       );
     },
   },
+  // Lazy creation covers the FIRST session in an empty workspace; this is
+  // how an operator starts any session after that, with a binding they
+  // pick rather than the system default.
+  "new-session": {
+    render: function (state, shell) {
+      return (
+        <window.SharedNewSessionForm
+          wid={shell.wid}
+          onCreated={function (row) {
+            var sid = row && (row.session_id || row.id);
+            shell.closeOverlay();
+            if (sid) shell.openDoc({ kind: "session", ref: sid, preview: false });
+          }}
+          onCancel={function () { shell.closeOverlay(); }}
+          pushToast={window.primerApi && window.primerApi.toastPush}
+        />
+      );
+    },
+  },
   harnesses: {
     render: function (state) {
       return <window.HarnessesPage harnessId={state.id || null} />;
@@ -136,7 +181,33 @@ var SH_OVERLAY_MOUNTS = {
     },
   },
   workspaces: {
-    render: function () {
+    render: function (state, shell) {
+      // ?overlay=workspaces:detail:<wid> opens ONE workspace's own tabs
+      // (channels, config, log, destroy). Without it the overlay can only
+      // switch which workspace the shell is in, and a workspace's own
+      // settings have nowhere to live.
+      // Templates are workspace-shaped configuration, so they belong to
+      // this overlay rather than a surface of their own.
+      if (state.section === "templates") {
+        return (
+          <window.WorkspaceTemplatesPage
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
+      if (state.section === "detail" && state.id) {
+        return (
+          <window.WorkspaceDetail
+            workspaceId={state.id}
+            pushToast={window.primerApi.toastPush}
+            onNavigate={function () {}}
+            onOpenSession={function (sid) {
+              shell.closeOverlay();
+              shell.openDoc({ kind: "session", ref: sid, preview: false });
+            }}
+          />
+        );
+      }
       return (
         <window.WorkspacesPage
           pushToast={window.primerApi.toastPush}
@@ -201,7 +272,7 @@ function SH_OverlayHost() {
           onClick={function () { shell.closeOverlay(); }}>Close Overlay</button>
       </div>
       <div className="sh-overlay-body" data-testid="shell-overlay-body">
-        {mount.render(overlay)}
+        {mount.render(overlay, shell)}
       </div>
     </div>
   );

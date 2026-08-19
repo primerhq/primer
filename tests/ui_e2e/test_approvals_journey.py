@@ -409,7 +409,7 @@ def test_u0109_approvals_operator_journey(
         # --- 6. Cross-surface: open the fresh session in the Studio ----
         # Re-pointed: the session-detail ApprovalBanner is retired. In the
         # Studio, a pending approval surfaces in the RIGHT sidebar Action
-        # Required list (studio-activity.jsx ``ActionRequired``) as an
+        # Required list (the shell rail's attention list) as an
         # ``action-item`` of kind "approval" with ``approve`` / ``reject``
         # controls. sid_banner is freshly parked and never responded-to, so
         # its park is stable (parked_status='parked' is excluded by the
@@ -428,7 +428,7 @@ def test_u0109_approvals_operator_journey(
 
         # --- 7. Approve from the Action Required item -----------------
         # The Studio approve handler POSTs /tool_approval/respond and
-        # optimistically REMOVES the item on success (studio-activity.jsx
+        # optimistically REMOVES the item on success (the shell rail's attention list
         # ``hide()`` — no toast). Pin the item clearing as the success signal.
         approve_btn = approval_item.locator("[data-testid='approve']")
         expect(approve_btn).to_be_enabled(timeout=5_000)

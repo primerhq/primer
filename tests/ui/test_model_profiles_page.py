@@ -14,7 +14,6 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "ui" / "components" / "model-profiles.jsx"
 ROUTER = ROOT / "ui" / "foundation" / "router.js"
-CHROME = ROOT / "ui" / "components" / "chrome.jsx"
 APP = ROOT / "ui" / "app.jsx"
 INDEX = ROOT / "ui" / "index.html"
 
@@ -43,7 +42,11 @@ class TestFoldedIn:
 
     def test_the_route_and_nav_entry_are_gone(self) -> None:
         assert '"/model-profiles"' not in ROUTER.read_text(encoding="utf-8")
-        assert 'id: "model-profiles"' not in CHROME.read_text(encoding="utf-8")
+        hits = [
+            p for p in (ROOT / "ui").rglob("*.js*")
+            if 'id: "model-profiles"' in p.read_text(encoding="utf-8")
+        ]
+        assert hits == [], f"a nav entry still points at it: {hits}"
 
     def test_the_app_no_longer_dispatches_to_it(self) -> None:
         app = APP.read_text(encoding="utf-8")

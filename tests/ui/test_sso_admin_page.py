@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SSO = ROOT / "ui" / "components" / "sso_admin.jsx"
-CHROME = ROOT / "ui" / "components" / "chrome.jsx"
+ADMIN = ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx"
 APP = ROOT / "ui" / "app.jsx"
 ROUTER = ROOT / "ui" / "foundation" / "router.js"
 INDEX = ROOT / "ui" / "index.html"
@@ -106,9 +106,9 @@ def test_app_wires_sso_providers_page() -> None:
     assert "SSO_ProvidersPage" in src
 
 
-def test_chrome_nav_has_sso_providers_entry() -> None:
-    src = CHROME.read_text()
-    assert "admin-sso-providers" in src
+def test_admin_overlay_has_sso_section() -> None:
+    src = ADMIN.read_text()
+    assert 'id: "sso"' in src
     assert "SSO Providers" in src
 
 

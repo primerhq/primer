@@ -198,7 +198,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
 ) -> None:
     """U0030 — Re-pointed to the Studio's ``ctrl-end``. This journey seeds
     an AGENT-bound session, which renders through ``SessionAgentPanel``
-    (studio-center.jsx) — the interactive control set is End/Restart
+    (the shell session document) — the interactive control set is End/Restart
     (``ctrl-end``/``ctrl-restart``); ``ctrl-cancel`` only exists on the
     GRAPH run view's ``SessionGraphPanel`` (autonomous sessions). Seed a
     CREATED agent session, open it in the Studio (agent panel), click the
@@ -209,7 +209,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
     * the panel-header status transitions to a terminal value
       (ended / cancelled / failed) within a polling interval,
     * the ``ctrl-end`` control becomes disabled once terminal (per
-      studio-center.jsx ``disabled={!wid || isEnded || endMut.loading}``).
+      the shell session document ``disabled={!wid || isEnded || endMut.loading}``).
 
     Note: the Studio's ctrl-end fires the cancel POST DIRECTLY (no
     confirmation modal — that surface was retired), so the old confirm

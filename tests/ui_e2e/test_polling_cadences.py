@@ -11,7 +11,7 @@ Covers:
 * U0003 — Topbar worker pool pill renders ``<active>/<total>``
   matching ``/v1/workers``.
 
-Polling intervals (per ui/components/chrome.jsx):
+Polling intervals (per ui/components/the console shell):
 * Sessions sub-counts (created+running+paused) — 5000 ms each.
 * Workers — 5000 ms.
 * Topbar /health — 2000 ms (drives the warn/err pill class).
@@ -48,7 +48,7 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
     count was removed with the sessions list (the ``studio`` nav item
     carries no count). The Studio's SessionsSection instead polls
     ``/workspaces/{wid}/sessions`` every 3s and renders the row count in
-    its ``sessions-header`` (studio-sidebar.jsx ``st-section-count``); a
+    its ``sessions-header`` (the shell rail ``st-section-count``); a
     new API-created row surfaces there without a manual refresh.
 
     Setup ladder: LLM provider → agent → workspace provider → template →
@@ -172,7 +172,7 @@ def test_u0003_topbar_worker_pill_renders_active_total_from_workers(
     least one worker; the pill text must include that worker's count.
 
     Priority 4 — polling cadence. The pill text comes from
-    chrome.jsx:262 ``{activeWorkers}/{totalWorkers || "—"}`` where
+    the console shell:262 ``{activeWorkers}/{totalWorkers || "—"}`` where
     both numbers derive from the polled ``/v1/workers`` response.
     The poll fires every 5 s; we budget 12 s for first-render
     settling.
@@ -199,7 +199,7 @@ def test_u0003_topbar_worker_pill_renders_active_total_from_workers(
 
     page.goto(f"{console_url}#/", wait_until="domcontentloaded")
 
-    # The pill carries class "worker-pill" (chrome.jsx:256). Locate
+    # The pill carries class "worker-pill" (the console shell:256). Locate
     # via class so we don't fight title/attribute drift.
     pill = page.locator(".worker-pill").first
     pill.wait_for(state="visible", timeout=10_000)

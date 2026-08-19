@@ -1,26 +1,25 @@
-"""Shared Playwright helpers for driving the workspace Studio.
+"""Shared Playwright helpers for driving the workspace console.
 
-The Studio (``ui/components/studio.jsx`` + ``studio-{sidebar,center,
-activity,settings,palette}.jsx``) replaced the three retired UIs:
+S8 replaced the Studio with the fresh shell (``ui/components/shell/*.jsx``).
+This module keeps its NAME and its function signatures so the e2e suite
+written between S1 and S8 did not need N edits when the surface changed:
+that is exactly what facade amendment M16 asked for. Every body here now
+delegates to :mod:`tests.ui_e2e._shell_helpers`.
 
-* the global ``#/sessions`` LIST page,
-* the ``#/sessions/:id`` session-detail page (now a redirect),
-* the ``#/workspaces/:id/:tab`` workspace-detail tabs (channels / config /
-  git-log / destroy → a Studio **Settings** modal).
+The shell's model differs from the Studio's in three ways the helpers
+have to bridge:
 
-A session now opens as a center *tab* inside the workspace's Studio; the
-management tabs live behind the sub-header gear. These helpers DRY the
-navigation the re-pointed e2e tests share so each test can focus on its
-own assertion rather than re-deriving the deep-link / modal dance.
+* One workspace URL (``#/w/<wid>``) rather than ``#/workspaces/<wid>``.
+* Documents, not panels: a session opens as a TAB
+  (``shell-tab:session:<sid>``) whose body is one uniform session
+  document for every binding kind. There is no agent/graph panel split,
+  so the ``kind`` argument is accepted and ignored.
+* Attention is always mounted (``rail-attention``) instead of hiding
+  behind a debug toggle, so "expand the panel" becomes an assertion.
 
-Selectors (data-testids) mirror the Studio components exactly:
+Selectors mirror the shell components exactly; see ``_shell_helpers``.
 
-  studio-root / studio-sidebar / studio-center / studio-activity
-  session-row · center-tab · panel-agent · panel-graph · panel-file
-  studio-settings-btn · workspace-settings · workspace-settings-nav:<id>
-  action-required / action-required-list / action-item
-
-Nothing here starts a server — that is the harness's job (see the module
+Nothing here starts a server -- that is the harness's job (see the module
 docstring in ``conftest.py``).
 """
 
@@ -28,24 +27,41 @@ from __future__ import annotations
 
 from playwright.sync_api import Page, expect
 
-# The app-shell (chrome.jsx Topbar) fetches GET /v1/internal_collections/config
-# on every page, and that endpoint 404s whenever the Internal Collections
-# feature is inactive (the common e2e default). The Studio renders IN-SHELL,
-# so this pre-existing app-shell 404 is now visible to any Studio test's
-# console-error assertion. It is NOT a Studio bug — allowlist it wherever a
-# Studio test asserts a clean console.
-#
-# NB: ``assert_no_console_errors`` matches each pattern against the console
-# message TEXT (``m["text"]``), not its ``location.url``. Chromium's 404
-# console line is the URL-less
-#   "Failed to load resource: the server responded with a status of 404 ..."
-# so the ``internal_collections/config`` URL patterns below would never match
-# on their own — the "status of 404" text pattern is the one that actually
-# suppresses this app-shell 404. (The URL patterns are kept for callers that
-# inspect ``failed_requests[*].url`` instead.)
+from tests.ui_e2e._shell_helpers import (
+    SHELL_CONSOLE_IGNORES,
+    open_doc,
+    open_overlay,
+    open_palette,
+    open_shell,
+    run_verb,
+    shell_url,
+)
+
+__all__ = [
+    "STUDIO_CONSOLE_IGNORES",
+    "action_item_for_session",
+    "expand_debug_sidebar",
+    "files_list",
+    "is_studio_v2",
+    "kind_text",
+    "open_palette",
+    "open_provider_catalog",
+    "open_session_in_studio",
+    "open_session_via_sidebar",
+    "open_studio",
+    "open_workspace_settings",
+    "run_verb",
+    "session_row",
+    "sessions_list",
+    "studio_url",
+]
+
+# The shell polls GET /v1/internal_collections/config, which 404s whenever
+# the Internal Collections feature is inactive (the common e2e default).
+# That is a pre-existing app 404, not a shell bug -- allowlist it wherever
+# a test asserts a clean console.
 STUDIO_CONSOLE_IGNORES = [
-    r"net::ERR_ABORTED",
-    r"favicon",
+    *SHELL_CONSOLE_IGNORES,
     r"/v1/internal_collections/config",
     r"internal_collections/config",
     r"Failed to load resource:.*status of 404",
@@ -53,107 +69,70 @@ STUDIO_CONSOLE_IGNORES = [
 
 
 def session_row(page: Page, sid: str):
-    """Locate the Studio sidebar ``session-row`` for a specific session id.
+    """The rail row for a specific session id.
 
-    The row renders the session TITLE (agent/binding name or a truncated
-    id), NOT the raw ``sess-<id>``, so filtering by ``has_text`` is
-    unreliable. studio-sidebar.jsx stamps ``data-session-id`` on each row so
-    e2e can locate a session deterministically while the visible title stays
-    unchanged. The sidebar is per-workspace, so navigate to the session's
-    OWN workspace Studio (``#/workspaces/<wid>``) before using this.
+    The row renders the session TITLE (binding name or a truncated id),
+    NOT the raw ``sess-<id>``, so filtering by ``has_text`` is unreliable;
+    the rail stamps the id into the testid instead. The rail is
+    per-workspace, so navigate to the session's OWN workspace first.
     """
-    return page.locator(
-        f'[data-testid="session-row"][data-session-id="{sid}"]'
-    )
+    return page.get_by_test_id(f"rail-session:{sid}")
 
 
 def studio_url(console_url: str, wid: str) -> str:
-    """The Studio route for a workspace (``#/workspaces/<wid>``)."""
-    return f"{console_url}#/workspaces/{wid}"
+    """The console URL for a workspace (``#/w/<wid>``)."""
+    return shell_url(console_url, wid)
 
 
 def is_studio_v2(page: Page) -> bool:
-    """True when the page is showing the revamped Studio shell.
+    """True once the shell has mounted.
 
-    Detected from the DOM rather than from the tweak default, so these helpers
-    keep working for whichever shell is actually rendered - the flag is a
-    runtime tweak, so one build serves both and a test may pin either.
-    ``studio-rail`` exists only in the revamp; ``studio-sidebar-inner`` only in
-    the v1 sidebar. Waits for whichever appears first, because counting before
-    the shell has mounted answers "not v2" for both shells - which would send a
-    v2 caller looking for v1 testids that will never arrive.
+    The Studio era ran two shells behind a runtime tweak and callers had
+    to ask which one they got. Only one shell ships now, so this waits
+    for it rather than choosing between two vocabularies.
     """
-    either = page.locator(
-        '[data-testid="studio-rail"], [data-testid="studio-sidebar-inner"]'
-    )
-    either.first.wait_for(state="attached", timeout=20_000)
-    return page.locator('[data-testid="studio-rail"]').count() > 0
+    page.get_by_test_id("shell-root").wait_for(state="attached", timeout=20_000)
+    return True
 
 
-# The revamp replaced raw park kinds with copy an operator can read: an item
-# says "asked a question", not "ask_user". Journeys assert the item identifies
-# its kind, not which vocabulary happens to be shipped, so they ask here.
-_V2_KIND_COPY = {
-    "ask_user": "asked a question",
-    "approval": "wants approval",
-    "ask_approval": "wants approval",
-    "watch_files": "waiting on a file",
-    "sleep": "sleeping",
+# The shell states what an item wants in operator copy: a pending
+# ask_user reads "Question", a pending approval reads "Approve <tool>".
+# Journeys assert an item identifies its kind, not which vocabulary
+# happens to be shipped, so they ask here.
+_SHELL_KIND_COPY = {
+    "ask_user": "Question",
+    "approval": "Approve",
+    "ask_approval": "Approve",
 }
 
 
 def kind_text(page: Page, kind: str) -> str:
-    """The text an action item renders for a park ``kind`` on this shell."""
-    return _V2_KIND_COPY.get(kind, kind) if is_studio_v2(page) else kind
+    """The text an attention item renders for a park ``kind``."""
+    return _SHELL_KIND_COPY.get(kind, kind)
 
 
 def sessions_list(page: Page):
-    """The list of session rows, whichever shell is rendered.
-
-    v1 stacked a ``sessions-section`` above a ``files-section``; the revamp
-    replaces both with one rail in two modes, so the runs list is ``rail-runs``.
-    """
-    return page.locator(
-        '[data-testid="rail-runs"]' if is_studio_v2(page) else '[data-testid="sessions-section"]'
-    )
+    """The rail's session list."""
+    return page.get_by_test_id("rail-sessions")
 
 
 def files_list(page: Page, *, timeout: int = 10_000):
-    """The file tree, switching the rail into Files mode first when needed.
-
-    On v1 the tree is always mounted below the sessions section. In the revamp
-    Files is one of two rail modes and Runs is the default, so a caller that
-    wants the tree has to ask for it - which is the trade the single rail makes
-    for giving whichever list you are using the full column height.
-    """
-    if not is_studio_v2(page):
-        return page.locator('[data-testid="files-section"]')
-    rail_files = page.locator('[data-testid="rail-files"]')
-    if rail_files.count() == 0:
-        page.locator('[data-testid="rail-mode-files"]').click()
-    expect(rail_files).to_be_visible(timeout=timeout)
-    return rail_files
+    """The rail's file tree."""
+    files = page.get_by_test_id("rail-files")
+    expect(files).to_be_visible(timeout=timeout)
+    return files
 
 
 def open_studio(page: Page, console_url: str, wid: str, *, timeout: int = 20_000) -> None:
-    """Navigate to a workspace's Studio and wait for the shell to mount.
+    """Navigate to a workspace and wait for the shell to mount.
 
-    Confirms the region wrappers render so callers can immediately reach the
-    left rail and the center.
-
-    studioV2 has no right column: Action Required moved into the always-mounted
-    attention bar and the event tap into the investigate dock, so
-    ``studio-activity`` is asserted only on the v1 shell (see
-    ``expand_debug_sidebar``).
+    Confirms the region wrappers render so callers can immediately reach
+    the rail and the center. Attention is part of the rail and is mounted
+    even when empty -- "nothing needs you" is a state worth showing.
     """
-    page.goto(studio_url(console_url, wid), wait_until="domcontentloaded")
-    expect(page.locator('[data-testid="studio-root"]')).to_be_visible(timeout=timeout)
-    for region in ("studio-sidebar", "studio-center"):
-        expect(page.locator(f'[data-testid="{region}"]')).to_be_visible(timeout=10_000)
-    if is_studio_v2(page):
-        expect(page.locator('[data-testid="attention-bar"]')).to_be_visible(timeout=10_000)
-    else:
-        expect(page.locator('[data-testid="studio-activity"]')).to_be_visible(timeout=10_000)
+    open_shell(page, console_url, wid, timeout=timeout)
+    for region in ("shell-rail", "shell-center"):
+        expect(page.get_by_test_id(region)).to_be_visible(timeout=10_000)
 
 
 def open_session_in_studio(
@@ -165,28 +144,15 @@ def open_session_in_studio(
     kind: str = "agent",
     timeout: int = 20_000,
 ) -> None:
-    """Deep-link a session open inside its workspace's Studio.
+    """Deep-link a session open as a tab in its workspace.
 
-    Uses the ``?open=session:<sid>`` deep-link (studio.jsx ST_tabFromUrl →
-    ST_applyUrlTab auto-opens + activates the tab on mount), then waits for
-    the center tab plus the resolved panel:
-
-    * ``kind="agent"`` → ``panel-agent`` (reused ``SessionLiveStream``)
-    * ``kind="graph"`` → ``panel-graph`` (reused ``SD_GraphRunView``)
-
-    The panel resolver (ST_SessionPanel) fetches GET /v1/sessions/<sid> and
-    branches on ``binding.kind``; a graph session always lands on
-    ``panel-graph`` regardless of the hint, but the hint lets a caller wait
-    on the right panel deterministically.
+    ``kind`` is accepted for call-site compatibility and ignored: the
+    shell renders ONE session document for every binding kind, so there
+    is no agent/graph panel to wait on. The tab's presence IS the wait.
     """
-    page.goto(
-        f"{console_url}#/workspaces/{wid}?open=session:{sid}",
-        wait_until="domcontentloaded",
-    )
-    expect(page.locator('[data-testid="studio-root"]')).to_be_visible(timeout=timeout)
-    expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(timeout=timeout)
-    panel = "panel-graph" if kind == "graph" else "panel-agent"
-    expect(page.locator(f'[data-testid="{panel}"]')).to_be_visible(timeout=timeout)
+    del kind
+    open_doc(page, console_url, wid, "session", sid, timeout=timeout)
+    expect(page.get_by_test_id(f"shell-session:{sid}")).to_be_visible(timeout=timeout)
 
 
 def open_session_via_sidebar(
@@ -197,19 +163,20 @@ def open_session_via_sidebar(
     kind: str = "agent",
     timeout: int = 20_000,
 ):
-    """Open a session by CLICKING the first sidebar ``session-row``.
+    """Open a session by CLICKING its rail row.
 
     Returns the clicked row locator. Use this (rather than the deep-link)
-    when the test's intent is the sidebar-list → center-tab interaction
-    itself. Waits for the resolved panel to render.
+    when the test's intent is the rail-list to tab interaction itself.
     """
+    del kind
     open_studio(page, console_url, wid, timeout=timeout)
-    row = page.locator('[data-testid="session-row"]').first
+    rows = page.locator('[data-testid^="rail-session:"]')
+    row = rows.first
     expect(row).to_be_visible(timeout=timeout)
     row.click()
-    expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(timeout=timeout)
-    panel = "panel-graph" if kind == "graph" else "panel-agent"
-    expect(page.locator(f'[data-testid="{panel}"]')).to_be_visible(timeout=timeout)
+    expect(page.locator('[data-testid^="shell-tab:session:"]').first).to_be_visible(
+        timeout=timeout
+    )
     return row
 
 
@@ -221,88 +188,81 @@ def open_workspace_settings(
     *,
     timeout: int = 20_000,
 ):
-    """Enter a workspace's Studio, open the Settings modal, select a section.
+    """Open a workspace's own settings tabs and select a section.
 
-    ``section`` is one of ``channels`` / ``config`` / ``log`` / ``destroy``
-    (the left-rail nav ids in studio-settings.jsx). The modal re-uses the
-    exact WorkspaceDetail panels (WS_ChannelsTab / WS_ConfigTab / WS_LogTab /
-    WS_DestroyTab), so a caller keeps its existing label/role assertions on
-    the returned panel scope.
+    ``section`` is one of ``files`` / ``sessions`` / ``events`` / ``log``
+    / ``channels`` / ``config`` / ``destroy``. The shell hosts these in
+    the ``workspaces`` overlay's ``detail`` section, which re-uses the
+    exact WorkspaceDetail panels (WS_ChannelsTab / WS_ConfigTab /
+    WS_LogTab / WS_DestroyTab), so a caller keeps its existing
+    label/role assertions on the returned scope.
 
-    Returns the ``workspace-settings`` modal locator so callers can scope
-    subsequent queries inside it (avoiding strict-mode clashes with the
-    nested Link-channel / Destroy-confirm modals rendered on top).
+    Returns the overlay body locator so callers can scope subsequent
+    queries inside it (avoiding strict-mode clashes with the nested
+    Link-channel / Destroy-confirm modals rendered on top).
     """
-    open_studio(page, console_url, wid, timeout=timeout)
-    gear = page.locator('[data-testid="studio-settings-btn"]')
-    expect(gear).to_be_visible(timeout=timeout)
-    gear.click()
-    modal = page.locator('[data-testid="workspace-settings"]')
-    expect(modal).to_be_visible(timeout=timeout)
-    nav = page.locator(f'[data-testid="workspace-settings-nav:{section}"]')
-    expect(nav).to_be_visible(timeout=timeout)
-    nav.click()
-    return modal
+    page.goto(f"{console_url}#/w/{wid}?overlay=workspaces:detail:{wid}")
+    body = page.get_by_test_id("shell-overlay-body")
+    expect(body).to_be_visible(timeout=timeout)
+    tab = page.get_by_test_id(f"workspace-tab:{section}")
+    expect(tab).to_be_visible(timeout=timeout)
+    tab.click()
+    return body
 
 
 def expand_debug_sidebar(page: Page, *, timeout: int = 10_000) -> None:
-    """Expand the Studio's right-sidebar workspace-events panel.
+    """Assert the attention list is present.
 
-    The panel (``ActionRequired`` list — ``action-item`` /
-    ``action-required-count`` / approval + ask_user controls — and the
-    ``WorkspaceActivity`` feed) starts CLOSED by default (``debugOpen: false``);
-    the right column is 0-width until opened. It is opened from the prominent
-    ``studio-debug-toggle`` button in the studio HEADER (the same show/hide
-    pattern as the terminal toggle — the earlier edge-rail affordance proved
-    unclickable). Opening flips ``debugOpen`` so the column expands and the
-    ``debug-sidebar-body`` becomes visible (both children stay mounted so their
-    poll timers never reset). Any test that asserts on content inside that body
-    must call this first — right after ``open_studio`` /
-    ``open_session_in_studio`` / ``open_session_via_sidebar``.
+    Nothing to expand: attention is mounted in the rail at all times,
+    including when empty. That IS the shell's premise, so the Studio's
+    open-the-panel-first step becomes a visibility assertion.
     """
-    if is_studio_v2(page):
-        # Nothing to expand: the attention bar is mounted between the header
-        # and the body at all times, including when empty. That IS the revamp's
-        # premise - "nothing needs you" is a state worth showing - so the v1
-        # open-the-panel-first step becomes a visibility assertion.
-        expect(page.locator("[data-testid='attention-bar']")).to_be_visible(timeout=timeout)
-        return
-    toggle = page.locator("[data-testid='studio-debug-toggle']")
-    expect(toggle).to_be_visible(timeout=timeout)
-    if toggle.get_attribute("aria-pressed") != "true":
-        toggle.click()
-    expect(page.locator("[data-testid='debug-sidebar-body']")).to_be_visible(timeout=timeout)
+    expect(page.get_by_test_id("rail-attention")).to_be_visible(timeout=timeout)
 
 
 def action_item_for_session(page: Page, sid: str):
-    """Locate the right-sidebar ``action-item`` for a session id.
+    """The attention item for a session id.
 
-    ask_user / approvals / watch / sleep parks surface in the RIGHT sidebar
-    ``action-required`` list (StudioActivity → ActionRequired), one
-    ``action-item`` per pending yield. The item carries a
-    ``action-session-link`` button whose text is the (shortened) session id;
-    filtering the list on that keeps the match scoped to THIS session even
-    when the shared DB left other parks around.
+    ask_user / approval parks surface in the rail's attention list, one
+    item per pending yield, keyed by session so the match stays scoped to
+    THIS session even when the shared DB left other parks around.
     """
-    return page.locator('[data-testid="action-item"]').filter(
-        has=page.locator('[data-testid="action-session-link"]')
-    )
+    return page.get_by_test_id(f"attention-item:{sid}")
 
 
 def open_provider_catalog(
     page: Page,
     console_url: str,
     *,
+    wid: str | None = None,
     cls: str | None = None,
     instance_id: str | None = None,
     via: str = "url",
     timeout: int = 20_000,
 ):
-    """Open the unified provider catalog and wait for its class rail.
+    """Open the unified provider catalog and wait for its body.
 
-    ``via="url"`` deep-links the catalog (``#/providers?class=<cls>&id=<id>``,
-    the deep-link shape pinned in Task 18); ``via="sidebar"`` clicks the single
-    Providers nav entry instead, which is the reachability path Task 39
-    asserts. S8 re-hosts the catalog as an overlay: when it does, THIS function
-    is the only navigation site that changes.
+    S8 re-hosts the catalog as an overlay, so THIS is the only navigation
+    site that changed. ``via="url"`` deep-links it
+    (``?overlay=providers[:<class>[:<id>]]``); ``via="palette"`` runs the
+    catalog's own verb instead, which is the reachability path -- an
+    overlay only the URL can reach is one a user cannot find.
+
+    ``wid`` defaults to the workspace already open, which is what a test
+    that only cares about the catalog wants.
     """
+    if via == "url":
+        target = "providers"
+        if cls:
+            target += ":" + cls
+            if instance_id:
+                target += ":" + instance_id
+        if wid:
+            page.goto(f"{console_url}#/w/{wid}?overlay={target}")
+        else:
+            page.goto(f"{console_url}#/w/?overlay={target}")
+    else:
+        run_verb(page, "Open Providers Catalog")
+    body = page.get_by_test_id("shell-overlay-body")
+    expect(body).to_be_visible(timeout=timeout)
+    return body

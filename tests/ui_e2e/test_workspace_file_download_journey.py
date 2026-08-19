@@ -136,7 +136,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
     ``/files/download`` endpoint the panel's download href targets, keeping
     the "content is downloadable + matches" half of the contract.
 
-    Pins the Studio file panel (studio-center.jsx ``FilePanel`` /
+    Pins the Studio file panel (the shell session document ``FilePanel`` /
     ``ST_FilePreview``) render path for text files.
     """
     file_name = f"u0106-{unique_suffix}.txt"

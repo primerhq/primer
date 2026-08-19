@@ -178,7 +178,7 @@ def test_u0103_sessions_full_lifecycle_journey(
     try:
         # --- 1. Enter the Studio; the seeded session is a sidebar row -------
         # The row shows the session TITLE, not the raw sid — locate by the
-        # data-session-id stamp (studio-sidebar.jsx).
+        # data-session-id stamp (the shell rail).
         open_studio(page, console_url, wid)
         row_locator = session_row(page, sid)
         expect(row_locator.first).to_be_visible(timeout=20_000)
@@ -309,7 +309,7 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
         # --- 1. Enter the Studio for the workspace --------------------------
         # Re-pointed: the workspace-detail Sessions tab is retired; sessions
         # live in the Studio left-sidebar Sessions section, which polls
-        # /workspaces/{wid}/sessions every 3s (studio-sidebar.jsx).
+        # /workspaces/{wid}/sessions every 3s (the shell rail).
         open_studio(page, console_url, wid)
 
         # --- 2. Sessions section shows the empty state ----------------------

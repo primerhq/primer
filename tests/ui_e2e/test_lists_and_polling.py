@@ -78,7 +78,7 @@ def test_u0024_workspaces_sidebar_count_polls_after_api_create(
 
     Priority 4 — polling cadence. Sister of U0002 (sessions) but
     on the Workspaces nav row. The /workspaces poll fires every
-    5000 ms (chrome.jsx:111). The total comes from the response's
+    5000 ms (the console shell:111). The total comes from the response's
     ``total`` field — so the sidebar count reflects the global
     workspace count, not per-status sub-counts.
     """

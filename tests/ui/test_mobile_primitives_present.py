@@ -10,7 +10,6 @@ ROOT = Path(__file__).resolve().parents[2] / "ui" / "components"
 
 MOBILE_AWARE_PAGES = [
     "auth.jsx",
-    "dashboard.jsx",
     "sessions-list.jsx",
     "workspaces.jsx",
     "workspaces/providers.jsx",
@@ -43,12 +42,6 @@ def test_every_page_consumes_use_viewport() -> None:
                     continue
             missing.append(rel)
     assert missing == [], f"pages without useViewport: {missing}"
-
-
-def test_chrome_uses_mobile_nav() -> None:
-    src = (ROOT / "chrome.jsx").read_text(encoding="utf-8")
-    assert "MobileNav" in src
-    assert "hamburger" in src
 
 
 def test_shared_modal_uses_use_viewport() -> None:

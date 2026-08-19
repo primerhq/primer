@@ -23,7 +23,7 @@ import pytest
 
 
 # (hash-fragment path, expected text inside <h1 class="page-title">)
-# Mirrors the chrome.jsx sidebar inventory + a few subroutes a user
+# Mirrors the the console shell sidebar inventory + a few subroutes a user
 # would deep-link to. Update this list when the sidebar grows or a
 # page is renamed.
 _ROUTES: list[tuple[str, str]] = [
@@ -73,7 +73,7 @@ def test_route_renders_with_zero_console_errors(
 
     # By-design 404s: the sidebar polls /v1/internal_collections/config
     # and a 404 there is the documented "subsystem OFF" signal (per
-    # chrome.jsx and app spec §12). Strip those out before asserting.
+    # the console shell and app spec §12). Strip those out before asserting.
     by_design_404_patterns = [
         r"/v1/internal_collections/config",
     ]

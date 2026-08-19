@@ -37,7 +37,6 @@ def test_primitives_load_before_page_components() -> None:
     order = _order()
     last_primitive = max(order.index(p) for p in PRIMITIVES)
     for page in (
-        "components/dashboard.jsx",
         "components/sessions-list.jsx",
         "components/workspaces.jsx",
     ):

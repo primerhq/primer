@@ -551,6 +551,10 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
             <button
               key={t.id}
               type="button"
+              // Stable handle for the e2e facade: the visible label is
+              // copy and the icon carries no name, so a tab is otherwise
+              // only reachable by text that is free to change.
+              data-testid={"workspace-tab:" + t.id}
               onClick={() => setTab(t.id)}
               style={{
                 background: "none",

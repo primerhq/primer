@@ -114,7 +114,7 @@ def _seed_ladder(base_url: str, unique_suffix: str, tmp_path):
 
 # U0057 REMOVED (no Studio equivalent) — the retired session-detail
 # AskUserPanel rendered a "waiting since {parked_at}" affordance in its
-# header. The Studio's Action Required item (studio-activity.jsx
+# header. The Studio's Action Required item (the shell rail's attention list
 # ``action-item``) surfaces the yield's kind + prompt + inline controls but
 # deliberately does NOT render a parked_at "waiting since" timestamp, so
 # there is no affordance to pin. Removed with this note rather than
@@ -133,7 +133,7 @@ def test_u0064_panel_polls_pending_endpoint_while_non_terminal(
     2s /ask_user/pending poll maps to the Studio's ``ST_SessionPanel``
     resource, which polls ``GET /v1/sessions/{sid}`` every 2s while the
     session is non-terminal (``pollMs: 2000`` + ``pauseWhile`` terminal,
-    studio-center.jsx). Count the GETs while a CREATED session's agent
+    the shell session document). Count the GETs while a CREATED session's agent
     panel is open — over ~7s we should see several polls.
 
     We observe (not fulfill) so the real 200 flows through and the panel
@@ -247,7 +247,7 @@ def test_u0065_panel_stops_polling_after_terminal_status(
 # U0069 REMOVED (no Studio equivalent) — the retired session-detail Cancel
 # button opened a "Cancel session?" confirmation modal, and this test pinned
 # the ESC-dismiss-without-signal safety contract. The Studio's session
-# controls (studio-center.jsx ``ST_SessionControls`` → ``ctrl-cancel``) fire
+# controls (the shell session document ``ST_SessionControls`` → ``ctrl-cancel``) fire
 # the cancel POST DIRECTLY with no confirmation modal, so there is no
 # modal-dismiss surface to pin. Removed with this note (the direct-cancel
 # happy path is exercised by the re-pointed U0030 / U0103 journeys).

@@ -162,7 +162,7 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
 
         # ----- 3. Sidebar Sessions section lists the seeded row ------
         # The row renders the session TITLE, not the raw sid — locate it by
-        # its data-session-id stamp (studio-sidebar.jsx).
+        # its data-session-id stamp (the shell rail).
         row = session_row(page, sid)
         expect(row.first).to_be_visible(timeout=20_000)
 

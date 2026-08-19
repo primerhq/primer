@@ -51,7 +51,7 @@ def _host() -> str:
 def _mount_names() -> set[str]:
     m = re.search(r"var SH_OVERLAY_MOUNTS = \{([\s\S]*?)\n\};", _host())
     assert m, "the mount table must be a literal map"
-    return set(re.findall(r"^\s{2}(\w+):", m.group(1), re.MULTILINE))
+    return set(re.findall(r'^\s{2}"?([\w-]+)"?:', m.group(1), re.MULTILINE))
 
 
 def test_every_overlay_name_has_a_mount() -> None:

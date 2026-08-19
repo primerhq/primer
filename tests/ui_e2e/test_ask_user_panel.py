@@ -2,7 +2,7 @@
 
 The Studio (PR-B) retired the session-detail ``AskUserPanel``. ask_user
 parks now surface in the Studio's RIGHT sidebar ``action-required`` list
-(``studio-activity.jsx`` → ``ActionRequired``): one ``action-item`` per
+(the shell rail's attention list): one ``action-item`` per
 pending yield, driven by ``GET /v1/workspaces/{wid}/yields/pending``. An
 ``ask_user`` item renders a ``respond`` text input inside
 ``action-ask-controls`` (Enter-to-send → POST
@@ -141,7 +141,7 @@ def _route_pending_items(page, wid: str, items: list[dict]):
     """Route GET /v1/workspaces/{wid}/yields/pending -> the given items.
 
     The ActionRequired resource reads ``data.items``; each item shape is
-    ``{ kind, session_id, tool_call_id, prompt }`` (studio-activity.jsx).
+    ``{ kind, session_id, tool_call_id, prompt }`` (the shell rail's attention list).
     """
     page.route(
         f"**/v1/workspaces/{wid}/yields/pending",
@@ -174,7 +174,7 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
     ``ask_user`` item, the Studio's RIGHT sidebar Action Required list
     renders an ``action-item`` for it: the prompt text, the ``ask_user``
     kind, and a ``respond`` input inside ``action-ask-controls``. Pins the
-    render contract from ``studio-activity.jsx`` ``ActionRequired``.
+    render contract from the shell rail's attention list.
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:

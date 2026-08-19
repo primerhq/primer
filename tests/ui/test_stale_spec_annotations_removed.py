@@ -55,10 +55,11 @@ def test_app_subsystem_on_not_tweak_only() -> None:
     )
 
 
-def test_dashboard_drops_hardcoded_bootstrap_string() -> None:
-    src = (UI / "components" / "dashboard.jsx").read_text(encoding="utf-8")
-    assert "last bootstrap 14m ago" not in src, (
-        "drop the hardcoded '14m ago' string — show 'active' / "
-        "'configured · bootstrap required' / 'not configured' "
-        "derived from icConfig instead"
-    )
+def test_no_surface_hardcodes_a_bootstrap_age() -> None:
+    """The dashboard that carried this string is gone; the rule is what
+    survives -- bootstrap state is derived from icConfig, never typed in."""
+    hits = [
+        str(p.relative_to(UI)) for p in UI.rglob("*.js*")
+        if "last bootstrap 14m ago" in p.read_text(encoding="utf-8")
+    ]
+    assert hits == [], f"hardcoded bootstrap age in: {hits}"

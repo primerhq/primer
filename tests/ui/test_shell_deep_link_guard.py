@@ -54,10 +54,10 @@ def test_doc_round_trip(kind: str) -> None:
     ctx = _ctx()
     ref = REFS[kind]
     url = ctx.eval(
-        "SH_buildUrl({wid: %s, doc: {kind: %s, ref: %s}})"
-        % (json.dumps("ws-1"), json.dumps(kind), json.dumps(ref))
+        f"SH_buildUrl({{wid: {json.dumps('ws-1')}, "
+        f"doc: {{kind: {json.dumps(kind)}, ref: {json.dumps(ref)}}}}})"
     )
-    back = json.loads(ctx.eval("JSON.stringify(SH_parseUrl(%s))" % json.dumps(url)))
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
     assert back["wid"] == "ws-1"
     assert back["doc"] == {"kind": kind, "ref": ref}
 
@@ -66,11 +66,11 @@ def test_doc_round_trip(kind: str) -> None:
 def test_overlay_round_trip(name: str) -> None:
     ctx = _ctx()
     url = ctx.eval(
-        "SH_buildUrl({wid: %s, overlay: {name: %s, section: %s, id: %s}})"
-        % (json.dumps("ws-1"), json.dumps(name), json.dumps("sect"),
-           json.dumps("id-1"))
+        f"SH_buildUrl({{wid: {json.dumps('ws-1')}, "
+        f"overlay: {{name: {json.dumps(name)}, "
+        f"section: {json.dumps('sect')}, id: {json.dumps('id-1')}}}}})"
     )
-    back = json.loads(ctx.eval("JSON.stringify(SH_parseUrl(%s))" % json.dumps(url)))
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
     assert back["overlay"] == {"name": name, "section": "sect", "id": "id-1"}
 
 
@@ -86,12 +86,12 @@ def test_anchor_round_trip(anchor: str, expected: dict) -> None:
     ctx = _ctx()
     url = ctx.eval(
         'SH_buildUrl({wid: "ws-1", doc: {kind: "session", ref: "s1"}, '
-        "anchor: %s})" % json.dumps(anchor)
+        f"anchor: {json.dumps(anchor)}}})"
     )
-    back = json.loads(ctx.eval("JSON.stringify(SH_parseUrl(%s))" % json.dumps(url)))
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
     assert back["anchor"] == anchor
     parsed = json.loads(
-        ctx.eval("JSON.stringify(SH_parseAnchor(%s))" % json.dumps(anchor))
+        ctx.eval(f"JSON.stringify(SH_parseAnchor({json.dumps(anchor)}))")
     )
     assert parsed == expected
 
@@ -105,7 +105,7 @@ def test_a_doc_and_an_overlay_coexist_in_one_url() -> None:
         'overlay: {name: "providers", section: "tts", id: "pv-1"}, '
         'anchor: "L3-L9"})'
     )
-    back = json.loads(ctx.eval("JSON.stringify(SH_parseUrl(%s))" % json.dumps(url)))
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
     assert back["doc"] == {"kind": "file", "ref": "a/b.ts"}
     assert back["overlay"] == {"name": "providers", "section": "tts", "id": "pv-1"}
     assert back["anchor"] == "L3-L9"

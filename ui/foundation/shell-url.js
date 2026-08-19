@@ -22,7 +22,7 @@ var SH_DOC_KINDS = ["session", "file", "diff", "wiki", "trace"];
 var SH_OVERLAYS = [
   "providers", "collections", "agents", "graphs", "triggers",
   "toolsets", "tools", "workers", "approvals", "admin",
-  "harnesses", "services", "channels", "workspaces",
+  "harnesses", "services", "channels", "workspaces", "new-session",
 ];
 
 // Refs are percent-encoded, then "/" is restored: file paths and wiki slug

@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ADMIN = ROOT / "ui" / "components" / "admin_users.jsx"
-CHROME = ROOT / "ui" / "components" / "chrome.jsx"
+ADMIN_OVERLAY = ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx"
 APP = ROOT / "ui" / "app.jsx"
 ROUTER = ROOT / "ui" / "foundation" / "router.js"
 INDEX = ROOT / "ui" / "index.html"
@@ -81,8 +81,10 @@ def test_app_wires_admin_users_page() -> None:
     assert "ADM_AdminUsersPage" in src
 
 
-def test_chrome_nav_has_users_entry() -> None:
-    assert "admin-users" in CHROME.read_text()
+def test_admin_overlay_has_users_section() -> None:
+    """The shell has no per-page nav: admin surfaces are sections of
+    the one search-first admin overlay."""
+    assert 'id: "users"' in ADMIN_OVERLAY.read_text()
 
 
 def test_keys_drilldown_present() -> None:

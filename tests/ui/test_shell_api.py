@@ -1,6 +1,6 @@
 """One file names URLs, so a route change has one edit site.
 
-Mirrors the discipline of ui/components/studio/st-api.jsx:1-5, and pins
+Mirrors the one-file-names-the-URLs discipline, and pins
 the two endpoints S8 is the FIRST console consumer of: the S1 binding
 switch and the S7 turn timeline.
 """

@@ -29,7 +29,9 @@ def test_every_overlay_gets_a_verb() -> None:
     # The labels are generated, so the label map must cover every overlay.
     m = re.search(r"var SH_OVERLAY_LABELS = \{([\s\S]*?)\n\};", src)
     assert m, "overlay labels must be a literal map"
-    labelled = set(re.findall(r'(\w+):\s*"', m.group(1)))
+    # Keys are bare identifiers where the name allows one and quoted
+    # otherwise, which is the same thing to JS.
+    labelled = set(re.findall(r'"?([\w-]+)"?:\s*"', m.group(1)))
     assert labelled == set(man["overlays"])
 
 

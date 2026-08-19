@@ -1,7 +1,7 @@
 """``shared/use-transcript.js`` exports the transcript helpers.
 
 Lifted from test_conversation_extracted.py when S1 P7 deleted the chat
-UI. The helpers themselves survive: session-detail.jsx, studio-center.jsx
+UI. The helpers themselves survive: session-detail.jsx, the shell session doc
 and the studio attention panel all render transcripts through them.
 """
 from __future__ import annotations

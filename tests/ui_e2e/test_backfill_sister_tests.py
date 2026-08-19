@@ -117,7 +117,7 @@ def test_u0095_workspaces_sidebar_count_decrements_after_delete(
     """U0095 — Sister of U0024 (which pinned the INCREMENT direction
     after a POST). Seed a workspace + capture baseline sidebar count
     that includes it; DELETE via API; assert the sidebar count
-    decrements within ~15s (5s real poll cadence per chrome.jsx:111).
+    decrements within ~15s (5s real poll cadence per the console shell:111).
 
     Pins the polled total contract — operators see deletions
     reflected without a manual refresh. Uses a container-internal

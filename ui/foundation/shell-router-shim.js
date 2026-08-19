@@ -35,11 +35,37 @@ function SH_shimParams(overlay) {
   return params;
 }
 
+// The re-hosted detail pages carry TABS, and each states its tab in the
+// query rather than the path: agents.jsx navigates to
+// "/agents/<id>?tab=tools", toolsets.jsx passes {tab} as a second
+// argument. Both forms mean the same thing, so both are read here.
+function SH_shimTab(path, opts) {
+  if (opts && opts.tab) return String(opts.tab);
+  var q = String(path || "").split("?")[1];
+  if (!q) return null;
+  var pairs = q.split("&");
+  for (var i = 0; i < pairs.length; i++) {
+    var kv = pairs[i].split("=");
+    if (kv[0] === "tab" && kv[1]) return decodeURIComponent(kv[1]);
+  }
+  return null;
+}
+
 // A page calling navigate("/providers/llm/pv-9") means "show me this
 // deeper thing", not "leave the shell". Segment 0 is the overlay name
 // when it is one we host, otherwise the current overlay keeps its name
 // and the remaining segments become section/id.
-function SH_shimNavigate(overlay, openOverlay, path) {
+//
+// A tab takes the section slot, because a tabbed page has only one
+// record open and so has no second use for it. That keeps ONE grammar
+// for the URL rather than growing a fourth segment nothing else needs.
+function SH_shimQuery(overlay) {
+  var query = {};
+  if (overlay && overlay.section) query.tab = overlay.section;
+  return query;
+}
+
+function SH_shimNavigate(overlay, openOverlay, path, opts) {
   var parts = String(path || "").split("?")[0].split("/");
   var clean = [];
   for (var i = 0; i < parts.length; i++) if (parts[i]) clean.push(parts[i]);
@@ -51,6 +77,11 @@ function SH_shimNavigate(overlay, openOverlay, path) {
     if (known[k] === clean[0]) { name = clean[0]; rest = clean.slice(1); break; }
   }
   if (!name) return;
+  var tab = SH_shimTab(path, opts);
+  if (tab) {
+    openOverlay(name, tab, rest[0] || (overlay && overlay.id) || null);
+    return;
+  }
   openOverlay(name, rest[0] || null, rest[1] || null);
 }
 
@@ -61,9 +92,13 @@ function SH_installRouterShim(getOverlay, openOverlay) {
     return {
       path: SH_shimPath(overlay),
       params: SH_shimParams(overlay),
-      query: {},
-      navigate: function (path) {
-        SH_shimNavigate(getOverlay(), openOverlay, path);
+      // The section slot doubles as the tab for a tabbed detail page.
+      // A page that reads params.section (providers reads a class) is
+      // untouched; a page that reads query.tab now gets an answer
+      // instead of always falling back to its first tab.
+      query: SH_shimQuery(overlay),
+      navigate: function (path, opts) {
+        SH_shimNavigate(getOverlay(), openOverlay, path, opts);
       },
     };
   };
@@ -75,4 +110,5 @@ function SH_installRouterShim(getOverlay, openOverlay) {
 
 window.SH_shimPath = SH_shimPath;
 window.SH_shimParams = SH_shimParams;
+window.SH_shimQuery = SH_shimQuery;
 window.SH_installRouterShim = SH_installRouterShim;

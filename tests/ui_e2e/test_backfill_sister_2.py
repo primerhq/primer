@@ -13,7 +13,7 @@ Covers backlog items:
 * U0099 — Sidebar Workers nav count matches GET /v1/workers items
   length on initial render (sister of U0002 sessions count + U0024
   workspaces count — Workers is the third polled count per
-  chrome.jsx:21 NAV entry + line 123 ``counts.workers``).
+  the console shell:21 NAV entry + line 123 ``counts.workers``).
 """
 
 from __future__ import annotations
@@ -181,12 +181,12 @@ def test_u0099_sidebar_workers_count_matches_api(
 ) -> None:
     """U0099 — Sister of U0002 (sessions count) + U0024 (workspaces
     count) for the Workers nav row. Sidebar's `Workers` entry
-    declares ``count: "workers"`` (chrome.jsx:63) and chrome.jsx:123
+    declares ``count: "workers"`` (the console shell:63) and the console shell:123
     populates ``counts.workers = workers.data?.items?.length``.
 
     Fetch /v1/workers via the API to compute the expected count,
     then assert the sidebar's Workers row .count element matches
-    within ~15s (real poll cadence 5s per chrome.jsx:114).
+    within ~15s (real poll cadence 5s per the console shell:114).
     """
     # Compute expected count from the API.
     with httpx.Client(base_url=base_url, timeout=30.0) as c:

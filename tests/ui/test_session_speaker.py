@@ -72,7 +72,7 @@ def test_the_speaker_block_stays_props_only() -> None:
 
 def test_the_toggle_is_exported_as_a_window_global() -> None:
     """The global is the contract every host binds to. Deliberately NOT a
-    read of studio-center.jsx: S8 P5 deletes that file, and a static test
+    read of the classic studio panel: S8 P5 deletes it, and a static test
     that opens it becomes a FileNotFoundError at the flag day (crosscheck
     findings F22/F31). The transitional mount is covered by the Task 27
     journey instead."""

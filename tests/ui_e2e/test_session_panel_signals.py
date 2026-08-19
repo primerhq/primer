@@ -167,7 +167,7 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
     within the polling cadence.
 
     Priority area 2 — mutation feedback. Re-pointed: the Studio's agent
-    panel has no Pause/Resume controls anymore (studio-center.jsx's
+    panel has no Pause/Resume controls anymore (the shell session document's
     ST_SessionControls cluster is defined but never mounted by
     SessionAgentPanel). Per session-adapter.jsx, resuming a CREATED
     session is now "send a message via the Composer" — the SAME

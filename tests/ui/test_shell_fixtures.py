@@ -18,7 +18,7 @@ DOC_KINDS = ["session", "file", "diff", "wiki", "trace"]
 OVERLAYS = [
     "providers", "collections", "agents", "graphs", "triggers",
     "toolsets", "tools", "workers", "approvals", "admin",
-    "harnesses", "services", "channels", "workspaces",
+    "harnesses", "services", "channels", "workspaces", "new-session",
 ]
 
 

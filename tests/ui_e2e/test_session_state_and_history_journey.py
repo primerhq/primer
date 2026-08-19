@@ -89,7 +89,7 @@ def test_cancelled_session_shows_outcome_banner(
 
     Re-pointed: the retired session-detail rendered a ``session-outcome``
     panel + a ``SessionLiveStream``-driven "Session ended" notice. The
-    rebuilt ``SessionAgentPanel`` (studio-center.jsx) has no such banner —
+    rebuilt ``SessionAgentPanel`` (the shell session document) has no such banner —
     it drives the session adapter + ``window.Transcript`` directly and
     exposes the terminal outcome via TWO real, always-rendered signals
     gated on the panel's own ``isEnded = status === "ended"``: the

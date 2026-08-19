@@ -32,10 +32,12 @@ addressable in the URL. Names are the registry keys:
 
 `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`,
 `tools`, `workers`, `approvals`, `admin`, `harnesses`, `services`,
-`channels`, `workspaces`.
+`channels`, `workspaces`, `new-session`.
 
-Thirteen re-host an existing component with no chrome. `admin` is the only
-overlay designed from scratch: ONE search-first surface holding users, SSO,
+Thirteen re-host an existing component with no chrome. `new-session` hosts
+the shared create form for the case lazy creation cannot cover: starting a
+session with a binding, name and opening instructions the operator picks.
+`admin` is the only overlay designed from scratch: ONE search-first surface holding users, SSO,
 API tokens and MCP settings, common settings at level one, "Advanced"
 collapsed, admin sections role-gated, every setting palette-addressable.
 

@@ -96,12 +96,11 @@ def test_the_console_mounts_the_catalog_at_slash_providers() -> None:
     assert "window.ProviderCatalog" in src
 
 
-def test_the_router_table_knows_the_catalog_path() -> None:
-    """useRouter() returns path "/__notfound__" for any path with no
-    pattern in its table (ui/foundation/router.js:157), so app.jsx would
-    never see "/providers" without an entry here."""
-    src = _read("foundation/router.js")
-    assert '{ pattern: "/providers",' in src
+def test_the_shell_can_address_the_catalog() -> None:
+    """An overlay the URL cannot name is unreachable, so the catalog has
+    to appear in the shell's overlay vocabulary as well as its host."""
+    assert '"providers"' in _read("foundation/shell-url.js")
+    assert "providers: {" in _read("components/shell/sh-overlay-host.jsx")
 
 
 def test_the_reused_class_panels_are_referenced_not_reimplemented() -> None:

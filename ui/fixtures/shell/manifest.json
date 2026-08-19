@@ -92,6 +92,7 @@
     "harnesses",
     "services",
     "channels",
-    "workspaces"
+    "workspaces",
+    "new-session"
   ]
 }

@@ -111,7 +111,7 @@ def test_u0068_steer_queue_renders_submitted_instruction(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
     """U0068 — Re-pointed to the Studio's Composer send. The retired
-    ``ctrl-steer``/``steer-popover`` cluster (studio-center.jsx's
+    ``ctrl-steer``/``steer-popover`` cluster (the shell session document's
     ST_SessionControls) is no longer mounted by the agent panel — per
     the studio-agents-interact brief, steering IS sending a message via
     the Composer (SessionAgentPanel's onSend -> session-adapter.jsx's
@@ -245,7 +245,7 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
     and should update from "1/1" to "0/1" within ~10s.
 
     Pins the worker-pill polling cadence + status filter in
-    primer's chrome.jsx TopBar.
+    primer's the console shell TopBar.
     """
     # Find the registered worker via API. If no active workers
     # remain (a prior test already drained the sole worker — drain
@@ -277,7 +277,7 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
         # Tolerate any "{n}/{total}" — we want the active part
         # specifically.
         initial_text = (pill.text_content() or "").strip()
-        # Format from chrome.jsx:262 is "{activeWorkers}/{totalWorkers || '—'}"
+        # Format from the console shell:262 is "{activeWorkers}/{totalWorkers || '—'}"
         # so it should look like "1/1".
         assert "/" in initial_text, (
             f"unexpected pill text format: {initial_text!r}"

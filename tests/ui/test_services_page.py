@@ -10,12 +10,11 @@ def _read(rel: str) -> str:
 
 
 def test_route_page_and_script() -> None:
-    router = _read("foundation/router.js")
-    assert '"/services"' in router
-    assert '"/services/:id"' in router
-    assert 'root === "services"' in _read("app.jsx")
+    # The shell reaches page-shaped admin surfaces as overlays, addressed
+    # by name in the URL hash rather than by a router table row.
+    assert '"services"' in _read("foundation/shell-url.js")
+    assert "services: {" in _read("components/shell/sh-overlay-host.jsx")
     assert 'src="components/services.jsx"' in _read("index.html")
-    assert '"Services"' in _read("components/chrome.jsx")
 
 
 def test_page_conventions() -> None:

@@ -56,9 +56,10 @@ def test_auto_play_is_final_answers_only_and_foreground_only() -> None:
 
     def call(kind: str, enabled: bool, fg: bool) -> bool:
         return json.loads(ctx.eval(
-            "JSON.stringify(SH_shouldAutoPlay({row: {kind: %s, final: true}, "
-            "enabled: %s, isForeground: %s}))"
-            % (json.dumps(kind), json.dumps(enabled), json.dumps(fg))
+            "JSON.stringify(SH_shouldAutoPlay({row: {kind: "
+            f"{json.dumps(kind)}, final: true}}, "
+            f"enabled: {json.dumps(enabled)}, "
+            f"isForeground: {json.dumps(fg)}}}))"
         ))
 
     assert call("assistant_message", True, True) is True

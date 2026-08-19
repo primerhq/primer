@@ -64,3 +64,92 @@ def session_row(page: Page, sid: str):
 
 def attention_item(page: Page, sid: str):
     return page.get_by_test_id(f"attention-item:{sid}")
+
+
+# ---------------------------------------------------------------------------
+# Legacy route translation
+# ---------------------------------------------------------------------------
+#
+# Every management page the console used to serve at its own "#/<page>"
+# route is an overlay on the shell. The e2e suite predates that move and
+# navigates by page name, so translate here rather than in N tests: one
+# table, one edit whenever a surface moves again.
+#
+# Keys are the legacy route path with no leading "#/"; values are the
+# overlay target ("<name>[:<section>[:<id>]]"). A route that takes an id
+# uses "{id}" in the target, filled from the caller's trailing segment.
+
+LEGACY_ROUTE_OVERLAYS = {
+    "agents": "agents",
+    "graphs": "graphs",
+    "triggers": "triggers",
+    "toolsets": "toolsets",
+    "tools": "tools",
+    "approvals": "approvals",
+    "workers": "workers",
+    "health": "workers:health",
+    "harnesses": "harnesses",
+    "services": "services",
+    "workspaces": "workspaces",
+    "workspaces/templates": "workspaces:templates",
+    "workspaces/providers": "providers:workspace",
+    "channels": "channels",
+    "channels/rules": "channels:rules",
+    "channels/providers": "providers:channel",
+    "knowledge/collections": "collections",
+    "subsystems/internal-collections": "collections",
+    "ssp": "providers:ssp",
+    "providers": "providers",
+    "providers/llm": "providers:llm",
+    "providers/embedding": "providers:embedding",
+    "providers/cross_encoder": "providers:cross_encoder",
+    "providers/stt": "providers:stt",
+    "providers/tts": "providers:tts",
+    "providers/web_search": "providers:web_search",
+    "providers/web_fetch": "providers:web_fetch",
+    "providers/artifact_storage": "providers:artifact_storage",
+}
+
+
+def overlay_target(route: str) -> str:
+    """Translate a legacy console route into a shell overlay target.
+
+    ``route`` may carry a trailing record id ("agents/ag-1"), which lands
+    on the overlay's own id slot. Raises rather than guessing: a route
+    with no successor is a surface that lost its home, and silently
+    navigating nowhere is how the old provider-catalog helper hid the
+    fact that it did nothing at all.
+    """
+    path = route.lstrip("#").lstrip("/").rstrip("/")
+    if path in LEGACY_ROUTE_OVERLAYS:
+        return LEGACY_ROUTE_OVERLAYS[path]
+    head, _, tail = path.rpartition("/")
+    if head in LEGACY_ROUTE_OVERLAYS and tail:
+        target = LEGACY_ROUTE_OVERLAYS[head]
+        # The overlay grammar is name[:section[:id]], so a target that
+        # already names a section takes the id in third position and one
+        # that does not has to leave the section slot empty.
+        return f"{target}:{tail}" if ":" in target else f"{target}::{tail}"
+    raise AssertionError(
+        f"no shell overlay for legacy route {route!r}; add it to "
+        "LEGACY_ROUTE_OVERLAYS or drive the surface it moved to"
+    )
+
+
+def open_legacy_route(page: Page, console_url: str, route: str,
+                      *, wid: str | None = None, timeout: int = 20_000):
+    """Open the overlay that succeeded a legacy console route.
+
+    ``wid`` is optional because these surfaces are platform-wide, not
+    workspace-scoped: with none given the shell resolves the first
+    workspace itself (SH_RootGate) and the overlay still opens, since
+    the URL grammar parses the overlay independently of the workspace.
+    """
+    target = overlay_target(route)
+    name = target.split(":")[0]
+    prefix = f"#/w/{wid}" if wid else "#/"
+    page.goto(f"{console_url}{prefix}?overlay={target}")
+    body = page.get_by_test_id("shell-overlay-body")
+    expect(body).to_be_visible(timeout=timeout)
+    expect(page.get_by_test_id(f"shell-overlay:{name}")).to_be_visible(timeout=timeout)
+    return body

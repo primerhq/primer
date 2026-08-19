@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 SHARED = UI / "components" / "shared.jsx"
 APP = UI / "app.jsx"
-CENTER = UI / "components" / "studio-center.jsx"
+SESSION_DOC = UI / "components" / "shell" / "sh-session-doc.jsx"
 TRIGGERS = UI / "components" / "triggers.jsx"
 PREDICATE = UI / "components" / "predicate-builder.jsx"
 
@@ -41,10 +41,10 @@ def test_app_mounts_confirm_host() -> None:
     assert "<ConfirmHost />" in APP.read_text(encoding="utf-8")
 
 
-def test_studio_center_uses_confirm_dialog() -> None:
-    src = CENTER.read_text(encoding="utf-8")
+def test_session_doc_avoids_native_confirm() -> None:
+    """No surface may block the shell on the browser's own dialog."""
+    src = SESSION_DOC.read_text(encoding="utf-8")
     assert "window.confirm" not in src
-    assert "confirmDialog({" in src
 
 
 def test_triggers_use_confirm_dialog_not_native() -> None:

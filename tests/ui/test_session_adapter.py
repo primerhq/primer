@@ -143,8 +143,10 @@ def test_session_scoped_tap_reuses_wtp_build_selector() -> None:
 def test_session_adapter_registered_before_studio_center() -> None:
     order = _order()
     assert "components/session-adapter.jsx" in order
-    assert "components/studio-center.jsx" in order
-    assert order.index("components/session-adapter.jsx") < order.index("components/studio-center.jsx")
+    assert "components/shell/sh-session-doc.jsx" in order
+    assert order.index("components/session-adapter.jsx") < order.index(
+        "components/shell/sh-session-doc.jsx"
+    )
 
 
 def test_bundle_transpiles_with_session_adapter() -> None:

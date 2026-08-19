@@ -17,6 +17,16 @@ var SH_ADMIN_SECTIONS = [
     render: function () { return <window.AT_ApiTokensPage />; },
   },
   {
+    // Every logged-in account manages its OWN linked identities, so this
+    // one is not admin-gated, unlike the SSO provider section below.
+    id: "linked-accounts",
+    title: "Linked Accounts",
+    level: 1,
+    roles: ["admin", "user"],
+    keywords: "linked account identity sso login provider unlink",
+    render: function () { return <window.LA_LinkedAccountsPage />; },
+  },
+  {
     id: "mcp",
     title: "MCP Server",
     level: 1,

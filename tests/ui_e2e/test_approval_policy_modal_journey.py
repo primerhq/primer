@@ -116,7 +116,7 @@ def test_u0110_policy_modal_llm_judge_journey(
       * Provider→model effect: picking a provider unblocks the model
         select and prefills the first available model.
       * Each mutation (create, toggle, delete) surfaces the documented
-        toast title via approvals.jsx + chrome.jsx toaster wiring.
+        toast title via approvals.jsx + the console shell toaster wiring.
       * The delete confirmation modal is a real gate — the row only
         disappears after the confirm button in the modal is clicked.
     """

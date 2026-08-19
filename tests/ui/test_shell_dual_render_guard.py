@@ -104,7 +104,9 @@ def test_every_overlay_is_reachable_from_the_registry() -> None:
     assert '"overlay.open." + name' in text
     labels = re.search(r"var SH_OVERLAY_LABELS = \{([\s\S]*?)\n\};", text)
     assert labels, "the overlay label map must be a literal"
-    labelled = set(re.findall(r"(\w+):\s*\"", labels.group(1)))
+    # Keys are bare identifiers where the name allows one and quoted
+    # otherwise, which is the same thing to JS.
+    labelled = set(re.findall(r'"?([\w-]+)"?:\s*"', labels.group(1)))
     assert labelled == set(overlays), (
         f"unlabelled: {set(overlays) - labelled}; extra: {labelled - set(overlays)}"
     )

@@ -199,7 +199,7 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
     single-panel "draft resets when the polled tool_call_id changes"
     invariant maps to the Studio's per-item respond state: each pending
     yield is its own ``action-item`` keyed by tool_call_id
-    (studio-activity.jsx ``respondState``), so a draft typed into item A
+    (the shell rail's attention list ``respondState``), so a draft typed into item A
     never bleeds into item B when the pending snapshot swaps.
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
@@ -289,7 +289,7 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
         respond.fill("Alice")
         respond.press("Enter")
 
-        # An inline error line renders on the item (studio-activity.jsx sets
+        # An inline error line renders on the item (the shell rail's attention list sets
         # rs.error to the failure's detail/title/message, else "Respond
         # failed"). Wait for the red line to appear, then confirm it carries
         # a failure marker — and that it is inline, NOT a toast.
@@ -318,7 +318,7 @@ def test_u0070_pause_button_disabled_when_status_not_running(
     """U0070 — Re-pointed to the Studio's ``ctrl-pause`` on the GRAPH
     panel. Task 13 moved Pause (and Cancel) off the agent panel onto
     SessionGraphPanel — the agent panel (SessionAgentPanel) has no Pause
-    control at all now (Stop/End/Restart only). Per studio-center.jsx
+    control at all now (Stop/End/Restart only). Per the shell session document
     SessionGraphPanel the Pause button is still
     ``disabled={!wid || status !== "running" || pauseMut.loading}`` with
     a title "Enabled only when running" for a non-running (CREATED)
@@ -351,7 +351,7 @@ def test_u0067_resume_re_toasts_on_repeat_click(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
     """U0067 — Re-pointed: the Studio's agent panel has no dedicated
-    Resume control anymore (studio-center.jsx's retired
+    Resume control anymore (the shell session document's retired
     ST_SessionControls cluster is defined but never mounted by
     SessionAgentPanel). Per session-adapter.jsx's SA_useSessionConversation
     comment, "one input, four behaviours": a Composer send to a CREATED

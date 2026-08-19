@@ -6,6 +6,7 @@
 // diffs open as tabs in a second group, side by side with the transcript.
 
 var SH_OVERLAY_LABELS = {
+  "new-session": "Create New Session",
   providers: "Open Providers Catalog",
   collections: "Open Collections",
   agents: "Open Agents",
@@ -171,6 +172,15 @@ function SH_registerCoreVerbs(shell) {
         shell.sessions.refetch();
       });
     },
+  });
+  shell.registry.register({
+    // session.create is the one-click path and takes the workspace
+    // default binding. This one is for picking a specific agent or
+    // graph, plus a name and opening instructions, before the session
+    // exists -- the form is the same one the classic console used.
+    id: "session.createAs", label: "Create Session With Binding",
+    surfaces: ["rail", "palette"],
+    run: function () { shell.openOverlay("new-session"); },
   });
   shell.registry.register({
     id: "session.interrupt", label: "Interrupt Session", destructive: true,

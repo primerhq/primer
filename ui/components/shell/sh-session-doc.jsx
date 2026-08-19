@@ -322,6 +322,27 @@ function SH_registerSessionVerbs(shell) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// SH_TokenMeter -- read-only context meter for the session head. Compaction
+// is the agent's own call, so the shared meter mounts with no compact
+// button; when the shared component is absent it degrades to a bare count.
+// ---------------------------------------------------------------------------
+
+function SH_TokenMeter(props) {
+  var session = props.session;
+  var turns = (session && Array.isArray(session.turns)) ? session.turns : [];
+  var last = turns.length > 0 ? turns[turns.length - 1] : null;
+  var inputTokens = Number(last && last.tokens_in) || 0;
+  var contextLength = Number(session && session.context_length) || 0;
+  if (window.TokenMeter) {
+    return (
+      <window.TokenMeter inputTokens={inputTokens}
+        contextLength={contextLength} onCompact={null} />
+    );
+  }
+  return <span className="sh-meta" data-testid="shell-token-count">{inputTokens} tok</span>;
+}
+
 function SH_SessionDoc(props) {
   var shell = SH_useShell();
   var sid = props.sid;
@@ -439,6 +460,7 @@ function SH_SessionDoc(props) {
       <header className="sh-session-head">
         <SH_BindingChip sid={sid} binding={binding}
           epoch={session && session.binding_epoch} />
+        <SH_TokenMeter session={session} />
         {shell.registry.forSurface("tab-menu").map(function (verb) {
           if (verb.contexts && verb.contexts.indexOf("session") < 0) return null;
           return (
@@ -448,6 +470,13 @@ function SH_SessionDoc(props) {
           );
         })}
       </header>
+
+      {/* Invoker-supplied tool calls the conversation is blocked on. The
+          banner polls on its own and renders nothing when the queue is
+          empty, so mounting it unconditionally costs a no-op. */}
+      {typeof window.ExternalPendingBanner === "function"
+        ? <window.ExternalPendingBanner sessionId={sid} pushToast={shell.toast} />
+        : null}
 
       <div className="sh-transcript" data-testid="shell-transcript" ref={scrollRef}
         onScroll={function () { if (decision.follow) setSeen(rows.length); }}>
@@ -504,3 +533,4 @@ window.SH_QueuedSteers = SH_QueuedSteers;
 window.SH_SessionComposer = SH_SessionComposer;
 window.SH_registerSessionVerbs = SH_registerSessionVerbs;
 window.SH_SessionDoc = SH_SessionDoc;
+window.SH_TokenMeter = SH_TokenMeter;

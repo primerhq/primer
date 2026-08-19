@@ -94,7 +94,7 @@ def test_u0114_policy_modal_rego_compile_error_renders_inline(
     Pinned invariants:
       * 422 errors from /v1/tool_approval_policies POST route
         inline via fieldErrors[loc.join(".")] — not a global
-        toast (chrome.jsx's pushToast is NOT invoked on 422).
+        toast (the console shell's pushToast is NOT invoked on 422).
       * Inline error testid pattern:
         approval-policy-err-{loc.replace(".","-")}.
       * Modal stays OPEN on 422 — operator can fix + retry.
