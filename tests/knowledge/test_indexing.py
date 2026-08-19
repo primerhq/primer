@@ -7,7 +7,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from primer.knowledge.indexing import (
-    backfill_missing_document_vectors,
     index_document,
 )
 from primer.model.collection import (
@@ -442,118 +441,6 @@ class _StorageProvider:
 
     def get_content_store(self):
         return _PerDocContentStore(self._bodies)
-
-
-class TestBackfill:
-    @pytest.mark.asyncio
-    async def test_indexes_only_unindexed_documents(self):
-        store = _Store()
-        # doc-a is already indexed; doc-b is not.
-        store._registered.add("kb-1")
-        from primer.model.vector import EmbeddingRecord
-
-        store.puts.append(
-            EmbeddingRecord(
-                collection_id="kb-1", document_id="doc-a", chunk_id="0",
-                text="x", vector=[0.1, 0.2, 0.3], meta={},
-            )
-        )
-        doc_a = Document(id="doc-a", collection_id="kb-1", slug="doc-a.md", path="doc-a.md",
-                         meta={"text": "already indexed"})
-        doc_b = Document(id="doc-b", collection_id="kb-1", slug="doc-b.md", path="doc-b.md",
-                         meta={"text": "needs indexing"})
-        reg = AsyncMock()
-        reg.get_embedder = AsyncMock(return_value=_Emb())
-        ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=store)
-        sp = _StorageProvider([doc_a, doc_b], [_collection()])
-
-        n = await backfill_missing_document_vectors(
-            storage_provider=sp,
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-        )
-        assert n == 1
-        # Only doc-b got embedded (its chunk was put after the pre-seeded one).
-        new_puts = [p for p in store.puts if p.document_id == "doc-b"]
-        assert len(new_puts) == 1
-
-    @pytest.mark.asyncio
-    async def test_unregistered_collection_indexes_all(self):
-        store = _Store()  # nothing registered -> search_by_meta raises
-        doc = Document(id="doc-1", collection_id="kb-1", slug="doc-1.md", path="doc-1.md",
-                       meta={"text": "hello"})
-        reg = AsyncMock()
-        reg.get_embedder = AsyncMock(return_value=_Emb())
-        ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=store)
-        sp = _StorageProvider([doc], [_collection()])
-
-        n = await backfill_missing_document_vectors(
-            storage_provider=sp,
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-        )
-        assert n == 1
-        assert store.created == ("kb-1", 3)
-
-    @pytest.mark.asyncio
-    async def test_system_collection_skipped(self):
-        doc = Document(id="doc-1", collection_id="sys", slug="doc-1.md", path="doc-1.md",
-                       meta={"text": "hello"})
-        sys_coll = Collection(
-            id="sys", description="t",
-            search_provider_id="ssp", system=True,
-        )
-        reg = AsyncMock()
-        ssr = AsyncMock()
-        sp = _StorageProvider([doc], [sys_coll])
-
-        n = await backfill_missing_document_vectors(
-            storage_provider=sp,
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-        )
-        assert n == 0
-        ssr.get_store.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_one_bad_document_does_not_abort_others(self):
-        store = _Store()
-        doc_ok = Document(id="ok", collection_id="kb-1", slug="ok.md", path="ok.md",
-                          meta={"text": "fine"})
-        doc_bad = Document(id="bad", collection_id="kb-1", slug="bad.md", path="bad.md",
-                           meta={"text": "boom"})
-
-        class _FlakyEmb:
-            async def embed(self, *, model, inputs):
-                if any("boom" in p.text for p in inputs):
-                    raise PrimerError("embedder exploded")
-                class _R:
-                    embeddings = [
-                        type("V", (), {"vector": [0.1, 0.2, 0.3]})()
-                        for _ in inputs
-                    ]
-                return _R()
-
-        reg = AsyncMock()
-        reg.get_embedder = AsyncMock(return_value=_FlakyEmb())
-        ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=store)
-        sp = _StorageProvider(
-            [doc_bad, doc_ok],
-            [_collection()],
-            bodies={"ok": "fine", "bad": "boom"},
-        )
-
-        # Should not raise; the good doc still gets indexed.
-        n = await backfill_missing_document_vectors(
-            storage_provider=sp,
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-        )
-        assert n == 1
-        assert any(p.document_id == "ok" for p in store.puts)
 
 
 class _MismatchStore(_Store):

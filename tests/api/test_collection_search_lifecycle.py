@@ -24,3 +24,25 @@ async def test_disable_always_works_and_status_reports_disabled(client):
     assert resp.status_code == 204
     s = await client.get(f"/v1/collections/{cid}/search")
     assert s.status_code == 200 and s.json()["state"] == "disabled"
+
+
+async def test_query_surfaces_error_state_hint(client):
+    # A collection whose search block is already in error state (provider
+    # deleted after enable). POST /v1/collections accepts the full v2
+    # entity body; provider validation happens only on the PUT lifecycle
+    # route.
+    r = await client.post("/v1/collections", json={
+        "description": "w",
+        "search": {
+            "embedder": {"provider_id": "emb-x", "model": "m"},
+            "vector_store_provider_id": "ssp-x",
+            "state": "error",
+            "error": "embedding provider 'emb-x' was deleted; re-register "
+                     "it or disable search on this collection",
+        },
+    })
+    assert r.status_code == 201, r.text
+    cid = r.json()["id"]
+    resp = await client.post(f"/v1/collections/{cid}/search", json={"query": "q"})
+    assert resp.status_code == 503
+    assert "emb-x" in resp.text

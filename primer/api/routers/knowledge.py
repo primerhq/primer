@@ -57,6 +57,7 @@ from primer.model.collection import (
 from primer.model.search import CollectionCrossEncoder
 from primer.model.except_ import (
     BadRequestError,
+    ConfigError,
     ConflictError,
     DimensionMismatchError,
     NotFoundError,
@@ -585,6 +586,11 @@ async def search_collection(
             f"semantic search is not enabled on collection {collection_id!r}; "
             "enable it with PUT /v1/collections/{id}/search. grep and the "
             "document tree remain available."
+        )
+    if coll.search.state == "error":
+        raise ConfigError(
+            f"semantic search on {collection_id!r} is in error state: "
+            f"{coll.search.error}"
         )
 
     # Vectorise the query with the collection's own embedder so query
