@@ -59,8 +59,7 @@ WORKDIR /app
 # field, so hatchling needs it present even for a deps-only sync.
 # UV_SYNC_EXTRAS selects which optional backends are installed. The default
 # builds the slim image (core + the light operational extras: kubernetes,
-# docker, channels, lance); it drops the multi-GB huggingface
-# torch stack. BootstrapRunner self-skips dep-backed default providers
+# docker, channels, lance); it drops the multi-GB huggingface torch stack. BootstrapRunner self-skips dep-backed default providers
 # whose extra is absent, so it boots cleanly. Build the batteries-included
 # image with:
 #   --build-arg UV_SYNC_EXTRAS="--all-extras"

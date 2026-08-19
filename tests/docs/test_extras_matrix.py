@@ -79,3 +79,36 @@ def test_speech_added_no_extra() -> None:
     """S4 decision: speech providers add NO packaging extra."""
     assert "speech" not in EXTRA_MODULES
     assert "speech" not in _pyproject_extras()
+
+
+def _dockerfile_default_extras() -> set[str]:
+    """Extras named by the slim default, e.g. {"kubernetes", "docker", ...}.
+
+    The line is ``ARG UV_SYNC_EXTRAS="--extra a --extra b ..."``, so the
+    token after each ``--extra`` is the extra name.
+    """
+    text = (REPO / "Dockerfile").read_text(encoding="utf-8")
+    line = next(
+        ln for ln in text.splitlines() if ln.startswith("ARG UV_SYNC_EXTRAS=")
+    )
+    value = line.split("=", 1)[1].strip().strip('"')
+    tokens = value.split()
+    return {
+        tokens[i + 1]
+        for i, tok in enumerate(tokens)
+        if tok == "--extra" and i + 1 < len(tokens)
+    }
+
+
+def test_slim_image_extras_are_a_subset_of_live_extras() -> None:
+    """The slim default may only select extras that still exist."""
+    slim = _dockerfile_default_extras()
+    assert slim, "could not parse the Dockerfile slim extras list"
+    dead = slim - _pyproject_extras()
+    assert not dead, f"Dockerfile slim default selects dead extras: {dead}"
+
+
+def test_full_image_is_all_extras() -> None:
+    """The -full variant is built with --all-extras, so it tracks pyproject."""
+    compose = (REPO / "docker-compose.yml").read_text(encoding="utf-8")
+    assert "UV_SYNC_EXTRAS: ${UV_SYNC_EXTRAS:---all-extras}" in compose
