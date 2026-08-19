@@ -19,7 +19,7 @@ the "find collection by description" use case. The per-collection
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import (
     Body,
@@ -55,6 +55,7 @@ from primer.model.except_ import (
     NotFoundError,
 )
 from primer.knowledge.grep import grep_collection
+from primer.knowledge.importer import import_zip
 from primer.search.run import run_collection_search
 
 
@@ -427,6 +428,41 @@ async def move_collection_document(
     if await collections.get(collection_id) is None:
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
     await service.move(collection_id=collection_id, src=body.src, dst=body.dst)
+
+
+@collection_router.post(
+    "/collections/{collection_id}/import",
+    summary="Import a zip archive's directory structure into the tree",
+    responses=common_responses(400, 404, 409, 500),
+)
+async def import_collection_zip(
+    collection_id: str = Path(..., description="Collection id"),
+    file: UploadFile = File(...),
+    parent: str = Query(default="", description="Parent path to import under"),
+    conflict: Literal["fail", "skip", "overwrite"] = Query(default="fail"),
+    collections=Depends(get_collection_storage),
+    service=Depends(get_document_tree_service),
+) -> dict:
+    """Map an archive's directories onto the document tree.
+
+    Directory segments and filenames are slugified, extensions dropped;
+    binary or non-UTF-8 entries are reported rather than failing the whole
+    import. ``conflict`` selects what happens at an existing path.
+    """
+    await _require_writable(collections, collection_id)
+    raw = await file.read()
+    if not raw:
+        raise BadRequestError("uploaded archive is empty")
+    # 32 MB cap, matching the single-file convert route.
+    if len(raw) > 32 * 1024 * 1024:
+        raise BadRequestError(
+            f"uploaded archive is too large ({len(raw)} bytes); cap is 32 MB."
+        )
+    report = await import_zip(
+        service, collection_id=collection_id, data=raw,
+        parent=parent, conflict=conflict,
+    )
+    return report.model_dump(mode="json")
 
 
 @collection_router.post(
