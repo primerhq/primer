@@ -745,65 +745,6 @@ _TEXT_PASSTHROUGH_CONTENT_TYPES = (
     "text/x-markdown",
     "text/plain",
 )
-
-
-def _is_text_passthrough(
-    filename: str | None, content_type: str | None,
-) -> bool:
-    """True when the upload is already text and needs no conversion.
-
-    Filename extension wins (operators sometimes mislabel the
-    content-type by uploading a `.md` with `application/octet-stream`).
-    Content-type is the fallback when there is no extension.
-    """
-    if filename:
-        lower = filename.lower()
-        for ext in _TEXT_PASSTHROUGH_EXTENSIONS:
-            if lower.endswith(ext):
-                return True
-    if content_type:
-        # Strip any charset / boundary parameters: "text/markdown; charset=utf-8".
-        primary = content_type.split(";", 1)[0].strip().lower()
-        if primary in _TEXT_PASSTHROUGH_CONTENT_TYPES:
-            return True
-    return False
-
-
-@collection_router.post(
-    "/documents/_convert_file",
-    summary="Return an uploaded UTF-8 text file as markdown",
-    responses=common_responses(400, 500),
-)
-async def convert_uploaded_file(
-    file: UploadFile = File(...),
-) -> dict:
-    """Return an uploaded text file's contents as markdown.
-
-    v2 accepts UTF-8 text only. Binary document conversion (PDF, DOCX,
-    ...) was removed along with the ingest package: a collection holds
-    text, and converting binaries is a job for a tool the operator runs
-    before uploading.
-
-    The endpoint is non-destructive: it does NOT persist a Document row.
-    """
-    raw = await file.read()
-    if not raw:
-        raise BadRequestError("uploaded file is empty")
-    if len(raw) > 32 * 1024 * 1024:
-        raise BadRequestError(
-            f"uploaded file is too large ({len(raw)} bytes); cap is 32 MB."
-        )
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise BadRequestError(
-            "this endpoint accepts UTF-8 text files only; binary document "
-            "conversion was removed in v2. Convert the file first, then "
-            "paste or upload the text."
-        ) from exc
-    return {"markdown": text, "filename": file.filename}
-
-
 def build_document_unindexer(request: Request):
     """Best-effort per-document vector cleanup for tree deletes."""
     from primer.knowledge.indexing import remove_document_index

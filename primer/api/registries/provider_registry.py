@@ -190,7 +190,6 @@ def _default_cross_encoder_factory(  # pragma: no cover
 
 
 _SYSTEM_TOOLSET_ID = "system"
-_SEARCH_TOOLSET_ID = "search"
 _WORKSPACES_TOOLSET_ID = "workspaces"
 _MISC_TOOLSET_ID = "misc"
 # `web` has always been prefix-less; unchanged.
@@ -205,7 +204,6 @@ _COLLECTIONS_TOOLSET_ID = "collections"
 # Toolset storage lookup for them.
 RESERVED_TOOLSET_IDS: frozenset[str] = frozenset({
     _SYSTEM_TOOLSET_ID,
-    _SEARCH_TOOLSET_ID,
     _WORKSPACES_TOOLSET_ID,
     _MISC_TOOLSET_ID,
     _WEB_TOOLSET_ID,
@@ -329,7 +327,6 @@ class ProviderRegistry:
         ) = None,
         toolset_factory: Callable[[Toolset], ToolsetProvider] | None = None,
         system_toolset_provider: ToolsetProvider | None = None,
-        search_toolset_provider: ToolsetProvider | None = None,
         workspaces_toolset_provider: ToolsetProvider | None = None,
         misc_toolset_provider: ToolsetProvider | None = None,
         collections_toolset_provider: ToolsetProvider | None = None,
@@ -366,7 +363,6 @@ class ProviderRegistry:
         # subsystem bootstrap (or the lifespan handler if a config row
         # already exists at startup); ``None`` means the subsystem is
         # inactive and ``get_toolset('search')`` raises NotFoundError.
-        self._search_toolset_provider = search_toolset_provider
         # Reserved id ``workspaces`` resolves to this immutable
         # provider — always built at app startup. Mirrors ``system``:
         # its tools dogfood the workspace REST API to agents.
@@ -477,13 +473,6 @@ class ProviderRegistry:
             and toolset_id == _SYSTEM_TOOLSET_ID
         ):
             return self._system_toolset_provider
-        # Reserved id `search` resolves to the search toolset built
-        # when the internal collections subsystem is activated.
-        if (
-            self._search_toolset_provider is not None
-            and toolset_id == _SEARCH_TOOLSET_ID
-        ):
-            return self._search_toolset_provider
         # Reserved id `workspaces` resolves to the always-on
         # workspace dogfood toolset built at app startup.
         if (

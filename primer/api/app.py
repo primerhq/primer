@@ -298,7 +298,6 @@ def create_test_app(
     app.state.seed_artifact_default = _seed_artifact_default
     # Tests build the subsystem on demand via the /bootstrap endpoint.
     app.state.internal_collections = None
-    app.state.search_toolset = None
     # Auth: tests get a fixed test secret so cookies are deterministic
     # across the suite. Real lifespan uses resolve_session_secret().
     from primer.api.config import AppConfig

@@ -402,12 +402,14 @@ class TestConfigCRUD:
         post-activation succeeds and preserves activated_at."""
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
-        body2 = {**_config_body(), "mmr": {"lambda_mult": 0.7}}
+        body2 = {**_config_body(), "cross_encoder": {
+            "provider_id": "ce-1", "model": "rerank-m",
+        }}
         resp = await client.put("/v1/internal_collections/config", json=body2)
         assert resp.status_code == 200, resp.text
         get = await client.get("/v1/internal_collections/config")
         assert get.json()["activated_at"] is not None
-        assert get.json()["mmr"]["lambda_mult"] == 0.7
+        assert get.json()["cross_encoder"]["model"] == "rerank-m"
 
     @pytest.mark.asyncio
     async def test_put_rejects_vector_space_change_after_activation(self, client) -> None:
@@ -586,31 +588,17 @@ class TestSearchEndpoints:
 
 class TestSearchToolset:
     @pytest.mark.asyncio
-    async def test_search_toolset_resolves_after_activation(
-        self, client, app, pr, sp
+    async def test_search_toolset_id_no_longer_resolves(
+        self, client, pr, sp
     ) -> None:
-        await sp.get_storage(Agent).create(_agent("agt-1"))
+        """S2 P5 deleted the search toolset: collections.semantic_search is
+        the live path, so the reserved id is simply unknown now."""
+        from primer.model.except_ import NotFoundError
+
         await client.put("/v1/internal_collections/config", json=_config_body())
         await _bootstrap_and_wait(client)
-
-        provider = await pr.get_toolset("search")
-        names = [t.id async for t in provider.list_tools()]
-        assert "search_agents" in names
-        assert "search_graphs" in names
-        assert "search_collections" in names
-        assert "search_tools" in names
-
-        # Registered but inert (pinned decision 15): the tools resolve and
-        # answer cleanly, with nothing indexed behind them until P5 removes
-        # the toolset. collections.semantic_search is the live path.
-        result = await provider.call(
-            tool_name="search_agents",
-            arguments={"query": "research", "top_k": 5},
-        )
-        assert not result.is_error, result.output
-        import json
-
-        assert json.loads(result.output)["hits"] == []
+        with pytest.raises(NotFoundError):
+            await pr.get_toolset("search")
 
     @pytest.mark.asyncio
     async def test_search_toolset_unavailable_before_bootstrap(

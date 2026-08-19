@@ -47,7 +47,6 @@ from primer.model.provider import SemanticSearchProvider
 from primer.model.scheduler import RuntimeMode, SchedulerProviderType
 from primer.toolset.harness import build_harness_toolset_provider
 from primer.toolset.misc import build_misc_toolset
-from primer.toolset.search import build_search_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.web import build_web_toolset
@@ -298,7 +297,6 @@ def _make_lifespan(config: AppConfig):
         app.state.misc_toolset = misc_toolset
         app.state.web_toolset = web_toolset
         app.state.internal_collections = None
-        app.state.search_toolset = None
         app.state.config = config
 
         # Workspace health-probe loop. Pings each running/failed
@@ -846,11 +844,7 @@ def _make_lifespan(config: AppConfig):
                     "collections": collections_toolset,
                 },
             )
-            search_toolset = build_search_toolset(ic_subsystem)
-            ic_subsystem.register_toolset_provider("search", search_toolset)
-            provider_registry._search_toolset_provider = search_toolset  # noqa: SLF001
             app.state.internal_collections = ic_subsystem
-            app.state.search_toolset = search_toolset
             # The CDC vector worker no longer starts: vectorisation is
             # the explicit search lifecycle now. The subsystem stays
             # constructed so the reserved `search` toolset resolves.

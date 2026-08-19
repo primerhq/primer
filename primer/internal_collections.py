@@ -51,7 +51,6 @@ from primer.model.except_ import (
 )
 from primer.model.graph import Graph
 from primer.model.internal import (
-    AI_DOCS_COLLECTION_ID,
     BootstrapPhase,
     INTERNAL_COLLECTION_IDS,
     INTERNAL_COLLECTIONS_CONFIG_ID,
@@ -429,7 +428,6 @@ class InternalCollectionsSubsystem:
             # we catch + swallow the "already exists" path.
             await self._ensure_collection(store, INTERNAL_COLLECTION_IDS[entity_type], embed_dim)
         # 5th reserved collection — agent-facing platform docs.
-        await self._ensure_collection(store, AI_DOCS_COLLECTION_ID, embed_dim)
 
         logger.info("ic bootstrap: phase=ingest_agents")
         counts["agents"] = await self._ingest_persisted_with_progress(
@@ -662,24 +660,6 @@ class InternalCollectionsSubsystem:
                 await collections.create(row)
             else:
                 await collections.update(row)
-        # Fifth reserved collection — agent-facing platform docs.
-        # Multi-chunk records produced by DocumentIngester at ingest
-        # time; row only carries identity + provider linkage.
-        ai_docs_row = Collection(
-            id=AI_DOCS_COLLECTION_ID,
-            description=(
-                "Reserved internal collection holding agent-facing "
-                "platform documentation. Sourced from the markdown "
-                "files shipped in primer.ai_docs."
-            ),
-            system=True,
-            search_provider_id=self._config.search_provider_id,
-        )
-        existing = await collections.get(AI_DOCS_COLLECTION_ID)
-        if existing is None:
-            await collections.create(ai_docs_row)
-        else:
-            await collections.update(ai_docs_row)
 
     async def _probe_embedding_dim(self) -> int:
         vec = await self._embed_text("dimensionality probe")
@@ -801,31 +781,6 @@ class InternalCollectionsSubsystem:
         """
         return 0
 
-    async def search_ai_docs(
-        self,
-        *,
-        query: str,
-        top_k: int = 10,
-    ) -> list[SearchResult]:
-        """Semantic search over agent-facing platform docs.
-
-        Separate entry point from :meth:`search` because the docs
-        collection isn't keyed off a per-entity-type CDC pipeline —
-        records here come from disk-based ingest only.
-        """
-        if not self.is_activated:
-            raise ConfigError(
-                "internal collections subsystem is configured but has "
-                "not been bootstrapped yet; POST "
-                "/v1/internal_collections/bootstrap to populate the "
-                "collections."
-            )
-        store = await self._semantic_search_registry.get_store(
-            self._config.search_provider_id
-        )
-        vector = await self._embed_text(query, task_type="retrieval_query")
-        return await store.search(AI_DOCS_COLLECTION_ID, vector, top_k)
-
     async def _upsert_config_row(
         self, cfg: InternalCollectionsConfig
     ) -> None:
@@ -892,7 +847,6 @@ def build_subsystem(
 
 
 __all__ = [
-    "AI_DOCS_COLLECTION_ID",
     "INTERNAL_COLLECTION_IDS",
     "InternalCollectionsSubsystem",
     "IngestEvent",

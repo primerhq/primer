@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 # split on character boundaries so one huge block still embeds.
 
 # Number of chunks embedded per embedder call. Mirrors
-# ``DocumentIngester.DEFAULT_BATCH_SIZE`` so user-collection ingestion and
+# the previous ingester's default so user-collection ingestion and
 # the internal-collection catalog batch identically.
 _EMBED_BATCH_SIZE = 32
 
@@ -138,7 +138,7 @@ async def index_document(
     # every new vector is in hand, so a failure here leaves the prior
     # index intact and the document still searchable.
     #
-    # Batch the chunk embeddings (mirrors DocumentIngester): each embed
+    # Batch the chunk embeddings: each embed
     # call carries up to ``_EMBED_BATCH_SIZE`` chunks and returns one
     # embedding per input in input order, so the records line up with the
     # chunks one-to-one. This is behaviour-equivalent to the previous

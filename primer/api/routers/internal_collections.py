@@ -62,7 +62,7 @@ from primer.model.internal import (
     InternalCollectionsConfig,
 )
 from primer.model.provider import SemanticSearchProvider
-from primer.model.search import CollectionCrossEncoder, MmrConfig
+from primer.model.search import CollectionCrossEncoder
 
 
 logger = logging.getLogger(__name__)
@@ -107,10 +107,6 @@ class InternalCollectionsConfigBody(BaseModel):
     cross_encoder: CollectionCrossEncoder | None = Field(
         default=None,
         description="Optional cross-encoder reranker config.",
-    )
-    mmr: MmrConfig | None = Field(
-        default=None,
-        description="Optional Maximal Marginal Relevance diversification config.",
     )
 
 
@@ -202,7 +198,7 @@ async def put_config(
     # from incompatible spaces — the new query embeddings can't be
     # compared meaningfully against the old stored ones. The only sane
     # mutation path is DELETE + PUT + bootstrap, which the deactivate
-    # button does. cross_encoder/mmr are reranking concerns that don't
+    # button does. cross_encoder is a reranking concern that doesn't
     # touch the vector space, so they stay editable.
     if existing is not None and existing.activated_at is not None:
         frozen_diffs = []
@@ -235,7 +231,6 @@ async def put_config(
         embedding_model=body.embedding_model,
         search_provider_id=body.search_provider_id,
         cross_encoder=body.cross_encoder,
-        mmr=body.mmr,
         activated_at=None,
     )
     if existing is None:
@@ -339,7 +334,6 @@ async def delete_config(
     # Clear in-memory subsystem state.
     if subsystem is not None:
         request.app.state.internal_collections = None
-        request.app.state.provider_registry._search_toolset_provider = None  # noqa: SLF001
     # Finally, remove the config row. Doing this last means a partial
     # failure leaves the config in place so the operator can retry the
     # DELETE (drop_collection is idempotent, so retry is safe).
@@ -364,7 +358,6 @@ async def _build_subsystem_for_request(
     construction path. Returns the freshly attached subsystem.
     """
     from primer.internal_collections import build_subsystem
-    from primer.toolset.search import build_search_toolset
 
     provider_registry = request.app.state.provider_registry
     semantic_search_registry = request.app.state.semantic_search_registry
@@ -405,10 +398,6 @@ async def _build_subsystem_for_request(
         toolset_providers=toolsets,
     )
     request.app.state.internal_collections = subsystem
-    search_ts = build_search_toolset(subsystem)
-    provider_registry._search_toolset_provider = search_ts  # noqa: SLF001
-    request.app.state.search_toolset = search_ts
-    subsystem.register_toolset_provider("search", search_ts)
     return subsystem
 
 

@@ -28,7 +28,6 @@ from primer.mcp.safety import is_exposable, tool_scoped_id
 from primer.toolset.collections import build_collections_toolset
 from primer.toolset.harness import build_harness_toolset_provider
 from primer.toolset.misc import build_misc_toolset
-from primer.toolset.search import build_search_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.web import build_web_toolset
@@ -95,8 +94,6 @@ def reserved_provider_registry(fake_storage_provider) -> ProviderRegistry:
 
     # search.py only needs a subsystem for its handlers (call()); list_tools()
     # never touches it, so a bare mock is a faithful stand-in here.
-    search_toolset = build_search_toolset(MagicMock())
-    registry._search_toolset_provider = search_toolset  # noqa: SLF001
 
     return registry
 
