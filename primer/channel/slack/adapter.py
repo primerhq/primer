@@ -118,7 +118,10 @@ class SlackChannelAdapter(ChannelAdapter):
         if self._conn is None:
             raise ProviderError("SlackChannelAdapter used before initialize()")
         client = _get_web_client(self._conn)
-        root_ts = await self._session_root_ts(client, envelope.session_id)
+        root_ts = await self._session_root_ts(
+            client, envelope.session_id,
+            getattr(envelope, "thread_anchor", None),
+        )
         media = getattr(envelope, "media", None)
         if media and self._artifacts is not None:
             from primer.channel.media import hydrate_media_dicts
@@ -208,12 +211,20 @@ class SlackChannelAdapter(ChannelAdapter):
             kwargs["thread_ts"] = thread_ts
         await client.files_upload_v2(**kwargs)
 
-    async def _session_root_ts(self, client: Any, session_id: str) -> str:
+    async def _session_root_ts(
+        self, client: Any, session_id: str, anchor: str | None = None,
+    ) -> str:
         """Get-or-create the root message ts for this session's thread.
 
         The first prompt posts a small anchor message to the channel; its ts is
         the thread root every later prompt for the session replies under.
+
+        A thread-mapped session (S6 section 5) already HAS its thread: the
+        anchor wins and no new anchor message is posted.
         """
+        if anchor:
+            self._session_threads[session_id] = anchor
+            return anchor
         ts = self._session_threads.get(session_id)
         if ts:
             return ts

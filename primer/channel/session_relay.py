@@ -71,6 +71,7 @@ async def _post_lifecycle(
         response_schema=None,
         choices=None,
         timeout_at_iso=None,
+        thread_anchor=getattr(binding, "anchor", None),
     )
     try:
         results = await dispatcher.dispatch_prompt(envelope=env, session=session)

@@ -113,7 +113,10 @@ class DiscordChannelAdapter(ChannelAdapter):
             raise ProviderError(
                 f"discord channel {self._channel.external_id!r} not reachable"
             )
-        thread = await self._session_thread(channel, envelope.session_id)
+        thread = await self._session_thread(
+            channel, envelope.session_id,
+            getattr(envelope, "thread_anchor", None),
+        )
         await self._post_thread_media(thread, envelope)
         header = attribution_header(envelope)
         if envelope.kind == "tool_approval":
@@ -151,13 +154,28 @@ class DiscordChannelAdapter(ChannelAdapter):
         else:
             raise ProviderError(f"unknown envelope kind {envelope.kind!r}")
 
-    async def _session_thread(self, channel: Any, session_id: str) -> Any:
+    async def _session_thread(
+        self, channel: Any, session_id: str, anchor: str | None = None,
+    ) -> Any:
         """Get-or-create the one conversation thread for this session.
 
         The first prompt posts a small anchor message and opens a named thread
         off it; every later prompt for the same session (ask or approval) is
         sent into that thread.
+
+        A thread-mapped session (S6 section 5) supplies its thread id as
+        ``anchor``; resolve it instead of opening a new thread.
         """
+        if anchor:
+            thread = self._client.get_channel(int(anchor))
+            if thread is None:
+                try:
+                    thread = await self._client.fetch_channel(int(anchor))
+                except Exception:  # noqa: BLE001 - fall back to the cache
+                    thread = None
+            if thread is not None:
+                self._session_threads[session_id] = thread.id
+                return thread
         tid = self._session_threads.get(session_id)
         if tid is not None:
             thread = self._client.get_channel(tid)

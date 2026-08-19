@@ -33,6 +33,10 @@ class PromptEnvelope:
     # Optional attribution context surfaced in channel gate posts.
     workspace_name: str | None = None
     session_label: str | None = None
+    # Platform thread this envelope must post into (S6 section 5). Set from
+    # the session's reply binding when the session is thread-mapped; None
+    # lets the adapter open or reuse its own per-session thread.
+    thread_anchor: str | None = None
 
 
 @dataclass
