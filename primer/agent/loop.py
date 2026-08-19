@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any
 
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import (
+    _ClientAction,
     ExtendedEvent,
     Message,
     StreamEvent,
@@ -165,11 +166,18 @@ async def run_agent_turn(
             )
             return
 
+        client_actions: list[_ClientAction] = []
         tool_result_msgs = await _dispatch_tool_calls(
             tool_calls,
             tool_manager=tool_manager,
             principal=principal,
+            actions_out=client_actions,
         )
+        # Delivery frames go out BEFORE the results so the session log
+        # reads tool_call -> client_action -> tool_result, matching the
+        # notifying contract (deliver, then answer).
+        for action in client_actions:
+            yield ExtendedEvent(extended=action)
         for trm in tool_result_msgs:
             if messages_out is not None:
                 messages_out.append(trm)
@@ -192,6 +200,7 @@ async def _dispatch_tool_calls(
     *,
     tool_manager: ToolExecutionManager,
     principal: str | None,
+    actions_out: list[_ClientAction],
 ) -> list[Message]:
     """Dispatch tool calls; return tool-role messages to feed back to the LLM.
 
@@ -203,6 +212,13 @@ async def _dispatch_tool_calls(
     result_parts: list[ToolResultPart] = []
     for call in calls:
         if tool_manager.is_notifying(call.name):
+            actions_out.append(
+                _ClientAction(
+                    call_id=call.id,
+                    name=call.name,
+                    arguments=dict(call.arguments or {}),
+                )
+            )
             # Notifying class (S3 spec section 3): the runner answers the
             # call itself with a successful synthetic tool_result and keeps
             # looping. The park machinery is never entered.

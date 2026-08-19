@@ -257,3 +257,95 @@ async def test_run_agent_turn_continues_past_a_notifying_call() -> None:
     assert len(results) == 1
     assert results[0].error is False
     assert results[0].output == NOTIFYING_TOOL_RESULT
+
+
+async def test_runner_emits_the_delivery_event_before_the_tool_result() -> None:
+    import asyncio
+    from collections.abc import AsyncIterator
+
+    from primer.agent.loop import run_agent_turn
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.chat import (
+        Done,
+        ExtendedEvent,
+        Message,
+        StreamEvent,
+        TextDelta,
+        TextPart,
+        ToolCallEnd,
+        ToolCallStart,
+        _ClientAction,
+        _ExecutorToolResult,
+    )
+    from primer.model.model_profile import ModelProfileConfig
+    from primer.model_profile import ResolvedModel
+
+    class _OneNotifyThenStopLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, *, model, messages, **kwargs):
+            self.calls += 1
+            first = self.calls == 1
+
+            async def _gen() -> AsyncIterator[StreamEvent]:
+                if first:
+                    yield ToolCallStart(id="tc-9", name="t1__notify_me", index=0)
+                    yield ToolCallEnd(
+                        id="tc-9", arguments={"path": "a.txt"}, index=0
+                    )
+                    yield Done(stop_reason="tool_use", raw_reason="tool_use")
+                else:
+                    yield TextDelta(text="done", index=0)
+                    yield Done(stop_reason="stop", raw_reason="stop")
+
+            return _gen()
+
+    mgr = _manager(
+        {"notify_me": (_tool("notify_me", tool_class="notifying"), _plain_handler)}
+    )
+    agent = Agent(id="ag", description="x", model=AgentModel(profile_id="p--m"))
+    seen: list[str] = []
+
+    async def _drive() -> None:
+        async for ev in run_agent_turn(
+            agent=agent,
+            llm=_OneNotifyThenStopLLM(),
+            llm_model=ResolvedModel(
+                profile_id="p",
+                provider_id="pr",
+                model_name="m",
+                context_length=4096,
+                config=ModelProfileConfig(),
+            ),
+            tool_manager=mgr,
+            prompt=[Message(role="user", parts=[TextPart(text="go")])],
+        ):
+            if isinstance(ev, ExtendedEvent):
+                if isinstance(ev.extended, _ClientAction):
+                    assert ev.extended.call_id == "tc-9"
+                    assert ev.extended.name == "t1__notify_me"
+                    assert ev.extended.arguments == {"path": "a.txt"}
+                    seen.append("action")
+                elif isinstance(ev.extended, _ExecutorToolResult):
+                    seen.append("result")
+
+    await asyncio.wait_for(_drive(), timeout=5.0)
+    assert seen == ["action", "result"]
+
+
+async def test_standard_calls_emit_no_delivery_event() -> None:
+    from primer.agent.loop import _dispatch_tool_calls
+    from primer.model.chat import _ClientAction
+
+    mgr = _manager({"do_it": (_tool("do_it"), _plain_handler)})
+    await mgr.list_tools()
+    actions: list[_ClientAction] = []
+    msgs = await _dispatch_tool_calls(
+        [ToolCallPart(id="tc-3", name="t1__do_it", arguments={})],
+        tool_manager=mgr,
+        principal=None,
+        actions_out=actions,
+    )
+    assert actions == []
+    assert msgs and msgs[0].parts[0].output == "ran"
