@@ -156,7 +156,6 @@ The bare `pipx install primer-ai` installs a lean core (REST API, console, MCP, 
 |---|---|---|
 | *(core)* | REST API, console, MCP server and client, SQLite/Postgres storage, API-based LLM and embedder providers, local workspaces | ~345M |
 | `huggingface` | local embeddings, local cross-encoder reranking, exact Ollama token counts | heavy (torch) |
-| `docling` | PDF/DOCX/PPTX ingestion and structure-aware splitting | heavy |
 | `lance` | embedded LanceDB vector store | light |
 | `channels` | Slack, Telegram and Discord | light |
 | `docker` | container workspace backend | light |
@@ -177,9 +176,7 @@ docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest        # slim
 docker run --rm -p 8000:8000 ghcr.io/primerhq/primer:latest-full   # batteries included
 ```
 
-`:latest` is the slim image: core plus the light operational extras (lance, channels, docker, kubernetes). It boots cleanly and skips the default providers it cannot construct. For local HuggingFace embeddings or Docling ingestion, use `:latest-full`.
-
-> **Tag change.** `:latest` used to be the batteries-included image. It is now slim. If you rely on HuggingFace or Docling from the image, switch to `:latest-full`. The old `-fat` and `-slim` suffixes still resolve for one release cycle.
+`:latest` is the slim image: core plus the light operational extras (lance, channels, docker, kubernetes). It boots cleanly and skips the default providers it cannot construct. For local HuggingFace embeddings, use `:latest-full`.
 
 **From source** (for contributors):
 
