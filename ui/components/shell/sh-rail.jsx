@@ -158,6 +158,29 @@ function SH_FilesList() {
 // P2 ships the list as a count and an empty state; P4 Task 22 replaces
 // this body with the tiered feed, its triage verbs and its decision
 // cards. The empty state is a prompt with an action, per section 8.
+// Three tiers routed by consequence (section 8):
+//   interrupt -> in-shell toast AND a rail row, spent sparingly
+//   ambient   -> a rail badge, no sound, ever
+//   digest    -> a per-session collapsed rollup
+// Resolved and snoozed items stay queryable: triage filters the live
+// view, it never deletes.
+function SH_loadTriage(username) {
+  try {
+    var raw = window.localStorage.getItem(window.SH_triageKey(username));
+    return raw ? JSON.parse(raw) : window.SH_emptyTriage();
+  } catch (_e) {
+    return window.SH_emptyTriage();
+  }
+}
+
+function SH_saveTriage(username, triage) {
+  try {
+    window.localStorage.setItem(
+      window.SH_triageKey(username), JSON.stringify(triage)
+    );
+  } catch (_e) { /* private mode: triage is best-effort, never fatal */ }
+}
+
 function SH_AttentionList() {
   var shell = SH_useShell();
   var pending = window.primerApi.useResource(
@@ -165,43 +188,123 @@ function SH_AttentionList() {
     function (signal) { return SH_api.pendingYields(shell.wid, signal); },
     { pollMs: 10000, deps: [shell.wid] }
   );
-  var items = (pending.data && pending.data.items) || [];
-  if (!items.length) {
+  var records = window.primerApi.useResource(
+    SH_api.keys.records(),
+    function (signal) { return SH_api.approvalRecords(signal); },
+    { pollMs: 0 }
+  );
+
+  // Gate/pending state arrives on the tap, so the feed is live rather
+  // than poll-latent (pinned decision 7).
+  window.useWorkspaceTapListener(shell.wid, function (ev) {
+    var cls = ev && ev["class"];
+    if (cls === "yielded" || cls === "resumed" || cls === "done") {
+      pending.refetch();
+      records.refetch();
+    }
+  });
+
+  var triageState = React.useState(function () {
+    return SH_loadTriage(shell.username);
+  });
+  var triage = triageState[0];
+  var setTriage = triageState[1];
+
+  function commit(next) {
+    setTriage(next);
+    SH_saveTriage(shell.username, next);
+  }
+
+  var all = window.SH_toAttentionItems({
+    pending: (pending.data && pending.data.items) || [],
+    records: (records.data && records.data.items) || [],
+  });
+  var visible = window.SH_applyTriage(all, triage);
+  var interrupts = visible.filter(function (i) { return i.tier === "interrupt"; });
+  var ambient = visible.filter(function (i) { return i.tier === "ambient"; });
+  var digest = visible.filter(function (i) { return i.tier === "digest"; });
+  shell.attentionRef.current = { items: visible, triage: triage, commit: commit };
+
+  function triageVerbs(item) {
     return (
-      <div className="sh-rail-list" data-testid="rail-attention">
-        <div className="sh-empty">Nothing needs you. Press Ctrl+K for verbs.</div>
-      </div>
+      <span className="sh-triage">
+        <button type="button" className="sh-verb" data-verb="attention.resolve"
+          onClick={function () {
+            shell.openDoc({ kind: "session", ref: item.sessionId, preview: true });
+          }}>Resolve Attention</button>
+        <button type="button" className="sh-verb" data-verb="attention.snooze"
+          onClick={function () {
+            var next = JSON.parse(JSON.stringify(triage));
+            next.snoozedUntil[item.id] = Date.now() + 60 * 60 * 1000;
+            commit(next);
+          }}>Snooze Attention</button>
+        <button type="button" className="sh-verb" data-verb="attention.mute"
+          onClick={function () {
+            var next = JSON.parse(JSON.stringify(triage));
+            next.mutedSessions[item.sessionId] = true;
+            commit(next);
+          }}>Mute Session</button>
+      </span>
     );
   }
+
   return (
-    <ul className="sh-rail-list" data-testid="rail-attention">
-      {items.map(function (item) {
+    <section className="sh-rail-list" data-testid="rail-attention">
+      <h3>
+        Attention
+        <span className="sh-rail-badge" data-testid="rail-badge:attention">
+          {interrupts.length + ambient.length}
+        </span>
+      </h3>
+
+      {/* Interrupts, and only interrupts, get an in-shell toast. No
+          sound at any tier. */}
+      {interrupts.map(function (item) {
         return (
-          <li key={item.tool_call_id}
-            data-testid={"attention-item:" + item.session_id}>
-            <button type="button"
-              onClick={function () {
-                shell.openDoc({
-                  kind: "session", ref: item.session_id, preview: true,
-                });
-              }}>{item.tool_name}</button>
-          </li>
+          <div key={item.id} className="sh-attention-toast"
+            data-testid={"attention-toast:" + item.toolCallId}>
+            <div data-testid={"attention-item:" + item.sessionId}>
+              <window.SH_DecisionCard item={item}
+                onResolved={function () { pending.refetch(); }} />
+              {triageVerbs(item)}
+            </div>
+          </div>
         );
       })}
-    </ul>
+
+      <ul className="sh-attention-ambient">
+        {ambient.map(function (item) {
+          return (
+            <li key={item.id} data-testid={"attention-item:" + item.sessionId}>
+              <button type="button"
+                onClick={function () {
+                  shell.openDoc({
+                    kind: "session", ref: item.sessionId, preview: true,
+                  });
+                }}>{item.title}</button>
+              {triageVerbs(item)}
+            </li>
+          );
+        })}
+      </ul>
+
+      {digest.length ? (
+        <details className="sh-attention-digest">
+          <summary>Resolved ({digest.length})</summary>
+          <ul>
+            {digest.map(function (item) {
+              return <li key={item.id}>{item.title}</li>;
+            })}
+          </ul>
+        </details>
+      ) : null}
+    </section>
   );
 }
 
 function SH_Rail() {
   var shell = SH_useShell();
-  var status = window.primerApi.useResource(
-    "auth-status",
-    function (signal) {
-      return window.primerApi.apiFetch("GET", "/auth/status", null, { signal: signal });
-    },
-    { pollMs: 0 }
-  );
-  var username = (status.data && status.data.username) || null;
+  var username = shell.username;
   var prefsState = React.useState(function () { return SH_loadRailPrefs(username); });
   var prefs = prefsState[0];
   var setPrefs = prefsState[1];
@@ -268,3 +371,6 @@ window.SH_railPrefsKey = SH_railPrefsKey;
 window.SH_loadRailPrefs = SH_loadRailPrefs;
 window.SH_saveRailPrefs = SH_saveRailPrefs;
 window.SH_Rail = SH_Rail;
+window.SH_loadTriage = SH_loadTriage;
+window.SH_saveTriage = SH_saveTriage;
+window.SH_AttentionList = SH_AttentionList;

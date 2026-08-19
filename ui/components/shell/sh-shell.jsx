@@ -63,6 +63,8 @@ function SH_Shell(props) {
   // the jumpLatest verb reads it. A ref, not state: replacing it must not
   // re-render the whole shell.
   var jumpLatestRef = React.useRef(function () {});
+  // The attention list fills this in; the triage verbs read it.
+  var attentionRef = React.useRef({ items: [], resolve: function () {} });
 
   // ---- URL is the state ----------------------------------------------------
   var active = null;
@@ -177,6 +179,8 @@ function SH_Shell(props) {
     role: (status.data && status.data.role) || "user",
     speech: (caps.data && caps.data.speech) || {},
     agents: (agentList.data && agentList.data.items) || [],
+    username: (status.data && status.data.username) || "anon",
+    attentionRef: attentionRef,
     jumpLatestRef: jumpLatestRef,
     focusComposer: function () {
       var el = document.querySelector('[data-testid="shell-composer"] textarea');

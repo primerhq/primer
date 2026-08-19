@@ -29,6 +29,58 @@ function SH_registerCoreVerbs(shell) {
     run: function () { shell.openOverlay("workspaces"); },
   });
 
+  // "attention: next / resolve / snooze" as verbs, so triage is
+  // keyboard-first (section 8). Each also renders as a rail affordance,
+  // satisfying the dual-render rule.
+  function attentionState() { return shell.attentionRef.current || null; }
+  function firstItem() {
+    var state = attentionState();
+    return state && state.items.length ? state.items[0] : null;
+  }
+
+  shell.registry.register({
+    id: "attention.next", label: "Open Attention", chord: "Ctrl+j",
+    surfaces: ["rail", "palette"],
+    run: function () {
+      var item = firstItem();
+      if (!item) { shell.toast("Nothing needs you"); return; }
+      shell.openDoc({ kind: "session", ref: item.sessionId, preview: true });
+    },
+  });
+  shell.registry.register({
+    id: "attention.resolve", label: "Resolve Attention",
+    surfaces: ["attention-item", "palette"],
+    run: function (arg) {
+      var item = (arg && arg.sessionId) ? arg : firstItem();
+      if (!item) return;
+      shell.openDoc({ kind: "session", ref: item.sessionId, preview: true });
+    },
+  });
+  shell.registry.register({
+    id: "attention.snooze", label: "Snooze Attention",
+    surfaces: ["attention-item", "palette"],
+    run: function (arg) {
+      var state = attentionState();
+      var item = (arg && arg.id) ? arg : firstItem();
+      if (!state || !item) return;
+      var next = JSON.parse(JSON.stringify(state.triage));
+      next.snoozedUntil[item.id] = Date.now() + 60 * 60 * 1000;
+      state.commit(next);
+    },
+  });
+  shell.registry.register({
+    id: "attention.mute", label: "Mute Session", destructive: true,
+    surfaces: ["attention-item", "palette"],
+    run: function (arg) {
+      var state = attentionState();
+      var item = (arg && arg.sessionId) ? arg : firstItem();
+      if (!state || !item) return;
+      var next = JSON.parse(JSON.stringify(state.triage));
+      next.mutedSessions[item.sessionId] = true;
+      state.commit(next);
+    },
+  });
+
   shell.registry.register({
     id: "doc.close", label: "Close Tab", chord: "Ctrl+w",
     surfaces: ["tab-menu", "palette"],
