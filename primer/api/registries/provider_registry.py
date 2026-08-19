@@ -586,7 +586,6 @@ class ProviderRegistry:
         # by an accidental write to the reserved ids.
         if toolset_id in (
             _SYSTEM_TOOLSET_ID,
-            _SEARCH_TOOLSET_ID,
             _WORKSPACES_TOOLSET_ID,
             _MISC_TOOLSET_ID,
             _WEB_TOOLSET_ID,

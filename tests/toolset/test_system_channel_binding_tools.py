@@ -184,8 +184,8 @@ async def test_create_channel_binding_creates_subscription_on_channel_trigger(
                 "command_name": "deploy",
             },
             "config": {
-                "kind": "start_chat",
-                "agent_id": "deployer",
+                "kind": "session_append",
+                "session_id": "sess-1",
             },
             "reply_target": "source_thread",
         },
@@ -209,7 +209,7 @@ async def test_create_channel_binding_unknown_trigger_returns_trigger_not_found(
         tool_name="create_channel_binding",
         arguments={
             "trigger_id": "no-such-trigger",
-            "config": {"kind": "start_chat", "agent_id": "deployer"},
+            "config": {"kind": "session_append", "session_id": "sess-1"},
         },
     )
     assert result.is_error
@@ -229,7 +229,7 @@ async def test_list_channel_bindings_returns_subscriptions(sp: _SP, system_tools
         tool_name="create_channel_binding",
         arguments={
             "trigger_id": "trg-ch-1",
-            "config": {"kind": "start_chat", "agent_id": "deployer"},
+            "config": {"kind": "session_append", "session_id": "sess-1"},
         },
     )
 
@@ -266,7 +266,7 @@ async def test_delete_channel_binding_removes_subscription(sp: _SP, system_tools
         tool_name="create_channel_binding",
         arguments={
             "trigger_id": "trg-ch-1",
-            "config": {"kind": "start_chat", "agent_id": "deployer"},
+            "config": {"kind": "session_append", "session_id": "sess-1"},
         },
     )
     sub_id = json.loads(create_result.output)["id"]

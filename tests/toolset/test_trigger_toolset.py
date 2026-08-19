@@ -245,7 +245,7 @@ class TestDelete:
 
 class TestSubscriptions:
     @pytest.mark.asyncio
-    async def test_create_subscription_chat_message(
+    async def test_create_subscription_session_append(
         self, toolset, fake_storage_provider,
     ):
         created = await toolset.call(
@@ -258,15 +258,15 @@ class TestSubscriptions:
             tool_name="create_subscription",
             arguments={
                 "trigger_id": trigger_id,
-                "config": {"kind": "chat_message", "chat_id": "ch-1"},
+                "config": {"kind": "session_append", "session_id": "sess-1"},
                 "payload_template": "hello",
             },
         )
         assert not sub_result.is_error, sub_result.output
         sub_body = _result_body(sub_result)
         assert sub_body["trigger_id"] == trigger_id
-        assert sub_body["config"]["kind"] == "chat_message"
-        assert sub_body["config"]["chat_id"] == "ch-1"
+        assert sub_body["config"]["kind"] == "session_append"
+        assert sub_body["config"]["session_id"] == "sess-1"
         assert sub_body["id"].startswith("sb-")
 
         # list_subscriptions surfaces the new row.
