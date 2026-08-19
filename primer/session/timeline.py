@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from primer.model.turn_log import TurnLogKind
 from primer.model.workspace_session import SessionMessageKind
 from primer.session.replay import visible_records
 
@@ -26,6 +27,11 @@ _ERROR = SessionMessageKind.ERROR.value
 _CANCELLED = SessionMessageKind.CANCELLED.value
 
 _TERMINAL_KINDS = frozenset({_DONE, _ERROR, _CANCELLED})
+
+# Turn-log kind (primer/model/turn_log.py:26). Same wire value as the
+# YIELDED record kind, but a different vocabulary: this one names a
+# turn-log envelope event, not a messages.jsonl row.
+_YIELDED = TurnLogKind.YIELDED.value
 
 
 def closes_turn(rec: dict[str, Any]) -> bool:
@@ -111,4 +117,68 @@ def turn_windows(message_lines: list[str]) -> list[dict[str, Any]]:
     return windows
 
 
-__all__ = ["closes_turn", "turn_windows"]
+
+
+def turn_envelopes(turn_log_lines: list[str]) -> list[list[dict[str, Any]]]:
+    """Group turn-log events by ``turn_no``, ascending, seq-ordered within.
+
+    The turn log is observability data, not a contract: unparseable lines
+    and events with no turn_no are skipped rather than raising.
+    """
+    by_turn: dict[int, list[dict[str, Any]]] = {}
+    for line in turn_log_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(obj, dict) or "kind" not in obj:
+            continue
+        turn_no = obj.get("turn_no")
+        if not isinstance(turn_no, int):
+            continue
+        by_turn.setdefault(turn_no, []).append(obj)
+    return [
+        sorted(by_turn[turn_no], key=lambda e: e.get("seq") or 0)
+        for turn_no in sorted(by_turn)
+    ]
+
+
+def envelopes_for_window(
+    groups: list[list[dict[str, Any]]], index: int,
+) -> list[list[dict[str, Any]]]:
+    """Return the envelope groups belonging to window ``index``.
+
+    ``index`` is the window's ``turn_no`` from :func:`turn_windows`, which
+    counts terminals over the UNFOLDED record stream: the turn log is
+    never folded, so a folded window count on one side of this join would
+    serve one turn's tree from another turn's envelope.
+
+    A park leaves turn_no untouched (the park branch of
+    primer/claim/adapters/sessions.py returns before the bump) while the
+    resume injection releases with success and no park, which DOES bump
+    it. One logical turn therefore spans a run of envelopes: every group
+    that closes with ``yielded`` is continued by the next one.
+    """
+    runs: list[list[list[dict[str, Any]]]] = []
+    current: list[list[dict[str, Any]]] = []
+    for group in groups:
+        current.append(group)
+        if (group[-1].get("kind") if group else None) != _YIELDED:
+            runs.append(current)
+            current = []
+    if current:
+        runs.append(current)
+    if index < 0 or index >= len(runs):
+        return []
+    return runs[index]
+
+
+__all__ = [
+    "closes_turn",
+    "envelopes_for_window",
+    "turn_envelopes",
+    "turn_windows",
+]
