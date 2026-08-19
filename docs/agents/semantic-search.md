@@ -70,8 +70,8 @@ Once activated, the subsystem does two things:
    the agent-docs directory, which resolves to `docs/agents/` by
    default) and embeds them. The first four collections
    store one vector per entity. The fifth - `_internal_ai_docs` -
-   uses [primer/ingest/](../../primer/ingest/)'s `DocumentIngester`
-   to chunk each markdown file by section and embed each chunk
+   uses [primer/knowledge/splitter.py](../../primer/knowledge/splitter.py)
+   to chunk each markdown file by heading and embed each chunk
    separately. Search against the docs collection therefore returns
    specific subsections, not whole files.
 2. **CDC.** Subscribes to entity mutation hooks for the first four
