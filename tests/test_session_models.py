@@ -363,6 +363,10 @@ class TestSessionMessageKind:
             # Structural rewind marker: the replay walk drops visible
             # rows past its to_seq, keeping the log append-only.
             "rewind_marker",
+            # Delivery frame for a notifying tool call (S3).
+            "client_action",
+            # One record per model call at the agent-loop seam (S7).
+            "llm_call",
             "yielded",
             "resumed",
             "done",

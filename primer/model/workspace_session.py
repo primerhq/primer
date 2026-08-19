@@ -701,6 +701,16 @@ class SessionMessageKind(StrEnum):
     # history, and this record is never sent to the model. Attached
     # clients execute it best-effort off the tap.
     CLIENT_ACTION = "client_action"
+    # One record per model call at the shared agent-loop seam
+    # (primer/agent/loop.py). Payload: ``{"profile_id": str,
+    # "provider_id": str, "model": str, "input_tokens": int,
+    # "output_tokens": int, "duration_ms": int, "status": "ok"}``. Adds
+    # per-CALL resolution inside multi-call turns, which the turn log's
+    # per-TURN completed event cannot give. Display/derivation only:
+    # prompt rebuild never sees it (only role/parts Message lines are
+    # history), and transcript renderers hide it - it is Trace-tab
+    # material. Carries ``node_id`` when the call ran inside a graph node.
+    LLM_CALL = "llm_call"
 class SessionMessageRecord(BaseModel):
     """One row in the per-session append-only message log.
 

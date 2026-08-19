@@ -68,6 +68,9 @@ class TapEventClass(StrEnum):
     # Mirrors SessionMessageKind.CLIENT_ACTION: the browser-facing delivery
     # frame for a notifying tool call.
     CLIENT_ACTION = "client_action"
+    # One event per model call. Trace-tab material: the transcript
+    # renderer skips it (ui/components/session-adapter.jsx).
+    LLM_CALL = "llm_call"
 class TapEvent(BaseModel):
     """Normalised tap event ready for wire transmission.
 
