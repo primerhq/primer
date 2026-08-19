@@ -440,6 +440,10 @@ function SH_SessionDoc(props) {
         onScroll={function () { if (decision.follow) setSeen(rows.length); }}>
         <SH_TurnList rows={rows} sid={sid}
           agentId={agentId} approvedBy={approvedBy} />
+        {window.SH_walkthroughState(flat).active
+          && typeof window.SH_Walkthrough === "function"
+          ? <window.SH_Walkthrough sid={sid} />
+          : null}
         {typeof window.SH_VoiceReplies === "function" ? (
           <window.SH_VoiceReplies sid={sid} rows={rows}
             agentId={agentId}
