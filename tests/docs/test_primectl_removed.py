@@ -140,10 +140,11 @@ def _hits() -> list[str]:
     found: list[str] = []
     for path in _tracked_files():
         # Excluded for the reason this file is: holding the name in
-        # order to forbid it is the whole job of both gates.
+        # order to forbid it is the whole job of each of these gates.
         if not path.exists() or path.name in (
             "test_primectl_removed.py",
             "test_definition_of_done.py",
+            "test_cutover_checklist.py",
         ):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
