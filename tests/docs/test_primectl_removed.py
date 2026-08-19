@@ -12,6 +12,7 @@ had no API coverage and either delete it or rewrite it needlessly.
 
 from __future__ import annotations
 
+import tomllib
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
@@ -67,3 +68,39 @@ def test_primer_cli_tests_are_kept() -> None:
     init_test = TESTS / "cli" / "test_init_command.py"
     assert init_test.exists()
     assert "import primer.cli" in init_test.read_text(encoding="utf-8")
+
+
+def _pyproject() -> dict:
+    with (REPO / "pyproject.toml").open("rb") as fh:
+        return tomllib.load(fh)
+
+
+def test_workspace_member_is_gone() -> None:
+    assert not (REPO / "primectl").exists()
+    members = _pyproject().get("tool", {}).get("uv", {}).get("workspace", {})
+    assert "primectl" not in members.get("members", [])
+
+
+def test_version_pin_is_gone() -> None:
+    pins = _pyproject()["tool"]["semantic_release"]["version_toml"]
+    assert all("primectl" not in pin for pin in pins)
+    assert "pyproject.toml:project.version" in pins
+    assert "runtime/pyproject.toml:project.version" in pins
+
+
+def test_release_pipeline_has_no_cli_package() -> None:
+    release = (REPO / ".github" / "workflows" / "release.yml").read_text(
+        encoding="utf-8"
+    )
+    assert "primectl" not in release
+
+
+def test_ci_sync_steps_do_not_install_the_cli() -> None:
+    for name in ("ci.yml", "e2e.yml"):
+        body = (REPO / ".github" / "workflows" / name).read_text(encoding="utf-8")
+        assert "./primectl" not in body, f"{name} still installs the CLI"
+
+
+def test_dependabot_has_no_cli_entry() -> None:
+    body = (REPO / ".github" / "dependabot.yml").read_text(encoding="utf-8")
+    assert "primectl" not in body

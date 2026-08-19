@@ -38,7 +38,7 @@ jobs:
         # without it the backend-specific suites would be skipped or fail.
         run: |
           uv sync --all-extras --dev --group docs
-          uv pip install --no-deps ./primectl ./runtime
+          uv pip install --no-deps ./runtime
       - name: Lint (ruff)
         run: uv run ruff check .
       - name: Import contracts (import-linter)

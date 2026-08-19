@@ -88,9 +88,6 @@ build-backend = "hatchling.build"
 # pinned stack without a separate --group docs sync.
 default-groups = ["dev", "docs"]
 
-[tool.uv.workspace]
-members = ["primectl"]
-
 
 [tool.hatch.build.targets.wheel]
 packages = ["primer"]
@@ -254,7 +251,6 @@ allow_zero_version = true
 version_toml = [
     "pyproject.toml:project.version",
     "runtime/pyproject.toml:project.version",
-    "primectl/pyproject.toml:project.version",
 ]
 build_command = ""
 commit_message = "chore(release): {version} [skip ci]"
