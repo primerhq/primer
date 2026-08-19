@@ -62,7 +62,7 @@ def test_file_refs_keep_their_slashes_and_survive_the_round_trip() -> None:
         ' anchor: "L10-L30"})'
     )
     assert url == "#/w/ws-1?doc=file:src/api.ts#L10-L30"
-    back = json.loads(ctx.eval("JSON.stringify(SH_parseUrl(%s))" % json.dumps(url)))
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
     assert back["doc"] == {"kind": "file", "ref": "src/api.ts"}
     assert back["anchor"] == "L10-L30"
 
@@ -73,7 +73,7 @@ def test_hostile_refs_are_encoded_not_lost() -> None:
         'SH_buildUrl({wid: "ws-1", doc: {kind: "wiki", ref: "a&b?c#d/e"}})'
     )
     assert "&b" not in url.split("doc=wiki:")[1].split("&")[0] or True
-    back = json.loads(ctx.eval("JSON.stringify(SH_parseUrl(%s))" % json.dumps(url)))
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
     assert back["doc"]["ref"] == "a&b?c#d/e"
 
 

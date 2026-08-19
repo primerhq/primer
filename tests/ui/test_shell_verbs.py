@@ -58,13 +58,13 @@ def test_lint_accepts_verb_noun_title_case_and_parenthesised_aliases() -> None:
     ctx = _ctx()
     for good in ("Open Session", "Park Session (Pause)", "Split Right",
                  "Switch Binding", "Approve Gate"):
-        assert ctx.eval("SH_lintVerbLabel(%s) === null" % json.dumps(good)), good
+        assert ctx.eval(f"SH_lintVerbLabel({json.dumps(good)}) === null"), good
 
 
 def test_lint_rejects_the_four_junk_drawer_shapes() -> None:
     ctx = _ctx()
     for bad in ("session", "open session", "Sessions", "open Session"):
-        assert ctx.eval("SH_lintVerbLabel(%s) !== null" % json.dumps(bad)), bad
+        assert ctx.eval(f"SH_lintVerbLabel({json.dumps(bad)}) !== null"), bad
 
 
 def test_registration_rejects_an_unlinted_label() -> None:

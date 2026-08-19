@@ -43,7 +43,7 @@ def test_overlay_labels_pass_the_registration_lint() -> None:
     m = re.search(r"var SH_OVERLAY_LABELS = \{([\s\S]*?)\n\};", src)
     for label in re.findall(r':\s*"([^"]+)"', m.group(1)):
         assert ctx.eval(
-            "SH_lintVerbLabel(%s) === null" % json.dumps(label)
+            f"SH_lintVerbLabel({json.dumps(label)}) === null"
         ), label
 
 
