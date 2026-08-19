@@ -12,6 +12,13 @@
 // other twelve reused pages; Task 20 adds the designer-fresh admin.
 
 var SH_OVERLAY_MOUNTS = {
+  admin: {
+    // Sections carry their own role gates, so the overlay itself opens
+    // for anyone: a non-admin sees the sections they are allowed.
+    render: function (state) {
+      return <window.SH_AdminOverlay section={state.section} id={state.id} />;
+    },
+  },
   providers: {
     // S4's standalone-mountable catalog (ui/components/provider-catalog.jsx,
     // the M11d props-only contract). The class comes off the section segment
