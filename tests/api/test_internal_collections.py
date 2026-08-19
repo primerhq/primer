@@ -236,6 +236,21 @@ class _FakeStore:
             if c == cid
         ][:k]
 
+    async def search_by_meta(self, cid, meta):
+        """Every record in the collection whose meta matches.
+
+        Missing entirely until now, which mattered: the status route
+        counts indexed documents through this call and swallows any
+        error as a zero, so the suite reported "indexed 0" for every
+        run and could not have noticed a bootstrap that indexed
+        nothing.
+        """
+        return [
+            r for (c, _, _), r in self.records.items()
+            if c == cid
+            and all(r.meta.get(k) == v for k, v in (meta or {}).items())
+        ]
+
 
 class _FakeEmbedder:
     """One embedding per input, which is the contract callers rely on.
@@ -554,6 +569,11 @@ class TestBootstrap:
         assert body["status"] == "succeeded"
         assert body["state"] == "ready"
         assert body["error"] is None
+        # A run that indexed nothing is not a successful run. Without
+        # this the suite stayed green through a bootstrap that walked
+        # every document, skipped every one, and reported ready.
+        assert body["documents_total"] > 0, body
+        assert body["documents_indexed"] > 0, body
 
 
 # ===========================================================================
