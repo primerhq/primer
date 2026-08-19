@@ -118,3 +118,25 @@ def test_limits_are_required_on_both_families() -> None:
             config={"url": "http://tts.local:8004/v1"},
         )
 
+
+
+def test_speech_names_are_importable_through_the_provider_facade() -> None:
+    import primer.model.provider as facade
+
+    for name in (
+        "SpeechToTextConfig",
+        "SpeechToTextProvider",
+        "SpeechToTextProviderType",
+        "TextToSpeechConfig",
+        "TextToSpeechProvider",
+        "TextToSpeechProviderType",
+    ):
+        assert hasattr(facade, name), f"{name} missing from the provider facade"
+        assert name in facade.__all__, f"{name} missing from provider.__all__"
+
+
+def test_facade_names_are_the_same_objects_as_the_submodule() -> None:
+    from primer.model.provider import SpeechToTextProvider as ViaFacade
+    from primer.model.providers.speech import SpeechToTextProvider as ViaModule
+
+    assert ViaFacade is ViaModule
