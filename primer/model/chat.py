@@ -1345,6 +1345,41 @@ class _GraphNodeEvent(BaseModel):
     )
 
 
+class _ClientAction(BaseModel):
+    """Synthetic event: the runner delivered a NOTIFYING tool call.
+
+    Reachable only through :class:`ExtendedEvent`. The agent loop emits
+    one per notifying call, just before the call's synthetic tool_result.
+    The session persistence translator turns it into a ``client_action``
+    record, which flows the existing workspace tap to every attached
+    client; the browser executes it best-effort. Not produced by any LLM
+    adapter.
+
+    Lives in this module for the same reason as
+    :class:`_ExecutorToolResult`: keeping the
+    :data:`ExtendedStreamContent` union self-contained.
+    """
+
+    type: Literal["client_action"] = Field(
+        default="client_action",
+        description="Discriminator tag identifying this as a client-action delivery event.",
+    )
+    call_id: str = Field(
+        ...,
+        min_length=1,
+        description="Identifier of the ToolCallPart this delivery belongs to.",
+    )
+    name: str = Field(
+        ...,
+        min_length=1,
+        description="Scoped tool id of the notifying call (toolset_id__bare_name).",
+    )
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The call's arguments, passed through verbatim to the client.",
+    )
+
+
 ExtendedStreamContent = Annotated[
     RawReasoningDelta
     | RefusalDelta
@@ -1355,6 +1390,7 @@ ExtendedStreamContent = Annotated[
     | Logprobs
     | SafetyRatings
     | _ExecutorToolResult
+    | _ClientAction
     | _GraphNodeEvent,
     Field(discriminator="type"),
 ]
