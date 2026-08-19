@@ -1,9 +1,41 @@
 {
-  "surfaces": [],
-  "doc_kinds": ["session", "file", "diff", "wiki"],
+  "surfaces": [
+    {
+      "id": "session-detail",
+      "file": "session-detail.json",
+      "describes": "Session doc: the flat session row plus binding, park state and queued steers"
+    },
+    {
+      "id": "session-list",
+      "file": "session-list.json",
+      "describes": "Rail sessions list: live, waiting (parked), ended"
+    },
+    {
+      "id": "tap-frames",
+      "file": "tap-frames.json",
+      "describes": "Workspace tap frames driving live turn rendering"
+    }
+  ],
+  "doc_kinds": [
+    "session",
+    "file",
+    "diff",
+    "wiki"
+  ],
   "overlays": [
-    "providers", "collections", "agents", "graphs", "triggers",
-    "toolsets", "tools", "workers", "approvals", "admin",
-    "harnesses", "services", "channels", "workspaces"
+    "providers",
+    "collections",
+    "agents",
+    "graphs",
+    "triggers",
+    "toolsets",
+    "tools",
+    "workers",
+    "approvals",
+    "admin",
+    "harnesses",
+    "services",
+    "channels",
+    "workspaces"
   ]
 }
