@@ -34,12 +34,6 @@ const NAV = [
     ],
   },
   {
-    group: "Web",
-    items: [
-      { id: "web-search", label: "Web Search", icon: "search", adminOnly: true },
-    ],
-  },
-  {
     group: "Toolsets",
     items: [
       { id: "toolsets", label: "Toolsets", icon: "tools" },

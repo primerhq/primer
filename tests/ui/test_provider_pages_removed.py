@@ -74,10 +74,13 @@ def test_the_sidebar_lost_the_three_entries() -> None:
 def test_the_docs_embeds_moved_to_the_catalog() -> None:
     src = _read("components/docs/embed-registry.jsx")
     assert '"ProvidersPage"' not in src
-    assert src.count('component: "ProviderCatalog"') == 3
+    # Four: the three model-family embeds plus web search, which folded
+    # into the same catalog when its page was deleted.
+    assert src.count('component: "ProviderCatalog"') == 4
     assert 'initialClass: "llm"' in src
     assert 'initialClass: "embedding"' in src
     assert 'initialClass: "cross_encoder"' in src
+    assert 'initialClass: "web_search"' in src
 
 
 def test_no_cross_page_hint_points_at_a_dead_path() -> None:
@@ -114,3 +117,33 @@ def test_the_studio2_legacy_table_points_at_the_catalog() -> None:
     ):
         assert dead not in src, dead
     assert '{ ref: "/providers",' in src
+
+
+def test_the_web_search_page_is_gone() -> None:
+    assert not (UI / "components" / "web_search.jsx").exists()
+    assert "components/web_search.jsx" not in _read("index.html")
+
+
+def test_nothing_still_renders_the_web_search_page() -> None:
+    for path in UI.rglob("*.jsx"):
+        src = path.read_text(encoding="utf-8")
+        assert "WebSearchPage" not in src, path
+
+
+def test_the_web_search_route_and_nav_entry_are_gone() -> None:
+    assert "web-search" not in _route_keys()
+    assert 'if (root === "web-search")' not in _read("app.jsx")
+    assert 'id: "web-search"' not in _read("components/chrome.jsx")
+    assert '"/web-search"' not in _read("foundation/router.js")
+
+
+def test_the_web_search_docs_embed_moved_to_the_catalog() -> None:
+    src = _read("components/docs/embed-registry.jsx")
+    assert 'initialClass: "web_search"' in src
+
+
+def test_the_reserved_row_guard_still_has_a_home() -> None:
+    """DuckDuckGo cannot be deleted; the catalog shows the backend's 403
+    rather than hiding the button behind a copied id list."""
+    src = _read("components/provider-catalog.jsx")
+    assert 'data-testid="provider-row-error"' in src

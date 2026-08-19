@@ -151,9 +151,9 @@
       props: { initialClass: "cross_encoder", onNavigate: function () {} },
     },
     "web-search": {
-      component: "WebSearchPage",
+      component: "ProviderCatalog",
       fixtures: "web-search",
-      props: { pushToast: function () {} },
+      props: { initialClass: "web_search", onNavigate: function () {} },
     },
     "workspace-provider-create": {
       // The workspace providers list/create lives in WorkspaceProvidersPage

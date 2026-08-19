@@ -57,7 +57,6 @@
     { pattern: "/settings/linked-accounts",        page: "LinkedAccountsPage" },
     { pattern: "/admin/users",                     page: "AdminUsersPage" },
     { pattern: "/admin/sso-providers",             page: "SsoProvidersPage" },
-    { pattern: "/web-search",                      page: "WebSearchPage" },
     { pattern: "/docs",                             page: "DocsPage" },
     { pattern: "/docs/:section",                    page: "DocsPage" },
     { pattern: "/docs/:section/:slug",              page: "DocsPage" },

@@ -72,7 +72,6 @@ function App() {
       return "toolsets";
     }
     if (root === "tools") return "tools";
-    if (root === "web-search") return "web-search";
     if (root === "providers") return "providers";
     if (root === "subsystems") {
       if (path.startsWith("/subsystems/internal-collections")) return "internal-collections";
@@ -400,7 +399,6 @@ function App() {
       toolsets: "/toolsets",
       "toolset-detail": (e) => `/toolsets/${e}`,
       tools: "/tools",
-      "web-search": "/web-search",
       "semantic-search": "/ssp",
       "ssp-detail": (e) => `/ssp/${e}`,
       "internal-collections": "/subsystems/internal-collections",
@@ -659,19 +657,6 @@ function App() {
       </>
     );
     pageBody = <ToolsPage pushToast={pushToast} />;
-  } else if (page === "web-search") {
-    pageHeader = (
-      <>
-        <div>
-          <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>Providers</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Web search</span>
-          </div>
-          <h1 className="page-title">Web search</h1>
-          <div className="page-sub">Active config + providers · DuckDuckGo built-in · Tavily configurable</div>
-        </div>
-      </>
-    );
-    pageBody = <window.WebSearchPage pushToast={pushToast} />;
   } else if (page === "toolset-detail" && currentToolsetId) {
     pageHeader = (
       <>
