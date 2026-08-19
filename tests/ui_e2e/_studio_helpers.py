@@ -287,3 +287,22 @@ def action_item_for_session(page: Page, sid: str):
     return page.locator('[data-testid="action-item"]').filter(
         has=page.locator('[data-testid="action-session-link"]')
     )
+
+
+def open_provider_catalog(
+    page: Page,
+    console_url: str,
+    *,
+    cls: str | None = None,
+    instance_id: str | None = None,
+    via: str = "url",
+    timeout: int = 20_000,
+):
+    """Open the unified provider catalog and wait for its class rail.
+
+    ``via="url"`` deep-links the catalog (``#/providers?class=<cls>&id=<id>``,
+    the deep-link shape pinned in Task 18); ``via="sidebar"`` clicks the single
+    Providers nav entry instead, which is the reachability path Task 39
+    asserts. S8 re-hosts the catalog as an overlay: when it does, THIS function
+    is the only navigation site that changes.
+    """
