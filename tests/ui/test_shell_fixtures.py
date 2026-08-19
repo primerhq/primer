@@ -136,3 +136,21 @@ def test_diff_fixture_carries_per_file_patches() -> None:
     assert commit["files"], "a diff doc with no files teaches nothing"
     for f in commit["files"]:
         assert set(f) >= {"path", "patch", "additions", "deletions"}
+
+
+def test_attention_and_boot_fixtures_carry_the_gating_facts() -> None:
+    """Voice gating, role gating and the setup gate are all designable."""
+    caps = json.loads((FIXTURES / "capabilities.json").read_text(encoding="utf-8"))
+    assert set(caps["speech"]) == {"stt_configured", "tts_configured"}
+
+    auth = json.loads((FIXTURES / "auth-status.json").read_text(encoding="utf-8"))
+    assert set(auth) >= {
+        "has_user", "authenticated", "username", "role",
+        "setup_complete", "setup_missing",
+    }
+
+    yields = json.loads((FIXTURES / "pending-yields.json").read_text(encoding="utf-8"))
+    kinds = {row["tool_name"] for row in yields["items"]}
+    assert "ask_approval" in kinds and "ask_user" in kinds, (
+        "attention needs both a decision card and a question to design against"
+    )

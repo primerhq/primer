@@ -39,6 +39,36 @@
       "id": "wiki-document",
       "file": "wiki-document.json",
       "describes": "Wiki doc: a collection document with children"
+    },
+    {
+      "id": "pending-yields",
+      "file": "pending-yields.json",
+      "describes": "Attention: parked gates and questions"
+    },
+    {
+      "id": "approval-records",
+      "file": "approval-records.json",
+      "describes": "Approvals overlay: resolved history"
+    },
+    {
+      "id": "workers-stats",
+      "file": "workers-stats.json",
+      "describes": "Workers overlay counters"
+    },
+    {
+      "id": "turn-timeline",
+      "file": "turn-timeline.json",
+      "describes": "Trace tab: one turn's tree incl. a nested subagent"
+    },
+    {
+      "id": "capabilities",
+      "file": "capabilities.json",
+      "describes": "Capability and voice gating"
+    },
+    {
+      "id": "auth-status",
+      "file": "auth-status.json",
+      "describes": "Boot probe: login, password, wizard, shell"
     }
   ],
   "doc_kinds": [
