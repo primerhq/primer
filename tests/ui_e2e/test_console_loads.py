@@ -36,7 +36,6 @@ _ROUTES: list[tuple[str, str]] = [
     ("#/agents",                            "Agents"),
     ("#/graphs",                            "Graphs"),
     ("#/knowledge/collections",             "Collections"),
-    ("#/knowledge/documents",               "Documents"),
     ("#/toolsets",                          "Toolsets"),
     ("#/providers/llm",                     "LLM providers"),
     ("#/providers/embedding",               "Embedding providers"),

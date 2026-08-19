@@ -9,11 +9,13 @@ collection.
 
 Pages traversed:
   1. /providers/embedding — verify the seeded embedding provider is
-     visible (operator's mental model: collections need an embedder).
+     visible.
   2. /knowledge/collections — click "New collection" → fill form →
-     submit → assert modal closes, success toast, row appears.
-  3. /knowledge/documents — assert the empty-state (no documents
-     ingested yet) since we just created the collection.
+     submit → assert modal closes and the row appears. S2: creating a
+     collection no longer asks for an embedder or a vector store, so the
+     form is id + description only; search is opt-in afterwards.
+  3. Open the collection and create a document in its tree, then grep
+     for its text.
   4. Back to /knowledge/collections - verify our collection still
      appears (no churn between page transitions).
 
@@ -107,28 +109,11 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=5_000)
 
-        # Fill the ID + description. Both inputs are inside .field
-        # containers; locate by their labels.
-        # The modal's first input is "ID"; second is "Description";
-        # then two <select>s for provider + model.
+        # S2: id + description only. No embedder, no vector store: a
+        # collection is a text wiki first and search is opt-in later.
         inputs = modal.locator("input.input")
         inputs.nth(0).fill(coll_id)
         inputs.nth(1).fill(f"journey collection {unique_suffix}")
-
-        # The provider dropdown auto-populates to the first option per
-        # NewCollectionModal's useEffect. With only our seeded provider,
-        # the default selection should be it. Verify it.
-        selects = modal.locator("select.select")
-        # First select = embedding provider; verify our id is selected.
-        selected = selects.nth(0).input_value()
-        # If the default isn't our id (e.g. an older row exists), pick
-        # ours explicitly.
-        if selected != emb_id:
-            selects.nth(0).select_option(value=emb_id)
-
-        # Model dropdown auto-seeds from the provider's models list. Our
-        # provider has one model "stub-embed".
-        selects.nth(1).select_option(value="stub-embed")
 
         # Submit.
         modal.get_by_role("button", name="Create").first.click()
@@ -141,17 +126,27 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
             page.locator(f"tr:has-text('{coll_id}')").first
         ).to_be_visible(timeout=10_000)
 
-        # ===== 3. /knowledge/documents — empty-state for our new coll =====
-        page.goto(
-            f"{console_url}#/knowledge/documents",
-            wait_until="domcontentloaded",
-        )
-        page.locator("h1.page-title").get_by_text(
-            "Documents", exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
-        # Either the empty-state OR a populated table renders cleanly;
-        # we don't pin the exact empty-state copy (could vary by run
-        # if a prior test left a stray document).
+        # ===== 3. Open the collection, create a doc, grep for it ==========
+        page.locator(f"tr:has-text('{coll_id}')").first.get_by_role(
+            "button", name="Open",
+        ).click()
+
+        page.get_by_role("button", name="New document").first.click()
+        doc_modal = page.locator(".modal").first
+        doc_modal.wait_for(state="visible", timeout=5_000)
+        doc_inputs = doc_modal.locator("input.input")
+        doc_inputs.nth(0).fill("journey-doc")
+        doc_modal.locator("textarea.input").first.fill("needle in the wiki")
+        doc_modal.get_by_role("button", name="Create").first.click()
+        doc_modal.wait_for(state="hidden", timeout=10_000)
+
+        # Grep works with no embedder configured: that is the point of
+        # the v2 model.
+        page.get_by_placeholder("grep (regex)").fill("needle")
+        page.get_by_role("button", name="Grep").first.click()
+        expect(
+            page.get_by_text("journey-doc:1", exact=False).first
+        ).to_be_visible(timeout=10_000)
 
         # ===== 4. Back to /knowledge/collections - row still present ======
         page.goto(

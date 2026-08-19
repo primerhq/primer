@@ -64,7 +64,8 @@ function App() {
     if (root === "approvals") return "approvals";
     if (root === "knowledge") {
       if (path.startsWith("/knowledge/collections")) return "collections";
-      if (path.startsWith("/knowledge/documents")) return "documents";
+      // The flat documents page folded into the collections tree (S2).
+      if (path.startsWith("/knowledge/documents")) return "collections";
       return "collections";
     }
     if (root === "toolsets") {
@@ -110,7 +111,7 @@ function App() {
   const docsFilterCollection = query.collection || "";
   // Reflect collection filter in the URL — Documents page reads it back via query.
   const setDocsFilterCollection = (cid) => {
-    const next = cid ? "#/knowledge/documents?collection=" + encodeURIComponent(cid) : "#/knowledge/documents";
+    const next = cid ? "#/knowledge/collections?collection=" + encodeURIComponent(cid) : "#/knowledge/collections";
     window.location.hash = next;
   };
   const [paletteOpen, setPaletteOpen] = React.useState(false);
@@ -401,7 +402,7 @@ function App() {
       workers: "/workers",
       health: "/health",
       collections: "/knowledge/collections",
-      documents: (e) => e ? `/knowledge/documents?collection=${encodeURIComponent(e)}` : "/knowledge/documents",
+      documents: (e) => e ? `/knowledge/collections?collection=${encodeURIComponent(e)}` : "/knowledge/collections",
       toolsets: "/toolsets",
       "toolset-detail": (e) => `/toolsets/${e}`,
       tools: "/tools",
@@ -739,27 +740,8 @@ function App() {
     pageBody = (
       <CollectionsPage
         pushToast={pushToast}
-        onOpen={(cid) => navigate("documents", cid)}
+        onOpen={(cid) => navigate("collections", cid)}
         onNavigate={navigate}
-      />
-    );
-  } else if (page === "documents") {
-    pageHeader = (
-      <>
-        <div>
-          <div className="crumb">
-            <a onClick={() => navigate("dashboard")}>Knowledge</a><span className="sep">/</span><span style={{ color: "var(--text)" }}>Documents</span>
-          </div>
-          <h1 className="page-title">Documents</h1>
-          <div className="page-sub">Ingested docs across all collections</div>
-        </div>
-      </>
-    );
-    pageBody = (
-      <DocumentsPage
-        pushToast={pushToast}
-        filterCollection={docsFilterCollection}
-        onClearFilter={() => setDocsFilterCollection("")}
       />
     );
   } else if (page === "graphs") {

@@ -20,7 +20,6 @@ LIST_ROUTES = [
     "/agents",
     "/graphs",
     "/knowledge/collections",
-    "/knowledge/documents",
     "/toolsets",
     "/providers/llm",
     "/providers/embedding",
