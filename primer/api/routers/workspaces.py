@@ -1644,6 +1644,93 @@ async def interrupt_session(
         return s
 
 
+class SessionAttachBody(BaseModel):
+    """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/attach``."""
+
+    client_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description=(
+            "Opaque per-tab client identifier. Re-posting with the same id "
+            "is the heartbeat: it extends the TTL and leaves the "
+            "attach-time high-water mark untouched."
+        ),
+    )
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/attach",
+    summary="Attach a client to a session (also the heartbeat)",
+    responses=common_responses(404, 422, 500),
+)
+async def attach_session(
+    body: SessionAttachBody = Body(...),
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Register (or refresh) a live client attachment for this session.
+
+    Turns STARTED while an attachment is live carry the client toolset
+    (S3 spec section 4). ``attached_seq`` is the replay fence the caller
+    must apply to delivery records: execute above it, render at or below.
+    """
+    from primer.model.client_attachment import ClientAttachment
+    from primer.session.attachment import ATTACH_TTL_SECONDS, attach_or_refresh
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    att = await attach_or_refresh(
+        storage_provider.get_storage(ClientAttachment),
+        workspace_id=workspace_id,
+        session_id=session_id,
+        client_id=body.client_id,
+        last_seq=row.last_seq,
+    )
+    return {
+        "client_id": att.client_id,
+        "attached_seq": att.attached_seq,
+        "expires_at": att.expires_at.isoformat(),
+        "ttl_seconds": ATTACH_TTL_SECONDS,
+    }
+
+
+@sessions_router.delete(
+    "/workspaces/{workspace_id}/sessions/{session_id}/attach",
+    summary="Detach a client from a session",
+    responses=common_responses(404, 422, 500),
+)
+async def detach_session(
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    client_id: str = Query(..., min_length=1),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Best-effort detach. The TTL covers a client that never calls it."""
+    from primer.model.client_attachment import ClientAttachment
+    from primer.session.attachment import detach
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    removed = await detach(
+        storage_provider.get_storage(ClientAttachment),
+        session_id=session_id,
+        client_id=client_id,
+    )
+    return {"detached": removed}
+
+
 # ===========================================================================
 # Files sub-resource
 # ===========================================================================
