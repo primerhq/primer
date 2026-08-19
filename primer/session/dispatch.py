@@ -608,6 +608,9 @@ async def run_one_session_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
+        await _publish_terminal(
+            deps.event_bus, session_id, SessionStatus.ENDED, "failed",
+        )
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
@@ -674,6 +677,9 @@ async def run_one_session_turn(
             await _clear_interrupt_requested(session_storage, session_id)
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
+        await _publish_terminal(
+            deps.event_bus, session_id, new_status, ended_reason,
+        )
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
         await _realize_pending_at_checkpoint(deps, session)
@@ -710,6 +716,10 @@ async def run_one_session_turn(
         await _clear_interrupt_requested(session_storage, session_id)
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
         await _advance_drain_cursor(session_storage, session_id)
+
+    await _publish_terminal(
+        deps.event_bus, session_id, new_status, ended_reason,
+    )
 
     # Every terminal exit drains, not just this one: a queued steer is
     # the user's message, and dropping it because their turn errored
@@ -964,6 +974,33 @@ async def _advance_drain_cursor(session_storage, session_id: str) -> None:
     if target > fresh.next_unprocessed_seq:
         await session_storage.update(
             fresh.model_copy(update={"next_unprocessed_seq": target})
+        )
+
+
+async def _publish_terminal(
+    event_bus,
+    session_id: str,
+    status: SessionStatus,
+    ended_reason: str | None,
+) -> None:
+    """Announce that this turn reached a terminal state.
+
+    The interactive webhook hold (primer/trigger/hold.py) awaits this key
+    instead of polling the row, per S6 section 9. Advisory: a publish
+    failure must never block the lease release, so it is swallowed with a
+    log and the hold falls back to its wait cap.
+    """
+    if event_bus is None:
+        return
+    try:
+        await event_bus.publish(
+            f"session:{session_id}:terminal",
+            {"status": status.value, "ended_reason": ended_reason},
+        )
+    except Exception:  # noqa: BLE001 - advisory; never block the release
+        logger.warning(
+            "session %s: terminal event publish failed", session_id,
+            exc_info=True,
         )
 
 
