@@ -97,7 +97,7 @@ erDiagram
 | `primer/toolset/system.py` | `channel_provider` / `channel` CRUD tools + `set_reply_binding` / `clear_reply_binding` + `create_channel_binding` / `list_channel_bindings` / `delete_channel_binding`. |
 | `primer/toolset/workspace_ext.py` | `subscribe_to_channel_event` yielding tool (parks a session until a matching channel event). |
 | `ui/components/channel_rules.jsx` | Console rule editor (capability-aware event picker + binding list). |
-| `ui/components/channels.jsx` | Console UI for channel entities; `ui/components/chrome.jsx` adds sidebar entries. |
+| `ui/components/channels.jsx` | Console UI for channel entities, hosted by the shell's `channels` overlay. |
 
 ## 5. Data model
 

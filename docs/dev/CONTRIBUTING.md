@@ -73,8 +73,11 @@ a one-line reason; it may not simply be omitted.
 ### Frontend
 
 - Add the page component under `ui/components/` and export it on `window`.
-- Register the route in `ui/foundation/router.js`.
-- Add the sidebar entry in `ui/components/chrome.jsx` when the page is top-level.
+- Add its overlay name to `SH_OVERLAYS` in `ui/foundation/shell-url.js` and a mount
+  for it in `ui/components/shell/sh-overlay-host.jsx`.
+- Give it a verb label in `SH_OVERLAY_LABELS` (`ui/components/shell/sh-doc-host.jsx`);
+  an overlay no verb opens is one a user cannot find, and the dual-render guard
+  fails on it.
 - Provide a mobile adaptation via `useViewport`.
 - Render loading, error, and empty states for every `useResource`.
 - Wire user feedback through `pushToast`.

@@ -157,12 +157,10 @@ rewind, and chat cancel-while-awaiting all resolve open rows to
 ## Console + primectl
 
 The console shows a pending banner (`ui/components/external-tools.jsx`,
-`window.ExternalPendingBanner`) on the session panel
-(`ui/components/studio-center.jsx`) and chat detail
-(`ui/components/chats.jsx`): read-only plus operator cancel; responding
-is the invoker's job. The agent editors (classic `ui/components/agents.jsx`
-and studio2 `ui/components/studio2/s2-doc-agent.jsx`) expose the
-`allow_external_tools` toggle. `primectl external-tools list | pending |
+`window.ExternalPendingBanner`) on the shell's session document
+(`ui/components/shell/sh-session-doc.jsx`): read-only plus operator
+cancel; responding is the invoker's job. The agent editor
+(`ui/components/agents.jsx`) exposes the `allow_external_tools` toggle. `primectl external-tools list | pending |
 respond` covers scripting; `respond` resolves the owning workspace and
 posts the same `tool_results` body the API uses.
 

@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-The UI foundation is the shared substrate every operator-console page is built on. It is a small set of hand-written browser primitives under `ui/foundation/` plus the console chrome and shared components, all of which attach to a single global namespace, `window.primerApi`. The foundation owns the cross-cutting concerns so that no page has to reinvent them: HTTP against the REST + ProblemDetails contract (`apiFetch`, `ApiError`), polled read state with dedupe and cancellation (`useResource`), optimistic write state (`useMutation`), hash routing (`useRouter`), the toast queue (`useToast`), client-side preferences (`useTweaks`), idle-pause and viewport breakpoints (`idle.js`, `useViewport`), the chrome shell (`Topbar`, `Sidebar`, `MobileNav`, `CommandPalette`), the shared primitives (`Modal`, `Banner`, `Btn`, `Icon`, `StatusPill`, the toast stack, and the mobile shells), the user-docs renderer at `/docs` with its markdown-directive dispatch, and the theme tokens.
+The UI foundation is the shared substrate every operator-console page is built on. It is a small set of hand-written browser primitives under `ui/foundation/` plus the shared components, all of which attach to a single global namespace, `window.primerApi`. The foundation owns the cross-cutting concerns so that no page has to reinvent them: HTTP against the REST + ProblemDetails contract (`apiFetch`, `ApiError`), polled read state with dedupe and cancellation (`useResource`), optimistic write state (`useMutation`), the router shim (`useRouter`), the toast queue (`useToast`), client-side preferences (`useTweaks`), idle-pause and viewport breakpoints (`idle.js`, `useViewport`), the shared primitives (`Modal`, `Banner`, `Btn`, `Icon`, `StatusPill`, the toast stack, and the mobile shells), the user-docs renderer at `/docs` with its markdown-directive dispatch, and the theme tokens.
 
 This doc is about the shared foundation only. Per-page composition (dashboard tiles, session detail panels, the graph editor, channel forms, the per-page mobile retrofits) lives in the companion doc [ui-pages.md](ui-pages.md). The foundation is deliberately thin: each module is a self-invoking function with no build step, no imports, and no framework beyond React loaded as a global.
 
@@ -12,28 +12,22 @@ A hard rule the spec set and the code enforces: pages must route all I/O through
 
 The console is a single-page React app served from the same FastAPI origin as the REST API. There is no bundler and no `package.json`; `ui/index.html` lists every source file as an inert `<script type="text/babel">` tag, and the backend (`primer/api/_jsx_bundle.py`) reads that list at startup, transpiles each file inside an embedded V8 isolate, and serves the concatenated result as a single `/console/_app.js`. The browser only loads three vendored UMD scripts (React, ReactDOM, html2canvas) plus that one bundle. The `text/babel` tags are the source-of-truth bundle order; the browser ignores them.
 
-Every foundation module attaches its public surface to `window.primerApi`. There is no React context provider wrapping the tree; shared state lives at module scope (the `useResource` cache, the toast queue, the tweaks store) so that non-React callers can read and write it too. Modules load in dependency order from `ui/index.html`: `api.js` then `toast.js` then `use-resource.js` then `use-mutation.js` then `capabilities.js` then `router.js` then `tweaks.js` then `idle.js` then `viewport.js`, followed by the vendor helpers, shared primitives, and page components.
+Every foundation module attaches its public surface to `window.primerApi`. There is no React context provider wrapping the tree; shared state lives at module scope (the `useResource` cache, the toast queue, the tweaks store) so that non-React callers can read and write it too. Modules load in dependency order from `ui/index.html`: `api.js` then `toast.js` then `use-resource.js` then `use-mutation.js` then `capabilities.js` then `tweaks.js` then `idle.js` then `viewport.js`, followed by the shell's own `shell-*.js` modules, the vendor helpers, shared primitives, and page components.
 
-The chrome wraps the active page. `ui/app.jsx` is the root shell: it reads the route from `useRouter()`, derives a page name from the path, owns most of the live polling (sidebar counts, worker stats, IC config, palette docs), and renders the chrome around the page body.
+There is no chrome layer any more. `ui/app.jsx` is one mount: `AuthGate` wrapping `SH_RootGate`. The shell owns its own regions and its own polling, and the foundation is what it and every re-hosted page share underneath. See [ui-pages.md](ui-pages.md) for the shell itself.
 
 ```mermaid
 graph TD
-    App["app.jsx (root shell)"] --> Topbar
-    App --> Sidebar
-    App --> MobileNav
-    App --> CommandPalette
-    App --> ToastStack["toast-stack"]
-    App --> Page["active page (ui-pages.md)"]
-    Topbar -->|onOpenDrawer| MobileNav
-    MobileNav --> Sidebar
-    Page --> PageHeader["page-header"]
-    Page --> PageBody["page-body"]
-    App -. "useRouter().path -> page name" .-> Page
-    App -. "counts / workerStats / icConfig as props" .-> Sidebar
-    App -. "counts / workerStats as props" .-> Topbar
+    App["app.jsx (the mount)"] --> Auth["AuthGate (auth.jsx)"]
+    Auth --> Shell["SH_RootGate (ui-pages.md)"]
+    Shell --> Toasts["SH_ToastHost -> toast-stack"]
+    Shell --> Confirm["ConfirmHost (shared.jsx)"]
+    Shell --> Surfaces["rail / tabs / overlays / palette"]
+    Surfaces -. "useResource, useMutation, apiFetch" .-> Found["ui/foundation/*"]
+    Surfaces -. "useRouter over overlay state" .-> Shim["shell-router-shim.js"]
 ```
 
-On a mobile viewport the desktop `Sidebar` is hidden by CSS and the `MobileNav` drawer (opened by the topbar hamburger) wraps the same `Sidebar` inside an overlay; `app.jsx` owns the `drawerOpen` state and auto-closes the drawer on route change.
+The shell adapts to narrow viewports itself rather than swapping in a separate mobile surface; `useViewport` remains the shared breakpoint primitive that both it and the re-hosted pages read.
 
 ## 3. Architecture patterns implemented
 
@@ -45,7 +39,7 @@ On a mobile viewport the desktop `Sidebar` is hidden by CSS and the `MobileNav` 
 
 - **Module-scope state instead of React context.** The cache, toast queue, idle flag, and tweaks store all live at module scope on `window.primerApi`. This lets `useMutation` enqueue an error toast from outside the React tree and lets `idle.js` re-arm every poll on wake without a provider.
 
-- **Hash routing.** `useRouter` is a hash router (`#/path?query`) with a first-match-wins routes table. Hash routing was chosen over `history.pushState` so the backend never has to rewrite console URLs back to `index.html`, the app works on `file://`, and the security-headers middleware needs no special casing.
+- **`useRouter` is a shim over overlay state, not a router.** The hash router and its routes table are gone: the console has one URL grammar, owned by the shell (`ui/foundation/shell-url.js`), and every management surface is an overlay within it. The re-hosted page components still call `window.primerApi.useRouter()` for `params.id` and `navigate`, so `ui/foundation/shell-router-shim.js` publishes the same `{path, params, query, navigate}` contract sourced from the ACTIVE overlay's `<name>:<section>:<id>` segments, and translates `navigate(path)` back into opening an overlay. The hash is still the address, for the same reasons it always was: the backend never rewrites console URLs, and the security-headers middleware needs no special casing.
 
 - **Single bundle, viewport-aware components.** Mobile support is one bundle and one CSS file with viewport-aware components, not a separate mobile SPA. `useViewport` re-emits only when the viewport crosses a band boundary, so placing it in every page is cheap.
 
@@ -57,18 +51,17 @@ The foundation primitives, all self-invoking and all contributing to `window.pri
 - `ui/foundation/capabilities.js` - `useCapabilities`, `capabilityHint`, `extraInstalled`, `CapabilityGate`, and `EXTRA_FOR_PROVIDER_TYPE`. Wraps `GET /v1/capabilities` so pages render honest not-installed states instead of offering backends the server cannot run; `extraInstalled` treats unknown as installed so a page never flashes the gate while the fetch is in flight. See [modularity](modularity.md).
 - `ui/foundation/use-resource.js` - `useResource`, the shared cache `Map`, `_eq` structural equality, the page-wide `visibilitychange` listener, and the internal helpers (`findKeys`, `peekData`, `replaceData`, `refetchKey`, `refetchAll`) exposed under `window.primerApi._resource` and `window.primerApi._refetchAll`.
 - `ui/foundation/use-mutation.js` - `useMutation`.
-- `ui/foundation/router.js` - `useRouter`, the routes table on `window.primerApi.routes`, `parseHash`/`buildHash`/`navigate`, and `matchRoute`/`_router` test helpers.
+- `ui/foundation/shell-router-shim.js` - `useRouter` over overlay state: `SH_shimPath`, `SH_shimParams`, `SH_shimQuery` (the section slot doubles as a tabbed page's `?tab=`), `SH_shimNavigate`, and `SH_installRouterShim`. It is the only provider of `primerApi.useRouter`, pinned by a flag-day test.
 - `ui/foundation/toast.js` - `useToast` plus the module-level `toastPush`/`toastDismiss` entry points.
 - `ui/foundation/tweaks.js` - `useTweaks`, the `localStorage` persistence of `theme`, and the synchronous flash-prevention theme apply.
 - `ui/foundation/idle.js` - the global idle flag and the wake-up `_refetchAll` call.
 - `ui/foundation/viewport.js` - `useViewport` with the mobile/tablet/desktop bands and the `?force-desktop=1` escape hatch.
 
-The chrome and shared components:
+The shared components:
 
-- `ui/components/chrome.jsx` - `Sidebar`, `MobileNav`, `Topbar`, `CommandPalette`, and the private `ThemeToggle`/`UserMenu`. `NAV` is a hard-coded section table; the chrome is presentational and receives counts/workerStats/page as props from `ui/app.jsx`.
 - `ui/components/shared.jsx` - the shared primitives `Icon`, `Btn`, `Modal`, `StatusPill`, `Banner`, plus `Sparkline`/`relativeTime`/`fmtDate`, all attached to `window`. `Modal` reads `window.primerApi.useViewport` and renders as a bottom sheet on mobile.
 - `ui/components/shared/` - the mobile shells `bottom-sheet.jsx`, `card-list.jsx`, `mobile-tabs.jsx`, `floating-action.jsx`, and `token-meter.jsx`, loaded after `shared.jsx`.
-- `ui/app.jsx` - the root shell: routing, chrome-level polling, the toast stack, and the page dispatch.
+- `ui/app.jsx` - the mount, and nothing else: `AuthGate` wrapping `SH_RootGate`.
 
 The bundling and serving glue lives on the API side (`primer/api/app.py`: `_mount_console`, `_install_console_csp`, `_install_jsx_bundle`, `_install_root_redirect`, `_CachingStaticFiles`; `primer/api/_jsx_bundle.py`: the `JSXBundler`). The vendored dependencies and their audit trail are under `ui/vendor/` with `ui/vendor/MANIFEST.md`.
 
@@ -122,7 +115,7 @@ sequenceDiagram
     H->>E: last subscriber gone -> abort, clear, delete entry
 ```
 
-Route-to-page dispatch: a hash change fires `hashchange`, `useRouter` re-parses `location.hash` into `{path, params, query}`, resolves the path against the first-match-wins routes table (unknown paths become `/__notfound__`), and `ui/app.jsx` maps the resolved path to a page name in a single match block and renders the matching page component. Navigation is always `window.primerApi.useRouter().navigate(path, query)`, called directly by leaf pages and the chrome; there is no prop-drilled navigate callback. A missing initial hash is forced to `#/`.
+Address handling: the shell parses `location.hash` into `{wid, doc, overlay, anchor}` and writes it back whenever any of those four change, so every document and overlay is a pasteable link. A re-hosted page component that calls `useRouter().navigate(path)` is not leaving the shell; the shim reads the path as "show me this deeper thing" and opens the corresponding overlay instead. See [ui-pages.md](ui-pages.md) for the grammar.
 
 The bundle lifecycle runs once at server startup: `_install_jsx_bundle` reads the `text/babel` script list from `ui/index.html`, transpiles each file (applying a Babel plugin that rewrites top-level `const`/`let` to `var` so the concatenated files share one global scope), and serves the result at `/console/_app.js` with a strong ETag and a 5-minute `must-revalidate` cache.
 
@@ -150,7 +143,7 @@ Everything the foundation exposes is on `window.primerApi`:
 - `useViewport()` - returns `{width, isMobile, isTablet, isDesktop}` over the 639px / 1023px bands.
 - `idle` - the boolean idle flag; `_refetchAll()` re-fires every active entry.
 
-The chrome components exported as globals are `Sidebar`, `MobileNav`, `Topbar`, and `CommandPalette`; the shared primitives are `Icon`, `Btn`, `Modal`, `StatusPill`, `Banner`, plus `Sparkline`/`relativeTime`/`fmtDate`. The mobile shells `CardList`/`Card`, `BottomSheet`, `MobileTabs`, and `Fab` are exposed for page consumption. The markdown layer exposes `window.MarkdownDirectives.register(prefix, handler)` and `window.DocsEmbeds`.
+The shared primitives exported as globals are `Icon`, `Btn`, `Modal`, `StatusPill`, `Banner`, plus `Sparkline`/`relativeTime`/`fmtDate`. The mobile shells `CardList`/`Card`, `BottomSheet`, `MobileTabs`, and `Fab` are exposed for page consumption. The markdown layer exposes `window.MarkdownDirectives.register(prefix, handler)` and `window.DocsEmbeds`.
 
 The bundle and console are served at the HTTP level: `GET /console/` serves `ui/index.html`, `GET /console/_app.js` serves the transpiled bundle, `GET /` 307-redirects to `/console/`, and a strict Content-Security-Policy is applied to `/console/*` responses only (never to `/v1/*` JSON).
 
@@ -162,7 +155,7 @@ The bundle and console are served at the HTTP level: `GET /console/` serves `ui/
 - **The T0103a cold-start retry.** `apiFetch` retries exactly once on a 502 whose envelope `type` is `/errors/provider-error` and whose detail matches `/pg_type_typname_nsp_index|relation .* does not exist/i`. This is the only automatic retry; it covers a known transient CREATE-TABLE race and does not mask other failures.
 - **422 humanizing.** Any 422 envelope is reshaped to `title: "Data is incomplete"` and a `detail` of `Missing or invalid: a, b (+N more).` synthesized from the `extensions.errors` loc paths, so form fallbacks show something useful instead of "Validation Error". Modals still read `fieldErrors` for per-field inline display.
 - **Network failures become a uniform envelope.** When `fetch()` itself throws (offline, DNS, TLS), `apiFetch` synthesizes an `ApiError` with `type: "/errors/network-error"` and `status: 0` so consumers see one shape regardless of transport failure.
-- **The IC-config 404 is the one silently-swallowed error.** The Internal Collections config endpoint 404s when unconfigured, which is the most common operator state, so the chrome treats 404 as "off" rather than surfacing a toast. Every other 404 is an operator-visible error.
+- **The IC-config 404 is the one silently-swallowed error.** The Internal Collections config endpoint 404s when unconfigured, which is the most common operator state, so the console treats 404 as "off" rather than surfacing a toast. Every other 404 is an operator-visible error.
 - **`pollMs` changes apply in place.** A second effect updates the entry's cadence without tearing down and rebuilding the cache entry, so a caller that adapts `pollMs` to the response does not loop through `data=undefined` rebuilds.
 - **Bundle order is the `index.html` script list.** `ui/index.html` is the single source of truth for transpile and load order; foundation modules must precede the components that consume them, and `viewport.js` plus the four `shared/` primitives must load before any page that branches on `isMobile`.
 
@@ -185,8 +178,8 @@ The user-docs service has its own Python coverage under `tests/user_docs/` (tree
 - **Polling halts after three consecutive errors until a manual refetch.** Why: a failing endpoint should not keep retrying every cadence; manual refetch is the operator recovery path. Spec: docs/superpowers/specs/2026-05-15-web-console-implementation-design.md.
 - **T0103a is the only automatic retry in `apiFetch`.** Why: the cold-start CREATE-TABLE race surfaces as a specific 502 provider-error signature and one retry resolves it without masking other failures. Spec: docs/superpowers/specs/2026-05-15-web-console-implementation-design.md.
 - **Pages must not call `apiFetch` directly.** Why: it forces all I/O through the hook layer where polling, cancellation, dedupe, and stale-while-error live. Spec: docs/superpowers/specs/2026-05-15-web-console-implementation-design.md.
-- **Idle-pause moved from the chrome design into `ui/foundation/idle.js`.** Why: every `useResource` caller needed it, not just chrome polls, so implementing it as a foundation primitive (the global flag plus `_refetchAll`) gave every page the behaviour with zero per-call opt-in. Spec: docs/superpowers/specs/2026-05-16-ui-chrome-design.md.
-- **Chrome polls were centralised in `ui/app.jsx` instead of inside the chrome components.** Why: counts and worker stats feed multiple surfaces, so pulling probes into the parent gave one shared cache key for free and kept the chrome components testable with prop fixtures. Spec: docs/superpowers/specs/2026-05-16-ui-chrome-design.md.
+- **Idle-pause moved out of the console shell into `ui/foundation/idle.js`.** Why: every `useResource` caller needed it, not just the shell's own polls, so implementing it as a foundation primitive (the global flag plus `_refetchAll`) gave every page the behaviour with zero per-call opt-in. Spec: docs/superpowers/specs/2026-05-16-ui-chrome-design.md.
+- **Shell-wide polls are centralised in the root, not inside each surface.** Why: counts and worker stats feed multiple surfaces, so probing once in the parent gives one shared cache key for free and keeps the surfaces testable with prop fixtures. The classic console did this in `ui/app.jsx`; the shell does it in its own root, and the reason is unchanged. Spec: docs/superpowers/specs/2026-05-16-ui-chrome-design.md.
 - **The IC-config 404 is the only silently-trapped error in the UI.** Why: the IC subsystem deliberately 404s when unconfigured, which is the most common operator state, and surfacing it as an error would crowd out real failures. Spec: docs/superpowers/specs/2026-05-16-ui-chrome-design.md.
 - **Only the `theme` tweak is persisted, applied to the document root synchronously at script load.** Why: mockup-era knobs should reset on reload so an operator cannot strand themselves in a broken demo, and the synchronous apply avoids a dark-mode flash on light reload. Spec: docs/superpowers/specs/2026-05-16-ui-foundation-design.md.
 - **React, ReactDOM, and Babel were moved off the unpkg CDN and self-hosted under `ui/vendor/` with a sha256 manifest.** Why: a Shai-Hulud-class supply-chain mitigation; zero third-party fetches mean no CDN allowance in the CSP and no install-time or import-time attack surface. Spec: docs/superpowers/specs/2026-05-16-ui-foundation-design.md.

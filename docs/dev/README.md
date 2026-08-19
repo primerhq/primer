@@ -188,14 +188,11 @@ flowchart TD
   turn parks, and the caller resumes it with the result through the same
   invocation API.
 - [ui-foundation](subsystems/ui-foundation.md) - the shared browser substrate every
-  console page builds on: the HTTP client, the polled-read and optimistic-write hooks,
-  hash routing, the chrome shell, and the shared primitives.
-- [ui-studio2](subsystems/ui-studio2.md) - the opt-in Studio2 trial shell at #/studio2:
-  one persistent frame with a command registry, document tabs, and a same-origin
-  iframe bridge to every un-migrated classic page.
-- [ui-pages](subsystems/ui-pages.md) - the per-page layer of the operator console: the
-  repeating list-and-detail page shapes, the loader and confirmation conventions, and a
-  page-by-page route index.
+  console surface builds on: the HTTP client, the polled-read and optimistic-write
+  hooks, the router shim over overlay state, and the shared primitives.
+- [ui-pages](subsystems/ui-pages.md) - the fresh shell: one workspace-scoped surface
+  whose navigation is a verb registry, whose documents are deep-linkable tabs, and
+  whose management surfaces are overlays re-hosting the page components.
 - [modularity](subsystems/modularity.md) - the modular-monolith contract: one wheel with
   a lean core, optional subsystems behind packaging extras, capability discovery, and the
   two boundary rules enforced by the core-install lane and the import-linter contracts.
