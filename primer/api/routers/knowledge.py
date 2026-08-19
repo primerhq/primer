@@ -47,7 +47,14 @@ from primer.api.registries import ProviderRegistry, SemanticSearchRegistry
 from primer.api.routers._cdc_hooks import register_cdc_kind
 from primer.api.routers._crud import make_crud_router
 from primer.model.chat import TextPart
-from primer.model.collection import Collection, Document
+from primer.model.collection import (
+    ChunkingConfig,
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+    Document,
+)
+from primer.model.search import CollectionCrossEncoder
 from primer.model.except_ import (
     BadRequestError,
     ConflictError,
@@ -56,6 +63,11 @@ from primer.model.except_ import (
 )
 from primer.knowledge.grep import grep_collection
 from primer.knowledge.importer import import_zip
+from primer.knowledge.lifecycle import (
+    disable_search,
+    enable_search,
+    search_status,
+)
 from primer.search.run import run_collection_search
 
 
@@ -428,6 +440,80 @@ async def move_collection_document(
     if await collections.get(collection_id) is None:
         raise NotFoundError(f"Collection {collection_id!r} does not exist")
     await service.move(collection_id=collection_id, src=body.src, dst=body.dst)
+
+
+class _SearchEnableBody(BaseModel):
+    """CollectionSearchConfig as the API accepts it: state and error are
+    lifecycle-owned, never client-set."""
+
+    embedder: CollectionEmbedder
+    vector_store_provider_id: str = Field(..., min_length=1)
+    cross_encoder: CollectionCrossEncoder | None = None
+    chunking: ChunkingConfig = Field(default_factory=ChunkingConfig)
+
+
+@collection_router.put(
+    "/collections/{collection_id}/search",
+    summary="Enable semantic search and backfill the collection",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def enable_collection_search(
+    collection_id: str = Path(..., description="Collection id"),
+    body: _SearchEnableBody = Body(...),
+    collections=Depends(get_collection_storage),
+    registry: ProviderRegistry = Depends(get_provider_registry),
+    ssr=Depends(get_semantic_search_registry),
+    request: Request = None,  # noqa: RUF013 - FastAPI fills this
+) -> dict:
+    """Turn semantic search on and index what is already there.
+
+    The backfill runs inline: collections are text-only and bounded, so a
+    caller learns the outcome from this response rather than polling. A
+    failure leaves the partial index intact and the state in ``error``;
+    re-issuing the same PUT retries.
+    """
+    await _require_writable(collections, collection_id)
+    cfg = CollectionSearchConfig(**body.model_dump())
+    updated = await enable_search(
+        request.app.state.storage_provider, registry, ssr,
+        collection_id=collection_id, cfg=cfg,
+    )
+    return updated.model_dump(mode="json")
+
+
+@collection_router.delete(
+    "/collections/{collection_id}/search",
+    status_code=204,
+    summary="Disable semantic search and drop the collection's vectors",
+    responses=common_responses(404, 500),
+)
+async def disable_collection_search(
+    collection_id: str = Path(..., description="Collection id"),
+    collections=Depends(get_collection_storage),
+    ssr=Depends(get_semantic_search_registry),
+    request: Request = None,  # noqa: RUF013 - FastAPI fills this
+) -> None:
+    """Always succeeds: a missing provider or namespace still disables."""
+    await _require_writable(collections, collection_id)
+    await disable_search(
+        request.app.state.storage_provider, ssr, collection_id=collection_id,
+    )
+
+
+@collection_router.get(
+    "/collections/{collection_id}/search",
+    summary="Report search state and indexing progress",
+    responses=common_responses(404, 500),
+)
+async def get_collection_search_status(
+    collection_id: str = Path(..., description="Collection id"),
+    ssr=Depends(get_semantic_search_registry),
+    request: Request = None,  # noqa: RUF013 - FastAPI fills this
+) -> dict:
+    status = await search_status(
+        request.app.state.storage_provider, ssr, collection_id=collection_id,
+    )
+    return status.model_dump(mode="json")
 
 
 @collection_router.post(
