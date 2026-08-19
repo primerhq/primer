@@ -122,10 +122,9 @@ ReplyTarget (where the action's reply goes):
 
 ChannelCorrelation (DB, internal):
 - Keyed `(channel_id, anchor)`.
-- `kind`: `"chat"` or `"session"`.
-- For `kind="chat"`: `chat_id`.
-- For `kind="session"`: `workspace_id`, `session_id`, `tool_call_id`
-  (the currently-pending gate).
+- `kind`: `"session"`. A platform thread IS a session, one to one.
+- `workspace_id`, `session_id`, `tool_call_id` (the currently-pending
+  gate, or absent when the thread is mapped with no gate open).
 - Anchor = thread id (Slack/Discord) / gate message id (Telegram)
   / `"__active_chat__"` for single-type channels.
 

@@ -113,14 +113,13 @@ A policy itself has no lifecycle beyond `enabled / disabled`. The
 ## Pending-approval HTTP endpoints
 
 Operators (and channel bridges) can query which approval is currently
-waiting on a session or chat:
+waiting on a session:
 
 ```
 GET /v1/sessions/{session_id}/tool_approval/pending
-GET /v1/chats/{chat_id}/tool_approval/pending
 ```
 
-Both return 200 with the same envelope when an approval is pending:
+It returns 200 with this envelope when an approval is pending:
 
 ```json
 {

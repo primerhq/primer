@@ -76,13 +76,12 @@ context (see the `Subscription` row below).
 A `Subscription` row:
 - `id` - operator-chosen.
 - `trigger_id` - the parent trigger.
-- `kind` - `chat_message | agent_fresh_session | graph_fresh_session
-  | parked_session | start_chat`. Determines the dispatch target.
-- `config` - discriminated by kind. For `chat_message`:
-  `{chat_id: "..."}`. For `agent_fresh_session`: `{agent_id: "...",
-  workspace_id: "..."}`. For `graph_fresh_session`: `{graph_id: "...",
-  workspace_id: "..."}`. For `start_chat`: `{agent_id: "..."}` (opens
-  a fresh chat with that agent; used by channel rules). For
+- `kind` - `agent_fresh_session | graph_fresh_session | session_append
+  | parked_session`. Determines the dispatch target.
+- `config` - discriminated by kind. For `agent_fresh_session`:
+  `{agent_id: "...", workspace_id: "..."}`. For `graph_fresh_session`:
+  `{graph_id: "...", workspace_id: "..."}`. For `session_append`:
+  the session the delivery is appended to. For
   `parked_session`: dynamic - created at yield time by
   `subscribe_to_trigger`.
 - `payload_template` - optional Jinja2 template rendered against the

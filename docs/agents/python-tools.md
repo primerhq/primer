@@ -72,7 +72,7 @@ def whoami(ctx) -> str:
 ```
 
 `ctx` is **data only**: `tool_call_id`, `session_id`, `workspace_id`,
-`chat_id`, `parked_at`. It is not the live `ToolContext` object, because the
+`parked_at`. It is not the live `ToolContext` object, because the
 tool runs in a separate process. `ctx.inform` is not available.
 
 ### Yielding tools
