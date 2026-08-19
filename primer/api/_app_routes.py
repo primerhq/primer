@@ -166,6 +166,10 @@ def _mount_routers(
     app.include_router(tts_providers_helpers_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(tts_providers_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(speech_active_config_router, prefix=prefix, dependencies=admin_dep)
+    # Audio proxy. Browser-facing, so it is a FEATURE surface (require_user)
+    # rather than admin: any signed-in operator may dictate or listen.
+    from primer.api.routers.audio import audio_router
+    app.include_router(audio_router, prefix=prefix, dependencies=user_dep)
     # Phase 2 — compute (Agent + Graph) — authoring feature => require_user.
     app.include_router(compute.agent_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=user_dep)
