@@ -416,6 +416,9 @@ function SH_SessionDoc(props) {
 
   return (
     <div className="sh-session" data-testid={"shell-session:" + sid}>
+      {typeof window.SH_ClientTools === "function"
+        ? <window.SH_ClientTools sid={sid} />
+        : null}
       <header className="sh-session-head">
         <SH_BindingChip sid={sid} binding={binding}
           epoch={session && session.binding_epoch} />

@@ -133,6 +133,20 @@ var SH_api = {
         + encodeURIComponent(sid) + "/interrupt", {});
   },
 
+  // S3 attach lifecycle. POST both attaches and heartbeats; DELETE
+  // detaches. One URL builder, so the two can never drift.
+  attach: function (wid, sid, clientId) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/attach", { client_id: clientId });
+  },
+
+  detach: function (wid, sid, clientId) {
+    return window.primerApi.apiFetch(
+      "DELETE", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/attach", { client_id: clientId });
+  },
+
   // S1 spec section 6: {kind, agent_id | graph_id, profile_id?}.
   switchBinding: function (wid, sid, binding) {
     return window.primerApi.apiFetch(
