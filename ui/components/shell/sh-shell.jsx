@@ -163,6 +163,11 @@ function SH_Shell(props) {
       setOverlay({ name: name, section: section || null, id: id || null });
     },
     closeOverlay: function () { setOverlay(null); },
+    // One active workspace at a time (spec section 3). Rebuilding the URL
+    // rather than mutating state keeps refresh and back/forward honest.
+    switchWorkspace: function (nextWid) {
+      window.location.hash = SH_buildUrl({ wid: nextWid });
+    },
     setAnchor: setAnchor,
     toast: function (msg) {
       if (window.primerApi.toastPush) {

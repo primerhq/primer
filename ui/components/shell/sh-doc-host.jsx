@@ -24,6 +24,12 @@ var SH_OVERLAY_LABELS = {
 
 function SH_registerCoreVerbs(shell) {
   shell.registry.register({
+    id: "workspace.switch", label: "Switch Workspace", chord: "Ctrl+Shift+p",
+    surfaces: ["topbar", "rail", "palette"],
+    run: function () { shell.openOverlay("workspaces"); },
+  });
+
+  shell.registry.register({
     id: "doc.close", label: "Close Tab", chord: "Ctrl+w",
     surfaces: ["tab-menu", "palette"],
     run: function () {
