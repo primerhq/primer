@@ -43,8 +43,9 @@ const NAV = [
   {
     group: "Providers",
     items: [
-      { id: "semantic-search", label: "Semantic Search", icon: "subsystem", countKey: "ssps", adminOnly: true },
-      { id: "channel-providers", label: "Channels", icon: "bell", adminOnly: true },
+      // One entry: every class lives on the catalog's own rail, and the
+      // component is mounted standalone by the studio overlay in S8.
+      { id: "providers", label: "Providers", icon: "llm", adminOnly: true },
     ],
   },
   {

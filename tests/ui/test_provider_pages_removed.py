@@ -147,3 +147,26 @@ def test_the_reserved_row_guard_still_has_a_home() -> None:
     rather than hiding the button behind a copied id list."""
     src = _read("components/provider-catalog.jsx")
     assert 'data-testid="provider-row-error"' in src
+
+
+def test_the_providers_group_is_one_entry() -> None:
+    """S4 section 6: one Providers entry, not a per-class list. The class
+    rail inside the catalog is where the classes live now."""
+    src = _read("components/chrome.jsx")
+    group = src.split('group: "Providers"', 1)[1].split("group:", 1)[0]
+    ids = re.findall(r'id:\s*"([\w-]+)"', group)
+    assert ids == ["providers"], ids
+    assert "providers" in _route_keys()
+
+
+def test_the_class_pages_the_catalog_hosts_keep_their_routes() -> None:
+    """Semantic search and channel providers lost their NAV entries, not
+    their routes: their detail views still navigate back through them
+    (ui/app.jsx:671,678,686,622)."""
+    routes = _route_keys()
+    assert routes >= {
+        "semantic-search",
+        "ssp-detail",
+        "channel-providers",
+        "channel-provider-detail",
+    }
