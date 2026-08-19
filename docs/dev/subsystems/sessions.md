@@ -263,7 +263,7 @@ Top-level under `/v1/sessions`:
 - `GET /` list, `POST /find` predicate find, `GET /{sid}` get.
 - `GET /{sid}/turn_log?limit&offset&since_seq` reads `turns.jsonl` via the workspace runtime (`_read_workspace_turn_log`); a missing file or a vanished workspace returns an empty page so the UI can still render the Turn-log tab.
 
-The session WebSocket mirrors the chat WebSocket at `/v1/chats/{id}/ws`; see [chats.md](./chats.md) for the symmetric surface.
+The session WebSocket is the only conversational socket: the chat surface it once mirrored was retired in S6, when a platform thread became a session.
 
 ## 9. Internal contracts
 

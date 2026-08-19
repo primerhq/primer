@@ -34,7 +34,7 @@ disk.
 
 After those, jump to the relevant subsystem doc under
 [docs/dev/subsystems/](subsystems/) for the feature you are touching (for example
-`subsystems/sessions.md`, `subsystems/chats.md`, `subsystems/knowledge.md`,
+`subsystems/sessions.md`, `subsystems/knowledge.md`,
 `subsystems/triggers.md`, `subsystems/channels.md`, `subsystems/ui-pages.md`).
 
 ## 2. Completeness checklist

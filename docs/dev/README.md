@@ -155,9 +155,9 @@ flowchart TD
 - [graphs](subsystems/graphs.md) - the Pregel-style executor for declarative directed
   graphs of agent nodes, with templated inputs, conditional routing, map-reduce
   fan-out/fan-in, and a tool-approval checkpoint protocol.
-- [chats](subsystems/chats.md) - the WebSocket-driven conversational surface: a
-  long-lived `Chat` plus append-only message log whose turns are detached onto the
-  worker pool and reuse the yielding-tool park machinery.
+- [bootstrap-operator](subsystems/bootstrap-operator.md) - first-run setup and the
+  marker-independent ensure pass that seeds the default workspace, the operator and
+  builder agents, and the system collection at every startup.
 - [channels](subsystems/channels.md) - the event-to-action bridge for Slack, Telegram, and
   Discord: inbound provider events are normalized and matched against `channel`-trigger
   bindings to drive actions, while outbound session traffic (gates, lifecycle, final result)

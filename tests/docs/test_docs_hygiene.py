@@ -37,7 +37,6 @@ SUBSYSTEM_DOCS = [
     "sessions",
     "agents",
     "graphs",
-    "chats",
     "channels",
     "knowledge",
     "semantic-search",
@@ -49,6 +48,7 @@ SUBSYSTEM_DOCS = [
     "ui-foundation",
     "ui-pages",
     "modularity",
+    "bootstrap-operator",
 ]
 
 ARCH_HEADINGS = [
