@@ -36,6 +36,7 @@ from primer.worker.io_shim import _WorkspaceIOShim
 from primer.worker.identity import stable_worker_label
 from primer.worker._toolset_ids import _toolset_ids_from_scoped  # noqa: F401  re-export
 
+import primer.observability.metrics as _metrics
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
 
 if TYPE_CHECKING:
@@ -395,20 +396,32 @@ class WorkerPool:
         key = (lease.kind, lease.entity_id)
         scope = _CancelScope()
         self._active_scopes[key] = scope
+        # Lease acquire -> release IS the task boundary (12-s7-design.md
+        # section 4): this wrapper brackets every lane's handler.
+        task_t0 = time.monotonic()
+        task_status = "ok"
         try:
             async with scope:
                 await handler(lease)
         except asyncio.CancelledError:
+            task_status = "cancelled"
             logger.info(
                 "engine handler for %s/%s cancelled (preempted)",
                 lease.kind, lease.entity_id,
             )
         except Exception:
+            task_status = "error"
             logger.exception(
                 "engine handler for %s/%s raised unexpectedly",
                 lease.kind, lease.entity_id,
             )
         finally:
+            _metrics.worker_tasks_total.labels(
+                self._worker_label, lease.kind.value, task_status,
+            ).inc()
+            _metrics.worker_task_duration_seconds.labels(
+                self._worker_label, lease.kind.value, task_status,
+            ).observe(time.monotonic() - task_t0)
             self._active_scopes.pop(key, None)
             self._in_flight.discard(key)
             self._wake.set()
