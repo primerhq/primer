@@ -10,8 +10,9 @@ provider's inbound gateway and is routed here. The precedence is:
        * ``kind="session"`` -> publish ``ask_user:{sid}:{tcid}`` so the parked
          session gate resumes (mirrors the legacy
          :class:`~primer.channel.inbound_router.ChannelInboundRouter` gate path).
-       * ``kind="chat"``    -> deliver the message to the bound chat via
-         :class:`~primer.channel.chat_router.ChatChannelRouter`.
+       * ``kind="session"`` with NO open gate -> the reply is the next user
+         message on that thread's mapped session, delivered through
+         :func:`~primer.session.steer_delivery.deliver_steer`.
 
      Either way the router returns: a correlated reply NEVER fans out to
      channel triggers.
@@ -30,13 +31,13 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
-from primer.channel.chat_router import ChatChannelRouter
 from primer.channel.correlation import CorrelationStore
 from primer.int.storage_provider import StorageProvider
 from primer.model.channel import Channel
 from primer.model.channel_event import ChannelEvent
 from primer.model.storage import Op, OffsetPage
 from primer.model.trigger import Trigger
+from primer.session.steer_delivery import DELIVERED_MISSING, deliver_steer
 from primer.storage.q import Q
 from primer.trigger.dispatch import fire_trigger as _default_fire_trigger
 from primer.trigger.subscribers import DispatchDeps
@@ -92,13 +93,6 @@ class ChannelEventRouter:
         self._bus = event_bus
         self._fire_trigger = fire_trigger
 
-    def _chat_router(self) -> ChatChannelRouter:
-        return ChatChannelRouter(
-            storage_provider=self._sp,
-            correlation_store=self._correlation,
-            event_bus=self._bus,
-        )
-
     async def route_event(
         self, *, event: ChannelEvent, channel: Channel | None
     ) -> ChannelRouteOutcome:
@@ -135,17 +129,32 @@ class ChannelEventRouter:
                 return ChannelRouteOutcome(
                     kind="gate", session_id=record.session_id,
                 )
-            if record is not None and record.kind == "chat":
-                await self._chat_router().deliver_message(
-                    channel_id=channel_id,
-                    thread_external_id=event.thread_anchor,
-                    supports_threads=event.surface == "thread",
-                    sender_name=event.sender.display_name
-                    or event.sender.external_id,
+            if record is not None and record.kind == "session":
+                # Thread-mapped session, no open gate: the reply is the next
+                # user message on that session (S6 section 5). Queueing is
+                # the parallelism a human conversation wants; a steer that
+                # lands mid-turn is realized at the drain checkpoint.
+                delivery = await deliver_steer(
+                    session_id=record.session_id,
                     text=event.text or "",
-                    media_parts=None,
+                    parallelism="queue",
+                    storage_provider=self._sp,
+                    scheduler=self._fire_deps.scheduler,
+                    claim_engine=self._fire_deps.claim_engine,
+                    workspace_registry=self._fire_deps.workspace_registry,
+                    event_bus=self._bus,
                 )
-                return ChannelRouteOutcome(kind="ignored")
+                if delivery.outcome != DELIVERED_MISSING:
+                    return ChannelRouteOutcome(
+                        kind="steer", session_id=record.session_id,
+                    )
+                # The session was deleted but the thread lives on: fall
+                # through so the fresh-thread path re-maps it.
+                logger.info(
+                    "channel event: mapping for %s/%s points at a deleted "
+                    "session; treating as a new thread",
+                    channel_id, anchor,
+                )
 
         # ----- (2) Fresh event -> fire channel triggers ----------------
         triggers = await self._resolve_channel_triggers(
