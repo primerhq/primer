@@ -27,6 +27,7 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.timeline import build_turn_timeline
 from primer.model.except_ import (
     ConflictError,
     NotFoundError,
@@ -898,6 +899,61 @@ async def get_session_messages(
     )
 
 
+@top_session_router.get(
+    "/sessions/{session_id}/turns/{turn_no}/timeline",
+    summary="Derive one turn's execution timeline",
+    responses=common_responses(404, 500),
+)
+async def get_session_turn_timeline(
+    session_id: str = Path(..., description="Session id"),
+    turn_no: int = Path(..., ge=0, description="Turn index (0-based)"),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+) -> dict:
+    """Fold this turn's records into a tree: model calls, tool round-trips,
+    graph nodes, delegated subagent calls, and any wait segment.
+
+    Pure derivation (12-s7-design.md section 6): no trace system, no new
+    write path. ``turn_no`` is the window ordinal produced by terminal
+    counting over every record in messages.jsonl, and it selects the
+    turn-log envelope run at the same ordinal. Counting is deliberately
+    done on the UNFOLDED log so a compaction or a rewind cannot retarget
+    a turn_no already in circulation; the response echoes the window's
+    ``terminal_seq`` for callers that want to re-resolve it. Works on any
+    historical session.
+    """
+    sess = await sessions.get(session_id)
+    if sess is None:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    workspace = await workspace_registry.get_workspace(sess.workspace_id)
+    if workspace is None:
+        raise NotFoundError(
+            f"Workspace {sess.workspace_id!r} for session {session_id!r} "
+            "is unavailable"
+        )
+    state_path = getattr(workspace, "state_path", ".state")
+
+    async def _lines(name: str) -> list[str]:
+        try:
+            raw = await workspace.read_file(
+                f"{state_path}/sessions/{session_id}/{name}"
+            )
+        except Exception:  # noqa: BLE001 - NotFoundError / IO / decode
+            return []
+        return raw.decode("utf-8", errors="replace").splitlines()
+
+    timeline = build_turn_timeline(
+        message_lines=await _lines("messages.jsonl"),
+        turn_log_lines=await _lines("turns.jsonl"),
+        turn_no=turn_no,
+    )
+    if timeline is None:
+        raise NotFoundError(
+            f"Session {session_id!r} has no turn {turn_no}"
+        )
+    return {"session_id": session_id, **timeline}
+
+
 __all__ = [
     "SessionCreateBody",
     "cancel_session",
@@ -905,6 +961,7 @@ __all__ = [
     "delete_session",
     "find_sessions",
     "get_session_by_id",
+    "get_session_turn_timeline",
     "list_sessions",
     "nested_session_router",
     "pause_session",
