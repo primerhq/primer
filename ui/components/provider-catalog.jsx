@@ -15,7 +15,7 @@
 // ============================================================================
 
 const PROVIDER_CLASSES = [
-  { key: "llm", label: "LLM", plural: "llm_providers", form: "crud" },
+  { key: "llm", label: "LLM", plural: "llm_providers", form: "crud", profiles: true },
   { key: "embedding", label: "Embedding", plural: "embedding_providers", form: "crud" },
   { key: "cross_encoder", label: "Cross-Encoder", plural: "cross_encoder_providers", form: "crud" },
   { key: "ssp", label: "Vector Stores", plural: "ssp", form: "panel",
@@ -81,6 +81,145 @@ function PC_InstanceList({ cls, selectedId, onSelect, reloadKey }) {
   );
 }
 
+
+// ---------------------------------------------------------------------------
+// Model profiles: LLM instances only
+// ---------------------------------------------------------------------------
+
+function PC_ProfilesPanel({ providerId }) {
+  const { useResource, apiFetch } = window.primerApi;
+  const [open, setOpen] = React.useState(false);
+  const models = useResource(
+    `pc:models:${providerId}`,
+    (signal) => apiFetch(
+      "GET", `/llm_providers/${encodeURIComponent(providerId)}/models`, null, { signal },
+    ),
+    { pollMs: null },
+  );
+  const discovered_models = models.data?.models ?? [];
+
+  return (
+    <div className="col" style={{ gap: 8 }} data-testid="provider-profiles">
+      <div className="muted text-sm">
+        Model profiles bind a model on this provider to defaults an agent
+        can name. Only LLM providers carry them.
+      </div>
+      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
+        {discovered_models.map((m) => (
+          <span key={m} className="mono text-sm chip">{m}</span>
+        ))}
+      </div>
+      <Btn icon="plus" kind="ghost" onClick={() => setOpen(true)}>New profile</Btn>
+      {open && window.MP_ProfileModal ? (
+        <window.MP_ProfileModal
+          providerId={providerId}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Active defaults, edited in place (amendment M11c)
+// ---------------------------------------------------------------------------
+
+function PC_ActiveSpeechPanel() {
+  const { useResource, apiFetch } = window.primerApi;
+  const [reloadKey, setReloadKey] = React.useState(0);
+  const [draft, setDraft] = React.useState(null);
+
+  const active = useResource(
+    `pc:speech-active:${reloadKey}`,
+    (signal) => apiFetch("GET", "/speech_active_config", null, { signal }),
+    { pollMs: null },
+  );
+  const voices = useResource(
+    "pc:voices",
+    (signal) => apiFetch("GET", "/audio/voices", null, { signal }),
+    { pollMs: null },
+  );
+
+  React.useEffect(() => {
+    if (active.data && draft === null) setDraft(active.data);
+  }, [active.data, draft]);
+
+  const row = draft || active.data || {};
+  const voiceNames = voices.data?.voices ?? [];
+
+  const save = async () => {
+    await apiFetch("PUT", "/speech_active_config", {
+      stt_provider_id: row.stt_provider_id || null,
+      tts_provider_id: row.tts_provider_id || null,
+      tts_voice: row.tts_voice || null,
+    });
+    setReloadKey((k) => k + 1);
+  };
+
+  return (
+    <div className="col" style={{ gap: 8 }} data-testid="active-speech-config">
+      <div className="muted text-sm">
+        Install-wide speech defaults. An agent may override the voice.
+      </div>
+      <input
+        className="input mono"
+        placeholder="stt_provider_id"
+        value={row.stt_provider_id || ""}
+        onChange={(e) => setDraft({ ...row, stt_provider_id: e.target.value })}
+      />
+      <input
+        className="input mono"
+        placeholder="tts_provider_id"
+        value={row.tts_provider_id || ""}
+        onChange={(e) => setDraft({ ...row, tts_provider_id: e.target.value })}
+      />
+      <select
+        className="input"
+        value={row.tts_voice || ""}
+        onChange={(e) => setDraft({ ...row, tts_voice: e.target.value })}
+      >
+        <option value="">(provider default voice)</option>
+        {voiceNames.map((v) => <option key={v} value={v}>{v}</option>)}
+      </select>
+      <Btn onClick={save}>Save defaults</Btn>
+    </div>
+  );
+}
+
+function PC_ActiveWebSearchPanel() {
+  const { useResource, apiFetch } = window.primerApi;
+  const [reloadKey, setReloadKey] = React.useState(0);
+  const [draft, setDraft] = React.useState(null);
+
+  const active = useResource(
+    `pc:websearch-active:${reloadKey}`,
+    (signal) => apiFetch("GET", "/web_search_active_config", null, { signal }),
+    { pollMs: null },
+  );
+  React.useEffect(() => {
+    if (active.data && draft === null) setDraft(active.data);
+  }, [active.data, draft]);
+  const row = draft || active.data || {};
+
+  const save = async () => {
+    await apiFetch("PUT", "/web_search_active_config", row);
+    setReloadKey((k) => k + 1);
+  };
+
+  return (
+    <div className="col" style={{ gap: 8 }} data-testid="active-web-search-config">
+      <div className="muted text-sm">Install-wide web search default.</div>
+      <input
+        className="input mono"
+        placeholder="provider_id"
+        value={row.provider_id || ""}
+        onChange={(e) => setDraft({ ...row, provider_id: e.target.value })}
+      />
+      <Btn onClick={save}>Save default</Btn>
+    </div>
+  );
+}
+
 function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   const [classKey, setClassKey] = React.useState(
     initialClass || PROVIDER_CLASSES[0].key,
@@ -89,7 +228,8 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   const [reloadKey, setReloadKey] = React.useState(0);
   const [draft, setDraft] = React.useState({});
 
-  const cls = PROVIDER_CLASSES.find((c) => c.key === classKey) || PROVIDER_CLASSES[0];
+  const klass = PROVIDER_CLASSES.find((c) => c.key === classKey) || PROVIDER_CLASSES[0];
+  const cls = klass;
 
   const selectClass = (key) => {
     setClassKey(key);
@@ -158,9 +298,14 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
         selected={cls.key}
         onSelect={selectClass}
       />
-      <div className="col" style={{ flex: 1, minWidth: 0 }}>
-        <h2 className="text-lg">{cls.label}</h2>
+      <div className="col" style={{ flex: 1, minWidth: 0, gap: 16 }}>
+        <h2 className="text-lg">{klass.label}</h2>
+        {klass.key === "stt" || klass.key === "tts" ? <PC_ActiveSpeechPanel /> : null}
+        {klass.key === "web_search" ? <PC_ActiveWebSearchPanel /> : null}
         {body}
+        {klass.profiles && instanceId ? (
+          <PC_ProfilesPanel providerId={instanceId} />
+        ) : null}
       </div>
     </div>
   );
