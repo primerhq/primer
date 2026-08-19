@@ -1,19 +1,16 @@
 """Per-collection search configuration models.
 
-A :class:`Collection` declares an optional search block
-that toggles two retrieval-augmentation techniques on top of the
-base vector search:
+A :class:`Collection` declares an optional search block that can layer
+one retrieval-augmentation technique on top of the base vector search:
 
-* :class:`CollectionCrossEncoder` — pointer to a configured
+* :class:`CollectionCrossEncoder` -- pointer to a configured
   :class:`primer.model.provider.CrossEncoderProvider` plus tuning
   knobs. When set, retrieved candidates are re-scored by the
   cross-encoder and re-sorted before being returned.
 
-Both fields are optional. Setting neither preserves today's
-behaviour (raw vector search). Setting both runs the standard
-``vector → cross-encoder rerank → MMR`` pipeline; see
-``docs/superpowers/specs/2026-05-05-mmr-cross-encoder-reranking-design.md``
-for the surrounding design.
+It is optional: leaving it unset gives raw vector search. MMR was the
+other half of this block and is no longer implemented, so the pipeline
+is ``vector -> cross-encoder rerank`` or nothing.
 """
 
 from __future__ import annotations
