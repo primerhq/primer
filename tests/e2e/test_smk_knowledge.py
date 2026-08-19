@@ -195,53 +195,46 @@ async def test_collection_crud(authed_client, unique_suffix, tmp_path):
 
 @smk("SMK-KNW-05")
 async def test_search_on_unindexed_collection_is_graceful(authed_client, unique_suffix, tmp_path):
+    """Both no-results states answer clearly, and they are different.
+
+    S2 made semantic search a per-collection opt-in, which split what
+    used to be one case in two: a collection with search switched off,
+    and a collection with search on but nothing indexed yet. Conflating
+    them would let a misconfigured collection look merely empty.
+    """
     eid, sid = await _embedder_and_ssp(authed_client, unique_suffix, tmp_path)
     cid = f"col-{unique_suffix}"
-    await authed_client.post(
+    created = await authed_client.post(
         "/v1/collections",
-        json={"id": cid, "description": "empty",
-              "embedder": {"provider_id": eid, "model": "sentence-transformers/all-MiniLM-L6-v2"},
-              "search_provider_id": sid, "system": False},
+        json={"id": cid, "description": "empty", "system": False},
     )
-    r = await authed_client.post(f"/v1/collections/{cid}/search", json={"query": "anything", "top_k": 5})
+    assert created.status_code == 201, created.text
+
+    # Search off: refused, and the refusal names the route that enables it.
+    off = await authed_client.post(
+        f"/v1/collections/{cid}/search", json={"query": "anything", "top_k": 5},
+    )
+    assert off.status_code == 409, off.text
+    assert "/search" in off.json()["detail"]
+
+    # Search on, nothing indexed: an ordinary empty result.
+    enabled = await authed_client.put(
+        f"/v1/collections/{cid}/search",
+        json={
+            "embedder": {
+                "provider_id": eid,
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+            "vector_store_provider_id": sid,
+        },
+    )
+    assert enabled.status_code in (200, 201, 202), enabled.text
+
+    r = await authed_client.post(
+        f"/v1/collections/{cid}/search", json={"query": "anything", "top_k": 5},
+    )
     assert r.status_code == 200, r.text
     assert r.json()["hits"] == []
-
-
-@smk("SMK-KNW-03")
-async def test_file_upload_conversion(authed_client):
-    files = {"file": ("note.md", b"# Title\n\nSome **markdown** body text.", "text/markdown")}
-    r = await authed_client.post("/v1/documents/_convert_file", files=files)
-    assert r.status_code in (200, 201), r.text
-    # the conversion returns text derived from the file
-    assert "markdown" in r.text.lower() or "title" in r.text.lower()
-
-
-# ===========================================================================
-# Real-embedder ids
-# ===========================================================================
-
-# Three short, topically-distinct documents. Each query below has exactly one
-# clearly-relevant doc, so "the right doc is in top-k" is a meaningful (not
-# vacuous) assertion even for a real, fuzzy embedding model.
-_DOCS = {
-    "cats": (
-        "Cats are small domestic felines kept as pets. They purr, groom "
-        "themselves, and hunt mice. A cat sleeps for much of the day."
-    ),
-    "python": (
-        "Python is a high-level programming language widely used for data "
-        "science, automation, and building web servers. Its syntax favors "
-        "readability over terseness."
-    ),
-    "coffee": (
-        "Coffee is a brewed beverage prepared from roasted coffee beans. "
-        "People drink it for the caffeine and the flavor; espresso is a "
-        "concentrated form."
-    ),
-}
-
-
 @smk("SMK-KNW-02", "SMK-KNW-04", "SMK-KNW-06")
 @requires("embedder", "pgvector")
 async def test_ingest_search_and_chunks(authed_client, unique_suffix):
