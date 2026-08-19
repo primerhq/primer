@@ -310,6 +310,9 @@ class _StatefulStore:
     async def get(self, cid, did):
         return [r for k, r in sorted(self._rows.items()) if k[0] == cid and k[1] == did]
 
+    async def search_by_meta(self, cid, *, meta):
+        return [r for k, r in sorted(self._rows.items()) if k[0] == cid]
+
 
 class _RaisingEmb:
     """Embedder that raises, simulating a transient embedder/network error."""
