@@ -1,6 +1,6 @@
 // Rewind, compact and structured-output controls for one session.
 //
-// PROPS ONLY, like the binding controls: no window.location, no ROUTES,
+// PROPS ONLY, like the binding controls: no window.location, no route table,
 // no studio import, so the next shell re-hosts this rather than
 // rewriting it.
 

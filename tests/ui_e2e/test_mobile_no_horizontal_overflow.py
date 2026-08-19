@@ -37,7 +37,7 @@ PHONE_WIDTHS = [(390, 844), (360, 800)]
 # "" means the shell root itself; the rest are legacy routes the
 # facade translates into overlays. The chats route went with the chat
 # surface in S6.
-ROUTES = ["", "agents", "workspaces", "toolsets"]
+SURFACES = ["", "agents", "workspaces", "toolsets"]
 
 
 def _overflow(page: Page) -> dict:
@@ -73,7 +73,7 @@ def _overflow(page: Page) -> dict:
 
 @pytest.mark.ui_e2e
 @pytest.mark.parametrize(("width", "height"), PHONE_WIDTHS)
-@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("route", SURFACES)
 def test_the_document_does_not_scroll_sideways_on_a_phone(
     page: Page, console_url: str, route: str, width: int, height: int,
 ) -> None:

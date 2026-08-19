@@ -90,10 +90,9 @@ def test_navigation_goes_through_the_onNavigate_callback() -> None:
     )
 
 
-def test_the_console_mounts_the_catalog_at_slash_providers() -> None:
-    src = _read("app.jsx")
-    assert re.search(r'\n\s*providers:\s*"/providers"', src)
-    assert "window.ProviderCatalog" in src
+def test_the_console_mounts_the_catalog() -> None:
+    """The overlay host is the console's only mount site."""
+    assert "window.ProviderCatalog" in _read("components/shell/sh-overlay-host.jsx")
 
 
 def test_the_shell_can_address_the_catalog() -> None:

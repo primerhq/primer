@@ -13,7 +13,6 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SRC = ROOT / "ui" / "components" / "model-profiles.jsx"
-ROUTER = ROOT / "ui" / "foundation" / "router.js"
 APP = ROOT / "ui" / "app.jsx"
 INDEX = ROOT / "ui" / "index.html"
 
@@ -40,19 +39,21 @@ class TestFoldedIn:
         assert "function MP_ProfileModal(" in src
         assert "window.MP_ProfileModal = MP_ProfileModal;" in src
 
-    def test_the_route_and_nav_entry_are_gone(self) -> None:
-        assert '"/model-profiles"' not in ROUTER.read_text(encoding="utf-8")
+    def test_no_address_or_nav_entry_reaches_it(self) -> None:
         hits = [
             p for p in (ROOT / "ui").rglob("*.js*")
             if 'id: "model-profiles"' in p.read_text(encoding="utf-8")
         ]
         assert hits == [], f"a nav entry still points at it: {hits}"
 
-    def test_the_app_no_longer_dispatches_to_it(self) -> None:
-        app = APP.read_text(encoding="utf-8")
-        assert 'root === "model-profiles"' not in app
-        assert "<ModelProfilesPage />" not in app
-        assert '"model-profiles": "/model-profiles"' not in app
+    def test_nothing_renders_it(self) -> None:
+        """The console dispatches through the overlay host now, so that
+        is where a surviving mount would be."""
+        hits = [
+            str(p.relative_to(ROOT)) for p in (ROOT / "ui").rglob("*.jsx")
+            if "ModelProfilesPage" in p.read_text(encoding="utf-8")
+        ]
+        assert hits == [], f"the page is still mounted by: {hits}"
 
     def test_it_is_still_in_the_bundle_manifest(self) -> None:
         """The file stays: the catalog mounts MP_ProfileModal from it."""

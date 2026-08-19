@@ -50,6 +50,8 @@ def test_admin_overlay_has_tokens_section():
     assert 'id: "api-tokens"' in src
 
 
-def test_app_routes_tokens():
-    src = APP.read_text()
-    assert "api-tokens" in src.lower() or "tokens" in src.lower()
+def test_the_admin_overlay_renders_the_tokens_page():
+    """The console has no route table: the overlay host IS the wiring."""
+    src = (Path(__file__).resolve().parents[2] / "ui" / "components"
+           / "shell" / "sh-admin-overlay.jsx").read_text()
+    assert "AT_ApiTokensPage" in src

@@ -158,14 +158,6 @@ def test_graphs_page_no_stale_executor_copy() -> None:
     )
 
 
-def test_graphs_page_has_accurate_subtitle() -> None:
-    src = _app()
-    # Verify an accurate description is present near the graphs page section.
-    assert "Multi-agent flows" in src, (
-        "graphs page subtitle should still identify the section as multi-agent flows"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Fix 4: Composer clear only on successful send
 # ---------------------------------------------------------------------------

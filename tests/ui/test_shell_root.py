@@ -24,18 +24,18 @@ def test_registered_and_exported() -> None:
     assert "window.SH_useShell = SH_useShell;" in src
 
 
-def test_the_gate_chain_is_auth_then_setup_then_shell() -> None:
+def test_the_gate_chain_is_auth_then_shell() -> None:
     """S5 boot probe drives login -> password -> wizard -> shell (C5).
 
-    TRANSITIONAL while both shells coexist (P2 to P4). SH_RootGate keeps
-    its own setup_complete branch only because ui/app.jsx still routes
-    through S2_RootGate; S5 P2 Task 9 owns the same branch inside AuthGate.
-    P5 Task 28 deletes this branch and rewrites this test to assert the
-    inverse [CROSSPLAN 2026-08-16, F27].
+    ONE gate owns that chain. AuthGate returns the wizard when
+    ``setup_complete`` is false and its children otherwise (S5 P2 Task
+    9), so the shell must not branch on setup a second time: two gates
+    for one decision is how a console ends up rendering the wizard
+    forever [CROSSPLAN 2026-08-16, F27].
     """
     src = _src()
-    assert "SetupWizardGate" in src
-    assert "setup_complete" in src
+    assert "SetupWizardGate" not in src
+    assert "setup_complete" not in src
     app = (UI / "app.jsx").read_text(encoding="utf-8")
     assert "SH_RootGate" in app
     assert re.search(r"AuthGate[\s\S]{0,400}SH_RootGate", app)

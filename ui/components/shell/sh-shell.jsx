@@ -228,8 +228,83 @@ function SH_Shell(props) {
         </footer>
         {typeof window.SH_Palette === "function" ? <window.SH_Palette /> : null}
         {typeof window.SH_OverlayHost === "function" ? <window.SH_OverlayHost /> : null}
+        <SH_ToastHost />
+        {/* Themed confirm()/prompt() replacement: one host renders the
+            active confirmDialog()/promptDialog() from anywhere below. */}
+        {typeof window.ConfirmHost === "function" ? <window.ConfirmHost /> : null}
       </div>
     </SH_ShellContext.Provider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// SH_ToastHost -- the one rendered toast stack, plus the global entry point
+// non-React callers use. useMutation (use-mutation.js) enqueues error toasts
+// through window.primerApi.toastPush; if nothing renders them, a mutation
+// with no explicit onError rolls back SILENTLY. A ref keeps the wrapper
+// stable while always calling the latest closure.
+// ---------------------------------------------------------------------------
+
+function SH_ToastHost() {
+  var toastState = React.useState([]);
+  var toasts = toastState[0];
+  var setToasts = toastState[1];
+  var toastSeq = React.useRef(1);
+
+  var pushToast = function (t) {
+    var id = String(toastSeq.current++);
+    setToasts(function (arr) { return arr.concat([Object.assign({}, t, { id: id })]); });
+    setTimeout(function () {
+      setToasts(function (arr) {
+        return arr.filter(function (x) { return x.id !== id; });
+      });
+    }, (t && t.kind === "error" ? 12 : 5) * 1000);
+  };
+  var removeToast = function (id) {
+    setToasts(function (arr) {
+      return arr.filter(function (x) { return x.id !== id; });
+    });
+  };
+
+  var pushToastRef = React.useRef(pushToast);
+  pushToastRef.current = pushToast;
+  var removeToastRef = React.useRef(removeToast);
+  removeToastRef.current = removeToast;
+
+  React.useEffect(function () {
+    var api = (window.primerApi = window.primerApi || {});
+    var prevPush = api.toastPush;
+    var prevDismiss = api.toastDismiss;
+    api.toastPush = function (t) { return pushToastRef.current(t); };
+    api.toastDismiss = function (id) { return removeToastRef.current(id); };
+    return function () {
+      api.toastPush = prevPush;
+      api.toastDismiss = prevDismiss;
+    };
+  }, []);
+
+  return (
+    <div className="toast-stack" data-testid="shell-toasts">
+      {toasts.map(function (t) {
+        var rid = t.requestId || t.reqId;
+        return (
+          <div key={t.id} className={"toast toast-" + (t.kind || "info")}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="title">{t.title || t.text}</div>
+              {t.detail ? <div className="detail">{t.detail}</div> : null}
+              {rid ? (
+                <div className="req-id">
+                  {"request-id "}
+                  <span style={{ color: "var(--text)" }}>{rid}</span>
+                </div>
+              ) : null}
+            </div>
+            <button type="button" className="close"
+              onClick={function () { removeToast(t.id); }}>x</button>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
@@ -250,10 +325,11 @@ function SH_RootGate() {
     { pollMs: 0, pauseWhile: function () { return !!parsed.wid; } }
   );
 
+  // AuthGate is the single boot gate now (S5 P2 Task 9 owns the setup
+  // branch inside it), so the shell only waits for auth to answer and
+  // then mounts. It kept a setup branch of its own while both consoles
+  // coexisted; two gates for one decision is one too many.
   if (status.loading) return <div className="sh-boot" data-testid="shell-boot" />;
-  if (status.data && status.data.setup_complete === false) {
-    return <window.SetupWizardGate onDone={function () { window.location.reload(); }} />;
-  }
   var wid = parsed.wid;
   if (!wid) {
     var items = (wsList.data && wsList.data.items) || [];
@@ -267,3 +343,4 @@ window.SH_ShellContext = SH_ShellContext;
 window.SH_useShell = SH_useShell;
 window.SH_Shell = SH_Shell;
 window.SH_RootGate = SH_RootGate;
+window.SH_ToastHost = SH_ToastHost;

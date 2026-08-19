@@ -3,7 +3,7 @@
 //
 // A HOST WRAPPER, not a renderer. S7 P4 Task 20 ships
 // window.SessionTracePanel({sid, turnNo, sessionStatus}) in
-// ui/components/shared/session-trace.jsx, built props-only (no ROUTES, no
+// ui/components/shared/session-trace.jsx, built props-only (no route table, no
 // window.location) expressly so this shell can re-host it unchanged. S7
 // lands before S8, and S7's only other mount (studio-center.jsx) dies at
 // the flag day, so re-hosting here is what keeps that component alive and

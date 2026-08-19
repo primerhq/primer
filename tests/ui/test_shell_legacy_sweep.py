@@ -24,9 +24,12 @@ DOOMED = [
 
 
 def _modules() -> list[Path]:
+    # test_shell_flag_day.py is excluded for the same reason as this
+    # file: holding the list of doomed names IS its job.
+    excluded = {SELF, (TESTS / "ui" / "test_shell_flag_day.py").resolve()}
     out = list((TESTS / "ui").rglob("test_*.py"))
     out += list((TESTS / "ui_e2e").rglob("test_*.py"))
-    return sorted(p for p in out if p.resolve() != SELF)
+    return sorted(p for p in out if p.resolve() not in excluded)
 
 
 def test_no_ui_test_reads_a_doomed_path() -> None:

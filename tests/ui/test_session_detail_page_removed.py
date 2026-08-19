@@ -44,11 +44,15 @@ def test_studio_reused_exports_survive() -> None:
     assert "window.SD_GraphRunView = SD_GraphRunView" in DETAIL
 
 
-def test_sessions_id_redirect_intact() -> None:
-    # /sessions/:id resolves the workspace and deep-links into the Studio.
-    assert "?open=session:" in APP, "deep-link into the Studio must remain"
-    assert "#/workspaces/" in APP, "must redirect into the workspace Studio"
-    assert "Opening session" in APP, "the in-flight redirect placeholder must remain"
+def test_a_session_is_reachable_as_a_document() -> None:
+    """There is no redirect to keep: the console has one URL grammar and
+    a session is a document in it, so a session link IS the shell URL."""
+    url = (UI / "foundation" / "shell-url.js").read_text(encoding="utf-8")
+    assert '"session"' in url, "session must be an addressable doc kind"
+    host = (UI / "components" / "shell" / "sh-doc-host.jsx").read_text(
+        encoding="utf-8"
+    )
+    assert 'kind: "session"' in host, "a verb must be able to open one"
     # The removed page component is never mounted.
     assert "<SessionDetail" not in APP
     assert "createElement(SessionDetail" not in APP

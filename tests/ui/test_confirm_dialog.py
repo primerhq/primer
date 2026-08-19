@@ -37,8 +37,10 @@ def test_dialog_host_uses_shared_modal_with_testids() -> None:
         assert f'data-testid="{testid}"' in src, testid
 
 
-def test_app_mounts_confirm_host() -> None:
-    assert "<ConfirmHost />" in APP.read_text(encoding="utf-8")
+def test_the_shell_mounts_confirm_host() -> None:
+    """One host renders the active dialog for everything below it."""
+    src = (UI / "components" / "shell" / "sh-shell.jsx").read_text(encoding="utf-8")
+    assert "window.ConfirmHost" in src
 
 
 def test_session_doc_avoids_native_confirm() -> None:

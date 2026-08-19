@@ -9,7 +9,6 @@ ROOT = Path(__file__).resolve().parents[2]
 LA = ROOT / "ui" / "components" / "linked_accounts.jsx"
 ADMIN_OVERLAY = ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx"
 APP = ROOT / "ui" / "app.jsx"
-ROUTER = ROOT / "ui" / "foundation" / "router.js"
 INDEX = ROOT / "ui" / "index.html"
 
 
@@ -105,16 +104,9 @@ def test_registered_in_bundle_order() -> None:
     assert order.index("components/linked_accounts.jsx") < order.index("app.jsx")
 
 
-def test_router_has_linked_accounts_route() -> None:
-    src = ROUTER.read_text()
-    assert "LinkedAccountsPage" in src
-    assert "/settings/linked-accounts" in src
-
-
-def test_app_wires_linked_accounts_page() -> None:
-    src = APP.read_text()
-    assert "linked-accounts" in src
-    assert "LA_LinkedAccountsPage" in src
+def test_the_admin_overlay_renders_the_linked_accounts_page() -> None:
+    """The console has no route table: the overlay host IS the wiring."""
+    assert "LA_LinkedAccountsPage" in ADMIN_OVERLAY.read_text()
 
 
 def test_chrome_nav_has_linked_accounts_entry_without_admin_only() -> None:

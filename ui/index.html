@@ -71,7 +71,6 @@
 <script type="text/babel" src="foundation/use-mutation.js"></script>
 <script type="text/babel" src="foundation/capabilities.js"></script>
 <script type="text/babel" src="foundation/use-workspace-tap.js"></script>
-<script type="text/babel" src="foundation/router.js"></script>
 <script type="text/babel" src="foundation/tweaks.js"></script>
 <script type="text/babel" src="foundation/idle.js"></script>
 <script type="text/babel" src="foundation/viewport.js"></script>
@@ -135,8 +134,6 @@
 <!-- Chrome + page components -->
 <script type="text/babel" src="components/auth.jsx"></script>
 <script type="text/babel" src="components/setup-wizard.jsx"></script>
-<script type="text/babel" src="components/chrome.jsx"></script>
-<script type="text/babel" src="components/dashboard.jsx"></script>
 <script type="text/babel" src="components/workers.jsx"></script>
 <script type="text/babel" src="components/health.jsx"></script>
 <script type="text/babel" src="components/external-tools.jsx"></script>
@@ -150,31 +147,7 @@
 <script type="text/babel" src="components/session-adapter.jsx"></script>
 <script type="text/babel" src="components/use-session-controls.jsx"></script>
 <script type="text/babel" src="components/new-session-form.jsx"></script>
-<script type="text/babel" src="components/studio/st-status.jsx"></script>
-<script type="text/babel" src="components/studio/st-api.jsx"></script>
-<script type="text/babel" src="components/studio/st-attention.jsx"></script>
-<script type="text/babel" src="components/studio/st-dock.jsx"></script>
-<script type="text/babel" src="components/studio/st-client-tools.jsx"></script>
-<script type="text/babel" src="components/studio-sidebar.jsx"></script>
-<!-- The rail reuses studio-sidebar.jsx's FilesTree / NewSessionForm / dialogs
-     rather than copying them, so it is registered after that file. -->
-<script type="text/babel" src="components/studio/st-runs-rail.jsx"></script>
-<script type="text/babel" src="components/studio/st-files-rail.jsx"></script>
-<script type="text/babel" src="components/studio/st-rail.jsx"></script>
-<script type="text/babel" src="components/studio-center.jsx"></script>
-<!-- PaneHost mounts two StudioCenter bodies, so it loads after that file. -->
-<script type="text/babel" src="components/studio/st-panes.jsx"></script>
-<script type="text/babel" src="components/studio/st-diff.jsx"></script>
-<!-- ChangesView renders DiffView, so it loads after it. -->
-<script type="text/babel" src="components/studio/st-changes.jsx"></script>
-<script type="text/babel" src="components/studio/st-graph-run.jsx"></script>
-<script type="text/babel" src="components/studio/st-mobile.jsx"></script>
-<script type="text/babel" src="components/studio-activity.jsx"></script>
-<script type="text/babel" src="components/studio-palette.jsx"></script>
-<script type="text/babel" src="components/studio-terminal.jsx"></script>
-<script type="text/babel" src="components/studio.jsx"></script>
 <script type="text/babel" src="components/workspaces.jsx"></script>
-<script type="text/babel" src="components/studio-settings.jsx"></script>
 <script type="text/babel" src="components/agents.jsx"></script>
 <script type="text/babel" src="components/graphs.jsx"></script>
 <script type="text/babel" src="components/knowledge.jsx"></script>
@@ -199,18 +172,6 @@
 <script type="text/babel" src="components/shared/session-history-controls.jsx"></script>
 <script type="text/babel" src="components/harness_form.jsx"></script>
 <script type="text/babel" src="components/harness_outbound_builder.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-commands.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-ctx.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-docs.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-legacy.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-doc-session.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-doc-agent.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-right.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-rail.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-nav.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-tabbar.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-palette.jsx"></script>
-<script type="text/babel" src="components/studio2/s2-shell.jsx"></script>
 <!-- Fresh shell (S8). sh-api.jsx is the only file naming a URL. -->
 <script type="text/babel" src="components/shell/sh-api.jsx"></script>
 <script type="text/babel" src="components/shell/sh-shell.jsx"></script>

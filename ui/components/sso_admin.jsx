@@ -9,7 +9,7 @@
 // CRUD over /v1/admin/oidc-providers (require_admin — Task 3) plus a
 // settings panel over /v1/admin/sso-settings (require_admin — Task 9).
 // Real authorization is enforced server-side; hiding this page from
-// non-admins (chrome.jsx adminOnly) is COSMETIC only.
+// non-admins (the admin overlay's role gate) is COSMETIC only.
 //
 // client_secret is WRITE-ONLY: the server always returns it masked
 // ("**********" or null — pydantic's default SecretStr JSON dump), and

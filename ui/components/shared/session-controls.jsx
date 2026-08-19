@@ -1,7 +1,7 @@
 // Shared session binding controls: a chip that says what is running,
 // and a switcher that changes it.
 //
-// PROPS ONLY. No window.location, no ROUTES, no chrome or studio
+// PROPS ONLY. No window.location, no route table, no console shell
 // import. The studio hosts it today and a different shell will host it
 // tomorrow, so anything ambient here would have to be rewritten rather
 // than re-hosted.
@@ -284,7 +284,7 @@ function SC_speakTurn(text, agentId) {
 
 
 // Props-only, like SessionBindingChip and SessionSwitcher beside it (S1 P6
-// Task 33): no ROUTES, no window.location, no studio import, so S8's session
+// Task 33): no route table, no window.location, no host import, so S8's session
 // doc re-hosts it unchanged. The host passes the session's own conversation
 // state; today that host is studio-center.jsx's session panels.
 function SessionSpeakerToggle({ agentId, messages, turnInFlight }) {
