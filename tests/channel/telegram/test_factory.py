@@ -160,7 +160,7 @@ def _patch_normalizer(monkeypatch, result):
 
 @pytest.mark.asyncio
 async def test_route_channel_event_no_router_returns_false():
-    adapter = SimpleNamespace(_event_router=lambda: None, _channel=_channel())
+    adapter = SimpleNamespace(_inbound_router=lambda: None, _channel=_channel())
     assert await tg_factory._route_channel_event(adapter, "p", _route_msg()) is False
 
 
@@ -169,25 +169,14 @@ async def test_route_channel_event_normalized_none(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, None)
     assert await tg_factory._route_channel_event(adapter, "p", _route_msg()) is False
-    router.has_matching_rule.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_route_channel_event_no_match(monkeypatch):
-    router = SimpleNamespace(
-        has_matching_rule=AsyncMock(return_value=False), route_event=AsyncMock())
-    adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
-        collect_inbound_media=AsyncMock(return_value=[]),
-    )
-    _patch_normalizer(monkeypatch, {"norm": True})
-    assert await tg_factory._route_channel_event(adapter, "p", _route_msg()) is False
     router.route_event.assert_not_awaited()
+
+
 
 
 @pytest.mark.asyncio
@@ -195,7 +184,7 @@ async def test_route_channel_event_match_dispatches(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, {"norm": True})
@@ -206,10 +195,9 @@ async def test_route_channel_event_match_dispatches(monkeypatch):
 @pytest.mark.asyncio
 async def test_route_channel_event_swallows_exception(monkeypatch):
     router = SimpleNamespace(
-        has_matching_rule=AsyncMock(side_effect=RuntimeError("boom")),
-        route_event=AsyncMock())
+        route_event=AsyncMock(side_effect=RuntimeError("boom")))
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, {"norm": True})
@@ -298,44 +286,10 @@ async def test_callback_reject_unresolvable_tag_is_noop(monkeypatch):
     adapter.remember_reply_target.assert_not_called()
 
 
-@pytest.mark.asyncio
-async def test_callback_pick_agent_posts_notice(monkeypatch):
-    adapter = _mock_adapter()
-    adapter.apply_agent_pick = AsyncMock(return_value="Agent switched.")
-    on_callback, _ = _install(monkeypatch, _FakeEntry({"100": adapter}))
-    ctx = _context()
-    await on_callback(
-        SimpleNamespace(callback_query=_cq("pick_agent:c1:a1")), ctx)
-    adapter.apply_agent_pick.assert_awaited_once()
-    ctx.bot.send_message.assert_awaited_once()
-    assert ctx.bot.send_message.await_args.kwargs["text"] == "Agent switched."
 
 
-@pytest.mark.asyncio
-async def test_callback_agentpage_navigates(monkeypatch):
-    adapter = _mock_adapter()
-    adapter.build_agent_picker_keyboard = AsyncMock(
-        return_value=[[{"text": "A", "callback_data": "pick_agent:c1:a1"}]])
-    on_callback, _ = _install(monkeypatch, _FakeEntry({"100": adapter}))
-    cq = _cq("agentpage:c1:2")
-    await on_callback(SimpleNamespace(callback_query=cq), _context())
-    adapter.build_agent_picker_keyboard.assert_awaited_once()
-    assert adapter.build_agent_picker_keyboard.await_args.kwargs["page"] == 2
-    cq.edit_message_reply_markup.assert_awaited_once()
 
 
-@pytest.mark.asyncio
-async def test_callback_chat_decision(monkeypatch):
-    adapter = _mock_adapter()
-    on_callback, _ = _install(monkeypatch, _FakeEntry({"100": adapter}))
-    await on_callback(
-        SimpleNamespace(callback_query=_cq("chat_ok:c1")), _context())
-    adapter.apply_chat_decision_button.assert_awaited_once()
-
-
-# --------------------------------------------------------------------------- #
-# _on_message
-# --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_message_none_is_noop(monkeypatch):
     _, on_message = _install(monkeypatch, _FakeEntry())
@@ -356,32 +310,8 @@ async def test_message_unknown_chat_is_noop(monkeypatch):
     adapter.handle_inbound_chat_text.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_message_chat_text_dispatch(monkeypatch):
-    adapter = _mock_adapter()
-    adapter.handle_inbound_chat_text = AsyncMock(return_value="Chat started.")
-    _, on_message = _install(monkeypatch, _FakeEntry({"100": adapter}))
-    monkeypatch.setattr(
-        tg_factory, "_route_channel_event", AsyncMock(return_value=False))
-    ctx = _context()
-    await on_message(SimpleNamespace(message=_msg(text="hello")), ctx)
-    adapter.handle_inbound_chat_text.assert_awaited_once()
-    assert adapter.handle_inbound_chat_text.await_args.kwargs["text"] == "hello"
-    ctx.bot.send_message.assert_awaited_once()
-    assert ctx.bot.send_message.await_args.kwargs["text"] == "Chat started."
 
 
-@pytest.mark.asyncio
-async def test_message_chat_media_dispatch(monkeypatch):
-    adapter = _mock_adapter()
-    adapter.handle_inbound_chat_media = AsyncMock(return_value=None)
-    _, on_message = _install(monkeypatch, _FakeEntry({"100": adapter}))
-    monkeypatch.setattr(
-        tg_factory, "_route_channel_event", AsyncMock(return_value=False))
-    await on_message(
-        SimpleNamespace(message=_msg(text=None, media="photo")), _context())
-    adapter.handle_inbound_chat_media.assert_awaited_once()
-    adapter.handle_inbound_chat_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio

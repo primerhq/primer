@@ -144,7 +144,7 @@ def _patch_normalizer(monkeypatch, result):
 
 @pytest.mark.asyncio
 async def test_route_channel_event_no_router_returns_false():
-    adapter = SimpleNamespace(_event_router=lambda: None, _channel=_channel())
+    adapter = SimpleNamespace(_inbound_router=lambda: None, _channel=_channel())
     assert await slack_factory._route_channel_event(adapter, "p", {}) is False
 
 
@@ -154,26 +154,14 @@ async def test_route_channel_event_normalized_none(monkeypatch):
         has_matching_rule=AsyncMock(return_value=True),
         route_event=AsyncMock())
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, None)
     assert await slack_factory._route_channel_event(adapter, "p", {}) is False
-    router.has_matching_rule.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_route_channel_event_no_matching_rule(monkeypatch):
-    router = SimpleNamespace(
-        has_matching_rule=AsyncMock(return_value=False),
-        route_event=AsyncMock())
-    adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
-        collect_inbound_media=AsyncMock(return_value=[]),
-    )
-    _patch_normalizer(monkeypatch, {"norm": True})
-    assert await slack_factory._route_channel_event(adapter, "p", {}) is False
     router.route_event.assert_not_awaited()
+
+
 
 
 @pytest.mark.asyncio
@@ -182,7 +170,7 @@ async def test_route_channel_event_match_dispatches(monkeypatch):
         has_matching_rule=AsyncMock(return_value=True),
         route_event=AsyncMock())
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, {"norm": True})
@@ -193,10 +181,9 @@ async def test_route_channel_event_match_dispatches(monkeypatch):
 @pytest.mark.asyncio
 async def test_route_channel_event_swallows_exception(monkeypatch):
     router = SimpleNamespace(
-        has_matching_rule=AsyncMock(side_effect=RuntimeError("boom")),
-        route_event=AsyncMock())
+        route_event=AsyncMock(side_effect=RuntimeError("boom")))
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, {"norm": True})
@@ -577,31 +564,8 @@ async def test_event_message_session_reply(monkeypatch):
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_event_message_chat_dispatch(monkeypatch):
-    adapter = _mock_adapter()
-    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
-    monkeypatch.setattr(
-        slack_factory, "_route_channel_event", AsyncMock(return_value=False))
-    event = {"channel": "C123", "text": "hello",
-             "user": "U2", "ts": "9", "files": None}
-    await app.events["message"](event, SimpleNamespace())
-    adapter.handle_inbound_chat_message.assert_awaited_once()
-    kw = adapter.handle_inbound_chat_message.await_args.kwargs
-    assert kw["text"] == "hello"
-    assert kw["sender_name"] == "U2"
-    assert kw["message_ts"] == "9"
 
 
-@pytest.mark.asyncio
-async def test_event_message_rule_match_skips_chat_dispatch(monkeypatch):
-    adapter = _mock_adapter()
-    _, app = _install(monkeypatch, _FakeEntry({"C123": adapter}))
-    monkeypatch.setattr(
-        slack_factory, "_route_channel_event", AsyncMock(return_value=True))
-    event = {"channel": "C123", "text": "trigger", "user": "U2", "ts": "9"}
-    await app.events["message"](event, SimpleNamespace())
-    adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -742,8 +706,9 @@ async def test_event_message_correlation_lookup_error_falls_through(monkeypatch)
     event = {"channel": "C123", "thread_ts": "TT",
              "text": "hi", "user": "U", "ts": "2"}
     await app.events["message"](event, SimpleNamespace())
-    # lookup failed -> rec None -> chat-surface dispatch owns delivery.
-    adapter.handle_inbound_chat_message.assert_awaited_once()
+    # lookup failed -> rec None -> the message still routes as an event
+    # (S6 section 5: there is no chat dispatch to fall through to).
+    slack_factory._route_channel_event.assert_awaited_once()
 
 
 # --------------------------------------------------------------------------- #

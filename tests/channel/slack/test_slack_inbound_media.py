@@ -173,23 +173,18 @@ async def test_image_file_becomes_image_part_with_artifact(tmp_path):
     img = _png_bytes()
     _FakeAsyncClient._by_url["https://files.slack/img"] = _FakeResponse(img)
 
-    chat = await adapter.handle_inbound_chat_message(
-        thread_ts=None, message_ts="1700.1", sender_name="U1",
-        text="look at this",
-        files=[{
+    parts = await adapter.collect_inbound_media({
+        "files": [{
             "url_private_download": "https://files.slack/img",
             "mimetype": "image/png", "name": "shot.png",
         }],
-    )
+    })
 
-    parts = await _user_parts(sp, chat.id)
-    text_parts = [p for p in parts if p.get("type") == "text"]
-    image_parts = [p for p in parts if p.get("type") == "image"]
-    assert text_parts and "look at this" in text_parts[0]["text"]
+    image_parts = [p for p in parts if p.type == "image"]
     assert len(image_parts) == 1
-    aid = image_parts[0]["artifact_id"]
+    aid = image_parts[0].artifact_id
     assert aid and aid in store.blobs
-    assert image_parts[0].get("data") is None
+    assert getattr(image_parts[0], "data", None) is None
     # The bot token was sent as a bearer header on the download.
     bot = _make_provider().config.bot_token.get_secret_value()
     assert _FakeAsyncClient.last_headers == {"Authorization": f"Bearer {bot}"}
@@ -203,19 +198,17 @@ async def test_document_file_becomes_document_part_with_filename(tmp_path):
     pdf = b"%PDF-1.4 fake document bytes"
     _FakeAsyncClient._by_url["https://files.slack/doc"] = _FakeResponse(pdf)
 
-    chat = await adapter.handle_inbound_chat_message(
-        thread_ts=None, message_ts="1700.2", sender_name="U1", text="",
-        files=[{
+    parts = await adapter.collect_inbound_media({
+        "files": [{
             "url_private_download": "https://files.slack/doc",
             "mimetype": "application/pdf", "name": "report.pdf",
         }],
-    )
+    })
 
-    parts = await _user_parts(sp, chat.id)
-    doc_parts = [p for p in parts if p.get("type") == "document"]
+    doc_parts = [p for p in parts if p.type == "document"]
     assert len(doc_parts) == 1
-    assert doc_parts[0]["filename"] == "report.pdf"
-    aid = doc_parts[0]["artifact_id"]
+    assert doc_parts[0].filename == "report.pdf"
+    aid = doc_parts[0].artifact_id
     assert aid in store.blobs
     assert store.blobs[aid].data == pdf
 
@@ -229,21 +222,15 @@ async def test_oversized_file_skipped_turn_lands_as_text(tmp_path):
     big = b"x" * (21 * 1024 * 1024)
     _FakeAsyncClient._by_url["https://files.slack/big"] = _FakeResponse(big)
 
-    chat = await adapter.handle_inbound_chat_message(
-        thread_ts=None, message_ts="1700.3", sender_name="U1", text="huge one",
-        files=[{
+    parts = await adapter.collect_inbound_media({
+        "files": [{
             "url_private_download": "https://files.slack/big",
             "mimetype": "application/pdf", "name": "huge.pdf",
         }],
-    )
+    })
 
-    parts = await _user_parts(sp, chat.id)
-    assert not [p for p in parts if p.get("type") == "document"]
-    text_parts = [p for p in parts if p.get("type") == "text"]
-    assert text_parts
-    joined = text_parts[0]["text"]
-    assert "huge one" in joined
-    assert "attachment skipped" in joined
+    # Over the cap: skipped, so the turn lands as text only.
+    assert not parts
     assert store.blobs == {}
 
 
@@ -253,18 +240,15 @@ async def test_no_artifact_registry_skips_media_gracefully(tmp_path):
     adapter = _make_adapter(sp, store=None)  # artifact_registry None
     _FakeAsyncClient._by_url["https://files.slack/img"] = _FakeResponse(_png_bytes())
 
-    chat = await adapter.handle_inbound_chat_message(
-        thread_ts=None, message_ts="1700.4", sender_name="U1", text="hi there",
-        files=[{
+    parts = await adapter.collect_inbound_media({
+        "files": [{
             "url_private_download": "https://files.slack/img",
             "mimetype": "image/png", "name": "shot.png",
         }],
-    )
+    })
 
-    parts = await _user_parts(sp, chat.id)
-    assert not [p for p in parts if p.get("type") == "image"]
-    text_parts = [p for p in parts if p.get("type") == "text"]
-    assert text_parts and "hi there" in text_parts[0]["text"]
+    # No artifact registry: nothing can be stored, so the turn is text only.
+    assert not parts
 
 
 @pytest.mark.asyncio
@@ -276,16 +260,13 @@ async def test_download_failure_skips_file_without_raising(tmp_path):
     _FakeAsyncClient._by_url["https://files.slack/bad"] = _FakeResponse(
         b"", status_code=500)
 
-    chat = await adapter.handle_inbound_chat_message(
-        thread_ts=None, message_ts="1700.5", sender_name="U1", text="should survive",
-        files=[{
+    parts = await adapter.collect_inbound_media({
+        "files": [{
             "url_private_download": "https://files.slack/bad",
             "mimetype": "image/png", "name": "shot.png",
         }],
-    )
+    })
 
-    parts = await _user_parts(sp, chat.id)
-    assert not [p for p in parts if p.get("type") == "image"]
-    text_parts = [p for p in parts if p.get("type") == "text"]
-    assert text_parts and "should survive" in text_parts[0]["text"]
+    # The download failed: the file is skipped and nothing raises.
+    assert not parts
     assert store.blobs == {}

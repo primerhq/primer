@@ -183,72 +183,6 @@ class TelegramChannelAdapter(ChannelAdapter):
         # only runs in real deployments after restart).
         return None
 
-    async def handle_inbound_chat_text(
-        self, *, sender_name: str, text: str,
-    ) -> str | None:
-        """Dispatch a single-type inbound message: command or chat turn.
-        Returns a notice string to post back (commands) or None (routed to a
-        turn)."""
-        if self._sp is None:
-            return None
-        from primer.channel.chat_router import ChatChannelRouter
-        from primer.channel.commands import (
-            CommandExecutor, help_text, parse_command,
-        )
-        parsed = parse_command(text)
-        if parsed is not None:
-            ex = CommandExecutor(storage_provider=self._sp)
-            if parsed.verb == "help":
-                return help_text(supports_threads=False)
-            if parsed.verb == "new":
-                res = await ex.new_single_chat(channel_id=self._channel.id)
-                return res.text
-            if parsed.verb == "list":
-                res = await ex.list_chats(channel_id=self._channel.id)
-                if not res.items:
-                    return "No chats yet."
-                return "\n".join(
-                    f"- {it['title']} ({it['agent_id']}) {it['chat_id']}"
-                    for it in res.items)
-            if parsed.verb == "switch" and parsed.arg:
-                res = await ex.switch_active_chat(
-                    channel_id=self._channel.id, chat_id=parsed.arg)
-                return res.text
-            if parsed.verb == "agent" and not await ex.agent_switch_allowed(
-                self._channel.id):
-                return "Agent switching is disabled on this channel."
-            if parsed.verb == "agent" and parsed.arg:
-                router = ChatChannelRouter(storage_provider=self._sp)
-                chat, _ = await router.resolve_or_create(
-                    channel_id=self._channel.id, thread_external_id=None,
-                    supports_threads=False)
-                res = await ex.set_agent(chat_id=chat.id, agent_id=parsed.arg)
-                return res.text
-            if parsed.verb == "agent":
-                from primer.channel.chat_router import ChatChannelRouter as _R
-                router = _R(storage_provider=self._sp)
-                chat, _ = await router.resolve_or_create(
-                    channel_id=self._channel.id, thread_external_id=None,
-                    supports_threads=False)
-                kb = await self.build_agent_picker_keyboard(chat_id=chat.id)
-                if self._app is not None:
-                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                    markup = InlineKeyboardMarkup([
-                        [InlineKeyboardButton(b["text"], callback_data=b["callback_data"])
-                         for b in row] for row in kb])
-                    await self._app.bot.send_message(
-                        chat_id=self._channel.external_id,
-                        text="Pick an agent:", reply_markup=markup)
-                    return None
-                return "Reply with /agent <agent-id> to switch."
-            return None
-        router = self._inbound_router()
-        if router is None:
-            return None
-        await router.route(
-            channel=self._channel, anchor=None, reply_to=None,
-            is_thread_channel=False, sender=sender_name, text=text)
-        return None
 
     async def collect_inbound_media(self, raw: Any) -> list:
         parts, _note = await self._extract_media_parts(raw)
@@ -314,87 +248,9 @@ class TelegramChannelAdapter(ChannelAdapter):
         note = " [attachment skipped: too large]" if skipped else ""
         return parts, note
 
-    async def handle_inbound_chat_media(
-        self, *, sender_name: str, msg,
-    ) -> str | None:
-        """Dispatch an inbound message carrying media. The user text is the
-        caption (``msg.caption``; None -> ""). Media attachments are downloaded
-        and stored, then the turn is routed through the chat router with the
-        caption as the leading TextPart and the media parts following.
 
-        A caption that parses as a command is handled as a text command (media
-        is ignored — commands are text-only)."""
-        if self._sp is None:
-            return None
-        caption = getattr(msg, "caption", None) or ""
-        from primer.channel.commands import parse_command
-        if parse_command(caption) is not None:
-            return await self.handle_inbound_chat_text(
-                sender_name=sender_name, text=caption)
 
-        parts, note = await self._extract_media_parts(msg)
-        text = caption + note if (caption or note) else ""
 
-        router = self._inbound_router()
-        if router is None:
-            return None
-        await router.route(
-            channel=self._channel, anchor=None, reply_to=None,
-            is_thread_channel=False, sender=sender_name, text=text,
-            media_parts=parts or None)
-        return None
-
-    async def build_agent_picker_keyboard(
-        self, *, chat_id: str, page: int = 0,
-    ) -> list[list[dict[str, str]]]:
-        """One inline button per agent for the current page, plus a Prev/Next
-        nav row when there is more than one page."""
-        from primer.channel.commands import CommandExecutor
-        res = await CommandExecutor(storage_provider=self._sp).agent_picker()
-        items = res.items
-        total = len(items)
-        pages = max(1, (total + _AGENTS_PER_PAGE - 1) // _AGENTS_PER_PAGE)
-        page = max(0, min(page, pages - 1))
-        start = page * _AGENTS_PER_PAGE
-        rows: list[list[dict[str, str]]] = []
-        for opt in items[start:start + _AGENTS_PER_PAGE]:
-            rows.append([{
-                "text": opt["label"],
-                "callback_data": f"pick_agent:{chat_id}:{opt['agent_id']}",
-            }])
-        nav: list[dict[str, str]] = []
-        if page > 0:
-            nav.append({"text": "< Prev",
-                        "callback_data": f"agentpage:{chat_id}:{page - 1}"})
-        if page < pages - 1:
-            nav.append({"text": "Next >",
-                        "callback_data": f"agentpage:{chat_id}:{page + 1}"})
-        if nav:
-            rows.append(nav)
-        return rows
-
-    async def apply_agent_pick(self, *, callback_data: str) -> str:
-        """Handle a 'pick_agent:<chat>:<agent>' callback. Returns a notice."""
-        from primer.channel.commands import CommandExecutor
-        _, chat_id, agent_id = callback_data.split(":", 2)
-        res = await CommandExecutor(storage_provider=self._sp).set_agent(
-            chat_id=chat_id, agent_id=agent_id)
-        return res.text or "Agent switched."
-
-    async def apply_chat_decision_button(self, *, callback_data: str) -> None:
-        """Handle 'chat_ok:<chat>' / 'chat_no:<chat>' approval buttons."""
-        from primer.channel.chat_inbox import ChatResponseInbox
-        verb, chat_id = callback_data.split(":", 1)
-        chat = await self._sp.get_storage(Chat).get(chat_id)
-        if chat is None or chat.pending_tool_call is None:
-            return
-        decision = "approved" if verb == "chat_ok" else "rejected"
-        inbox = ChatResponseInbox(
-            storage_provider=self._sp, event_bus=self._bus,
-            claim_engine=self._claim_engine)
-        await inbox.handle_chat_decision(
-            chat_id=chat_id, pending=chat.pending_tool_call,
-            decision=decision, reason=None, sender="telegram")
 
     async def post_chat_message(self, text: str) -> dict[str, Any]:
         """Outbound chat relay: send a plain message to the channel."""

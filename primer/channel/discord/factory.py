@@ -49,7 +49,7 @@ async def _route_channel_event(
     SDK-free) - deriving the channel ``kind`` discriminator from the runtime
     ``discord`` channel type. Best effort: any failure is logged and swallowed
     (returning ``False``) so it never breaks the chat-surface dispatch."""
-    router = adapter._event_router()
+    router = adapter._inbound_router()
     if router is None:
         return False
     try:
@@ -86,8 +86,6 @@ async def _route_channel_event(
         normalizer = DiscordEventNormalizer(provider_id=provider_id)
         event = await normalizer.normalize({"type": "message", "payload": payload})
         if event is None:
-            return False
-        if not await router.has_matching_rule(event=event, channel=adapter._channel):
             return False
         media_parts = await adapter.collect_inbound_media(message)
         await router.route_event(
@@ -252,41 +250,16 @@ def _install_handlers(provider_id: str, client: Any, channel: Channel) -> None:
             # thread's chat (thread id = the discord thread id).
             if getattr(adapter, "_sp", None) is None:
                 return
-            sender_name = (
-                getattr(message.author, "display_name", None)
-                or getattr(message.author, "name", None) or "user"
-            )
-            # Rule path first: if a channel-trigger rule matches, it owns this
-            # message - skip the chat dispatch so it is not delivered twice
-            # (once as the rule action, once as a default chat message).
-            if await _route_channel_event(adapter, provider_id, message):
-                return
-            await adapter.handle_inbound_chat_message(
-                thread_id=str(thread_id), message_id=str(message.id),
-                sender_name=sender_name, text=message.content or "",
-                attachments=list(getattr(message, "attachments", None) or []),
-            )
+            # Every inbound message is a routed event (S6 section 5).
+            await _route_channel_event(adapter, provider_id, message)
             return
-        # Top-level message in the channel: open a new thread-chat anchored on
-        # the message id. Only on chat-enabled adapters.
+        # Top-level message in the channel: routed as an event, which fires
+        # the channel triggers that create and map its session.
         channel_id = str(getattr(message.channel, "id", "") or "")
         adapter = entry.adapters_by_channel_id.get(channel_id)
         if adapter is None or getattr(adapter, "_sp", None) is None:
             return
-        sender_name = (
-            getattr(message.author, "display_name", None)
-            or getattr(message.author, "name", None) or "user"
-        )
-        # Rule path first: if a channel-trigger rule matches, it owns this
-        # message - skip the chat dispatch so it is not delivered twice (once
-        # as the rule action, once as a default chat message).
-        if await _route_channel_event(adapter, provider_id, message):
-            return
-        await adapter.handle_inbound_chat_message(
-            thread_id=None, message_id=str(message.id),
-            sender_name=sender_name, text=message.content or "",
-            attachments=list(getattr(message, "attachments", None) or []),
-        )
+        await _route_channel_event(adapter, provider_id, message)
 
     # Bind the handlers to the real gateway event names. The base
     # ``discord.Client`` dispatches by looking up ``self.on_<event>`` (this is

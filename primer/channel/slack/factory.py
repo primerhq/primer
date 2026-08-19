@@ -49,7 +49,7 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> b
     normalizer envelope is just ``{"type": "message", "payload": event}``. Best
     effort: any failure is logged and swallowed (returning ``False``) so it
     never breaks the chat-surface dispatch."""
-    router = adapter._event_router()
+    router = adapter._inbound_router()
     if router is None:
         return False
     try:
@@ -60,10 +60,6 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> b
             {"type": "message", "payload": event},
         )
         if normalized is None:
-            return False
-        if not await router.has_matching_rule(
-            event=normalized, channel=adapter._channel,
-        ):
             return False
         media_parts = await adapter.collect_inbound_media(event)
         await router.route_event(
@@ -375,21 +371,12 @@ def _install_handlers(provider_id: str, app: Any) -> None:
                     except Exception:
                         pass
                     return
-        # Chat-surface dispatch: on a chat-enabled adapter, a top-level message
-        # opens a new thread-chat and an in-thread message routes to its chat.
+        # Every inbound message is a routed event (S6 section 5): the
+        # thread IS the session, so there is no chat dispatch to fall back
+        # to and no matcher pre-pass to gate on.
         if getattr(adapter, "_sp", None) is None:
             return
-        sender_name = event.get("user") or "user"
-        # Rule path first: if a channel-trigger rule matches, it owns this
-        # message - skip the chat dispatch so it is not delivered twice (once
-        # as the rule action, once as a default chat message).
-        if await _route_channel_event(adapter, provider_id, event):
-            return
-        await adapter.handle_inbound_chat_message(
-            thread_ts=thread_ts, message_ts=event.get("ts", ""),
-            sender_name=sender_name, text=event.get("text", ""),
-            files=event.get("files"),
-        )
+        await _route_channel_event(adapter, provider_id, event)
 
 
 async def _slack_factory(

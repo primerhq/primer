@@ -169,7 +169,7 @@ def _patch_normalizer(monkeypatch, result):
 
 @pytest.mark.asyncio
 async def test_route_channel_event_no_router_returns_false():
-    adapter = SimpleNamespace(_event_router=lambda: None, _channel=_channel())
+    adapter = SimpleNamespace(_inbound_router=lambda: None, _channel=_channel())
     msg = _message(SimpleNamespace(id=1))
     assert await discord_factory._route_channel_event(adapter, "p", msg) is False
 
@@ -179,27 +179,15 @@ async def test_route_channel_event_normalized_none(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, None)
     msg = _message(SimpleNamespace(id=1))
     assert await discord_factory._route_channel_event(adapter, "p", msg) is False
-    router.has_matching_rule.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_route_channel_event_text_no_match(monkeypatch):
-    router = SimpleNamespace(
-        has_matching_rule=AsyncMock(return_value=False), route_event=AsyncMock())
-    adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
-        collect_inbound_media=AsyncMock(return_value=[]),
-    )
-    _patch_normalizer(monkeypatch, {"norm": True})
-    msg = _message(SimpleNamespace(id=9), content="text")
-    assert await discord_factory._route_channel_event(adapter, "p", msg) is False
     router.route_event.assert_not_awaited()
+
+
 
 
 @pytest.mark.asyncio
@@ -207,7 +195,7 @@ async def test_route_channel_event_thread_match_dispatches(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, {"norm": True})
@@ -221,7 +209,7 @@ async def test_route_channel_event_dm_channel_kind(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     captured: dict = {}
@@ -244,10 +232,9 @@ async def test_route_channel_event_dm_channel_kind(monkeypatch):
 @pytest.mark.asyncio
 async def test_route_channel_event_swallows_exception(monkeypatch):
     router = SimpleNamespace(
-        has_matching_rule=AsyncMock(side_effect=RuntimeError("boom")),
-        route_event=AsyncMock())
+        route_event=AsyncMock(side_effect=RuntimeError("boom")))
     adapter = SimpleNamespace(
-        _event_router=lambda: router, _channel=_channel(),
+        _inbound_router=lambda: router, _channel=_channel(),
         collect_inbound_media=AsyncMock(return_value=[]),
     )
     _patch_normalizer(monkeypatch, {"norm": True})
@@ -266,19 +253,6 @@ async def test_on_message_ignores_bot(monkeypatch):
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_on_message_toplevel_chat_dispatch(monkeypatch):
-    adapter = _mock_adapter()
-    _, client = _install(monkeypatch, _FakeEntry({"555": adapter}))
-    monkeypatch.setattr(
-        discord_factory, "_route_channel_event", AsyncMock(return_value=False))
-    await client.on_message(_message(SimpleNamespace(id=555), content="hey", mid=42))
-    adapter.handle_inbound_chat_message.assert_awaited_once()
-    kw = adapter.handle_inbound_chat_message.await_args.kwargs
-    assert kw["thread_id"] is None
-    assert kw["message_id"] == "42"
-    assert kw["sender_name"] == "Dee"
-    assert kw["text"] == "hey"
 
 
 @pytest.mark.asyncio
@@ -333,27 +307,6 @@ async def test_on_message_thread_session_reply(monkeypatch):
     adapter.handle_inbound_chat_message.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_on_message_thread_chat_dispatch(monkeypatch):
-    adapter = _mock_adapter()
-    _, client = _install(monkeypatch, _FakeEntry({"999": adapter}))
-
-    class Corr:
-        def __init__(self, sp):
-            pass
-
-        async def lookup(self, cid, key):
-            return None
-
-    monkeypatch.setattr("primer.channel.correlation.CorrelationStore", Corr)
-    monkeypatch.setattr(
-        discord_factory, "_route_channel_event", AsyncMock(return_value=False))
-    msg = _message(_fake_thread(777, 999), content="chat", mid=8)
-    await client.on_message(msg)
-    adapter.handle_inbound_chat_message.assert_awaited_once()
-    kw = adapter.handle_inbound_chat_message.await_args.kwargs
-    assert kw["thread_id"] == "777"
-    assert kw["message_id"] == "8"
 
 
 @pytest.mark.asyncio
@@ -688,7 +641,9 @@ async def test_on_message_thread_lookup_error_falls_through(monkeypatch):
     monkeypatch.setattr(
         discord_factory, "_route_channel_event", AsyncMock(return_value=False))
     await client.on_message(_message(_fake_thread(777, 999), content="c", mid=3))
-    adapter.handle_inbound_chat_message.assert_awaited_once()
+    # lookup failed -> rec None -> the message still routes as an event
+    # (S6 section 5: there is no chat dispatch to fall through to).
+    discord_factory._route_channel_event.assert_awaited_once()
 
 
 @pytest.mark.asyncio
