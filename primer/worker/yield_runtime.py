@@ -116,6 +116,10 @@ class ParkedState:
     # compare and void itself rather than running a continuation under a
     # binding nobody is on any more. Optional so pre-S1 blobs still load
     # without a schema-version bump.
+    # S3: did the turn that parked carry the client toolset? Frozen here so
+    # a fenced resume rebuilds the SAME toolset even after the attachment
+    # TTL expired. Absent in pre-S3 blobs, hence the tolerant read.
+    client_tools_attached: bool = False
     binding_epoch: int | None = None
     frames: list = field(default_factory=list)
     schema_version: int = PARKED_STATE_SCHEMA_VERSION
@@ -132,6 +136,7 @@ class ParkedState:
             "llm_messages": list(self.llm_messages),
             "turn_no": self.turn_no,
             "binding_epoch": self.binding_epoch,
+            "client_tools_attached": self.client_tools_attached,
             "started_at": self.started_at.isoformat(),
             "resume_event_payload": (
                 dict(self.resume_event_payload)
@@ -215,6 +220,7 @@ class ParkedState:
                 if data.get("binding_epoch") is not None
                 else None
             ),
+            client_tools_attached=bool(data.get("client_tools_attached", False)),
             started_at=_parse_iso(data["started_at"]),
             tool_call_id=tool_call_id,
             resume_event_payload=(

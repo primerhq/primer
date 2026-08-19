@@ -508,6 +508,11 @@ async def run_one_session_turn(
             tool_call_id=park.tool_call_id,
             graph_checkpoint=graph_checkpoint,
             frames=list(getattr(park, "frames", []) or []),
+            # Frozen at park so a fenced resume rebuilds the SAME toolset
+            # even after the attachment TTL has expired: a resumed prompt
+            # that disagreed with the parked one would be a silent
+            # mid-turn capability change.
+            client_tools_attached=_has_client_toolset(executor),
         )
 
         logger.info(
@@ -903,6 +908,16 @@ def _post_turn_status(
     if mapped is None:
         return (SessionStatus.ENDED, "completed")
     return mapped
+
+
+def _has_client_toolset(executor: Any) -> bool:
+    """Did this turn's tool manager carry the client toolset (S3 s4)?"""
+    from primer.toolset.client import CLIENT_TOOLSET_ID
+
+    inner = getattr(executor, "_executor", executor)
+    manager = getattr(inner, "_tool_manager", None)
+    providers = getattr(manager, "toolset_providers", None)
+    return bool(providers) and CLIENT_TOOLSET_ID in providers
 
 
 async def _persist_last_seq(

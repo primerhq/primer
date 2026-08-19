@@ -45,6 +45,37 @@ def _external_defs_for(session_row, agent) -> "list | None":
     return [ExternalToolDef.model_validate(d) for d in raw]
 
 
+async def client_tools_attached(pool: "WorkerPool", session_row) -> bool:
+    """Does THIS turn carry the client toolset (S3 spec section 4)?
+
+    Decided ONCE per turn. A parked row already carries the decision its
+    turn started with, so a resume reuses it verbatim: without that, a
+    park outliving the 30s attachment TTL would silently drop the toolset
+    mid-turn and the resumed prompt would disagree with the parked one.
+    """
+    blob = session_row.parked_state or {}
+    if "client_tools_attached" in blob:
+        return bool(blob["client_tools_attached"])
+    if pool._storage is None:
+        return False
+    from primer.model.client_attachment import ClientAttachment
+    from primer.session.attachment import live_attachments
+
+    live = await live_attachments(
+        pool._storage.get_storage(ClientAttachment), session_row.id,
+    )
+    return bool(live)
+
+
+async def client_toolset_for(pool: "WorkerPool", session_row) -> dict:
+    """``{client: ClientToolsetProvider()}`` when attached, else ``{}``."""
+    if not await client_tools_attached(pool, session_row):
+        return {}
+    from primer.toolset.client import CLIENT_TOOLSET_ID, ClientToolsetProvider
+
+    return {CLIENT_TOOLSET_ID: ClientToolsetProvider()}
+
+
 async def build_executor(pool: "WorkerPool", session: WorkspaceSession, workspace):
     """Construct an executor for ``session`` against ``workspace``.
 
@@ -225,6 +256,11 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
     for toolset_id in toolset_ids:
         provider = await pool._provider_registry.get_toolset(toolset_id)
         toolset_providers[toolset_id] = provider
+
+    # Client tools ride the turn only while a browser has the session
+    # open. Gated by attachment alone: allow_external_tools stays the
+    # API-caller gate and says nothing about notifying client tools.
+    toolset_providers.update(await client_toolset_for(pool, session))
 
     # Get the on-disk AgentSession the API allocated at create
     # time (Wave 2). The id matches session.id.
