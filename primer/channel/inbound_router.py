@@ -62,7 +62,9 @@ class ChannelInboundRouter:
             claim_engine=self._claim_engine,
         )
 
-    async def route_event(self, *, event, channel: Channel) -> None:
+    async def route_event(
+        self, *, event, channel: Channel, media_parts: list | None = None,
+    ) -> None:
         """Route a normalized :class:`ChannelEvent` correlation-first, else fire
         channel triggers.
 
@@ -91,13 +93,16 @@ class ChannelInboundRouter:
             correlation_store=self._correlation,
             fire_deps=fire_deps,
             event_bus=self._bus,
+            artifact_registry=self._artifacts,
         )
         matched = await self._count_matched_bindings(event=event, channel=channel)
         if matched:
             metrics.channel_events_matched_total.labels(
                 event_type=event_type, provider=provider,
             ).inc()
-        await router.route_event(event=event, channel=channel)
+        await router.route_event(
+            event=event, channel=channel, media_parts=media_parts,
+        )
         if matched:
             metrics.channel_events_dispatched_total.labels(
                 event_type=event_type, provider=provider,

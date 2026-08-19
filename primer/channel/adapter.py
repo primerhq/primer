@@ -189,6 +189,16 @@ class ChannelAdapter(ABC):
 
     # -- shared inbound routing --------------------------------------------
 
+    async def collect_inbound_media(self, raw: Any) -> list:
+        """Build artifact-backed media parts for one raw inbound message.
+
+        Default: no media. Platform adapters override by delegating to their
+        own download helper; the factory passes the result to
+        ``route_event(media_parts=...)`` (S6 section 6).
+        """
+        del raw
+        return []
+
     def _inbound_router(self):
         """Build a :class:`ChannelInboundRouter` from the adapter's wiring, or
         ``None`` when chat-surface dispatch is not configured (no storage

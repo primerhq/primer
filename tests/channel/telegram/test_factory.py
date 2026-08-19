@@ -168,7 +168,10 @@ async def test_route_channel_event_no_router_returns_false():
 async def test_route_channel_event_normalized_none(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, None)
     assert await tg_factory._route_channel_event(adapter, "p", _route_msg()) is False
     router.has_matching_rule.assert_not_awaited()
@@ -178,7 +181,10 @@ async def test_route_channel_event_normalized_none(monkeypatch):
 async def test_route_channel_event_no_match(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=False), route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     assert await tg_factory._route_channel_event(adapter, "p", _route_msg()) is False
     router.route_event.assert_not_awaited()
@@ -188,7 +194,10 @@ async def test_route_channel_event_no_match(monkeypatch):
 async def test_route_channel_event_match_dispatches(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     assert await tg_factory._route_channel_event(adapter, "p", _route_msg()) is True
     router.route_event.assert_awaited_once()
@@ -199,7 +208,10 @@ async def test_route_channel_event_swallows_exception(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(side_effect=RuntimeError("boom")),
         route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     assert await tg_factory._route_channel_event(adapter, "p", _route_msg()) is False
 

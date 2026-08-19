@@ -341,6 +341,12 @@ class DiscordChannelAdapter(ChannelAdapter):
         sent = await self._send_media_parts(target, parts)
         return {"sent": sent, "thread_id": thread_ts}
 
+    async def collect_inbound_media(self, raw: Any) -> list:
+        parts, _text = await self._build_media_parts(
+            list(getattr(raw, "attachments", None) or []), "",
+        )
+        return parts
+
     async def _build_media_parts(
         self, attachments: list, text: str,
     ) -> tuple[list, str]:

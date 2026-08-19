@@ -65,7 +65,11 @@ async def _route_channel_event(adapter: Any, provider_id: str, event: dict) -> b
             event=normalized, channel=adapter._channel,
         ):
             return False
-        await router.route_event(event=normalized, channel=adapter._channel)
+        media_parts = await adapter.collect_inbound_media(event)
+        await router.route_event(
+            event=normalized, channel=adapter._channel,
+            media_parts=media_parts or None,
+        )
         return True
     except Exception:  # noqa: BLE001 -- never break chat-surface dispatch
         logger.exception("slack: channel-event routing failed")

@@ -153,7 +153,10 @@ async def test_route_channel_event_normalized_none(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True),
         route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, None)
     assert await slack_factory._route_channel_event(adapter, "p", {}) is False
     router.has_matching_rule.assert_not_awaited()
@@ -164,7 +167,10 @@ async def test_route_channel_event_no_matching_rule(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=False),
         route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     assert await slack_factory._route_channel_event(adapter, "p", {}) is False
     router.route_event.assert_not_awaited()
@@ -175,7 +181,10 @@ async def test_route_channel_event_match_dispatches(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True),
         route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     assert await slack_factory._route_channel_event(adapter, "p", {}) is True
     router.route_event.assert_awaited_once()
@@ -186,7 +195,10 @@ async def test_route_channel_event_swallows_exception(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(side_effect=RuntimeError("boom")),
         route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     assert await slack_factory._route_channel_event(adapter, "p", {}) is False
 

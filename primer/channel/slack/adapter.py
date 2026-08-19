@@ -283,6 +283,12 @@ class SlackChannelAdapter(ChannelAdapter):
         thread_external_id = thread_ts or message_ts
         return await self._resolve_thread_chat(thread_external_id)
 
+    async def collect_inbound_media(self, raw: Any) -> list:
+        _text, parts = await self._collect_inbound_media(
+            "", (raw or {}).get("files"),
+        )
+        return parts
+
     async def _collect_inbound_media(
         self, text: str, files: list[dict] | None,
     ) -> tuple[str, list]:

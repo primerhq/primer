@@ -250,6 +250,10 @@ class TelegramChannelAdapter(ChannelAdapter):
             is_thread_channel=False, sender=sender_name, text=text)
         return None
 
+    async def collect_inbound_media(self, raw: Any) -> list:
+        parts, _note = await self._extract_media_parts(raw)
+        return parts
+
     async def _extract_media_parts(self, msg) -> tuple[list, str]:
         """Download every attachment on ``msg`` and build artifact-backed
         chat media parts. Returns ``(parts, skipped_note)`` where

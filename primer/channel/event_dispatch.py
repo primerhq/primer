@@ -100,15 +100,21 @@ class ChannelEventRouter:
         fire_deps: DispatchDeps,
         event_bus=None,
         fire_trigger=_default_fire_trigger,
+        artifact_registry=None,
     ) -> None:
         self._sp = storage_provider
         self._correlation = correlation_store
         self._fire_deps = fire_deps
         self._bus = event_bus
         self._fire_trigger = fire_trigger
+        self._artifacts = artifact_registry
 
     async def route_event(
-        self, *, event: ChannelEvent, channel: Channel | None
+        self,
+        *,
+        event: ChannelEvent,
+        channel: Channel | None,
+        media_parts: list | None = None,
     ) -> ChannelRouteOutcome:
         """Route one normalized inbound event and report what it did."""
         channel_id = event.channel_id or (channel.id if channel is not None else None)
@@ -150,7 +156,12 @@ class ChannelEventRouter:
                 # lands mid-turn is realized at the drain checkpoint.
                 delivery = await deliver_steer(
                     session_id=record.session_id,
-                    text=event.text or "",
+                    text=await self._steer_text(
+                        event=event,
+                        media_parts=media_parts,
+                        workspace_id=record.workspace_id,
+                        fire_id=event.event_id,
+                    ),
                     parallelism="queue",
                     storage_provider=self._sp,
                     scheduler=self._fire_deps.scheduler,
@@ -174,7 +185,20 @@ class ChannelEventRouter:
         triggers = await self._resolve_channel_triggers(
             event.provider_id, channel_id,
         )
-        extra_context = {"event": event.model_dump(mode="json")}
+        event_payload = event.model_dump(mode="json")
+        if media_parts:
+            # The created session's FIRST instruction must reference the
+            # same landed files the steer path composes, so a fresh thread
+            # with an attachment is not silently text-only. No workspace is
+            # resolvable before _map_thread runs, so the attachments are
+            # referenced by name here.
+            event_payload["text"] = await self._steer_text(
+                event=event,
+                media_parts=media_parts,
+                workspace_id=None,
+                fire_id=event.event_id,
+            )
+        extra_context = {"event": event_payload}
         fire_ids: list[str] = []
         mapped_session_id: str | None = None
         for trigger in triggers:
@@ -263,6 +287,70 @@ class ChannelEventRouter:
         if interactive:
             metadata[RELAY_EVERY_TURN_KEY] = True
         await sessions.update(row.model_copy(update={"metadata": metadata}))
+
+    async def _steer_text(
+        self,
+        *,
+        event: ChannelEvent,
+        media_parts: list | None,
+        workspace_id: str | None,
+        fire_id: str,
+    ) -> str:
+        """Land any attachments, then build the text the session receives."""
+        from primer.channel.media_in import (
+            compose_steer_text,
+            land_media_in_workspace,
+            resolve_active_stt,
+            transcribe_voice_parts,
+        )
+
+        if not media_parts:
+            return event.text or ""
+        registry = self._fire_deps.workspace_registry
+        workspace = None
+        if registry is not None and workspace_id:
+            try:
+                workspace = await registry.get_workspace(workspace_id)
+            except Exception:  # noqa: BLE001 - land nothing rather than fail
+                logger.warning(
+                    "channel media: workspace %s unreachable", workspace_id,
+                    exc_info=True,
+                )
+        store = await self._artifact_store()
+        paths: list[str] = []
+        if workspace is not None:
+            paths = await land_media_in_workspace(
+                workspace=workspace,
+                fire_id=fire_id,
+                parts=media_parts,
+                artifact_storage=store,
+            )
+        stt = await resolve_active_stt(self._sp)
+        transcript, note = await transcribe_voice_parts(
+            parts=media_parts, artifact_storage=store, stt=stt,
+        )
+        return compose_steer_text(
+            event.text, paths, transcript=transcript, note=note,
+        )
+
+    async def _artifact_store(self):
+        """Resolve the ArtifactStorage behind the injected registry, or None.
+
+        The adapters carry an artifact REGISTRY (``get_default()``), not a
+        store (``get(artifact_id)``); the same two-step the platform adapters
+        already do before ``store_inbound_media``
+        (`primer/channel/slack/adapter.py:282-285`). Passing the registry
+        straight through would make every artifact-backed part unresolvable.
+        """
+        if self._artifacts is None:
+            return None
+        try:
+            return await self._artifacts.get_default()
+        except Exception:  # noqa: BLE001 - no store means inline bytes only
+            logger.warning(
+                "channel media: artifact store unavailable", exc_info=True,
+            )
+            return None
 
     async def _resolve_channel_triggers(
         self, provider_id: str, channel_id: str | None,

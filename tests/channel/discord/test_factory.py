@@ -178,7 +178,10 @@ async def test_route_channel_event_no_router_returns_false():
 async def test_route_channel_event_normalized_none(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, None)
     msg = _message(SimpleNamespace(id=1))
     assert await discord_factory._route_channel_event(adapter, "p", msg) is False
@@ -189,7 +192,10 @@ async def test_route_channel_event_normalized_none(monkeypatch):
 async def test_route_channel_event_text_no_match(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=False), route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     msg = _message(SimpleNamespace(id=9), content="text")
     assert await discord_factory._route_channel_event(adapter, "p", msg) is False
@@ -200,7 +206,10 @@ async def test_route_channel_event_text_no_match(monkeypatch):
 async def test_route_channel_event_thread_match_dispatches(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     msg = _message(_fake_thread(11, 22))
     assert await discord_factory._route_channel_event(adapter, "p", msg) is True
@@ -211,7 +220,10 @@ async def test_route_channel_event_thread_match_dispatches(monkeypatch):
 async def test_route_channel_event_dm_channel_kind(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(return_value=True), route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     captured: dict = {}
 
     class _N:
@@ -234,7 +246,10 @@ async def test_route_channel_event_swallows_exception(monkeypatch):
     router = SimpleNamespace(
         has_matching_rule=AsyncMock(side_effect=RuntimeError("boom")),
         route_event=AsyncMock())
-    adapter = SimpleNamespace(_event_router=lambda: router, _channel=_channel())
+    adapter = SimpleNamespace(
+        _event_router=lambda: router, _channel=_channel(),
+        collect_inbound_media=AsyncMock(return_value=[]),
+    )
     _patch_normalizer(monkeypatch, {"norm": True})
     msg = _message(SimpleNamespace(id=1))
     assert await discord_factory._route_channel_event(adapter, "p", msg) is False
