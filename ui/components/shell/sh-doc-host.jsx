@@ -99,6 +99,33 @@ function SH_registerCoreVerbs(shell) {
     surfaces: ["rail", "palette"],
     run: function () { shell.openOverlay("collections"); },
   });
+  // The palette's own chord is a verb like any other: SH_CHORDS names it,
+  // so leaving it unregistered would bind two keystrokes to nothing the
+  // registry knows about.
+  shell.registry.register({
+    id: "palette.open", label: "Open Palette", chord: "Ctrl+k",
+    surfaces: ["topbar", "palette"],
+    run: function () { shell.openPalette(); },
+  });
+  // diff and wiki are addressable doc kinds, so each needs a verb that
+  // opens one: a kind the URL can reach but no verb can is an orphan.
+  shell.registry.register({
+    id: "doc.openChanges", label: "Open Changes", surfaces: ["rail", "palette"],
+    run: function (arg) {
+      var sha = arg && arg.sha;
+      if (!sha) { shell.openOverlay("workspaces"); return; }
+      shell.openDoc({ kind: "diff", ref: sha, title: "Changes " + sha.slice(0, 7),
+        preview: true });
+    },
+  });
+  shell.registry.register({
+    id: "doc.openWiki", label: "Open Document", surfaces: ["rail", "palette"],
+    run: function (arg) {
+      var slug = arg && arg.slug;
+      if (!slug) { shell.openOverlay("collections"); return; }
+      shell.openDoc({ kind: "wiki", ref: slug, title: slug, preview: true });
+    },
+  });
   shell.registry.register({
     id: "doc.pin", label: "Pin Tab", surfaces: ["tab-menu"],
     run: function () {

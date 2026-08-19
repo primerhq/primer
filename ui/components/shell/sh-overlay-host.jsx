@@ -185,6 +185,17 @@ function SH_OverlayHost() {
         <span className="sh-overlay-title">
           {window.SH_OVERLAY_LABELS[name]}
         </span>
+        {/* Rendered from the registry so an overlay-surface verb cannot
+            be declared and then never offered anywhere. */}
+        <span className="sh-overlay-verbs">
+          {shell.registry.forSurface("overlay-button").map(function (verb) {
+            return (
+              <button type="button" key={verb.id} className="sh-verb"
+                data-verb={verb.id}
+                onClick={function () { verb.run(); }}>{verb.label}</button>
+            );
+          })}
+        </span>
         <button type="button" className="sh-verb"
           data-testid="shell-overlay-close"
           onClick={function () { shell.closeOverlay(); }}>Close Overlay</button>

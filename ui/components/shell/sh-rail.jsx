@@ -225,25 +225,37 @@ function SH_AttentionList() {
   var digest = visible.filter(function (i) { return i.tier === "digest"; });
   shell.attentionRef.current = { items: visible, triage: triage, commit: commit };
 
+  // Rendered from the registry, not from three hardcoded buttons: a verb
+  // that is renamed or dropped must disappear here rather than leave a
+  // button that looks live and does nothing.
+  var ATTENTION_RUNNERS = {
+    "attention.resolve": function (item) {
+      shell.openDoc({ kind: "session", ref: item.sessionId, preview: true });
+    },
+    "attention.snooze": function (item) {
+      var next = JSON.parse(JSON.stringify(triage));
+      next.snoozedUntil[item.id] = Date.now() + 60 * 60 * 1000;
+      commit(next);
+    },
+    "attention.mute": function (item) {
+      var next = JSON.parse(JSON.stringify(triage));
+      next.muted[item.toolName] = true;
+      commit(next);
+    },
+  };
+
   function triageVerbs(item) {
     return (
       <span className="sh-triage">
-        <button type="button" className="sh-verb" data-verb="attention.resolve"
-          onClick={function () {
-            shell.openDoc({ kind: "session", ref: item.sessionId, preview: true });
-          }}>Resolve Attention</button>
-        <button type="button" className="sh-verb" data-verb="attention.snooze"
-          onClick={function () {
-            var next = JSON.parse(JSON.stringify(triage));
-            next.snoozedUntil[item.id] = Date.now() + 60 * 60 * 1000;
-            commit(next);
-          }}>Snooze Attention</button>
-        <button type="button" className="sh-verb" data-verb="attention.mute"
-          onClick={function () {
-            var next = JSON.parse(JSON.stringify(triage));
-            next.mutedSessions[item.sessionId] = true;
-            commit(next);
-          }}>Mute Session</button>
+        {shell.registry.forSurface("attention-item").map(function (verb) {
+          var run = ATTENTION_RUNNERS[verb.id];
+          if (!run) return null;
+          return (
+            <button type="button" key={verb.id} className="sh-verb"
+              data-verb={verb.id}
+              onClick={function () { run(item); }}>{verb.label}</button>
+          );
+        })}
       </span>
     );
   }

@@ -234,6 +234,19 @@ function SH_SessionComposer(props) {
           </React.Fragment>
         ) : "idle"}
       </div>
+      {slash ? (
+        <div className="sh-composer-verbs">
+          {shell.registry.forSurface("composer-slash").map(function (verb) {
+            return (
+              <button type="button" key={verb.id} className="sh-verb"
+                data-verb={verb.id}
+                onClick={function () { verb.run({ sid: sid }); }}>
+                {verb.label}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
       {slash && typeof window.SH_PaletteRows === "function" ? (
         <window.SH_PaletteRows query={value.slice(1)}
           onRun={function (verb) { setValue(""); verb.run(); }} />

@@ -85,6 +85,10 @@ function SH_Palette() {
   var query = queryState[0];
   var setQuery = queryState[1];
 
+  // Publish the opener so the palette.open verb and the chord run the
+  // same code path.
+  shell.paletteRef.current.open = function () { setQuery(""); setOpen(true); };
+
   React.useEffect(function () {
     function onKey(ev) {
       var chord = SH_chordFor(ev);

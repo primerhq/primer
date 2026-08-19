@@ -70,6 +70,9 @@ function SH_Shell(props) {
   var sessionStatusRef = React.useRef({});
   // The voice driver publishes its stop handle here.
   var voiceRef = React.useRef({ stop: function () {} });
+  // The palette owns its own open state; it publishes the opener here so
+  // the palette.open verb runs the same path the chord does.
+  var paletteRef = React.useRef({ open: function () {} });
 
   // ---- URL is the state ----------------------------------------------------
   var active = null;
@@ -187,6 +190,8 @@ function SH_Shell(props) {
     username: (status.data && status.data.username) || "anon",
     attentionRef: attentionRef,
     voiceRef: voiceRef,
+    paletteRef: paletteRef,
+    openPalette: function () { paletteRef.current.open(); },
     // "Never from background sessions": foreground means this session is
     // the ACTIVE tab of the active group, not merely open somewhere.
     isForeground: function (sid) {
