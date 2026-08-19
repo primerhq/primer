@@ -1034,16 +1034,15 @@ async def _make_document(
 ) -> tuple[str, str]:
     """Create a collection + a document whose body is ``marker``.
 
-    Reuses the hermetic knowledge backends the existing knowledge e2e uses
-    (``tests/e2e/test_smk_knowledge.py::_embedder_and_ssp``): a HuggingFace
-    placeholder embedder + a LanceDB SSP at a unique on-disk path. The
-    document-source resolver only reads the persisted Document row from
-    storage (``document_body_text`` -> ``meta['text']``); it does NOT touch
-    the vector store, and on-create indexing is best-effort (a failing
-    placeholder embedder is logged, not fatal), so the collection's embedder
-    /SSP are only here because collection-create requires a valid
-    ``search_provider_id``. The marker is stored under ``meta['text']`` -
-    the body text the REST create form indexes and the resolver returns.
+    The document is created as a real node with a body: S2 made the
+    content store the single body location, and the document-source
+    resolver reads it from there, failing the workspace create outright
+    when a document has no content row. A metadata-only row (POST
+    /v1/documents) therefore cannot back a template file.
+
+    The embedder and vector store are still created because enabling
+    search needs both, but the resolver never touches them: it reads the
+    body and nothing else, so a placeholder embedder is harmless here.
     """
     eid = f"emb-doc-{suffix}"
     er = await client.post(
@@ -1076,28 +1075,30 @@ async def _make_document(
         json={
             "id": cid,
             "description": "wsp-template document-source harness",
-            "embedder": {
-                "provider_id": eid,
-                "model": "sentence-transformers/all-MiniLM-L6-v2",
-            },
-            "search_provider_id": sid,
             "system": False,
         },
     )
     assert cr.status_code in (200, 201), cr.text
     tracker.collection_id = cid
 
-    did = f"doc-{suffix}"
-    dr = await client.post(
-        "/v1/documents",
+    er2 = await client.put(
+        f"/v1/collections/{cid}/search",
         json={
-            "id": did,
-            "slug": "x.md", "path": f"{did}.md",
-            "collection_id": cid,
-            "meta": {"text": marker},
+            "embedder": {
+                "provider_id": eid,
+                "model": "sentence-transformers/all-MiniLM-L6-v2",
+            },
+            "vector_store_provider_id": sid,
         },
     )
+    assert er2.status_code in (200, 201, 202), er2.text
+
+    dr = await client.post(
+        f"/v1/collections/{cid}/docs",
+        json={"parent": "", "slug": f"doc-{suffix}.md", "body": marker},
+    )
     assert dr.status_code in (200, 201), dr.text
+    did = dr.json()["id"]
     tracker.document_id = did
 
     return cid, did

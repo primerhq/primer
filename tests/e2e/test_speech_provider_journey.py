@@ -120,13 +120,23 @@ async def test_speech_is_consumed_incrementally(client, api_prefix, stub_provide
             if chunk and first_byte_at is None:
                 first_byte_at = time.monotonic()
             body += chunk
+    finished_at = time.monotonic()
 
     assert body.startswith(b"ID3")
-    # The stub sleeps 50 ms per chunk for three chunks, so a proxy that
-    # buffered the whole synthesis could not deliver a first byte before
-    # roughly 150 ms.
+    # The stub sleeps 50 ms per chunk for three chunks. A proxy that
+    # buffered the whole synthesis would hand over every byte at once,
+    # so the gap between the first byte and the last would collapse.
+    #
+    # Measured as a GAP rather than as an absolute deadline: the absolute
+    # form raced the runner (a 140 ms budget against a 150 ms synthesis
+    # fails whenever scheduling costs 40 ms), while the gap is the
+    # property actually under test and is unaffected by how long the
+    # first byte took to arrive.
     assert first_byte_at is not None
-    assert first_byte_at - started < 0.14
+    assert finished_at - first_byte_at > 0.05, (
+        f"stream delivered in one shot: first byte at "
+        f"{first_byte_at - started:.3f}s, last at {finished_at - started:.3f}s"
+    )
 
 
 @pytest.mark.asyncio

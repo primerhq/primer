@@ -78,21 +78,27 @@ async def test_semantic_search_full_journey(
         r = await client.post("/v1/embedding_providers", json=_emb_body(emb_id))
         assert r.status_code == 201, r.text
 
-        # ----- Create Collection bound to both -----
+        # ----- Create Collection, then bind both through search -----
         r = await client.post("/v1/collections", json={
             "id": coll_id,
             "description": "ssp journey",
-            "embedder": {"provider_id": emb_id, "model": "stub-embed"},
-            "search_provider_id": ssp_id,
         })
         assert r.status_code == 201, r.text
 
-        # ----- Verify in list with search_provider_id field intact -----
+        # S2: the embedder and the vector store are the per-collection
+        # search config, not top-level collection fields.
+        r = await client.put(f"/v1/collections/{coll_id}/search", json={
+            "embedder": {"provider_id": emb_id, "model": "stub-embed"},
+            "vector_store_provider_id": ssp_id,
+        })
+        assert r.status_code in (200, 201, 202), r.text
+
+        # ----- Verify the binding survives a list read -----
         r = await client.get("/v1/collections?length=50")
         assert r.status_code == 200, r.text
         items = [c for c in r.json().get("items", []) if c["id"] == coll_id]
         assert len(items) == 1, items
-        assert items[0]["search_provider_id"] == ssp_id, items[0]
+        assert items[0]["search"]["vector_store_provider_id"] == ssp_id, items[0]
 
         # ----- Cascade-block: DELETE SSP while collection is live -----
         # The hook raises ConflictError → RFC 7807 flat envelope.
@@ -130,18 +136,22 @@ async def test_semantic_search_full_journey(
 async def test_semantic_search_collection_with_unknown_ssp_returns_404(
     client: httpx.AsyncClient, unique_suffix: str,
 ):
-    """Sister: Collection create with unknown search_provider_id is
+    """Sister: enabling search against an unknown vector store is
     rejected with 404 + /errors/not-found flat RFC 7807 envelope."""
     emb_id = f"emb-unk-{unique_suffix}"
     try:
         r = await client.post("/v1/embedding_providers", json=_emb_body(emb_id))
         assert r.status_code == 201, r.text
 
+        coll_id = f"coll-unk-{unique_suffix}"
         r = await client.post("/v1/collections", json={
-            "id": f"coll-unk-{unique_suffix}",
-            "description": "unknown ssp",
+            "id": coll_id, "description": "unknown ssp",
+        })
+        assert r.status_code == 201, r.text
+
+        r = await client.put(f"/v1/collections/{coll_id}/search", json={
             "embedder": {"provider_id": emb_id, "model": "stub-embed"},
-            "search_provider_id": "ssp-does-not-exist-xyz",
+            "vector_store_provider_id": "ssp-does-not-exist-xyz",
         })
         assert r.status_code == 404, r.text
         # _validate_ssp_exists raises NotFoundError → RFC 7807 flat envelope
@@ -149,4 +159,5 @@ async def test_semantic_search_collection_with_unknown_ssp_returns_404(
         assert body.get("type") == "/errors/not-found", body
         assert "ssp-does-not-exist-xyz" in body.get("detail", ""), body
     finally:
+        await client.delete(f"/v1/collections/coll-unk-{unique_suffix}")
         await client.delete(f"/v1/embedding_providers/{emb_id}")
