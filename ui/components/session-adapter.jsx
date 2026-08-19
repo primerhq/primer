@@ -78,6 +78,11 @@ var SA_KIND_TO_TRANSCRIPT = {
   // Binding hand-off: which agent took over, and at which epoch.
   agent_marker: "binding_change",
   graph_transition: "divider",
+  // The reader SHOULD see that their history was folded: after a
+  // compaction the marker is the only visible row (replay.visible_records
+  // replaces the set with it), so hiding it would leave a transcript that
+  // silently begins mid-conversation.
+  compaction_marker: "divider",
   invocation_divider: "divider",
   // Lifecycle rows map to the SAME-named kinds <Transcript>'s Message()
   // already renders with dedicated styling: yielded/resumed/done as a muted
@@ -92,12 +97,19 @@ var SA_KIND_TO_TRANSCRIPT = {
   error: "error",
 };
 
-// Divider label for the two kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
+// Divider label for the three kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
 // invocation_divider (written by reset_session on ENDED->CREATED re-open,
 // payload: {invocation: N}) renders "— invocation N —"; graph_transition
 // (node ENTER/EXIT, payload: {node_id, node_kind, phase, status}) renders
 // "<node_id> · <phase>".
 function SA_dividerLabel(rec) {
+  if (rec.kind === "compaction_marker") {
+    var p = rec.payload || {};
+    var from = p.replaced_from_seq;
+    return from == null
+      ? "— history compacted —"
+      : "— history compacted from #" + from + " —";
+  }
   if (rec.kind === "invocation_divider") {
     var n = (rec.payload && rec.payload.invocation) || 1;
     return "— invocation " + n + " —";
