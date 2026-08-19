@@ -49,6 +49,29 @@ var SH_api = {
       null, { signal: signal });
   },
 
+  // PUT /v1/workspaces/{wid}/files?path= with {content, encoding}
+  // (primer/api/routers/workspaces.py:1511-1530; body FileWriteBody at
+  // :161-177). 204 on success, so there is no response body to read.
+  fileWrite: function (wid, path, content) {
+    return window.primerApi.apiFetch(
+      "PUT", "/workspaces/" + encodeURIComponent(wid) + "/files?path="
+        + encodeURIComponent(path),
+      { content: content, encoding: "text" });
+  },
+
+  collections: function (signal) {
+    return window.primerApi.apiFetch("GET", "/collections?limit=200", null,
+      { signal: signal });
+  },
+
+  // S2's document-by-path read (ui/components/knowledge.jsx:657-660).
+  collectionDocument: function (cid, path, signal) {
+    return window.primerApi.apiFetch(
+      "GET", "/collections/" + encodeURIComponent(cid) + "/documents?path="
+        + encodeURIComponent(path),
+      null, { signal: signal });
+  },
+
   commitLog: function (wid, limit, signal) {
     return window.primerApi.apiFetch(
       "GET", "/workspaces/" + encodeURIComponent(wid) + "/log?limit="
@@ -160,6 +183,8 @@ var SH_api = {
     sessionPending: function (sid) { return "shell-session-pending:" + sid; },
     tree: function (wid, path) { return "shell-tree:" + wid + ":" + (path || "."); },
     file: function (wid, path) { return "shell-file:" + wid + ":" + path; },
+    collections: function () { return "shell-collections"; },
+    document: function (cid, path) { return "shell-document:" + cid + ":" + path; },
     log: function (wid) { return "shell-log:" + wid; },
     commit: function (wid, sha) { return "shell-commit:" + wid + ":" + sha; },
     records: function () { return "shell-approval-records"; },
