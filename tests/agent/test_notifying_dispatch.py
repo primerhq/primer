@@ -123,3 +123,137 @@ async def test_a_tool_hidden_by_the_agent_allowlist_is_not_notifying() -> None:
         await mgr.execute(
             ToolCallPart(id="tc-0", name="t1__notify_me", arguments={})
         )
+
+
+async def test_notifying_dispatch_never_parks_and_answers_success() -> None:
+    mgr = _manager(
+        {"notify_me": (_tool("notify_me", tool_class="notifying"), _parking_handler)}
+    )
+    await mgr.list_tools()
+    call = ToolCallPart(id="tc-1", name="t1__notify_me", arguments={"a": 1})
+    rp = await mgr.deliver_notifying(call)
+    assert rp.id == "tc-1"
+    assert rp.error is False
+    assert rp.output == NOTIFYING_TOOL_RESULT
+
+
+async def test_standard_yielding_tool_still_parks() -> None:
+    import pytest
+
+    mgr = _manager({"wait": (_tool("wait"), _parking_handler)})
+    await mgr.list_tools()
+    call = ToolCallPart(id="tc-2", name="t1__wait", arguments={})
+    with pytest.raises(YieldToWorker):
+        await mgr.execute(call)
+
+
+async def test_notifying_non_client_tool_obeys_the_same_rule() -> None:
+    """Spec section 7: a NOTIFYING non-client tool follows the same rule.
+
+    inform_user is server-side, not client-registered, so its delivery is
+    its own channel sink. The class is one concept: the handler still runs
+    (the sink still fires) and the caller still gets the synthetic success
+    instead of the handler's ``{"delivered_to": N}``.
+    """
+    from primer.toolset.misc import MISC_TOOLSET_ID, build_misc_toolset
+
+    mgr = ToolExecutionManager(
+        toolset_providers={MISC_TOOLSET_ID: build_misc_toolset()},
+        workspace_session=_FakeAgentSession(),  # type: ignore[arg-type]
+        initiated_by=_SYSTEM,
+    )
+    delivered: list[str] = []
+
+    async def _sink(message: str) -> int:
+        delivered.append(message)
+        return 1
+
+    mgr.set_inform_sink(_sink)
+    await mgr.list_tools()
+    assert mgr.is_notifying("misc__inform_user") is True
+    assert mgr.is_notifying("misc__get_datetime") is False
+    rp = await mgr.deliver_notifying(
+        ToolCallPart(
+            id="tc-i", name="misc__inform_user", arguments={"message": "hi"}
+        )
+    )
+    assert delivered == ["hi"], "the notifying handler must still run"
+    assert rp.id == "tc-i"
+    assert rp.error is False
+    assert rp.output == NOTIFYING_TOOL_RESULT
+
+
+async def test_run_agent_turn_continues_past_a_notifying_call() -> None:
+    import asyncio
+    from collections.abc import AsyncIterator
+
+    from primer.agent.loop import run_agent_turn
+    from primer.model.agent import Agent, AgentModel
+    from primer.model.chat import (
+        Done,
+        Message,
+        StreamEvent,
+        TextDelta,
+        TextPart,
+        ToolCallEnd,
+        ToolCallStart,
+        ToolResultPart,
+    )
+    from primer.model.model_profile import ModelProfileConfig
+    from primer.model_profile import ResolvedModel
+
+    class _OneNotifyThenStopLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def stream(self, *, model, messages, **kwargs):
+            self.calls += 1
+            first = self.calls == 1
+
+            async def _gen() -> AsyncIterator[StreamEvent]:
+                if first:
+                    yield ToolCallStart(id="tc-9", name="t1__notify_me", index=0)
+                    yield ToolCallEnd(id="tc-9", arguments={"m": "hi"}, index=0)
+                    yield Done(stop_reason="tool_use", raw_reason="tool_use")
+                else:
+                    yield TextDelta(text="done", index=0)
+                    yield Done(stop_reason="stop", raw_reason="stop")
+
+            return _gen()
+
+    mgr = _manager(
+        {"notify_me": (_tool("notify_me", tool_class="notifying"), _parking_handler)}
+    )
+    agent = Agent(id="ag", description="x", model=AgentModel(profile_id="p--m"))
+    llm = _OneNotifyThenStopLLM()
+    messages_out: list[Message] = []
+
+    async def _drive() -> None:
+        async for _ in run_agent_turn(
+            agent=agent,
+            llm=llm,
+            llm_model=ResolvedModel(
+                profile_id="p",
+                provider_id="pr",
+                model_name="m",
+                context_length=4096,
+                config=ModelProfileConfig(),
+            ),
+            tool_manager=mgr,
+            prompt=[Message(role="user", parts=[TextPart(text="go")])],
+            messages_out=messages_out,
+        ):
+            pass
+
+    await asyncio.wait_for(_drive(), timeout=5.0)
+
+    assert llm.calls == 2, "the turn continued instead of parking"
+    results = [
+        p
+        for m in messages_out
+        for p in m.parts
+        if isinstance(p, ToolResultPart)
+    ]
+    assert len(results) == 1
+    assert results[0].error is False
+    assert results[0].output == NOTIFYING_TOOL_RESULT

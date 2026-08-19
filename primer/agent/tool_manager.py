@@ -41,7 +41,7 @@ from primer.agent.approval import (
 )
 from primer.authz import _role_allows
 from primer.int.toolset import ToolsetProvider
-from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart
+from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart, NOTIFYING_TOOL_RESULT
 from primer.model.except_ import (
     AuthRequiredError,
     ConfigError,
@@ -513,6 +513,41 @@ class ToolExecutionManager:
         )
 
     # ---- Internals -------------------------------------------------------
+
+    async def deliver_notifying(
+        self,
+        call: ToolCallPart,
+        *,
+        principal: str | None = None,
+    ) -> ToolResultPart:
+        """Dispatch one NOTIFYING-class call: never parks, always succeeds.
+
+        The class is a contract, not a hint: no response is expected from
+        any responder, so the handler's return value and its failures are
+        both discarded and the caller always gets the synthetic success.
+        A ``YieldToWorker`` raised under a notifying call is a contract
+        violation (or an approval policy targeting one): it is swallowed
+        here so the park machinery is never entered and the turn keeps
+        running.
+        """
+        try:
+            await self._execute_inner(call, principal=principal)
+        except YieldToWorker:
+            logger.warning(
+                "ToolExecutionManager: notifying tool %r tried to park; "
+                "delivery skipped and the turn continues",
+                call.name,
+            )
+        except Exception as exc:  # noqa: BLE001 - delivery is best-effort
+            logger.warning(
+                "ToolExecutionManager: notifying tool %r raised; the turn "
+                "continues (error=%s)",
+                call.name,
+                exc,
+            )
+        return ToolResultPart(
+            id=call.id, output=NOTIFYING_TOOL_RESULT, error=False
+        )
 
     async def _dispatch_toolset(
         self,

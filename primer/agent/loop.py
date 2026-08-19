@@ -202,6 +202,14 @@ async def _dispatch_tool_calls(
     """
     result_parts: list[ToolResultPart] = []
     for call in calls:
+        if tool_manager.is_notifying(call.name):
+            # Notifying class (S3 spec section 3): the runner answers the
+            # call itself with a successful synthetic tool_result and keeps
+            # looping. The park machinery is never entered.
+            result_parts.append(
+                await tool_manager.deliver_notifying(call, principal=principal)
+            )
+            continue
         try:
             rp = await tool_manager.execute(call, principal=principal)
         except AuthRequiredError:
