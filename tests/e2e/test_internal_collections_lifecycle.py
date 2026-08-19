@@ -46,6 +46,9 @@ from tests._support.model_profiles import agent_model, seed_llm_provider
 # The 30 s that sufficed while it indexed nothing does not cover that.
 _BOOTSTRAP_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
 
+# The collection bootstrap enables search on.
+_SYSTEM_COLLECTION_ID = "system"
+
 
 def _embedding_provider_body(entity_id: str) -> dict:
     """HuggingFace embedder using a tiny local model that
@@ -2837,3 +2840,91 @@ async def test_t0586_agents_search_top_k_1_empty_post_bootstrap(
             await client.delete(f"/v1/ssp/{ssp_id}")
         except Exception:  # noqa: BLE001
             pass
+
+
+# ============================================================================
+# A new agent is searchable without waiting for a restart
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_new_agent_is_searchable_through_the_system_collection(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """Creating an agent makes it findable, with no second bootstrap.
+
+    The CRUD hooks converge that agent's page in the system collection
+    and, because bootstrap left search enabled on it, the write carries
+    the indexing hooks. This is the successor to the CDC coverage that
+    used to assert the same thing through /v1/agents/search, which S2
+    left inert.
+    """
+    embedder_id = f"emb-cdc-{unique_suffix}"
+    ssp_id = f"ssp-cdc-{unique_suffix}"
+    llm_id = f"llm-cdc-{unique_suffix}"
+    agent_id = f"agent-cdc-{unique_suffix}"
+    distinctive = f"pelagic cartography rota {unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    agent_created = False
+    llm_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id, ssp_id)
+
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=llm_id, description=distinctive,
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # The page exists immediately, written by the CRUD hook.
+        page = await client.get(
+            f"/v1/collections/{_SYSTEM_COLLECTION_ID}/documents",
+            params={"path": f"agents/{agent_id}"},
+        )
+        assert page.status_code == 200, page.text
+        assert distinctive in page.text, page.text
+
+        # And it is searchable, without bootstrapping a second time.
+        found = False
+        last: dict = {}
+        for _ in range(20):
+            search = await client.post(
+                f"/v1/collections/{_SYSTEM_COLLECTION_ID}/search",
+                json={"query": distinctive, "top_k": 5},
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+            assert search.status_code == 200, search.text
+            last = search.json()
+            if any(
+                f"agents/{agent_id}" == h.get("meta", {}).get("path")
+                for h in last["hits"]
+            ):
+                found = True
+                break
+            await asyncio.sleep(0.5)
+        assert found, (
+            f"agent {agent_id!r} was not searchable through the system "
+            f"collection; last response: {last!r}"
+        )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")

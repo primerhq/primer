@@ -67,15 +67,43 @@ def make_cdc_hooks(
     entity_type: EntityType,
     model_cls: type[Identifiable],
 ) -> tuple[_OnMutateHook, _OnMutateHook, _OnMutateHook]:
-    """Return ``(on_create, on_update, on_delete)`` hooks that enqueue
-    one CDC event per mutation against the named ``entity_type``.
+    """Return ``(on_create, on_update, on_delete)`` hooks that keep the
+    system collection in step with the named ``entity_type``.
 
-    Hooks no-op when the :class:`InternalCollectionsSubsystem` is not
-    attached to the app state, so a deployment that has not bootstrapped
-    the subsystem still gets normal CRUD behaviour.
+    Each mutation converges that entity's page and its subtree index. If
+    the system collection has semantic search enabled, the write carries
+    the indexing hooks, so the change is searchable straight away rather
+    than at the next startup regeneration.
+
+    The hooks also still enqueue an event on the
+    :class:`InternalCollectionsSubsystem` when one is attached, which is
+    what the legacy per-entity namespaces consumed; that queue has no
+    worker draining it any more and goes when the surface does.
+
+    Never raises: a stale page must not fail the write that changed the
+    entity, so convergence is best-effort and logs on failure.
     """
 
+    async def _converge(entity_id: str, request: Request) -> None:
+        from primer.knowledge.system_collection import converge_entity
+
+        sp = getattr(request.app.state, "storage_provider", None)
+        if sp is None:
+            return
+        await converge_entity(
+            sp,
+            entity_type=entity_type,
+            entity_id=entity_id,
+            provider_registry=getattr(
+                request.app.state, "provider_registry", None,
+            ),
+            semantic_search_registry=getattr(
+                request.app.state, "semantic_search_registry", None,
+            ),
+        )
+
     async def _upsert(entity_id: str, request: Request) -> None:
+        await _converge(entity_id, request)
         ic = getattr(request.app.state, "internal_collections", None)
         if ic is None:
             return
@@ -101,6 +129,7 @@ def make_cdc_hooks(
         ))
 
     async def _delete(entity_id: str, request: Request) -> None:
+        await _converge(entity_id, request)
         ic = getattr(request.app.state, "internal_collections", None)
         if ic is None:
             return

@@ -102,6 +102,37 @@ async def _ensure_collection(storage_provider) -> Collection:
     ))
 
 
+def _agent_body(a) -> str:
+    return (
+        f"# {a.id}\n\n{a.description or ''}\n\n"
+        f"- model profile: `{getattr(a.model, 'profile_id', '')}`\n"
+    )
+
+
+def _graph_body(g) -> str:
+    return f"# {g.id}\n\n{g.description or ''}\n"
+
+
+def _collection_body(c) -> str:
+    enabled = "enabled" if c.search is not None else "disabled"
+    return (
+        f"# {c.id}\n\n{c.description or ''}\n\n"
+        f"- semantic search: {enabled}\n"
+    )
+
+
+# Entity types the CRUD routers fire CDC for, mapped onto their subtree,
+# model and renderer. Tools are absent on purpose: they are enumerated
+# from toolset providers rather than stored as rows, so nothing mutates
+# one and there is no hook to hang this on.
+def _entity_kinds() -> dict:
+    return {
+        "agent": ("agents", Agent, _agent_body, "Agents"),
+        "graph": ("graphs", Graph, _graph_body, "Graphs"),
+        "collection": ("collections", Collection, _collection_body, "Collections"),
+    }
+
+
 def _index_body(title: str, children: list[tuple[str, str]]) -> str:
     lines = [f"# {title}", ""]
     if not children:
@@ -298,10 +329,7 @@ async def _desired(storage_provider, toolset_providers: dict) -> dict[str, str]:
     agent_children = []
     for a in agents:
         path = f"agents/{a.id}"
-        desired[path] = (
-            f"# {a.id}\n\n{a.description or ''}\n\n"
-            f"- model profile: `{getattr(a.model, 'profile_id', '')}`\n"
-        )
+        desired[path] = _agent_body(a)
         agent_children.append((path, a.id))
     desired["agents"] = _index_body("Agents", agent_children)
 
@@ -309,7 +337,7 @@ async def _desired(storage_provider, toolset_providers: dict) -> dict[str, str]:
     graph_children = []
     for g in graphs:
         path = f"graphs/{g.id}"
-        desired[path] = f"# {g.id}\n\n{g.description or ''}\n"
+        desired[path] = _graph_body(g)
         graph_children.append((path, g.id))
     desired["graphs"] = _index_body("Graphs", graph_children)
 
@@ -319,11 +347,7 @@ async def _desired(storage_provider, toolset_providers: dict) -> dict[str, str]:
         if c.id == SYSTEM_COLLECTION_ID:
             continue
         path = f"collections/{c.id}"
-        enabled = "enabled" if c.search is not None else "disabled"
-        desired[path] = (
-            f"# {c.id}\n\n{c.description or ''}\n\n"
-            f"- semantic search: {enabled}\n"
-        )
+        desired[path] = _collection_body(c)
         coll_children.append((path, c.id))
     desired["collections"] = _index_body("Collections", coll_children)
 
@@ -469,4 +493,123 @@ async def regenerate_system_collection(
     return written
 
 
-__all__ = ["SYSTEM_COLLECTION_ID", "regenerate_system_collection"]
+async def converge_entity(
+    storage_provider, *, entity_type: str, entity_id: str,
+    provider_registry=None, semantic_search_registry=None,
+) -> bool:
+    """Bring one entity's page in the system collection up to date.
+
+    Called from the CRUD CDC hooks so that creating, editing or deleting
+    an agent, graph or collection is reflected immediately, rather than
+    waiting for the next startup regeneration. When the registries are
+    supplied the write carries the indexing hooks, so the change reaches
+    the vector store too and the entity becomes searchable at once.
+
+    Deliberately narrow: it writes the entity's own page and re-renders
+    the one subtree index that links to it. Running the full
+    regeneration per mutation would enumerate every toolset provider's
+    tools on each write, which is the slow, network-touching part of
+    that pass and has no business on a CRUD path.
+
+    Returns True when something was written. Never raises: a system
+    collection that is briefly stale must not fail the write that
+    changed the entity.
+    """
+    kinds = _entity_kinds()
+    if entity_type not in kinds:
+        return False
+    subtree, model_cls, render, title = kinds[entity_type]
+
+    try:
+        colls = storage_provider.get_storage(Collection)
+        if await colls.get(SYSTEM_COLLECTION_ID) is None:
+            return False
+
+        indexer = unindexer = None
+        if semantic_search_registry is not None:
+            unindexer = make_document_unindexer(
+                storage_provider=storage_provider,
+                semantic_search_registry=semantic_search_registry,
+            )
+            if provider_registry is not None:
+                indexer = make_document_indexer(
+                    storage_provider=storage_provider,
+                    provider_registry=provider_registry,
+                    semantic_search_registry=semantic_search_registry,
+                )
+        tree = DocumentTreeService(
+            storage_provider, indexer=indexer, unindexer=unindexer,
+        )
+
+        entity = await storage_provider.get_storage(model_cls).get(entity_id)
+        path = f"{subtree}/{entity_id}"
+
+        if entity is None or (
+            entity_type == "collection" and entity_id == SYSTEM_COLLECTION_ID
+        ):
+            # Gone (or the system collection itself, which never lists
+            # itself): drop the page if one is there.
+            try:
+                await tree.delete(
+                    collection_id=SYSTEM_COLLECTION_ID, path=path,
+                    recursive=True,
+                )
+            except PrimerError:
+                pass
+        else:
+            body = render(entity)
+            try:
+                current = await tree.read(
+                    collection_id=SYSTEM_COLLECTION_ID, path=path,
+                )
+            except PrimerError:
+                current = None
+            if current is not None and current.body == body:
+                return False
+            try:
+                await tree.update(
+                    collection_id=SYSTEM_COLLECTION_ID, path=path, body=body,
+                )
+            except NotFoundError:
+                await tree.create(
+                    collection_id=SYSTEM_COLLECTION_ID, parent=subtree,
+                    slug=entity_id, body=body, strict_slugs=False,
+                )
+
+        # Re-render the subtree index so its links match what is there.
+        rows = await _list_all(storage_provider, model_cls)
+        children = [
+            (f"{subtree}/{r.id}", r.id) for r in rows
+            if not (entity_type == "collection" and r.id == SYSTEM_COLLECTION_ID)
+        ]
+        index_body = _index_body(title, children)
+        try:
+            current_index = await tree.read(
+                collection_id=SYSTEM_COLLECTION_ID, path=subtree,
+            )
+        except PrimerError:
+            current_index = None
+        if current_index is None or current_index.body != index_body:
+            try:
+                await tree.update(
+                    collection_id=SYSTEM_COLLECTION_ID, path=subtree,
+                    body=index_body,
+                )
+            except NotFoundError:
+                await tree.create(
+                    collection_id=SYSTEM_COLLECTION_ID, parent="",
+                    slug=subtree, body=index_body, strict_slugs=False,
+                )
+        return True
+    except Exception:  # noqa: BLE001 - never fail the entity write
+        logger.exception(
+            "system collection: converging %s %r failed", entity_type, entity_id,
+        )
+        return False
+
+
+__all__ = [
+    "SYSTEM_COLLECTION_ID",
+    "converge_entity",
+    "regenerate_system_collection",
+]
