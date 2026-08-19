@@ -170,8 +170,14 @@ async def test_stt_provider(body: _SttDraft) -> dict[str, Any]:
 async def list_stt_types() -> dict[str, dict[str, Any]]:
     return {
         "openai": {
+            "label": "OpenAI-compatible",
             "config_fields": ["url", "api_key"],
             "row_fields": ["default_model"],
+            # No _discover_models route: the model list comes back from
+            # POST /stt_providers/_test, which is a live round trip the
+            # form already offers.
+            "discoverable": False,
+            "limits": True,
         },
     }
 
@@ -206,8 +212,11 @@ async def test_tts_provider(body: _TtsDraft) -> dict[str, Any]:
 async def list_tts_types() -> dict[str, dict[str, Any]]:
     return {
         "openai": {
+            "label": "OpenAI-compatible",
             "config_fields": ["url", "api_key"],
             "row_fields": ["default_model", "default_voice"],
+            "discoverable": False,
+            "limits": True,
         },
     }
 

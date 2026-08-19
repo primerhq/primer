@@ -1,18 +1,20 @@
 /* global React, Icon, Btn, Banner */
 // ============================================================================
-// One parameterized provider form (S4 P2 Task 19).
+// One parameterized provider form (S4 P2 Task 19, P4 Task 29).
 //
 // Every provider class previously carried its own form component with its
 // own field list. They are all the same shape: a provider-type picker, a
 // few row-level fields, a config block, and limits. So the field list
 // comes from the class's own /_types endpoint and exactly one component
-// knows how to render it.
+// knows how to render it. No field table lives here: the place that owns
+// the provider enums is the place that describes their fields.
 //
 // Capability hints render INSIDE this form using the existing
 // foundation/capabilities.js helpers, which are deliberately untouched.
 // ============================================================================
 
-// Field name to input type. Anything not named here renders as text.
+// Field name to input type. A served descriptor carries its own `type`;
+// this is the fallback for the bare-name shape.
 const PC_FIELD_TYPES = {
   "api_key": "password",
   "token": "password",
@@ -25,47 +27,174 @@ const PC_FIELD_TYPES = {
   "port": "number",
 };
 
-function PC_Field({ name, value, onChange, disabled }) {
-  const kind = PC_FIELD_TYPES[name] || "text";
+function PC_fieldType(name) {
+  return PC_FIELD_TYPES[name] || "text";
+}
+
+// _types answers in two shapes. web_search, web_fetch and the speech
+// classes serve bare field NAMES (routers/web_search.py:216-222); the
+// model-family classes serve DESCRIPTORS (routers/providers.py
+// list_llm_provider_types). Normalise once so one renderer covers both.
+function PC_normalizeField(field) {
+  if (typeof field === "string") {
+    return {
+      key: field,
+      label: field,
+      type: PC_fieldType(field),
+      required: false,
+      help: "",
+      options: null,
+      placeholder: "",
+    };
+  }
+  return {
+    key: field.key,
+    label: field.label || field.key,
+    type: field.type || PC_fieldType(field.key),
+    required: !!field.required,
+    help: field.help || "",
+    options: field.options || null,
+    placeholder: field.placeholder || "",
+  };
+}
+
+// EmbeddingProvider and CrossEncoderProvider declare models: min_length=1,
+// so the row is rejected outright without one. A comma-joined text box
+// would round-trip badly (names contain slashes and dots), so this is a
+// real add/remove list of {name} objects, matching the wire shape.
+function PC_ModelListField({ value, onChange }) {
+  const rows = Array.isArray(value) ? value : [];
+  const setName = (i, name) =>
+    onChange(rows.map((r, j) => (j === i ? { ...r, name } : r)));
   return (
-    <div className="field">
-      <label className="field-label mono text-sm" htmlFor={`pf-${name}`}>
-        {name}
-      </label>
-      <input
-        id={`pf-${name}`}
-        className="input mono"
-        type={kind}
-        disabled={disabled}
-        value={value == null ? "" : value}
-        onChange={(e) => {
-          const raw = e.target.value;
-          onChange(name, kind === "number" && raw !== "" ? Number(raw) : raw);
-        }}
-      />
+    <div className="model-list" data-testid="provider-form-model-list">
+      {rows.map((row, i) => (
+        <div className="model-list-row" key={i}>
+          <input
+            type="text"
+            className="mono"
+            value={row.name || ""}
+            onChange={(e) => setName(i, e.target.value)}
+          />
+          <Btn
+            type="button"
+            kind="ghost"
+            onClick={() => onChange(rows.filter((_, j) => j !== i))}
+          >
+            Remove
+          </Btn>
+        </div>
+      ))}
+      <Btn
+        type="button"
+        data-testid="provider-form-add-model"
+        onClick={() => onChange(rows.concat([{ name: "" }]))}
+      >
+        Add model
+      </Btn>
     </div>
   );
 }
 
-function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest }) {
-  const { useResource, apiFetch, useCapabilities, capabilityHint } = window.primerApi;
-  const EXTRA_FOR_PROVIDER_TYPE = window.primerApi.EXTRA_FOR_PROVIDER_TYPE || {};
-  const caps = useCapabilities();
-  const [testResult, setTestResult] = React.useState(null);
-  const [busy, setBusy] = React.useState(false);
+function PC_Field({ field, value, onChange }) {
+  let input;
+  if (field.type === "model_list") {
+    input = <PC_ModelListField value={value} onChange={onChange} />;
+  } else if (field.type === "enum") {
+    input = (
+      <select value={value || ""} onChange={(e) => onChange(e.target.value)}>
+        {(field.options || []).map((opt) => (
+          <option key={opt} value={opt}>{opt}</option>
+        ))}
+      </select>
+    );
+  } else {
+    input = (
+      <input
+        type={field.type}
+        required={field.required}
+        placeholder={field.placeholder}
+        value={value || ""}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    );
+  }
+  return (
+    <label className="field" data-field={field.key}>
+      <span>
+        {field.label}
+        {field.required ? <em className="req"> *</em> : null}
+      </span>
+      {input}
+      {field.help ? <span className="field-help">{field.help}</span> : null}
+    </label>
+  );
+}
 
+// Limits is required on every model-family provider row and
+// max_concurrency inside it has no default, so the form has to offer it.
+// The optional timeouts are left blank by default: an empty box means
+// "use the model default", which is what the backend's None means.
+function PC_LimitsFieldset({ value, onChange }) {
+  const limits = value || { max_concurrency: 1 };
+  const set = (key, raw) => {
+    const next = { ...limits };
+    if (raw === "") delete next[key];
+    else next[key] = Number(raw);
+    onChange(next);
+  };
+  return (
+    <fieldset className="limits" data-testid="provider-form-limits">
+      <legend>Limits</legend>
+      <label className="field">
+        <span>max_concurrency<em className="req"> *</em></span>
+        <input
+          type="number"
+          min="1"
+          value={limits.max_concurrency == null ? 1 : limits.max_concurrency}
+          onChange={(e) => set("max_concurrency", e.target.value || "1")}
+        />
+      </label>
+      <label className="field">
+        <span>request_timeout_seconds</span>
+        <input
+          type="number"
+          min="0"
+          value={limits.request_timeout_seconds == null ? "" : limits.request_timeout_seconds}
+          onChange={(e) => set("request_timeout_seconds", e.target.value)}
+        />
+      </label>
+      <label className="field">
+        <span>connect_timeout_seconds</span>
+        <input
+          type="number"
+          min="0"
+          value={limits.connect_timeout_seconds == null ? "" : limits.connect_timeout_seconds}
+          onChange={(e) => set("connect_timeout_seconds", e.target.value)}
+        />
+      </label>
+    </fieldset>
+  );
+}
+
+function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest }) {
+  const { useResource, apiFetch, useCapabilities, capabilityHint,
+    EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
+  const [busy, setBusy] = React.useState(false);
+  const [testResult, setTestResult] = React.useState(null);
+  const caps = (useCapabilities() || {}).data;
   const types = useResource(
-    `pf:types:${plural}`,
+    `provider-types:${plural}`,
     (signal) => apiFetch("GET", typesPath || `/${plural}/_types`, null, { signal }),
     { pollMs: null },
   );
 
   const draft = value || {};
-  const entries = types.data?.types || types.data?.items || [];
-  const selectedType = draft.provider || (entries[0] && entries[0].provider) || "";
-  const spec = entries.find((t) => t.provider === selectedType) || entries[0] || {};
-  const rowFields = spec.row_fields || [];
-  const configFields = spec.config_fields || [];
+  // _types answers a MAP keyed by provider-type value.
+  const typeMap = types.data || {};
+  const typeKeys = Object.keys(typeMap);
+  const selectedType = draft.provider || typeKeys[0] || "";
+  const shape = typeMap[selectedType] || {};
 
   // The provider type decides whether an optional extra is needed; the
   // hint text comes from the shared capabilities helper so the wording
@@ -73,9 +202,13 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
   const extra = EXTRA_FOR_PROVIDER_TYPE[selectedType];
   const missingExtra = extra && caps && caps.extras && !caps.extras[extra]?.installed;
 
-  const setField = (name, v) => onChange({ ...draft, [name]: v });
-  const setConfig = (name, v) =>
-    onChange({ ...draft, config: { ...(draft.config || {}), [name]: v } });
+  const setField = (scope, name, v) => {
+    if (scope === "config") {
+      onChange({ ...draft, config: { ...(draft.config || {}), [name]: v } });
+      return;
+    }
+    onChange({ ...draft, [name]: v });
+  };
 
   const runTest = async () => {
     setBusy(true);
@@ -107,10 +240,10 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
           id="pf-provider"
           className="input"
           value={selectedType}
-          onChange={(e) => setField("provider", e.target.value)}
+          onChange={(e) => setField("row", "provider", e.target.value)}
         >
-          {entries.map((t) => (
-            <option key={t.provider} value={t.provider}>{t.provider}</option>
+          {typeKeys.map((k) => (
+            <option key={k} value={k}>{(typeMap[k] || {}).label || k}</option>
           ))}
         </select>
       </div>
@@ -121,25 +254,36 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
         </Banner>
       ) : null}
 
-      <PC_Field name="id" value={draft.id} onChange={setField} />
+      <PC_Field
+        field={PC_normalizeField({ key: "id", label: "id", required: true })}
+        value={draft.id}
+        onChange={(next) => setField("row", "id", next)}
+      />
 
-      {rowFields.map((name) => (
-        <PC_Field key={name} name={name} value={draft[name]} onChange={setField} />
+      {(shape.row_fields || []).map(PC_normalizeField).map((f) => (
+        <PC_Field
+          key={`row:${f.key}`}
+          field={f}
+          value={draft[f.key]}
+          onChange={(next) => setField("row", f.key, next)}
+        />
       ))}
 
-      {configFields.length ? (
-        <div className="col" style={{ gap: 8 }}>
-          <div className="muted text-sm">config</div>
-          {configFields.map((name) => (
-            <PC_Field
-              key={name}
-              name={name}
-              value={(draft.config || {})[name]}
-              onChange={setConfig}
-            />
-          ))}
-        </div>
-      ) : null}
+      {(shape.config_fields || []).map(PC_normalizeField).map((f) => (
+        <PC_Field
+          key={`config:${f.key}`}
+          field={f}
+          value={(draft.config || {})[f.key]}
+          onChange={(next) => setField("config", f.key, next)}
+        />
+      ))}
+
+      {shape.limits && (
+        <PC_LimitsFieldset
+          value={draft.limits}
+          onChange={(next) => setField("row", "limits", next)}
+        />
+      )}
 
       {testResult ? (
         <Banner
@@ -168,4 +312,5 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
 }
 
 window.PC_FIELD_TYPES = PC_FIELD_TYPES;
+window.PC_normalizeField = PC_normalizeField;
 window.PC_ProviderForm = PC_ProviderForm;
