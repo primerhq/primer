@@ -32,7 +32,7 @@ import primer.observability.metrics as _metrics
 
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import (
-    _ClientAction,
+    Done,
     ExtendedEvent,
     Message,
     StreamEvent,
@@ -40,7 +40,9 @@ from primer.model.chat import (
     ToolResultPart,
     Usage,
     output_to_message,
+    _ClientAction,
     _ExecutorToolResult,
+    _LlmCall,
 )
 from primer.model.except_ import AuthRequiredError, PrimerError
 
@@ -138,6 +140,7 @@ async def run_agent_turn(
     tool_round = 0
     while True:
         buffered: list[StreamEvent] = []
+        held_done: StreamEvent | None = None
         call_t0 = time.monotonic()
         call_usage: Usage | None = None
         stream = llm.stream(
@@ -154,6 +157,14 @@ async def run_agent_turn(
                 buffered.append(event)
                 if isinstance(event, Usage):
                     call_usage = event
+                if isinstance(event, Done) and held_done is None:
+                    # Held so the llm_call event below reaches consumers
+                    # FIRST: the record it becomes must land inside this
+                    # turn's seq window, and a DONE record closes that
+                    # window (primer/session/timeline.py). ``buffered``
+                    # keeps the original order for output_to_message.
+                    held_done = event
+                    continue
                 yield event
                 if (
                     last_input_tokens_out is not None
@@ -166,7 +177,20 @@ async def run_agent_turn(
         except Exception:
             _observe_llm_call(llm_model, call_t0, call_usage, "error")
             raise
-        _observe_llm_call(llm_model, call_t0, call_usage, "ok")
+        elapsed = _observe_llm_call(llm_model, call_t0, call_usage, "ok")
+        yield ExtendedEvent(
+            extended=_LlmCall(
+                profile_id=llm_model.profile_id,
+                provider_id=llm_model.provider_id,
+                model=llm_model.model_name,
+                input_tokens=call_usage.input_tokens if call_usage else None,
+                output_tokens=call_usage.output_tokens if call_usage else None,
+                duration_ms=max(0, int(elapsed * 1000)),
+                status="ok",
+            )
+        )
+        if held_done is not None:
+            yield held_done
 
         try:
             assistant_msg = output_to_message(buffered)

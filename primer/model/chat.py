@@ -1380,6 +1380,58 @@ class _ClientAction(BaseModel):
     )
 
 
+class _LlmCall(BaseModel):
+    """Synthetic event: one completed model call at the agent-loop seam.
+
+    Reachable only through :class:`ExtendedEvent`. Emitted by
+    :func:`primer.agent.loop.run_agent_turn` once per ``llm.stream`` call
+    (so once per tool round), immediately BEFORE that round's
+    :class:`Done` so the record it becomes lands inside the turn's seq
+    window. Not produced by any LLM adapter.
+
+    Lives in this module for the same reason as
+    :class:`_ExecutorToolResult`: keeping the
+    :data:`ExtendedStreamContent` union self-contained.
+    """
+
+    type: Literal["llm_call"] = Field(
+        default="llm_call",
+        description="Discriminator tag identifying this as a model-call event.",
+    )
+    profile_id: str = Field(
+        ...,
+        description="ModelProfile the call resolved under.",
+    )
+    provider_id: str = Field(
+        ...,
+        description="Provider row id the profile resolved to.",
+    )
+    model: str = Field(
+        ...,
+        description="Concrete model name sent to the provider.",
+    )
+    input_tokens: int | None = Field(
+        default=None,
+        description="Prompt tokens reported by the stream's Usage event, if any.",
+    )
+    output_tokens: int | None = Field(
+        default=None,
+        description="Completion tokens reported by the stream's Usage event, if any.",
+    )
+    duration_ms: int = Field(
+        default=0,
+        ge=0,
+        description="Wall-clock duration of the model call in milliseconds.",
+    )
+    status: Literal["ok"] = Field(
+        default="ok",
+        description=(
+            "Only successful calls produce a record: a failed stream "
+            "re-raises, and the dispatch error path writes the ERROR "
+            "record. The failure is still counted on llm_calls_total."
+        ),
+    )
+
 ExtendedStreamContent = Annotated[
     RawReasoningDelta
     | RefusalDelta
@@ -1391,6 +1443,7 @@ ExtendedStreamContent = Annotated[
     | SafetyRatings
     | _ExecutorToolResult
     | _ClientAction
+    | _LlmCall
     | _GraphNodeEvent,
     Field(discriminator="type"),
 ]
