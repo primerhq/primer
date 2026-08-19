@@ -75,3 +75,9 @@ def test_wizard_transpiles_via_the_server_bundler() -> None:
     )
     code = b._transform(_src(), "components/setup-wizard.jsx")
     assert code and "SetupWizardSteps" in code
+
+def test_completion_invokes_the_seed_endpoint() -> None:
+    """C3: the wizard explicitly runs the ensure pass once a profile exists."""
+    src = _src()
+    host = src[src.index("function SetupWizardGate("):src.index("function SetupWaitingScreen(")]
+    assert '"/setup/seed"' in host

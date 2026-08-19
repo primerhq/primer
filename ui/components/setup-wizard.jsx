@@ -200,7 +200,17 @@ function SetupWizardGate({ onDone }) {
               ask the operator for once you are inside.
             </div>
           </div>
-          <SetupWizardSteps onComplete={async () => { onDone(); }} />
+          <SetupWizardSteps
+            onComplete={async () => {
+              // Seeding needs the profile step 2 just created (amendment C3).
+              try {
+                await window.primerApi.apiFetch("POST", "/setup/seed", null, {});
+              } catch (e) {
+                /* the next boot's ensure pass repairs it; reload regardless */
+              }
+              onDone();
+            }}
+          />
         </div>
       </div>
     </div>

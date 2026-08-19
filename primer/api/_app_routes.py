@@ -121,6 +121,11 @@ def _mount_routers(
 
     # Phase 1 — providers (system configuration => admin only).
     app.include_router(providers.llm_provider_router, prefix=prefix, dependencies=admin_dep)
+
+    # First-run setup: explicit seeding + the operator/builder reset.
+    # Admin-only; the wizard calls /setup/seed on completion.
+    from primer.api.routers.setup import setup_router
+    app.include_router(setup_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.embedding_provider_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.cross_encoder_provider_router, prefix=prefix, dependencies=admin_dep)
     # ModelProfile CRUD. A profile is provider configuration (it names a
