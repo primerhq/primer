@@ -52,6 +52,7 @@ from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_workspace_settings
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # 60-char placeholder; satisfies DiscordChannelProviderConfig.bot_token
@@ -183,10 +184,7 @@ def test_u0108_channels_operator_onboarding_journey(
 
     try:
         # ----- 1. /channels/providers → New provider --------------------
-        page.goto(
-            f"{console_url}#/channels/providers",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "channels/providers")
         new_provider_btn = page.get_by_role(
             "button", name="New provider", exact=True,
         )
@@ -220,10 +218,7 @@ def test_u0108_channels_operator_onboarding_journey(
         )
 
         # ----- 2. /channels/channels → New channel (with Chats) ---------
-        page.goto(
-            f"{console_url}#/channels/channels",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "channels")
         new_channel_btn = page.get_by_role(
             "button", name="New channel", exact=True,
         )
@@ -273,7 +268,7 @@ def test_u0108_channels_operator_onboarding_journey(
 
         # ----- 3. Studio → Settings modal → Channels → Link channel -----
         # Re-pointed: the old ``?tab=channels`` workspace-detail tab moved
-        # into the Studio Settings modal (studio-settings.jsx), which renders
+        # into the workspace's own tabs in the workspaces overlay, which render
         # the SAME WS_ChannelsTab. Open it and drive the reused Link-channel
         # flow. The settings overlay is itself a ``workspace-settings`` modal,
         # so scope the Link-channel button to that panel.

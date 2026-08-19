@@ -43,6 +43,7 @@ from tests.ui_e2e._studio_helpers import files_list, open_studio
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -159,7 +160,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
             assert r.status_code in (200, 201, 204), r.text
 
         # ----- 1. /workspaces list ----------------------------------
-        page.goto(f"{console_url}#/workspaces", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "workspaces")
         expect(page.locator("h1.page-title")).to_have_text(
             "Workspaces", timeout=20_000,
         )

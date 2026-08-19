@@ -14,6 +14,7 @@ import httpx
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-04", "SMK-UI-05", status="partial")
 
 
@@ -59,10 +60,7 @@ def test_u0040_internal_collections_page_shows_off_state_and_configure_cta(
         except Exception:  # noqa: BLE001
             pass
 
-    page.goto(
-        f"{console_url}#/subsystems/internal-collections",
-        wait_until="domcontentloaded",
-    )
+    open_legacy_route(page, console_url, "subsystems/internal-collections")
     page.locator("h1.page-title").first.wait_for(
         state="visible", timeout=10_000,
     )
@@ -146,7 +144,7 @@ def test_u0028_graph_create_modal_navigates_and_renders_status(
         assert r.status_code == 201, f"seed agent failed: {r.text}"
 
     try:
-        page.goto(f"{console_url}#/graphs", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "graphs")
         page.locator("h1.page-title").get_by_text(
             "Graphs", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)

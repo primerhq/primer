@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import httpx
 from playwright.sync_api import expect
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # 60-char Discord placeholder — matches the API-side check in
@@ -100,10 +101,7 @@ def test_u0111_channels_per_platform_create_form_journey(
 
     try:
         # --- 1. Navigate /channels/providers → "New provider" -------
-        page.goto(
-            f"{console_url}#/channels/providers",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "channels/providers")
         new_btn = page.get_by_role(
             "button", name="New provider", exact=True,
         )

@@ -20,6 +20,7 @@ from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_session_in_studio
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_doc
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +204,7 @@ def test_u0065_panel_stops_polling_after_terminal_status(
             f"**/v1/sessions/{sid}/ask_user/pending", _on_pending,
         )
 
-        page.goto(
-            f"{console_url}#/sessions/{sid}", wait_until="domcontentloaded",
-        )
+        open_doc(page, console_url, wid, "session", sid)
         # Resilience gate (chrome mounted).
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,

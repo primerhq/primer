@@ -27,6 +27,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -64,10 +65,7 @@ def test_workspace_chain_create_journey(
             "() => typeof window.WorkspaceProvidersPage === 'function'",
             timeout=20_000,
         )
-        page.goto(
-            f"{console_url}#/workspaces/providers",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "workspaces/providers")
         page.get_by_role(
             "button", name="New workspace provider",
         ).or_(
@@ -90,10 +88,7 @@ def test_workspace_chain_create_journey(
             "() => typeof window.WorkspaceTemplatesPage === 'function'",
             timeout=20_000,
         )
-        page.goto(
-            f"{console_url}#/workspaces/templates",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "workspaces/templates")
         page.get_by_role(
             "button", name="New workspace template",
         ).or_(
@@ -121,10 +116,7 @@ def test_workspace_chain_create_journey(
             "() => typeof window.WorkspacesPage === 'function'",
             timeout=20_000,
         )
-        page.goto(
-            f"{console_url}#/workspaces",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "workspaces")
         page.get_by_role(
             "button", name="New workspace",
         ).first.click()

@@ -52,6 +52,7 @@ from tests.ui_e2e import _graph_builder_helpers as gb
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-04")
 
 
@@ -142,7 +143,7 @@ def test_u0107_graph_builder_persistence_journey(
     graph_id_created: str | None = None
     try:
         # ----- 1. /graphs list ---------------------------------------
-        page.goto(f"{console_url}#/graphs", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "graphs")
         expect(page.locator("h1.page-title")).to_have_text(
             "Graphs", timeout=20_000,
         )

@@ -9,13 +9,14 @@ from playwright.sync_api import Page, expect  # noqa: E402
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-01", status="partial")
 
 
 @pytest.mark.ui_e2e
 def test_mobile_modal_renders_as_sheet(page: Page, console_url: str) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    page.goto(f"{console_url}#/providers/llm")
+    open_legacy_route(page, console_url, "providers/llm")
     page.wait_for_load_state("domcontentloaded")
     page.locator(".fab").first.click()
     expect(page.locator(".sheet-overlay")).to_be_visible()
@@ -26,7 +27,7 @@ def test_mobile_modal_renders_as_sheet(page: Page, console_url: str) -> None:
 @pytest.mark.ui_e2e
 def test_mobile_modal_esc_closes(page: Page, console_url: str) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    page.goto(f"{console_url}#/providers/llm")
+    open_legacy_route(page, console_url, "providers/llm")
     page.wait_for_load_state("domcontentloaded")
     page.locator(".fab").first.click()
     expect(page.locator(".sheet-overlay")).to_be_visible()
@@ -37,7 +38,7 @@ def test_mobile_modal_esc_closes(page: Page, console_url: str) -> None:
 @pytest.mark.ui_e2e
 def test_mobile_modal_tap_backdrop_closes(page: Page, console_url: str) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    page.goto(f"{console_url}#/providers/llm")
+    open_legacy_route(page, console_url, "providers/llm")
     page.wait_for_load_state("domcontentloaded")
     page.locator(".fab").first.click()
     expect(page.locator(".sheet-overlay")).to_be_visible()

@@ -14,6 +14,7 @@ import re
 from collections.abc import Iterable
 
 from tests._support.smk import smk
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 pytestmark = smk("SMK-UI-CR-01")
 
@@ -26,7 +27,7 @@ def test_channel_rules_route_renders_with_zero_console_errors(
 ) -> None:
     """Navigate to the channel-rules route, wait for the page-title,
     assert text + no unexpected console errors / fetch failures."""
-    page.goto(console_url + "#/channels/rules", wait_until="domcontentloaded")
+    open_legacy_route(page, console_url, "channels/rules")
     title_locator = page.locator("h1.page-title").first
     title_locator.wait_for(state="visible", timeout=10_000)
     assert "Channel rules" in title_locator.inner_text()

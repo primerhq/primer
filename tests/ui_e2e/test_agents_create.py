@@ -28,6 +28,7 @@ import pytest
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-03")
 
 
@@ -111,9 +112,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
     with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
         agent_id = f"ag-{unique_suffix}"
         try:
-            page.goto(
-                console_url + "#/agents", wait_until="domcontentloaded",
-            )
+            open_legacy_route(page, console_url, "agents")
             page.locator("h1.page-title").first.wait_for(
                 state="visible", timeout=10_000,
             )
@@ -200,7 +199,7 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
     """
     with _seeded_llm_provider(base_url, unique_suffix) as provider_id:
         agent_id = f"ag-u0007-{unique_suffix}"
-        page.goto(console_url + "#/agents", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "agents")
         page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
 
         page.get_by_role("button", name="New agent").first.click()
@@ -301,10 +300,7 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
 
         try:
             # Land directly on the agent's detail page.
-            page.goto(
-                f"{console_url}#/agents/{agent_id}",
-                wait_until="domcontentloaded",
-            )
+            open_legacy_route(page, console_url, f"agents/{agent_id}")
             page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
                 state="visible", timeout=10_000,
             )

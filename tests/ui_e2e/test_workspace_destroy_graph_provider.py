@@ -36,6 +36,7 @@ from tests.ui_e2e._studio_helpers import (
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -113,18 +114,14 @@ def _cleanup(base_url: str, urls: list[str]) -> None:
 def test_u0077_workspace_detail_tabs_all_reachable(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0077 — Re-pointed to the Studio. The old WorkspaceDetail's five
-    tabs split across the Studio: Files + Sessions became left-sidebar
-    sections, and Log / Config / Destroy moved into the Settings modal's
-    left-rail nav (studio-settings.jsx). This asserts every one of those
-    surfaces is reachable:
+    """U0077 - Re-pointed to the shell. The old WorkspaceDetail's five
+    tabs split in two: the rail carries sessions and files, and the
+    workspace's own tabs live in the workspaces overlay's detail
+    section. This asserts every one of those surfaces is reachable:
 
-    * left sidebar ``sessions-section`` + ``files-section`` render,
-    * the Settings modal's ``workspace-settings-nav:{channels,config,log,
-      destroy}`` items are each clickable and render their panel.
-
-    (Channels was not a WorkspaceDetail *tab* here but is one of the four
-    settings-nav items, so we walk all four for completeness.)
+    * the rail's session list and file tree render,
+    * each of the workspace tabs (channels, config, log, destroy) is
+      clickable and renders its panel.
     """
     wp_id = f"wp-77-{unique_suffix}"
     tpl_id = f"tpl-77-{unique_suffix}"
@@ -140,16 +137,9 @@ def test_u0077_workspace_detail_tabs_all_reachable(
         expect(sessions_list(page)).to_be_visible(timeout=15_000)
         expect(files_list(page)).to_be_visible(timeout=15_000)
 
-        # Log / Config / Destroy (+ Channels) live in the Settings modal.
-        gear = page.locator("[data-testid='studio-settings-btn']")
-        gear.wait_for(state="visible", timeout=10_000)
-        gear.click()
-        modal = page.locator("[data-testid='workspace-settings']")
-        expect(modal).to_be_visible(timeout=10_000)
+        # Log / Config / Destroy (+ Channels) are the workspace's own tabs.
         for section in ("channels", "config", "log", "destroy"):
-            nav = page.locator(f"[data-testid='workspace-settings-nav:{section}']")
-            nav.wait_for(state="visible", timeout=5_000)
-            nav.click()
+            open_workspace_settings(page, console_url, wid, section)
             # Brief settle so the reused panel renders.
             page.wait_for_timeout(300)
     finally:
@@ -266,10 +256,7 @@ def test_u0091_llm_provider_invalidate_toasts_and_preserves_row(
     _seed_llm_provider(base_url, pid)
     cleanup_urls = [f"/v1/llm_providers/{pid}"]
     try:
-        page.goto(
-            f"{console_url}#/providers/llm/{pid}",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"providers/llm/{pid}")
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,
         )

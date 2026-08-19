@@ -17,6 +17,7 @@ from __future__ import annotations
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-02")
 
 
@@ -38,7 +39,7 @@ def test_u0010_embedding_provider_modal_shows_t0025_static_models_helper(
     phrasing and the (T0025) tag are present so a future copy-edit can't
     silently drop the anomaly reference.
     """
-    page.goto(console_url + "#/providers/embedding", wait_until="domcontentloaded")
+    open_legacy_route(page, console_url, "providers/embedding")
     page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
 
     new_btn = page.get_by_role("button", name="New embedding provider").first
@@ -79,7 +80,7 @@ def test_u0011_llm_provider_modal_shows_t0379_cross_validation_warning(
     Defence: if a future copy-edit drops the T0379 reference, this
     test catches it before the anomaly drift propagates to operators.
     """
-    page.goto(console_url + "#/providers/llm", wait_until="domcontentloaded")
+    open_legacy_route(page, console_url, "providers/llm")
     page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
 
     page.get_by_role("button", name="New llm provider").first.click()
@@ -124,9 +125,7 @@ def test_provider_create_disabled_until_model_name_filled(
     """
     from playwright.sync_api import expect
 
-    page.goto(
-        console_url + "#/providers/embedding", wait_until="domcontentloaded"
-    )
+    open_legacy_route(page, console_url, "providers/embedding")
     page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
 
     page.get_by_role("button", name="New embedding provider").first.click()

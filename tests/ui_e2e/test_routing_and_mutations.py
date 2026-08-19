@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import httpx
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +104,7 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
         assert r.status_code == 201, f"seed template failed: {r.text}"
 
     try:
-        page.goto(f"{console_url}#/workspaces", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "workspaces")
         page.locator("h1.page-title").get_by_text(
             "Workspaces", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -193,10 +194,7 @@ def test_u0033_agent_config_tab_deep_link_survives_reload(
     _seed_agent(base_url, agent_id, provider_id)
 
     try:
-        page.goto(
-            f"{console_url}#/agents/{agent_id}?tab=config",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="config")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )

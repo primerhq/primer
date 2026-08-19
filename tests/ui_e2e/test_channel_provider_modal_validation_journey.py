@@ -45,6 +45,7 @@ from __future__ import annotations
 import httpx
 import pytest
 from playwright.sync_api import expect
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 def _cleanup(base_url: str, provider_ids: list[str]) -> None:
@@ -91,10 +92,7 @@ def test_u0115_channel_provider_modal_invalid_app_token_inline_error(
 
     try:
         # ----- 1. /channels/providers → New provider modal ----------
-        page.goto(
-            f"{console_url}#/channels/providers",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "channels/providers")
         new_btn = page.get_by_role(
             "button", name="New provider", exact=True,
         )

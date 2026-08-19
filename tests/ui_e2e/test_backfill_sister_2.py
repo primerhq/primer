@@ -22,6 +22,7 @@ import time
 
 import httpx
 from playwright.sync_api import expect
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +71,7 @@ def test_u0097_modal_overlay_click_dismisses_create_modal(
     page.route("**/v1/agents", _on_agents_mutate)
 
     try:
-        page.goto(f"{console_url}#/agents", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "agents")
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,
         )
@@ -139,10 +140,7 @@ def test_u0098_embedding_provider_invalidate_toasts_and_preserves_row(
         assert r.status_code == 201, r.text
     cleanup_urls = [f"/v1/embedding_providers/{pid}"]
     try:
-        page.goto(
-            f"{console_url}#/providers/embedding/{pid}",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"providers/embedding/{pid}")
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,
         )

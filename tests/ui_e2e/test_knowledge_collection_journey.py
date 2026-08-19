@@ -35,6 +35,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-05")
 
 
@@ -84,10 +85,7 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
 
     try:
         # ===== 1. /providers/embedding — verify seeded provider visible =
-        page.goto(
-            f"{console_url}#/providers/embedding",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "providers/embedding")
         page.locator("h1.page-title").first.wait_for(
             state="visible", timeout=10_000,
         )
@@ -96,10 +94,7 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         ).to_be_visible(timeout=10_000)
 
         # ===== 2. /knowledge/collections — create via the modal ===========
-        page.goto(
-            f"{console_url}#/knowledge/collections",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "knowledge/collections")
         page.locator("h1.page-title").get_by_text(
             "Collections", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -149,10 +144,7 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         ).to_be_visible(timeout=10_000)
 
         # ===== 4. Back to /knowledge/collections - row still present ======
-        page.goto(
-            f"{console_url}#/knowledge/collections",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "knowledge/collections")
         expect(
             page.locator(f"tr:has-text('{coll_id}')").first
         ).to_be_visible(timeout=10_000)

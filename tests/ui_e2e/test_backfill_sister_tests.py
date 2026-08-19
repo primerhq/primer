@@ -18,6 +18,7 @@ import time
 
 import httpx
 import pytest
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # ---------------------------------------------------------------------------
@@ -71,10 +72,7 @@ def test_u0094_toolset_sessions_tab_deep_link_survives_reload(
         assert r.status_code == 201, f"seed toolset failed: {r.text}"
 
     try:
-        page.goto(
-            f"{console_url}#/toolsets/{toolset_id}?tab=sessions",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"toolsets/{toolset_id}", tab="sessions")
         page.locator("h1.page-title").get_by_text(
             toolset_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)

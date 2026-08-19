@@ -30,6 +30,7 @@ import pytest
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-02", "SMK-UI-03", "SMK-UI-04", "SMK-UI-06")
 
 
@@ -178,7 +179,7 @@ def test_multi_page_operator_journey_no_llm(
         )
 
         # ----- 2. Workspaces list
-        page.goto(f"{console_url}#/workspaces", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "workspaces")
         page.locator("h1.page-title").get_by_text(
             "Workspaces", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -201,7 +202,7 @@ def test_multi_page_operator_journey_no_llm(
         )
 
         # ----- 4. Agents list
-        page.goto(f"{console_url}#/agents", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "agents")
         page.locator("h1.page-title").get_by_text(
             "Agents", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -219,7 +220,7 @@ def test_multi_page_operator_journey_no_llm(
         )
 
         # ----- 6. Graphs list
-        page.goto(f"{console_url}#/graphs", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "graphs")
         page.locator("h1.page-title").get_by_text(
             "Graphs", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -228,7 +229,7 @@ def test_multi_page_operator_journey_no_llm(
         )
 
         # ----- 7. Toolsets list
-        page.goto(f"{console_url}#/toolsets", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "toolsets")
         page.locator("h1.page-title").get_by_text(
             "Toolsets", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -237,9 +238,7 @@ def test_multi_page_operator_journey_no_llm(
         )
 
         # ----- 8. Providers > LLM list
-        page.goto(
-            f"{console_url}#/providers/llm", wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "providers/llm")
         page.locator("h1.page-title").first.wait_for(
             state="visible", timeout=10_000,
         )

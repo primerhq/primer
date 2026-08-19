@@ -37,8 +37,9 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._studio_helpers import files_list
+from tests.ui_e2e._studio_helpers import open_workspace_settings, files_list
 from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -168,10 +169,7 @@ def test_u0032_toast_renders_request_id_on_5xx(
     page.route("**/v1/agents", _on_post_agents)
 
     try:
-        page.goto(
-            f"{console_url}#/agents",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "agents")
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,
         )
@@ -286,10 +284,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
                 )
             assert r.status_code in (200, 201, 204), r.text
 
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=files",
-            wait_until="domcontentloaded",
-        )
+        open_workspace_settings(page, console_url, wid, "files")
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,
         )

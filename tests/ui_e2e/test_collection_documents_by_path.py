@@ -25,6 +25,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-05", status="partial")
 
 
@@ -90,10 +91,7 @@ def test_collection_document_path_browser_full_journey(
         assert r.status_code == 201, f"seed collection failed: {r.text}"
 
     try:
-        page.goto(
-            f"{console_url}#/knowledge/collections",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "knowledge/collections")
         page.locator("h1.page-title").first.wait_for(state="visible", timeout=10_000)
 
         # Select the collection row to reveal the detail panel.

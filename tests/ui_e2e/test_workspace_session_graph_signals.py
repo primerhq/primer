@@ -26,6 +26,7 @@ from tests.ui_e2e import _graph_builder_helpers as gb
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", "SMK-UI-04", status="partial")
 
 
@@ -241,10 +242,7 @@ def test_u0088_graph_editor_discard_reverts_unsaved_add_node(
         f"/v1/llm_providers/{pid}",
     ]
     try:
-        page.goto(
-            f"{console_url}#/graphs/{gid}",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"graphs/{gid}")
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,
         )

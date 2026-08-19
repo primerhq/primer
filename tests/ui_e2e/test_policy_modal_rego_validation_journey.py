@@ -49,6 +49,7 @@ from __future__ import annotations
 import httpx
 import pytest
 from playwright.sync_api import expect
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 _BAD_REGO = "this is not rego {\n  unclosed"
@@ -115,10 +116,7 @@ def test_u0114_policy_modal_rego_compile_error_renders_inline(
         # page onto the per-tool Tools table: each row's Add/Edit button
         # opens the same AP_NewPolicyModal (which still carries free-form
         # id / toolset / tool inputs we override below).
-        page.goto(
-            f"{console_url}#/tools",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "tools")
         page.locator("h1.page-title").get_by_text(
             "Tools", exact=False,
         ).first.wait_for(state="visible", timeout=15_000)

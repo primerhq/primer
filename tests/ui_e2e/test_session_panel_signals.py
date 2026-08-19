@@ -25,6 +25,7 @@ from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-07", status="partial")
 
 
@@ -290,10 +291,7 @@ def test_u0027_empty_collection_search_renders_no_matches(
         f"/v1/embedding_providers/{embed_pid}",
     ]
     try:
-        page.goto(
-            f"{console_url}#/knowledge/collections",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "knowledge/collections")
         # Click the row for our collection to drill in.
         row = page.get_by_text(coll_id, exact=False).first
         row.wait_for(state="visible", timeout=10_000)

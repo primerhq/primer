@@ -12,8 +12,11 @@ pytest.importorskip("playwright")
 from playwright.sync_api import Page, expect  # noqa: E402
 
 
+# Every list surface, named by the legacy route the facade translates.
+# "/sessions" is absent: sessions are the shell's own rail and tabs, not
+# a list page, and "/channels/associations" folded into the channels
+# overlay's rules section.
 LIST_ROUTES = [
-    "/sessions",
     "/workspaces",
     "/workspaces/providers",
     "/workspaces/templates",
@@ -27,13 +30,14 @@ LIST_ROUTES = [
     "/ssp",
     "/approvals",
     "/channels/providers",
-    "/channels/channels",
-    "/channels/associations",
+    "/channels",
+    "/channels/rules",
     "/harnesses",
 ]
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-01", status="partial")
 
 
@@ -43,7 +47,7 @@ def test_mobile_no_table_on_list_route(
     page: Page, console_url: str, route: str
 ) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    page.goto(f"{console_url}#{route}")
+    open_legacy_route(page, console_url, route)
     page.wait_for_load_state("domcontentloaded")
     expect(page.locator("table.tbl")).to_have_count(0)
 
@@ -53,7 +57,7 @@ def test_mobile_workspaces_tap_card_opens_detail(
     page: Page, console_url: str
 ) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    page.goto(f"{console_url}#/workspaces")
+    open_legacy_route(page, console_url, "workspaces")
     page.wait_for_load_state("domcontentloaded")
     # The card list is populated by an async fetch; give it time to
     # settle before counting so we don't read an empty pre-fetch DOM

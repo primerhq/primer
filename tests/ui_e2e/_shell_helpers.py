@@ -94,6 +94,8 @@ LEGACY_ROUTE_OVERLAYS = {
     "workspaces/templates": "workspaces:templates",
     "workspaces/providers": "providers:workspace",
     "channels": "channels",
+    "channels/channels": "channels",
+    "channels/associations": "channels:rules",
     "channels/rules": "channels:rules",
     "channels/providers": "providers:channel",
     "knowledge/collections": "collections",
@@ -137,7 +139,8 @@ def overlay_target(route: str) -> str:
 
 
 def open_legacy_route(page: Page, console_url: str, route: str,
-                      *, wid: str | None = None, timeout: int = 20_000):
+                      *, tab: str | None = None, wid: str | None = None,
+                      timeout: int = 20_000):
     """Open the overlay that succeeded a legacy console route.
 
     ``wid`` is optional because these surfaces are platform-wide, not
@@ -146,6 +149,12 @@ def open_legacy_route(page: Page, console_url: str, route: str,
     the URL grammar parses the overlay independently of the workspace.
     """
     target = overlay_target(route)
+    if tab:
+        # A tabbed detail page states its tab in the section slot, which
+        # is the same slot the router shim reads back as query.tab.
+        head, _, rest = target.partition(":")
+        record = rest.rpartition(":")[2] if rest else ""
+        target = f"{head}:{tab}:{record}" if record else f"{head}:{tab}"
     name = target.split(":")[0]
     prefix = f"#/w/{wid}" if wid else "#/"
     page.goto(f"{console_url}{prefix}?overlay={target}")

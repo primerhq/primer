@@ -20,29 +20,25 @@ import re
 from collections.abc import Iterable
 
 import pytest
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
-# (hash-fragment path, expected text inside <h1 class="page-title">)
-# Mirrors the the console shell sidebar inventory + a few subroutes a user
-# would deep-link to. Update this list when the sidebar grows or a
-# page is renamed.
+# (legacy route, expected text in the overlay's own title bar)
+# The console has no sidebar and no page routes: every management
+# surface is an overlay, titled by the verb that opens it. The routes
+# below are what a user deep-links to, translated by the facade.
 _ROUTES: list[tuple[str, str]] = [
-    ("#/",                                  "Dashboard"),
-    # PR-B: the global Sessions list is retired; #/sessions now REDIRECTS
-    # into the Studio (app.jsx: page=="sessions" → replace("#/workspaces")),
-    # so this route lands on the Workspaces list title.
-    ("#/sessions",                          "Workspaces"),
-    ("#/workspaces",                        "Workspaces"),
-    ("#/agents",                            "Agents"),
-    ("#/graphs",                            "Graphs"),
-    ("#/knowledge/collections",             "Collections"),
-    ("#/toolsets",                          "Toolsets"),
-    ("#/providers/llm",                     "LLM providers"),
-    ("#/providers/embedding",               "Embedding providers"),
-    ("#/providers/cross_encoder",           "Cross-Encoder providers"),
-    ("#/subsystems/internal-collections",   "Internal Collections"),
-    ("#/workers",                           "Workers"),
-    ("#/health",                            "Health"),
+    ("workspaces",                      "Open Workspaces"),
+    ("agents",                          "Open Agents"),
+    ("graphs",                          "Open Graphs"),
+    ("knowledge/collections",           "Open Collections"),
+    ("toolsets",                        "Open Toolsets"),
+    ("providers/llm",                   "Open Providers Catalog"),
+    ("providers/embedding",             "Open Providers Catalog"),
+    ("providers/cross_encoder",         "Open Providers Catalog"),
+    ("subsystems/internal-collections", "Open Collections"),
+    ("workers",                         "Open Workers"),
+    ("health",                          "Open Workers"),
 ]
 
 
@@ -50,21 +46,20 @@ from tests._support.smk import smk  # noqa: E402
 pytestmark = smk("SMK-UI-01")
 
 
-@pytest.mark.parametrize("hash_path,expected_title", _ROUTES, ids=[r[0] for r in _ROUTES])
+@pytest.mark.parametrize("route,expected_title", _ROUTES, ids=[r[0] for r in _ROUTES])
 def test_route_renders_with_zero_console_errors(
     page,
     console_url: str,
     console_messages: list[dict],
     failed_requests: list[dict],
-    hash_path: str,
+    route: str,
     expected_title: str,
 ) -> None:
-    """Navigate to ``hash_path``, wait for the page-title, assert text +
+    """Open ``route``'s overlay, assert its title +
     no unexpected console errors / fetch failures. The ``page`` fixture
-    already loaded ``/console/`` and React has bootstrapped — this just
-    changes the hash and re-asserts."""
-    page.goto(console_url + hash_path, wait_until="domcontentloaded")
-    title_locator = page.locator("h1.page-title").first
+    already loaded ``/console/`` and React has bootstrapped."""
+    open_legacy_route(page, console_url, route)
+    title_locator = page.locator(".sh-overlay-title").first
     title_locator.wait_for(state="visible", timeout=10_000)
     assert expected_title in title_locator.inner_text()
     # Give the page a moment for any post-load fetches (sidebar IC poll,

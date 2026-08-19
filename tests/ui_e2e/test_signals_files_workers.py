@@ -16,7 +16,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_session_in_studio
+from tests.ui_e2e._studio_helpers import open_workspace_settings, open_session_in_studio
 
 
 # ---------------------------------------------------------------------------
@@ -212,10 +212,7 @@ def test_u0072_workspace_files_tab_lists_api_written_file(
                 )
 
         # Navigate to workspace detail Files tab.
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=files",
-            wait_until="domcontentloaded",
-        )
+        open_workspace_settings(page, console_url, wid, "files")
         page.locator(".nav-item").first.wait_for(
             state="visible", timeout=20_000,
         )

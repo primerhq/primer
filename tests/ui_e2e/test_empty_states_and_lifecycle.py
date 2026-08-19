@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import httpx
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 def _cleanup(base_url: str, urls: list[str]) -> None:
@@ -64,10 +65,7 @@ def test_u0045_toolset_tools_tab_deep_link_survives_reload(
         assert r.status_code == 201, f"seed toolset failed: {r.text}"
 
     try:
-        page.goto(
-            f"{console_url}#/toolsets/{toolset_id}?tab=tools",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"toolsets/{toolset_id}", tab="tools")
         page.locator("h1.page-title").get_by_text(
             toolset_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -136,10 +134,7 @@ def test_u0047_provider_list_reflects_new_row_after_modal_create(
     """
     provider_id = f"llm-u0047-{unique_suffix}"
     try:
-        page.goto(
-            f"{console_url}#/providers/llm",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "providers/llm")
         page.locator("h1.page-title").first.wait_for(
             state="visible", timeout=10_000,
         )

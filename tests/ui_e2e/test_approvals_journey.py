@@ -56,6 +56,7 @@ import pytest
 from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_session_in_studio
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # ---------------------------------------------------------------------------
@@ -329,10 +330,7 @@ def test_u0109_approvals_operator_journey(
         )
 
         # --- 1. Navigate to /approvals (pending tab default) ----------
-        page.goto(
-            f"{console_url}#/approvals",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "approvals")
         # Pending tab is the default; it shows a count chip when at
         # least one row is parked. Wait for our seeded row to appear.
         row = page.locator(f"[data-testid='approval-row-{sid}']")

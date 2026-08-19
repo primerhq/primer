@@ -22,6 +22,7 @@ import httpx
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-01", status="partial")
 
 
@@ -189,10 +190,7 @@ def test_u0034_agent_metadata_tab_deep_link_survives_reload(
     _seed_agent(base_url, agent_id, provider_id)
 
     try:
-        page.goto(
-            f"{console_url}#/agents/{agent_id}?tab=metadata",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="metadata")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
@@ -262,7 +260,7 @@ def test_u0037_agents_list_filter_narrows_table_to_matching_ids(
     _seed_agent(base_url, agent_c, provider_id)
 
     try:
-        page.goto(f"{console_url}#/agents", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "agents")
         page.locator("h1.page-title").get_by_text(
             "Agents", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)

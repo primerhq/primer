@@ -45,6 +45,7 @@ from playwright.sync_api import expect
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-10")
 
 
@@ -130,10 +131,7 @@ def test_u0110_policy_modal_llm_judge_journey(
 
     try:
         # --- 1. Verify seeded provider is listed on /providers/llm --
-        page.goto(
-            f"{console_url}#/providers/llm",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "providers/llm")
         provider_row = page.locator("tbody tr", has_text=pid)
         expect(provider_row.first).to_be_visible(timeout=15_000)
 
@@ -142,10 +140,7 @@ def test_u0110_policy_modal_llm_judge_journey(
         # page onto the per-tool Tools table: each row's Add/Edit button
         # opens the same AP_NewPolicyModal (free-form id / toolset / tool
         # inputs are still editable, so we override them below).
-        page.goto(
-            f"{console_url}#/tools",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "tools")
         page.locator("h1.page-title").get_by_text(
             "Tools", exact=False,
         ).first.wait_for(state="visible", timeout=15_000)

@@ -23,6 +23,7 @@ from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-02", "SMK-UI-05", status="partial")
 
 
@@ -66,10 +67,7 @@ def test_u0008_toolset_tools_tab_renders_t0711_anomaly_banner(
     try:
         # Navigate to the toolset detail page; default tab loads, then
         # click Tools tab to trigger the /tools fetch.
-        page.goto(
-            f"{console_url}#/toolsets/{toolset_id}",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"toolsets/{toolset_id}")
         page.locator("h1.page-title").get_by_text(toolset_id).first.wait_for(
             state="visible", timeout=10_000,
         )
@@ -138,8 +136,7 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
 
     try:
         # Navigate directly to the deep-link with ?tab=tools.
-        deep_link = f"{console_url}#/agents/{agent_id}?tab=tools"
-        page.goto(deep_link, wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="tools")
 
         # Wait for the agent detail page to render.
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
@@ -383,10 +380,7 @@ def test_u0009_agent_tools_tab_isolates_one_failing_toolset(
 
     try:
         # Navigate directly to the Tools tab via deep-link.
-        page.goto(
-            f"{console_url}#/agents/{agent_id}?tab=tools",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="tools")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )

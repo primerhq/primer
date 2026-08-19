@@ -22,6 +22,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -63,10 +64,7 @@ def test_workspace_template_create_edit_delete_journey(
             "() => typeof window.WorkspaceTemplatesPage === 'function'",
             timeout=20_000,
         )
-        page.goto(
-            f"{console_url}#/workspaces/templates",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "workspaces/templates")
         new_btn = page.get_by_role(
             "button", name="New workspace template",
         ).or_(

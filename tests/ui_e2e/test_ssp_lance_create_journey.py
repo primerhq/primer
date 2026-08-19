@@ -14,6 +14,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-05", status="partial")
 
 
@@ -34,7 +35,7 @@ def test_ssp_lance_create_via_modal_journey(
 
     try:
         # 1. Navigate to the SSP list page.
-        page.goto(f"{console_url}#/ssp", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "ssp")
         expect(page.locator("h1.page-title")).to_be_visible(timeout=15_000)
 
         # 2. Open the create modal — button label depends on empty vs

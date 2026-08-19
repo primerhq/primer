@@ -24,6 +24,7 @@ from playwright.sync_api import Page  # noqa: E402
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 pytestmark = smk("SMK-UI-01", status="partial")
 
@@ -33,7 +34,10 @@ pytestmark = smk("SMK-UI-01", status="partial")
 PHONE_WIDTHS = [(390, 844), (360, 800)]
 
 # One per top-level nav section that renders the standard shell.
-ROUTES = ["#/", "#/agents", "#/workspaces", "#/toolsets", "#/chats"]
+# "" means the shell root itself; the rest are legacy routes the
+# facade translates into overlays. The chats route went with the chat
+# surface in S6.
+ROUTES = ["", "agents", "workspaces", "toolsets"]
 
 
 def _overflow(page: Page) -> dict:
@@ -74,7 +78,10 @@ def test_the_document_does_not_scroll_sideways_on_a_phone(
     page: Page, console_url: str, route: str, width: int, height: int,
 ) -> None:
     page.set_viewport_size({"width": width, "height": height})
-    page.goto(f"{console_url}{route}")
+    if route:
+        open_legacy_route(page, console_url, route)
+    else:
+        page.goto(f"{console_url}#/")
     page.wait_for_load_state("domcontentloaded")
     # The shell mounts before data arrives; give the topbar's live pill a beat
     # so we measure it populated rather than empty.
