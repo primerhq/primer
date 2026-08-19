@@ -52,6 +52,10 @@ var SA_SKIP_IN_TRANSCRIPT = {
   // would show the reader an instruction about their history instead of
   // their history.
   rewind_marker: true,
+  // Delivery frame for a notifying tool call (S3): display and protocol
+  // only. The paired tool_call/tool_result rows carry the history, so
+  // rendering this too would show the same action twice.
+  client_action: true,
 };
 
 var SA_KIND_TO_TRANSCRIPT = {
@@ -440,6 +444,7 @@ function SA_useSessionConversation(opts) {
   };
 }
 
+window.SA_SKIP_IN_TRANSCRIPT = SA_SKIP_IN_TRANSCRIPT;
 window.SA_toTranscript = SA_toTranscript;
 window.SA_KIND_TO_TRANSCRIPT = SA_KIND_TO_TRANSCRIPT;
 window.SA_useSessionConversation = SA_useSessionConversation;

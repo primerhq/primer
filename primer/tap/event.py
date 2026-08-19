@@ -65,8 +65,9 @@ class TapEventClass(StrEnum):
 
     # -- tap-layer extension -------------------------------------------------
     GRAPH_TRANSITION = "graph_transition"
-
-
+    # Mirrors SessionMessageKind.CLIENT_ACTION: the browser-facing delivery
+    # frame for a notifying tool call.
+    CLIENT_ACTION = "client_action"
 class TapEvent(BaseModel):
     """Normalised tap event ready for wire transmission.
 

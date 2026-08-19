@@ -695,8 +695,12 @@ class SessionMessageKind(StrEnum):
     # append-only invariant above holds for rewinds too. Consumed by the
     # replay rule only, never sent to the model.
     REWIND_MARKER = "rewind_marker"
-
-
+    # Delivery frame for a NOTIFYING tool call (S3). Payload:
+    # ``{"call_id": str, "name": str, "arguments": dict}``. Display and
+    # protocol only: the paired tool_call/tool_result rows carry the
+    # history, and this record is never sent to the model. Attached
+    # clients execute it best-effort off the tap.
+    CLIENT_ACTION = "client_action"
 class SessionMessageRecord(BaseModel):
     """One row in the per-session append-only message log.
 

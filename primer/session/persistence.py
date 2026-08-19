@@ -37,6 +37,7 @@ from primer.model.chat import (
     ToolCallEnd,
     ToolCallStart,
     Usage,
+    _ClientAction,
     _ExecutorToolResult,
     _GraphNodeEvent,
 )
@@ -244,6 +245,7 @@ def translate_stream_event(
     | ToolCallStart        | None (records name in state.tool_names[node,id])|
     | ToolCallEnd          | flush text buffer (if any), then TOOL_CALL      |
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
+    | ExtendedEvent(_ClientAction)       | CLIENT_ACTION                  |
     | ExtendedEvent(_GraphNodeEvent) | reconstruct inner StreamEvent and    |
     |                      |   recurse with node_id=event.extended.node_id   |
     | Done                 | flush text buffer (if any), then DONE           |
@@ -411,6 +413,21 @@ def translate_stream_event(
                 "call_id": event.extended.call_id,
                 "output": event.extended.output,
                 "error": event.extended.error,
+            },
+            node_id=node_id,
+            created_at=now,
+        )
+
+    if isinstance(event, ExtendedEvent) and isinstance(
+        event.extended, _ClientAction
+    ):
+        return SessionMessageRecord(
+            seq=1,
+            kind=SessionMessageKind.CLIENT_ACTION,
+            payload={
+                "call_id": event.extended.call_id,
+                "name": event.extended.name,
+                "arguments": dict(event.extended.arguments or {}),
             },
             node_id=node_id,
             created_at=now,
