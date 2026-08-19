@@ -77,6 +77,18 @@ WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
 # actually registered external tools.
 _EXTERNAL_TOOLSET_ID = "external"
 
+# Reserved toolset id for the server-defined client (browser) vocabulary.
+# Canonical home: primer.toolset.client. Kept as a local constant so the
+# hot list/dispatch paths never import that module.
+_CLIENT_TOOLSET_ID = "client"
+
+# Per-invocation GRANT toolsets. Their tools ride a single turn rather than
+# being picked from the agent's ``tools`` list, so they bypass the agent
+# allowlist in both the catalogue filter and the dispatch gate.
+_GRANT_TOOLSET_IDS: frozenset[str] = frozenset(
+    {_EXTERNAL_TOOLSET_ID, _CLIENT_TOOLSET_ID}
+)
+
 # Tool ids surfaced to the LLM are scoped as ``toolset_id<sep>bare_name`` so
 # tools with colliding bare names across different toolsets stay
 # distinguishable. The separator is ``__`` (two underscores) — chosen
@@ -321,7 +333,7 @@ class ToolExecutionManager:
                     # message, not entries in Agent.tools.
                     if (
                         self._tools_allowlist is not None
-                        and toolset_id != _EXTERNAL_TOOLSET_ID
+                        and toolset_id not in _GRANT_TOOLSET_IDS
                         and scoped_id not in self._tools_allowlist
                     ):
                         continue
@@ -433,7 +445,7 @@ class ToolExecutionManager:
             # list didn't include it.
             if (
                 self._tools_allowlist is not None
-                and toolset_id != _EXTERNAL_TOOLSET_ID
+                and toolset_id not in _GRANT_TOOLSET_IDS
                 and call.name not in self._tools_allowlist
             ):
                 raise UnsupportedContentError(
