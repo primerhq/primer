@@ -109,6 +109,10 @@ function SH_TurnList(props) {
         {row.kind === "tool_call" ? chip(row) : (
           <span className="sh-turn-body">{row.label}</span>
         )}
+        {row.kind === "assistant_message"
+          && typeof window.SH_SpeakerButton === "function" ? (
+            <window.SH_SpeakerButton row={row} agentId={identityFor(row)} />
+          ) : null}
         {(row.children || []).map(function (child) {
           return render(child, depth + 1);
         })}
@@ -436,6 +440,11 @@ function SH_SessionDoc(props) {
         onScroll={function () { if (decision.follow) setSeen(rows.length); }}>
         <SH_TurnList rows={rows} sid={sid}
           agentId={agentId} approvedBy={approvedBy} />
+        {typeof window.SH_VoiceReplies === "function" ? (
+          <window.SH_VoiceReplies sid={sid} rows={rows}
+            agentId={agentId}
+            isForeground={shell.isForeground(sid)} />
+        ) : null}
         <SH_QueuedSteers rows={pending} onDismiss={function (row) {
           SH_api.dismissQueuedSteer(shell.wid, sid, row.id)
             .then(function () { detail.refetch(); })

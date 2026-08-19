@@ -68,6 +68,8 @@ function SH_Shell(props) {
   // Open session docs publish their status here so the trace tab can pass
   // it through to the S7 panel without opening a second read of its own.
   var sessionStatusRef = React.useRef({});
+  // The voice driver publishes its stop handle here.
+  var voiceRef = React.useRef({ stop: function () {} });
 
   // ---- URL is the state ----------------------------------------------------
   var active = null;
@@ -184,6 +186,13 @@ function SH_Shell(props) {
     agents: (agentList.data && agentList.data.items) || [],
     username: (status.data && status.data.username) || "anon",
     attentionRef: attentionRef,
+    voiceRef: voiceRef,
+    // "Never from background sessions": foreground means this session is
+    // the ACTIVE tab of the active group, not merely open somewhere.
+    isForeground: function (sid) {
+      var group = docs.groups[docs.activeGroup];
+      return !!group && group.activeId === "session:" + sid;
+    },
     sessionStatus: function (sid) {
       return sessionStatusRef.current[sid] || null;
     },
