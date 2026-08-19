@@ -1,6 +1,6 @@
 """The switch_binding tool (S1 P3 Task 19).
 
-Unlike chat's switch_to_agent, which yields and hands the turn over
+Unlike the chat-era switch_to_agent, which yielded and handed the turn over
 immediately, this tool never yields. It records the request on the row
 and returns; the drain checkpoint applies it once the current turn
 finishes. Next-turn semantics therefore need no yield protocol, no
@@ -65,9 +65,18 @@ class TestRegistration:
         assert tool.id == "switch_binding"
         assert tool.yields is False
 
-    def test_coexists_with_the_chat_tool_until_p7(self, toolset):
+    def test_coexists_with_the_agent_facing_alias(self, toolset):
+        """switch_to_agent is the name agents already know for this. It
+        survives as an alias over the same seam rather than as the dead
+        chat-era yield, which nothing would resume now that chats are
+        gone."""
         assert "switch_to_agent" in toolset._registry  # noqa: SLF001
         assert "switch_binding" in toolset._registry  # noqa: SLF001
+        alias, _ = toolset._registry["switch_to_agent"]  # noqa: SLF001
+        assert alias.yields is False, (
+            "the alias must not yield: the chat dispatch loop that used to "
+            "resume it no longer exists"
+        )
 
 
 class TestHandler:
@@ -95,7 +104,8 @@ class TestHandler:
         assert row.binding_epoch == 0
 
     async def test_rejected_outside_a_session(self, toolset, sp):
-        """The exact inverse of switch_to_agent's chat-only guard."""
+        """A binding is a property of a session; there is nothing else to
+        switch."""
         await _seed(sp)
         _, handler = _handler(toolset)
         ctx = ToolContext(tool_call_id="tc1", session_id=None,
@@ -131,3 +141,43 @@ class TestHandler:
                                ctx=ctx)
         assert result.is_error is True
         assert "graph_id" in result.output
+
+
+class TestSwitchToAgentAlias:
+    """The chat-era name, ported onto the session binding switch.
+
+    It kept its own two-field argument shape (agent_id + prompt), which
+    is what every existing agent prompt writes, and delegates so there is
+    exactly one implementation of "hand this conversation over".
+    """
+
+    async def test_alias_queues_the_same_request(self, toolset, sp):
+        await _seed(sp)
+        _, handler = toolset._registry["switch_to_agent"]  # noqa: SLF001
+        ctx = ToolContext(tool_call_id="tc1", session_id="sess-1",
+                          workspace_id="w1")
+
+        result = await handler(
+            {"agent_id": "agent-b", "prompt": "take the billing question"},
+            ctx=ctx,
+        )
+        assert result.is_error is False
+        assert "queued" in result.output
+
+        row = await sp.get_storage(WorkspaceSession).get("sess-1")
+        assert row.pending_binding_switch["kind"] == "agent"
+        assert row.pending_binding_switch["agent_id"] == "agent-b"
+        assert row.pending_binding_switch["actor"] == "agent"
+        # The handoff prompt is what the transcript records as the reason.
+        assert row.pending_binding_switch["reason"] == "take the billing question"
+        assert row.binding.agent_id == "agent-a"
+
+    async def test_alias_refuses_an_unknown_agent(self, toolset, sp):
+        await _seed(sp)
+        _, handler = toolset._registry["switch_to_agent"]  # noqa: SLF001
+        ctx = ToolContext(tool_call_id="tc1", session_id="sess-1",
+                          workspace_id="w1")
+
+        result = await handler({"agent_id": "nope", "prompt": "go"}, ctx=ctx)
+        assert result.is_error is True
+        assert "does not exist" in result.output

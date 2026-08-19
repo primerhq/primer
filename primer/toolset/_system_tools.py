@@ -40,10 +40,8 @@ if TYPE_CHECKING:
 
 
 # ===========================================================================
-# ask_user - yielding tool. Lives in the ``system`` toolset (alongside
-# switch_to_agent) so it is available everywhere, including chats. It
-# soft-yields in chats (degrades to a conversational turn keyed on the
-# bare name ``ask_user``) and parks in workspace sessions.
+# ask_user - yielding tool. Lives in the ``system`` toolset so it is
+# available everywhere. It parks the session until a human answers.
 #
 # Pauses the agent's turn until a human operator types a response via
 # the API surface (GET .../ask_user/pending + POST .../ask_user/respond).

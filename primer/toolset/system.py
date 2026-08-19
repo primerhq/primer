@@ -754,27 +754,27 @@ def build_system_toolset(
 
     async def _switch_to_agent_handler(
         arguments: dict[str, Any], *, ctx: ToolContext,
-    ) -> ToolCallResult | Yielded:
+    ) -> ToolCallResult:
+        """Hand the conversation to another agent.
+
+        Kept as the agent-facing name for this capability, delegating to
+        the session binding switch. It used to be chat-only and to yield
+        into the chat dispatch loop; with chats gone that loop no longer
+        exists, so the yield would have parked a session nobody resumes.
+        The behaviour it named is unchanged: the rest of THIS
+        conversation runs under the new agent, from the next turn.
+        """
         try:
             args = _SwitchToAgentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if ctx.chat_id is None or ctx.session_id is not None:
-            return _err(
-                "switch_to_agent is only available in chats (not workspace "
-                "sessions)",
-                error_type="bad-request",
-            )
-        agents = storage_provider.get_storage(Agent)
-        if await agents.get(args.agent_id) is None:
-            return _err(
-                f"agent {args.agent_id!r} does not exist",
-                error_type="not-found",
-            )
-        return Yielded(
-            tool_name="",  # provider stamps "switch_to_agent"
-            event_key=f"switch_to_agent:{ctx.chat_id}:{ctx.tool_call_id}",
-            resume_metadata={"agent_id": args.agent_id, "prompt": args.prompt},
+        return await _switch_binding_handler(
+            {
+                "kind": "agent",
+                "agent_id": args.agent_id,
+                "reason": args.prompt,
+            },
+            ctx=ctx,
         )
 
     registry["switch_to_agent"] = (
@@ -782,12 +782,14 @@ def build_system_toolset(
             id="switch_to_agent",
             toolset_id=toolset_id,
             purpose=(
-                "Hand the current chat off to another agent with a prompt; "
-                "the new agent takes over."
+                "Hand this conversation off to another agent with a prompt; "
+                "the new agent takes over from the next turn."
             ),
             when=(
                 "Use when you want to delegate the rest of THIS conversation "
-                "to another agent; for a one-off subtask use invoke_agent."
+                "to another agent; for a one-off subtask use invoke_agent. "
+                "To hand off to a GRAPH, or to carry a model profile across "
+                "the switch, use switch_binding."
             ),
             args_schema=_SwitchToAgentArgs.model_json_schema(),
             examples=[
@@ -796,11 +798,10 @@ def build_system_toolset(
                         "agent_id": "agent-coder",
                         "prompt": "Implement the plan above.",
                     },
-                    returns="(turn handed off)",
-                    note="chat-only; ends the turn",
+                    returns="binding switch to 'agent-coder' queued",
+                    note="applies at the end of this turn",
                 ),
             ],
-            yields=True,
         ),
         _switch_to_agent_handler,
     )
