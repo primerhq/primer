@@ -24,6 +24,7 @@ STRICT_SLUG_RE = re.compile(r"[a-z0-9-]+")
 
 Indexer = Callable[..., Awaitable[None]]
 Unindexer = Callable[..., Awaitable[None]]
+PathRewriter = Callable[..., Awaitable[None]]
 
 
 class TreeNode(BaseModel):
@@ -46,12 +47,14 @@ def _new_document_id() -> str:
 
 class DocumentTreeService:
     def __init__(self, storage_provider, *, indexer: Indexer | None = None,
-                 unindexer: Unindexer | None = None) -> None:
+                 unindexer: Unindexer | None = None,
+                 path_rewriter: PathRewriter | None = None) -> None:
         self._sp = storage_provider
         self._docs: Storage[Document] = storage_provider.get_storage(Document)
         self._content: DocumentContentStore = storage_provider.get_content_store()
         self._indexer = indexer
         self._unindexer = unindexer
+        self._path_rewriter = path_rewriter
 
     # ---- resolution ------------------------------------------------------
 
@@ -195,6 +198,18 @@ class DocumentTreeService:
                 await self._docs.update(
                     d.model_copy(update={"path": d_path, "updated_at": _utcnow()}),
                     conn=conn,
+                )
+        # Chunk metadata carries the path, so a move rewrites it. Metadata
+        # only: the vectors are unchanged, so nothing re-embeds.
+        if self._path_rewriter is not None:
+            await self._path_rewriter(
+                document_id=doc.id, collection_id=collection_id,
+                new_path=new_path,
+            )
+            for d in descendants:
+                await self._path_rewriter(
+                    document_id=d.id, collection_id=collection_id,
+                    new_path=new_path + d.path[len(old_prefix):],
                 )
         return moved
 

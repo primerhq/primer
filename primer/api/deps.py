@@ -275,11 +275,20 @@ def get_document_tree_service(request: Request):
     entity + content write commits. The indexer is wired here rather than
     in the route so the dependency owns the registry lookups.
     """
-    from primer.api.routers.knowledge import build_document_indexer
+    from primer.api.routers.knowledge import (
+        build_document_indexer,
+        build_document_path_rewriter,
+        build_document_unindexer,
+    )
     from primer.knowledge.tree import DocumentTreeService
 
     sp = get_storage_provider(request)
-    return DocumentTreeService(sp, indexer=build_document_indexer(request))
+    return DocumentTreeService(
+        sp,
+        indexer=build_document_indexer(request),
+        unindexer=build_document_unindexer(request),
+        path_rewriter=build_document_path_rewriter(request),
+    )
 
 
 def get_workspace_provider_storage(

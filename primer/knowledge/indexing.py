@@ -32,8 +32,6 @@ logger = logging.getLogger(__name__)
 # Target chunk size in characters. Paragraph-aware: paragraphs are packed
 # up to this size, and any single paragraph longer than the hard cap is
 # split on character boundaries so one huge block still embeds.
-_CHUNK_TARGET_CHARS = 1500
-_CHUNK_HARD_CAP = 3000
 
 # Number of chunks embedded per embedder call. Mirrors
 # ``DocumentIngester.DEFAULT_BATCH_SIZE`` so user-collection ingestion and
@@ -52,44 +50,6 @@ def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
     if m:
         return int(m.group(1))
     return fallback
-
-
-def chunk_text(text: str) -> list[str]:
-    """Split text into embedding-sized chunks, paragraph-aware.
-
-    Paragraphs (split on blank lines) are packed greedily up to
-    ``_CHUNK_TARGET_CHARS``. A paragraph longer than ``_CHUNK_HARD_CAP``
-    on its own is hard-split so no single chunk is unbounded. Returns an
-    empty list for empty input.
-    """
-    text = (text or "").strip()
-    if not text:
-        return []
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = [text]
-
-    chunks: list[str] = []
-    current = ""
-    for para in paragraphs:
-        # Hard-split an over-long paragraph on character boundaries.
-        if len(para) > _CHUNK_HARD_CAP:
-            if current:
-                chunks.append(current)
-                current = ""
-            for i in range(0, len(para), _CHUNK_TARGET_CHARS):
-                chunks.append(para[i:i + _CHUNK_TARGET_CHARS])
-            continue
-        if not current:
-            current = para
-        elif len(current) + 2 + len(para) <= _CHUNK_TARGET_CHARS:
-            current = f"{current}\n\n{para}"
-        else:
-            chunks.append(current)
-            current = para
-    if current:
-        chunks.append(current)
-    return chunks
 
 
 async def index_document(
@@ -121,7 +81,13 @@ async def index_document(
     text = await content_store.get(document.id)
     if text is None:
         text = ""
-    chunks = chunk_text(text)
+    from primer.knowledge.splitter import split_text
+
+    chunks = split_text(
+        text,
+        max_chars=cfg.chunking.max_chars,
+        overlap=cfg.chunking.overlap,
+    )
 
     embedder = await provider_registry.get_embedder(
         cfg.embedder.provider_id
@@ -359,7 +325,31 @@ async def backfill_missing_document_vectors(
 
 __all__ = [
     "backfill_missing_document_vectors",
-    "chunk_text",
     "index_document",
     "remove_document_index",
+    "rewrite_document_path_meta",
 ]
+
+
+async def rewrite_document_path_meta(
+    *,
+    document_id: str,
+    collection: Collection,
+    semantic_search_registry,
+    new_path: str,
+) -> None:
+    """Rewrite each stored chunk's meta path after a move. Metadata only:
+    vectors are reused verbatim (spec section 6), so no embedder runs."""
+    if collection.system or collection.search is None:
+        return
+    store = await semantic_search_registry.get_store(
+        collection.search.vector_store_provider_id
+    )
+    try:
+        records = await store.get(collection.id, document_id)
+        for record in records:
+            await store.put(record.model_copy(
+                update={"meta": {**record.meta, "path": new_path}}
+            ))
+    except PrimerError:
+        pass

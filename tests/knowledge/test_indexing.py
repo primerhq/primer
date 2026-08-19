@@ -8,7 +8,6 @@ import pytest
 
 from primer.knowledge.indexing import (
     backfill_missing_document_vectors,
-    chunk_text,
     index_document,
 )
 from primer.model.collection import (
@@ -21,14 +20,16 @@ from primer.model.except_ import ConflictError, DimensionMismatchError, PrimerEr
 from primer.model.storage import OffsetPage, OffsetPageResponse
 
 
-def _collection(system: bool = False) -> Collection:
+def _collection(system: bool = False, chunking=None) -> Collection:
+    search = CollectionSearchConfig(
+        embedder=CollectionEmbedder(provider_id="emb", model="m"),
+        vector_store_provider_id="ssp",
+        **({"chunking": chunking} if chunking is not None else {}),
+    )
     return Collection(
         id="kb-1",
         description="test",
-        search=CollectionSearchConfig(
-            embedder=CollectionEmbedder(provider_id="emb", model="m"),
-            vector_store_provider_id="ssp",
-        ),
+        search=search,
         system=system,
     )
 
@@ -44,28 +45,6 @@ def _document(text: str | None = None, content: str | None = None) -> Document:
 def _body_store(text: str | None = None, content: str | None = None):
     body = text if text is not None else content
     return _NullContentStore() if body is None else _ContentStore(body)
-
-
-class TestChunkText:
-    def test_empty_returns_no_chunks(self):
-        assert chunk_text("") == []
-        assert chunk_text("   ") == []
-
-    def test_short_text_is_one_chunk(self):
-        assert chunk_text("hello world") == ["hello world"]
-
-    def test_paragraphs_pack_greedily(self):
-        text = "\n\n".join(["a" * 800, "b" * 800, "c" * 800])
-        chunks = chunk_text(text)
-        # 800 + 2 + 800 = 1602 > 1500, so each 800-char paragraph is its
-        # own chunk.
-        assert len(chunks) == 3
-
-    def test_overlong_paragraph_is_hard_split(self):
-        text = "x" * 5000
-        chunks = chunk_text(text)
-        assert len(chunks) >= 2
-        assert all(len(c) <= 1500 for c in chunks)
 
 
 class _NullContentStore:
@@ -280,14 +259,18 @@ class TestBatchEmbedEquivalence:
         ssr.get_store = AsyncMock(return_value=store)
 
         # Build 70 distinct chunks (> 2 * 32) by hard-splitting one long
-        # paragraph (chunk_text splits on _CHUNK_TARGET_CHARS boundaries).
-        from primer.knowledge.indexing import _CHUNK_TARGET_CHARS
+        # paragraph. The collection's chunking config drives the split, and
+        # overlap=0 keeps the chunk count exactly predictable.
+        from primer.model.collection import ChunkingConfig
 
+        max_chars = 1500
         n_chunks = 70
-        text = "x" * (_CHUNK_TARGET_CHARS * n_chunks)
+        text = "x" * (max_chars * n_chunks)
         n = await index_document(
             document=_document(text=text),
-            collection=_collection(),
+            collection=_collection(chunking=ChunkingConfig(
+                max_chars=max_chars, overlap=0,
+            )),
             provider_registry=reg,
             semantic_search_registry=ssr,
             content_store=_body_store(text=text),
@@ -693,3 +676,78 @@ async def test_index_document_noop_when_search_off():
         content_store=_NullContentStore(),
     )
     assert n == 0
+
+
+class _OneDocContentStore:
+    def __init__(self, document_id: str, text: str) -> None:
+        self._id, self._text = document_id, text
+
+    async def get(self, document_id, *, conn=None):
+        return self._text if document_id == self._id else None
+
+
+async def test_chunking_config_drives_split():
+    from primer.model.collection import ChunkingConfig
+
+    store = _Store()
+    reg = AsyncMock()
+    reg.get_embedder = AsyncMock(return_value=_Emb(dim=3))
+    ssr = AsyncMock()
+    ssr.get_store = AsyncMock(return_value=store)
+    coll = Collection(
+        id="c-chunk", description="d",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="e", model="m"),
+            vector_store_provider_id="s",
+            chunking=ChunkingConfig(max_chars=300, overlap=0),
+        ),
+    )
+    doc = Document(collection_id="c-chunk", slug="big", path="big")
+    n = await index_document(
+        document=doc, collection=coll,
+        provider_registry=reg,
+        semantic_search_registry=ssr,
+        content_store=_OneDocContentStore(doc.id, "## A\n\n" + "x" * 900),
+    )
+    assert n >= 3  # 900 chars at max_chars=300 hard-split into >= 3 chunks
+
+
+class _MetaStore:
+    def __init__(self, records):
+        self.records = list(records)
+        self.puts = []
+
+    async def get(self, cid, did):
+        return sorted(
+            (r for r in self.records if r.document_id == did),
+            key=lambda r: r.chunk_id,
+        )
+
+    async def put(self, record):
+        self.puts.append(record)
+
+
+async def test_move_rewrites_path_meta_without_reembedding():
+    from primer.knowledge.indexing import rewrite_document_path_meta
+    from primer.model.vector import EmbeddingRecord
+
+    rec = EmbeddingRecord(
+        collection_id="c1", document_id="d1", chunk_id="0",
+        text="body", vector=[0.1, 0.2], meta={"path": "old/leaf"},
+    )
+    store = _MetaStore([rec])
+    ssr = AsyncMock()
+    ssr.get_store = AsyncMock(return_value=store)
+    coll = Collection(
+        id="c1", description="d",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="e", model="m"),
+            vector_store_provider_id="s",
+        ),
+    )
+    await rewrite_document_path_meta(
+        document_id="d1", collection=coll,
+        semantic_search_registry=ssr, new_path="dst/leaf",
+    )
+    assert store.puts[0].meta["path"] == "dst/leaf"
+    assert store.puts[0].vector == rec.vector  # metadata only, no re-embed

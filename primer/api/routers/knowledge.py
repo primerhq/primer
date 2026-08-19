@@ -741,6 +741,57 @@ async def convert_uploaded_file(
     }
 
 
+def build_document_unindexer(request: Request):
+    """Best-effort per-document vector cleanup for tree deletes."""
+    from primer.knowledge.indexing import remove_document_index
+
+    storage_provider = request.app.state.storage_provider
+
+    async def _unindexer(*, document_id: str, collection_id: str) -> None:
+        collection = await storage_provider.get_storage(Collection).get(collection_id)
+        if collection is None:
+            return
+        try:
+            ssr = get_semantic_search_registry(request)
+            await remove_document_index(
+                document_id=document_id, collection=collection,
+                semantic_search_registry=ssr,
+            )
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            logger.exception(
+                "document %s: unindexing failed; chunks may linger", document_id,
+            )
+
+    return _unindexer
+
+
+def build_document_path_rewriter(request: Request):
+    """Best-effort chunk path-metadata rewrite after a tree move."""
+    from primer.knowledge.indexing import rewrite_document_path_meta
+
+    storage_provider = request.app.state.storage_provider
+
+    async def _rewriter(
+        *, document_id: str, collection_id: str, new_path: str
+    ) -> None:
+        collection = await storage_provider.get_storage(Collection).get(collection_id)
+        if collection is None:
+            return
+        try:
+            ssr = get_semantic_search_registry(request)
+            await rewrite_document_path_meta(
+                document_id=document_id, collection=collection,
+                semantic_search_registry=ssr, new_path=new_path,
+            )
+        except Exception:  # noqa: BLE001 - best-effort metadata fix
+            logger.exception(
+                "document %s: path meta rewrite failed; hits may show the "
+                "pre-move path", document_id,
+            )
+
+    return _rewriter
+
+
 async def _reject_system_collection(
     collection_id: str, request: Request, *, verb: str,
 ) -> None:
