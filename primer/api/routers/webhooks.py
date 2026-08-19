@@ -128,7 +128,12 @@ def _verify_hmac(secret: str, body: bytes, sig_header: str | None) -> bool:
 
 
 async def _finalize_delivery(
-    storage_provider: Any, delivery_id: str, *, ok: bool
+    storage_provider: Any,
+    delivery_id: str,
+    *,
+    ok: bool,
+    fire_id: str | None = None,
+    results: list[dict] | None = None,
 ) -> None:
     """Best-effort flip of a WebhookDelivery row to done/failed.
 
@@ -150,10 +155,15 @@ async def _finalize_delivery(
         row = await storage.get(delivery_id)
         if row is None:
             return
-        await storage.update(row.model_copy(update={
+        updates: dict[str, Any] = {
             "status": "done" if ok else "failed",
             "completed_at": datetime.now(timezone.utc),
-        }))
+        }
+        if fire_id is not None:
+            updates["fire_id"] = fire_id
+        if results is not None:
+            updates["results"] = results
+        await storage.update(row.model_copy(update=updates))
     except Exception:  # noqa: BLE001 -- advisory marking, never fatal
         logger.debug(
             "webhook delivery finalize failed for %s", delivery_id,
