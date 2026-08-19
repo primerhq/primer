@@ -164,7 +164,86 @@ class DocumentTreeService:
             await self._indexer(document=updated, content=body)
         return updated
 
+    async def move(self, *, collection_id: str, path: str,
+                   new_parent: str, new_slug: str | None = None) -> Document:
+        doc = await self.resolve(collection_id=collection_id, path=path)
+        slug = new_slug or doc.slug
+        if not STRICT_SLUG_RE.fullmatch(slug):
+            raise BadRequestError(f"slug {slug!r} must match [a-z0-9-]+")
+        parent_id, parent_path = await self._resolve_parent(collection_id, new_parent)
+        if parent_path == doc.path or parent_path.startswith(doc.path + "/"):
+            raise BadRequestError(
+                f"cannot move {doc.path!r} into its own subtree {parent_path!r}"
+            )
+        new_path = f"{parent_path}/{slug}" if parent_path else slug
+        if new_path != doc.path and (
+            await self._content.resolve_id(collection_id, new_path) is not None
+        ):
+            raise ConflictError(f"path {new_path!r} already exists")
+        descendants = await self._descendants(collection_id, doc)
+        old_prefix = doc.path
+        moved = doc.model_copy(update={
+            "parent_id": parent_id, "slug": slug,
+            "path": new_path, "updated_at": _utcnow(),
+        })
+        async with self._sp.transaction() as conn:
+            await self._content.move(doc.id, new_path, conn=conn)
+            await self._docs.update(moved, conn=conn)
+            for d in descendants:
+                d_path = new_path + d.path[len(old_prefix):]
+                await self._content.move(d.id, d_path, conn=conn)
+                await self._docs.update(
+                    d.model_copy(update={"path": d_path, "updated_at": _utcnow()}),
+                    conn=conn,
+                )
+        return moved
+
+    async def delete(self, *, collection_id: str, path: str,
+                     recursive: bool = False) -> list[str]:
+        doc = await self.resolve(collection_id=collection_id, path=path)
+        descendants = await self._descendants(collection_id, doc)
+        if descendants and not recursive:
+            raise ConflictError(
+                f"{path!r} has {len(descendants)} descendant(s); pass "
+                "recursive=true to delete the subtree"
+            )
+        targets = [doc, *descendants]
+        async with self._sp.transaction() as conn:
+            for t in targets:
+                await self._docs.delete(t.id, conn=conn)
+                await self._content.delete(t.id, conn=conn)
+        if self._unindexer is not None:
+            for t in targets:
+                await self._unindexer(document_id=t.id, collection_id=collection_id)
+        return [t.id for t in targets]
+
+    async def _descendants(
+        self, collection_id: str, root: Document
+    ) -> list[Document]:
+        out: list[Document] = []
+        frontier = [root]
+        while frontier:
+            cur = frontier.pop(0)
+            kids = await self._children(collection_id, cur.id)
+            out.extend(kids)
+            frontier.extend(kids)
+        return out
+
     # ---- reads -----------------------------------------------------------
+
+    async def tree(self, *, collection_id: str, parent: str = "",
+                   depth: int = 1) -> list[TreeNode]:
+        parent_id, _ = await self._resolve_parent(collection_id, parent)
+        out: list[TreeNode] = []
+        frontier: list[tuple[str | None, int]] = [(parent_id, 1)]
+        while frontier:
+            pid, level = frontier.pop(0)
+            for node in await self._child_nodes(collection_id, pid):
+                out.append(node)
+                if level < depth and node.has_children:
+                    frontier.append((node.document_id, level + 1))
+        return sorted(out, key=lambda n: n.path)
+
 
     async def read(self, *, collection_id: str, path: str) -> TreeReadResult:
         doc = await self.resolve(collection_id=collection_id, path=path)
