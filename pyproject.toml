@@ -54,7 +54,6 @@ dependencies = [
 # Local HuggingFace embeddings + cross-encoder reranking (pulls torch).
 huggingface = ["sentence-transformers>=5.5.1", "transformers>=5.8.1"]
 # Rich multi-format document ingestion (PDF/DOCX/PPTX/HTML; pulls torch + OCR).
-docling = ["docling>=2.102.1"]
 # LanceDB embedded vector store (the alternative to the core pgvector backend).
 lance = ["lancedb>=0.33.0"]
 # Kubernetes workspace backend.
@@ -69,7 +68,7 @@ channels = [
     "slack-sdk>=3.42.0",
 ]
 # Everything: the batteries-included install.
-full = ["primer-ai[huggingface,docling,lance,kubernetes,docker,channels]"]
+full = ["primer-ai[huggingface,lance,kubernetes,docker,channels]"]
 
 [project.scripts]
 primer = "primer.cli:app"

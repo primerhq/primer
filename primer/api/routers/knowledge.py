@@ -5,7 +5,7 @@
   ``collection_id``). ``POST /v1/collections/{id}/search`` runs
   semantic search across the collection's indexed documents using the
   collection's own embedder + the SSP-registry-resolved vector store.
-* Document — CRUD + Find. Live ``ingest`` (multipart upload + docling
+* Document - CRUD + Find. Live ``ingest`` (multipart upload
   chunking) is deferred to a follow-up sub-project; the system
   toolset's ``put_document`` provides an in-process upsert path.
 
@@ -735,7 +735,7 @@ async def list_indexed_documents(
 
 
 # Extensions / content types whose content IS already markdown or plain
-# text. We short-circuit docling for these because (a) docling can't
+# text. We short-circuit conversion for these because (a) it can't
 # reliably detect the format from raw bytes with no filename hint and
 # fails on .md; (b) running text through a markdown converter just to
 # get markdown back is wasteful.
@@ -750,7 +750,7 @@ _TEXT_PASSTHROUGH_CONTENT_TYPES = (
 def _is_text_passthrough(
     filename: str | None, content_type: str | None,
 ) -> bool:
-    """True when the upload is already text and needs no docling pass.
+    """True when the upload is already text and needs no conversion.
 
     Filename extension wins (operators sometimes mislabel the
     content-type by uploading a `.md` with `application/octet-stream`).
@@ -771,7 +771,7 @@ def _is_text_passthrough(
 
 @collection_router.post(
     "/documents/_convert_file",
-    summary="Convert an uploaded file to markdown via docling",
+    summary="Return an uploaded UTF-8 text file as markdown",
     responses=common_responses(400, 500),
 )
 async def convert_uploaded_file(

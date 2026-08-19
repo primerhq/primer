@@ -1,4 +1,4 @@
-"""Heading-aware splitter replacing docling chunking (terrain surprise 4)."""
+"""Heading-aware splitter replacing the old binary-document chunking."""
 from __future__ import annotations
 
 from primer.knowledge.splitter import split_text

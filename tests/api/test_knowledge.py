@@ -323,7 +323,7 @@ class TestDocumentRouter:
 
 
 class TestConvertUploadedFile:
-    """The /documents/_convert_file endpoint short-circuits docling for
+    """The convert endpoint short-circuits conversion for
     already-text formats (.md / .txt). Regression test for the upload
     failing on markdown source files."""
 

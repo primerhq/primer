@@ -2,8 +2,9 @@
 
 ATX headings outside fenced code blocks cut the document into sections;
 each emitted chunk is prefixed with its heading breadcrumb so retrieval
-keeps context (the granularity docling's HybridChunker provided for the
-internal AI docs). Oversized sections and heading-free text fall back to
+keeps context, which is the granularity the old binary-document chunker
+provided for the internal docs. Oversized sections and heading-free text
+fall back to
 paragraph packing (ported from the previous chunk_text), with an
 optional character overlap between adjacent chunks of one section.
 """

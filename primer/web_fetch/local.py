@@ -2,7 +2,7 @@
 
 httpx GET (following redirects) -> content-type routing:
   text/html  -> trafilatura markdown (sets is_thin when extraction is short)
-  application/pdf -> docling markdown
+  application/pdf -> unsupported (binary conversion removed in v2)
   application/json -> pretty-printed + fenced
   text/*     -> returned as-is
   other      -> WebFetchProviderError (use http-request for raw bytes)

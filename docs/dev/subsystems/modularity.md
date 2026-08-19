@@ -42,7 +42,6 @@ The extra to marker-module map, mirroring `EXTRA_MODULES` in
 | Extra | Enables | Marker modules |
 |---|---|---|
 | `huggingface` | local embedder, local cross-encoder, exact Ollama token counts | `sentence_transformers` |
-| `docling` | PDF/DOCX/PPTX document loading and structure-aware splitting | `docling` |
 | `lance` | the embedded LanceDB vector store | `lancedb` |
 | `kubernetes` | the Kubernetes workspace backend | `kubernetes_asyncio` |
 | `docker` | the container workspace backend | `aiodocker` |
