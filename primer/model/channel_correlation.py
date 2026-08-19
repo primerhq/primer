@@ -23,7 +23,11 @@ class ChannelCorrelation(Identifiable):
     workspace_id: str | None = Field(default=None, description="kind=session.")
     session_id: str | None = Field(default=None, description="kind=session.")
     tool_call_id: str | None = Field(
-        default=None, description="kind=session: the currently-pending gate."
+        default=None,
+        description=(
+            "kind=session: the currently-pending gate, or None when the "
+            "record is a plain thread-to-session mapping (S6 section 5)."
+        ),
     )
     updated_at: datetime | None = Field(default=None)
 

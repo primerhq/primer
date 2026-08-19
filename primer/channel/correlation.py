@@ -208,6 +208,74 @@ class CorrelationStore:
             return await self._fallback_upsert(record)
         return await self._atomic_upsert(record)
 
+    async def upsert_thread_session(
+        self,
+        *,
+        channel_id: str,
+        anchor: str,
+        workspace_id: str,
+        session_id: str,
+    ) -> ChannelCorrelation:
+        """Bind a platform thread to its session (S6 section 5).
+
+        ``tool_call_id`` is deliberately None: the record says "this thread
+        IS this session" and nothing about an open gate. A later ask_user on
+        the same anchor upgrades the SAME row with a tool_call_id; answering
+        it clears the field again via :meth:`clear_gate`, so the thread stays
+        mapped for the next reply.
+        """
+        now = datetime.now(timezone.utc)
+        record = ChannelCorrelation(
+            channel_id=channel_id,
+            anchor=anchor,
+            kind="session",
+            workspace_id=workspace_id,
+            session_id=session_id,
+            tool_call_id=None,
+            updated_at=now,
+        )
+        if self._backend() == "other":
+            return await self._fallback_upsert(record)
+        return await self._atomic_upsert(record)
+
+    async def clear_gate(self, channel_id: str, anchor: str) -> None:
+        """Blank a resolved gate's ``tool_call_id``, keeping the mapping.
+
+        Without this the next reply in the thread would re-publish onto a
+        resume key nobody is waiting on any more, instead of steering the
+        mapped session.
+        """
+        existing = await self.lookup(channel_id, anchor)
+        if existing is None or existing.tool_call_id is None:
+            return
+        await self._storage().update(
+            existing.model_copy(update={
+                "tool_call_id": None,
+                "updated_at": datetime.now(timezone.utc),
+            })
+        )
+
+    async def clear_for_session(self, session_id: str) -> int:
+        """Delete every mapping pointing at ``session_id``. Returns the count.
+
+        Called from the session DELETE path so a mapping never outlives its
+        session (S6 section 9: mappings are garbage-collected with their
+        sessions).
+        """
+        removed = 0
+        while True:
+            page = await self._storage().find(
+                Q(ChannelCorrelation).where("session_id", session_id).build(),
+                OffsetPage(offset=0, length=200),
+            )
+            if not page.items:
+                return removed
+            for record in page.items:
+                await self._storage().delete(record.id)
+                removed += 1
+            if len(page.items) < 200:
+                return removed
+
     async def upsert_chat(
         self,
         *,
