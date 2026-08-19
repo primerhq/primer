@@ -24,8 +24,11 @@ Behaviour:
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
+
+import primer.observability.metrics as _metrics
 
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import (
@@ -49,6 +52,35 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _observe_llm_call(
+    llm_model: "ResolvedModel",
+    t0: float,
+    usage: "Usage | None",
+    status: str,
+) -> float:
+    """Record one model call against the per-profile instruments.
+
+    This loop is the ONE model-call seam every executor shares (the base
+    agent executor, the graph agent node and the subagent runner all call
+    run_agent_turn), so instrumenting here counts every call exactly once.
+    Returns the elapsed seconds so the caller can reuse them.
+    """
+    elapsed = time.monotonic() - t0
+    _metrics.llm_calls_total.labels(
+        llm_model.provider_id, llm_model.profile_id, status,
+    ).inc()
+    if usage is not None:
+        if usage.input_tokens:
+            _metrics.llm_profile_tokens_total.labels(
+                llm_model.profile_id, "in",
+            ).inc(usage.input_tokens)
+        if usage.output_tokens:
+            _metrics.llm_profile_tokens_total.labels(
+                llm_model.profile_id, "out",
+            ).inc(usage.output_tokens)
+    return elapsed
 
 
 async def run_agent_turn(
@@ -106,6 +138,8 @@ async def run_agent_turn(
     tool_round = 0
     while True:
         buffered: list[StreamEvent] = []
+        call_t0 = time.monotonic()
+        call_usage: Usage | None = None
         stream = llm.stream(
             model=llm_model.model_name,
             messages=prompt,
@@ -115,17 +149,24 @@ async def run_agent_turn(
             tools=tools,
             tool_choice="auto",
         )
-        async for event in stream:
-            buffered.append(event)
-            yield event
-            if (
-                last_input_tokens_out is not None
-                and isinstance(event, Usage)
-            ):
-                if not last_input_tokens_out:
-                    last_input_tokens_out.append(event.input_tokens)
-                else:
-                    last_input_tokens_out[0] = event.input_tokens
+        try:
+            async for event in stream:
+                buffered.append(event)
+                if isinstance(event, Usage):
+                    call_usage = event
+                yield event
+                if (
+                    last_input_tokens_out is not None
+                    and isinstance(event, Usage)
+                ):
+                    if not last_input_tokens_out:
+                        last_input_tokens_out.append(event.input_tokens)
+                    else:
+                        last_input_tokens_out[0] = event.input_tokens
+        except Exception:
+            _observe_llm_call(llm_model, call_t0, call_usage, "error")
+            raise
+        _observe_llm_call(llm_model, call_t0, call_usage, "ok")
 
         try:
             assistant_msg = output_to_message(buffered)
