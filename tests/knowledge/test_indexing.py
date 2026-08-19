@@ -135,12 +135,39 @@ class TestIndexDocument:
         assert ("kb-1", "doc-1") in store.deleted
 
     @pytest.mark.asyncio
-    async def test_system_collection_skipped(self):
+    async def test_system_collection_is_indexed_when_search_is_on(self):
+        """The system collection is the one bootstrap vectorises.
+
+        Skipping it on the ``system`` flag made
+        /v1/internal_collections/bootstrap a no-op that still reported
+        success: it enables search on that collection and then indexes
+        every document, so a skip left state "ready" with nothing
+        indexed and no collection registered in the vector store.
+        """
+        store = _Store()
         reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=_Emb())
         ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
         n = await index_document(
             document=_document(text="anything"),
             collection=_collection(system=True),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_body_store(text="anything"),
+        )
+        assert n > 0
+        assert store.puts
+
+    @pytest.mark.asyncio
+    async def test_collection_without_search_config_skipped(self):
+        """Search being unset is what makes indexing a no-op now."""
+        reg = AsyncMock()
+        ssr = AsyncMock()
+        collection = _collection()
+        n = await index_document(
+            document=_document(text="anything"),
+            collection=collection.model_copy(update={"search": None}),
             provider_registry=reg,
             semantic_search_registry=ssr,
             content_store=_body_store(text="anything"),

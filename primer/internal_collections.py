@@ -43,6 +43,7 @@ from primer.model.chat import TextPart
 from primer.model.embedding import ExtendedEmbeddingConfig
 from primer.model.collection import Collection, CollectionEmbedder
 from primer.model.except_ import (
+    BadRequestError,
     ConfigError,
     ConflictError,
     DimensionMismatchError,
@@ -812,7 +813,21 @@ class InternalCollectionsSubsystem:
         )
         vector = await self._embed_text(query, task_type="retrieval_query")
         coll_id = INTERNAL_COLLECTION_IDS[entity_type]
-        return await store.search(coll_id, vector, top_k)
+        try:
+            return await store.search(coll_id, vector, top_k)
+        except BadRequestError:
+            # S2 pinned decision 15: this surface is registered but INERT.
+            # Activation stopped populating the four _internal_* namespaces
+            # (agent and graph material lives in the system collection now),
+            # so the store has no such collection and says so. That is the
+            # expected steady state here, not a caller error: answer as an
+            # empty index rather than turning the toggle's own design into
+            # a 400 on every call.
+            logger.debug(
+                "internal search: %r is not registered; returning no hits",
+                coll_id,
+            )
+            return []
 
 
 # ===========================================================================

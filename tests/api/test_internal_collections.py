@@ -238,9 +238,20 @@ class _FakeStore:
 
 
 class _FakeEmbedder:
+    """One embedding per input, which is the contract callers rely on.
+
+    It used to return a single embedding whatever it was handed. That
+    went unnoticed while indexing skipped the system collection outright
+    and this fake was only ever called with the one-item dimensionality
+    probe; the moment a real chunk batch arrives it raises.
+    """
+
     async def embed(self, *, model, inputs, **kwargs):
         class _R:
-            embeddings = [type("E", (), {"vector": [0.1, 0.2, 0.3, 0.4]})()]
+            embeddings = [
+                type("E", (), {"vector": [0.1, 0.2, 0.3, 0.4]})()
+                for _ in inputs
+            ]
 
         return _R()
 

@@ -71,10 +71,18 @@ async def index_document(
     migrated document with no content row, this falls back to the legacy
     ``meta['text']`` / ``meta['content']`` read so nothing breaks in transit.
 
-    System collections are skipped (returns 0). On embedder/store failure it
-    raises; the caller treats indexing as best-effort and swallows it.
+    A collection with no search config is skipped (returns 0). System
+    collections are NOT: the system collection is precisely what
+    /v1/internal_collections/bootstrap vectorises, so skipping them made
+    that toggle a no-op that still reported success (state "ready" with
+    zero documents indexed, and no vector-store collection ever created).
+    The guard dates from when "system" meant the four _internal_* rows a
+    separate ingest path owned. Search being unset is the real signal now.
+
+    On embedder/store failure it raises; the caller treats indexing as
+    best-effort and swallows it.
     """
-    if collection.system or collection.search is None:
+    if collection.search is None:
         return 0
     cfg = collection.search
 
@@ -215,7 +223,7 @@ async def remove_document_index(
     semantic_search_registry,
 ) -> None:
     """Delete every indexed chunk for a document. Best-effort, idempotent."""
-    if collection.system or collection.search is None:
+    if collection.search is None:
         return
     store = await semantic_search_registry.get_store(
         collection.search.vector_store_provider_id
@@ -242,7 +250,7 @@ async def rewrite_document_path_meta(
 ) -> None:
     """Rewrite each stored chunk's meta path after a move. Metadata only:
     vectors are reused verbatim (spec section 6), so no embedder runs."""
-    if collection.system or collection.search is None:
+    if collection.search is None:
         return
     store = await semantic_search_registry.get_store(
         collection.search.vector_store_provider_id
