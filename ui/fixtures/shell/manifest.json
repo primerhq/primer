@@ -1,0 +1,9 @@
+{
+  "surfaces": [],
+  "doc_kinds": ["session", "file", "diff", "wiki"],
+  "overlays": [
+    "providers", "collections", "agents", "graphs", "triggers",
+    "toolsets", "tools", "workers", "approvals", "admin",
+    "harnesses", "services", "channels", "workspaces"
+  ]
+}
