@@ -24,7 +24,14 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_COLLECTION_ID = "system"
 
-_SUBTREES = ("agents", "graphs", "tools", "collections", "docs")
+_SUBTREES = (
+    "agents", "graphs", "tools", "collections", "docs",
+    # S5 subtrees. They prune on the same diff-and-converge pass; leaving
+    # them out would keep a deleted workspace or provider in the map
+    # forever, which is exactly the staleness the regeneration exists to
+    # prevent.
+    "workspaces", "providers", "how-to",
+)
 
 
 async def _list_all(storage, model_cls) -> list:
@@ -38,6 +45,44 @@ async def _list_all(storage, model_cls) -> list:
         if len(resp.items) < page:
             return out
         offset += page
+
+
+
+async def _all_rows(storage_provider, model_cls) -> list:
+    """Page every row of one model. Alias of :func:`_list_all`."""
+    return await _list_all(storage_provider, model_cls)
+
+
+
+def _enum_value(value) -> str:
+    """Render an enum as its wire value, never its repr.
+
+    A provider type stringifies as ``LLMProviderType.OLLAMA``, which is a
+    python detail; what an agent greps for is ``ollama``.
+    """
+    return str(getattr(value, "value", value))
+
+
+def _index(
+    title: str,
+    entries: list[tuple[str, str | None, str]],
+    *,
+    preamble: str | None = None,
+) -> str:
+    """Render a subtree index: a heading, an optional preamble, bullets.
+
+    Each entry is ``(label, path_or_None, note)``; a None path renders the
+    label unlinked, which is how an empty class still names itself.
+    """
+    lines = [f"# {title}", ""]
+    if preamble:
+        lines.extend([preamble, ""])
+    if not entries:
+        lines.append("_(none)_")
+    for label, path, note in entries:
+        head = f"[{label}]({path})" if path else label
+        lines.append(f"- {head}" + (f" - {note}" if note else ""))
+    return "\n".join(lines) + "\n"
 
 
 async def _ensure_collection(storage_provider) -> Collection:
@@ -60,6 +105,185 @@ def _index_body(title: str, children: list[tuple[str, str]]) -> str:
     for path, label in sorted(children):
         lines.append(f"- [{label}]({path})")
     return "\n".join(lines) + "\n"
+
+
+HOW_TO_GUIDES: dict[str, str] = {
+    "create-an-agent": (
+        "# Create an agent\n\n"
+        "Ask the operator for the capability you want. The operator delegates "
+        "to the builder agent (invoke_agent 'builder'), which calls "
+        "crud__create_agent. That call is approval-gated: approve it in the "
+        "console's approvals view and the agent is created.\n\n"
+        "An agent row needs a description, a model profile id, a tool grant "
+        "(scoped ids of the form toolset__tool), and a system prompt. See "
+        "/tools for every tool that can be granted, and /providers/"
+        "model-profiles for the profiles this install has registered.\n"
+    ),
+    "enable-semantic-search": (
+        "# Enable semantic search on a collection\n\n"
+        "Grep works on every collection with no setup. Semantic search is "
+        "opt-in per collection and needs a registered embedding provider and "
+        "a semantic-search provider; see /providers.\n\n"
+        "Enable it from the collection's search settings, which registers the "
+        "collection for backfill. While backfill runs the collection reports "
+        "an indexing state; disabling it drops the vectors again. Grep is "
+        "unaffected either way.\n"
+    ),
+    "configure-voice": (
+        "# Configure voice\n\n"
+        "Voice is an edge transform: agents stay text in, text out. Register "
+        "a speech-to-text provider and a text-to-speech provider (see "
+        "/providers), then set the install defaults for each. An agent may "
+        "override the TTS voice for its own replies.\n\n"
+        "Once both defaults are set, any session composer can record audio "
+        "and play replies back.\n"
+    ),
+    "wire-a-trigger": (
+        "# Wire a trigger\n\n"
+        "A trigger starts a run without a human typing. Four kinds exist: "
+        "delayed, scheduled, webhook, and channel. Ask the operator, which "
+        "delegates to the builder's crud__create_trigger (approval-gated).\n\n"
+        "Scheduled and delayed triggers are fire and forget. Webhook and "
+        "channel triggers can be interactive, meaning the caller or thread "
+        "receives the run's final result. See /agents for what a trigger can "
+        "target.\n"
+    ),
+}
+
+
+async def _workspaces_map(storage_provider) -> dict[str, str]:
+    """/workspaces: one page per workspace row plus an index."""
+    from primer.model.workspace import Workspace
+
+    rows = await _all_rows(storage_provider, Workspace)
+    out: dict[str, str] = {}
+    lines = ["# Workspaces", "", "Places sessions run. One page each.", ""]
+    for row in rows:
+        label = row.name or row.id
+        lines.append(f"- [{label}](workspaces/{row.id}) - phase {row.phase}")
+        out[f"workspaces/{row.id}"] = (
+            f"# Workspace {row.id}\n\n"
+            f"- name: {label}\n"
+            f"- template: {row.template_id}\n"
+            f"- provider: {row.provider_id}\n"
+            f"- phase: {row.phase}\n"
+        )
+    if not rows:
+        lines.append("No workspaces exist yet.")
+    out["workspaces"] = "\n".join(lines) + "\n"
+    return out
+
+
+async def _providers_map(storage_provider) -> dict[str, str]:
+    """/providers: what this install can talk to, by class.
+
+    Config VALUES are never rendered: a provider config carries API keys.
+    Only the key NAMES go in, which is what an agent needs to reason about
+    whether a provider is configured.
+    """
+    from primer.model.model_profile import ModelProfile
+    from primer.model.provider import (
+        EmbeddingProvider,
+        LLMProvider,
+        SemanticSearchProvider,
+    )
+
+    out: dict[str, str] = {}
+    llms = await _all_rows(storage_provider, LLMProvider)
+    for row in llms:
+        keys = sorted(row.config.model_dump(mode="json").keys())
+        out[f"providers/llm/{row.id}"] = (
+            f"# LLM provider {row.id}\n\n"
+            f"- type: {_enum_value(row.provider)}\n"
+            f"- config keys (values omitted): {', '.join(keys)}\n"
+        )
+    out["providers/llm"] = _index(
+        "LLM providers",
+        [(r.id, f"providers/llm/{r.id}", _enum_value(r.provider)) for r in llms],
+    )
+
+    profiles = await _all_rows(storage_provider, ModelProfile)
+    out["providers/model-profiles"] = _index(
+        "Model profiles",
+        [
+            (
+                p.id,
+                None,
+                f"{p.model_name} on {p.provider_id}, "
+                f"context {p.context_length}",
+            )
+            for p in profiles
+        ],
+        preamble=(
+            "An agent names a profile, not a model. These are the profiles "
+            "this install has registered."
+        ),
+    )
+
+    for cls, sub, label in (
+        (EmbeddingProvider, "embedding", "Embedding providers"),
+        (SemanticSearchProvider, "semantic-search", "Semantic-search providers"),
+    ):
+        rows = await _all_rows(storage_provider, cls)
+        for row in rows:
+            out[f"providers/{sub}/{row.id}"] = (
+                f"# {label[:-1]} {row.id}\n\n- type: {_enum_value(row.provider)}\n"
+            )
+        out[f"providers/{sub}"] = _index(
+            label, [(r.id, f"providers/{sub}/{r.id}", _enum_value(r.provider)) for r in rows],
+        )
+
+    out["providers"] = _index(
+        "Providers",
+        [
+            ("llm", "providers/llm", "chat/completion backends"),
+            ("model-profiles", "providers/model-profiles", "what agents bind to"),
+            ("embedding", "providers/embedding", "vector embedders"),
+            ("semantic-search", "providers/semantic-search", "vector stores"),
+        ],
+        preamble="Everything this install can talk to, by class.",
+    )
+    return out
+
+
+def _how_to_map() -> dict[str, str]:
+    """/how-to: the authored guides plus their index."""
+    out = {f"how-to/{slug}": body for slug, body in HOW_TO_GUIDES.items()}
+    out["how-to"] = _index(
+        "How to",
+        [
+            (slug, f"how-to/{slug}", body.splitlines()[0].lstrip("# "))
+            for slug, body in sorted(HOW_TO_GUIDES.items())
+        ],
+        preamble="Task-shaped guides. Read one before configuring anything.",
+    )
+    return out
+
+
+# Slug of the collection's root index. A collection root is a PARENT, not
+# a document, so the map itself lives at `index` (model slug charset), and
+# every subtree index links back to it.
+ROOT_INDEX_SLUG = "index"
+
+ROOT_INDEX = (
+    "# Primer\n\n"
+    "Primer runs AGENTS: an agent is a model, a prompt, and a set of "
+    "tools. A SESSION is one agent (or graph) working inside a WORKSPACE, "
+    "which is a real filesystem it can read and write. COLLECTIONS are "
+    "document trees agents navigate and search; TRIGGERS start runs "
+    "without a human typing.\n\n"
+    "This collection is the map of THIS install. It is regenerated from "
+    "live state at every startup, so it never goes stale, and it is "
+    "read-only: grep it, read it, do not write to it.\n\n"
+    "- [agents](agents) - every agent, its purpose and its tool grant\n"
+    "- [graphs](graphs) - every graph and what it orchestrates\n"
+    "- [tools](tools) - every toolset and every tool it exposes\n"
+    "- [collections](collections) - every collection on this install\n"
+    "- [docs](docs) - the shipped primer documentation\n"
+    "- [workspaces](workspaces) - every workspace and its phase\n"
+    "- [providers](providers) - LLM, embedding and search backends\n"
+    "- [how-to](how-to) - guides for configuring the pieces above\n"
+)
 
 
 async def _desired(storage_provider, toolset_providers: dict) -> dict[str, str]:
@@ -151,6 +375,14 @@ async def _desired(storage_provider, toolset_providers: dict) -> dict[str, str]:
         ]
         if kids and desired[path].startswith("# ") and "_(none)_" in desired[path]:
             desired[path] = _index_body(path.rsplit("/", 1)[-1], kids)
+
+    # S5 subtrees: the operator's map of THIS install, plus the root index
+    # every subtree links back to. Merged after the synthesised-ancestor
+    # pass because each one already carries its own index document.
+    desired.update(await _workspaces_map(storage_provider))
+    desired.update(await _providers_map(storage_provider))
+    desired.update(_how_to_map())
+    desired[ROOT_INDEX_SLUG] = ROOT_INDEX
 
     return desired
 
