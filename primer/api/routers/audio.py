@@ -26,6 +26,8 @@ from starlette.responses import StreamingResponse
 from primer.model.agent import Agent
 from primer.model.provider import TextToSpeechProvider
 from primer.speech.resolution import resolve_tts_voice
+from fastapi import Query
+from primer.speech.discovery import list_models, list_voices
 
 
 logger = logging.getLogger(__name__)
@@ -251,6 +253,78 @@ async def synthesize_speech(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+def _api_key_of(config) -> str | None:
+    secret = getattr(config, "api_key", None)
+    return secret.get_secret_value() if secret is not None else None
+
+
+async def _probe(coro_factory, url: str, api_key: str | None) -> list[str]:
+    """Run one enumeration probe, degrading to [] on any failure.
+
+    The pickers this feeds are advisory: a provider that is down should
+    leave the field empty and typeable, not fail the whole page.
+    """
+    try:
+        return await coro_factory(url=url, api_key=api_key)
+    except Exception as exc:  # noqa: BLE001 -- advisory path
+        logger.warning("audio enumeration probe failed for %s: %s", url, exc)
+        return []
+
+
+@audio_router.get(
+    "/audio/models",
+    summary=(
+        "List the models the active speech providers currently offer, per "
+        "family. Feeds the catalog's model pickers."
+    ),
+)
+async def list_audio_models(request: Request) -> dict[str, list[str]]:
+    active = await read_active_speech_config(request)
+    out: dict[str, list[str]] = {"stt": [], "tts": []}
+    sp = request.app.state.storage_provider
+    if active.stt_provider_id:
+        row = await sp.get_storage(SpeechToTextProvider).get(active.stt_provider_id)
+        if row is not None:
+            out["stt"] = await _probe(
+                list_models, str(row.config.url), _api_key_of(row.config),
+            )
+    if active.tts_provider_id:
+        row = await sp.get_storage(TextToSpeechProvider).get(active.tts_provider_id)
+        if row is not None:
+            out["tts"] = await _probe(
+                list_models, str(row.config.url), _api_key_of(row.config),
+            )
+    return out
+
+
+@audio_router.get(
+    "/audio/voices",
+    summary=(
+        "List the voices a text-to-speech provider offers. Defaults to the "
+        "active provider; pass provider_id to inspect another row."
+    ),
+)
+async def list_audio_voices(
+    request: Request,
+    provider_id: str | None = Query(default=None),
+) -> dict[str, list[str]]:
+    target = provider_id
+    if target is None:
+        active = await read_active_speech_config(request)
+        target = active.tts_provider_id
+    if not target:
+        return {"voices": []}
+    storage = request.app.state.storage_provider.get_storage(TextToSpeechProvider)
+    row = await storage.get(target)
+    if row is None:
+        return {"voices": []}
+    return {
+        "voices": await _probe(
+            list_voices, str(row.config.url), _api_key_of(row.config),
+        )
+    }
 
 
 __all__ = ["audio_router"]
