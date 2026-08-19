@@ -15,9 +15,9 @@
 // ============================================================================
 
 const PROVIDER_CLASSES = [
-  { key: "llm", label: "LLM", plural: "llm_providers", form: "crud", profiles: true },
-  { key: "embedding", label: "Embedding", plural: "embedding_providers", form: "crud" },
-  { key: "cross_encoder", label: "Cross-Encoder", plural: "cross_encoder_providers", form: "crud" },
+  { key: "llm", label: "LLM", plural: "llm_providers", form: "crud", profiles: true, invalidate: true },
+  { key: "embedding", label: "Embedding", plural: "embedding_providers", form: "crud", invalidate: true },
+  { key: "cross_encoder", label: "Cross-Encoder", plural: "cross_encoder_providers", form: "crud", invalidate: true },
   { key: "ssp", label: "Vector Stores", plural: "ssp", form: "panel",
     panel: () => window.SSPListPage },
   { key: "stt", label: "Speech-to-Text", plural: "stt_providers", form: "crud" },
@@ -47,7 +47,84 @@ function PC_ClassRail({ classes, selected, onSelect }) {
   );
 }
 
-function PC_InstanceList({ klass, selectedId, onSelect }) {
+// The two actions the deleted per-class detail view had. Invalidate only
+// appears where the endpoint does: the model-family registry caches an
+// adapter per row id (api/registries/provider_registry.py), while the
+// sibling registries drop their entry on the CRUD hook and need no
+// button.
+function PC_RowActions({ klass, rowId, onChanged }) {
+  const { apiFetch } = window.primerApi;
+  const [confirmDelete, setConfirmDelete] = React.useState(false);
+  const [err, setErr] = React.useState("");
+  const [busy, setBusy] = React.useState("");
+
+  const run = async (what, method, path) => {
+    setErr("");
+    setBusy(what);
+    try {
+      await apiFetch(method, path);
+      setConfirmDelete(false);
+      if (onChanged) onChanged(what);
+    } catch (err) {
+      // 403 means a reserved row; the backend detail says which and why
+      // (routers/providers.py:116-135). Show it where the click was
+      // rather than hiding the button behind a copied id list.
+      const detail = err && err.detail ? err.detail : null;
+      const message =
+        (detail && (detail.message || detail)) || (err && err.title) || String(err);
+      setErr(err && err.status ? `${err.status}: ${message}` : String(message));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const encoded = encodeURIComponent(rowId);
+  return (
+    <div className="row-actions">
+      {klass.invalidate && (
+        <Btn
+          type="button"
+          kind="ghost"
+          disabled={busy !== ""}
+          data-testid="provider-row-invalidate"
+          onClick={() => run("invalidate", "POST", `/${klass.plural}/${encoded}/invalidate`)}
+        >
+          Invalidate
+        </Btn>
+      )}
+      {confirmDelete ? (
+        <>
+          <Btn
+            type="button"
+            kind="danger"
+            disabled={busy !== ""}
+            data-testid="provider-row-delete-confirm"
+            onClick={() => run("delete", "DELETE", `/${klass.plural}/${encoded}`)}
+          >
+            Confirm delete
+          </Btn>
+          <Btn type="button" kind="ghost" onClick={() => setConfirmDelete(false)}>
+            Cancel
+          </Btn>
+        </>
+      ) : (
+        <Btn
+          type="button"
+          kind="ghost"
+          data-testid="provider-row-delete"
+          onClick={() => { setErr(""); setConfirmDelete(true); }}
+        >
+          Delete
+        </Btn>
+      )}
+      {err && (
+        <div className="field-help" data-testid="provider-row-error">{err}</div>
+      )}
+    </div>
+  );
+}
+
+function PC_InstanceList({ klass, selectedId, onSelect, onRegisterRefetch }) {
   const { usePagedList, useViewport } = window.primerApi;
   const { isMobile } = useViewport();
   const list = usePagedList({
@@ -57,6 +134,13 @@ function PC_InstanceList({ klass, selectedId, onSelect }) {
     pollMs: null,
     resetKey: { plural: klass.plural },
   });
+
+  // Hand the refetch up so a row action refreshes this list in place. A
+  // remount would work too, but it would also throw away the page the
+  // operator was on.
+  React.useEffect(() => {
+    if (onRegisterRefetch) onRegisterRefetch(() => list.refetch());
+  }, [onRegisterRefetch, list.refetch]);
 
   if (list.error) {
     return (
@@ -252,6 +336,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     initialClass || PROVIDER_CLASSES[0].key,
   );
   const [instanceId, setInstanceId] = React.useState(initialInstanceId || null);
+  const listRefetchRef = React.useRef(null);
   const [reloadKey, setReloadKey] = React.useState(0);
   const [draft, setDraft] = React.useState({});
 
@@ -303,8 +388,19 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
           klass={cls}
           selectedId={instanceId}
           onSelect={selectInstance}
+          onRegisterRefetch={(fn) => { listRefetchRef.current = fn; }}
         />
         <div className="col" style={{ flex: 1, minWidth: 0 }}>
+        {instanceId && cls.form === "crud" && (
+          <PC_RowActions
+            klass={cls}
+            rowId={instanceId}
+            onChanged={(what) => {
+              if (listRefetchRef.current) listRefetchRef.current();
+              if (what === "delete") setInstanceId(null);
+            }}
+          />
+        )}
           <window.PC_ProviderForm
             plural={cls.plural}
             typesPath={`/${cls.plural}/_types`}
