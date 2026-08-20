@@ -200,3 +200,44 @@ def test_an_empty_state_is_still_the_bare_root() -> None:
         'var b3 = SH_buildUrl({ wid: null, doc: null, overlay: null, anchor: null });'
     )
     assert ctx.eval("b3") == "#/"
+
+
+# ---------------------------------------------------------------------------
+# The url can be ahead of the shell mid-navigation.
+# ---------------------------------------------------------------------------
+
+
+def test_a_url_naming_another_workspace_is_ahead_not_wrong() -> None:
+    """Regression: the shell overwrote the address it was navigating to.
+
+    Arriving at another workspace is not one render. The hashchange
+    listener applies the new url's document first and the workspace prop
+    only catches up once the root gate re-reads the hash, so in between
+    the shell holds the new document beside the old workspace. Writing
+    the url from that mixture replaced the workspace still being
+    navigated to with the one being left.
+    """
+    ctx = _ctx()
+    ctx.eval(
+        """
+        var ahead = SH_urlIsAhead(SH_parseUrl("#/w/ws-target?doc=session:s1"),
+                                  "ws-previous");
+        var settled = SH_urlIsAhead(SH_parseUrl("#/w/ws-target?doc=session:s1"),
+                                    "ws-target");
+        var noWid = SH_urlIsAhead(SH_parseUrl("#/?overlay=agents"), "primer");
+        var nothing = SH_urlIsAhead(null, "primer");
+        """
+    )
+    assert ctx.eval("ahead") is True
+    assert ctx.eval("settled") is False
+    # A url with no workspace names no destination, so it cannot be ahead:
+    # the platform overlays are addressable without one.
+    assert ctx.eval("noWid") is False
+    assert ctx.eval("nothing") is False
+
+
+def test_the_sync_effect_actually_consults_that_rule() -> None:
+    shell = (ROOT / "ui" / "components" / "shell" / "sh-shell.jsx").read_text(
+        encoding="utf-8",
+    )
+    assert "SH_urlIsAhead(SH_readUrl(), wid)" in shell

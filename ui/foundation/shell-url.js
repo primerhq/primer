@@ -160,6 +160,20 @@ function SH_parseAnchor(anchor) {
   return null;
 }
 
+// Is the url ahead of the shell?
+//
+// Arriving at another workspace is not one render: the hashchange
+// listener applies the new url's document first, and the workspace only
+// catches up once the root gate re-reads the hash. In between, the shell
+// holds the NEW document beside the OLD workspace, and anything that
+// writes the url from that mixture overwrites the address still being
+// navigated to. When the url names a workspace the shell has not adopted
+// yet it is ahead, not wrong, and nothing may write over it.
+function SH_urlIsAhead(parsed, wid) {
+  return !!(parsed && parsed.wid && parsed.wid !== wid);
+}
+
+window.SH_urlIsAhead = SH_urlIsAhead;
 window.SH_DOC_KINDS = SH_DOC_KINDS;
 window.SH_OVERLAYS = SH_OVERLAYS;
 window.SH_encodeRef = SH_encodeRef;

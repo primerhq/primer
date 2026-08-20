@@ -83,6 +83,21 @@ function SH_Shell(props) {
     }
   }
   React.useEffect(function () {
+    // The url is the source of truth while a navigation is resolving.
+    //
+    // Arriving at another workspace is not one render. The hashchange
+    // listener applies the new url's document first; the workspace prop
+    // only catches up once SH_RootGate re-reads the hash and re-renders.
+    // In between, this effect sees the NEW document beside the OLD
+    // workspace, decides the url disagrees with it, and writes that
+    // mixture back over the address that was still being navigated to.
+    // Everything downstream then reads the shell's own stale answer
+    // instead of where the caller asked to go.
+    //
+    // So: when the url names a workspace the shell has not adopted yet,
+    // it is ahead, not wrong. Leave it alone and let the reconciliation
+    // finish; the next run writes the settled state.
+    if (SH_urlIsAhead(SH_readUrl(), wid)) return;
     var url = SH_buildUrl({
       wid: wid,
       doc: active ? { kind: active.kind, ref: active.ref } : null,
