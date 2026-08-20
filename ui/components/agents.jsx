@@ -390,6 +390,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
     (signal) => apiFetch("GET", "/tools", null, { signal }),
     { pollMs: null }
   );
+  // The Advanced tab gates a tts_voice picker on the speech capability
+  // and fills it from the voice list. Both were read here while only
+  // AgentsPage fetched them, so opening this modal and reaching that
+  // tab threw ReferenceError: caps is not defined, and the whole tab
+  // rendered nothing -- taking the rest of its fields down with it.
+  const caps = window.primerApi.useCapabilities();
+  const voices = useResource(
+    "agents:voices",
+    (signal) => apiFetch("GET", "/audio/voices", null, { signal }),
+    { pollMs: 0 },
+  );
 
   // Initial values come from the existing agent in edit mode, else
   // blanks. system_prompt and compaction_prompt are stored as arrays

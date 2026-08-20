@@ -176,9 +176,12 @@ def test_u0018_deep_link_reload_preserves_agent_detail_tools_tab(
             f"class={tools_tab_after.get_attribute('class')!r}"
         )
 
-        # Defence: URL still has ?tab=tools after reload.
-        assert "tab=tools" in page.url, (
-            f"reload dropped the ?tab=tools query: {page.url}"
+        # Defence: the URL still carries the tab after reload. The shell
+        # states it in the overlay target's section slot rather than as a
+        # ?tab= query, which is the same deep link in the one grammar the
+        # URL now has.
+        assert f"overlay=agents:tools:{agent_id}" in page.url, (
+            f"reload dropped the tools tab: {page.url}"
         )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
