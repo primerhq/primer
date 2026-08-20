@@ -161,3 +161,34 @@ def test_landing_ignores_session_rows_from_another_workspace() -> None:
         r"items\[0\]\.workspace_id\s*\n?\s*&&\s*items\[0\]\.workspace_id\s*!==\s*wid",
         src,
     ), "landing must wait for the refetch rather than open a foreign session"
+
+
+def test_the_url_is_not_written_from_a_half_changed_shell() -> None:
+    """Regression: a deep link opened the previous workspace's session.
+
+    On the render where the workspace prop changes, the url-sync effect
+    runs BEFORE the reset effect that drops the previous workspace's
+    tabs, because effects fire in declaration order and sync is declared
+    first. It therefore paired the new workspace with the OLD active
+    document and wrote that over the address being navigated to, so the
+    reset effect then read an address naming the wrong session and
+    faithfully opened it. An instrumented CI run logged the arriving
+    "?doc=session:<target>" and the sync effect replacing it on the very
+    next line.
+
+    lastWidRef is the marker for "which workspace the open documents
+    belong to", so the sync effect must consult it before writing, and it
+    must be declared before the effect that reads it.
+    """
+    src = _src()
+    decl = src.index("var lastWidRef = React.useRef(wid);")
+    sync = src.index("var url = SH_buildUrl({")
+    assert decl < sync, (
+        "lastWidRef must be declared before the sync effect that reads it"
+    )
+    guard = src[src.index("React.useEffect", decl):sync]
+    assert "lastWidRef.current !== wid" in guard, (
+        "the sync effect must not write while the doc state still belongs "
+        "to the previous workspace"
+    )
+    assert src.count("var lastWidRef = React.useRef(wid);") == 1

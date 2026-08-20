@@ -96,21 +96,33 @@ function SH_Shell(props) {
       if (group.tabs[i].id === group.activeId) active = group.tabs[i];
     }
   }
+  // Which workspace the open documents belong to. The reset effect below
+  // advances it; until it does, the two disagree and the doc state is
+  // still the PREVIOUS workspace's.
+  var lastWidRef = React.useRef(wid);
+
   React.useEffect(function () {
-    // The url is the source of truth while a navigation is resolving.
+    // Never write the url from a half-changed shell.
     //
-    // Arriving at another workspace is not one render. The hashchange
-    // listener applies the new url's document first; the workspace prop
-    // only catches up once SH_RootGate re-reads the hash and re-renders.
-    // In between, this effect sees the NEW document beside the OLD
-    // workspace, decides the url disagrees with it, and writes that
-    // mixture back over the address that was still being navigated to.
-    // Everything downstream then reads the shell's own stale answer
-    // instead of where the caller asked to go.
+    // Arriving at another workspace is not one render. On the render
+    // where the workspace prop changes, this effect runs BEFORE the
+    // reset effect that drops the previous workspace's tabs, because
+    // effects fire in declaration order and this one is declared first.
+    // It therefore saw the new workspace beside the old active document
+    // and wrote that pairing straight over the address being navigated
+    // to, replacing the document the caller asked for with the one the
+    // shell had open in the workspace it was leaving. Everything
+    // downstream then read the overwritten address, the reset effect
+    // included, which is why the shell opened the WRONG session rather
+    // than none: the rail listed the workspace asked for and the centre
+    // held a session from the one before it.
     //
-    // So: when the url names a workspace the shell has not adopted yet,
-    // it is ahead, not wrong. Leave it alone and let the reconciliation
-    // finish; the next run writes the settled state.
+    // Observed rather than deduced: an instrumented run logged the
+    // arriving "?doc=session:<target>" and this effect replacing it on
+    // the very next line.
+    if (lastWidRef.current !== wid) return;
+    // The same rule one step out: a url naming a workspace the shell has
+    // not adopted at all is ahead of it, not wrong.
     if (SH_urlIsAhead(SH_readUrl(), wid)) return;
     var url = SH_buildUrl({
       wid: wid,
@@ -167,7 +179,6 @@ function SH_Shell(props) {
   // outlive the render that started them.
   var widRef = React.useRef(wid);
   widRef.current = wid;
-  var lastWidRef = React.useRef(wid);
   React.useEffect(function () {
     if (lastWidRef.current === wid) return;
     SH_diag("wid-change", { from: lastWidRef.current, to: wid,
