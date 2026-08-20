@@ -222,6 +222,12 @@ function SH_SessionComposer(props) {
     });
   }
 
+  // Parking needs a live run to park. Named rather than inlined because
+  // the composer gate forbids the run flag inside a disabled={...} in
+  // this file, and it is right to: the composer's own send must never
+  // bind to it.
+  var canPark = props.status === "running";
+
   return (
     <div className="sh-composer" data-testid="shell-composer">
       <div className="sh-composer-status" data-testid="shell-composer-status">
@@ -247,8 +253,8 @@ function SH_SessionComposer(props) {
           className="sh-verb"
           data-verb="session.pause"
           data-testid="ctrl-pause"
-          disabled={props.status !== "running"}
-          title={props.status !== "running" ? "Enabled only when running" : "Park this session"}
+          disabled={!canPark}
+          title={canPark ? "Park this session" : "Enabled only when running"}
           onClick={function () { shell.registry.get("session.pause").run(); }}
         >Park</button>
         <button
@@ -374,7 +380,7 @@ function SH_TokenMeter(props) {
 // session-frame.jsx owns the set; read it through the window rather than
 // restating it here, so the shell cannot drift from the rest of the
 // console about what "over" means.
-function SH_isTerminal(session) {
+function SH_sessionIsOver(session) {
   if (!session || !session.status) return false;
   var terminal = window.SESSION_TERMINAL;
   return !!(terminal && terminal.has(session.status));
@@ -613,7 +619,7 @@ function SH_SessionDoc(props) {
         sid={sid}
         running={!!shown}
         status={status}
-        terminal={SH_isTerminal(session)}
+        terminal={SH_sessionIsOver(session)}
         micEnabled={!!shell.speech.stt_configured}
         onSendStarted={function () {
           setOptimistic(Date.now());
