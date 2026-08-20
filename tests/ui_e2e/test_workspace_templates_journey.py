@@ -95,7 +95,10 @@ def test_workspace_template_create_edit_delete_journey(
         expect(modal).not_to_be_visible(timeout=10_000)
         wait_for_overlay_url(page, f"workspaces/templates/{template_id}")
         # The description should appear in the page body (not just transient toast).
-        page_body = page.locator(".page-body")
+        # The overlay body is the successor to .page-body, and it is
+        # still the right scope: the toast stack renders at the
+        # shell root, outside it.
+        page_body = page.get_by_test_id("shell-overlay-body")
         expect(page_body.get_by_text("dev workspace v1", exact=False).first).to_be_visible(
             timeout=10_000
         )

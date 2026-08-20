@@ -136,7 +136,10 @@ def test_workspace_provider_create_detail_delete_journey(
         # Scope the assertion to the page body (table/empty state) to avoid
         # matching the transient "Provider deleted" toast which also renders
         # the provider id in its detail field.
-        page_body = page.locator(".page-body")
+        # The overlay body is the successor to .page-body, and it is
+        # still the right scope: the toast stack renders at the
+        # shell root, outside it.
+        page_body = page.get_by_test_id("shell-overlay-body")
         expect(
             page_body.get_by_text(provider_id, exact=True)
         ).to_have_count(0, timeout=5_000)
