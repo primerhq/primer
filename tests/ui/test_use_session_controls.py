@@ -2,12 +2,21 @@
 extracted into a single shared hook, window.useSessionControls, instead of
 being re-implemented in each caller.
 
-The hook has no caller today. S8 gave the shell ONE session-control verb,
-session.interrupt (S8 design section: the S1 surface the shell consumes is
-"session CRUD/steer/interrupt"), because steering or resuming a session IS
-sending it a message and a session ends when its turn ends. The hook stays
-in the tree as working, importable, fully-tested API rather than being
-deleted along with the panels that used to call it.
+The hook has no caller today. S8 gave the shell session.interrupt and
+almost nothing else (S8 design section: the S1 surface the shell consumes
+is "session CRUD/steer/interrupt"), because steering or resuming a session
+IS sending it a message: POST .../steer invokes a CREATED session, steers
+a running one, resumes a PAUSED one and reopens an ENDED one. That covers
+resume and restart, so neither got a control.
+
+It does not cover the hook's other two. Nothing you can type parks a
+session, and nothing you can type ends one, so session.pause and
+session.end are verbs in the shell registry, reaching the same live
+POST .../pause and POST .../cancel this hook wraps.
+
+The hook itself still has no caller and stays in the tree as working,
+importable, fully-tested API rather than being deleted along with the
+panels that used to call it.
 
 Guards that the hook exists, exports the four actions, is registered in
 index.html, and that the bundle transpiles with it.

@@ -133,35 +133,22 @@ var SH_api = {
         + encodeURIComponent(sid) + "/interrupt", {});
   },
 
-  // Pause parks a running session without discarding it; resume is the
-  // idempotent start-or-resume the backend has always served. Interrupt
-  // is the hard stop -- these two are the soft pair, and both endpoints
-  // are live, so the shell has to reach them.
+  // The two session controls the composer cannot express. Sending a
+  // message already covers the rest: POST .../steer invokes a CREATED
+  // session, steers a running one, RESUMES a paused one and reopens an
+  // ENDED one, which is why S8 gave the shell one send and one verb.
+  // Nothing you can type parks a session or ends it, so these two need
+  // a way in of their own.
   pause: function (wid, sid) {
     return window.primerApi.apiFetch(
       "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
         + encodeURIComponent(sid) + "/pause", {});
   },
 
-  resume: function (wid, sid) {
-    return window.primerApi.apiFetch(
-      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
-        + encodeURIComponent(sid) + "/resume", {});
-  },
-
-  // Interrupt stops the running turn and leaves the session alive.
-  // Cancel ends the session. Restart brings an ended one back. Three
-  // different endpoints doing three different things, all live.
   cancel: function (wid, sid) {
     return window.primerApi.apiFetch(
       "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
         + encodeURIComponent(sid) + "/cancel", {});
-  },
-
-  restart: function (wid, sid) {
-    return window.primerApi.apiFetch(
-      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
-        + encodeURIComponent(sid) + "/restart", {});
   },
 
   // S3 attach lifecycle. POST both attaches and heartbeats; DELETE

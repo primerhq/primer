@@ -234,11 +234,13 @@ function SH_SessionComposer(props) {
           </React.Fragment>
         ) : "idle"}
       </div>
-      {/* Pause parks the session; Resume is the idempotent start-or-resume.
-          Interrupt above is the hard stop. All three endpoints are live, so
-          the strip renders whatever the status is and disables rather than
-          hides: a control that vanishes teaches nothing, and the title says
-          why it cannot be pressed. */}
+      {/* Park and Close, the two things a message cannot say. Sending
+          already invokes a created session, steers a running one, resumes
+          a parked one and reopens an ended one, so there is no Resume and
+          no Restart here: the composer is both. Interrupt above stops the
+          turn in flight and leaves the session alive, which is not the
+          same as closing it. The strip renders at every status and
+          disables rather than hides, with a title saying why. */}
       <div className="sh-composer-signals" data-testid="shell-session-signals">
         <button
           type="button"
@@ -246,22 +248,9 @@ function SH_SessionComposer(props) {
           data-verb="session.pause"
           data-testid="ctrl-pause"
           disabled={props.status !== "running"}
-          title={props.status !== "running" ? "Enabled only when running" : "Pause this session"}
+          title={props.status !== "running" ? "Enabled only when running" : "Park this session"}
           onClick={function () { shell.registry.get("session.pause").run(); }}
-        >Pause</button>
-        <button
-          type="button"
-          className="sh-verb"
-          data-verb="session.resume"
-          data-testid="ctrl-resume"
-          disabled={props.status === "running"}
-          title={props.status === "running" ? "Already running" : "Start or resume this session"}
-          onClick={function () { shell.registry.get("session.resume").run(); }}
-        >Resume</button>
-        {/* End is not Interrupt: interrupt stops the turn in flight and
-            leaves the session alive, end closes the session. Restart is
-            the way back from a terminal one, which is the common case
-            now that a clean turn ends the session. */}
+        >Park</button>
         <button
           type="button"
           className="sh-verb"
@@ -270,16 +259,7 @@ function SH_SessionComposer(props) {
           disabled={props.terminal}
           title={props.terminal ? "This session has already ended" : "End this session"}
           onClick={function () { shell.registry.get("session.end").run(); }}
-        >End</button>
-        <button
-          type="button"
-          className="sh-verb"
-          data-verb="session.restart"
-          data-testid="ctrl-restart"
-          disabled={!props.terminal}
-          title={props.terminal ? "Restart this session" : "Enabled once the session has ended"}
-          onClick={function () { shell.registry.get("session.restart").run(); }}
-        >Restart</button>
+        >Close</button>
       </div>
       {slash ? (
         <div className="sh-composer-verbs">

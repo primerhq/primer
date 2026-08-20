@@ -194,9 +194,13 @@ function SH_registerCoreVerbs(shell) {
       if (tab && tab.kind === "session") SH_api.interrupt(shell.wid, tab.ref);
     },
   });
-  // The soft pair beside Interrupt. Both endpoints are live, so both
-  // need a way in; the active tab supplies the session, same as
-  // interrupt does.
+  // The two controls a message cannot express. POST .../steer already
+  // invokes a CREATED session, steers a running one, resumes a PAUSED
+  // one and reopens an ENDED one, so the composer is the resume and the
+  // restart; that is why S8 shipped one send and one verb. Nothing you
+  // can type parks a session or ends it, and both endpoints are live,
+  // so those two get verbs. The active tab supplies the session, same
+  // as interrupt does.
   function activeSessionRef() {
     var group = shell.docs.groups[shell.docs.activeGroup];
     for (var j = 0; group && j < group.tabs.length; j++) {
@@ -207,7 +211,7 @@ function SH_registerCoreVerbs(shell) {
     return null;
   }
   shell.registry.register({
-    id: "session.pause", label: "Pause Session",
+    id: "session.pause", label: "Park Session",
     contexts: ["session"], surfaces: ["tab-menu", "palette"],
     run: function () {
       var ref = activeSessionRef();
@@ -216,19 +220,9 @@ function SH_registerCoreVerbs(shell) {
       });
     },
   });
-  shell.registry.register({
-    id: "session.resume", label: "Resume Session",
-    contexts: ["session"], surfaces: ["tab-menu", "palette"],
-    run: function () {
-      var ref = activeSessionRef();
-      if (ref) SH_api.resume(shell.wid, ref).then(function () {
-        shell.sessions.refetch();
-      });
-    },
-  });
 
   shell.registry.register({
-    id: "session.end", label: "End Session", destructive: true,
+    id: "session.end", label: "Close Session", destructive: true,
     contexts: ["session"], surfaces: ["tab-menu", "palette"],
     run: function () {
       var ref = activeSessionRef();
@@ -238,18 +232,6 @@ function SH_registerCoreVerbs(shell) {
       });
     },
   });
-  shell.registry.register({
-    id: "session.restart", label: "Restart Session",
-    contexts: ["session"], surfaces: ["tab-menu", "palette"],
-    run: function () {
-      var ref = activeSessionRef();
-      if (ref) SH_api.restart(shell.wid, ref).then(function () {
-        shell.toast("Session restarted");
-        shell.sessions.refetch();
-      });
-    },
-  });
-
   for (var i = 0; i < SH_OVERLAYS.length; i++) {
     (function (name) {
       shell.registry.register({
