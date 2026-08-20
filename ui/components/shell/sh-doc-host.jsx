@@ -194,6 +194,39 @@ function SH_registerCoreVerbs(shell) {
       if (tab && tab.kind === "session") SH_api.interrupt(shell.wid, tab.ref);
     },
   });
+  // The soft pair beside Interrupt. Both endpoints are live, so both
+  // need a way in; the active tab supplies the session, same as
+  // interrupt does.
+  function activeSessionRef() {
+    var group = shell.docs.groups[shell.docs.activeGroup];
+    for (var j = 0; group && j < group.tabs.length; j++) {
+      if (group.tabs[j].id === group.activeId) {
+        return group.tabs[j].kind === "session" ? group.tabs[j].ref : null;
+      }
+    }
+    return null;
+  }
+  shell.registry.register({
+    id: "session.pause", label: "Pause Session",
+    contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    run: function () {
+      var ref = activeSessionRef();
+      if (ref) SH_api.pause(shell.wid, ref).then(function () {
+        shell.sessions.refetch();
+      });
+    },
+  });
+  shell.registry.register({
+    id: "session.resume", label: "Resume Session",
+    contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    run: function () {
+      var ref = activeSessionRef();
+      if (ref) SH_api.resume(shell.wid, ref).then(function () {
+        shell.sessions.refetch();
+      });
+    },
+  });
+
   for (var i = 0; i < SH_OVERLAYS.length; i++) {
     (function (name) {
       shell.registry.register({

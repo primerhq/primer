@@ -133,6 +133,22 @@ var SH_api = {
         + encodeURIComponent(sid) + "/interrupt", {});
   },
 
+  // Pause parks a running session without discarding it; resume is the
+  // idempotent start-or-resume the backend has always served. Interrupt
+  // is the hard stop -- these two are the soft pair, and both endpoints
+  // are live, so the shell has to reach them.
+  pause: function (wid, sid) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/pause", {});
+  },
+
+  resume: function (wid, sid) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/resume", {});
+  },
+
   // S3 attach lifecycle. POST both attaches and heartbeats; DELETE
   // detaches. One URL builder, so the two can never drift.
   attach: function (wid, sid, clientId) {

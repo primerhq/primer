@@ -234,6 +234,31 @@ function SH_SessionComposer(props) {
           </React.Fragment>
         ) : "idle"}
       </div>
+      {/* Pause parks the session; Resume is the idempotent start-or-resume.
+          Interrupt above is the hard stop. All three endpoints are live, so
+          the strip renders whatever the status is and disables rather than
+          hides: a control that vanishes teaches nothing, and the title says
+          why it cannot be pressed. */}
+      <div className="sh-composer-signals" data-testid="shell-session-signals">
+        <button
+          type="button"
+          className="sh-verb"
+          data-verb="session.pause"
+          data-testid="ctrl-pause"
+          disabled={props.status !== "running"}
+          title={props.status !== "running" ? "Enabled only when running" : "Pause this session"}
+          onClick={function () { shell.registry.get("session.pause").run(); }}
+        >Pause</button>
+        <button
+          type="button"
+          className="sh-verb"
+          data-verb="session.resume"
+          data-testid="ctrl-resume"
+          disabled={props.status === "running"}
+          title={props.status === "running" ? "Already running" : "Start or resume this session"}
+          onClick={function () { shell.registry.get("session.resume").run(); }}
+        >Resume</button>
+      </div>
       {slash ? (
         <div className="sh-composer-verbs">
           {shell.registry.forSurface("composer-slash").map(function (verb) {
