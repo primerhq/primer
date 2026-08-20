@@ -28,7 +28,10 @@ const PROVIDER_CLASSES = [
   { key: "workspace", label: "Workspaces", plural: "workspace_providers", form: "panel",
     panel: () => window.WorkspaceProvidersPage },
   { key: "channel", label: "Channels", plural: "channel_providers", form: "panel",
-    panel: () => window.ChannelProvidersPage },
+    panel: () => window.ChannelProvidersPage,
+    // A panel class can still have a detail view; without one the
+    // catalog can select an instance and then show the list again.
+    detail: () => window.ChannelProviderDetail },
 ];
 
 function PC_ClassRail({ classes, selected, onSelect }) {
@@ -494,8 +497,14 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   // behaviour a parameterised form would have to special-case anyway.
   let body;
   if (cls.form === "panel") {
+    const Detail = instanceId && cls.detail ? cls.detail() : null;
     const Panel = cls.panel();
-    body = Panel ? (
+    body = Detail ? (
+      <Detail
+        providerId={instanceId}
+        pushToast={window.primerApi && window.primerApi.toastPush}
+      />
+    ) : Panel ? (
       // These panels take the same two props their pages always took.
       // Mounted bare, onOpen was undefined, so creating a provider threw
       // on the call meant to open it and clicking a row did nothing at

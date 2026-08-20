@@ -151,7 +151,16 @@ def wait_for_overlay_url(page: Page, route: str, *,
     call site reads as what it is checking rather than as URL grammar.
     """
     target = overlay_target(route)
-    page.wait_for_url(f"**overlay={target}**", timeout=timeout)
+    try:
+        page.wait_for_url(f"**overlay={target}**", timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 - re-raised with the URL
+        # Playwright's timeout names the pattern but not what the URL
+        # actually is, which is the one thing needed to tell "the app
+        # navigated somewhere else" from "the app never navigated".
+        raise AssertionError(
+            f"never reached overlay={target!r} for route {route!r}.\n"
+            f"  current url: {page.url}"
+        ) from exc
 
 
 def open_legacy_route(page: Page, console_url: str, route: str,
