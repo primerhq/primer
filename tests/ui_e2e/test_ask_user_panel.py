@@ -2,10 +2,10 @@
 
 The Studio (PR-B) retired the session-detail ``AskUserPanel``. ask_user
 parks now surface in the Studio's RIGHT sidebar ``action-required`` list
-(the shell rail's attention list): one ``action-item`` per
+(the shell rail's attention list): one decision card per
 pending yield, driven by ``GET /v1/workspaces/{wid}/yields/pending``. An
 ``ask_user`` item renders a ``respond`` text input inside
-``action-ask-controls`` (Enter-to-send → POST
+``shell-decision-answer`` (Enter-to-send → POST
 ``/sessions/{sid}/ask_user/respond``).
 
 Strategy (unchanged in spirit): rather than drive a real agent through an
@@ -15,7 +15,7 @@ mutation, then drive the Studio's Action Required controls. The session +
 workspace rows are seeded via the REST API so the shell renders honestly.
 
 Covered backlog items (re-pointed to the Studio):
-* U0048 - ask_user park renders an action-item + respond control.
+* U0048 - ask_user park renders a decision card + answer control.
 * U0049 - Submitting a response POSTs /respond and the item clears.
 * U0051 - A server error on /respond renders inline (rs.error), not a toast.
 
@@ -32,7 +32,7 @@ import json
 import httpx
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import kind_text, expand_debug_sidebar, open_studio
+from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_studio
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def _ask_item(sid: str, *, tool_call_id: str = "tc-ui-1", prompt: str = "What is
 
 
 # ---------------------------------------------------------------------------
-# U0048 - ask_user park renders an action-item + respond control
+# U0048 - ask_user park renders a decision card + answer control
 # ---------------------------------------------------------------------------
 
 
@@ -172,8 +172,8 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
 ) -> None:
     """U0048 - With the workspace ``/yields/pending`` snapshot carrying an
     ``ask_user`` item, the Studio's RIGHT sidebar Action Required list
-    renders an ``action-item`` for it: the prompt text, the ``ask_user``
-    kind, and a ``respond`` input inside ``action-ask-controls``. Pins the
+    renders a decision card for it: the prompt text, the question
+    kind, and a ``shell-decision-answer`` input. Pins the
     render contract from the shell rail's attention list.
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
@@ -181,18 +181,20 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
         _route_pending_items(page, wid, [_ask_item(sid, prompt="What is your name?")])
         open_studio(page, console_url, wid)
         # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for action-item content.
+        # expand it before looking for the decision card.
         expand_debug_sidebar(page)
 
-        item = page.locator("[data-testid='action-item']").first
-        expect(item).to_be_visible(timeout=10_000)
-        expect(item).to_contain_text("What is your name?")
-        expect(item).to_contain_text(kind_text(page, "ask_user"))
-        # The ask_user variant renders a respond text input (Enter to send).
-        expect(item.locator("[data-testid='action-ask-controls']")).to_be_visible()
-        expect(item.locator("[data-testid='respond']")).to_be_visible()
-        # The count chip reflects the single pending action.
-        expect(page.locator("[data-testid='action-required-count']")).to_contain_text("1")
+        # One decision card per parked yield, keyed by tool_call_id. The
+        # old Studio's action-item/respond/action-required-count testids
+        # went with it; the shell renders this card in the rail and again
+        # inline in the transcript, from one component.
+        card = page.get_by_test_id("shell-decision:tc-ui-1")
+        expect(card).to_be_visible(timeout=10_000)
+        expect(card).to_contain_text("What is your name?")
+        expect(card).to_have_attribute("data-kind", "question")
+        expect(card.get_by_test_id("shell-decision-answer")).to_be_visible()
+        # The rail badge reflects the single pending item.
+        expect(page.get_by_test_id("rail-badge:attention")).to_contain_text("1")
     finally:
         _cleanup(base_url, cleanup_urls)
 
@@ -205,7 +207,7 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
 def test_u0049_ask_user_panel_submit_collapses_and_toasts(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0049 - Type a response into the action-item's ``respond`` input,
+    """U0049 - Type a response into the decision card's answer input,
     press Enter -> it POSTs ``/sessions/{sid}/ask_user/respond`` with the
     right body, and the item is optimistically removed from the list
     (ActionRequired ``hide()``); flipping the pending snapshot to empty
@@ -233,13 +235,13 @@ def test_u0049_ask_user_panel_submit_collapses_and_toasts(
 
         open_studio(page, console_url, wid)
         # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for action-item content.
+        # expand it before looking for the decision card.
         expand_debug_sidebar(page)
-        item = page.locator("[data-testid='action-item']").first
-        expect(item).to_be_visible(timeout=10_000)
+        card = page.get_by_test_id("shell-decision:tc-ui-1")
+        expect(card).to_be_visible(timeout=10_000)
 
-        # Fill the respond input + press Enter (the submit affordance).
-        respond = item.locator("[data-testid='respond']")
+        # Fill the answer input + press Enter (the submit affordance).
+        respond = card.get_by_test_id("shell-decision-answer")
         respond.fill("Alice")
         # Flip the snapshot to empty so the post-hide reconcile keeps it gone.
         page.unroute(f"**/v1/workspaces/{wid}/yields/pending")
@@ -247,7 +249,9 @@ def test_u0049_ask_user_panel_submit_collapses_and_toasts(
         respond.press("Enter")
 
         # The item is optimistically removed + the respond endpoint was hit.
-        expect(page.locator("[data-testid='action-item']")).to_have_count(0, timeout=8_000)
+        expect(page.get_by_test_id("shell-decision:tc-ui-1")).to_have_count(
+            0, timeout=8_000,
+        )
         assert len(respond_calls) >= 1, "respond endpoint was not called"
         body = json.loads(respond_calls[-1]["body"] or "{}")
         assert body.get("tool_call_id") == "tc-ui-1", body
@@ -276,7 +280,7 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
     """U0051 - When ``/ask_user/respond`` returns a 422, the Studio's
-    ActionRequired surfaces the failure INLINE on the action-item (the
+    The decision card surfaces the failure INLINE on the card (the
     per-item ``rs.error`` red line), NOT as a generic toast, and the item
     stays put so the operator can retry.
 
@@ -307,23 +311,25 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
 
         open_studio(page, console_url, wid)
         # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for action-item content.
+        # expand it before looking for the decision card.
         expand_debug_sidebar(page)
-        item = page.locator("[data-testid='action-item']").first
-        expect(item).to_be_visible(timeout=10_000)
+        card = page.get_by_test_id("shell-decision:tc-ui-1")
+        expect(card).to_be_visible(timeout=10_000)
 
-        respond = item.locator("[data-testid='respond']")
+        respond = card.get_by_test_id("shell-decision-answer")
         respond.fill("something")
         respond.press("Enter")
 
         # Inline error text renders on the item; the friendly 422 summary the
         # API client builds surfaces (ui/foundation/api.js
         # ``_friendlyValidationDetail``). It is inline, not a toast.
-        expect(item).to_contain_text("required fields are missing or invalid", timeout=5_000)
-        assert page.locator(".toast").filter(has_text="required fields").count() == 0, (
-            "422 should render inline on the action-item, not as a toast"
+        expect(card).to_contain_text(
+            "required fields are missing or invalid", timeout=5_000,
         )
-        # The item stays put so the operator can retry.
-        expect(item).to_be_visible()
+        assert page.locator(".toast").filter(has_text="required fields").count() == 0, (
+            "422 should render inline on the decision card, not as a toast"
+        )
+        # The card stays put so the operator can retry.
+        expect(card).to_be_visible()
     finally:
         _cleanup(base_url, cleanup_urls)

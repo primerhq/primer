@@ -22,15 +22,22 @@ function SH_DecisionCard(props) {
   var busyState = React.useState(false);
   var busy = busyState[0];
   var setBusy = busyState[1];
+  var errState = React.useState(null);
+  var err = errState[0];
+  var setErr = errState[1];
 
   function settle(promise) {
     setBusy(true);
+    setErr(null);
     return promise.then(function () {
       setBusy(false);
       if (props.onResolved) props.onResolved(item);
-    }).catch(function (err) {
+    }).catch(function (e) {
       setBusy(false);
-      shell.toast("Decision failed: " + (err && err.message ? err.message : err));
+      // Inline, on the card, not a toast: this is the control the
+      // operator has to correct and retry with, and a toast slides away
+      // from it. The card stays put so the retry is where the error is.
+      setErr((e && (e.detail || e.message)) || String(e));
     });
   }
 
@@ -43,11 +50,24 @@ function SH_DecisionCard(props) {
         {item.preview}
       </pre>
 
+      {err ? (
+        <div className="sh-decision-error" data-testid="shell-decision-error">
+          {err}
+        </div>
+      ) : null}
+
       {item.kind === "question" ? (
         <div className="sh-decision-actions">
           <input type="text" data-testid="shell-decision-answer"
             value={answer} placeholder="Your answer"
-            onChange={function (ev) { setAnswer(ev.target.value); }} />
+            onChange={function (ev) { setAnswer(ev.target.value); }}
+            onKeyDown={function (ev) {
+              // Enter sends, so answering never requires leaving the
+              // keyboard for the button beside it.
+              if (ev.key === "Enter" && !busy) {
+                settle(SH_api.answer(item.sessionId, item.toolCallId, answer));
+              }
+            }} />
           <button type="button" className="sh-verb" disabled={busy}
             onClick={function () {
               settle(SH_api.answer(item.sessionId, item.toolCallId, answer));
