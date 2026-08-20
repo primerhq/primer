@@ -47,9 +47,19 @@ function SH_previewOf(meta) {
   return "";
 }
 
+// GET /workspaces/{wid}/yields/pending answers rows of
+// {session_id, kind, prompt, tool_call_id, parked_at}. This file was
+// reading tool_name / resume_metadata / yielded_at, which that route
+// has never sent: every parked question came through as a nameless
+// "approval", so the rail could not tell a question from a tool call
+// and never offered the operator a way to answer one.
+function SH_yieldKind(row) {
+  return (row && (row.kind || row.tool_name)) || "";
+}
+
 function SH_titleOf(row) {
-  var call = (row.resume_metadata || {}).original_call || {};
-  if (row.tool_name === "ask_user") return "Question";
+  var call = ((row && row.resume_metadata) || {}).original_call || {};
+  if (SH_yieldKind(row) === "ask_user") return "Question";
   return call.name ? "Approve " + call.name : "Approve tool call";
 }
 
@@ -64,11 +74,13 @@ function SH_toAttentionItems(input) {
       id: "pending:" + row.tool_call_id,
       sessionId: row.session_id,
       toolCallId: row.tool_call_id,
-      toolName: row.tool_name,
-      kind: row.tool_name === "ask_user" ? "question" : "approval",
+      toolName: SH_yieldKind(row),
+      kind: SH_yieldKind(row) === "ask_user" ? "question" : "approval",
       title: SH_titleOf(row),
-      preview: SH_previewOf(row.resume_metadata),
-      at: row.yielded_at,
+      // The route sends the human-facing text as ``prompt``; the older
+      // resume_metadata blob is still read when one is present.
+      preview: SH_previewOf(row.resume_metadata || { prompt: row.prompt }),
+      at: row.parked_at || row.yielded_at,
       resolved: false,
     };
     item.tier = SH_tierFor(item);
@@ -134,6 +146,7 @@ function SH_applyTriage(items, triage, nowMs) {
 
 window.SH_TIERS = SH_TIERS;
 window.SH_tierFor = SH_tierFor;
+window.SH_yieldKind = SH_yieldKind;
 window.SH_toAttentionItems = SH_toAttentionItems;
 window.SH_approvedByMap = SH_approvedByMap;
 window.SH_emptyTriage = SH_emptyTriage;

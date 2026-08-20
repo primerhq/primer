@@ -114,3 +114,61 @@ def test_approved_by_map_is_keyed_on_the_tool_call_id() -> None:
 def test_the_triage_key_is_per_account() -> None:
     ctx = _ctx()
     assert ctx.eval('SH_triageKey("usman")') == "primer.shell.triage:usman"
+
+
+def test_a_parked_question_in_the_ROUTE_shape_is_a_question() -> None:
+    """The shape GET /workspaces/{wid}/yields/pending actually sends.
+
+    That route answers rows of ``{session_id, kind, prompt,
+    tool_call_id, parked_at}``. This module read ``tool_name``,
+    ``resume_metadata`` and ``yielded_at`` instead -- none of which it
+    sends -- so every parked question arrived as a nameless "approval"
+    and the rail never offered a way to answer one.
+
+    The fixture next door carries the older envelope shape on purpose,
+    which is why it did not catch this: it is not the route's contract.
+    """
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toAttentionItems({
+          pending: [{
+            session_id: "sess-1",
+            kind: "ask_user",
+            prompt: "What is your name?",
+            tool_call_id: "tc-1",
+            parked_at: "2026-08-20T09:00:00+00:00"
+          }],
+          records: []
+        }))
+        """
+    ))
+    assert len(out) == 1, out
+    item = out[0]
+    assert item["kind"] == "question", item
+    assert item["title"] == "Question", item
+    assert item["preview"] == "What is your name?", item
+    assert item["at"] == "2026-08-20T09:00:00+00:00", item
+    # A parked decision is an interrupt, not ambient: it is the tier that
+    # puts the row in front of the operator.
+    assert item["tier"] == "interrupt", item
+
+
+def test_an_approval_park_in_the_route_shape_still_reads_as_approval() -> None:
+    ctx = _ctx()
+    out = json.loads(ctx.eval(
+        """
+        JSON.stringify(SH_toAttentionItems({
+          pending: [{
+            session_id: "sess-2",
+            kind: "ask_approval",
+            prompt: "run rm -rf /tmp/x",
+            tool_call_id: "tc-2",
+            parked_at: "2026-08-20T09:01:00+00:00"
+          }],
+          records: []
+        }))
+        """
+    ))
+    assert out[0]["kind"] == "approval", out
+    assert out[0]["tier"] == "interrupt", out
