@@ -119,10 +119,19 @@ function SH_buildUrl(state) {
   if (s.overlay && s.overlay.name
       && SH_indexOfIn(SH_OVERLAYS, s.overlay.name) >= 0) {
     var ov = s.overlay.name;
+    // The id used to be written only INSIDE the section branch, so an
+    // overlay carrying a record but no tab -- which is every plain
+    // detail view -- serialised as bare "overlay=agents" and lost the
+    // record. Reloading such a URL landed back on the list, and a deep
+    // link to a record was impossible unless it happened to have a tab.
+    // The parser already reads an empty middle slot, so an id with no
+    // section writes one.
     if (s.overlay.section) {
       ov += ":" + SH_encodeRef(s.overlay.section);
-      if (s.overlay.id) ov += ":" + SH_encodeRef(s.overlay.id);
+    } else if (s.overlay.id) {
+      ov += ":";
     }
+    if (s.overlay.id) ov += ":" + SH_encodeRef(s.overlay.id);
     query.push("overlay=" + ov);
   }
   if (query.length) url += "?" + query.join("&");

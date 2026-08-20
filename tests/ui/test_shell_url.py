@@ -67,6 +67,37 @@ def test_file_refs_keep_their_slashes_and_survive_the_round_trip() -> None:
     assert back["anchor"] == "L10-L30"
 
 
+def test_a_record_without_a_tab_survives_the_url() -> None:
+    """A plain detail view has to be deep-linkable.
+
+    The id was written only inside the section branch, so an overlay
+    carrying a record but no tab -- every plain detail view -- came out
+    as bare "overlay=agents" and lost the record. Reloading landed back
+    on the list, and there was no way to link to a record unless it
+    happened to have a tab.
+    """
+    ctx = _ctx()
+    url = ctx.eval(
+        'SH_buildUrl({wid: "ws-1", overlay: {name: "agents", id: "ag-42"}})'
+    )
+    assert url == "#/w/ws-1?overlay=agents::ag-42"
+    back = json.loads(ctx.eval(f"JSON.stringify(SH_parseUrl({json.dumps(url)}))"))
+    assert back["overlay"] == {"name": "agents", "section": None, "id": "ag-42"}
+
+    # A tab still occupies the middle slot, record after it.
+    tabbed = ctx.eval(
+        'SH_buildUrl({wid: "ws-1", overlay: {name: "agents",'
+        ' section: "tools", id: "ag-42"}})'
+    )
+    assert tabbed == "#/w/ws-1?overlay=agents:tools:ag-42"
+
+    # And a bare list overlay still carries no slots at all.
+    listing = ctx.eval(
+        'SH_buildUrl({wid: "ws-1", overlay: {name: "agents"}})'
+    )
+    assert listing == "#/w/ws-1?overlay=agents"
+
+
 def test_hostile_refs_are_encoded_not_lost() -> None:
     ctx = _ctx()
     url = ctx.eval(
