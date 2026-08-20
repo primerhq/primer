@@ -97,7 +97,7 @@ function SH_Shell(props) {
     // So: when the url names a workspace the shell has not adopted yet,
     // it is ahead, not wrong. Leave it alone and let the reconciliation
     // finish; the next run writes the settled state.
-    if (SH_urlIsAhead(SH_readUrl(), wid)) return;
+    if (SH_urlIsAhead(SH_readUrl(), wid, active)) return;
     var url = SH_buildUrl({
       wid: wid,
       doc: active ? { kind: active.kind, ref: active.ref } : null,
