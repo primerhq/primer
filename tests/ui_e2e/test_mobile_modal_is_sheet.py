@@ -1,6 +1,12 @@
 """On a 375x812 viewport, a Modal renders as a .sheet-overlay (bottom
 sheet), not as a .modal-overlay (centered dialog). Tap-outside and ESC
-close it."""
+close it.
+
+Driven from the AGENTS surface. These opened the provider catalog and
+tapped its FAB, but the catalog creates through an inline form rather
+than a modal and so has no FAB to tap: the per-class pages that did are
+what it replaced. Agents still creates through a modal, which is the
+thing under test here -- the surface is only the way in."""
 from __future__ import annotations
 import pytest
 
@@ -16,7 +22,7 @@ pytestmark = smk("SMK-UI-01", status="partial")
 @pytest.mark.ui_e2e
 def test_mobile_modal_renders_as_sheet(page: Page, console_url: str) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    open_legacy_route(page, console_url, "providers/llm")
+    open_legacy_route(page, console_url, "agents")
     page.wait_for_load_state("domcontentloaded")
     page.locator(".fab").first.click()
     expect(page.locator(".sheet-overlay")).to_be_visible()
@@ -27,7 +33,7 @@ def test_mobile_modal_renders_as_sheet(page: Page, console_url: str) -> None:
 @pytest.mark.ui_e2e
 def test_mobile_modal_esc_closes(page: Page, console_url: str) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    open_legacy_route(page, console_url, "providers/llm")
+    open_legacy_route(page, console_url, "agents")
     page.wait_for_load_state("domcontentloaded")
     page.locator(".fab").first.click()
     expect(page.locator(".sheet-overlay")).to_be_visible()
@@ -38,7 +44,7 @@ def test_mobile_modal_esc_closes(page: Page, console_url: str) -> None:
 @pytest.mark.ui_e2e
 def test_mobile_modal_tap_backdrop_closes(page: Page, console_url: str) -> None:
     page.set_viewport_size({"width": 375, "height": 812})
-    open_legacy_route(page, console_url, "providers/llm")
+    open_legacy_route(page, console_url, "agents")
     page.wait_for_load_state("domcontentloaded")
     page.locator(".fab").first.click()
     expect(page.locator(".sheet-overlay")).to_be_visible()

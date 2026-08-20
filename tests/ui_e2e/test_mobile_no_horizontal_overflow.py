@@ -1,6 +1,6 @@
 """No console page may scroll the DOCUMENT sideways on a phone.
 
-Regression: `.topbar` and `.main` are grid items, so both defaulted to
+Regression: the topbar and `.main` are grid items, so both defaulted to
 `min-width: auto`, which floors an item at its min-content width. The
 topbar's min-content is ~410px (brand + hamburger + the status cluster,
 whose worker pill alone was 182px and could not shrink), so on any
@@ -61,7 +61,7 @@ def _overflow(page: Page) -> dict:
             scrollWidth: de.scrollWidth,
             // The shell itself must never be a culprit.
             topbar: (() => {
-              const e = document.querySelector('.topbar');
+              const e = document.querySelector('.sh-topbar');
               return e ? Math.round(e.getBoundingClientRect().width) : null;
             })(),
             widest: widest.slice(0, 3),
