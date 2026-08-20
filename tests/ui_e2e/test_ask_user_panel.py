@@ -153,6 +153,11 @@ def _route_pending_items(page, wid: str, items: list[dict]) -> list[str]:
     moment anything appends a query string.
     """
     seen: list[str] = []
+    # Every request the page makes, so a miss can say what WAS asked for
+    # rather than only that the pattern matched nothing.
+    asked: list[str] = []
+    page.on("request", lambda req: asked.append(req.url))
+    _ASKED[id(page)] = asked
 
     def _handler(route):
         seen.append(route.request.url)
@@ -166,6 +171,9 @@ def _route_pending_items(page, wid: str, items: list[dict]) -> list[str]:
     return seen
 
 
+_ASKED: dict = {}
+
+
 def _assert_polled(page, polled: list[str], *, timeout_ms: int = 10_000) -> None:
     """Wait until the shell has actually asked for the pending yields.
 
@@ -177,11 +185,16 @@ def _assert_polled(page, polled: list[str], *, timeout_ms: int = 10_000) -> None
     while not polled and waited < timeout_ms:
         page.wait_for_timeout(250)
         waited += 250
-    assert polled, (
-        "the shell never requested the workspace's pending yields, so the "
-        "mock matched nothing: everything below would be comparing an "
-        "empty list against an empty list"
-    )
+    if not polled:
+        asked = _ASKED.get(id(page), [])
+        near = [u for u in asked if "yields" in u or "workspaces" in u]
+        raise AssertionError(
+            "the shell never requested the workspace's pending yields, so "
+            "the mock matched nothing: everything below would be comparing "
+            "an empty list against an empty list.\n"
+            f"workspace-ish requests the page DID make ({len(asked)} total): "
+            + "\n  ".join([""] + near[:25])
+        )
 
 
 def _ask_item(sid: str, *, tool_call_id: str = "tc-ui-1", prompt: str = "What is your name?") -> dict:
