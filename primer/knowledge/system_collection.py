@@ -9,6 +9,7 @@ collection.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from primer.ai_docs_path import resolve_ai_docs_dir
@@ -19,7 +20,7 @@ from primer.knowledge.indexing import (
 )
 from primer.knowledge.tree import DocumentTreeService
 from primer.model.agent import Agent
-from primer.model.collection import Collection
+from primer.model.collection import Collection, Document
 from primer.model.except_ import NotFoundError, PrimerError
 from primer.model.graph import Graph
 from primer.model.storage import OffsetPage
@@ -493,6 +494,46 @@ async def regenerate_system_collection(
     return written
 
 
+# Background index tasks, held so the event loop does not garbage-collect
+# a task nobody is awaiting.
+_INDEX_TASKS: set[asyncio.Task] = set()
+
+
+def _deferred(indexer):
+    """Run an index-on-write hook off the caller's critical path.
+
+    The page write itself must stay synchronous: a CRUD create is
+    expected to leave the entity's page readable the moment it returns.
+    Embedding that page is a different matter. It calls out to the
+    embedding provider, which on a cold container also downloads the
+    model, and doing that inline put a network round trip inside every
+    agent, graph and collection write. Five concurrent creates against a
+    bootstrap that is already regenerating the collection then queue
+    behind each other and the client times out before any of them
+    answer.
+
+    Deferring only the embed keeps the page immediate and lets search
+    catch up a moment later, which is what searchability has always
+    been: index_document is best-effort and a document is simply not
+    findable until something indexes it.
+    """
+
+    async def _run(*, document: Document, content: str) -> None:
+        try:
+            await indexer(document=document, content=content)
+        except Exception:
+            logger.exception(
+                "deferred index failed for %s", getattr(document, "path", "?"),
+            )
+
+    async def _schedule(*, document: Document, content: str) -> None:
+        task = asyncio.create_task(_run(document=document, content=content))
+        _INDEX_TASKS.add(task)
+        task.add_done_callback(_INDEX_TASKS.discard)
+
+    return _schedule
+
+
 async def converge_entity(
     storage_provider, *, entity_type: str, entity_id: str,
     provider_registry=None, semantic_search_registry=None,
@@ -532,11 +573,11 @@ async def converge_entity(
                 semantic_search_registry=semantic_search_registry,
             )
             if provider_registry is not None:
-                indexer = make_document_indexer(
+                indexer = _deferred(make_document_indexer(
                     storage_provider=storage_provider,
                     provider_registry=provider_registry,
                     semantic_search_registry=semantic_search_registry,
-                )
+                ))
         tree = DocumentTreeService(
             storage_provider, indexer=indexer, unindexer=unindexer,
         )

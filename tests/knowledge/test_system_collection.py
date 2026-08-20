@@ -195,3 +195,60 @@ async def test_entity_write_converges_and_indexes_that_entity(sp):
     with pytest.raises(NotFoundError):
         await tree.read(collection_id=SYSTEM_COLLECTION_ID,
                         path="agents/agent-new")
+
+
+async def test_the_index_hook_is_deferred_off_the_write() -> None:
+    """The page write stays synchronous; embedding it does not.
+
+    A CRUD create is expected to leave the entity's page readable the
+    moment it returns, and a test pins exactly that. Embedding the page
+    is a different matter: it calls the embedding provider, which on a
+    cold container also downloads the model, so awaiting it inline put a
+    network round trip inside every agent, graph and collection write.
+    Five concurrent creates racing a bootstrap then queued behind each
+    other until the client gave up.
+    """
+    import asyncio
+
+    from primer.knowledge.system_collection import _deferred
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    finished = []
+
+    async def slow_indexer(*, document, content):
+        started.set()
+        await release.wait()
+        finished.append(document)
+
+    schedule = _deferred(slow_indexer)
+
+    # The caller returns without waiting for the indexer to finish.
+    await asyncio.wait_for(
+        schedule(document="doc", content="body"), timeout=1.0,
+    )
+    assert finished == [], "the write waited for the embed"
+
+    # ...and the indexer still runs.
+    await asyncio.wait_for(started.wait(), timeout=1.0)
+    release.set()
+    for _ in range(50):
+        if finished:
+            break
+        await asyncio.sleep(0.01)
+    assert finished == ["doc"], "the deferred index never ran"
+
+
+async def test_a_failing_deferred_index_does_not_escape() -> None:
+    """Searchability is best-effort; a write must not fail behind it."""
+    import asyncio
+
+    from primer.knowledge.system_collection import _deferred
+
+    async def broken(*, document, content):
+        raise RuntimeError("embedder down")
+
+    await _deferred(broken)(document="doc", content="body")
+    # Let the task run and be collected; nothing may propagate.
+    for _ in range(20):
+        await asyncio.sleep(0.01)
