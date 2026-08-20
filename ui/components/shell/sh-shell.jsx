@@ -356,7 +356,13 @@ function SH_RootGate() {
     if (!items.length) return <div className="sh-boot" data-testid="shell-boot" />;
     wid = items[0].id;
   }
-  return <SH_Shell wid={wid} />;
+  // Keyed by workspace: everything the shell holds -- open documents,
+  // tabs, the overlay -- is scoped to ONE workspace, so switching to
+  // another has to start a fresh instance that reads its state from the
+  // URL again. Without the key React keeps the old instance and its
+  // tabs, and the shell then asks the new workspace for the previous
+  // one's sessions, which 404.
+  return <SH_Shell key={wid} wid={wid} />;
 }
 
 window.SH_ShellContext = SH_ShellContext;

@@ -112,3 +112,4 @@ def test_the_gate_can_actually_see_an_offender() -> None:
         and not re.search(r"(?:const|let|var)\s+caps\b", body)
     ]
     assert hits == ["Modal"], hits
+

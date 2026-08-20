@@ -264,6 +264,9 @@ function SH_AttentionList() {
     <section className="sh-rail-list" data-testid="rail-attention">
       <h3>
         Attention
+        {/* Distinct from rail-head-badge:<name> on the collapsed section
+            head: both render a count for the same list, and sharing one
+            testid made every targeted lookup ambiguous. */}
         <span className="sh-rail-badge" data-testid="rail-badge:attention">
           {interrupts.length + ambient.length}
         </span>
@@ -365,7 +368,8 @@ function SH_Rail() {
             >
               {name}
               {counts[name] ? (
-                <span className="sh-badge" data-testid={"rail-badge:" + name}>
+                <span className="sh-badge"
+                  data-testid={"rail-head-badge:" + name}>
                   {prefs.badgeStyle === "dot" ? "" : counts[name]}
                 </span>
               ) : null}

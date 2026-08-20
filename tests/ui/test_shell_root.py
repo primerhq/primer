@@ -88,6 +88,13 @@ def test_the_gate_that_picks_the_workspace_follows_the_url() -> None:
         "boot is the only one it will ever show"
     )
     assert "popstate" in gate, "Back must move the shell too"
+    # A different workspace is a different shell: its open documents and
+    # tabs are workspace-scoped, so carrying them across a switch makes
+    # the shell ask the new workspace for the old one's sessions.
+    assert "key={wid}" in gate, (
+        "SH_Shell must be keyed by workspace so a switch starts a fresh "
+        "instance rather than carrying the previous workspace's tabs"
+    )
 
 
 def test_no_router_dependency() -> None:
