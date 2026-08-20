@@ -123,3 +123,41 @@ def test_bundle_transpiles_every_shell_file() -> None:
         assert f"/* === components/shell/{f.name} === */" in text, (
             f"{f.name} missing from the bundle; is its index.html script tag there?"
         )
+
+
+# ---------------------------------------------------------------------------
+# Landing must not act for a workspace the shell has already left.
+# ---------------------------------------------------------------------------
+
+
+def test_the_lazy_create_is_dropped_if_the_workspace_changed() -> None:
+    """Regression: a deep-linked session tab never appeared.
+
+    Landing on an empty workspace starts a createSession round trip. The
+    shell does not stand still while it runs: following a url to a
+    document in another workspace resolved the promise after the move and
+    pinned the abandoned workspace's session over the tab the url had
+    just opened. The rail showed the workspace you asked for and the
+    center showed a session that does not belong to it, so the tab named
+    in the url was never there.
+    """
+    src = _src()
+    create = src[src.index("SH_api.createSession(wid, {})"):]
+    create = create[:create.index("});")]
+    assert "widRef.current !== startedForWid" in create, (
+        "the create must be dropped when the shell has left the workspace "
+        "it was started for"
+    )
+    assert "SH_readUrl().doc" in create, (
+        "and dropped when the url has since named a document of its own"
+    )
+    assert "var startedForWid = wid;" in src
+
+
+def test_landing_ignores_session_rows_from_another_workspace() -> None:
+    """The sessions snapshot outlives the render that changes workspace."""
+    src = _src()
+    assert re.search(
+        r"items\[0\]\.workspace_id\s*\n?\s*&&\s*items\[0\]\.workspace_id\s*!==\s*wid",
+        src,
+    ), "landing must wait for the refetch rather than open a foreign session"

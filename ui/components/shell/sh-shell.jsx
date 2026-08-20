@@ -128,6 +128,10 @@ function SH_Shell(props) {
   // just navigated to and the one its own sync effect is about to write,
   // so it could land on the intermediate URL and lose the overlay that
   // was being opened.
+  // Which workspace the shell is in RIGHT NOW, for callbacks that
+  // outlive the render that started them.
+  var widRef = React.useRef(wid);
+  widRef.current = wid;
   var lastWidRef = React.useRef(wid);
   React.useEffect(function () {
     if (lastWidRef.current === wid) return;
@@ -163,6 +167,15 @@ function SH_Shell(props) {
     if (parsed.doc) { landedRef.current = true; return; }
     var items = (sessions.data && sessions.data.items) || null;
     if (!items) return;
+    // The sessions resource is keyed on the workspace, but its snapshot
+    // survives the render on which the workspace changes: for that one
+    // render the shell is in the new workspace holding the old one's
+    // rows. Landing on them opens a session that is not in this
+    // workspace, which then 404s on every poll. Wait for the refetch.
+    if (items.length && items[0].workspace_id
+        && items[0].workspace_id !== wid) {
+      return;
+    }
     landedRef.current = true;
     if (items.length) {
       var newest = items.slice().sort(function (a, b) {
@@ -181,9 +194,25 @@ function SH_Shell(props) {
     }
     // Lazy creation: an empty workspace opens on a fresh session bound to
     // the system default agent (S1 spec section 8).
+    //
+    // The create is a round trip, and the shell does not stand still
+    // while it runs. Landing on an empty workspace and then following a
+    // url to a document in ANOTHER workspace resolved this promise after
+    // the move and pinned the abandoned workspace's session over the tab
+    // the url had just opened: the rail showed the workspace you asked
+    // for and the center showed a session that does not belong to it.
+    // A deep link to a session was the common way to hit it, so the tab
+    // it names simply never appeared.
+    //
+    // The workspace this was started for is therefore captured, and the
+    // answer is dropped if the shell has moved on or if the url has since
+    // named a document of its own.
+    var startedForWid = wid;
     SH_api.createSession(wid, {}).then(function (row) {
       var sid = row && (row.session_id || row.id);
       if (!sid) return;
+      if (widRef.current !== startedForWid) return;
+      if (SH_readUrl().doc) return;
       sessions.refetch();
       setDocs(function (s) {
         return SH_pinDoc(
