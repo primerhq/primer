@@ -88,8 +88,9 @@ def test_u0045_toolset_tools_tab_deep_link_survives_reload(
             f"Tools tab lost selected state after reload; "
             f"aria-selected={tools_tab_after.get_attribute('aria-selected')!r}"
         )
-        assert "tab=tools" in page.url, (
-            f"reload dropped ?tab=tools query: {page.url}"
+        # The tab travels in the overlay target's section slot now.
+        assert f"overlay=toolsets:tools:{toolset_id}" in page.url, (
+            f"reload dropped the tools tab: {page.url}"
         )
 
         # Defence: the page didn't blank out — either tools table or

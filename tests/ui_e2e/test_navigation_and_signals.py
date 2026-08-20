@@ -152,8 +152,9 @@ def test_u0036_toolset_config_tab_deep_link_survives_reload(
             f"Config tab lost selected state after reload; "
             f"aria-selected={config_tab_after.get_attribute('aria-selected')!r}"
         )
-        assert "tab=config" in page.url, (
-            f"reload dropped ?tab=config query: {page.url}"
+        # The tab travels in the overlay target's section slot now.
+        assert f"overlay=toolsets:config:{toolset_id}" in page.url, (
+            f"reload dropped the config tab: {page.url}"
         )
     finally:
         _cleanup(base_url, [f"/v1/toolsets/{toolset_id}"])

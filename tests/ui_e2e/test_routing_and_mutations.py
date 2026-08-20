@@ -219,9 +219,10 @@ def test_u0033_agent_config_tab_deep_link_survives_reload(
             f"aria-selected={config_tab_after.get_attribute('aria-selected')!r}"
         )
 
-        # Defence: URL still has ?tab=config.
-        assert "tab=config" in page.url, (
-            f"reload dropped ?tab=config query: {page.url}"
+        # Defence: the tab travels in the overlay target's section
+        # slot now, not as a ?tab= query.
+        assert f"overlay=agents:config:{agent_id}" in page.url, (
+            f"reload dropped the config tab: {page.url}"
         )
     finally:
         _cleanup(base_url, [

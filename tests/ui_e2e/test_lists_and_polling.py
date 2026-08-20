@@ -115,9 +115,12 @@ def test_u0034_agent_metadata_tab_deep_link_survives_reload(
             f"aria-selected={metadata_tab_after.get_attribute('aria-selected')!r}"
         )
 
-        # Defence: URL still has ?tab=metadata.
-        assert "tab=metadata" in page.url, (
-            f"reload dropped ?tab=metadata query: {page.url}"
+        # Defence: the URL still carries the tab. The shell states it
+        # in the overlay target's section slot rather than as a ?tab=
+        # query, which is the same deep link in the one grammar the URL
+        # now has.
+        assert f"overlay=agents:metadata:{agent_id}" in page.url, (
+            f"reload dropped the metadata tab: {page.url}"
         )
     finally:
         _cleanup(base_url, [
