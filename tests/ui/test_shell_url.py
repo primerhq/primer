@@ -223,9 +223,9 @@ def test_a_url_naming_another_workspace_is_ahead_not_wrong() -> None:
         var ahead = SH_urlIsAhead(SH_parseUrl("#/w/ws-target?doc=session:s1"),
                                   "ws-previous");
         var settled = SH_urlIsAhead(SH_parseUrl("#/w/ws-target?doc=session:s1"),
-                                    "ws-target", {id: "session:s1"});
-        var noWid = SH_urlIsAhead(SH_parseUrl("#/?overlay=agents"), "primer", null);
-        var nothing = SH_urlIsAhead(null, "primer", null);
+                                    "ws-target");
+        var noWid = SH_urlIsAhead(SH_parseUrl("#/?overlay=agents"), "primer");
+        var nothing = SH_urlIsAhead(null, "primer");
         """
     )
     assert ctx.eval("ahead") is True
@@ -236,37 +236,8 @@ def test_a_url_naming_another_workspace_is_ahead_not_wrong() -> None:
     assert ctx.eval("nothing") is False
 
 
-
-
-def test_a_url_naming_an_unopened_document_is_also_ahead() -> None:
-    """The same race one step later.
-
-    Once the workspace matches, the url still names a document the shell
-    has not opened: the listener that applies it and the effect that
-    writes the url are different turns. Writing there erased
-    "?doc=session:<id>" from the address, and the landing rule reads that
-    address to decide whether it has anywhere to go, so it concluded the
-    workspace was empty and lazily created a session. That session is the
-    tab that showed instead of the one asked for.
-    """
-    ctx = _ctx()
-    ctx.eval(
-        """
-        var u = SH_parseUrl("#/w/ws-1?doc=session:s1");
-        var unopened = SH_urlIsAhead(u, "ws-1", null);
-        var opened = SH_urlIsAhead(u, "ws-1", { id: "session:s1" });
-        var noDoc = SH_urlIsAhead(SH_parseUrl("#/w/ws-1"), "ws-1", null);
-        """
-    )
-    assert ctx.eval("unopened") is True
-    assert ctx.eval("opened") is False
-    # A url naming no document cannot be ahead about one, so closing the
-    # last tab still writes through.
-    assert ctx.eval("noDoc") is False
-
-
-def test_the_sync_effect_passes_the_active_document() -> None:
+def test_the_sync_effect_actually_consults_that_rule() -> None:
     shell = (ROOT / "ui" / "components" / "shell" / "sh-shell.jsx").read_text(
         encoding="utf-8",
     )
-    assert "SH_urlIsAhead(SH_readUrl(), wid, active)" in shell
+    assert "SH_urlIsAhead(SH_readUrl(), wid)" in shell

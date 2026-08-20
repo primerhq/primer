@@ -169,19 +169,8 @@ function SH_parseAnchor(anchor) {
 // writes the url from that mixture overwrites the address still being
 // navigated to. When the url names a workspace the shell has not adopted
 // yet it is ahead, not wrong, and nothing may write over it.
-function SH_urlIsAhead(parsed, wid, activeDoc) {
-  if (!parsed) return false;
-  if (parsed.wid && parsed.wid !== wid) return true;
-  // The same race one step later. Once the workspace matches, the url
-  // still names a DOCUMENT that the shell has not opened yet: the
-  // listener that applies it and the effect that writes the url are
-  // different turns. Writing here erased "?doc=session:<id>" from the
-  // address, and the landing rule reads that address to decide whether
-  // it has anywhere to go -- so it concluded the workspace was empty and
-  // lazily created a session, which is the tab that then showed instead
-  // of the one asked for.
-  if (parsed.doc && parsed.doc.ref && !activeDoc) return true;
-  return false;
+function SH_urlIsAhead(parsed, wid) {
+  return !!(parsed && parsed.wid && parsed.wid !== wid);
 }
 
 window.SH_urlIsAhead = SH_urlIsAhead;

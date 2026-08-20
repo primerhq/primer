@@ -20,22 +20,7 @@ function SH_readUrl() {
 function SH_Shell(props) {
   var wid = props.wid;
   var initial = SH_readUrl();
-  // The overlay and the anchor were seeded from the url here; the
-  // DOCUMENT was not, and nothing else opens it on a first render. The
-  // hashchange listener needs a hash change after mount and the
-  // workspace effect needs the workspace to change after mount, so a
-  // shell that mounts already pointed at "#/w/<wid>?doc=session:<id>"
-  // opened no document at all: on a fresh load, and on any remount, the
-  // address named a session the shell then ignored. The landing rule
-  // went on to decide the workspace was empty and made a session of its
-  // own, which is the tab that appeared instead.
-  var docsState = React.useState(function () {
-    var empty = SH_emptyDocState();
-    if (!initial.doc) return empty;
-    return SH_openDoc(empty, {
-      kind: initial.doc.kind, ref: initial.doc.ref, preview: false,
-    });
-  });
+  var docsState = React.useState(SH_emptyDocState());
   var docs = docsState[0];
   var setDocs = docsState[1];
   var overlayState = React.useState(initial.overlay);
@@ -112,7 +97,7 @@ function SH_Shell(props) {
     // So: when the url names a workspace the shell has not adopted yet,
     // it is ahead, not wrong. Leave it alone and let the reconciliation
     // finish; the next run writes the settled state.
-    if (SH_urlIsAhead(SH_readUrl(), wid, active)) return;
+    if (SH_urlIsAhead(SH_readUrl(), wid)) return;
     var url = SH_buildUrl({
       wid: wid,
       doc: active ? { kind: active.kind, ref: active.ref } : null,
