@@ -113,3 +113,45 @@ def test_the_gate_can_actually_see_an_offender() -> None:
     ]
     assert hits == ["Modal"], hits
 
+
+# ---------------------------------------------------------------------------
+# Shell globals
+# ---------------------------------------------------------------------------
+
+_WINDOW_CALL = re.compile(r"window\.(SH_[A-Za-z0-9_]+)\s*\(")
+_WINDOW_DEF = re.compile(r"window\.(SH_[A-Za-z0-9_]+)\s*=")
+
+
+def test_every_shell_global_called_is_a_shell_global_defined() -> None:
+    """``window.SH_x(...)`` has to resolve to something.
+
+    These files are plain scripts that publish their exports with an
+    explicit ``window.SH_x = SH_x``, so a call to a name nobody exported
+    is not a compile error anywhere -- it throws "not a function" the
+    first time a user reaches that path, and only then.
+
+    FIVE were live at once: SH_openOverlayFromShim, SH_OVERLAY_OPEN_DOC,
+    SH_OVERLAY_OPEN_OVERLAY, SH_OVERLAY_SWITCH_WORKSPACE and SH_traceRef.
+    Between them they meant a provider, an agent, a graph, a collection,
+    an approval's session, a workspace and a trace tab all failed to
+    open -- every one of them the primary click on its surface.
+    """
+    called: dict[str, set[str]] = {}
+    defined: set[str] = set()
+    for path in sorted(UI.rglob("*.js")) + sorted(UI.rglob("*.jsx")):
+        source = _without_comments(path.read_text(encoding="utf-8"))
+        for m in _WINDOW_CALL.finditer(source):
+            called.setdefault(m.group(1), set()).add(
+                str(path.relative_to(UI.parent))
+            )
+        for m in _WINDOW_DEF.finditer(source):
+            defined.add(m.group(1))
+
+    missing = {
+        name: sorted(places) for name, places in called.items()
+        if name not in defined
+    }
+    assert not missing, (
+        "these throw \"not a function\" the first time anyone clicks the "
+        f"thing that calls them: {missing}"
+    )

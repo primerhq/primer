@@ -26,24 +26,24 @@ var SH_OVERLAY_MOUNTS = {
     // addresses one provider. The per-class provider pages died in S4 P4;
     // the catalog is the only provider surface, and naming a dead global
     // here is what this file's guard exists to prevent.
-    render: function (state) {
+    render: function (state, shell) {
       return (
         <window.ProviderCatalog
           initialClass={state.section || "llm"}
           initialInstanceId={state.id || null}
           onNavigate={function (ref) {
-            // The catalog emits a STRUCTURED ref -- its own header
-            // documents that -- while this read it as (name, section,
-            // id). The object landed in `name` and the other two were
-            // undefined, so picking a class or a provider never moved
-            // the URL and a reload always came back to the LLM list.
+            // Two things were wrong here. The catalog emits a STRUCTURED
+            // ref -- its own header documents that -- while this read it
+            // as (name, section, id), so the object landed in `name` and
+            // the rest were undefined. And it called
+            // window.SH_openOverlayFromShim, which is defined NOWHERE:
+            // every class or provider click threw "not a function".
+            // The host is handed `shell`; use it.
             if (!ref || typeof ref !== "object") return;
             if (ref.kind === "provider-class") {
-              window.SH_openOverlayFromShim("providers", ref.classKey, null);
+              shell.openOverlay("providers", ref.classKey, null);
             } else if (ref.kind === "provider-instance") {
-              window.SH_openOverlayFromShim(
-                "providers", ref.classKey, ref.id,
-              );
+              shell.openOverlay("providers", ref.classKey, ref.id);
             }
           }}
         />
@@ -51,12 +51,16 @@ var SH_OVERLAY_MOUNTS = {
     },
   },
   collections: {
-    render: function (state) {
+    render: function (state, shell) {
       return (
         <window.CollectionsPage
           pushToast={window.primerApi.toastPush}
           onOpen={function (cid) {
-            window.SH_OVERLAY_OPEN_DOC("wiki", cid + "/" + (state.id || ""));
+            // Was window.SH_OVERLAY_OPEN_DOC, defined NOWHERE: opening a
+            // collection threw "not a function" instead.
+            shell.openDoc({
+              kind: "wiki", ref: cid + "/" + (state.id || ""), preview: false,
+            });
           }}
           onNavigate={function () {}}
         />
@@ -66,7 +70,7 @@ var SH_OVERLAY_MOUNTS = {
   // List and record are ONE overlay: the id slot decides which renders,
   // so clicking a row and pasting a link land in the same place.
   agents: {
-    render: function (state) {
+    render: function (state, shell) {
       if (state.id) {
         return (
           <window.AgentDetail
@@ -79,14 +83,16 @@ var SH_OVERLAY_MOUNTS = {
         <window.AgentsPage
           pushToast={window.primerApi.toastPush}
           onOpen={function (aid) {
-            window.SH_OVERLAY_OPEN_OVERLAY("agents", null, aid);
+            // Was window.SH_OVERLAY_OPEN_OVERLAY, defined NOWHERE, so
+            // clicking an agent row threw rather than opening it.
+            shell.openOverlay("agents", null, aid);
           }}
         />
       );
     },
   },
   graphs: {
-    render: function (state) {
+    render: function (state, shell) {
       if (state.id) {
         return (
           <window.GraphDetail
@@ -99,7 +105,7 @@ var SH_OVERLAY_MOUNTS = {
         <window.GraphsPage
           pushToast={window.primerApi.toastPush}
           onOpen={function (gid) {
-            window.SH_OVERLAY_OPEN_OVERLAY("graphs", null, gid);
+            shell.openOverlay("graphs", null, gid);
           }}
         />
       );
@@ -138,12 +144,16 @@ var SH_OVERLAY_MOUNTS = {
     },
   },
   approvals: {
-    render: function () {
+    render: function (state, shell) {
       return (
         <window.ApprovalsPage
           pushToast={window.primerApi.toastPush}
           onNavigate={function (_page, sid) {
-            if (sid) window.SH_OVERLAY_OPEN_DOC("session", sid);
+            // Was window.SH_OVERLAY_OPEN_DOC, defined NOWHERE: following
+            // an approval to its session threw instead of opening it.
+            if (sid) {
+              shell.openDoc({ kind: "session", ref: sid, preview: false });
+            }
           }}
         />
       );
@@ -223,7 +233,12 @@ var SH_OVERLAY_MOUNTS = {
       return (
         <window.WorkspacesPage
           pushToast={window.primerApi.toastPush}
-          onOpen={function (wid) { window.SH_OVERLAY_SWITCH_WORKSPACE(wid); }}
+          onOpen={function (wid) {
+            // Was window.SH_OVERLAY_SWITCH_WORKSPACE, defined NOWHERE:
+            // picking a workspace from the list threw rather than
+            // switching to it.
+            shell.switchWorkspace(wid);
+          }}
         />
       );
     },

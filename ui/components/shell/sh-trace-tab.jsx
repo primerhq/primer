@@ -52,3 +52,9 @@ function SH_TraceTab(props) {
     </div>
   );
 }
+
+// sh-doc-host opens a trace through window.SH_traceRef; every other
+// shell file exports what its siblings call, and this one did not, so
+// "Split Trace" threw "not a function" instead of opening the tab.
+window.SH_traceRef = SH_traceRef;
+window.SH_parseTraceRef = SH_parseTraceRef;
