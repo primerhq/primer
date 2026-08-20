@@ -318,6 +318,26 @@ function SH_RootGate() {
     },
     { pollMs: 0 }
   );
+
+  // Re-read the URL when it changes. This gate picks the workspace, and
+  // it read the hash once at first render only, so nothing that changes
+  // the hash could move the shell off the workspace it happened to boot
+  // on: not a deep link to another workspace, not Back, and not the
+  // shell's own Switch Workspace verb, which does its work by assigning
+  // window.location.hash. SH_Shell listened for the same events but only
+  // ever updated the overlay, the doc and the anchor from them.
+  var tickState = React.useState(0);
+  var setTick = tickState[1];
+  React.useEffect(function () {
+    function onUrl() { setTick(function (n) { return n + 1; }); }
+    window.addEventListener("hashchange", onUrl);
+    window.addEventListener("popstate", onUrl);
+    return function () {
+      window.removeEventListener("hashchange", onUrl);
+      window.removeEventListener("popstate", onUrl);
+    };
+  }, []);
+
   var parsed = SH_readUrl();
   var wsList = window.primerApi.useResource(
     "shell-workspaces",

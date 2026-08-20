@@ -65,6 +65,31 @@ def test_url_is_the_state_and_verb_navigation_pushes_history() -> None:
     assert "paletteOpen: " not in src.split("SH_buildUrl(")[1][:400]
 
 
+def test_the_gate_that_picks_the_workspace_follows_the_url() -> None:
+    """SH_RootGate must re-read the URL when the URL changes.
+
+    It chooses the workspace, and it read the hash once at first render
+    only. Nothing that changes the hash could then move the shell off
+    whichever workspace it happened to boot on: not a deep link to
+    another workspace, not Back, and not the shell's own Switch
+    Workspace verb, which works by assigning window.location.hash.
+    SH_Shell listened for the same events the whole time, but only ever
+    updated the overlay, the doc and the anchor from them.
+
+    It cost a whole round of ui_e2e debugging: three journeys mocked
+    their own workspace's pending-yields route and the shell sat there
+    polling the first workspace in the list instead, so the mock matched
+    nothing and the surface rendered empty.
+    """
+    src = _src()
+    gate = src.split("function SH_RootGate()")[1]
+    assert "hashchange" in gate, (
+        "SH_RootGate never re-reads the URL, so the workspace it picks at "
+        "boot is the only one it will ever show"
+    )
+    assert "popstate" in gate, "Back must move the shell too"
+
+
 def test_no_router_dependency() -> None:
     """The palette is the router: the classic route table dies in P5."""
     src = _src()
