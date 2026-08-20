@@ -17,6 +17,15 @@ function SH_readUrl() {
   return SH_parseUrl(window.location.hash || "");
 }
 
+// TEMPORARY (remove once the deep-link fault is found): the ui-e2e
+// harness writes every console message to an artifact on failure, so
+// this is the only way to see what the shell actually does in CI.
+function SH_diag(what, detail) {
+  try {
+    window.console.log("[shdiag] " + what + " " + JSON.stringify(detail));
+  } catch (err) { /* diagnostics never break the shell */ }
+}
+
 function SH_Shell(props) {
   var wid = props.wid;
   var initial = SH_readUrl();
@@ -29,6 +38,11 @@ function SH_Shell(props) {
   var anchorState = React.useState(initial.anchor);
   var anchor = anchorState[0];
   var setAnchor = anchorState[1];
+
+  SH_diag("render", {
+    wid: wid, hash: window.location.hash || "",
+    urlDoc: initial.doc ? initial.doc.kind + ":" + initial.doc.ref : null,
+  });
 
   var registry = React.useMemo(function () { return SH_createVerbRegistry(); }, []);
   var frecency = React.useMemo(function () { return SH_createFrecency(); }, []);
@@ -105,6 +119,7 @@ function SH_Shell(props) {
       anchor: anchor,
     });
     if ((window.location.hash || "") !== url) {
+      SH_diag("sync-write", { from: window.location.hash || "", to: url });
       window.history.pushState(null, "", url);
     }
   }, [wid, active && active.id, overlay && overlay.name,
@@ -113,6 +128,11 @@ function SH_Shell(props) {
   React.useEffect(function () {
     function onUrl() {
       var parsed = SH_readUrl();
+      SH_diag("hashchange", {
+        hash: window.location.hash || "",
+        doc: parsed.doc ? parsed.doc.kind + ":" + parsed.doc.ref : null,
+        overlay: parsed.overlay ? parsed.overlay.name : null,
+      });
       setOverlay(parsed.overlay);
       setAnchor(parsed.anchor);
       if (parsed.doc) {
@@ -150,6 +170,8 @@ function SH_Shell(props) {
   var lastWidRef = React.useRef(wid);
   React.useEffect(function () {
     if (lastWidRef.current === wid) return;
+    SH_diag("wid-change", { from: lastWidRef.current, to: wid,
+                            hash: window.location.hash || "" });
     lastWidRef.current = wid;
     // Drop the old workspace's tabs, but keep whatever THIS url asks
     // for: arriving at #/w/<wid>?doc=session:<sid> changes the
@@ -179,6 +201,12 @@ function SH_Shell(props) {
   React.useEffect(function () {
     if (landedRef.current) return;
     var parsed = SH_readUrl();
+    SH_diag("landing", {
+      wid: wid, hash: window.location.hash || "",
+      doc: parsed.doc ? parsed.doc.kind + ":" + parsed.doc.ref : null,
+      items: (sessions.data && sessions.data.items)
+        ? sessions.data.items.length : null,
+    });
     if (parsed.doc) { landedRef.current = true; return; }
     var items = (sessions.data && sessions.data.items) || null;
     if (!items) return;
