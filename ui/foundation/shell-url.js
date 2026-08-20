@@ -109,8 +109,14 @@ function SH_parseUrl(hash) {
 // every other transient are deliberately not representable here.
 function SH_buildUrl(state) {
   var s = state || {};
-  if (!s.wid) return "#/";
-  var url = "#/w/" + SH_encodeRef(s.wid);
+  // A missing workspace used to discard the whole state and return "#/".
+  // The PARSER reads "#/?overlay=agents" perfectly well -- the platform
+  // surfaces are not workspace-scoped, so addressing one before a
+  // workspace is resolved is legitimate -- but building could not express
+  // it, so the url-sync effect rewrote that address to a bare "#/" and
+  // the overlay was gone before anything could render it. Build must be
+  // the parser's inverse: drop only the segment that is actually absent.
+  var url = s.wid ? "#/w/" + SH_encodeRef(s.wid) : "#/";
   var query = [];
   if (s.doc && s.doc.kind && s.doc.ref
       && SH_indexOfIn(SH_DOC_KINDS, s.doc.kind) >= 0) {

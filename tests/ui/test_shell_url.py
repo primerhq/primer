@@ -144,3 +144,59 @@ def test_bare_workspace_url_round_trips() -> None:
     assert ctx.eval('SH_buildUrl({wid: "ws-1"})') == "#/w/ws-1"
     out = json.loads(ctx.eval('JSON.stringify(SH_parseUrl("#/w/ws-1"))'))
     assert out == {"wid": "ws-1", "doc": None, "overlay": None, "anchor": None}
+
+
+# ---------------------------------------------------------------------------
+# Building is the parser's inverse, workspace or no workspace.
+# ---------------------------------------------------------------------------
+
+
+def test_an_overlay_survives_a_url_with_no_workspace() -> None:
+    """Regression: platform overlays could not be addressed before boot.
+
+    The platform surfaces are not workspace-scoped, and the parser reads
+    "#/?overlay=agents" perfectly well. Building discarded the whole state
+    whenever the workspace was missing and returned a bare "#/", so the
+    url-sync effect rewrote that address the moment the shell rendered
+    without a resolved workspace, and the overlay was gone before anything
+    could show it.
+    """
+    ctx = _ctx()
+    ctx.eval(
+        """
+        var built = SH_buildUrl({
+          wid: null, doc: null,
+          overlay: { name: "agents", section: null, id: null }, anchor: null
+        });
+        var back = SH_parseUrl(built);
+        """
+    )
+    assert ctx.eval("built") == "#/?overlay=agents"
+    assert json.loads(ctx.eval("JSON.stringify(back.overlay)")) == {
+        "name": "agents", "section": None, "id": None,
+    }
+
+
+def test_a_document_survives_a_url_with_no_workspace() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        """
+        var b2 = SH_buildUrl({
+          wid: null, doc: { kind: "session", ref: "sess-1" },
+          overlay: null, anchor: null
+        });
+        var back2 = SH_parseUrl(b2);
+        """
+    )
+    assert ctx.eval("b2") == "#/?doc=session:sess-1"
+    assert json.loads(ctx.eval("JSON.stringify(back2.doc)")) == {
+        "kind": "session", "ref": "sess-1",
+    }
+
+
+def test_an_empty_state_is_still_the_bare_root() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        'var b3 = SH_buildUrl({ wid: null, doc: null, overlay: null, anchor: null });'
+    )
+    assert ctx.eval("b3") == "#/"
