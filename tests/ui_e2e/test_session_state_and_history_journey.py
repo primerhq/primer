@@ -151,7 +151,9 @@ def test_cancelled_session_shows_cancelled_chip_in_list(
     # data-session-id stamp — the row shows the title, not the raw sid).
     row = session_row(page, sid).first
     expect(row).to_be_visible(timeout=20_000)
-    # The row carries its status dot (terminal / gray tone for cancelled).
-    expect(row.locator('[data-testid="session-status-dot"]')).to_be_visible(
-        timeout=10_000,
+    # The row carries its status chip, stamped with the status it is in.
+    dot = row.locator('[data-testid="session-status-dot"]')
+    expect(dot).to_be_visible(timeout=10_000)
+    assert (dot.get_attribute("data-status") or "") == "cancelled", (
+        f"expected a cancelled chip, got {dot.get_attribute('data-status')!r}"
     )

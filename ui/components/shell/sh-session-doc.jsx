@@ -368,6 +368,19 @@ function SH_TokenMeter(props) {
   return <span className="sh-meta" data-testid="shell-token-count">{inputTokens} tok</span>;
 }
 
+// A node filter is a view of the same turns, not a different fetch: the
+// canvas selection scopes what the turn list shows and nothing else. A
+// turn that carries no node attribution is graph-level and stays visible
+// at every filter, otherwise selecting a node would hide the run's own
+// start and finish.
+function SH_scopeToNode(rows, nodeId) {
+  if (!nodeId) return rows;
+  return (rows || []).filter(function (row) {
+    var n = row && (row.node_id || row.node);
+    return !n || n === nodeId;
+  });
+}
+
 function SH_SessionDoc(props) {
   var shell = SH_useShell();
   var sid = props.sid;
@@ -432,6 +445,12 @@ function SH_SessionDoc(props) {
   var session = detail.data || null;
   var binding = (session && session.binding) || null;
   var agentId = (binding && binding.agent_id) || null;
+  var graphId = (binding && binding.graph_id) || null;
+  // null = all nodes. Clicking a node on the canvas scopes the turn list
+  // to that node; the banner below says so and offers the way back.
+  var nodeState = React.useState(null);
+  var selectedNode = nodeState[0];
+  var setSelectedNode = nodeState[1];
   var pending = (session && session.pending_messages) || [];
   var records = (history.data && history.data.items) || [];
   var flat = SH_nestSubagentRows(window.SA_toTranscript(records, session));
@@ -503,9 +522,51 @@ function SH_SessionDoc(props) {
         ? <window.ExternalPendingBanner sessionId={sid} pushToast={shell.toast} />
         : null}
 
+      {/* A graph-bound session runs a graph, and the canvas is how you see
+          where it is. The Studio mounted this; the shell that replaced it
+          carried over the binding chip and nothing else, so a graph
+          session showed a transcript and no graph. SD_GraphRunView is the
+          production component, still loaded, still the one to reuse.
+          hideInspector drops its 360px node-event stream: the turn list
+          below already says what the inspector said. */}
+      {graphId && typeof window.SD_GraphRunView === "function" ? (
+        <div className="sh-graph-viz" data-testid="graph-viz-region"
+          style={{
+            flex: "0 0 auto", height: 360, minHeight: 0, overflow: "auto",
+            borderBottom: "1px solid var(--border)",
+          }}>
+          <window.SD_GraphRunView
+            gid={graphId}
+            rid={sid}
+            wid={shell.wid}
+            session={session}
+            pushToast={window.primerApi.toastPush}
+            onNodeSelect={setSelectedNode}
+            hideInspector={true}
+          />
+        </div>
+      ) : null}
+
+      {selectedNode ? (
+        <div className="sh-node-filter" data-testid="graph-node-filter"
+          style={{
+            display: "flex", alignItems: "center", gap: 8, padding: "6px 14px",
+            borderBottom: "1px solid var(--border)", flex: "0 0 auto",
+            fontSize: 11.5,
+          }}>
+          <span>Showing <span className="mono">{selectedNode}</span> only</span>
+          <div style={{ flex: 1 }} />
+          <button type="button" className="sh-verb"
+            data-testid="graph-node-filter-clear"
+            title="Show the full transcript (all nodes)"
+            onClick={function () { setSelectedNode(null); }}
+          >All nodes</button>
+        </div>
+      ) : null}
+
       <div className="sh-transcript" data-testid="shell-transcript" ref={scrollRef}
         onScroll={function () { if (decision.follow) setSeen(rows.length); }}>
-        <SH_TurnList rows={rows} sid={sid}
+        <SH_TurnList rows={SH_scopeToNode(rows, selectedNode)} sid={sid}
           agentId={agentId} approvedBy={approvedBy} />
         {window.SH_walkthroughState(flat).active
           && typeof window.SH_Walkthrough === "function"

@@ -91,7 +91,8 @@ function SH_SessionsList() {
           }}
         >
           <span className="sh-rail-title">{session.name || session.session_id}</span>
-          <span className="sh-rail-chip" data-status={session.status}>
+          <span className="sh-rail-chip" data-testid="session-status-dot"
+            data-status={session.status}>
             {live
               ? SH_statusLine({
                 verb: live.verb, object: live.object,
