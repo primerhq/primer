@@ -54,13 +54,19 @@ function SH_ClientTools(props) {
 
   React.useEffect(function () {
     if (!sid) return undefined;
-    executor.start(sid);
+    // Attaching is best effort and always has been: a session that has
+    // never run has no on-disk slot, so the server answers 404 and there
+    // is nothing for the client to do about it. Unhandled, that rejection
+    // lands in the console of every journey that opens a not-yet-started
+    // session and buries the errors worth reading.
+    var quiet = function () {};
+    Promise.resolve(executor.start(sid)).catch(quiet);
     var timer = window.setInterval(function () {
-      executor.heartbeat(sid);
+      Promise.resolve(executor.heartbeat(sid)).catch(quiet);
     }, SH_CT_HEARTBEAT_MS);
     return function () {
       window.clearInterval(timer);
-      executor.stop(sid);
+      Promise.resolve(executor.stop(sid)).catch(quiet);
     };
   }, [executor, sid]);
 
