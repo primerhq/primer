@@ -405,22 +405,23 @@ def test_u0109_approvals_operator_journey(
         )
 
         # --- 6. Cross-surface: open the fresh session in the Studio ----
-        # Re-pointed: the session-detail ApprovalBanner is retired. In the
-        # Studio, a pending approval surfaces in the RIGHT sidebar Action
-        # Required list (the shell rail's attention list) as an
-        # ``action-item`` of kind "approval" with ``approve`` / ``reject``
-        # controls. sid_banner is freshly parked and never responded-to, so
+        # Re-pointed: the session-detail ApprovalBanner is retired. A
+        # pending approval surfaces in the shell rail's attention list as
+        # a decision card of kind "approval", carrying Approve Gate and
+        # Reject Gate. sid_banner is freshly parked and never responded-to, so
         # its park is stable (parked_status='parked' is excluded by the
         # claim-eligibility filter → the worker never resumes it and clears
         # parked_state), making the item deterministic.
         open_session_in_studio(page, console_url, ids["workspace"], sid_banner, kind="agent")
         # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for action-item content.
+        # expand it before looking for the decision card.
         expand_debug_sidebar(page)
 
-        # The Action Required list surfaces the pending approval item.
-        approval_item = page.locator("[data-testid='action-item']").filter(
-            has=page.locator("[data-testid='action-approval-controls']")
+        # The attention list surfaces the pending approval. An approval
+        # card is the one carrying the approve control; a question card
+        # renders an answer input instead.
+        approval_item = page.locator("[data-kind='approval']").filter(
+            has=page.get_by_test_id("shell-decision-approve")
         ).first
         expect(approval_item).to_be_visible(timeout=30_000)
 
@@ -428,15 +429,15 @@ def test_u0109_approvals_operator_journey(
         # The Studio approve handler POSTs /tool_approval/respond and
         # optimistically REMOVES the item on success (the shell rail's attention list
         # ``hide()`` — no toast). Pin the item clearing as the success signal.
-        approve_btn = approval_item.locator("[data-testid='approve']")
+        approve_btn = approval_item.get_by_test_id("shell-decision-approve")
         expect(approve_btn).to_be_enabled(timeout=5_000)
         approve_btn.click()
         # The approved item is optimistically removed — no approval-controls
         # item remains (the step-1 session was rejected earlier, so this is
         # the only pending approval in the workspace).
         expect(
-            page.locator("[data-testid='action-item']").filter(
-                has=page.locator("[data-testid='action-approval-controls']")
+            page.locator("[data-kind='approval']").filter(
+                has=page.get_by_test_id("shell-decision-approve")
             )
         ).to_have_count(0, timeout=10_000)
     finally:

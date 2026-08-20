@@ -105,12 +105,12 @@ def test_u0052_ask_user_panel_hidden_on_terminal_session(
 ) -> None:
     """U0052 — Re-pointed to the Studio. A terminal (ENDED) session can
     never be parked on ask_user, so the Studio's RIGHT sidebar Action
-    Required list surfaces NO action-item for it — the yielding-tools
+    Required list surfaces NO decision card for it — the yielding-tools
     quiet-state invariant carried over from the retired AskUserPanel.
 
     Cancel the seeded session via the API (CREATED → ENDED), open it in
     the Studio, wait past a poll cycle, and assert the action-required
-    list stays empty (no ``action-item``, no ask-controls). The old
+    list stays empty (no decision card, no answer input). The old
     ``ask-user-panel`` / "Input requested" copy is gone everywhere.
     """
     pid = f"llm-u52-{unique_suffix}"
@@ -140,11 +140,11 @@ def test_u0052_ask_user_panel_hidden_on_terminal_session(
         # Wait past a pending-poll cycle to be sure nothing shows up late.
         page.wait_for_timeout(2_500)
 
-        # No action-item / ask-controls for a terminal session.
-        assert page.locator("[data-testid='action-item']").count() == 0, (
+        # No decision card for a terminal session.
+        assert page.locator("[data-testid^='shell-decision:']").count() == 0, (
             "Action Required surfaced an item for a terminal session"
         )
-        assert page.locator("[data-testid='action-ask-controls']").count() == 0
+        assert page.get_by_test_id("shell-decision-answer").count() == 0
         # The retired panel copy must not appear anywhere.
         assert page.get_by_text("Input requested").count() == 0
         assert page.locator("[data-testid='ask-user-panel']").count() == 0
