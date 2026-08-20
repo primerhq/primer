@@ -207,6 +207,43 @@ function PC_AggregatedMount({ value, onChange }) {
   );
 }
 
+// What the form shows is what it must send.
+//
+// PC_LimitsFieldset renders `value || { max_concurrency: 1 }`, a default
+// that lives only in that component's render. An operator who fills the
+// required fields and presses Save therefore sent no `limits` key at all,
+// and every provider class declares limits as required: the create 422'd
+// with "limits: Field required" while the form displayed a perfectly good
+// max_concurrency of 1. Creating a provider through the catalog only
+// worked if you happened to touch a Limits box first.
+//
+// Number inputs have the mirror problem. PC_Field stores e.target.value,
+// which is a string, and an emptied box stores "". Both are rejected:
+// "" fails float parsing, and a numeric string only survives because
+// Pydantic coerces it. Send numbers as numbers and drop the empties.
+function PC_submittable(draft, shape) {
+  const out = { ...draft };
+  if (shape && shape.limits) {
+    out.limits = { max_concurrency: 1, ...(draft.limits || {}) };
+  }
+  const clean = (obj, fields) => {
+    if (!obj) return obj;
+    const next = { ...obj };
+    (fields || []).forEach((f) => {
+      const norm = PC_normalizeField(f);
+      if (norm.type !== "number") return;
+      const raw = next[norm.key];
+      if (raw === "" || raw == null) delete next[norm.key];
+      else if (typeof raw === "string") next[norm.key] = Number(raw);
+    });
+    return next;
+  };
+  const cleaned = clean(out, shape && shape.row_fields);
+  cleaned.config = clean(out.config, shape && shape.config_fields);
+  if (cleaned.config == null) delete cleaned.config;
+  return cleaned;
+}
+
 function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest }) {
   const { useResource, apiFetch, useCapabilities, capabilityHint,
     EXTRA_FOR_PROVIDER_TYPE } = window.primerApi;
@@ -257,8 +294,9 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
     setBusy(true);
     try {
       const out = typeof onTest === "function"
-        ? await onTest(draft)
-        : await apiFetch("POST", `/${plural}/_test`, draft);
+        ? await onTest(PC_submittable(draft, shape))
+        : await apiFetch("POST", `/${plural}/_test`,
+                         PC_submittable(draft, shape));
       setTestResult(out);
     } catch (err) {
       setTestResult({ ok: false, error: err?.detail || err?.message || String(err) });
@@ -367,7 +405,7 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
           Test
         </Btn>
         <Btn data-testid="provider-form-save"
-          onClick={() => onSubmit && onSubmit(draft)}
+          onClick={() => onSubmit && onSubmit(PC_submittable(draft, shape))}
           disabled={busy || modelRowsIncomplete(shape.row_fields)}>Save</Btn>
       </div>
     </div>
@@ -376,4 +414,5 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
 
 window.PC_FIELD_TYPES = PC_FIELD_TYPES;
 window.PC_normalizeField = PC_normalizeField;
+window.PC_submittable = PC_submittable;
 window.PC_ProviderForm = PC_ProviderForm;

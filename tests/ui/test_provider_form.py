@@ -73,3 +73,96 @@ def test_no_per_class_form_duplicate_survives_in_the_catalog() -> None:
     assert "config_fields" not in src, (
         "field rendering belongs in provider-form.jsx, not the catalog shell"
     )
+
+
+# ---------------------------------------------------------------------------
+# The form must send what it shows.
+# ---------------------------------------------------------------------------
+
+
+def _submittable_ctx():
+    """MiniRacer with provider-form.jsx transpiled and loaded.
+
+    PC_submittable is pure logic over a draft, so it is executed for real
+    rather than substring-matched. React is stubbed because loading the
+    module evaluates the component definitions, not their bodies.
+    """
+    from py_mini_racer import MiniRacer
+
+    from primer.api._jsx_bundle import JSXBundler
+
+    ui = UI
+    bundler = JSXBundler(
+        ui_dir=ui,
+        babel_source=(ui / "vendor" / "babel.min.js").read_text(encoding="utf-8"),
+    )
+    code = bundler._transform(
+        _read("components/provider-form.jsx"), "components/provider-form.jsx",
+    )
+    ctx = MiniRacer()
+    ctx.eval(
+        "var window = globalThis; window.primerApi = {};"
+        "var React = { createElement: function () { return null; },"
+        " useState: function (v) { return [v, function () {}]; },"
+        " Fragment: null };"
+    )
+    ctx.eval(code)
+    return ctx
+
+
+def test_a_save_that_never_touched_limits_still_sends_limits() -> None:
+    """Regression: the create 422'd with "limits: Field required".
+
+    PC_LimitsFieldset renders ``value || { max_concurrency: 1 }``, a
+    default that existed only inside that component's render. Filling the
+    required fields and pressing Save therefore posted no ``limits`` key,
+    and every provider class declares it required, so creating a provider
+    through the catalog only worked if you happened to touch a Limits box
+    on the way past.
+    """
+    ctx = _submittable_ctx()
+    out = ctx.call(
+        "PC_submittable",
+        {"id": "llm-x", "provider": "anthropic", "config": {"api_key": "k"}},
+        {"limits": True},
+    )
+    assert out["limits"] == {"max_concurrency": 1}, out
+
+
+def test_limits_the_operator_did_set_win_over_the_default() -> None:
+    ctx = _submittable_ctx()
+    out = ctx.call(
+        "PC_submittable",
+        {"id": "llm-x", "limits": {"max_concurrency": 4}},
+        {"limits": True},
+    )
+    assert out["limits"]["max_concurrency"] == 4
+
+
+def test_a_class_without_limits_is_not_given_any() -> None:
+    ctx = _submittable_ctx()
+    out = ctx.call("PC_submittable", {"id": "ws-x"}, {})
+    assert "limits" not in out
+
+
+def test_emptied_number_boxes_are_dropped_rather_than_sent_as_blank() -> None:
+    """"" fails float parsing server-side; a cleared optional box is unset."""
+    ctx = _submittable_ctx()
+    out = ctx.call(
+        "PC_submittable",
+        {"id": "llm-x", "config": {"port": "", "base_url": "http://x"}},
+        {"config_fields": [{"key": "port", "type": "number"},
+                           {"key": "base_url"}]},
+    )
+    assert "port" not in out["config"]
+    assert out["config"]["base_url"] == "http://x"
+
+
+def test_number_boxes_are_sent_as_numbers() -> None:
+    ctx = _submittable_ctx()
+    out = ctx.call(
+        "PC_submittable",
+        {"id": "llm-x", "config": {"port": "11434"}},
+        {"config_fields": [{"key": "port", "type": "number"}]},
+    )
+    assert out["config"]["port"] == 11434
