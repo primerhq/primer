@@ -367,7 +367,21 @@ function SH_Topbar() {
   var shell = SH_useShell();
   return (
     <div className="sh-topbar-inner">
-      <span className="sh-ws" data-testid="shell-workspace">{shell.wid}</span>
+      {/* The Studio put a gear here that opened the workspace's own
+          settings. The overlay that replaced it can address one
+          workspace (overlay=workspaces:detail:<wid>) but nothing in the
+          shell opened it for the workspace you are actually in, so the
+          config, channels, log and destroy tabs were unreachable without
+          hand-writing a URL. The name is the affordance. */}
+      <button
+        type="button"
+        className="sh-ws"
+        data-testid="shell-workspace"
+        title="Workspace settings"
+        onClick={function () {
+          shell.openOverlay("workspaces", "detail", shell.wid);
+        }}
+      >{shell.wid}</button>
       <span className="sh-topbar-verbs">
         {shell.registry.forSurface("topbar").map(function (verb) {
           return (
