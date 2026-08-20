@@ -132,8 +132,21 @@ function SH_Shell(props) {
   React.useEffect(function () {
     if (lastWidRef.current === wid) return;
     lastWidRef.current = wid;
-    setDocs(SH_emptyDocState());
-    landedRef.current = false;
+    // Drop the old workspace's tabs, but keep whatever THIS url asks
+    // for: arriving at #/w/<wid>?doc=session:<sid> changes the
+    // workspace and names a document in one go, and the hashchange
+    // listener has usually opened it already by the time this runs.
+    // Resetting to empty unconditionally threw that away again.
+    var parsed = SH_readUrl();
+    var fresh = SH_emptyDocState();
+    setDocs(
+      parsed.doc
+        ? SH_openDoc(fresh, {
+            kind: parsed.doc.kind, ref: parsed.doc.ref, preview: false,
+          })
+        : fresh
+    );
+    landedRef.current = !!parsed.doc;
   }, [wid]);
   React.useEffect(function () {
     if (landedRef.current) return;
