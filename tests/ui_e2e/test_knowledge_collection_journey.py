@@ -89,8 +89,13 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         page.locator("h1.page-title").first.wait_for(
             state="visible", timeout=10_000,
         )
+        # The catalog lists provider instances as cards beside the form,
+        # not as table rows: the per-class provider pages and their tables
+        # died with S4 P4.
         expect(
-            page.locator(f"tr:has-text('{emb_id}')").first
+            page.get_by_test_id("provider-instances-embedding").get_by_text(
+                emb_id, exact=True,
+            )
         ).to_be_visible(timeout=10_000)
 
         # ===== 2. /knowledge/collections — create via the modal ===========

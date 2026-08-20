@@ -173,8 +173,10 @@ def test_multi_page_operator_journey_no_llm(
     """
     ids = _seed_full_set(base_url, unique_suffix, tmp_path)
     try:
-        # ----- 1. Dashboard (initial nav done by `page` fixture)
-        page.locator("h1.page-title").first.wait_for(
+        # ----- 1. The shell itself (initial nav done by `page` fixture)
+        # There is no dashboard page any more, and no page-title outside
+        # an overlay: landing on the console lands you in a workspace.
+        page.get_by_test_id("shell-root").wait_for(
             state="visible", timeout=10_000,
         )
 
