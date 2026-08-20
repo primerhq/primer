@@ -20,11 +20,15 @@ from __future__ import annotations
 
 import httpx
 import pytest
+
 from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import wait_for_overlay_url
+from tests.ui_e2e._shell_helpers import (
+    open_legacy_route,
+    wait_for_overlay_url,
+)
 pytestmark = smk("SMK-UI-06")
 
 
@@ -57,12 +61,14 @@ def test_workspace_provider_create_detail_delete_journey(
             timeout=15_000,
         )
 
-        # Hash-navigate to the providers page (no full page reload).
-        page.evaluate("() => { window.location.hash = '#/workspaces/providers'; }")
-        # Wait for the page header to reflect the new route.
-        page.locator("h1.page-title").get_by_text(
-            "Workspace providers", exact=False,
-        ).first.wait_for(state="visible", timeout=10_000)
+        # S4 folded every provider class into one catalog, and workspace
+        # providers are the "workspace" class in it. The standalone
+        # #/workspaces/providers route died with the per-class pages; the
+        # page component itself is reused verbatim as that class's panel.
+        open_legacy_route(page, console_url, "workspaces/providers")
+        page.get_by_test_id("provider-body-workspace").wait_for(
+            state="visible", timeout=10_000,
+        )
 
         # Empty-state CTA OR filter-bar "New provider" — both work.
         new_btn = page.get_by_role(
