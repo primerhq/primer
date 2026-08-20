@@ -58,8 +58,23 @@ def open_overlay(page: Page, console_url: str, wid: str, name: str,
 
 
 def open_palette(page: Page) -> None:
-    page.keyboard.press("Control+k")
-    expect(page.get_by_test_id("shell-palette")).to_be_visible()
+    """Open the command palette, by its own affordance.
+
+    Waits for the shell first: the chord is handled by a window keydown
+    listener the palette installs on mount, so pressing it at a page
+    that is still booting goes nowhere and the palette simply never
+    appears.
+
+    Clicks the chip rather than pressing Ctrl+K. The chip is the visible
+    way in, so a caller checking that a surface is reachable without
+    typing a URL is checking the path a person would actually take; the
+    chord has its own coverage in tests/ui.
+    """
+    expect(page.get_by_test_id("shell-root")).to_be_visible(timeout=20_000)
+    chip = page.get_by_test_id("shell-palette-chip")
+    expect(chip).to_be_visible(timeout=20_000)
+    chip.click()
+    expect(page.get_by_test_id("shell-palette")).to_be_visible(timeout=10_000)
 
 
 def run_verb(page: Page, label: str) -> None:
