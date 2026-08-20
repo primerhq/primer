@@ -132,7 +132,13 @@ def test_u0110_policy_modal_llm_judge_journey(
     try:
         # --- 1. Verify seeded provider is listed on /providers/llm --
         open_legacy_route(page, console_url, "providers/llm")
-        provider_row = page.locator("tbody tr", has_text=pid)
+        # The catalog renders provider rows as cards, not a table, so
+        # there is no tbody to filter. Scope to the LLM class's own
+        # container so a same-named provider under another class cannot
+        # satisfy this.
+        provider_row = page.get_by_test_id("provider-instances-llm").get_by_text(
+            pid, exact=True,
+        )
         expect(provider_row.first).to_be_visible(timeout=15_000)
 
         # --- 2. Open the policy modal from the Tools page ----------

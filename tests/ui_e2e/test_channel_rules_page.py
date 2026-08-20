@@ -33,7 +33,12 @@ def test_channel_rules_route_renders_with_zero_console_errors(
     assert "Channel rules" in title_locator.inner_text()
     # Let any post-load fetches (provider/trigger lists) settle so a
     # render-time explosion would have surfaced by now.
-    page.wait_for_load_state("networkidle", timeout=10_000)
+    # NOT networkidle: the shell holds live polling (sessions,
+    # attention, files) for as long as it is mounted, so the network
+    # is never idle and that wait can only time out. A fixed settle is
+    # enough here, since what follows only reads what has already
+    # loaded.
+    page.wait_for_timeout(1_500)
 
     # By-design 404s: the sidebar polls the IC subsystem config and a
     # 404 there is the documented "subsystem OFF" signal.

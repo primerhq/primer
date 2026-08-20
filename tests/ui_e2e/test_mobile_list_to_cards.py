@@ -63,7 +63,12 @@ def test_mobile_workspaces_tap_card_opens_detail(
     # settle before counting so we don't read an empty pre-fetch DOM
     # (which would otherwise mask a real navigation regression as a
     # spurious skip).
-    page.wait_for_load_state("networkidle", timeout=10_000)
+    # NOT networkidle: the shell holds live polling (sessions,
+    # attention, files) for as long as it is mounted, so the network
+    # is never idle and that wait can only time out. A fixed settle is
+    # enough here, since what follows only reads what has already
+    # loaded.
+    page.wait_for_timeout(1_500)
     cards = page.locator(".card-interactive")
     try:
         cards.first.wait_for(state="visible", timeout=10_000)

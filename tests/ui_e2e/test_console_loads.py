@@ -64,7 +64,12 @@ def test_route_renders_with_zero_console_errors(
     assert expected_title in title_locator.inner_text()
     # Give the page a moment for any post-load fetches (sidebar IC poll,
     # per-page list fetch) to settle so failures are caught.
-    page.wait_for_load_state("networkidle", timeout=10_000)
+    # NOT networkidle: the shell holds live polling (sessions,
+    # attention, files) for as long as it is mounted, so the network
+    # is never idle and that wait can only time out. A fixed settle is
+    # enough here, since what follows only reads what has already
+    # loaded.
+    page.wait_for_timeout(1_500)
 
     # By-design 404s: the sidebar polls /v1/internal_collections/config
     # and a 404 there is the documented "subsystem OFF" signal (per

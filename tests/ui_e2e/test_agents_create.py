@@ -222,22 +222,26 @@ def test_u0007_new_agent_create_422_renders_inline_field_errors(
 
         modal.get_by_role("button", name="Create").click()
 
-        # Modal should STAY OPEN on 422 (a success would close it).
-        # Give the mutation a moment to settle before asserting.
-        page.wait_for_load_state("networkidle", timeout=10_000)
+        # An inline field-help error must appear somewhere in the modal
+        # body. The exact loc-key the server emits depends on which
+        # validator fires; we look for ANY field-help-red marker. The
+        # pattern in NewAgentModal is
+        # `<div className="field-help" style="color: var(--red)">`.
+        #
+        # Waited on FIRST, and with no networkidle before it: the shell
+        # polls for as long as it is mounted, so the network is never
+        # idle and that wait could only time out. This one settles on the
+        # thing the 422 actually produces, which also makes the
+        # still-open check below non-racy.
+        red_helps = modal.locator('.field-help[style*="--red"]')
+        red_helps.first.wait_for(state="visible", timeout=10_000)
+
+        # Modal STAYS OPEN on 422 (a success would close it).
         assert modal.is_visible(), (
             "modal should stay open on 422 so the operator can correct "
             "the field; closing means the contract collapsed into a "
             "happy-path or error-toast flow"
         )
-
-        # An inline field-help error must appear somewhere in the
-        # modal body. The exact loc-key the server emits depends on
-        # which validator fires; we look for ANY field-help-red marker
-        # that wasn't present before submit. The CSS pattern in
-        # NewAgentModal is `<div className="field-help" style="color: var(--red)">`.
-        red_helps = modal.locator('.field-help[style*="--red"]')
-        red_helps.first.wait_for(state="visible", timeout=5_000)
 
         # No error toast - 422 should NOT surface as a toast per spec §3.
         # Use a short wait_for absence; if a toast slipped through, this
