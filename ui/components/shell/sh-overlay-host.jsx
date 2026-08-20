@@ -218,6 +218,39 @@ var SH_OVERLAY_MOUNTS = {
   },
 };
 
+// The heading each overlay shows above its page. Distinct from
+// SH_OVERLAY_LABELS, which is palette wording ("Open Agents") for the
+// verb that gets you here and names no record.
+var SH_OVERLAY_TITLES = {
+  "new-session": "New session",
+  providers: "Providers",
+  collections: "Collections",
+  agents: "Agents",
+  graphs: "Graphs",
+  triggers: "Triggers",
+  toolsets: "Toolsets",
+  tools: "Tools",
+  workers: "Workers",
+  approvals: "Approvals",
+  admin: "Admin settings",
+  harnesses: "Harnesses",
+  services: "Services",
+  channels: "Channels",
+  workspaces: "Workspaces",
+};
+
+
+function SH_overlayTitle(overlay) {
+  // A detail view is titled by the record it is showing; a list view by
+  // the surface. app.jsx rendered this header for every route before S8
+  // re-hosted the pages in overlays, and the pages themselves never had
+  // one, so without it nothing on screen says which agent (or graph, or
+  // toolset) you are looking at.
+  if (overlay.id) return overlay.id;
+  return SH_OVERLAY_TITLES[overlay.name] || overlay.name;
+}
+
+
 function SH_OverlayHost() {
   var shell = SH_useShell();
   var overlay = shell.overlay;
@@ -272,6 +305,9 @@ function SH_OverlayHost() {
           onClick={function () { shell.closeOverlay(); }}>Close Overlay</button>
       </div>
       <div className="sh-overlay-body" data-testid="shell-overlay-body">
+        <div className="page-header">
+          <h1 className="page-title">{SH_overlayTitle(overlay)}</h1>
+        </div>
         {mount.render(overlay, shell)}
       </div>
     </div>
@@ -279,4 +315,6 @@ function SH_OverlayHost() {
 }
 
 window.SH_OVERLAY_MOUNTS = SH_OVERLAY_MOUNTS;
+window.SH_OVERLAY_TITLES = SH_OVERLAY_TITLES;
+window.SH_overlayTitle = SH_overlayTitle;
 window.SH_OverlayHost = SH_OverlayHost;
