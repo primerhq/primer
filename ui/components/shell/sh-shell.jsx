@@ -147,6 +147,15 @@ function SH_Shell(props) {
         : fresh
     );
     landedRef.current = !!parsed.doc;
+    // The overlay and anchor come from the same url, and they have to be
+    // re-read HERE too. A navigation that changes the workspace AND the
+    // overlay arrives as two renders: the hashchange listener sets the
+    // new overlay, then this workspace change re-renders. The url-sync
+    // effect runs on that render and would otherwise write the state it
+    // can see -- the previous overlay -- straight back over the url,
+    // leaving the shell on the surface the caller had just left.
+    setOverlay(parsed.overlay);
+    setAnchor(parsed.anchor);
   }, [wid]);
   React.useEffect(function () {
     if (landedRef.current) return;
