@@ -168,10 +168,10 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
 
         # ----- 4. Click the row → center tab + agent panel ----------
         row.first.click()
-        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
             timeout=15_000,
         )
 
@@ -193,7 +193,7 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
         expect(modal).to_have_count(0, timeout=5_000)
 
         # ----- 6. The session tab survived the settings hop ---------
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
             timeout=10_000,
         )
     finally:

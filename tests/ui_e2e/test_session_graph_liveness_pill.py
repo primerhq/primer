@@ -134,7 +134,9 @@ def test_graph_session_liveness_pill_replaces_executor_missing_stub(
 
         # The graph panel header shows the derived StatusPill; a CREATED
         # session reads "created" (StatusPill labels — shared.jsx).
-        header = page.locator('[data-testid="panel-graph-header"]')
+        # One session document serves every binding kind, so a graph
+        # session's status is on the same composer status line.
+        header = page.get_by_test_id("shell-composer-status")
         expect(header.locator(".pill").filter(has_text="created").first).to_be_visible(
             timeout=10_000,
         )

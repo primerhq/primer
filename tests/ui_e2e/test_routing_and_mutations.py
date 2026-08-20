@@ -141,7 +141,7 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
 
         # The new workspace's Studio shell mounts (studio-root), and its
         # sub-header workspace selector shows the new id.
-        page.locator('[data-testid="studio-root"]').wait_for(
+        page.get_by_test_id("shell-root").wait_for(
             state="visible", timeout=15_000,
         )
         page.locator('[data-testid="workspace-selector"]').get_by_text(

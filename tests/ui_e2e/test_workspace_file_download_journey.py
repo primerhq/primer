@@ -183,7 +183,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
 
         # ----- 3. Click file-row → panel-file preview shows content -
         file_row.click()
-        panel = page.locator('[data-testid="panel-file"]')
+        panel = page.locator('[data-testid^="shell-file:"]')
         expect(panel).to_be_visible(timeout=15_000)
         expect(
             page.locator('[data-testid="file-breadcrumb"]')

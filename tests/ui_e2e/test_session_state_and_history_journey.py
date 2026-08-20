@@ -106,8 +106,10 @@ def test_cancelled_session_shows_outcome_banner(
 
     open_session_in_studio(page, console_url, wid, sid, kind="agent")
     # The panel header StatusPill reads a terminal status (ended).
-    header = page.locator('[data-testid="panel-agent-header"]')
-    expect(header.locator(".pill").filter(has_text="ended").first).to_be_visible(
+    # The Studio's panel header carried a StatusPill; the shell shows a
+    # session's status on the composer's status line.
+    header = page.get_by_test_id("shell-composer-status")
+    expect(header.filter(has_text="ended").first).to_be_visible(
         timeout=20_000,
     )
     # And the End/Restart pair reflects isEnded=true: End disables, Restart

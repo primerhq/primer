@@ -185,10 +185,10 @@ def test_u0103_sessions_full_lifecycle_journey(
 
         # --- 2. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
             timeout=15_000,
         )
 
@@ -211,8 +211,10 @@ def test_u0103_sessions_full_lifecycle_journey(
         # ST_SessionPanel polls /sessions/{id} every 2s while non-terminal;
         # the header StatusPill catches up to cancelled/ended. Pin "left
         # CREATED" (30s budget).
-        header = page.locator('[data-testid="panel-agent-header"]')
-        status_pill = header.locator(".pill").first
+        # The Studio's panel header carried a StatusPill; the shell
+        # shows a session's status on the composer's status line.
+        header = page.get_by_test_id("shell-composer-status")
+        status_pill = header
         deadline = time.time() + 30.0
         last_seen = None
         while time.time() < deadline:
@@ -343,10 +345,10 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
 
         # --- 5. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
             timeout=15_000,
         )
     finally:
