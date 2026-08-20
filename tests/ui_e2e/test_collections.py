@@ -90,16 +90,11 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
         modal.locator("input.input").nth(0).fill(collection_id)
         modal.locator("input.input").nth(1).fill("u0025 test collection")
 
-        # The provider + model dropdowns auto-select on mount via
-        # the modal's useEffect (knowledge.jsx:272-283). With only
-        # one seeded provider + one model, the defaults work; we
-        # set explicitly for determinism.
-        modal.locator("select.select").nth(0).select_option(
-            value=provider_id,
-        )
-        modal.locator("select.select").nth(1).select_option(
-            value="sentence-transformers/all-MiniLM-L6-v2",
-        )
+        # No provider or model dropdowns: S2 took the vector-space
+        # fields off collection create and gave them their own route
+        # (PUT /collections/{id}/search), so a collection is created
+        # with an id and a description and is grep-only until search is
+        # turned on. The modal has exactly those two inputs.
 
         # Submit.
         modal.get_by_role("button", name="Create").first.click()

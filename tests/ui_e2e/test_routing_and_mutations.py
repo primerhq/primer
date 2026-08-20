@@ -74,10 +74,10 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
     close, a success toast must appear, and the URL must navigate to
     ``#/workspaces/<new-id>``.
 
-    Re-pointed: ``#/workspaces/<id>`` now renders the Studio (not the old
-    workspace-detail page), so the post-create assertion pins the Studio
-    shell mounting for the new workspace (studio-root + the workspace
-    selector showing the new id) instead of an ``h1.page-title``.
+    Re-pointed: ``#/workspaces/<id>`` now renders the console shell (not
+    the old workspace-detail page), so the post-create assertion pins the
+    shell mounting for the new workspace (shell-root + the topbar naming
+    the new id) instead of an ``h1.page-title``.
 
     Priority 1 — mutation feedback. Sister to U0006 (agents) for the
     workspace-create flow. The New-workspace modal doesn't collect a
@@ -116,12 +116,16 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
         modal.wait_for(state="visible", timeout=5_000)
 
         # The dropdown auto-selects the first template per
-        # NewWorkspaceModal's useEffect (workspaces.jsx:196). Pin via
-        # explicit selection so we don't depend on ordering.
-        page.locator("select.select").first.select_option(value=tpl_id)
+        # NewWorkspaceModal's useEffect. Pin via explicit selection so we
+        # don't depend on ordering. Scope to the modal: the list page
+        # behind it carries its own selects and its own Create buttons,
+        # and a page-wide ``.first`` picks by DOM order, not by intent.
+        modal.locator("select.select").first.select_option(value=tpl_id)
 
-        # Submit.
-        page.get_by_role("button", name="Create").first.click()
+        # Submit. By testid, not by role name: "Create" is a substring
+        # match, so it also catches the modal's own "Create a template
+        # now" escape hatch.
+        modal.get_by_test_id("workspace-create-submit").click()
 
         # Wait for modal close + URL change to #/workspaces/<id>.
         # The new id is backend-allocated so we glob.
@@ -139,12 +143,13 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
             f"unexpected workspace id format in URL: {url}"
         )
 
-        # The new workspace's Studio shell mounts (studio-root), and its
-        # sub-header workspace selector shows the new id.
+        # The new workspace's shell mounts, and the topbar names it.
+        # S8 retired the Studio's workspace selector; the shell states
+        # the workspace id in the topbar instead.
         page.get_by_test_id("shell-root").wait_for(
             state="visible", timeout=15_000,
         )
-        page.locator('[data-testid="workspace-selector"]').get_by_text(
+        page.get_by_test_id("shell-workspace").get_by_text(
             created_ws_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
 
