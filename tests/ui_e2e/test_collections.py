@@ -107,9 +107,15 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
             "Collection created", exact=False,
         ).first.wait_for(state="visible", timeout=5_000)
 
-        # New row appears in the table after the list.refetch().
-        page.locator(f"tr:has-text('{collection_id}')").first.wait_for(
-            state="visible", timeout=10_000,
+        # Creating a collection opens it. The overlay leaves the list and
+        # shows the new collection's document browser, so what proves the
+        # create landed is the breadcrumb naming it, not a row in a table
+        # that is no longer on screen.
+        page.get_by_test_id("shell-overlay-body").get_by_text(
+            collection_id, exact=False,
+        ).first.wait_for(state="visible", timeout=10_000)
+        assert "overlay=collections" in page.url, (
+            f"expected to land in the collections overlay, got {page.url}"
         )
 
         # Defence: storage round-trip.
