@@ -90,6 +90,13 @@ class _Store:
 
     async def delete(self, cid, did):
         self.deleted.append((cid, did))
+        # Actually drop them. A fake that records the call but keeps the
+        # rows cannot show a re-index leaving stale chunks behind, which
+        # is one of the things this module is supposed to prevent.
+        self.puts = [
+            r for r in self.puts
+            if not (r.collection_id == cid and r.document_id == did)
+        ]
 
     async def create_collection(self, cid, *, dimensions, distance="cosine"):
         self.created = (cid, dimensions)
@@ -98,9 +105,14 @@ class _Store:
     async def put(self, record):
         self.puts.append(record)
 
-    async def search_by_meta(self, cid, *, meta):
-        # Mirror the real store: an unregistered collection raises rather
-        # than returning an empty list.
+    async def search_by_meta(self, cid, meta=None):
+        # ``meta`` is positional-or-keyword on the real interface; forcing
+        # it keyword-only here made a positional call raise TypeError,
+        # which callers that treat store errors as "nothing indexed"
+        # silently read as an empty index.
+        #
+        # Mirror the real store otherwise: an unregistered collection
+        # raises rather than returning an empty list.
         if cid not in self._registered:
             raise PrimerError(f"collection {cid!r} is not registered")
         return [r for r in self.puts if r.collection_id == cid]
@@ -727,6 +739,55 @@ class TestIndexDocuments:
         # system collection past the e2e per-test ceiling.
         assert emb.calls == 2, emb.batch_sizes
         assert emb.batch_sizes == [1, 20], emb.batch_sizes
+
+    @pytest.mark.asyncio
+    async def test_a_second_pass_over_unchanged_content_embeds_nothing(self):
+        """Re-running a backfill must not re-embed what is already there.
+
+        Bootstrap re-enables search on the system collection, which is
+        roughly 900 chunks. Re-indexing all of it per call is what put
+        the five-cycle e2e test past its 180 s ceiling, and it is wasted
+        work in production too.
+        """
+        from primer.knowledge.indexing import index_documents
+
+        store = _Store()
+        emb = _CountingEmb()
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=emb)
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        docs = [
+            Document(
+                id=f"doc-{i}", collection_id="kb-1",
+                slug=f"doc-{i}", path=f"doc-{i}",
+            )
+            for i in range(5)
+        ]
+        bodies = {d.id: f"body number {i}" for i, d in enumerate(docs)}
+
+        class _Bodies:
+            async def get(self, doc_id):
+                return bodies[doc_id]
+
+        kwargs = dict(
+            documents=docs, collection=_collection(),
+            provider_registry=reg, semantic_search_registry=ssr,
+            content_store=_Bodies(),
+        )
+        assert await index_documents(**kwargs) == 5
+        first_calls = emb.calls
+        assert first_calls > 0
+
+        # Second pass: same documents, same bodies, no work.
+        assert await index_documents(**kwargs) == 0
+        assert emb.calls == first_calls, emb.batch_sizes
+
+        # Change one body and only that document is re-embedded.
+        bodies["doc-2"] = "an entirely different body"
+        assert await index_documents(**kwargs) == 1
+        assert emb.calls == first_calls + 2, emb.batch_sizes  # probe + batch
 
     @pytest.mark.asyncio
     async def test_nothing_is_written_when_embedding_fails(self):

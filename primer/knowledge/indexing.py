@@ -257,7 +257,10 @@ async def index_documents(
     semantic_search_registry,
     content_store: DocumentContentStore,
 ) -> int:
-    """Index many documents in one pass. Returns the document count.
+    """Index many documents in one pass.
+
+    Returns how many documents it actually (re)indexed, which is not the
+    number passed in: see the skip rule below.
 
     Same contract as :func:`index_document`, batched. The per-document
     form makes one embedder round-trip per document plus a probe, which
@@ -266,6 +269,13 @@ async def index_documents(
     the e2e lane hit its per-test ceiling re-bootstrapping five times.
     Chunks are batched ACROSS documents here, so the number of calls
     tracks total chunks rather than document count.
+
+    Documents whose stored chunks already match what they would produce
+    are skipped: a backfill re-run over unchanged content does no
+    embedding at all. That is what makes re-enabling search cheap, and
+    it is the difference between a bootstrap that costs a full re-index
+    every time and one that costs only the drift. Documents that are
+    absent from the index, or whose text has moved on, are re-embedded.
 
     Embeds everything before touching the index, so a failure part-way
     leaves the prior vectors intact exactly as the single-document path
@@ -276,23 +286,43 @@ async def index_documents(
     cfg = collection.search
     from primer.knowledge.splitter import split_text
 
-    # (document, chunk_index, text) flattened across every document.
-    flat: list[tuple[str, int, str]] = []
-    seen: list[str] = []
-    for doc in documents:
-        seen.append(doc.id)
-        text = await content_store.get(doc.id) or ""
-        for idx, chunk in enumerate(split_text(
-            text,
-            max_chars=cfg.chunking.max_chars,
-            overlap=cfg.chunking.overlap,
-        )):
-            flat.append((doc.id, idx, chunk))
-
     embedder = await provider_registry.get_embedder(cfg.embedder.provider_id)
     store = await semantic_search_registry.get_store(
         cfg.vector_store_provider_id
     )
+
+    # What the index already holds, read once for the whole pass. An
+    # unregistered collection means "nothing", which is the first run.
+    existing: dict[str, dict[str, str]] = {}
+    try:
+        for record in await store.search_by_meta(collection.id, {}):
+            existing.setdefault(record.document_id, {})[
+                record.chunk_id
+            ] = record.text
+    except Exception:  # noqa: BLE001 - absent index reads as empty
+        existing = {}
+
+    # (document, chunk_index, text) flattened across the documents that
+    # actually need work.
+    flat: list[tuple[str, int, str]] = []
+    stale: list[str] = []
+    for doc in documents:
+        chunks = split_text(
+            await content_store.get(doc.id) or "",
+            max_chars=cfg.chunking.max_chars,
+            overlap=cfg.chunking.overlap,
+        )
+        current = existing.get(doc.id, {})
+        if current == {str(i): c for i, c in enumerate(chunks)}:
+            continue
+        stale.append(doc.id)
+        flat.extend((doc.id, idx, chunk) for idx, chunk in enumerate(chunks))
+
+    if not stale:
+        logger.info(
+            "collection %s already indexed; nothing to backfill", collection.id,
+        )
+        return 0
 
     dimensions = await probe_dimensions(
         collection=collection, provider_registry=provider_registry,
@@ -343,7 +373,7 @@ async def index_documents(
             ))
 
     # Every vector is in hand: only now replace what is stored.
-    for doc_id in seen:
+    for doc_id in stale:
         try:
             await store.delete(collection.id, doc_id)
         except PrimerError:
@@ -353,9 +383,9 @@ async def index_documents(
 
     logger.info(
         "indexed %d document(s) into collection %s (%d chunks)",
-        len(seen), collection.id, len(records),
+        len(stale), collection.id, len(records),
     )
-    return len(seen)
+    return len(stale)
 
 
 async def remove_document_index(
