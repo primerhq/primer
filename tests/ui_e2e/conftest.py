@@ -82,6 +82,63 @@ def console_url(base_url: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Getting past the setup gate
+# ---------------------------------------------------------------------------
+
+
+_SETUP_PROVIDER_ID = "uie2e-setup-llm"
+_SETUP_MODEL = "scripted:default"
+
+
+@pytest.fixture(scope="session", autouse=True)
+def install_is_set_up(base_url: str) -> None:
+    """Leave the install past the S5 setup gate before any journey runs.
+
+    The console refuses to render its shell until setup is complete and
+    shows the wizard instead: "Configure this install". Completeness
+    needs an LLMProvider and a ModelProfile, and those come from the
+    wizard, not from the startup seed pass, so a fresh bring-up serves
+    the wizard to every journey. Each one then waits out its Playwright
+    timeout on a shell element that is never coming, which is what left
+    this whole lane red and, at 30 minutes of timeouts, unable to even
+    report why.
+
+    Seeding a provider is what a first-run operator does in the wizard.
+    The seed pass then has the profile it needs to create the reserved
+    agents, which are the remaining predicates.
+    """
+    import httpx as _httpx
+
+    from tests._support.model_profiles import seed_llm_provider_with
+
+    with _httpx.Client(base_url=base_url, timeout=60.0) as c:
+        status = c.get("/v1/auth/status")
+        if status.status_code == 200 and status.json().get("setup_complete"):
+            return
+
+        seed_llm_provider_with(c, {
+            "id": _SETUP_PROVIDER_ID,
+            "provider": "openai",
+            "config": {
+                "url": "http://127.0.0.1:9/v1",
+                "api_key": "sk-not-used",
+            },
+            "models": [{"name": _SETUP_MODEL}],
+        })
+        # Re-run the ensure pass now that a profile exists: the reserved
+        # agents are stamped with the default profile and cannot be
+        # created before one is there.
+        c.post("/v1/setup/seed")
+
+        status = c.get("/v1/auth/status")
+        body = status.json() if status.status_code == 200 else {}
+        assert body.get("setup_complete"), (
+            "the console will serve the setup wizard to every journey; "
+            f"still missing: {body.get('setup_missing')!r}"
+        )
+
+
+# ---------------------------------------------------------------------------
 # httpx client (for test data setup + cleanup, NOT for behavior under test)
 # ---------------------------------------------------------------------------
 
