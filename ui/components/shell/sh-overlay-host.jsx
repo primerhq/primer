@@ -364,6 +364,22 @@ function SH_OverlayHost() {
       </div>
       <div className="sh-overlay-body" data-testid="shell-overlay-body">
         <div className="page-header">
+          {/* The crumb, restored. Every re-hosted page states in its own
+              header comment that app.jsx renders the crumb and h1 for it,
+              which is why none of them draw their own; the flag day cut
+              app.jsx down to the mount and the crumb went with it. A
+              detail view has had no way back to its list since, so
+              opening one agent, graph, toolset or harness was a one-way
+              trip ending at Close Overlay. */}
+          {overlay.id || overlay.section ? (
+            <div className="crumb">
+              <a data-testid="shell-overlay-crumb"
+                onClick={function () { shell.openOverlay(name, null, null); }}
+              >{SH_OVERLAY_TITLES[name] || name}</a>
+              <span className="sep">/</span>
+              <span className="mono">{SH_overlayTitle(overlay)}</span>
+            </div>
+          ) : null}
           <h1 className="page-title">{SH_overlayTitle(overlay)}</h1>
         </div>
         {mount.render(overlay, shell)}
