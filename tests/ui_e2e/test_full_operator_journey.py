@@ -30,7 +30,7 @@ import pytest
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-02", "SMK-UI-03", "SMK-UI-04", "SMK-UI-06")
 
 
@@ -192,9 +192,7 @@ def test_multi_page_operator_journey_no_llm(
         # ----- 3. Workspace detail (click the row)
         page.locator(f"tr:has-text('{ids['workspace']}')").first.click()
         # URL transitions to /workspaces/{id}
-        page.wait_for_url(
-            f"**/console/#/workspaces/{ids['workspace']}**", timeout=10_000,
-        )
+        wait_for_overlay_url(page, f"workspaces/{ids['workspace']}", timeout=10_000)
         # The detail page renders the workspace id somewhere in the
         # header — be permissive on layout, just confirm presence.
         page.get_by_text(ids["workspace"], exact=False).first.wait_for(
@@ -212,9 +210,7 @@ def test_multi_page_operator_journey_no_llm(
 
         # ----- 5. Agent detail
         page.locator(f"tr:has-text('{ids['agent']}')").first.click()
-        page.wait_for_url(
-            f"**/console/#/agents/{ids['agent']}**", timeout=10_000,
-        )
+        wait_for_overlay_url(page, f"agents/{ids['agent']}", timeout=10_000)
         page.get_by_text(ids["agent"], exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )

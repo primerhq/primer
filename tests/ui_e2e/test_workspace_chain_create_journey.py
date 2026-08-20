@@ -27,7 +27,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -78,10 +78,7 @@ def test_workspace_chain_create_journey(
         modal.locator("[data-testid='ws-provider-path']").fill(f"/tmp/{provider_id}")
         modal.get_by_role("button", name="Create").first.click()
         expect(modal).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/workspaces/providers/{provider_id}**",
-            timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"workspaces/providers/{provider_id}")
 
         # ---- 2. Create the template via the UI ---------------------------
         page.wait_for_function(
@@ -106,10 +103,7 @@ def test_workspace_chain_create_journey(
         modal.locator("[data-testid='ws-template-description']").fill("chain test template")
         modal.get_by_role("button", name="Create").first.click()
         expect(modal).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/workspaces/templates/{template_id}**",
-            timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"workspaces/templates/{template_id}")
 
         # ---- 3. Create the workspace via the existing modal --------------
         page.wait_for_function(
@@ -138,7 +132,7 @@ def test_workspace_chain_create_journey(
 
         # Modal closes; URL navigates to the workspace detail page.
         expect(modal).not_to_be_visible(timeout=15_000)
-        page.wait_for_url("**/console/#/workspaces/**", timeout=20_000)
+        wait_for_overlay_url(page, "workspaces", timeout=20_000)
         # Grab the workspace id from the URL for cleanup.
         url = page.url
         wid = url.rsplit("/", 1)[-1]

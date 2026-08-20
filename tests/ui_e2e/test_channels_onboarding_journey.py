@@ -52,7 +52,7 @@ from playwright.sync_api import expect
 
 from tests.ui_e2e._studio_helpers import open_workspace_settings
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 
 
 # 60-char placeholder; satisfies DiscordChannelProviderConfig.bot_token
@@ -210,9 +210,7 @@ def test_u0108_channels_operator_onboarding_journey(
         # Modal closes; Designer's onSuccess navigates to the new
         # provider's detail page.
         expect(page.locator(".modal")).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/channels/providers/{cp_id}**", timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"channels/providers/{cp_id}")
         expect(page.get_by_role("button", name="Probe").first).to_be_visible(
             timeout=10_000,
         )

@@ -43,7 +43,7 @@ from tests.ui_e2e._studio_helpers import files_list, open_studio
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -169,7 +169,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
 
         # ----- 2. Click row → the Studio for that workspace ---------
         ws_row.first.click()
-        page.wait_for_url(f"**/console/#/workspaces/{wid}**", timeout=15_000)
+        wait_for_overlay_url(page, f"workspaces/{wid}")
         open_studio(page, console_url, wid)
 
         # v1 kept the tree always on screen; the revamp's rail defaults to

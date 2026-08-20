@@ -24,6 +24,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import wait_for_overlay_url
 pytestmark = smk("SMK-UI-06")
 
 
@@ -102,10 +103,7 @@ def test_workspace_provider_create_detail_delete_journey(
 
         # Modal closes; URL navigates to detail page.
         expect(modal).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/workspaces/providers/{provider_id}**",
-            timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"workspaces/providers/{provider_id}")
 
         # Detail header renders with the backend badge + path summary.
         expect(page.get_by_text(provider_id, exact=False).first).to_be_visible(
@@ -130,9 +128,7 @@ def test_workspace_provider_create_detail_delete_journey(
         ).first.click()
 
         # URL navigates back to /workspaces/providers and the row is gone.
-        page.wait_for_url(
-            "**/console/#/workspaces/providers", timeout=15_000,
-        )
+        wait_for_overlay_url(page, "workspaces/providers")
         # Scope the assertion to the page body (table/empty state) to avoid
         # matching the transient "Provider deleted" toast which also renders
         # the provider id in its detail field.

@@ -52,7 +52,7 @@ from tests.ui_e2e import _graph_builder_helpers as gb
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-04")
 
 
@@ -166,9 +166,7 @@ def test_u0107_graph_builder_persistence_journey(
         modal.get_by_role("button", name="Create", exact=True).click()
 
         # ----- 3. Land on /graphs/{gid}; editor renders ------------
-        page.wait_for_url(
-            f"**/console/#/graphs/{graph_id}", timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"graphs/{graph_id}")
         graph_id_created = graph_id
         expect(page.locator("h1.page-title", has_text=graph_id)).to_be_visible(
             timeout=20_000,
@@ -223,7 +221,7 @@ def test_u0107_graph_builder_persistence_journey(
 
         # ----- 7. Click "Graphs" breadcrumb → /graphs list ---------
         page.locator(".crumb a", has_text="Graphs").click()
-        page.wait_for_url("**/console/#/graphs", timeout=10_000)
+        wait_for_overlay_url(page, "graphs", timeout=10_000)
         expect(page.locator("h1.page-title")).to_have_text(
             "Graphs", timeout=10_000,
         )
@@ -232,9 +230,7 @@ def test_u0107_graph_builder_persistence_journey(
 
         # ----- 8. Click row → back to /graphs/{gid} ----------------
         row.first.click()
-        page.wait_for_url(
-            f"**/console/#/graphs/{graph_id}", timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"graphs/{graph_id}")
         expect(page.locator("h1.page-title", has_text=graph_id)).to_be_visible(
             timeout=15_000,
         )

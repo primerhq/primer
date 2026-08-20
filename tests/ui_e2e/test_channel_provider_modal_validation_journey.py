@@ -45,7 +45,7 @@ from __future__ import annotations
 import httpx
 import pytest
 from playwright.sync_api import expect
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 
 
 def _cleanup(base_url: str, provider_ids: list[str]) -> None:
@@ -154,9 +154,7 @@ def test_u0115_channel_provider_modal_invalid_app_token_inline_error(
 
         # ----- 8. Success path — modal closes + navigates ----------
         expect(modal).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/channels/providers/{cp_id}**", timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"channels/providers/{cp_id}")
 
         # ----- 9. Detail page sanity: Probe disabled with hint -----
         probe = page.get_by_role("button", name="Probe", exact=True).first

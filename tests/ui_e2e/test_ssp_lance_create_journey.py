@@ -14,7 +14,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-05", status="partial")
 
 
@@ -79,7 +79,7 @@ def test_ssp_lance_create_via_modal_journey(
 
         # 9. Modal closes; URL navigates to detail page.
         expect(modal).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(f"**/console/#/ssp/{ssp_id}**", timeout=15_000)
+        wait_for_overlay_url(page, f"ssp/{ssp_id}")
 
         # 10. Detail page header shows the path.
         expect(page.get_by_text(lance_path, exact=False).first).to_be_visible(timeout=10_000)

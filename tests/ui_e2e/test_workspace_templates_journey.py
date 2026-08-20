@@ -22,7 +22,7 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -93,10 +93,7 @@ def test_workspace_template_create_edit_delete_journey(
         submit.click()
 
         expect(modal).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/workspaces/templates/{template_id}**",
-            timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"workspaces/templates/{template_id}")
         # The description should appear in the page body (not just transient toast).
         page_body = page.locator(".page-body")
         expect(page_body.get_by_text("dev workspace v1", exact=False).first).to_be_visible(
@@ -128,9 +125,7 @@ def test_workspace_template_create_edit_delete_journey(
             "button", name="Delete template"
         ).first.click()
 
-        page.wait_for_url(
-            "**/console/#/workspaces/templates", timeout=15_000,
-        )
+        wait_for_overlay_url(page, "workspaces/templates")
         # Scope to page body to exclude the transient "Template deleted" toast.
         expect(
             page_body.get_by_text(template_id, exact=True)

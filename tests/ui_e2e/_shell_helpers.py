@@ -138,6 +138,22 @@ def overlay_target(route: str) -> str:
     )
 
 
+def wait_for_overlay_url(page: Page, route: str, *,
+                         timeout: int = 15_000) -> None:
+    """Wait until the URL addresses the overlay that succeeded ``route``.
+
+    The pre-S8 console addressed pages directly (``#/agents/ag-1``);
+    the shell addresses one workspace and hangs surfaces off it as
+    ``#/w/<wid>?overlay=<name>[:<section>[:<id>]]``. A test that waited
+    on the old shape waited forever, since nothing writes it any more.
+
+    Takes the same legacy route the rest of this module speaks, so a
+    call site reads as what it is checking rather than as URL grammar.
+    """
+    target = overlay_target(route)
+    page.wait_for_url(f"**overlay={target}**", timeout=timeout)
+
+
 def open_legacy_route(page: Page, console_url: str, route: str,
                       *, tab: str | None = None, wid: str | None = None,
                       timeout: int = 20_000):

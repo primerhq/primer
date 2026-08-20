@@ -28,7 +28,7 @@ import pytest
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-03")
 
 
@@ -159,7 +159,7 @@ def test_u0006_new_agent_modal_creates_row_and_closes(
             # the agent id. We wait for both as separate observations
             # so a future spec change that decouples nav-and-title
             # gives a clearer failure.
-            page.wait_for_url(f"**/console/#/agents/{agent_id}", timeout=10_000)
+            wait_for_overlay_url(page, f"agents/{agent_id}", timeout=10_000)
             page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
                 state="visible", timeout=10_000,
             )
@@ -329,7 +329,7 @@ def test_u0020_agent_delete_confirms_removes_and_navigates_back_to_list(
             confirm.wait_for(state="hidden", timeout=10_000)
 
             # Navigates back to /agents (the UI's success path).
-            page.wait_for_url("**/console/#/agents", timeout=10_000)
+            wait_for_overlay_url(page, "agents", timeout=10_000)
             page.locator("h1.page-title").get_by_text("Agents").first.wait_for(
                 state="visible", timeout=5_000,
             )
