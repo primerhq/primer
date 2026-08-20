@@ -161,3 +161,25 @@ def test_landing_ignores_session_rows_from_another_workspace() -> None:
         r"items\[0\]\.workspace_id\s*\n?\s*&&\s*items\[0\]\.workspace_id\s*!==\s*wid",
         src,
     ), "landing must wait for the refetch rather than open a foreign session"
+
+
+def test_the_url_document_is_open_on_the_first_render() -> None:
+    """Regression: a shell mounted at a document url opened nothing.
+
+    The overlay and the anchor were seeded from the url in the initial
+    state; the document was not, and nothing else opens it on a first
+    render. The hashchange listener needs a hash change AFTER mount and
+    the workspace effect needs the workspace to change AFTER mount, so a
+    shell that mounts already pointed at "#/w/<wid>?doc=session:<id>"
+    ignored the session the address named. The landing rule then decided
+    the workspace was empty and created a session of its own, which is
+    the tab that appeared instead of the one asked for.
+    """
+    src = _src()
+    seed = src[src.index("var docsState = React.useState("):]
+    seed = seed[:seed.index("var overlayState")]
+    assert "initial.doc" in seed, (
+        "the initial doc state must be seeded from the url, like the "
+        "overlay and the anchor beside it"
+    )
+    assert "SH_openDoc(" in seed
