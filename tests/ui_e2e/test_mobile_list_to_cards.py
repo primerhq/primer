@@ -75,8 +75,9 @@ def test_mobile_workspaces_tap_card_opens_detail(
     except Exception:
         pytest.skip("no workspaces seeded in this environment")
     cards.first.click()
-    # Tapping a card navigates to the per-workspace detail route, i.e.
-    # the hash gains a "/workspaces/<id>" segment (a non-empty id after
-    # the trailing slash). ``to_have_url`` takes a string or regex, not
-    # a callable, so match the detail-route shape with a pattern.
-    expect(page).to_have_url(re.compile(r"#/workspaces/.+"))
+    # Tapping a card enters that workspace. The shell addresses a
+    # workspace as "#/w/<wid>", so the hash gains a non-empty id there;
+    # the pre-S8 "#/workspaces/<id>" spelling was the same destination
+    # under the old grammar. ``to_have_url`` takes a string or regex, not
+    # a callable, so match the shape with a pattern.
+    expect(page).to_have_url(re.compile(r"#/w/.+"))
