@@ -206,6 +206,34 @@ function SH_createFrecency(now) {
   };
 }
 
+// A verb is registered once, on the shell's first render, but it runs
+// much later. A closure over that first render's shell object therefore
+// reads state as it was at mount: an empty tab list, no sessions, the
+// starting workspace. Every session verb resolved its target from
+// shell.docs and so found nothing, which is why Close Session, Park
+// Session and Interrupt Session all silently did nothing rather than
+// failing loudly.
+//
+// SH_liveShell returns a stand-in whose every property read delegates to
+// the CURRENT render's object, so registration stays one-shot while the
+// verbs still see the shell as it is when the operator invokes them.
+// The shell object is built from a fixed literal each render, so its key
+// set does not change and reading them once is enough.
+function SH_liveShell(ref) {
+  var view = {};
+  var keys = Object.keys(ref.current || {});
+  for (var i = 0; i < keys.length; i++) {
+    (function (key) {
+      Object.defineProperty(view, key, {
+        enumerable: true,
+        get: function () { return ref.current[key]; },
+      });
+    })(keys[i]);
+  }
+  return view;
+}
+
+window.SH_liveShell = SH_liveShell;
 window.SH_SURFACES = SH_SURFACES;
 window.SH_VERB_WORDS = SH_VERB_WORDS;
 window.SH_DESTRUCTIVE_DAMPENER = SH_DESTRUCTIVE_DAMPENER;

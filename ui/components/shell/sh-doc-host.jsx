@@ -284,10 +284,14 @@ function SH_DocBody(props) {
 function SH_DocHost() {
   var shell = SH_useShell();
   var tap = window.useWorkspaceTap(shell.wid);
+  // Registration is one-shot but the verbs run later, so they get a live
+  // view rather than this render's object: see SH_liveShell.
+  var shellRef = React.useRef(shell);
+  shellRef.current = shell;
   var registeredRef = React.useRef(false);
   if (!registeredRef.current) {
     registeredRef.current = true;
-    SH_registerCoreVerbs(shell);
+    SH_registerCoreVerbs(window.SH_liveShell(shellRef));
   }
 
   return (

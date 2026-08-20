@@ -436,7 +436,12 @@ function SH_SessionDoc(props) {
     (records.data && records.data.items) || []
   );
 
-  if (!shell.registry.get("session.rewind")) SH_registerSessionVerbs(shell);
+  var verbShellRef = React.useRef(shell);
+  verbShellRef.current = shell;
+  if (!shell.registry.get("session.rewind")) {
+    // Live view, not this render's object: see SH_liveShell.
+    SH_registerSessionVerbs(window.SH_liveShell(verbShellRef));
+  }
 
   // "Mounted IMMEDIATELY on send": the tap frame that would produce a
   // status is still in flight when the user releases Enter, so send sets

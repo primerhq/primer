@@ -9,6 +9,7 @@ the dual-render rule is checkable statically later.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -183,3 +184,67 @@ def test_for_surface_returns_only_verbs_that_declared_it() -> None:
         'JSON.stringify(REG.forSurface("rail").map(function (v) { return v.id; }))'
     ))
     assert ids == ["session.open"]
+
+
+# ---------------------------------------------------------------------------
+# A verb registered once must still see the shell as it is when it runs.
+# ---------------------------------------------------------------------------
+
+
+def test_a_verb_registered_once_reads_the_current_shell_not_the_first_one() -> None:
+    """Regression: every session verb silently did nothing.
+
+    Verbs are registered on the shell's first render and run much later.
+    Closing over that render's shell object froze the doc state at mount,
+    so a verb resolving its target from ``shell.docs`` found an empty tab
+    list. Close Session, Park Session and Interrupt Session all returned
+    without sending a request and without saying why.
+    """
+    ctx = _ctx()
+    ctx.eval(
+        """
+        var ref = { current: { docs: { activeGroup: 0, groups: [] } } };
+        var live = SH_liveShell(ref);
+        // Registration happens now, against the empty state...
+        var seen = null;
+        var verb = function () { seen = live.docs.groups.length; };
+        // ...and the shell is replaced on a later render, as React does.
+        ref.current = { docs: { activeGroup: 0, groups: [{ tabs: [1, 2] }] } };
+        verb();
+        """
+    )
+    assert ctx.eval("seen") == 1, (
+        "the verb read the first render's empty group list, not the current one"
+    )
+
+
+def test_the_live_view_reflects_every_later_replacement() -> None:
+    ctx = _ctx()
+    ctx.eval(
+        """
+        var ref2 = { current: { wid: "primer", role: "user" } };
+        var live2 = SH_liveShell(ref2);
+        var first = live2.wid;
+        ref2.current = { wid: "ws-other", role: "admin" };
+        var second = live2.wid;
+        var role = live2.role;
+        """
+    )
+    assert ctx.eval("first") == "primer"
+    assert ctx.eval("second") == "ws-other"
+    assert ctx.eval("role") == "admin"
+
+
+def test_both_registration_sites_pass_a_live_view() -> None:
+    """Neither site may hand the raw first-render object back in."""
+    for rel, call in (
+        ("components/shell/sh-doc-host.jsx", "SH_registerCoreVerbs"),
+        ("components/shell/sh-session-doc.jsx", "SH_registerSessionVerbs"),
+    ):
+        src = (ROOT / "ui" / rel).read_text(encoding="utf-8")
+        assert f"{call}(window.SH_liveShell(" in src, (
+            f"{rel} must register {call} against a live view, not a snapshot"
+        )
+        assert not re.search(rf"(?<!function ){call}\(shell\)", src), (
+            f"{rel} still registers {call} against a first-render snapshot"
+        )
