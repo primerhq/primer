@@ -64,6 +64,15 @@ function PC_RowActions({ klass, rowId, onChanged }) {
     try {
       await apiFetch(method, path);
       setConfirmDelete(false);
+      // Say it happened. Invalidating a cache changes nothing on screen,
+      // so without this the button just goes un-busy and the operator
+      // has no way to tell a dropped cache from a click that missed.
+      // The per-class detail views this catalog replaced said so, and
+      // the toolsets and semantic-search surfaces still do.
+      var toast = window.primerApi && window.primerApi.toastPush;
+      if (what === "invalidate" && typeof toast === "function") {
+        toast({ kind: "success", title: "Cache dropped", detail: rowId });
+      }
       if (onChanged) onChanged(what);
     } catch (err) {
       // 403 means a reserved row; the backend detail says which and why

@@ -240,6 +240,17 @@ var SH_OVERLAY_TITLES = {
 };
 
 
+// Some surfaces are addressed by SECTION rather than by record, and the
+// section is what the page is actually showing: "channels:rules" is the
+// channel rules, not channels. Titling those by the surface alone names
+// the wrong page.
+var SH_OVERLAY_SECTION_TITLES = {
+  "channels:rules": "Channel rules",
+  "workspaces:templates": "Workspace templates",
+  "workers:health": "Health",
+};
+
+
 function SH_overlayTitle(overlay) {
   // A detail view is titled by the record it is showing; a list view by
   // the surface. app.jsx rendered this header for every route before S8
@@ -247,6 +258,12 @@ function SH_overlayTitle(overlay) {
   // one, so without it nothing on screen says which agent (or graph, or
   // toolset) you are looking at.
   if (overlay.id) return overlay.id;
+  if (overlay.section) {
+    var keyed = SH_OVERLAY_SECTION_TITLES[
+      overlay.name + ":" + overlay.section
+    ];
+    if (keyed) return keyed;
+  }
   return SH_OVERLAY_TITLES[overlay.name] || overlay.name;
 }
 
@@ -316,5 +333,6 @@ function SH_OverlayHost() {
 
 window.SH_OVERLAY_MOUNTS = SH_OVERLAY_MOUNTS;
 window.SH_OVERLAY_TITLES = SH_OVERLAY_TITLES;
+window.SH_OVERLAY_SECTION_TITLES = SH_OVERLAY_SECTION_TITLES;
 window.SH_overlayTitle = SH_overlayTitle;
 window.SH_OverlayHost = SH_OverlayHost;

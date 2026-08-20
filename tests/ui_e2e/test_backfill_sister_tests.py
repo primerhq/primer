@@ -96,8 +96,10 @@ def test_u0094_toolset_sessions_tab_deep_link_survives_reload(
             f"Sessions tab lost selected state after reload; "
             f"aria-selected={sessions_tab_after.get_attribute('aria-selected')!r}"
         )
-        assert "tab=sessions" in page.url, (
-            f"reload dropped ?tab=sessions query: {page.url}"
+        # The shell states the tab in the overlay target's section slot
+        # rather than as a ?tab= query: same deep link, one grammar.
+        assert f"overlay=toolsets:sessions:{toolset_id}" in page.url, (
+            f"reload dropped the sessions tab: {page.url}"
         )
     finally:
         _cleanup(base_url, [f"/v1/toolsets/{toolset_id}"])
