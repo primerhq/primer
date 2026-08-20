@@ -128,16 +128,17 @@ async def test_semantic_search_full_journey(
         # What matters is that it refuses and says which collection.
         assert coll_id in r.text, r.text
 
-        # ----- Delete the collection, then SSP delete should succeed -----
+        # ----- The collection goes too, and both are then gone ---------
+        # This used to be the point where the SSP delete finally became
+        # legal, once nothing referenced it. It is legal from the start
+        # now, so all that is left to pin is that removing the
+        # collection afterwards works and neither row lingers.
         r = await client.delete(f"/v1/collections/{coll_id}")
         assert r.status_code in (200, 204), r.text
-        r = await client.delete(f"/v1/ssp/{ssp_id}")
-        assert r.status_code in (200, 204), r.text
 
-        # ----- Post-delete: GET returns 404 for both -----
-        r = await client.get(f"/v1/ssp/{ssp_id}")
-        assert r.status_code == 404, r.text
         r = await client.get(f"/v1/collections/{coll_id}")
+        assert r.status_code == 404, r.text
+        r = await client.get(f"/v1/ssp/{ssp_id}")
         assert r.status_code == 404, r.text
 
     finally:

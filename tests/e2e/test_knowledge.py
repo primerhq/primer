@@ -505,7 +505,9 @@ async def test_t0204_collection_documents_paginates_with_offset_and_limit(
         assert page.status_code == 200, page.text
         documents = page.json()["documents"]
         seen = [d["path"] for d in documents]
-        expected = sorted(f"{did}.md" for did in doc_ids)
+        # Paths are the slug chain; the strict slug charset the tree
+        # route enforces has no room for an extension.
+        expected = sorted(doc_ids)
 
         # Every seeded path appears exactly once
         assert sorted(seen) == expected, (
@@ -758,13 +760,13 @@ async def test_t0253_collection_documents_items_carry_collection_id(
         documents = page.json()["documents"]
         returned_ids = {d["path"] for d in documents}
         # The unrelated document (different collection) must NOT appear.
-        assert f"{unrelated}.md" not in returned_ids, (
+        assert unrelated not in returned_ids, (
             f"unrelated doc {unrelated!r} (different collection_id) "
             f"surfaced in {coll_id!r} listing: {returned_ids!r}"
         )
         # All 3 seeded docs ARE present
         for did in doc_ids:
-            assert f"{did}.md" in returned_ids, (
+            assert did in returned_ids, (
                 f"seeded doc {did!r} missing from listing: {returned_ids!r}"
             )
     finally:
