@@ -87,7 +87,7 @@ def console_url(base_url: str) -> str:
 
 
 _SETUP_PROVIDER_ID = "uie2e-setup-llm"
-_SETUP_MODEL = "scripted:default"
+_SETUP_MODEL = "fake-model"
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -116,19 +116,23 @@ def install_is_set_up(base_url: str) -> None:
         if status.status_code == 200 and status.json().get("setup_complete"):
             return
 
-        seed_llm_provider_with(c, {
+        r = seed_llm_provider_with(c, {
             "id": _SETUP_PROVIDER_ID,
-            "provider": "openai",
-            "config": {
-                "url": "http://127.0.0.1:9/v1",
-                "api_key": "sk-not-used",
-            },
-            "models": [{"name": _SETUP_MODEL}],
+            "provider": "ollama",
+            "config": {"url": "http://127.0.0.1:9999"},
+            "models": [{"name": _SETUP_MODEL, "context_length": 4096}],
+            "limits": {"max_concurrency": 1},
         })
+        assert r.status_code in (200, 201, 409), (
+            f"could not seed the setup provider: {r.status_code} {r.text}"
+        )
         # Re-run the ensure pass now that a profile exists: the reserved
         # agents are stamped with the default profile and cannot be
         # created before one is there.
-        c.post("/v1/setup/seed")
+        seeded = c.post("/v1/setup/seed")
+        assert seeded.status_code == 200, (
+            f"ensure pass failed: {seeded.status_code} {seeded.text}"
+        )
 
         status = c.get("/v1/auth/status")
         body = status.json() if status.status_code == 200 else {}
