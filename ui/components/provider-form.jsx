@@ -221,8 +221,14 @@ function PC_AggregatedMount({ value, onChange }) {
 // which is a string, and an emptied box stores "". Both are rejected:
 // "" fails float parsing, and a numeric string only survives because
 // Pydantic coerces it. Send numbers as numbers and drop the empties.
-function PC_submittable(draft, shape) {
+function PC_submittable(draft, shape, selectedType) {
   const out = { ...draft };
+  // The type dropdown has the same fault limits had: `selectedType` falls
+  // back to the first key for DISPLAY, and that fallback was never written
+  // to the draft. Saving without touching the dropdown therefore sent no
+  // `provider` at all, which is required on every class, so the create
+  // 422'd while the form showed a type selected.
+  if (selectedType && !out.provider) out.provider = selectedType;
   if (shape && shape.limits) {
     out.limits = { max_concurrency: 1, ...(draft.limits || {}) };
   }
@@ -294,9 +300,9 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
     setBusy(true);
     try {
       const out = typeof onTest === "function"
-        ? await onTest(PC_submittable(draft, shape))
+        ? await onTest(PC_submittable(draft, shape, selectedType))
         : await apiFetch("POST", `/${plural}/_test`,
-                         PC_submittable(draft, shape));
+                         PC_submittable(draft, shape, selectedType));
       setTestResult(out);
     } catch (err) {
       setTestResult({ ok: false, error: err?.detail || err?.message || String(err) });
@@ -405,7 +411,7 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
           Test
         </Btn>
         <Btn data-testid="provider-form-save"
-          onClick={() => onSubmit && onSubmit(PC_submittable(draft, shape))}
+          onClick={() => onSubmit && onSubmit(PC_submittable(draft, shape, selectedType))}
           disabled={busy || modelRowsIncomplete(shape.row_fields)}>Save</Btn>
       </div>
     </div>

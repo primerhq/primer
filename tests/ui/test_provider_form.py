@@ -166,3 +166,23 @@ def test_number_boxes_are_sent_as_numbers() -> None:
         {"config_fields": [{"key": "port", "type": "number"}]},
     )
     assert out["config"]["port"] == 11434
+
+
+def test_a_save_that_never_touched_the_type_still_sends_one() -> None:
+    """Same fault as limits: shown as a default, never written to the draft.
+
+    ``selectedType`` falls back to the first key so the dropdown always
+    shows something, but that fallback lived only in the render. Saving
+    without touching the dropdown sent no ``provider``, which is required
+    on every class, so the create 422'd while the form displayed a type.
+    """
+    ctx = _submittable_ctx()
+    out = ctx.call("PC_submittable", {"id": "stt-x"}, {}, "whisper")
+    assert out["provider"] == "whisper"
+
+
+def test_a_type_the_operator_picked_wins_over_the_fallback() -> None:
+    ctx = _submittable_ctx()
+    out = ctx.call("PC_submittable", {"id": "stt-x", "provider": "deepgram"},
+                   {}, "whisper")
+    assert out["provider"] == "deepgram"
