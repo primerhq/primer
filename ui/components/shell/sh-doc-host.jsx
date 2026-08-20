@@ -372,6 +372,65 @@ function SH_StatusBar() {
   );
 }
 
+// The worker pool, at a glance.
+//
+// The old console carried this in its topbar and the shell dropped it,
+// leaving the pool visible only by opening the Workers overlay and
+// looking. /v1/workers and /v1/health are both live and the .worker-pill
+// styling was never deleted, so what went was the glance, not the data:
+// an operator had no standing signal that the pool had drained until
+// something failed to run.
+function SH_WorkerPill() {
+  var shell = SH_useShell();
+  var workers = window.primerApi.useResource(
+    "shell-workers",
+    function (signal) {
+      return window.primerApi.apiFetch("GET", "/workers", null,
+        { signal: signal });
+    },
+    { pollMs: 5000 }
+  );
+  var health = window.primerApi.useResource(
+    "shell-worker-health",
+    function (signal) {
+      return window.primerApi.apiFetch("GET", "/health", null,
+        { signal: signal });
+    },
+    { pollMs: 5000 }
+  );
+
+  var items = (workers.data && workers.data.items) || [];
+  if (!items.length) return null;
+
+  var pool = (health.data && health.data.worker_pool) || {};
+  var active = 0;
+  var capacity = 0;
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].status === "active") active++;
+    capacity += items[i].capacity || 0;
+  }
+  if (typeof pool.capacity === "number") capacity = pool.capacity;
+  var inFlight = typeof pool.in_flight === "number" ? pool.in_flight : 0;
+
+  var busy = capacity > 0 && inFlight >= capacity * 0.8;
+  var cls = active === 0 ? "err" : (busy ? "warn" : "");
+
+  return (
+    <div
+      className={"worker-pill " + cls}
+      data-testid="worker-pill"
+      title="Worker pool: click to view"
+      onClick={function () { shell.openOverlay("workers"); }}
+    >
+      <span className="dot" />
+      <span className={busy ? "num-warn" : ""}>{active + "/" + items.length}</span>
+      <span>workers</span>
+      <span className="sep">·</span>
+      <span>{inFlight + " in flight"}</span>
+    </div>
+  );
+}
+
 function SH_Topbar() {
   var shell = SH_useShell();
   return (
@@ -391,6 +450,7 @@ function SH_Topbar() {
           shell.openOverlay("workspaces", "detail", shell.wid);
         }}
       >{shell.wid}</button>
+      <SH_WorkerPill />
       <span className="sh-topbar-verbs">
         {shell.registry.forSurface("topbar").map(function (verb) {
           return (
