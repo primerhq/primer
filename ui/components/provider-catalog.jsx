@@ -40,8 +40,24 @@ function PC_ClassRail({ classes, selected, onSelect }) {
       {classes.map((cls) => (
         <a
           key={cls.key}
+          // Stable handle for the e2e facade, matching the convention
+          // the workspace tabs use: the visible text is copy and is
+          // free to change, so a class is otherwise only addressable by
+          // its label.
+          data-testid={`provider-class-${cls.key}`}
           className={`pc-rail-item${cls.key === selected ? " selected" : ""}`}
+          role="button"
+          tabIndex={0}
           onClick={() => onSelect(cls.key)}
+          // An anchor with no href is not focusable and does not answer
+          // the keyboard, and this rail IS the navigation for the whole
+          // surface.
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              onSelect(cls.key);
+            }
+          }}
         >
           {cls.label}
         </a>
@@ -561,7 +577,7 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
         <h2 className="text-lg">{klass.label}</h2>
         {klass.key === "stt" || klass.key === "tts" ? <PC_ActiveSpeechPanel /> : null}
         {klass.key === "web_search" ? <PC_ActiveWebSearchPanel /> : null}
-        {body}
+        <div data-testid={`provider-body-${klass.key}`}>{body}</div>
         {klass.profiles && instanceId ? (
           <PC_ProfilesPanel providerId={instanceId} />
         ) : null}

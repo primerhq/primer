@@ -5,18 +5,23 @@ from __future__ import annotations
 from tests.ui_e2e._studio_helpers import open_provider_catalog
 
 
+# The keys the catalog actually uses, which are also the ones the URL
+# carries (?overlay=providers:<key>[:<id>]) and the ones
+# LEGACY_ROUTE_OVERLAYS maps the old routes onto. Four here were the
+# plural or the short form instead -- vector, artifact, workspaces,
+# channels -- and named no class on the rail.
 CLASS_KEYS = [
     "llm",
     "embedding",
     "cross_encoder",
-    "vector",
+    "ssp",
     "stt",
     "tts",
     "web_search",
     "web_fetch",
-    "artifact",
-    "workspaces",
-    "channels",
+    "artifact_storage",
+    "workspace",
+    "channel",
 ]
 
 
