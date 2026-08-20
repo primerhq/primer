@@ -123,7 +123,7 @@ def test_u0106_workspace_file_inspect_and_download_journey(
          host bind-mount path).
       3. Navigate /workspaces list — assert seeded row visible.
       4. Click row → /workspaces/{wid} (the Studio).
-      5. Wait for the Studio sidebar ``file-row`` for the seeded file.
+      5. Wait for the rail's ``rail-file:<path>`` entry for the seeded file.
       6. Click it → the center ``panel-file`` opens with the file's
          breadcrumb + the text preview showing the seeded content.
       7. Also verify the download endpoint delivers the exact bytes
@@ -174,14 +174,16 @@ def test_u0106_workspace_file_inspect_and_download_journey(
 
         # v1 kept the tree always on screen; the revamp's rail defaults to
         # Runs, so ask for Files first (no-op on v1) before the seeded file
-        # surfaces as a file-row within its lazy tree fetch.
+        # surfaces as a rail entry within its lazy tree fetch.
         files_list(page)
+        # The rail stamps each entry with its path: rail-file:<path>.
+        # The Studio's flat file-row is gone with the Studio.
         file_row = page.locator(
-            '[data-testid="file-row"]', has_text=file_name,
+            '[data-testid^="rail-file:"]', has_text=file_name,
         ).first
         expect(file_row).to_be_visible(timeout=20_000)
 
-        # ----- 3. Click file-row → panel-file preview shows content -
+        # ----- 3. Click the rail entry: the file doc shows content
         file_row.click()
         panel = page.locator('[data-testid^="shell-file:"]')
         expect(panel).to_be_visible(timeout=15_000)
