@@ -263,7 +263,8 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
   }
 
   return (
-    <div className="col" style={{ gap: 12 }}>
+    <div className="col" style={{ gap: 12 }}
+      data-testid={`provider-form-${plural}`}>
       <div className="field">
         <label className="field-label" htmlFor="pf-provider">provider</label>
         <select
@@ -342,7 +343,8 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
         >
           Test
         </Btn>
-        <Btn onClick={() => onSubmit && onSubmit(draft)} disabled={busy}>Save</Btn>
+        <Btn data-testid="provider-form-save"
+          onClick={() => onSubmit && onSubmit(draft)} disabled={busy}>Save</Btn>
       </div>
     </div>
   );
