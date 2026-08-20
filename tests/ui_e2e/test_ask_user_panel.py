@@ -137,19 +137,50 @@ def _seed_ladder(base_url: str, unique_suffix: str, tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def _route_pending_items(page, wid: str, items: list[dict]):
+def _route_pending_items(page, wid: str, items: list[dict]) -> list[str]:
     """Route GET /v1/workspaces/{wid}/yields/pending -> the given items.
 
-    The ActionRequired resource reads ``data.items``; each item shape is
-    ``{ kind, session_id, tool_call_id, prompt }`` (the shell rail's attention list).
+    The rail's attention list reads ``data.items``; each item is the
+    shape that route sends: ``{session_id, kind, prompt, tool_call_id,
+    parked_at}``.
+
+    Returns the list the handler appends each intercepted URL to. A mock
+    that quietly fails to match looks exactly like a surface rendering
+    nothing, which is a slow and confusing thing to debug; callers assert
+    on this so the two are told apart immediately.
+
+    The trailing ``*`` matters: without it the glob stops matching the
+    moment anything appends a query string.
     """
-    page.route(
-        f"**/v1/workspaces/{wid}/yields/pending",
-        lambda route: route.fulfill(
+    seen: list[str] = []
+
+    def _handler(route):
+        seen.append(route.request.url)
+        route.fulfill(
             status=200,
             content_type="application/json",
             body=json.dumps({"items": items}),
-        ),
+        )
+
+    page.route(f"**/v1/workspaces/{wid}/yields/pending*", _handler)
+    return seen
+
+
+def _assert_polled(page, polled: list[str], *, timeout_ms: int = 10_000) -> None:
+    """Wait until the shell has actually asked for the pending yields.
+
+    The rail fetches on mount, so this normally returns on the first
+    tick; it waits rather than asserting outright so a slow first paint
+    does not read as a mock that never matched.
+    """
+    waited = 0
+    while not polled and waited < timeout_ms:
+        page.wait_for_timeout(250)
+        waited += 250
+    assert polled, (
+        "the shell never requested the workspace's pending yields, so the "
+        "mock matched nothing: everything below would be comparing an "
+        "empty list against an empty list"
     )
 
 
@@ -178,11 +209,17 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        _route_pending_items(page, wid, [_ask_item(sid, prompt="What is your name?")])
+        polled = _route_pending_items(
+            page, wid, [_ask_item(sid, prompt="What is your name?")],
+        )
         open_studio(page, console_url, wid)
         # The right-sidebar debug panel (Action Required) starts collapsed;
         # expand it before looking for the decision card.
         expand_debug_sidebar(page)
+
+        # The rail has to have ASKED before anything it renders means
+        # something.
+        _assert_polled(page, polled)
 
         # One decision card per parked yield, keyed by tool_call_id. The
         # old Studio's action-item/respond/action-required-count testids
@@ -219,7 +256,7 @@ def test_u0049_ask_user_panel_submit_collapses_and_toasts(
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        _route_pending_items(page, wid, [_ask_item(sid)])
+        polled = _route_pending_items(page, wid, [_ask_item(sid)])
         respond_calls: list[dict] = []
 
         def _on_respond(route):
@@ -237,6 +274,7 @@ def test_u0049_ask_user_panel_submit_collapses_and_toasts(
         # The right-sidebar debug panel (Action Required) starts collapsed;
         # expand it before looking for the decision card.
         expand_debug_sidebar(page)
+        _assert_polled(page, polled)
         card = page.get_by_test_id("shell-decision:tc-ui-1")
         expect(card).to_be_visible(timeout=10_000)
 
@@ -291,7 +329,9 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
     try:
-        _route_pending_items(page, wid, [_ask_item(sid, prompt="Provide config")])
+        polled = _route_pending_items(
+            page, wid, [_ask_item(sid, prompt="Provide config")],
+        )
         # Server returns 422 for the submit.
         page.route(
             f"**/v1/sessions/{sid}/ask_user/respond",
@@ -313,6 +353,7 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
         # The right-sidebar debug panel (Action Required) starts collapsed;
         # expand it before looking for the decision card.
         expand_debug_sidebar(page)
+        _assert_polled(page, polled)
         card = page.get_by_test_id("shell-decision:tc-ui-1")
         expect(card).to_be_visible(timeout=10_000)
 
