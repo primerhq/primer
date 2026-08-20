@@ -70,6 +70,25 @@ def test_deep_editing_never_becomes_an_overlay() -> None:
     assert _mount_names().isdisjoint(set(kinds))
 
 
+def test_the_catalog_ref_reaches_the_overlay_as_a_class_and_an_id() -> None:
+    """ProviderCatalog emits a STRUCTURED ref, and the host must read it.
+
+    The catalog's own header pins the contract: it leaves through
+    onNavigate as ``{kind, classKey, id}``. The host read it as
+    ``(name, section, id)``, so the object landed in ``name``, the other
+    two were undefined, and picking a class or a provider never moved
+    the URL -- a reload always came back to the LLM list.
+    """
+    src = (UI / "components" / "shell" / "sh-overlay-host.jsx").read_text(
+        encoding="utf-8"
+    )
+    adapter = src.split("window.ProviderCatalog")[1].split("},")[0]
+    assert "provider-class" in adapter and "provider-instance" in adapter, (
+        "the host must translate the catalog's structured ref rather than "
+        "destructure it as positional arguments"
+    )
+
+
 def test_the_router_shim_publishes_the_real_contract() -> None:
     """Pinned decision 14: eight reused pages read this hook."""
     src = SHIM.read_text(encoding="utf-8")

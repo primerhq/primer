@@ -31,8 +31,20 @@ var SH_OVERLAY_MOUNTS = {
         <window.ProviderCatalog
           initialClass={state.section || "llm"}
           initialInstanceId={state.id || null}
-          onNavigate={function (name, section, id) {
-            window.SH_openOverlayFromShim(name, section, id);
+          onNavigate={function (ref) {
+            // The catalog emits a STRUCTURED ref -- its own header
+            // documents that -- while this read it as (name, section,
+            // id). The object landed in `name` and the other two were
+            // undefined, so picking a class or a provider never moved
+            // the URL and a reload always came back to the LLM list.
+            if (!ref || typeof ref !== "object") return;
+            if (ref.kind === "provider-class") {
+              window.SH_openOverlayFromShim("providers", ref.classKey, null);
+            } else if (ref.kind === "provider-instance") {
+              window.SH_openOverlayFromShim(
+                "providers", ref.classKey, ref.id,
+              );
+            }
           }}
         />
       );

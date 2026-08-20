@@ -496,7 +496,14 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   if (cls.form === "panel") {
     const Panel = cls.panel();
     body = Panel ? (
-      <Panel />
+      // These panels take the same two props their pages always took.
+      // Mounted bare, onOpen was undefined, so creating a provider threw
+      // on the call meant to open it and clicking a row did nothing at
+      // all; pushToast being undefined swallowed every confirmation too.
+      <Panel
+        onOpen={selectInstance}
+        pushToast={window.primerApi && window.primerApi.toastPush}
+      />
     ) : (
       <Banner kind="info" title={`${cls.label} panel unavailable`}>
         That panel component is not loaded in this bundle.
