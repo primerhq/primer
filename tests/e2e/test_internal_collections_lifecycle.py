@@ -41,10 +41,10 @@ from tests._support.model_profiles import agent_model, seed_llm_provider
 
 
 # Bootstrap is synchronous and now genuinely indexes the system
-# collection, so the call carries the whole first embedding pass: a few
-# hundred documents through a locally-loaded sentence-transformers model.
-# The 30 s that sufficed while it indexed nothing does not cover that.
-_BOOTSTRAP_TIMEOUT = httpx.Timeout(300.0, connect=10.0)
+# collection, so the call carries a real embedding pass. Kept under
+# the lane's own --timeout=180 per-test ceiling: a client timeout
+# above that can never fire, the test just dies at 180 s instead.
+_BOOTSTRAP_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
 
 # The collection bootstrap enables search on.
 _SYSTEM_COLLECTION_ID = "system"

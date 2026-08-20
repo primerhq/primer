@@ -668,3 +668,105 @@ async def test_move_rewrites_path_meta_without_reembedding():
     )
     assert store.puts[0].meta["path"] == "dst/leaf"
     assert store.puts[0].vector == rec.vector  # metadata only, no re-embed
+
+
+class _CountingEmb(_Emb):
+    """Embedder that records how many calls it fielded."""
+
+    def __init__(self, dim: int = 3):
+        super().__init__(dim)
+        self.calls = 0
+        self.batch_sizes: list[int] = []
+
+    async def embed(self, *, model, inputs):
+        self.calls += 1
+        self.batch_sizes.append(len(inputs))
+        return await super().embed(model=model, inputs=inputs)
+
+
+class TestIndexDocuments:
+    """The batched backfill: calls track chunks, not documents."""
+
+    @pytest.mark.asyncio
+    async def test_one_pass_regardless_of_document_count(self):
+        from primer.knowledge.indexing import index_documents
+
+        store = _Store()
+        emb = _CountingEmb()
+        reg = AsyncMock()
+        reg.get_embedder = AsyncMock(return_value=emb)
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        docs = [
+            Document(
+                id=f"doc-{i}", collection_id="kb-1",
+                slug=f"doc-{i}", path=f"doc-{i}",
+            )
+            for i in range(20)
+        ]
+        bodies = {d.id: f"body number {i}" for i, d in enumerate(docs)}
+
+        class _Bodies:
+            async def get(self, doc_id):
+                return bodies[doc_id]
+
+        n = await index_documents(
+            documents=docs,
+            collection=_collection(),
+            provider_registry=reg,
+            semantic_search_registry=ssr,
+            content_store=_Bodies(),
+        )
+
+        assert n == 20
+        assert len(store.puts) == 20, store.puts
+        # One probe plus one batch: twenty documents of one chunk each fit
+        # inside a single embed call. The per-document form made twenty
+        # probes and twenty embeds, which is what put a bootstrap of the
+        # system collection past the e2e per-test ceiling.
+        assert emb.calls == 2, emb.batch_sizes
+        assert emb.batch_sizes == [1, 20], emb.batch_sizes
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_written_when_embedding_fails(self):
+        """A failure part-way must leave the prior index intact."""
+        from primer.knowledge.indexing import index_documents
+
+        store = _Store()
+        reg = AsyncMock()
+        ssr = AsyncMock()
+        ssr.get_store = AsyncMock(return_value=store)
+
+        class _Boom(_Emb):
+            """Answers the probe, then dies on the real chunk batch."""
+
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            async def embed(self, *, model, inputs):
+                self.calls += 1
+                if self.calls > 1:
+                    raise RuntimeError("embedder down")
+                return await super().embed(model=model, inputs=inputs)
+
+        reg.get_embedder = AsyncMock(return_value=_Boom())
+        docs = [
+            Document(id="doc-a", collection_id="kb-1", slug="doc-a", path="doc-a"),
+        ]
+
+        class _Bodies:
+            async def get(self, doc_id):
+                return "some body text"
+
+        with pytest.raises(RuntimeError):
+            await index_documents(
+                documents=docs,
+                collection=_collection(),
+                provider_registry=reg,
+                semantic_search_registry=ssr,
+                content_store=_Bodies(),
+            )
+        assert store.puts == []
+        assert store.deleted == []

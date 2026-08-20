@@ -107,9 +107,9 @@ async def test_meta_agent_builds_from_use_case(
         config_active = True
         boot = await authed_client.post(
             "/v1/internal_collections/bootstrap",
-            # Synchronous, and it carries the system collection's first
-            # embedding pass; 30 s only sufficed while it indexed nothing.
-            timeout=httpx.Timeout(300.0, connect=10.0),
+            # Synchronous, and it carries a real embedding pass now.
+            # Under the lane's --timeout=180 per-test ceiling on purpose.
+            timeout=httpx.Timeout(120.0, connect=10.0),
         )
         assert boot.status_code == 200, boot.text
         await _read_bootstrap(authed_client)

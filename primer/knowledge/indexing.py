@@ -249,6 +249,115 @@ async def index_document(
     return len(records)
 
 
+async def index_documents(
+    *,
+    documents,
+    collection: Collection,
+    provider_registry,
+    semantic_search_registry,
+    content_store: DocumentContentStore,
+) -> int:
+    """Index many documents in one pass. Returns the document count.
+
+    Same contract as :func:`index_document`, batched. The per-document
+    form makes one embedder round-trip per document plus a probe, which
+    is fine for a single write and ruinous for a backfill: enabling
+    search on the system collection meant several hundred calls, and
+    the e2e lane hit its per-test ceiling re-bootstrapping five times.
+    Chunks are batched ACROSS documents here, so the number of calls
+    tracks total chunks rather than document count.
+
+    Embeds everything before touching the index, so a failure part-way
+    leaves the prior vectors intact exactly as the single-document path
+    does.
+    """
+    if collection.search is None:
+        return 0
+    cfg = collection.search
+    from primer.knowledge.splitter import split_text
+
+    # (document, chunk_index, text) flattened across every document.
+    flat: list[tuple[str, int, str]] = []
+    seen: list[str] = []
+    for doc in documents:
+        seen.append(doc.id)
+        text = await content_store.get(doc.id) or ""
+        for idx, chunk in enumerate(split_text(
+            text,
+            max_chars=cfg.chunking.max_chars,
+            overlap=cfg.chunking.overlap,
+        )):
+            flat.append((doc.id, idx, chunk))
+
+    embedder = await provider_registry.get_embedder(cfg.embedder.provider_id)
+    store = await semantic_search_registry.get_store(
+        cfg.vector_store_provider_id
+    )
+
+    dimensions = await probe_dimensions(
+        collection=collection, provider_registry=provider_registry,
+    )
+    try:
+        await store.create_collection(collection.id, dimensions=dimensions)
+    except ConflictError as exc:
+        stored_dim = _parse_stored_dim(str(exc), fallback=0)
+        raise DimensionMismatchError(
+            f"Embedder output dimension ({dimensions}) does not match the "
+            f"vector store dimension ({stored_dim}) recorded for collection "
+            f"{collection.id!r}. The collection was indexed with a different "
+            f"embedding model. To fix: delete all documents from this "
+            f"collection, then re-create it with the correct embedder, and "
+            f"re-ingest the documents.",
+            embedder_dim=dimensions,
+            collection_dim=stored_dim,
+            collection_id=collection.id,
+            cause=exc,
+        ) from exc
+
+    # Paths for the record meta, keyed by id so the loop below need not
+    # carry the Document objects around.
+    paths = {doc.id: doc.path for doc in documents}
+
+    records: list[EmbeddingRecord] = []
+    for start in range(0, len(flat), _EMBED_BATCH_SIZE):
+        batch = flat[start : start + _EMBED_BATCH_SIZE]
+        response = await embedder.embed(
+            model=cfg.embedder.model,
+            inputs=[TextPart(text=chunk) for _, _, chunk in batch],
+        )
+        if len(response.embeddings) != len(batch):
+            raise PrimerError(
+                f"embedder returned {len(response.embeddings)} embeddings "
+                f"for {len(batch)} chunk(s) of collection {collection.id!r}"
+            )
+        for (doc_id, idx, chunk), emb in zip(
+            batch, response.embeddings, strict=True
+        ):
+            records.append(EmbeddingRecord(
+                collection_id=collection.id,
+                document_id=doc_id,
+                chunk_id=str(idx),
+                text=chunk,
+                vector=list(emb.vector),
+                meta={"path": paths.get(doc_id, "")},
+            ))
+
+    # Every vector is in hand: only now replace what is stored.
+    for doc_id in seen:
+        try:
+            await store.delete(collection.id, doc_id)
+        except PrimerError:
+            pass
+    for record in records:
+        await store.put(record)
+
+    logger.info(
+        "indexed %d document(s) into collection %s (%d chunks)",
+        len(seen), collection.id, len(records),
+    )
+    return len(seen)
+
+
 async def remove_document_index(
     *,
     document_id: str,
@@ -396,6 +505,7 @@ async def rewrite_document_path_meta(
 
 __all__ = [
     "index_document",
+    "index_documents",
     "make_document_indexer",
     "make_document_path_rewriter",
     "make_document_unindexer",
