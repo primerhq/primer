@@ -364,6 +364,21 @@ function SH_ToastHost() {
                 <div className="req-id">
                   {"request-id "}
                   <span style={{ color: "var(--text)" }}>{rid}</span>
+                  {" \u00b7 "}
+                  {/* A request id is the one thing here worth keeping: it
+                      is what an operator pastes into a bug report or a log
+                      query, and it is long and opaque enough that reading
+                      it off the screen is a transcription error waiting to
+                      happen. The old console offered this; the shell's
+                      toast printed the id and left you to select it. */}
+                  <a
+                    data-testid="toast-copy-request-id"
+                    onClick={function () {
+                      if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(rid).catch(function () {});
+                      }
+                    }}
+                  >copy</a>
                 </div>
               ) : null}
             </div>
