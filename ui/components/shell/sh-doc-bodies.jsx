@@ -31,7 +31,7 @@ function SH_FileDoc(props) {
   return (
     <div className="sh-file" data-testid={"shell-file:" + path}>
       <div className="sh-file-bar">
-        <span className="sh-file-path">{path}</span>
+        <span className="sh-file-path" data-testid="file-breadcrumb">{path}</span>
         <button type="button" className="sh-verb" data-testid="shell-doc-save"
           disabled={draft == null}
           onClick={function () {
