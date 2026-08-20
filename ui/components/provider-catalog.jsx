@@ -379,6 +379,9 @@ function PC_ActiveSpeechPanel() {
       />
       <select
         className="input"
+        // The voice picker is the one control on this panel a caller
+        // needs by name; the panel around it already had a handle.
+        data-testid="active-speech-voice"
         value={row.tts_voice || ""}
         onChange={(e) => setDraft({ ...row, tts_voice: e.target.value })}
       >
