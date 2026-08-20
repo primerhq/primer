@@ -257,9 +257,6 @@ def test_u0091_llm_provider_invalidate_toasts_and_preserves_row(
     cleanup_urls = [f"/v1/llm_providers/{pid}"]
     try:
         open_legacy_route(page, console_url, f"providers/llm/{pid}")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
 
         # Wait for the Invalidate button.
         inv = page.get_by_role(

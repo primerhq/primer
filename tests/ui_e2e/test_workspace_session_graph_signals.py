@@ -243,9 +243,6 @@ def test_u0088_graph_editor_discard_reverts_unsaved_add_node(
     ]
     try:
         open_legacy_route(page, console_url, f"graphs/{gid}")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
 
         gb.wait_for_builder(page)
         gb.expect_clean(page)

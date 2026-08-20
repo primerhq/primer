@@ -213,9 +213,6 @@ def test_u0072_workspace_files_tab_lists_api_written_file(
 
         # Navigate to workspace detail Files tab.
         open_workspace_settings(page, console_url, wid, "files")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
 
         # The file tree renders each file by its base name. Wait
         # for our filename to appear (the tab loads → fetches /files
@@ -263,9 +260,6 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
 
     try:
         page.goto(console_url, wait_until="domcontentloaded")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
         # The worker pill is the .worker-pill element in the topbar.
         pill = page.locator(".worker-pill").first
         pill.wait_for(state="visible", timeout=10_000)

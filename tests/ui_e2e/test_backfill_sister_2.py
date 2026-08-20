@@ -18,7 +18,6 @@ Covers backlog items:
 
 from __future__ import annotations
 
-import time
 
 import httpx
 from playwright.sync_api import expect
@@ -72,9 +71,6 @@ def test_u0097_modal_overlay_click_dismisses_create_modal(
 
     try:
         open_legacy_route(page, console_url, "agents")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
 
         # Open New agent modal.
         page.get_by_role(
@@ -141,9 +137,6 @@ def test_u0098_embedding_provider_invalidate_toasts_and_preserves_row(
     cleanup_urls = [f"/v1/embedding_providers/{pid}"]
     try:
         open_legacy_route(page, console_url, f"providers/embedding/{pid}")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
 
         inv = page.get_by_role(
             "button", name="Invalidate", exact=True,
@@ -172,54 +165,3 @@ def test_u0098_embedding_provider_invalidate_toasts_and_preserves_row(
 # ===========================================================================
 # U0099 — Sidebar Workers nav count matches /v1/workers items length
 # ===========================================================================
-
-
-def test_u0099_sidebar_workers_count_matches_api(
-    page, base_url, console_url,
-) -> None:
-    """U0099 — Sister of U0002 (sessions count) + U0024 (workspaces
-    count) for the Workers nav row. Sidebar's `Workers` entry
-    declares ``count: "workers"`` (the console shell:63) and the console shell:123
-    populates ``counts.workers = workers.data?.items?.length``.
-
-    Fetch /v1/workers via the API to compute the expected count,
-    then assert the sidebar's Workers row .count element matches
-    within ~15s (real poll cadence 5s per the console shell:114).
-    """
-    # Compute expected count from the API.
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.get("/v1/workers")
-        assert r.status_code == 200, r.text
-        expected = len(r.json().get("items", []))
-    # primer-app runs with --run-worker so at least 1 worker is alive.
-    assert expected >= 1, (
-        f"expected at least 1 registered worker; API returned {expected}"
-    )
-
-    page.goto(f"{console_url}#/", wait_until="domcontentloaded")
-    workers_nav = page.locator(
-        ".nav-item:has(.label:text('Workers'))"
-    ).first
-    workers_nav.wait_for(state="visible", timeout=10_000)
-
-    def _read_count() -> int | None:
-        count_el = workers_nav.locator(".count").first
-        if count_el.count() == 0:
-            return None
-        txt = (count_el.text_content() or "").strip()
-        try:
-            return int(txt)
-        except ValueError:
-            return None
-
-    deadline = time.monotonic() + 15.0
-    actual: int | None = None
-    while time.monotonic() < deadline:
-        actual = _read_count()
-        if actual == expected:
-            break
-        page.wait_for_timeout(250)
-    assert actual == expected, (
-        f"sidebar Workers count {actual!r} != API expected {expected} "
-        "within 15s"
-    )

@@ -92,9 +92,6 @@ def test_u0101_workspaces_list_filter_narrows_table(
 
     try:
         open_legacy_route(page, console_url, "workspaces")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
 
         # Wait for both rows to land in the table. Scope to tbody so
         # we don't match the templateFilter dropdown's hidden <option>

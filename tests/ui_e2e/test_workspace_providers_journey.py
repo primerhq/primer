@@ -47,13 +47,11 @@ def test_workspace_provider_create_detail_delete_journey(
 
     try:
         # The conftest page fixture already navigated to console_url.
-        # Wait for the sidebar (.nav-item) to confirm React + all scripts
-        # have booted — the workspace provider components use
-        # data-type="module" in index.html, so they load asynchronously;
-        # we must wait until window.WorkspaceProvidersPage is defined
-        # before pushing the hash, otherwise React crashes with
-        # "type is invalid — got undefined".
-        page.locator(".nav-item").first.wait_for(state="visible", timeout=20_000)
+        # Wait until the page component is defined before pushing the
+        # hash: these load asynchronously (data-type="module" in
+        # index.html), and React crashes with "type is invalid - got
+        # undefined" if the hash lands first. This used to gate on the
+        # sidebar rendering, which the shell replaced with the rail.
         page.wait_for_function(
             "() => typeof window.WorkspaceProvidersPage === 'function'",
             timeout=15_000,

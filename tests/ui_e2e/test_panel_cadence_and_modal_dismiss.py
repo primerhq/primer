@@ -206,9 +206,6 @@ def test_u0065_panel_stops_polling_after_terminal_status(
 
         open_doc(page, console_url, wid, "session", sid)
         # Resilience gate (chrome mounted).
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
         # Wait for status to be visibly terminal. The status pill is
         # somewhere in the body — just check the body text contains
         # "ended" or "cancelled".

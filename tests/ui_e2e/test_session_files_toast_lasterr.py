@@ -170,9 +170,6 @@ def test_u0032_toast_renders_request_id_on_5xx(
 
     try:
         open_legacy_route(page, console_url, "agents")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
 
         # Click "New agent".
         new_btn = page.get_by_role(
@@ -285,9 +282,6 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
             assert r.status_code in (200, 201, 204), r.text
 
         open_workspace_settings(page, console_url, wid, "files")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
 
         # v1 stacked Files under Sessions so the tree was always on screen; the
         # revamp's single rail defaults to Runs, so ask for Files first. No-op
