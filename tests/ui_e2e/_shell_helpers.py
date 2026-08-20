@@ -33,7 +33,17 @@ def open_shell(page: Page, console_url: str, wid: str, *, timeout: int = 20_000)
 
 
 def open_doc(page: Page, console_url: str, wid: str, kind: str, ref: str,
-             *, anchor: str | None = None, timeout: int = 20_000) -> None:
+             *, anchor: str | None = None, timeout: int = 45_000) -> None:
+    """Deep-link a document open and wait for its tab.
+
+    The budget is deliberately generous. Reaching a document in another
+    workspace is a chain, not a navigation: the shell boots on whichever
+    workspace it lands in first, may lazily create a session there,
+    then follows the url to the target workspace, drops the previous
+    workspace's tabs and opens this one. 20 s covered that on an idle
+    runner and not on a busy one, which showed up as a tab that the
+    failure screenshot then proved was present all along.
+    """
     url = f"{console_url}#/w/{wid}?doc={kind}:{ref}"
     if anchor:
         url += f"#{anchor}"
