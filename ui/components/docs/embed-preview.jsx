@@ -309,7 +309,21 @@
         });
       })
       .then(function (fixtures) {
-        iwin.primerApi = iwin.DocsMakeStubApi(fixtures);
+        // Layer the stub OVER the real namespace rather than replacing
+        // it. The foundation contributes more than the seven members the
+        // stub defines -- useCapabilities, capabilityHint, CapabilityGate,
+        // toastPush -- and a bare assignment deleted all of them, so any
+        // page that reads capabilities (agents, channels, knowledge,
+        // providers, semantic-search) threw "useCapabilities is not a
+        // function" the moment it mounted.
+        //
+        // Layering is safe because the network members are exactly the
+        // ones the stub overrides: everything else reaches apiFetch and
+        // useResource through the namespace at call time, which is what
+        // capabilities.js says it is written that way for. The embed
+        // still cannot touch the network.
+        iwin.primerApi = Object.assign({}, iwin.primerApi,
+          iwin.DocsMakeStubApi(fixtures));
         // Render the real component into the embed mount.
         var root = iwin.ReactDOM.createRoot(idoc.getElementById("embed-root"));
         root.render(iwin.React.createElement(iwin[componentName], props || {}));
