@@ -118,6 +118,23 @@ function SH_Shell(props) {
 
   // ---- landing: most recent session, lazily created ------------------------
   var landedRef = React.useRef(false);
+  // Documents and tabs belong to ONE workspace, so a switch has to drop
+  // them: keeping them makes the shell ask the new workspace for the
+  // previous one's sessions, which 404 on every poll. Landing runs again
+  // afterwards, so the new workspace opens on its own newest session.
+  //
+  // Done in place rather than by keying SH_Shell on wid. A remount also
+  // re-reads the URL, and the shell is often mid-flight between the hash
+  // just navigated to and the one its own sync effect is about to write,
+  // so it could land on the intermediate URL and lose the overlay that
+  // was being opened.
+  var lastWidRef = React.useRef(wid);
+  React.useEffect(function () {
+    if (lastWidRef.current === wid) return;
+    lastWidRef.current = wid;
+    setDocs(SH_emptyDocState());
+    landedRef.current = false;
+  }, [wid]);
   React.useEffect(function () {
     if (landedRef.current) return;
     var parsed = SH_readUrl();
@@ -356,13 +373,7 @@ function SH_RootGate() {
     if (!items.length) return <div className="sh-boot" data-testid="shell-boot" />;
     wid = items[0].id;
   }
-  // Keyed by workspace: everything the shell holds -- open documents,
-  // tabs, the overlay -- is scoped to ONE workspace, so switching to
-  // another has to start a fresh instance that reads its state from the
-  // URL again. Without the key React keeps the old instance and its
-  // tabs, and the shell then asks the new workspace for the previous
-  // one's sessions, which 404.
-  return <SH_Shell key={wid} wid={wid} />;
+  return <SH_Shell wid={wid} />;
 }
 
 window.SH_ShellContext = SH_ShellContext;

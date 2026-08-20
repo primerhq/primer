@@ -88,12 +88,13 @@ def test_the_gate_that_picks_the_workspace_follows_the_url() -> None:
         "boot is the only one it will ever show"
     )
     assert "popstate" in gate, "Back must move the shell too"
-    # A different workspace is a different shell: its open documents and
-    # tabs are workspace-scoped, so carrying them across a switch makes
-    # the shell ask the new workspace for the old one's sessions.
-    assert "key={wid}" in gate, (
-        "SH_Shell must be keyed by workspace so a switch starts a fresh "
-        "instance rather than carrying the previous workspace's tabs"
+    # Documents and tabs are workspace-scoped, so a switch must drop
+    # them: carrying them makes the shell ask the new workspace for the
+    # old one's sessions, which 404 on every poll.
+    shell_body = src.split("function SH_Shell(")[1]
+    assert "lastWidRef" in shell_body, (
+        "a workspace switch must reset the shell's documents rather than "
+        "carrying the previous workspace's tabs into it"
     )
 
 
