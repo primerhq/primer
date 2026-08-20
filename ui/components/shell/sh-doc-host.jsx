@@ -227,6 +227,29 @@ function SH_registerCoreVerbs(shell) {
     },
   });
 
+  shell.registry.register({
+    id: "session.end", label: "End Session", destructive: true,
+    contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    run: function () {
+      var ref = activeSessionRef();
+      if (ref) SH_api.cancel(shell.wid, ref).then(function () {
+        shell.toast("Session ended");
+        shell.sessions.refetch();
+      });
+    },
+  });
+  shell.registry.register({
+    id: "session.restart", label: "Restart Session",
+    contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    run: function () {
+      var ref = activeSessionRef();
+      if (ref) SH_api.restart(shell.wid, ref).then(function () {
+        shell.toast("Session restarted");
+        shell.sessions.refetch();
+      });
+    },
+  });
+
   for (var i = 0; i < SH_OVERLAYS.length; i++) {
     (function (name) {
       shell.registry.register({

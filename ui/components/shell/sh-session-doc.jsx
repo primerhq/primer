@@ -258,6 +258,28 @@ function SH_SessionComposer(props) {
           title={props.status === "running" ? "Already running" : "Start or resume this session"}
           onClick={function () { shell.registry.get("session.resume").run(); }}
         >Resume</button>
+        {/* End is not Interrupt: interrupt stops the turn in flight and
+            leaves the session alive, end closes the session. Restart is
+            the way back from a terminal one, which is the common case
+            now that a clean turn ends the session. */}
+        <button
+          type="button"
+          className="sh-verb"
+          data-verb="session.end"
+          data-testid="ctrl-end"
+          disabled={props.terminal}
+          title={props.terminal ? "This session has already ended" : "End this session"}
+          onClick={function () { shell.registry.get("session.end").run(); }}
+        >End</button>
+        <button
+          type="button"
+          className="sh-verb"
+          data-verb="session.restart"
+          data-testid="ctrl-restart"
+          disabled={!props.terminal}
+          title={props.terminal ? "Restart this session" : "Enabled once the session has ended"}
+          onClick={function () { shell.registry.get("session.restart").run(); }}
+        >Restart</button>
       </div>
       {slash ? (
         <div className="sh-composer-verbs">
@@ -366,6 +388,16 @@ function SH_TokenMeter(props) {
     );
   }
   return <span className="sh-meta" data-testid="shell-token-count">{inputTokens} tok</span>;
+}
+
+// The four statuses a session does not come back from on its own.
+// session-frame.jsx owns the set; read it through the window rather than
+// restating it here, so the shell cannot drift from the rest of the
+// console about what "over" means.
+function SH_isTerminal(session) {
+  if (!session || !session.status) return false;
+  var terminal = window.SESSION_TERMINAL;
+  return !!(terminal && terminal.has(session.status));
 }
 
 // A node filter is a view of the same turns, not a different fetch: the
@@ -601,6 +633,7 @@ function SH_SessionDoc(props) {
         sid={sid}
         running={!!shown}
         status={status}
+        terminal={SH_isTerminal(session)}
         micEnabled={!!shell.speech.stt_configured}
         onSendStarted={function () {
           setOptimistic(Date.now());

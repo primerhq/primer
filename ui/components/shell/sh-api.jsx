@@ -149,6 +149,21 @@ var SH_api = {
         + encodeURIComponent(sid) + "/resume", {});
   },
 
+  // Interrupt stops the running turn and leaves the session alive.
+  // Cancel ends the session. Restart brings an ended one back. Three
+  // different endpoints doing three different things, all live.
+  cancel: function (wid, sid) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/cancel", {});
+  },
+
+  restart: function (wid, sid) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
+        + encodeURIComponent(sid) + "/restart", {});
+  },
+
   // S3 attach lifecycle. POST both attaches and heartbeats; DELETE
   // detaches. One URL builder, so the two can never drift.
   attach: function (wid, sid, clientId) {
