@@ -132,13 +132,13 @@ def test_graph_session_liveness_pill_replaces_executor_missing_stub(
         # The hardcoded stub must be gone everywhere in the Studio.
         expect(page.get_by_text("executor missing")).to_have_count(0)
 
-        # The graph panel header shows the derived StatusPill; a CREATED
-        # session reads "created" (StatusPill labels — shared.jsx).
-        # One session document serves every binding kind, so a graph
-        # session's status is on the same composer status line.
-        header = page.get_by_test_id("shell-composer-status")
-        expect(header.locator(".pill").filter(has_text="created").first).to_be_visible(
-            timeout=10_000,
-        )
+        # A created session reads "created" on its rail row. One session
+        # document serves every binding kind, so a graph session's status
+        # is shown exactly where an agent session's is -- and not on the
+        # composer's status line, which describes what a session is DOING
+        # and is empty while nothing runs.
+        expect(
+            page.get_by_test_id(f"rail-session:{sid}").filter(has_text="created")
+        ).to_be_visible(timeout=10_000)
     finally:
         _cleanup(base_url, cleanup)

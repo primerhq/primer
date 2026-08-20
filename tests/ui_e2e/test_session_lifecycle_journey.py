@@ -207,14 +207,14 @@ def test_u0103_sessions_full_lifecycle_journey(
             timeout=10_000,
         )
 
-        # --- 4. Panel-header status polls off CREATED -----------------------
-        # ST_SessionPanel polls /sessions/{id} every 2s while non-terminal;
-        # the header StatusPill catches up to cancelled/ended. Pin "left
-        # CREATED" (30s budget).
-        # The Studio's panel header carried a StatusPill; the shell
-        # shows a session's status on the composer's status line.
-        header = page.get_by_test_id("shell-composer-status")
-        status_pill = header
+        # --- 4. The session's status polls off CREATED ----------------------
+        # The rail's row for a session carries its status and polls while
+        # the session is non-terminal. Pin "left CREATED" (30s budget).
+        #
+        # NOT the composer's status line: that describes what a session is
+        # DOING and is empty whenever nothing is running, so it says
+        # nothing at all about a created-then-cancelled session.
+        status_pill = page.get_by_test_id(f"rail-session:{sid}")
         deadline = time.time() + 30.0
         last_seen = None
         while time.time() < deadline:
