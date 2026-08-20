@@ -179,7 +179,7 @@ def _ask_item(sid, *, tool_call_id, prompt):
 def _route_pending_items(page, wid, items):
     """Route GET /v1/workspaces/{wid}/yields/pending → {items}."""
     page.route(
-        f"**/v1/workspaces/{wid}/yields/pending",
+        f"**/v1/workspaces/{wid}/yields/pending*",
         lambda route: route.fulfill(
             status=200, content_type="application/json",
             body=json.dumps({"items": items}),
@@ -198,7 +198,7 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
     """U0058 — Re-pointed to the Studio's Action Required. The old
     single-panel "draft resets when the polled tool_call_id changes"
     invariant maps to the Studio's per-item respond state: each pending
-    yield is its own ``action-item`` keyed by tool_call_id
+    yield is its own decision card keyed by tool_call_id
     (the shell rail's attention list ``respondState``), so a draft typed into item A
     never bleeds into item B when the pending snapshot swaps.
     """
@@ -212,25 +212,25 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
                 body=json.dumps({"items": state["items"]}),
             )
 
-        page.route(f"**/v1/workspaces/{wid}/yields/pending", _on_pending)
+        page.route(f"**/v1/workspaces/{wid}/yields/pending*", _on_pending)
 
         open_studio(page, console_url, wid)
         # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for action-item content.
+        # expand it before looking for the decision card.
         expand_debug_sidebar(page)
-        item = page.locator("[data-testid='action-item']").first
+        item = page.get_by_test_id("shell-decision:tc-A")
         expect(item).to_be_visible(timeout=10_000)
         expect(item).to_contain_text("What is your name?")
 
-        # Type a draft into item A's respond input.
-        inp = item.locator("[data-testid='respond']")
+        # Type a draft into card A's answer input.
+        inp = item.get_by_test_id("shell-decision-answer")
         inp.fill("partial draft text")
         assert (inp.input_value() or "") == "partial draft text"
 
         # Swap the pending snapshot to a DIFFERENT yield (new tcid + prompt);
         # the next reconcile poll (15s) or a manual wait surfaces item B.
         state["items"] = [_ask_item(sid, tool_call_id="tc-B", prompt="Pick a color?")]
-        item_b = page.locator("[data-testid='action-item']").filter(has_text="Pick a color?").first
+        item_b = page.get_by_test_id("shell-decision:tc-B")
         # Two full poll periods. The pending snapshot polls every 15s on both
         # shells, woken early by a workspace tap - but the tap never fires here
         # because /yields/pending is route-mocked, so the backstop poll is the
@@ -240,7 +240,7 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
         # phase and one period is no longer reliably enough.
         expect(item_b).to_be_visible(timeout=35_000)
         # Item B's respond input is empty — the draft was scoped to item A.
-        inp_b = item_b.locator("[data-testid='respond']")
+        inp_b = item_b.get_by_test_id("shell-decision-answer")
         assert (inp_b.input_value() or "") == "", (
             f"draft bled into the new pending item: {inp_b.input_value()!r}"
         )
@@ -249,7 +249,7 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
 
 
 # ===========================================================================
-# U0060 — /respond error → inline on the action-item (not a toast)
+# U0060 — /respond error → inline on the decision card (not a toast)
 # ===========================================================================
 
 
@@ -257,7 +257,7 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
     """U0060 — Re-pointed to the Studio's Action Required. A server 500
-    from ``/ask_user/respond`` renders INLINE on the action-item (the
+    from ``/ask_user/respond`` renders INLINE on the decision card (the
     per-item ``rs.error`` red line), NOT as a generic toast — the
     operator sees the failure exactly where the submission happened and
     the item stays put to retry.
@@ -280,12 +280,12 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
 
         open_studio(page, console_url, wid)
         # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for action-item content.
+        # expand it before looking for the decision card.
         expand_debug_sidebar(page)
-        item = page.locator("[data-testid='action-item']").first
+        item = page.get_by_test_id("shell-decision:tc-500")
         expect(item).to_be_visible(timeout=10_000)
 
-        respond = item.locator("[data-testid='respond']")
+        respond = item.get_by_test_id("shell-decision-answer")
         respond.fill("Alice")
         respond.press("Enter")
 
@@ -296,7 +296,7 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
         page.wait_for_timeout(1_000)
         item_text = (item.text_content() or "").lower()
         assert any(m in item_text for m in ("synthetic 500", "internal error", "respond failed", "500")), (
-            f"no inline error marker on the action-item: {item_text!r}"
+            f"no inline error marker on the decision card: {item_text!r}"
         )
         assert page.locator(".toast").filter(has_text="Respond failed").count() == 0, (
             "respond error should render inline on the item, not as a toast"
