@@ -82,7 +82,19 @@ function SH_shimNavigate(overlay, openOverlay, path, opts) {
     openOverlay(name, tab, rest[0] || (overlay && overlay.id) || null);
     return;
   }
-  openOverlay(name, rest[0] || null, rest[1] || null);
+  // Two trailing segments are section + record, as the grammar reads.
+  // ONE is the record, not the section: every page that reads this back
+  // reads params.id (agents, triggers, toolsets, harnesses, workspaces),
+  // and nothing outside the shell reads params.section at all, since the
+  // section slot is what carries the tab. Filling section first meant a
+  // page navigating to its own detail view handed the record to a slot
+  // its own reader never looks at, so the detail view opened with no
+  // record and the shell had nothing to title the page with.
+  if (rest.length > 1) {
+    openOverlay(name, rest[0], rest[1]);
+    return;
+  }
+  openOverlay(name, null, rest[0] || null);
 }
 
 function SH_installRouterShim(getOverlay, openOverlay) {

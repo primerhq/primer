@@ -108,3 +108,40 @@ def test_the_shim_maps_overlay_segments_onto_params_id() -> None:
     assert out[0] == "/providers/tts/pv-1"
     assert out[1] == {"id": "pv-1", "section": "tts"}
     assert out[2] == [["providers", "llm", "pv-9"]]
+
+
+def test_a_lone_trailing_segment_is_the_record_not_the_section() -> None:
+    """``navigate("/agents/<id>")`` has to arrive as params.id.
+
+    Every re-hosted page reads params.id; nothing outside the shell
+    reads params.section, which is the slot the tab travels in. Filling
+    section first meant a page opening its own detail view handed the
+    record to a slot its reader never looks at, so the view opened with
+    no record and the header had nothing to name.
+    """
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = globalThis; window.primerApi = {};")
+    ctx.eval("var React = {useCallback: function (f) { return f; }};")
+    ctx.eval((UI / "foundation" / "shell-url.js").read_text(encoding="utf-8"))
+    ctx.eval(SHIM.read_text(encoding="utf-8"))
+    out = json.loads(ctx.eval(
+        """
+        (function () {
+          var OV = {name: "agents", section: null, id: null};
+          var seen = [];
+          SH_installRouterShim(
+            function () { return OV; },
+            function (n, s, i) { seen.push([n, s, i]); }
+          );
+          var r = window.primerApi.useRouter();
+          r.navigate("/agents/ag-42");
+          // A tab still takes the section slot, record alongside it.
+          r.navigate("/agents/ag-42?tab=tools");
+          return JSON.stringify(seen);
+        })()
+        """
+    ))
+    assert out[0] == ["agents", None, "ag-42"]
+    assert out[1] == ["agents", "tools", "ag-42"]
