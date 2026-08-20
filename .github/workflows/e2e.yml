@@ -113,9 +113,16 @@ jobs:
       - name: Run tests/ui_e2e
         # -n0 for the same exclusivity reason: the UI journeys drive one shared
         # server + browser-against-DB state serially.
+        #
+        # --maxfail: when the console is broken every journey fails on the
+        # same first wait, and each one pays a Playwright timeout. That runs
+        # past this job's 30-minute cap, so the job is CANCELLED rather than
+        # failed, pytest never prints its tracebacks, and the "on failure"
+        # steps below (server logs, Playwright artifacts) never run. Stopping
+        # early turns a silent half-hour into a report.
         run: >-
           PRIMER_RUN_UI_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/ui_e2e
-          -q --tb=short -n0 -m "not distributed"
+          -q --tb=short -n0 --maxfail=5 -m "not distributed"
       - name: Tear down
         if: always()
         run: bash scripts/e2e/teardown.sh
