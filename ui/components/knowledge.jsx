@@ -146,7 +146,9 @@ function KN_DocumentPane({ collection, path, readOnly, pushToast, onChanged, onS
         `/collections/${encodeURIComponent(cid)}/docs?path=${encodeURIComponent(path)}`,
         { body: draft, title: title || null },
       );
-      pushToast && pushToast({ kind: "success", title: "Saved" });
+      pushToast && pushToast({
+        kind: "success", title: "Document saved", detail: path,
+      });
       onChanged && onChanged();
     } catch (err) {
       pushToast && pushToast({
@@ -171,7 +173,9 @@ function KN_DocumentPane({ collection, path, readOnly, pushToast, onChanged, onS
         `/collections/${encodeURIComponent(cid)}/docs?path=${encodeURIComponent(path)}`
         + `&recursive=${kids ? "true" : "false"}`,
       );
-      pushToast && pushToast({ kind: "success", title: "Deleted" });
+      pushToast && pushToast({
+        kind: "success", title: "Document deleted", detail: path,
+      });
       onSelect(null);
       onChanged && onChanged();
     } catch (err) {
@@ -283,6 +287,9 @@ function KN_NewDocumentModal({ collection, parent, pushToast, onClose, onCreated
         `/collections/${encodeURIComponent(collection.id)}/docs`,
         { parent: parent || "", slug, title: title || null, body },
       );
+      pushToast && pushToast({
+        kind: "success", title: "Document created", detail: res.document.path,
+      });
       onCreated(res.document.path);
     } catch (err) {
       pushToast && pushToast({
@@ -342,6 +349,9 @@ function KN_MoveModal({ collection, path, pushToast, onClose, onMoved }) {
         `/collections/${encodeURIComponent(collection.id)}/docs/move`,
         { path, new_parent: newParent, new_slug: newSlug || null },
       );
+      pushToast && pushToast({
+        kind: "success", title: "Document moved", detail: res.document.path,
+      });
       onMoved(res.document.path);
     } catch (err) {
       pushToast && pushToast({
