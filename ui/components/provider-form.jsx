@@ -220,6 +220,19 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
   );
 
   const draft = value || {};
+
+  // A model row seeded by "Add model" starts blank, and submitting one
+  // sends models: [{}], which the API rejects with 422
+  // body.models.0.name: Field required. The per-class create modals
+  // gated Create on every row being filled; the catalog's form replaced
+  // them with no gate at all, so the same bad request went out again.
+  const modelRowsIncomplete = (fields) =>
+    (fields || []).some((f) => {
+      const norm = PC_normalizeField(f);
+      if (norm.type !== "model_list") return false;
+      const rows = Array.isArray(draft[norm.key]) ? draft[norm.key] : [];
+      return rows.some((r) => !String((r && r.name) || "").trim());
+    });
   // _types answers a MAP keyed by provider-type value.
   const typeMap = types.data || {};
   const typeKeys = Object.keys(typeMap);
@@ -277,6 +290,16 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
             <option key={k} value={k}>{(typeMap[k] || {}).label || k}</option>
           ))}
         </select>
+        {/* Documented anomaly, surfaced in place rather than hidden
+            (docs/dev/subsystems/ui-pages.md). The per-class create
+            modals carried this line and the catalog that replaced them
+            dropped it, so nothing warned an operator before they
+            submitted a mismatched pair. */}
+        <div className="field-help" data-testid="provider-form-t0379">
+          Provider and config alignment is NOT cross-validated
+          server-side (T0379): make sure the vendor name matches the
+          config shape you are filling in.
+        </div>
       </div>
 
       {missingExtra ? (
@@ -344,7 +367,8 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
           Test
         </Btn>
         <Btn data-testid="provider-form-save"
-          onClick={() => onSubmit && onSubmit(draft)} disabled={busy}>Save</Btn>
+          onClick={() => onSubmit && onSubmit(draft)}
+          disabled={busy || modelRowsIncomplete(shape.row_fields)}>Save</Btn>
       </div>
     </div>
   );

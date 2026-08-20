@@ -300,7 +300,9 @@ def _models_row_field(example: str) -> dict[str, Any]:
         required=True,
         help_=(
             f"At least one model name (for example {example}); the row is "
-            "rejected without one."
+            "rejected without one. Model list comes from the provider row, "
+            "not a live introspection of the upstream (T0025): adding a "
+            "model here does not check that the provider serves it."
         ),
     )
 
