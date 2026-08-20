@@ -123,13 +123,16 @@ jobs:
         # logs, Playwright artifacts) never run at all. The cap turns a
         # silent half-hour into a report.
         #
-        # 25 rather than 5: 5 was right while the lane was failing wholesale,
-        # but it also caps what any one run can TELL you, and the lane is far
-        # enough along that the remaining count matters more than the early
-        # exit. Still low enough to bail out of a catastrophic regression.
+        # 60 rather than 25: every run since the cap was raised to 25 has
+        # STOPPED at exactly 25, so the number reports the cap and not the
+        # lane, and each run ends with the remaining count still unknown.
+        # The failures left are concentrated in a few root causes, so the
+        # value of seeing all of them at once now outweighs the early exit.
+        # Still well short of the suite, so a catastrophic regression bails
+        # out rather than burning the job's whole 45 minutes.
         run: >-
           PRIMER_RUN_UI_E2E=1 PRIMER_E2E_PORT=8765 uv run pytest tests/ui_e2e
-          -q --tb=short -n0 --maxfail=25 -m "not distributed"
+          -q --tb=short -n0 --maxfail=60 -m "not distributed"
       - name: Tear down
         if: always()
         run: bash scripts/e2e/teardown.sh
