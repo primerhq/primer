@@ -74,3 +74,31 @@ def test_the_attach_endpoints_live_in_the_api_module() -> None:
     assert re.search(r"attach:\s*function\s*\(wid,\s*sid,\s*clientId\)", api)
     assert re.search(r"detach:\s*function\s*\(wid,\s*sid,\s*clientId\)", api)
     assert '"DELETE"' in api
+
+
+def test_detach_sends_client_id_where_the_route_actually_reads_it() -> None:
+    """Regression: every detach 422'd on a missing required parameter.
+
+    ``detach_session`` declares ``client_id: str = Query(...)``. The shell
+    sent it as a JSON body, so it never arrived, the call failed 422 every
+    time, and a client attachment could only ever lapse by its TTL. The
+    two halves are pinned against each other here rather than separately,
+    since either one moving alone is the bug.
+    """
+    import inspect
+
+    from primer.api.routers.workspaces import detach_session
+
+    param = inspect.signature(detach_session).parameters["client_id"]
+    assert type(param.default).__name__ == "Query", (
+        "the route takes client_id from the query string; if that changed, "
+        "the shell's detach call has to change with it"
+    )
+
+    api = API.read_text(encoding="utf-8")
+    detach_src = api[api.index("detach: function"):]
+    detach_src = detach_src[:detach_src.index("},")]
+    assert "?client_id=" in detach_src, (
+        "detach must put client_id in the query string, not a body"
+    )
+    assert "{ client_id:" not in detach_src

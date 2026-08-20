@@ -159,10 +159,14 @@ var SH_api = {
         + encodeURIComponent(sid) + "/attach", { client_id: clientId });
   },
 
+  // client_id is a QUERY parameter on the detach route, not a body.
+  // Sent as a body it never arrived, so every detach 422'd on a missing
+  // required parameter and an attachment could only ever lapse by TTL.
   detach: function (wid, sid, clientId) {
     return window.primerApi.apiFetch(
       "DELETE", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
-        + encodeURIComponent(sid) + "/attach", { client_id: clientId });
+        + encodeURIComponent(sid) + "/attach?client_id="
+        + encodeURIComponent(clientId), null);
   },
 
   // S1 spec section 6: {kind, agent_id | graph_id, profile_id?}.
