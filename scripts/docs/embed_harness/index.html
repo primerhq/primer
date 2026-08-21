@@ -140,6 +140,12 @@
       iwin.EventSource.CONNECTING = 0;
       iwin.EventSource.OPEN = 1;
       iwin.EventSource.CLOSED = 2;
+      // The shell reads which workspace and document are open from the
+      // url, not from props, so an entry that wants a document open says
+      // so with a hash and the harness puts it there before mounting.
+      if (entry.hash) {
+        try { iwin.location.hash = entry.hash; } catch (err) { /* same-origin only */ }
+      }
       var root = iwin.ReactDOM.createRoot(idoc.getElementById("embed-root"));
       root.render(iwin.React.createElement(iwin[entry.component], entry.props || {}));
       // Give React effects (useResource fetchers, per-row effects) a beat to

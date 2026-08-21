@@ -40,28 +40,31 @@
       props: { onOpen: function () {}, pushToast: function () {} },
     },
     "sessions-list": {
-      // The global sessions list/detail pages were retired: sessions now live
-      // inside the workspace Studio (studio.jsx). This embed renders the Studio
-      // for the fixture workspace, so it shows the left sidebar's Sessions list
-      // + Files tree over fixture data. `wid` must match the workspace + session
-      // rows in sessions-list.json.
-      component: "Studio",
+      // Sessions live in the workspace shell. The Studio this used to
+      // render was deleted on the S8 flag day, so the harness mounted an
+      // undefined component and the capture never reached "done".
+      //
+      // SH_Shell rather than SH_RootGate: the gate resolves auth and
+      // picks a workspace, which is boot behaviour the embed does not
+      // want, and it takes `wid` exactly as the Studio did. `wid` must
+      // match the workspace + session rows in sessions-list.json.
+      component: "SH_Shell",
       fixtures: "sessions-list",
-      props: { wid: "ws-blogassistant", pushToast: function () {} },
+      props: { wid: "ws-blogassistant" },
     },
     "session-detail": {
-      // Same Studio render, but `initialOpen` seeds an open session tab so the
-      // capture shows the center transcript panel (SessionLiveStream). The
-      // session in session-detail.json is terminal (ended), so the transcript
-      // renders fully from GET /sessions/{sid}/messages history with no live
-      // tap (the harness has no SSE backend).
-      component: "Studio",
+      // The same shell with one session open, so the capture shows the
+      // transcript beside the rail. The shell reads the open document
+      // from the url rather than from a prop, which is why this carries
+      // a hash where the Studio version carried `initialOpen`.
+      //
+      // The session in session-detail.json is terminal (ended), so the
+      // transcript renders fully from GET /sessions/{sid}/messages with
+      // no live tap; the harness has no SSE backend.
+      component: "SH_Shell",
       fixtures: "session-detail",
-      props: {
-        wid: "ws-blogassistant",
-        initialOpen: "session:sess-briefwriter",
-        pushToast: function () {},
-      },
+      hash: "#/w/ws-blogassistant?doc=session:sess-briefwriter",
+      props: { wid: "ws-blogassistant" },
     },
     "workspaces": {
       component: "WorkspacesPage",
