@@ -782,6 +782,12 @@ function KN_NewCollectionModal({ pushToast, onClose, onCreate }) {
       const body = { description };
       if (id) body.id = id;
       const row = await apiFetch("POST", "/collections", body);
+      // Say it worked. The four document actions in this file all
+      // confirm themselves; creating the COLLECTION they live in said
+      // nothing, so the only sign was the view changing underneath you.
+      pushToast && pushToast({
+        kind: "success", title: "Collection created", detail: row.id,
+      });
       onCreate(row);
     } catch (err) {
       pushToast && pushToast({

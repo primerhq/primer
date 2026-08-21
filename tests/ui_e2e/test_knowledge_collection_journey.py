@@ -121,16 +121,17 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         # Modal closes on success.
         modal.wait_for(state="hidden", timeout=10_000)
 
-        # New collection row appears in the list.
+        # Creating a collection OPENS it, so the list is no longer on
+        # screen; the browser for the new collection is.
         expect(
-            page.locator(f"tr:has-text('{coll_id}')").first
+            page.get_by_test_id("shell-overlay-body").get_by_text(
+                coll_id, exact=False,
+            ).first
         ).to_be_visible(timeout=10_000)
 
-        # ===== 3. Open the collection, create a doc, grep for it ==========
-        page.locator(f"tr:has-text('{coll_id}')").first.get_by_role(
-            "button", name="Open",
-        ).click()
-
+        # ===== 3. Create a doc in it, grep for it =========================
+        # Already inside the collection: the create opened it, so there
+        # is no row to click through any more.
         page.get_by_role("button", name="New document").first.click()
         doc_modal = page.locator(".modal").first
         doc_modal.wait_for(state="visible", timeout=5_000)
