@@ -33,6 +33,7 @@ import aiosqlite
 from pydantic import BaseModel
 
 from primer.int.document_content import (
+    FulltextHit,
     ContentListEntry,
     ContentRow,
     DocumentContentStore,
@@ -967,12 +968,90 @@ class SqliteDocumentContentStore(DocumentContentStore):
                     "CREATE INDEX IF NOT EXISTS document_content_coll "
                     "ON document_content (collection_id)"
                 )
+                # External-content FTS5 mirror. The triggers keep it in
+                # sync on every write path, and the 'rebuild' insert makes
+                # rows that predate the index searchable after an upgrade
+                # (idempotent; cheap at this table's scale).
+                await self._conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS document_content_fts "
+                    "USING fts5(content, content='document_content', "
+                    "content_rowid='rowid')"
+                )
+                for trg, body in (
+                    ("document_content_fts_ai",
+                     "AFTER INSERT ON document_content BEGIN "
+                     "INSERT INTO document_content_fts(rowid, content) "
+                     "VALUES (new.rowid, new.content); END"),
+                    ("document_content_fts_ad",
+                     "AFTER DELETE ON document_content BEGIN "
+                     "INSERT INTO document_content_fts"
+                     "(document_content_fts, rowid, content) "
+                     "VALUES ('delete', old.rowid, old.content); END"),
+                    ("document_content_fts_au",
+                     "AFTER UPDATE ON document_content BEGIN "
+                     "INSERT INTO document_content_fts"
+                     "(document_content_fts, rowid, content) "
+                     "VALUES ('delete', old.rowid, old.content); "
+                     "INSERT INTO document_content_fts(rowid, content) "
+                     "VALUES (new.rowid, new.content); END"),
+                ):
+                    await self._conn.execute(
+                        f"CREATE TRIGGER IF NOT EXISTS {trg} {body}"
+                    )
+                await self._conn.execute(
+                    "INSERT INTO document_content_fts"
+                    "(document_content_fts) VALUES ('rebuild')"
+                )
                 if should_commit:
                     await self._conn.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name="document_content", op="ensure_schema",
             ) from exc
+
+    @staticmethod
+    def _fts_query(query: str) -> str:
+        """Quote every token so user punctuation is text, not FTS5 syntax."""
+        tokens = [t for t in query.split() if t]
+        return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+
+    async def search_fulltext(
+        self,
+        collection_id: str,
+        query: str,
+        *,
+        path_prefix: str | None = None,
+        limit: int = 20,
+        conn: object | None = None,
+    ) -> list[FulltextHit]:
+        fts = self._fts_query(query)
+        if not fts:
+            return []
+        sql = (
+            "SELECT dc.path AS path, "
+            "snippet(document_content_fts, 0, '', '', ' ... ', 16) AS excerpt, "
+            "-bm25(document_content_fts) AS score "
+            "FROM document_content_fts "
+            "JOIN document_content dc ON dc.rowid = document_content_fts.rowid "
+            "WHERE document_content_fts MATCH ? AND dc.collection_id = ? "
+            "AND (? IS NULL OR dc.path LIKE ? || '%') "
+            "ORDER BY score DESC LIMIT ?"
+        )
+        try:
+            cur = await self._conn.execute(
+                sql, (fts, collection_id, path_prefix, path_prefix, limit),
+            )
+            rows = await cur.fetchall()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="document_content", op="search_fulltext",
+            ) from exc
+        # -bm25 because FTS5 ranks lower-is-better; the interface promises
+        # higher-is-better.
+        return [
+            FulltextHit(path=r[0], excerpt=r[1], score=float(r[2]))
+            for r in rows
+        ]
 
     async def get(self, document_id: str, *, conn: Any | None = None) -> str | None:
         del conn
