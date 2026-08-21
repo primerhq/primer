@@ -129,23 +129,25 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
             session_id = r.json()["id"]
 
         # Wait for the sidebar to catch up (3s poll) — budget 15s.
+        # Wait for THIS session's row, not merely for the count to move.
+        # An empty workspace makes the shell create a session of its own,
+        # so any-increment was satisfied by that one and the wait exited
+        # before the seeded row had arrived.
         target = baseline + 1
         deadline = time.monotonic() + 15.0
         final = baseline
         while time.monotonic() < deadline:
             final = _row_count()
-            if final >= target:
+            if session_row(page, session_id).count() >= 1:
                 break
             page.wait_for_timeout(250)
-        assert final >= target, (
-            f"Studio sidebar session-row count did not catch up to API "
-            f"state within 15s: baseline={baseline} expected>={target} "
-            f"final={final}"
-        )
-        # The new row is the seeded session (located by data-session-id;
-        # the row shows the title, not the raw sid).
         assert session_row(page, session_id).count() >= 1, (
-            "seeded session row not found in sidebar"
+            f"seeded session row did not reach the rail within 15s: "
+            f"baseline={baseline} final={final} sid={session_id}"
+        )
+        assert final >= target, (
+            f"the rail's session-row count did not catch up to API state: "
+            f"baseline={baseline} expected>={target} final={final}"
         )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
