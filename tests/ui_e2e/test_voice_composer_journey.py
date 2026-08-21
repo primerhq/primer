@@ -34,11 +34,40 @@ def _seed_stt(base_url: str) -> None:
 
 
 def _drop_stt(base_url: str) -> None:
+    """Remove EVERY stt provider, not just this file's own.
+
+    The capability the mic hangs off is "does any SpeechToTextProvider
+    row exist", so a test asserting the mic is absent has to clear all of
+    them. Deleting one id left whatever another test had created, and the
+    mic stayed on screen for a reason that had nothing to do with this
+    test.
+    """
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         try:
-            c.delete(f"/v1/stt_providers/{STT_ID}")
+            listing = c.get("/v1/stt_providers", params={"limit": 200})
+            rows = listing.json().get("items", []) if listing.status_code == 200 else []
         except Exception:  # noqa: BLE001
-            pass
+            rows = [{"id": STT_ID}]
+        for row in rows or [{"id": STT_ID}]:
+            try:
+                c.delete(f"/v1/stt_providers/{row['id']}")
+            except Exception:  # noqa: BLE001
+                pass
+
+
+def _drop_tts(base_url: str) -> None:
+    """Remove every tts provider; see _drop_stt."""
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        try:
+            listing = c.get("/v1/tts_providers", params={"limit": 200})
+            rows = listing.json().get("items", []) if listing.status_code == 200 else []
+        except Exception:  # noqa: BLE001
+            rows = []
+        for row in rows:
+            try:
+                c.delete(f"/v1/tts_providers/{row['id']}")
+            except Exception:  # noqa: BLE001
+                pass
 
 
 def _seed_session(base_url: str, unique_suffix: str, tmp_path) -> tuple[str, str]:
@@ -119,6 +148,10 @@ def test_the_mic_is_absent_with_no_stt_provider(
 def test_the_speaker_toggle_is_absent_with_no_tts_provider(
     page, base_url, console_url, unique_suffix, tmp_path
 ) -> None:
+    # Assert absence against an actually-empty registry: the toggle hangs
+    # off "does any TextToSpeechProvider row exist", and this asserted it
+    # without clearing any.
+    _drop_tts(base_url)
     wid, sid = _seed_session(base_url, unique_suffix, tmp_path)
     open_session_in_studio(page, console_url, wid, sid)
     page.wait_for_selector('[data-testid="chat-send-btn"]')
