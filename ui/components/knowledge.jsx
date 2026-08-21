@@ -165,7 +165,15 @@ function KN_DocumentPane({ collection, path, readOnly, pushToast, onChanged, onS
     const msg = kids
       ? `Delete ${path} and its ${kids} descendant document(s)?`
       : `Delete ${path}?`;
-    if (!window.confirm(msg)) return;
+    // The themed dialog, not the browser's. Every destructive action in
+    // this console routes through ConfirmHost; a native confirm() is a
+    // modal the app cannot style, cannot test and, in a headless
+    // browser, is dismissed for it, so the delete silently did nothing.
+    const ok = await window.confirmDialog({
+      title: "Delete document", message: msg,
+      confirmLabel: "Delete", danger: true,
+    });
+    if (!ok) return;
     setBusy(true);
     try {
       await apiFetch(

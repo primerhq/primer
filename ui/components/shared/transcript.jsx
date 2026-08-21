@@ -448,11 +448,14 @@ function CT_MarkdownBody({ text }) {
 // hands the row's `seq` up to `onRewind` — <Conversation> owns the
 // actual `POST /chats/{id}/rewind` call + local truncation.
 function CT_RewindButton({ seq, disabled, onRewind }) {
-  const handleClick = () => {
+  const handleClick = async () => {
     if (disabled || typeof onRewind !== "function") return;
-    const ok = window.confirm(
-      "Rewind to this message? Everything sent or received after it will be discarded."
-    );
+    const ok = await window.confirmDialog({
+      title: "Rewind to this message?",
+      message: "Everything sent or received after it will be discarded.",
+      confirmLabel: "Rewind",
+      danger: true,
+    });
     if (!ok) return;
     onRewind(seq);
   };

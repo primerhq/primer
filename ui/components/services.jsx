@@ -191,10 +191,13 @@ function SV_ServiceModal({ existing, onClose, onSaved }) {
 
   const submit = async () => {
     if (viewerAuth === "none" && (!existing || existing.viewer_auth !== "none")) {
-      const ok = window.confirm(
-        "Anonymous viewing serves this app WITHOUT login. The manifest "
-        + "tool allowlist still applies to gateway calls. Continue?",
-      );
+      const ok = await window.confirmDialog({
+        title: "Serve without login?",
+        message: "Anonymous viewing serves this app WITHOUT login. The "
+          + "manifest tool allowlist still applies to gateway calls.",
+        confirmLabel: "Continue",
+        danger: true,
+      });
       if (!ok) return;
     }
     setBusy(true);

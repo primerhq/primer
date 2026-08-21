@@ -189,3 +189,29 @@ def test_no_page_writes_the_hash_behind_the_router() -> None:
         "navigate(), so the shell never sees the navigation: "
         + ", ".join(offenders)
     )
+
+
+def test_no_destructive_action_uses_the_browser_confirm() -> None:
+    """ConfirmHost is the console's confirm; the browser's is not.
+
+    A native window.confirm is a modal the app cannot style, cannot test,
+    and that a headless browser dismisses on its behalf, so the action
+    behind it silently does nothing. Deleting a document went that way:
+    the dialog never appeared and neither did the delete.
+    """
+    import re
+    from pathlib import Path
+
+    ui = Path(__file__).resolve().parents[2] / "ui"
+    offenders = []
+    for path in sorted(ui.rglob("*.jsx")) + sorted(ui.rglob("*.js")):
+        rel = path.relative_to(ui).as_posix()
+        if "vendor/" in rel:
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"\bwindow\.confirm\s*\(", line):
+                offenders.append(f"{rel}:{i}")
+    assert not offenders, (
+        "these call the browser's confirm instead of confirmDialog: "
+        + ", ".join(offenders)
+    )
