@@ -919,7 +919,13 @@ function CollectionsPage({ pushToast, onOpen, onNavigate }) {
               </thead>
               <tbody>
                 {rows.map((c) => (
-                  <tr key={c.id}>
+                  // The whole row opens the collection, as every other
+                  // list in this console does. It used to be the small
+                  // "Open" button in the last cell alone, so clicking a
+                  // collection anywhere else did nothing at all and gave
+                  // no hint that it should have.
+                  <tr key={c.id} style={{ cursor: "pointer" }}
+                    onClick={() => setSelected(c)}>
                     <td className="mono">
                       {c.id} {c.system ? <Icon name="lock" /> : null}
                     </td>
@@ -928,7 +934,10 @@ function CollectionsPage({ pushToast, onOpen, onNavigate }) {
                       {c.search ? c.search.state : "disabled"}
                     </td>
                     <td>
-                      <Btn kind="ghost" onClick={() => setSelected(c)}>Open</Btn>
+                      <Btn kind="ghost" onClick={(e) => {
+                        e.stopPropagation();
+                        setSelected(c);
+                      }}>Open</Btn>
                     </td>
                   </tr>
                 ))}
