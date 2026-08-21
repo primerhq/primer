@@ -49,7 +49,10 @@ function SH_ClientTools(props) {
     });
   }, [wid]);
 
-  // Test surface, matching the classic adapter's __clientToolsExecutor.
+  // Test surface. Named for the shell, like its other globals: the
+  // classic adapter it replaced published __clientToolsExecutor, and a
+  // comment claiming these match sent the journey looking for a name
+  // nothing defines.
   window.__shellClientToolsExecutor = executor;
 
   React.useEffect(function () {

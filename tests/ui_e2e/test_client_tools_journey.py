@@ -136,14 +136,14 @@ def test_open_file_delivery_opens_the_file_tab(
 
         # The adapter attached on mount, so the executor exists.
         page.wait_for_function(
-            "() => !!window.__clientToolsExecutor", timeout=10_000
+            "() => !!window.__shellClientToolsExecutor", timeout=10_000
         )
 
         # A delivery record ABOVE the fence executes: assert the tab is
         # PRESENT (focus is host policy, not part of the contract).
         verdict = page.evaluate(
             """([sid, path]) => {
-                const ex = window.__clientToolsExecutor;
+                const ex = window.__shellClientToolsExecutor;
                 ex.setAttachment(sid, 0);
                 return ex.handleEvent({
                   class: "client_action",
@@ -167,7 +167,7 @@ def test_open_file_delivery_opens_the_file_tab(
         # tab, no error.
         replayed = page.evaluate(
             """([sid, path]) => {
-                const ex = window.__clientToolsExecutor;
+                const ex = window.__shellClientToolsExecutor;
                 ex.setAttachment(sid, 5000);
                 return ex.handleEvent({
                   class: "client_action",

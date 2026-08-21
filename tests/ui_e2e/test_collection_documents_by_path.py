@@ -185,8 +185,12 @@ def test_collection_document_path_browser_full_journey(
 
         # ---- delete ----
         browser.get_by_role("button", name="Delete").first.click()
-        # Confirm in the nested modal.
-        page.get_by_role("button", name="Delete").last.click()
+        # Confirm through the themed window.confirm replacement. Its
+        # action carries the default OK/Cancel wording, not the verb of
+        # whatever asked, so it is reached by its own handle: matching
+        # "Delete" here found the page's own button again and confirmed
+        # nothing.
+        page.get_by_test_id("dialog-confirm").click()
         page.get_by_text("Document deleted", exact=False).first.wait_for(
             state="visible", timeout=10_000,
         )
