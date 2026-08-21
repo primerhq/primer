@@ -27,6 +27,7 @@ import logging
 
 from primer.int.storage_provider import StorageProvider
 from primer.model.collection import Document as LiveDocument
+from primer.model.except_ import ConflictError
 from primer.storage.migrations.m003_session_cutover import _iter_rows
 from primer.storage.migrations.m004_document_slugs import Document
 
@@ -97,19 +98,39 @@ class M005DocumentDirectories:
                 parent_id = existing
                 continue
             node_id = LiveDocument(collection_id="_", slug="x", path="x").id
-            await docs.create(
-                Document(
-                    id=node_id,
-                    collection_id=collection_id,
-                    path=walked,
-                    slug=segment,
-                    parent_id=parent_id,
+            try:
+                await docs.create(
+                    Document(
+                        id=node_id,
+                        collection_id=collection_id,
+                        path=walked,
+                        slug=segment,
+                        parent_id=parent_id,
+                    )
                 )
-            )
-            await content.upsert(
-                document_id=node_id, collection_id=collection_id,
-                path=walked, content="",
-            )
+                await content.upsert(
+                    document_id=node_id, collection_id=collection_id,
+                    path=walked, content="",
+                )
+            except ConflictError:
+                # Every pod runs the chain on boot, and a deploy rolls the
+                # API and the workers together, so two of them can reach an
+                # unapplied version at the same moment. The path is unique
+                # in the content store, which is what makes the second
+                # writer lose rather than duplicate the directory. Adopt
+                # what the winner wrote.
+                #
+                # The row is created before the content entry, so losing the
+                # race leaves our row behind with no path of its own. Drop it:
+                # a document the content store cannot resolve is invisible to
+                # every read path and would block nothing but confuse everything.
+                won = await content.resolve_id(collection_id, walked)
+                if won is None:
+                    raise
+                await docs.delete(node_id)
+                by_path[(collection_id, walked)] = won
+                parent_id = won
+                continue
             by_path[(collection_id, walked)] = node_id
             parent_id = node_id
             made += 1

@@ -446,3 +446,80 @@ async def test_m005_synthesises_the_directory_a_flat_document_names(sp):
     after = (await docs.list(OffsetPage(offset=0, length=100))).items
     assert len(after) == len(before)
     assert {d.id for d in after} == {d.id for d in before}
+
+
+async def test_m005_adopts_a_directory_another_pod_created_first(sp):
+    """Every pod runs the chain on boot, so two can build the same directory.
+
+    The content store's path uniqueness makes the loser lose. It must adopt
+    the winner's node and clean up the row it had already written, rather
+    than leaving a document behind that nothing can resolve.
+    """
+    from primer.model.collection import Document as LiveDocument
+    from primer.model.except_ import ConflictError
+    from primer.model.storage import OffsetPage
+    from primer.storage.migrations.m005_document_directories import (
+        Document as DocumentView,
+        M005DocumentDirectories,
+    )
+
+    content = sp.get_content_store()
+    await content.ensure_schema()
+    docs = sp.get_storage(DocumentView)
+    await docs.create(
+        DocumentView(
+            id="document-child",
+            collection_id="coll-1",
+            path="cookbook/x.md",
+            slug="x.md",
+        )
+    )
+    await content.upsert(
+        document_id="document-child", collection_id="coll-1",
+        path="cookbook/x.md", content="body",
+    )
+
+    # The other pod wins the directory: the path is taken by its node.
+    winner_id = LiveDocument(collection_id="_", slug="x", path="x").id
+    real_upsert = type(content).upsert
+    seeded: dict[str, bool] = {}
+
+    async def upsert_that_loses(self, *, document_id, collection_id, path, content, conn=None):
+        if path == "cookbook" and not seeded.get("done"):
+            seeded["done"] = True
+            await real_upsert(
+                self, document_id=winner_id, collection_id=collection_id,
+                path=path, content="", conn=conn,
+            )
+            raise ConflictError(f"path {path!r} is taken")
+        return await real_upsert(
+            self, document_id=document_id, collection_id=collection_id,
+            path=path, content=content, conn=conn,
+        )
+
+    import pytest as _pytest
+    mp = _pytest.MonkeyPatch()
+    mp.setattr(type(content), "upsert", upsert_that_loses)
+    try:
+        await M005DocumentDirectories().apply(sp)
+    finally:
+        mp.undo()
+
+    assert seeded.get("done"), "the losing upsert never fired"
+
+    live = sp.get_storage(LiveDocument)
+    child = await live.get("document-child")
+    assert child is not None
+    # It adopted the winner rather than pointing at the row it wrote.
+    assert child.parent_id == winner_id
+
+    # And it left nothing behind. Every surviving row's path must resolve
+    # to that row: an orphan's path resolves to the winner instead, which a
+    # mere not-None check would happily accept.
+    rows = (await docs.list(OffsetPage(offset=0, length=100))).items
+    for row in rows:
+        if row.path:
+            owner = await content.resolve_id(row.collection_id, row.path)
+            assert owner == row.id, (
+                f"document {row.id} sits at {row.path}, which resolves to {owner}"
+            )
