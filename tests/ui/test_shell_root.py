@@ -192,3 +192,35 @@ def test_the_url_is_not_written_from_a_half_changed_shell() -> None:
         "to the previous workspace"
     )
     assert src.count("var lastWidRef = React.useRef(wid);") == 1
+
+
+def test_the_shell_only_overwrites_its_own_address() -> None:
+    """Regression: a navigation was erased before it could be applied.
+
+    A navigation and the url-sync effect are triggered by the same event,
+    and whichever React runs first wins. One instrumented run showed both
+    outcomes: "#/?overlay=workspaces" survived because the hashchange
+    listener had already applied it, while "#/?overlay=toolsets::<id>"
+    was rewritten to "#/w/primer" because the effect got there first and
+    built the url from an overlay state still null. The surface never
+    opened and nothing said why.
+
+    ownHashRef records the last address the shell put in the bar or read
+    back from it; anything else there is a navigation in flight.
+    """
+    src = _src()
+    assert "var ownHashRef = React.useRef(" in src
+    sync = src[src.index("var url = SH_buildUrl({") - 2500:
+               src.index("var url = SH_buildUrl({")]
+    assert "current !== ownHashRef.current" in sync, (
+        "the sync effect must not write over an address it did not set"
+    )
+    # Both readers must record what they have applied, or the shell locks
+    # itself out of ever writing again.
+    assert src.count("ownHashRef.current = window.location.hash") >= 2, (
+        "the hashchange listener and the workspace reset must each record "
+        "the address they applied"
+    )
+    assert "ownHashRef.current = url;" in src, (
+        "and a write must record what it wrote"
+    )

@@ -101,6 +101,11 @@ function SH_Shell(props) {
   // still the PREVIOUS workspace's.
   var lastWidRef = React.useRef(wid);
 
+  // The last address the shell itself put in the bar, or has read back.
+  // Anything else there arrived from outside and has not been applied
+  // yet, so it must not be overwritten.
+  var ownHashRef = React.useRef(window.location.hash || "");
+
   React.useEffect(function () {
     // Never write the url from a half-changed shell.
     //
@@ -121,6 +126,21 @@ function SH_Shell(props) {
     // arriving "?doc=session:<target>" and this effect replacing it on
     // the very next line.
     if (lastWidRef.current !== wid) return;
+    // Never overwrite an address the shell did not put there.
+    //
+    // A navigation and this effect are triggered by the same event, and
+    // whichever React runs first wins. The traces show both outcomes in
+    // one run: "#/?overlay=workspaces" survived because the listener had
+    // already applied it, while "#/?overlay=toolsets::<id>" was rewritten
+    // to "#/w/primer" because this effect got there first and built the
+    // url from an overlay state that was still null. The surface then
+    // never opened, and nothing said why.
+    //
+    // So the shell only writes over its own last address. One that
+    // arrived from outside is a navigation in flight; the listener will
+    // apply it and record it, and the next run writes the settled state.
+    var current = window.location.hash || "";
+    if (current !== ownHashRef.current) return;
     // The same rule one step out: a url naming a workspace the shell has
     // not adopted at all is ahead of it, not wrong.
     if (SH_urlIsAhead(SH_readUrl(), wid)) return;
@@ -132,6 +152,7 @@ function SH_Shell(props) {
     });
     if ((window.location.hash || "") !== url) {
       SH_diag("sync-write", { from: window.location.hash || "", to: url });
+      ownHashRef.current = url;
       window.history.pushState(null, "", url);
     }
   }, [wid, active && active.id, overlay && overlay.name,
@@ -145,6 +166,7 @@ function SH_Shell(props) {
         doc: parsed.doc ? parsed.doc.kind + ":" + parsed.doc.ref : null,
         overlay: parsed.overlay ? parsed.overlay.name : null,
       });
+      ownHashRef.current = window.location.hash || "";
       setOverlay(parsed.overlay);
       setAnchor(parsed.anchor);
       if (parsed.doc) {
@@ -184,6 +206,7 @@ function SH_Shell(props) {
     SH_diag("wid-change", { from: lastWidRef.current, to: wid,
                             hash: window.location.hash || "" });
     lastWidRef.current = wid;
+    ownHashRef.current = window.location.hash || "";
     // Drop the old workspace's tabs, but keep whatever THIS url asks
     // for: arriving at #/w/<wid>?doc=session:<sid> changes the
     // workspace and names a document in one go, and the hashchange
