@@ -171,7 +171,15 @@ async def list_stt_types() -> dict[str, dict[str, Any]]:
     return {
         "openai": {
             "label": "OpenAI-compatible",
-            "config_fields": ["url", "api_key"],
+            # url is REQUIRED on the speech configs; api_key is not.
+            # Listed as bare strings the form read both as optional, so
+            # it offered Save on a row with no endpoint and the create
+            # came back 422.
+            "config_fields": [
+                {"key": "url", "label": "url", "type": "url",
+                 "required": True},
+                "api_key",
+            ],
             # default_model is REQUIRED on SpeechToTextProvider. Declared
             # as a bare string the form treated it as optional, so Save
             # was offered on an incomplete row and the create came back
@@ -221,7 +229,15 @@ async def list_tts_types() -> dict[str, dict[str, Any]]:
     return {
         "openai": {
             "label": "OpenAI-compatible",
-            "config_fields": ["url", "api_key"],
+            # url is REQUIRED on the speech configs; api_key is not.
+            # Listed as bare strings the form read both as optional, so
+            # it offered Save on a row with no endpoint and the create
+            # came back 422.
+            "config_fields": [
+                {"key": "url", "label": "url", "type": "url",
+                 "required": True},
+                "api_key",
+            ],
             # Both are REQUIRED on TextToSpeechProvider; see the note on
             # the STT types above.
             "row_fields": [

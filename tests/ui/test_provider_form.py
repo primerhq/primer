@@ -224,19 +224,23 @@ def test_the_speech_types_declare_the_fields_their_models_require() -> None:
         (list_tts_types, TextToSpeechProvider),
     ):
         payload = asyncio.run(types_fn())
+        config_model = model.model_fields["config"].annotation
         for spec in payload.values():
-            declared = {
-                f["key"] for f in spec["row_fields"]
-                if isinstance(f, dict) and f.get("required")
-            }
-            needed = {
-                n for n, f in model.model_fields.items()
-                if f.is_required() and n in {
-                    (g["key"] if isinstance(g, dict) else g)
-                    for g in spec["row_fields"]
+            for slot, owner in (("row_fields", model),
+                                ("config_fields", config_model)):
+                declared = {
+                    f["key"] for f in spec[slot]
+                    if isinstance(f, dict) and f.get("required")
                 }
-            }
-            assert needed <= declared, (
-                f"{model.__name__} requires {sorted(needed - declared)}, "
-                "which the form is not told about"
-            )
+                listed = {
+                    (g["key"] if isinstance(g, dict) else g)
+                    for g in spec[slot]
+                }
+                needed = {
+                    n for n, f in owner.model_fields.items()
+                    if f.is_required() and n in listed
+                }
+                assert needed <= declared, (
+                    f"{owner.__name__} requires {sorted(needed - declared)}, "
+                    f"which the form is not told about via {slot}"
+                )

@@ -58,6 +58,8 @@ def test_a_provider_row_can_be_created_and_deleted(page, console_url) -> None:
     # letting the create come back 422 with nothing saying which field
     # was missing.
     page.fill(f'{form} [data-field="default_model"] input', "whisper-1")
+    # url is required on the speech config too.
+    page.fill(f'{form} [data-field="url"] input', "https://api.openai.com/v1")
     page.click('[data-testid="provider-form-save"]')
     page.wait_for_selector("text=journey-stt")
     page.click("text=journey-stt")

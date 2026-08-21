@@ -245,9 +245,12 @@ def test_multi_page_operator_journey_no_llm(
         page.locator("h1.page-title").first.wait_for(
             state="visible", timeout=10_000,
         )
-        page.locator(f"tr:has-text('{ids['llm']}')").first.wait_for(
-            state="visible", timeout=10_000,
-        )
+        # The catalog lists instances as cards beside the form, not as
+        # table rows: S4 P4 retired the per-class provider pages and
+        # their tables.
+        page.get_by_test_id("provider-instances-llm").get_by_text(
+            ids["llm"], exact=True,
+        ).first.wait_for(state="visible", timeout=10_000)
 
         # ----- 9. Back to dashboard
         page.goto(f"{console_url}#/", wait_until="domcontentloaded")
