@@ -19,14 +19,19 @@ const PROVIDER_CLASSES = [
   { key: "embedding", label: "Embedding", plural: "embedding_providers", form: "crud", invalidate: true },
   { key: "cross_encoder", label: "Cross-Encoder", plural: "cross_encoder_providers", form: "crud", invalidate: true },
   { key: "ssp", label: "Vector Stores", plural: "ssp", form: "panel",
-    panel: () => window.SSPListPage },
+    panel: () => window.SSPListPage,
+    // Without a detail the catalog selected a store and then showed the
+    // list again, so a vector store's own page was unreachable. It takes
+    // its id as `sspId`, hence detailProp.
+    detail: () => window.SSPDetail, detailProp: "sspId" },
   { key: "stt", label: "Speech-to-Text", plural: "stt_providers", form: "crud" },
   { key: "tts", label: "Text-to-Speech", plural: "tts_providers", form: "crud" },
   { key: "web_search", label: "Web Search", plural: "web_search_providers", form: "crud" },
   { key: "web_fetch", label: "Web Fetch", plural: "web_fetch_providers", form: "crud" },
   { key: "artifact_storage", label: "Artifact Storage", plural: "artifact_storage_providers", form: "crud" },
   { key: "workspace", label: "Workspaces", plural: "workspace_providers", form: "panel",
-    panel: () => window.WorkspaceProvidersPage },
+    panel: () => window.WorkspaceProvidersPage,
+    detail: () => window.WorkspaceProviderDetail },
   { key: "channel", label: "Channels", plural: "channel_providers", form: "panel",
     panel: () => window.ChannelProvidersPage,
     // A panel class can still have a detail view; without one the
@@ -518,11 +523,15 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
   if (cls.form === "panel") {
     const Detail = instanceId && cls.detail ? cls.detail() : null;
     const Panel = cls.panel();
+    // Detail components predate the catalog and name their id after the
+    // thing they show: sspId, providerId. A class says which, rather
+    // than every one of them being renamed to suit the host.
+    const detailProps = {
+      pushToast: window.primerApi && window.primerApi.toastPush,
+    };
+    detailProps[cls.detailProp || "providerId"] = instanceId;
     body = Detail ? (
-      <Detail
-        providerId={instanceId}
-        pushToast={window.primerApi && window.primerApi.toastPush}
-      />
+      <Detail {...detailProps} />
     ) : Panel ? (
       // These panels take the same two props their pages always took.
       // Mounted bare, onOpen was undefined, so creating a provider threw

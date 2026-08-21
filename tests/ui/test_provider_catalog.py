@@ -112,3 +112,28 @@ def test_the_reused_class_panels_are_referenced_not_reimplemented() -> None:
         "window.ChannelProvidersPage",
     ):
         assert component in src
+
+
+def test_every_panel_class_can_reach_its_own_detail_view() -> None:
+    """Regression: selecting an instance showed the list again.
+
+    A panel class that declares no detail leaves the catalog with nothing
+    to render for one instance, so it fell back to the list: a vector
+    store's own page, and a workspace provider's, were unreachable even
+    though both components are defined, exported and loaded.
+
+    Detail components predate the catalog and name their id after the
+    thing they show, so a class says which prop carries it rather than
+    every component being renamed to suit the host.
+    """
+    src = _read("components/provider-catalog.jsx")
+    classes = src[:src.index("function PC_ClassRail")]
+    for key in ("ssp", "workspace", "channel"):
+        block = classes[classes.index(f'key: "{key}"'):]
+        block = block[:block.index("},")]
+        assert "detail:" in block, f"the {key} class has no detail view"
+    assert 'detailProp: "sspId"' in classes, (
+        "SSPDetail takes sspId, so the class has to say so"
+    )
+    assert 'detailProps[cls.detailProp || "providerId"]' in \
+        _read("components/provider-catalog.jsx")
