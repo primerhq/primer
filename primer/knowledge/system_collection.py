@@ -21,7 +21,7 @@ from primer.knowledge.indexing import (
 from primer.knowledge.tree import DocumentTreeService
 from primer.model.agent import Agent
 from primer.model.collection import Collection, Document
-from primer.model.except_ import NotFoundError, PrimerError
+from primer.model.except_ import ConflictError, NotFoundError, PrimerError
 from primer.model.graph import Graph
 from primer.model.storage import OffsetPage
 
@@ -468,10 +468,21 @@ async def regenerate_system_collection(
                 collection_id=SYSTEM_COLLECTION_ID, path=path, body=body,
             )
         except NotFoundError:
-            await tree.create(
-                collection_id=SYSTEM_COLLECTION_ID, parent=parent, slug=slug,
-                body=body, strict_slugs=False,
-            )
+            try:
+                await tree.create(
+                    collection_id=SYSTEM_COLLECTION_ID, parent=parent, slug=slug,
+                    body=body, strict_slugs=False,
+                )
+            except ConflictError:
+                # A CDC convergence hook wrote this page between the miss
+                # above and this create. It races us by construction: the
+                # seed step before this one creates the agents, and every
+                # create fires converge_entity for the very path this loop
+                # is about to write. Take the page over rather than failing
+                # the whole pass over a write that arrived first.
+                await tree.update(
+                    collection_id=SYSTEM_COLLECTION_ID, path=path, body=body,
+                )
         written += 1
 
     # Prune whatever the platform no longer describes.

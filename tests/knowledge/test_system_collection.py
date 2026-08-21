@@ -252,3 +252,53 @@ async def test_a_failing_deferred_index_does_not_escape() -> None:
     # Let the task run and be collected; nothing may propagate.
     for _ in range(20):
         await asyncio.sleep(0.01)
+
+
+async def test_regeneration_survives_a_page_created_underneath_it(sp, monkeypatch):
+    """A CDC convergence hook can win the create; the pass must not die.
+
+    Seeding an agent fires converge_entity for ``agents/<id>``, the very
+    path the regeneration that runs next is about to write. When that hook
+    lands between the regeneration's not-found miss and its create, the
+    create raises ConflictError. Before the fix that killed the whole
+    ensure pass and left the system collection half built.
+    """
+    from primer.model.except_ import ConflictError
+
+    await sp.get_storage(Agent).create(
+        Agent(id="agent-raced", description="helper",
+              model=AgentModel(profile_id="prov--m"))
+    )
+
+    real_create = DocumentTreeService.create
+    raced: dict[str, bool] = {}
+
+    async def racing_create(self, *, collection_id, parent, slug, body,
+                            title=None, strict_slugs=True):
+        # Stand in for the hook: write the page, then report the collision
+        # the regeneration would really have seen.
+        if slug == "agent-raced" and not raced.get("done"):
+            raced["done"] = True
+            await real_create(
+                self, collection_id=collection_id, parent=parent, slug=slug,
+                body="written by the convergence hook", title=title,
+                strict_slugs=strict_slugs,
+            )
+            raise ConflictError(f"path {parent}/{slug!r} already exists")
+        return await real_create(
+            self, collection_id=collection_id, parent=parent, slug=slug,
+            body=body, title=title, strict_slugs=strict_slugs,
+        )
+
+    monkeypatch.setattr(DocumentTreeService, "create", racing_create)
+
+    await regenerate_system_collection(sp, toolset_providers={})
+
+    assert raced.get("done"), "the racing create never fired"
+    # The pass took the page over instead of leaving the hook's stand-in body.
+    tree = DocumentTreeService(sp)
+    page = await tree.read(
+        collection_id=SYSTEM_COLLECTION_ID, path="agents/agent-raced",
+    )
+    assert page.body != "written by the convergence hook"
+    assert "agent-raced" in page.body
