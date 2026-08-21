@@ -142,6 +142,28 @@ async def _capture(out_dir: Path, ids: list[str]) -> dict[str, dict]:
                             f"html_len={res.get('rootHtmlLen')} "
                             f"text={res.get('textSample')!r}"
                         )
+                    # Shrink the host to what actually rendered. The iframe is
+                    # 100vh so every capture would otherwise be 1366x900 with
+                    # the embed sitting in the top strip, which is most of them:
+                    # a two-row provider list published as two thirds blank.
+                    # Measured on #embed-root, since the iframe document's body
+                    # is the frame's viewport and never reports less than it.
+                    await page.evaluate(
+                        """() => {
+                            const f = document.getElementById('host');
+                            const d = f.contentDocument;
+                            const root = d && d.getElementById('embed-root');
+                            if (!root) return;
+                            const h = Math.ceil(
+                                root.getBoundingClientRect().height
+                            );
+                            if (h > 0) {
+                                f.style.height = Math.max(120, h + 16) + 'px';
+                            }
+                        }"""
+                    )
+                    await page.wait_for_timeout(120)
+
                     # Screenshot the host iframe element (contains the rendered embed).
                     el = await page.query_selector("#host")
                     if el is None:
