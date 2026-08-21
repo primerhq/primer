@@ -118,6 +118,11 @@ function SH_SessionsList() {
       {roots.map(function (s) { return row(s, 0); })}
       {roots.length ? null : (
         <li className="sh-empty">
+          {/* Say what is true before offering the remedy. A lone button
+              left the operator to infer the workspace was empty from the
+              absence of rows, which reads the same as a list that has
+              not loaded. The files list beside it says which. */}
+          <span>No sessions yet</span>
           <button type="button" data-testid="rail-sessions-empty"
             onClick={function () { shell.registry.get("session.create").run(); }}>
             Create Session
