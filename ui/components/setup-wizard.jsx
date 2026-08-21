@@ -29,14 +29,23 @@ function _setupDraftConfig(type, url, apiKey) {
   return config;
 }
 
-function SetupWizardSteps({ onComplete }) {
-  const [step, setStep] = React.useState(1);
+function SetupWizardSteps({ onComplete, initialStep, initialModels }) {
+  // initialStep exists for the docs harness, which captures each step as
+  // its own image and cannot click through a wizard to reach the second
+  // one. Nothing in the console passes it, so the wizard still opens
+  // where a first-run operator expects: at the beginning.
+  const [step, setStep] = React.useState(initialStep || 1);
   const [type, setType] = React.useState("openchat");
   const [url, setUrl] = React.useState("");
   const [apiKey, setApiKey] = React.useState("");
   const [providerId, setProviderId] = React.useState("");
-  const [discovered, setDiscovered] = React.useState([]);
-  const [picked, setPicked] = React.useState("");
+  // initialModels goes with initialStep: step 2's list is what step 1's
+  // probe returned, so a capture that starts at step 2 has an empty
+  // dropdown and documents nothing. Console callers pass neither.
+  const [discovered, setDiscovered] = React.useState(initialModels || []);
+  const [picked, setPicked] = React.useState(
+    (initialModels && initialModels[0] && initialModels[0].name) || ""
+  );
   const [busy, setBusy] = React.useState(false);
   const [err, setErr] = React.useState(null);
 

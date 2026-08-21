@@ -66,6 +66,59 @@
       hash: "#/w/ws-blogassistant?doc=session:sess-briefwriter",
       props: { wid: "ws-blogassistant" },
     },
+    // ---- the v2 shell ids the concept pages fence -------------------
+    // These reuse the fixture files their surface already has: a fixture
+    // is a recorded set of API responses, and two embeds looking at the
+    // same surface want the same recording.
+    "shell-session": {
+      // The shell as an operator meets it: rail, tabs, one open session.
+      component: "SH_Shell",
+      fixtures: "session-detail",
+      hash: "#/w/ws-blogassistant?doc=session:sess-briefwriter",
+      props: { wid: "ws-blogassistant" },
+    },
+    "client-tool-open-file": {
+      // The same workspace with a FILE open, which is what a client tool
+      // delivering "open this" produces.
+      component: "SH_Shell",
+      fixtures: "session-detail",
+      hash: "#/w/ws-blogassistant?doc=file:draft.md",
+      props: { wid: "ws-blogassistant" },
+    },
+    "collections-tree": {
+      // A collection open at its document tree: paths on the left, the
+      // grep box above them.
+      component: "CollectionsPage",
+      fixtures: "collection-list",
+      props: { pushToast: function () {} },
+    },
+    "providers-catalog": {
+      // One catalog, every provider class on the rail.
+      component: "ProviderCatalog",
+      fixtures: "llm-provider-openrouter",
+      props: { initialClass: "llm" },
+    },
+    "wizard-provider": {
+      // First run, step 1: name the provider that will serve the models.
+      component: "SetupWizardSteps",
+      fixtures: "llm-provider-openrouter",
+      props: { onComplete: function () {} },
+    },
+    "wizard-profile": {
+      // First run, step 2: pick the default model. initialStep is why the
+      // wizard takes one; the harness cannot click through to get here.
+      component: "SetupWizardSteps",
+      fixtures: "llm-provider-openrouter",
+      props: {
+        onComplete: function () {},
+        initialStep: 2,
+        initialModels: [
+          { name: "gpt-4o-mini" },
+          { name: "gpt-4o" },
+          { name: "o4-mini" },
+        ],
+      },
+    },
     "workspaces": {
       component: "WorkspacesPage",
       fixtures: "workspaces",
