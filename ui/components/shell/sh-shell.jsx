@@ -147,11 +147,6 @@ function SH_Shell(props) {
     function onUrl() {
       var parsed = SH_readUrl();
       ownHashRef.current = window.location.hash || "";
-      try {
-        window.console.log("[shdiag] hashApply "
-          + JSON.stringify({ hash: window.location.hash || "",
-                             overlay: parsed.overlay ? parsed.overlay.name : null }));
-      } catch (err) { /* diagnostics never break the shell */ }
       setOverlay(parsed.overlay);
       setAnchor(parsed.anchor);
       if (parsed.doc) {
@@ -199,10 +194,6 @@ function SH_Shell(props) {
     if (lastWidRef.current === wid) return;
     lastWidRef.current = wid;
     ownHashRef.current = window.location.hash || "";
-    try {
-      window.console.log("[shdiag] widApply "
-        + JSON.stringify({ wid: wid, hash: window.location.hash || "" }));
-    } catch (err) { /* diagnostics never break the shell */ }
     // Drop the old workspace's tabs, but keep whatever THIS url asks
     // for: arriving at #/w/<wid>?doc=session:<sid> changes the
     // workspace and names a document in one go, and the hashchange
@@ -314,15 +305,6 @@ function SH_Shell(props) {
     splitRight: function () { setDocs(function (s) { return SH_splitRight(s); }); },
     cycleMru: function (step) { setDocs(function (s) { return SH_cycleMru(s, step); }); },
     openOverlay: function (name, section, id) {
-      // TEMPORARY: which overlay is being opened, and by what. The
-      // collections journey ends up on the providers catalog after a row
-      // click and nothing in the source explains it.
-      try {
-        window.console.log("[shdiag] openOverlay "
-          + JSON.stringify({ name: name, section: section || null,
-                             id: id || null })
-          + " " + new Error().stack.split("\n").slice(1, 5).join(" | "));
-      } catch (err) { /* diagnostics never break the shell */ }
       setOverlay({ name: name, section: section || null, id: id || null });
     },
     closeOverlay: function () { setOverlay(null); },
