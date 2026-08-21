@@ -205,9 +205,13 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
         composer = page.locator("textarea[placeholder='Send a message…']")
         composer.wait_for(state="visible", timeout=10_000)
 
-        # The panel header StatusPill reads "created" initially.
-        body_initial = (page.locator("body").text_content() or "").lower()
-        assert "created" in body_initial, "expected initial 'created' status"
+        # The rail row carries a status before anything is sent. NOT
+        # pinned to "created": a seeded session does not reliably sit
+        # there to be observed, since the scheduler may claim it between
+        # the seed and the assertion, and what this test is about is the
+        # transition a send causes.
+        initial_chip = page.locator('[data-testid="session-status-dot"]').first
+        expect(initial_chip).to_be_visible(timeout=10_000)
 
         # Send a message via the Composer — this is the resume/steer/invoke
         # signal now (POST .../steer, session-adapter.jsx sendMessage).
