@@ -305,6 +305,15 @@ function SH_Shell(props) {
     splitRight: function () { setDocs(function (s) { return SH_splitRight(s); }); },
     cycleMru: function (step) { setDocs(function (s) { return SH_cycleMru(s, step); }); },
     openOverlay: function (name, section, id) {
+      // TEMPORARY: which overlay is being opened, and by what. The
+      // collections journey ends up on the providers catalog after a row
+      // click and nothing in the source explains it.
+      try {
+        window.console.log("[shdiag] openOverlay "
+          + JSON.stringify({ name: name, section: section || null,
+                             id: id || null })
+          + " " + new Error().stack.split("\n").slice(1, 5).join(" | "));
+      } catch (err) { /* diagnostics never break the shell */ }
       setOverlay({ name: name, section: section || null, id: id || null });
     },
     closeOverlay: function () { setOverlay(null); },
