@@ -248,3 +248,36 @@ def test_both_registration_sites_pass_a_live_view() -> None:
         assert not re.search(rf"(?<!function ){call}\(shell\)", src), (
             f"{rel} still registers {call} against a first-render snapshot"
         )
+
+
+def test_requires_live_survives_registration() -> None:
+    """Regression: the gate read a field the registry had thrown away.
+
+    register() builds an explicit `stored` object with a fixed field
+    list, so anything not named there is dropped. requiresLive was not,
+    so verb.requiresLive was undefined at every render and Interrupt
+    stayed on the menu for sessions that had already ended. The check
+    that "proved" the gate worked passed a raw verb object rather than a
+    registered one, which is exactly the difference that mattered.
+    """
+    ctx = _ctx()
+    ctx.eval(
+        """
+        var R = SH_createVerbRegistry();
+        var stored = R.register({
+          id: "session.probe", label: "Interrupt Session", weight: 1,
+          surfaces: ["tab-menu"], contexts: ["session"],
+          requiresLive: true, run: function () {}
+        });
+        var back = R.get("session.probe");
+        var plain = R.register({
+          id: "session.other", label: "Close Session", weight: 1,
+          surfaces: ["tab-menu"], contexts: ["session"], run: function () {}
+        });
+        """
+    )
+    assert ctx.eval("stored.requiresLive") is True
+    assert ctx.eval("back.requiresLive") is True, (
+        "the gate reads the STORED verb, so the field has to survive get()"
+    )
+    assert ctx.eval("plain.requiresLive") is False

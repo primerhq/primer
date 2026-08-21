@@ -93,6 +93,12 @@ function SH_createVerbRegistry() {
       weight: verb.weight === undefined ? 1 : verb.weight,
       destructive: !!verb.destructive,
       contexts: verb.contexts || null,
+      // Whether the verb needs a session that is still going. Interrupt
+      // and Park mean nothing once one has ended, and a menu that still
+      // offers them says the shell has not noticed. The stored shape is
+      // an explicit whitelist, so a field that is not listed here is
+      // silently dropped and any gate reading it never fires.
+      requiresLive: !!verb.requiresLive,
       surfaces: surfaces,
       chord: verb.chord || null,
       run: verb.run,
