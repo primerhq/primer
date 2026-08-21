@@ -46,3 +46,43 @@ def test_dispatch_still_maps_graph_ended_to_completed():
     status, reason = _STOP_REASON_TO_STATUS["graph_ended"]
     assert status == SessionStatus.ENDED
     assert reason == "completed"
+
+
+# ---- the path dispatch actually uses: the raw executor --------------------
+
+
+def _bare_executor(ended_reason=None):
+    """An executor instance without running __init__ (abstract hooks and
+    constructor wiring are irrelevant to the outcome property)."""
+    from primer.graph.base import _BaseGraphExecutor
+
+    ex = object.__new__(GraphOutcomeProbe)
+    if ended_reason is not None:
+        ex._last_ended_reason = ended_reason
+    return ex
+
+
+from primer.graph.base import _BaseGraphExecutor  # noqa: E402
+
+
+class GraphOutcomeProbe(_BaseGraphExecutor):
+    async def _load_node_history(self, *a, **k):  # pragma: no cover
+        raise NotImplementedError
+
+    async def _persist_node_turn(self, *a, **k):  # pragma: no cover
+        raise NotImplementedError
+
+    async def _save_state(self, *a, **k):  # pragma: no cover
+        raise NotImplementedError
+
+
+def test_executor_reports_no_outcome_mid_run():
+    assert _bare_executor().last_done_reason is None
+
+
+def test_executor_reports_graph_failed_after_a_failed_run():
+    assert _bare_executor("failed").last_done_reason == "graph_failed"
+
+
+def test_executor_reports_graph_ended_after_success():
+    assert _bare_executor("completed").last_done_reason == "graph_ended"
