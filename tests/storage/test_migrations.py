@@ -523,3 +523,50 @@ async def test_m005_adopts_a_directory_another_pod_created_first(sp):
             assert owner == row.id, (
                 f"document {row.id} sits at {row.path}, which resolves to {owner}"
             )
+
+
+# ---------------------------------------------------------------------------
+# m006: agent grants rewritten for the unified search tool
+# ---------------------------------------------------------------------------
+
+
+async def test_m006_rewrites_and_dedupes_search_grants(sp):
+    """Both retired ids collapse to one collections__search, order kept."""
+    from primer.model.agent import Agent as LiveAgent
+    from primer.storage.migrations.m006_unified_search_grants import (
+        Agent as AgentView,
+    )
+
+    # The extras (description, model) ride through the view untouched and
+    # are what make the row readable by the live model afterwards.
+    await sp.get_storage(AgentView).create(AgentView(
+        id="agent-old",
+        description="pre-cutover agent",
+        model={"profile_id": "prov--m"},
+        tools=["collections__grep_collection", "web__web_fetch",
+               "collections__semantic_search"],
+    ))
+
+    await run_migrations(sp, is_fresh_install=False)
+
+    row = await sp.get_storage(LiveAgent).get("agent-old")
+    assert row is not None
+    assert row.tools == ["collections__search", "web__web_fetch"]
+
+
+async def test_m006_leaves_untouched_grants_alone(sp):
+    """Idempotent, and a clean grant is not rewritten."""
+    from primer.storage.migrations.m006_unified_search_grants import (
+        Agent as AgentView,
+        M006UnifiedSearchGrants,
+    )
+
+    await sp.get_storage(AgentView).create(AgentView(
+        id="agent-clean", tools=["collections__search"],
+    ))
+
+    await run_migrations(sp, is_fresh_install=False)
+    await M006UnifiedSearchGrants().apply(sp)  # re-run converges
+
+    row = await sp.get_storage(AgentView).get("agent-clean")
+    assert row.tools == ["collections__search"]

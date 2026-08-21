@@ -41,6 +41,9 @@ from primer.storage.migrations.m004_document_slugs import M004DocumentSlugs
 from primer.storage.migrations.m005_document_directories import (
     M005DocumentDirectories,
 )
+from primer.storage.migrations.m006_unified_search_grants import (
+    M006UnifiedSearchGrants,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +67,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M003SessionCutover(),
     M004DocumentSlugs(),
     M005DocumentDirectories(),
+    M006UnifiedSearchGrants(),
 )
 
 #: Highest version this build knows how to apply.
