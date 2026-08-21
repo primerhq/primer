@@ -127,6 +127,21 @@ async def _capture(out_dir: Path, ids: list[str]) -> dict[str, dict]:
                     info["harness"] = res
                     if res and res.get("error"):
                         raise RuntimeError(res["error"])
+                    # The harness already decides whether the component put
+                    # anything on the page, and until now nobody asked. Reaching
+                    # "done" only means the harness finished, so an embed that
+                    # rendered nothing screenshotted an empty host and counted as
+                    # a success: every PNG in the set was blank and the summary
+                    # said 56/56 was within reach. A capture of nothing is a
+                    # failure, and it names what it saw so the cause is one read
+                    # away.
+                    if res is not None and not res.get("rendered"):
+                        raise RuntimeError(
+                            "component rendered nothing: "
+                            f"component={res.get('component')!r} "
+                            f"html_len={res.get('rootHtmlLen')} "
+                            f"text={res.get('textSample')!r}"
+                        )
                     # Screenshot the host iframe element (contains the rendered embed).
                     el = await page.query_selector("#host")
                     if el is None:
