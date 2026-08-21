@@ -157,3 +157,23 @@ def test_creating_a_provider_refreshes_the_list_beside_the_form() -> None:
         "and select what was just made, which is where the operator is "
         "already looking"
     )
+
+
+def test_the_catalog_follows_the_addressed_instance() -> None:
+    """Regression: the vector-store detail never opened.
+
+    initialInstanceId seeded local state once and was never looked at
+    again. A page hosted inside the catalog that navigates on its own,
+    which the vector-store list does to /ssp/<id>, therefore updated the
+    url and the crumb while the catalog went on showing the list: its own
+    state had not heard about it. The id slot is what says which instance
+    is open, so the catalog has to follow it.
+    """
+    src = _read("components/provider-catalog.jsx")
+    assert "setInstanceId(initialInstanceId || null);" in src
+    assert "}, [initialInstanceId]);" in src, (
+        "the effect has to depend on the prop it is following"
+    )
+    assert "}, [initialClass]);" in src, (
+        "and the class, addressed the same way in the section slot"
+    )

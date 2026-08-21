@@ -484,6 +484,17 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
     initialClass || PROVIDER_CLASSES[0].key,
   );
   const [instanceId, setInstanceId] = React.useState(initialInstanceId || null);
+  // The addressed instance wins. This was seeded once and never looked at
+  // again, so a page inside the catalog that navigates on its own -- the
+  // vector-store list does, to /ssp/<id> -- updated the url and the crumb
+  // while the catalog went on showing the list, because its own state had
+  // not heard about it. The id slot is what says which instance is open.
+  React.useEffect(() => {
+    setInstanceId(initialInstanceId || null);
+  }, [initialInstanceId]);
+  React.useEffect(() => {
+    if (initialClass) setClassKey(initialClass);
+  }, [initialClass]);
   const listRefetchRef = React.useRef(null);
   const [reloadKey, setReloadKey] = React.useState(0);
   const [draft, setDraft] = React.useState({});
