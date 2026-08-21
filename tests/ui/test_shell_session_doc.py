@@ -156,3 +156,22 @@ def test_raw_tool_arguments_never_render_inline() -> None:
     assert ".arguments" not in src, (
         "raw args belong to the Trace tab; the chip speaks plain language"
     )
+
+
+def test_the_session_poll_follows_the_session_it_is_watching() -> None:
+    """A flat cadence was wrong in both directions.
+
+    A CREATED session is about to change and the operator is watching for
+    exactly that transition, so five seconds is a visible lag. An ENDED
+    session will never change again, and polling it forever costs a
+    request every five seconds per open tab for news that cannot come.
+    """
+    src = _src()
+    block = src[src.index("var terminalRef = React.useRef(false);"):]
+    block = block[:block.index("var history")]
+    assert "pollMs: terminalRef.current ? 0 : 2000" in block, (
+        "poll while the session is live, and stop once it is over"
+    )
+    assert "SH_sessionIsOver(detail.data)" in block, (
+        "and decide that from the row the poll just returned"
+    )

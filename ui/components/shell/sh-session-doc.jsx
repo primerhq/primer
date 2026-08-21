@@ -404,11 +404,20 @@ function SH_SessionDoc(props) {
   var sid = props.sid;
   var tap = window.useWorkspaceTap(shell.wid);
 
+  // Poll while there is something to learn, and stop when there is not.
+  //
+  // A flat 5s was wrong in both directions: a session that is CREATED is
+  // about to change and the operator is watching it, so five seconds is
+  // a visible lag on the one transition anyone waits for; a session that
+  // has ENDED will never change again, and polling it forever costs a
+  // request every five seconds per open tab for news that cannot come.
+  var terminalRef = React.useRef(false);
   var detail = window.primerApi.useResource(
     SH_api.keys.session(sid),
     function (signal) { return SH_api.session(sid, signal); },
-    { pollMs: 5000, deps: [sid] }
+    { pollMs: terminalRef.current ? 0 : 2000, deps: [sid] }
   );
+  terminalRef.current = !!(detail.data && SH_sessionIsOver(detail.data));
   var history = window.primerApi.useResource(
     SH_api.keys.session(sid) + ":messages",
     function (signal) { return SH_api.messages(sid, 200, null, signal); },
