@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 
+from tests._support.model_profiles import agent_model, seed_llm_provider_with
 from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 STT_ID = "ui-e2e-stt"
@@ -55,7 +56,44 @@ def _seed_session(base_url: str, unique_suffix: str, tmp_path) -> tuple[str, str
     not stamped until S5 P1, which runs after S4.
     """
     agent_id = f"voice-agent-{unique_suffix}"
-    wid = ...  # the four seeding calls named above
+    provider_id = f"voice-llm-{unique_suffix}"
+    wp_id = f"voice-wp-{unique_suffix}"
+    tpl_id = f"voice-tpl-{unique_suffix}"
+
+    with httpx.Client(base_url=base_url, timeout=30.0) as c:
+        r = seed_llm_provider_with(c, {
+            "id": provider_id,
+            "provider": "ollama",
+            "config": {"url": "http://127.0.0.1:9999"},
+            "models": [{"name": "fake-model", "context_length": 4096}],
+            "limits": {"max_concurrency": 1},
+        })
+        assert r.status_code == 201, f"seed LLM failed: {r.text}"
+        r = c.post("/v1/agents", json={
+            "id": agent_id,
+            "description": "voice probe",
+            "model": agent_model(provider_id, "fake-model"),
+            "tools": [],
+            "system_prompt": ["test"],
+        })
+        assert r.status_code == 201, f"seed agent failed: {r.text}"
+        r = c.post("/v1/workspace_providers", json={
+            "id": wp_id,
+            "provider": "local",
+            "config": {"kind": "local", "root_path": str(tmp_path)},
+        })
+        assert r.status_code == 201, f"seed provider failed: {r.text}"
+        r = c.post("/v1/workspace_templates", json={
+            "id": tpl_id,
+            "description": "voice template",
+            "provider_id": wp_id,
+            "backend": {"kind": "local"},
+        })
+        assert r.status_code == 201, f"seed template failed: {r.text}"
+        r = c.post("/v1/workspaces", json={"template_id": tpl_id})
+        assert r.status_code == 201, f"seed workspace failed: {r.text}"
+        wid = r.json()["id"]
+
     with httpx.Client(base_url=base_url, timeout=30.0) as c:
         r = c.post(
             f"/v1/workspaces/{wid}/sessions",
