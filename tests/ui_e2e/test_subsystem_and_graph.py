@@ -14,7 +14,7 @@ import httpx
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
-from tests.ui_e2e._shell_helpers import open_legacy_route
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-04", "SMK-UI-05", status="partial")
 
 
@@ -167,11 +167,11 @@ def test_u0028_graph_create_modal_navigates_and_renders_status(
         # Submit.
         modal.get_by_role("button", name="Create").first.click()
 
-        # URL must navigate to /graphs/<id>.
-        page.wait_for_url(
-            lambda url: f"#/graphs/{graph_id}" in url,
-            timeout=15_000,
-        )
+        # The url must address the new graph. The shell hangs a surface
+        # off the workspace it is in rather than routing to it, so the
+        # pre-S8 "#/graphs/<id>" spelling is gone; the route table
+        # translates the same destination.
+        wait_for_overlay_url(page, f"graphs/{graph_id}")
         page.locator("h1.page-title").get_by_text(
             graph_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)

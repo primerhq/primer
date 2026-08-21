@@ -35,6 +35,8 @@ reach the workspace provider's path — we use container-internal
 
 from __future__ import annotations
 
+import re
+
 import httpx
 import pytest
 from playwright.sync_api import expect
@@ -43,7 +45,7 @@ from tests.ui_e2e._studio_helpers import files_list, open_studio
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -167,9 +169,13 @@ def test_u0106_workspace_file_inspect_and_download_journey(
         ws_row = page.locator("tbody tr", has_text=wid)
         expect(ws_row).to_be_visible(timeout=20_000)
 
-        # ----- 2. Click row → the Studio for that workspace ---------
+        # ----- 2. Click row: enter that workspace -------------------
+        # The row ENTERS the workspace rather than addressing its record,
+        # which is what the shell spells "#/w/<wid>". The overlay-url
+        # helper is for a surface hung off a workspace, which this is
+        # not.
         ws_row.first.click()
-        wait_for_overlay_url(page, f"workspaces/{wid}")
+        expect(page).to_have_url(re.compile(rf"#/w/{re.escape(wid)}\b"))
         open_studio(page, console_url, wid)
 
         # v1 kept the tree always on screen; the revamp's rail defaults to
