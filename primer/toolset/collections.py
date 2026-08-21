@@ -14,10 +14,12 @@ it did find, and every write refuses a system-owned collection.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
+from primer.knowledge.fulltext import fulltext_collection
 from primer.knowledge.grep import grep_collection as _grep
 from primer.knowledge.indexing import (
     make_document_indexer,
@@ -70,6 +72,16 @@ class _GrepArgs(_CollArgs):
 class _SemArgs(_CollArgs):
     query: str = Field(..., min_length=1)
     top_k: int = Field(default=10, ge=1, le=100)
+
+
+class _SearchArgs(_CollArgs):
+    query: str = Field(..., min_length=1, description=(
+        "What to find. Natural language for auto/fulltext/semantic; an "
+        "exact substring for literal; a pattern only for regex."))
+    mode: Literal["auto", "semantic", "fulltext", "literal", "regex"] = Field(
+        default="auto")
+    path_prefix: str | None = Field(default=None)
+    limit: int = Field(default=20, ge=1, le=100)
 
 
 class _CreateArgs(_CollArgs):
@@ -317,6 +329,44 @@ def build_collections_toolset(
         _grep_collection,
     )
 
+    async def _run_semantic(coll, query: str, top_k: int):
+        """Embed + query the vector store; (hits, error) like _parse."""
+        from primer.model.chat import TextPart
+        from primer.search.run import run_collection_search
+
+        try:
+            embedder = await provider_registry.get_embedder(
+                coll.search.embedder.provider_id
+            )
+            response = await embedder.embed(
+                model=coll.search.embedder.model,
+                inputs=[TextPart(text=query)],
+            )
+            vector = list(response.embeddings[0].vector)
+            store = await semantic_search_registry.get_store(
+                coll.search.vector_store_provider_id
+            )
+            hits = await run_collection_search(
+                collection=coll, embedder=embedder, store=store,
+                query=query, top_k=top_k,
+                cross_encoder_resolver=provider_registry, query_vector=vector,
+            )
+        except PrimerError as exc:
+            return None, _map_error(exc)
+
+        out = []
+        for hit in hits:
+            path = hit.record.meta.get("path")
+            if not path:
+                doc = await docs.get(hit.record.document_id)
+                path = doc.path if doc is not None else hit.record.document_id
+            out.append({
+                "path": path,
+                "excerpt": hit.record.text,
+                "score": hit.score,
+            })
+        return out, None
+
     async def _semantic_search(arguments: dict[str, Any]) -> ToolCallResult:
         args, error = _parse(_SemArgs, arguments)
         if error is not None:
@@ -340,40 +390,9 @@ def build_collections_toolset(
                 "semantic search is not wired in this context",
                 error_type="unavailable",
             )
-        from primer.model.chat import TextPart
-        from primer.search.run import run_collection_search
-
-        try:
-            embedder = await provider_registry.get_embedder(
-                coll.search.embedder.provider_id
-            )
-            response = await embedder.embed(
-                model=coll.search.embedder.model,
-                inputs=[TextPart(text=args.query)],
-            )
-            vector = list(response.embeddings[0].vector)
-            store = await semantic_search_registry.get_store(
-                coll.search.vector_store_provider_id
-            )
-            hits = await run_collection_search(
-                collection=coll, embedder=embedder, store=store,
-                query=args.query, top_k=args.top_k,
-                cross_encoder_resolver=provider_registry, query_vector=vector,
-            )
-        except PrimerError as exc:
-            return _map_error(exc)
-
-        out = []
-        for hit in hits:
-            path = hit.record.meta.get("path")
-            if not path:
-                doc = await docs.get(hit.record.document_id)
-                path = doc.path if doc is not None else hit.record.document_id
-            out.append({
-                "path": path,
-                "excerpt": hit.record.text,
-                "score": hit.score,
-            })
+        out, error = await _run_semantic(coll, args.query, args.top_k)
+        if error is not None:
+            return error
         return _ok({"hits": out})
 
     registry["semantic_search"] = (
@@ -394,6 +413,95 @@ def build_collections_toolset(
             required_role="user",
         ),
         _semantic_search,
+    )
+
+    def _capability(coll: Collection) -> str:
+        """Best rung this collection offers right now."""
+        if (coll.search is not None and coll.search.state == "ready"
+                and provider_registry is not None
+                and semantic_search_registry is not None):
+            return "semantic"
+        return "fulltext"
+
+    async def _search(arguments: dict[str, Any]) -> ToolCallResult:
+        args, error = _parse(_SearchArgs, arguments)
+        if error is not None:
+            return error
+        coll, error = await _load(args.collection)
+        if error is not None:
+            return error
+
+        best = _capability(coll)
+        mode = args.mode
+        note = None
+        if mode == "auto":
+            mode = best
+            if best != "semantic" and coll.search is not None:
+                note = (f"semantic index is {coll.search.state}; "
+                        "fell back to fulltext")
+        elif mode == "semantic" and best != "semantic":
+            return _err(
+                f"semantic search is not enabled on {args.collection!r}; "
+                "available: fulltext, literal, regex",
+                error_type="conflict",
+            )
+
+        if mode == "semantic":
+            hits, error = await _run_semantic(coll, args.query, args.limit)
+            if error is not None:
+                return error
+            out: dict[str, Any] = {
+                "hits": hits, "truncated": False, "mode_used": "semantic",
+            }
+        elif mode == "fulltext":
+            try:
+                result = await fulltext_collection(
+                    content, collection_id=args.collection,
+                    query=args.query, path_prefix=args.path_prefix,
+                    max_results=args.limit,
+                )
+            except PrimerError as exc:
+                return _map_error(exc)
+            out = {"hits": [h.model_dump() for h in result.hits],
+                   "truncated": result.truncated, "mode_used": "fulltext"}
+        else:  # literal | regex
+            pattern = args.query if mode == "regex" else re.escape(args.query)
+            try:
+                result = await _grep(
+                    content, collection_id=args.collection, pattern=pattern,
+                    path_prefix=args.path_prefix, max_results=args.limit,
+                )
+            except PrimerError as exc:
+                return _map_error(exc)
+            out = {"hits": [h.model_dump() for h in result.hits],
+                   "truncated": result.truncated, "mode_used": mode}
+        if note:
+            out["note"] = note
+        return _ok(out)
+
+    registry["search"] = (
+        make_tool(
+            id="search",
+            toolset_id=COLLECTIONS_TOOLSET_ID,
+            purpose=(
+                "Search a collection. One tool for every rung: mode "
+                "defaults to the best the collection offers and the "
+                "result states mode_used."
+            ),
+            when=(
+                "Default to mode auto. Use literal for exact strings, "
+                "regex only when you mean a pattern. A fulltext hit is "
+                "keyword-relevant; a semantic hit is meaning-relevant."
+            ),
+            args_schema=_SearchArgs.model_json_schema(),
+            examples=[ToolExample(
+                args={"collection": "kb", "query": "how refunds work"},
+                returns='{"hits": [...], "mode_used": "fulltext"}',
+                note="mode_used tells you the rung auto picked",
+            )],
+            required_role="user",
+        ),
+        _search,
     )
 
     # ---- writes -----------------------------------------------------------

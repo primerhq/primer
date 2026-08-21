@@ -8,6 +8,10 @@ import pytest_asyncio
 
 from primer.knowledge.tree import DocumentTreeService
 from primer.model.collection import Collection
+from primer.model.collection import (
+    CollectionEmbedder,
+    CollectionSearchConfig,
+)
 from primer.model.provider import (
     SqliteConfig, StorageProviderConfig, StorageProviderType,
 )
@@ -92,3 +96,89 @@ async def test_system_collection_write_forbidden(env):
     })
     assert res.is_error
     assert json.loads(res.output)["type"] == "forbidden"
+
+
+# ---- the unified search tool ---------------------------------------------
+
+
+async def test_search_auto_uses_fulltext_when_no_semantic(env):
+    res = await env.call(tool_name="search", arguments={
+        "collection": "collection-u", "query": "needle",
+    })
+    data = json.loads(res.output)
+    assert data["mode_used"] == "fulltext"
+    assert data["hits"][0]["path"] == "guides"
+    assert "score" in data["hits"][0]
+
+
+async def test_search_literal_mode_escapes_regex_metachars(env):
+    await env.call(tool_name="create_document", arguments={
+        "collection": "collection-u", "slug": "notes",
+        "body": "a(b) literally",
+    })
+    res = await env.call(tool_name="search", arguments={
+        "collection": "collection-u", "query": "a(b)", "mode": "literal",
+    })
+    data = json.loads(res.output)
+    assert data["mode_used"] == "literal"
+    assert data["hits"][0]["path"] == "notes"
+    assert data["hits"][0]["line"] == 1
+
+
+async def test_search_regex_mode_is_a_pattern(env):
+    res = await env.call(tool_name="search", arguments={
+        "collection": "collection-u", "query": "need.e", "mode": "regex",
+    })
+    data = json.loads(res.output)
+    assert data["mode_used"] == "regex"
+    assert data["hits"][0]["path"] == "guides"
+
+
+async def test_search_explicit_semantic_without_index_names_alternatives(env):
+    res = await env.call(tool_name="search", arguments={
+        "collection": "collection-u", "query": "anything",
+        "mode": "semantic",
+    })
+    assert res.is_error
+    msg = json.loads(res.output)["message"]
+    assert "available: fulltext, literal, regex" in msg
+
+
+@pytest_asyncio.fixture
+async def env_broken(tmp_path):
+    """A collection whose semantic index is in error state."""
+    cfg = StorageProviderConfig(
+        provider=StorageProviderType.SQLITE,
+        config=SqliteConfig(path=tmp_path / "b.sqlite"),
+    )
+    provider = StorageProviderFactory.create(cfg)
+    await provider.initialize()
+    await provider.get_content_store().ensure_schema()
+    await provider.get_storage(Collection).create(Collection(
+        id="collection-b", description="broken index",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="e", model="m"),
+            vector_store_provider_id="v",
+            state="error", error="index exploded",
+        ),
+    ))
+    tree = DocumentTreeService(provider)
+    await tree.create(collection_id="collection-b", parent="", slug="doc",
+                      body="refund text")
+    ts = build_collections_toolset(
+        storage_provider=provider,
+        provider_registry=None,
+        semantic_search_registry=None,
+    )
+    yield ts
+    await provider.aclose()
+
+
+async def test_search_auto_degrades_and_says_so(env_broken):
+    res = await env_broken.call(tool_name="search", arguments={
+        "collection": "collection-b", "query": "refund",
+    })
+    data = json.loads(res.output)
+    assert data["mode_used"] == "fulltext"
+    assert "semantic" in data["note"]
+    assert data["hits"][0]["path"] == "doc"
