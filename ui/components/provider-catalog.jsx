@@ -506,7 +506,21 @@ function ProviderCatalog({ initialClass, initialInstanceId, onNavigate }) {
       ? `/${cls.plural}/${encodeURIComponent(body.id)}`
       : `/${cls.plural}`;
     await apiFetch(method, path, body);
+    // Refresh the list beside the form. setReloadKey bumps a counter
+    // nothing depends on, so a created provider never appeared until the
+    // operator navigated away and back: the row action beside it already
+    // used this refetch, the create simply never called it.
+    if (listRefetchRef.current) listRefetchRef.current();
     setReloadKey((k) => k + 1);
+    if (method === "POST" && body.id) {
+      // Select what was just made, which is where the operator is
+      // already looking.
+      selectInstance(body.id);
+      const toast = window.primerApi && window.primerApi.toastPush;
+      if (typeof toast === "function") {
+        toast({ kind: "success", title: "Provider created", detail: body.id });
+      }
+    }
   };
 
   const selectInstance = (id) => {

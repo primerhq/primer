@@ -137,3 +137,23 @@ def test_every_panel_class_can_reach_its_own_detail_view() -> None:
     )
     assert 'detailProps[cls.detailProp || "providerId"]' in \
         _read("components/provider-catalog.jsx")
+
+
+def test_creating_a_provider_refreshes_the_list_beside_the_form() -> None:
+    """Regression: a created provider did not appear until you left.
+
+    save() bumped a reloadKey that nothing depends on. The instance list
+    hands its refetch up through onRegisterRefetch, and the row action
+    beside it already used that; the create simply never called it, so
+    the row only showed after navigating away and back.
+    """
+    src = _read("components/provider-catalog.jsx")
+    save = src[src.index("const save = async (body) =>"):]
+    save = save[:save.index("const selectInstance")]
+    assert "listRefetchRef.current()" in save, (
+        "the create has to refresh the list it just added a row to"
+    )
+    assert "selectInstance(body.id)" in save, (
+        "and select what was just made, which is where the operator is "
+        "already looking"
+    )
