@@ -113,7 +113,11 @@ def test_the_binding_chip_posts_the_s1_endpoint() -> None:
 def test_rewind_and_compact_reached_the_api_module() -> None:
     """Spec section 4 lists rewind/compact among the S1 contracts."""
     api = API.read_text(encoding="utf-8")
-    assert re.search(r"rewind:\s*function\s*\(wid,\s*sid,\s*seq\)", api)
+    # The third parameter's NAME is incidental; what matters is that the
+    # call exists and takes a sequence. Its body is pinned against
+    # RewindBody in test_shell_api, which is where the field name that
+    # actually goes over the wire belongs.
+    assert re.search(r"rewind:\s*function\s*\(wid,\s*sid,\s*\w+\)", api)
     assert re.search(r"compact:\s*function\s*\(wid,\s*sid\)", api)
     assert '"/rewind"' in api and '"/compact"' in api
 
@@ -174,4 +178,23 @@ def test_the_session_poll_follows_the_session_it_is_watching() -> None:
     )
     assert "SH_sessionIsOver(detail.data)" in block, (
         "and decide that from the row the poll just returned"
+    )
+
+
+def test_the_transcript_refreshes() -> None:
+    """Regression: the session transcript was fetched once and never again.
+
+    It was declared with pollMs: 0 and nothing called refetch on it, so
+    sending a message and watching the answer arrive -- the whole loop
+    this document exists for -- only worked if you reloaded the page.
+    """
+    src = _src()
+    block = src[src.index('SH_api.keys.session(sid) + ":messages"'):]
+    block = block[:block.index("var gates")]
+    assert "pollMs: terminalRef.current ? 0 : 2000" in block, (
+        "poll the transcript while the session is live, stop when it is over"
+    )
+    assert "history.refetch();" in src, (
+        "and refresh it on send, so the operator sees their own message "
+        "without waiting out a poll interval"
     )

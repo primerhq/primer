@@ -418,10 +418,17 @@ function SH_SessionDoc(props) {
     { pollMs: terminalRef.current ? 0 : 2000, deps: [sid] }
   );
   terminalRef.current = !!(detail.data && SH_sessionIsOver(detail.data));
+  // The transcript was fetched ONCE, on mount, and nothing ever asked
+  // for it again: not the send, not the turn running, not the turn
+  // finishing. Sending a message and watching the answer arrive is the
+  // whole loop this document exists for, and it only worked if you
+  // reloaded the page. It follows the same rule as the session row now:
+  // poll while there is something to learn, stop once the session is
+  // over and the transcript is final.
   var history = window.primerApi.useResource(
     SH_api.keys.session(sid) + ":messages",
     function (signal) { return SH_api.messages(sid, 200, null, signal); },
-    { pollMs: 0, deps: [sid] }
+    { pollMs: terminalRef.current ? 0 : 2000, deps: [sid] }
   );
 
   // The gate at the pause point, and who approved what (the "on behalf
@@ -643,6 +650,9 @@ function SH_SessionDoc(props) {
         onSendStarted={function () {
           setOptimistic(Date.now());
           detail.refetch();
+          // Do not wait up to a poll interval to show the operator their
+          // own message.
+          history.refetch();
         }}
       />
     </div>
