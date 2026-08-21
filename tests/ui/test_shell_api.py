@@ -47,13 +47,25 @@ def test_approval_decisions_use_the_shipped_respond_body() -> None:
     assert 'decision: "rejected"' in src
 
 
+def _without_comments(body: str) -> str:
+    """Strip // line and /* */ block comments.
+
+    The gate is about where URLs are BUILT, and a comment explaining what
+    a route used to be is not a second URL site. It tripped on a note
+    recording the pre-S8 spelling of a route, which is exactly the kind
+    of context worth writing down.
+    """
+    body = re.sub(r"/\*.*?\*/", "", body, flags=re.S)
+    return re.sub(r"//[^\n]*", "", body)
+
+
 def test_no_other_shell_file_names_a_v1_url() -> None:
     """A second URL site is how st-api's discipline was worth having."""
     shell = UI / "components" / "shell"
     for path in sorted(shell.glob("*.jsx")):
         if path.name == "sh-api.jsx":
             continue
-        body = path.read_text(encoding="utf-8")
+        body = _without_comments(path.read_text(encoding="utf-8"))
         assert '"/workspaces/' not in body, path.name
         assert '"/sessions/' not in body, path.name
 
