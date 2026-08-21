@@ -244,10 +244,30 @@ var SH_OVERLAY_MOUNTS = {
           />
         );
       }
-      // An id names ONE workspace, whatever the section says. The
-      // section slot doubles as the tab for a tabbed detail page, so
-      // "workspaces:files:<wid>" is the Files tab of that workspace, not
-      // a reason to fall through to the list of all of them.
+      // Workspace providers are workspace-shaped configuration too, and
+      // an id under that section names ONE provider.
+      if (state.section === "providers") {
+        if (state.id) {
+          return (
+            <window.WorkspaceProviderDetail
+              providerId={state.id}
+              pushToast={window.primerApi.toastPush}
+            />
+          );
+        }
+        return (
+          <window.WorkspaceProvidersPage
+            pushToast={window.primerApi.toastPush}
+          />
+        );
+      }
+      // Otherwise an id names ONE workspace. The section slot doubles as
+      // the tab for a tabbed detail page, so "workspaces:files:<wid>" is
+      // the Files tab of that workspace, not a reason to fall through to
+      // the list of all of them. It is NOT a licence to read any id
+      // under any section as a workspace: a provider id read that way
+      // sent the whole shell into a workspace that does not exist, and
+      // every rail poll 404'd against it.
       if (state.id) {
         return (
           <window.WorkspaceDetail
