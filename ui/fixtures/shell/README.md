@@ -32,9 +32,14 @@ addressable in the URL. Names are the registry keys:
 
 `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`,
 `tools`, `workers`, `approvals`, `admin`, `harnesses`, `services`,
-`channels`, `workspaces`, `new-session`.
+`channels`, `workspaces`, `new-session`, `internal-collections`.
 
-Thirteen re-host an existing component with no chrome. `new-session` hosts
+`internal-collections` is the SUBSYSTEM: its config, its bootstrap
+control and the off-state that says why search is unavailable. It is not
+`collections`, which is the knowledge browser. The two were conflated
+once and the subsystem ended up addressable from nowhere.
+
+Fourteen re-host an existing component with no chrome. `new-session` hosts
 the shared create form for the case lazy creation cannot cover: starting a
 session with a binding, name and opening instructions the operator picks.
 `admin` is the only overlay designed from scratch: ONE search-first surface holding users, SSO,

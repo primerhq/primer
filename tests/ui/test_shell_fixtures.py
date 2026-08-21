@@ -19,6 +19,7 @@ OVERLAYS = [
     "providers", "collections", "agents", "graphs", "triggers",
     "toolsets", "tools", "workers", "approvals", "admin",
     "harnesses", "services", "channels", "workspaces", "new-session",
+    "internal-collections",
 ]
 
 
