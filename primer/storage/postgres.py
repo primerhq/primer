@@ -63,6 +63,7 @@ from primer.storage._ddl import (
 from pydantic import BaseModel
 
 from primer.int.document_content import (
+    FulltextHit,
     ContentListEntry,
     ContentRow,
     DocumentContentStore,
@@ -1039,12 +1040,21 @@ class PostgresDocumentContentStore(DocumentContentStore):
             'CREATE INDEX IF NOT EXISTS document_content_coll '
             f'ON {self._qualified} (collection_id)'
         )
+        # Expression index: no sync needed, and it covers rows that
+        # predate it. websearch_to_tsquery at query time accepts arbitrary
+        # user text without raising.
+        ddl_fts = (
+            'CREATE INDEX IF NOT EXISTS document_content_fts '
+            f'ON {self._qualified} USING GIN '
+            "(to_tsvector('english', content))"
+        )
         try:
             async with self._pool.acquire() as conn:
                 async with conn.transaction():
                     await conn.execute(ddl_table)
                     await conn.execute(ddl_uniq)
                     await conn.execute(ddl_coll)
+                    await conn.execute(ddl_fts)
         except (
             asyncpg.DuplicateTableError,
             asyncpg.DuplicateObjectError,
@@ -1064,6 +1074,44 @@ class PostgresDocumentContentStore(DocumentContentStore):
             )
         except Exception as exc:
             raise _wrap_content_error(exc, op="ensure_schema") from exc
+
+    async def search_fulltext(
+        self,
+        collection_id: str,
+        query: str,
+        *,
+        path_prefix: str | None = None,
+        limit: int = 20,
+        conn: Any | None = None,
+    ) -> list[FulltextHit]:
+        if not query.strip():
+            return []
+        sql = (
+            "SELECT path, "
+            "ts_headline('english', content, "
+            "websearch_to_tsquery('english', $2), "
+            "'MaxFragments=1, MaxWords=18, MinWords=6, "
+            "StartSel=, StopSel=') AS excerpt, "
+            "ts_rank(to_tsvector('english', content), "
+            "websearch_to_tsquery('english', $2)) AS score "
+            f"FROM {self._qualified} "
+            "WHERE collection_id = $1 "
+            "AND to_tsvector('english', content) "
+            "@@ websearch_to_tsquery('english', $2) "
+            "AND ($3::text IS NULL OR path LIKE $3 || '%') "
+            "ORDER BY score DESC LIMIT $4"
+        )
+        try:
+            async with self._acquire_or_use(conn) as c:
+                rows = await c.fetch(sql, collection_id, query,
+                                     path_prefix, limit)
+        except Exception as exc:
+            raise _wrap_content_error(exc, op="search_fulltext") from exc
+        return [
+            FulltextHit(path=r["path"], excerpt=r["excerpt"],
+                        score=float(r["score"]))
+            for r in rows
+        ]
 
     async def get(self, document_id: str, *, conn: Any | None = None) -> str | None:
         sql = f'SELECT content FROM {self._qualified} WHERE document_id = $1'
