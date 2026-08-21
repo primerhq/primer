@@ -127,6 +127,12 @@ def test_provider_create_disabled_until_model_name_filled(
     save_btn = form.get_by_test_id("provider-form-save")
     model_list = form.get_by_test_id("provider-form-model-list")
 
+    # The subject here is the MODEL-ROW gate, so satisfy the row-level
+    # one first: an id is required on every provider, and Save is now
+    # withheld until every required field is filled rather than letting
+    # the create come back 422.
+    form.locator('[data-field="id"] input').fill("emb-gate-probe")
+
     # Add a model row but leave its name blank: the regression case.
     form.get_by_test_id("provider-form-add-model").click()
     row_input = model_list.locator("input.mono").last
