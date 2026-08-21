@@ -1045,6 +1045,23 @@ class PostgresDocumentContentStore(DocumentContentStore):
                     await conn.execute(ddl_table)
                     await conn.execute(ddl_uniq)
                     await conn.execute(ddl_coll)
+        except (
+            asyncpg.DuplicateTableError,
+            asyncpg.DuplicateObjectError,
+            asyncpg.UniqueViolationError,
+        ) as exc:
+            # IF NOT EXISTS is not race-safe in Postgres: it checks the
+            # catalog, so two processes can both pass the check and then
+            # collide creating the table's implicit row type in pg_type.
+            # Every pod runs this on boot and a rollout starts them
+            # together, so the loser used to take an unhandled error
+            # straight out of the lifespan and exit before serving.
+            # Losing means the schema is there, which is all the caller
+            # asked for.
+            logger.debug(
+                "document_content schema created concurrently by another "
+                "process; continuing (%s)", type(exc).__name__,
+            )
         except Exception as exc:
             raise _wrap_content_error(exc, op="ensure_schema") from exc
 
