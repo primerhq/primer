@@ -15,8 +15,8 @@ it fails to load them:
   both required, so legacy rows raise ``missing`` and the collection is
   unreadable -- including the system collection, which fails the seed.
 
-Both steps are get-then-write and skip rows that already carry the new
-shape, so re-running converges.
+Both steps are get-then-write and skip rows that already carry the
+new shape, so re-running converges.
 
 **Why this module redefines the two models.** A migration reads rows
 written by the old schema from inside a build where the models have

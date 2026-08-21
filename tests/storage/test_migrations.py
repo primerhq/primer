@@ -336,3 +336,51 @@ async def test_m003_is_idempotent(sp):
 
     assert first is not None and second is not None
     assert first.search.model_dump() == second.search.model_dump()
+
+
+async def test_m003_legacy_document_gets_a_slug_and_parent(sp):
+    """Documents identified by name gain slug and parent_id from path.
+
+    Without this the tree endpoint 500s on every collection an upgraded
+    install already had, because slug is required on the live model.
+    """
+    from primer.model.collection import Document as LiveDocument
+    from primer.storage.migrations.m004_document_slugs import (
+        Document as DocumentView,
+    )
+
+    legacy = sp.get_storage(DocumentView)
+    await legacy.create(
+        DocumentView(
+            id="document-root",
+            collection_id="coll-1",
+            name="guides",
+            path="guides",
+        )
+    )
+    await legacy.create(
+        DocumentView(
+            id="document-child",
+            collection_id="coll-1",
+            name="onboarding.md",
+            path="guides/onboarding.md",
+        )
+    )
+
+    with pytest.raises(Exception):
+        await sp.get_storage(LiveDocument).get("document-child")
+
+    await run_migrations(sp, is_fresh_install=False)
+
+    docs = sp.get_storage(LiveDocument)
+    root = await docs.get("document-root")
+    child = await docs.get("document-child")
+    assert root is not None and child is not None
+    assert root.slug == "guides"
+    assert root.parent_id is None
+    assert child.slug == "onboarding.md"
+    # The child is wired to the row that owns its parent path, not to the
+    # path string, so the tree can walk it.
+    assert child.parent_id == "document-root"
+    # path is untouched: it was already correct and the tree reads it.
+    assert child.path == "guides/onboarding.md"
