@@ -142,7 +142,9 @@ def test_collection_document_path_browser_full_journey(
         ).to_be_visible()
 
         # ---- edit ----
-        textarea = browser.locator("textarea.textarea").first
+        # The document body editor is a textarea carrying the shared
+        # input classes, not a "textarea" class of its own.
+        textarea = browser.locator("textarea.input").first
         textarea.fill("# SLO\n\nEdited body.")
         browser.get_by_role("button", name="Save", exact=True).first.click()
         page.get_by_text("Document saved", exact=False).first.wait_for(

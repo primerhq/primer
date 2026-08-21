@@ -252,9 +252,12 @@ def test_multi_page_operator_journey_no_llm(
             ids["llm"], exact=True,
         ).first.wait_for(state="visible", timeout=10_000)
 
-        # ----- 9. Back to dashboard
+        # ----- 9. Back to the shell
+        # There is no dashboard page and no page title outside an
+        # overlay, same as step 1: landing on the console lands you in a
+        # workspace.
         page.goto(f"{console_url}#/", wait_until="domcontentloaded")
-        page.locator("h1.page-title").first.wait_for(
+        page.get_by_test_id("shell-root").wait_for(
             state="visible", timeout=10_000,
         )
 
