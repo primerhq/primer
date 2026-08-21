@@ -36,7 +36,11 @@ def test_rewind_affordance_exists_on_user_messages() -> None:
 
 def test_rewind_confirms_before_acting() -> None:
     src = _src(TRANSCRIPT)
-    assert "window.confirm(" in src
+    # confirmDialog, not the browser's confirm: a native modal cannot be
+    # styled or tested, and a headless browser dismisses it on the app's
+    # behalf, so the action behind it silently does nothing.
+    assert "window.confirmDialog(" in src
+    assert "window.confirm(" not in src
     assert "if (!ok) return;" in src
 
 

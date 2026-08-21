@@ -24,7 +24,9 @@ def test_page_conventions() -> None:
     assert "harness_id" in src  # managed banner
     assert "_activate" in src  # rollback wiring
     assert "viewer_auth" in src
-    assert "confirm(" in src  # switching to anonymous confirms
+    # Switching to anonymous confirms, through the console's own dialog
+    # rather than the browser's.
+    assert "confirmDialog(" in src
     assert "publish_service" in src  # versions empty state names the tool
 
 
