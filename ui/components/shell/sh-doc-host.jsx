@@ -21,6 +21,7 @@ var SH_OVERLAY_LABELS = {
   services: "Open Services",
   channels: "Open Channels",
   workspaces: "Open Workspaces",
+  "internal-collections": "Open Internal Collections",
 };
 
 function SH_registerCoreVerbs(shell) {

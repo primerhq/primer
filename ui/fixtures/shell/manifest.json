@@ -93,6 +93,7 @@
     "services",
     "channels",
     "workspaces",
-    "new-session"
+    "new-session",
+    "internal-collections"
   ]
 }

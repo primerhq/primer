@@ -50,6 +50,21 @@ var SH_OVERLAY_MOUNTS = {
       );
     },
   },
+  // The subsystem, not the knowledge browser. InternalCollectionsPage was
+  // defined, exported and loaded from index.html, and mounted nowhere:
+  // the legacy route for it pointed at the "collections" overlay, which
+  // renders CollectionsPage. So the config, the bootstrap control and the
+  // off-state that tells an operator why search is unavailable were all
+  // unreachable, while the endpoints behind them stayed live.
+  "internal-collections": {
+    render: function () {
+      return (
+        <window.InternalCollectionsPage
+          pushToast={window.primerApi.toastPush}
+        />
+      );
+    },
+  },
   collections: {
     render: function (state, shell) {
       return (
@@ -268,6 +283,7 @@ var SH_OVERLAY_TITLES = {
   services: "Services",
   channels: "Channels",
   workspaces: "Workspaces",
+  "internal-collections": "Internal collections",
 };
 
 

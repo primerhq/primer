@@ -124,7 +124,7 @@ LEGACY_ROUTE_OVERLAYS = {
     "channels/rules": "channels:rules",
     "channels/providers": "providers:channel",
     "knowledge/collections": "collections",
-    "subsystems/internal-collections": "collections",
+    "subsystems/internal-collections": "internal-collections",
     "ssp": "providers:ssp",
     "providers": "providers",
     "providers/llm": "providers:llm",

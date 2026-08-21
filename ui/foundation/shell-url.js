@@ -23,6 +23,11 @@ var SH_OVERLAYS = [
   "providers", "collections", "agents", "graphs", "triggers",
   "toolsets", "tools", "workers", "approvals", "admin",
   "harnesses", "services", "channels", "workspaces", "new-session",
+  // The internal-collections SUBSYSTEM: its config, bootstrap and the
+  // search it powers. Distinct from "collections", which is the
+  // knowledge browser; the two were conflated and the subsystem ended up
+  // with no home at all.
+  "internal-collections",
 ];
 
 // Refs are percent-encoded, then "/" is restored: file paths and wiki slug
