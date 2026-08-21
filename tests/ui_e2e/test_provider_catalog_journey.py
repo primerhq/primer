@@ -51,7 +51,13 @@ def test_the_catalog_is_reachable_from_the_sidebar(page, console_url) -> None:
 def test_a_provider_row_can_be_created_and_deleted(page, console_url) -> None:
     open_provider_catalog(page, console_url, cls="stt")
     page.wait_for_selector('[data-testid="provider-form-stt_providers"]')
-    page.fill('[data-testid="provider-form-stt_providers"] input[type="text"]', "journey-stt")
+    form = '[data-testid="provider-form-stt_providers"]'
+    page.fill(f'{form} [data-field="id"] input', "journey-stt")
+    # default_model is required on SpeechToTextProvider, so Save stays
+    # disabled until it is filled: the form declares that now instead of
+    # letting the create come back 422 with nothing saying which field
+    # was missing.
+    page.fill(f'{form} [data-field="default_model"] input', "whisper-1")
     page.click('[data-testid="provider-form-save"]')
     page.wait_for_selector("text=journey-stt")
     page.click("text=journey-stt")

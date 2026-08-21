@@ -172,7 +172,15 @@ async def list_stt_types() -> dict[str, dict[str, Any]]:
         "openai": {
             "label": "OpenAI-compatible",
             "config_fields": ["url", "api_key"],
-            "row_fields": ["default_model"],
+            # default_model is REQUIRED on SpeechToTextProvider. Declared
+            # as a bare string the form treated it as optional, so Save
+            # was offered on an incomplete row and the create came back
+            # 422 with nothing on the form having said which field was
+            # missing.
+            "row_fields": [
+                {"key": "default_model", "label": "default_model",
+                 "required": True},
+            ],
             # No _discover_models route: the model list comes back from
             # POST /stt_providers/_test, which is a live round trip the
             # form already offers.
@@ -214,7 +222,14 @@ async def list_tts_types() -> dict[str, dict[str, Any]]:
         "openai": {
             "label": "OpenAI-compatible",
             "config_fields": ["url", "api_key"],
-            "row_fields": ["default_model", "default_voice"],
+            # Both are REQUIRED on TextToSpeechProvider; see the note on
+            # the STT types above.
+            "row_fields": [
+                {"key": "default_model", "label": "default_model",
+                 "required": True},
+                {"key": "default_voice", "label": "default_voice",
+                 "required": True},
+            ],
             "discoverable": False,
             "limits": True,
         },

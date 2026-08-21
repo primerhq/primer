@@ -269,6 +269,24 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
   // body.models.0.name: Field required. The per-class create modals
   // gated Create on every row being filled; the catalog's form replaced
   // them with no gate at all, so the same bad request went out again.
+  // A required field that is empty is the same fault as a blank model
+  // row: the form knows the request cannot succeed and offers Save
+  // anyway, so the operator learns what was missing from a 422 instead
+  // of from the form. The marker is already rendered beside the label;
+  // this makes it mean something.
+  const missingRequired = () => {
+    const blank = (v) => v === undefined || v === null
+      || String(v).trim() === "";
+    if (blank(draft.id)) return true;
+    const check = (fields, scope) => (fields || []).some((f) => {
+      const norm = PC_normalizeField(f);
+      if (!norm.required) return false;
+      const holder = scope === "config" ? (draft.config || {}) : draft;
+      return blank(holder[norm.key]);
+    });
+    return check(shape.row_fields, "row") || check(shape.config_fields, "config");
+  };
+
   const modelRowsIncomplete = (fields) =>
     (fields || []).some((f) => {
       const norm = PC_normalizeField(f);
@@ -412,7 +430,8 @@ function PC_ProviderForm({ plural, typesPath, value, onChange, onSubmit, onTest 
         </Btn>
         <Btn data-testid="provider-form-save"
           onClick={() => onSubmit && onSubmit(PC_submittable(draft, shape, selectedType))}
-          disabled={busy || modelRowsIncomplete(shape.row_fields)}>Save</Btn>
+          disabled={busy || missingRequired()
+            || modelRowsIncomplete(shape.row_fields)}>Save</Btn>
       </div>
     </div>
   );

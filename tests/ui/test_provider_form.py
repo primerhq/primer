@@ -186,3 +186,57 @@ def test_a_type_the_operator_picked_wins_over_the_fallback() -> None:
     out = ctx.call("PC_submittable", {"id": "stt-x", "provider": "deepgram"},
                    {}, "whisper")
     assert out["provider"] == "deepgram"
+
+
+def test_save_is_withheld_while_a_required_field_is_empty() -> None:
+    """The required marker beside the label has to mean something.
+
+    A required field left empty is the same fault as a blank model row:
+    the form knows the request cannot succeed and offered Save anyway, so
+    the operator learned what was missing from a 422 rather than from the
+    form in front of them. Speech providers hit this on every create,
+    since default_model is required on the model and the field spec did
+    not say so.
+    """
+    src = _read("components/provider-form.jsx")
+    gate = src[src.index("const missingRequired ="):src.index("const modelRowsIncomplete")]
+    assert "norm.required" in gate
+    assert 'scope === "config"' in gate, (
+        "config fields can be required too, not just row fields"
+    )
+    save = src[src.index('<Btn data-testid="provider-form-save"'):]
+    save = save[:save.index("</Btn>")]
+    assert "missingRequired()" in save
+
+
+def test_the_speech_types_declare_the_fields_their_models_require() -> None:
+    """_types is what the form learns required-ness from."""
+    import asyncio
+
+    from primer.api.routers.speech import list_stt_types, list_tts_types
+    from primer.model.provider import (
+        SpeechToTextProvider,
+        TextToSpeechProvider,
+    )
+
+    for types_fn, model in (
+        (list_stt_types, SpeechToTextProvider),
+        (list_tts_types, TextToSpeechProvider),
+    ):
+        payload = asyncio.run(types_fn())
+        for spec in payload.values():
+            declared = {
+                f["key"] for f in spec["row_fields"]
+                if isinstance(f, dict) and f.get("required")
+            }
+            needed = {
+                n for n, f in model.model_fields.items()
+                if f.is_required() and n in {
+                    (g["key"] if isinstance(g, dict) else g)
+                    for g in spec["row_fields"]
+                }
+            }
+            assert needed <= declared, (
+                f"{model.__name__} requires {sorted(needed - declared)}, "
+                "which the form is not told about"
+            )
