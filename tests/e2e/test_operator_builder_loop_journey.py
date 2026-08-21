@@ -133,10 +133,12 @@ async def test_operator_delegates_construction_and_invokes_the_result(
                 },
                 emit_tool_call_id="call_delegate",
             ),
-            # Operator, turn 1: consult the index first.
+            # Operator, turn 1: consult the index first, through the
+            # unified search tool (mode auto -> the fulltext floor, which
+            # on this lane exercises the Postgres FTS path for real).
             Rule(
-                emit_tool="collections__grep_collection",
-                emit_args={"collection": "system", "pattern": "weather"},
+                emit_tool="collections__search",
+                emit_args={"collection": "system", "query": "weather"},
                 emit_tool_call_id="call_grep",
             ),
         ],
@@ -203,7 +205,10 @@ async def test_operator_delegates_construction_and_invokes_the_result(
 
         # ----- The loop's shape, not just its ending -------------------
         text = json.dumps(outcome["log"])
-        assert "grep_collection" in text, "the operator must consult the index first"
+        assert "collections__search" in text, "the operator must consult the index first"
+        assert "mode_used" in text and "fulltext" in text, (
+            "the unified search must have run and reported its rung"
+        )
         assert built in text, "the builder must have reported what it created"
         assert outcome["approvals"] >= 1, "create_agent must have tripped the gate"
 
