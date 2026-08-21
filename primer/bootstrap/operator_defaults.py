@@ -16,7 +16,7 @@ OPERATOR_TOOLS: tuple[str, ...] = (
     "collections__collections_list",
     "collections__collection_tree",
     "collections__read_document",
-    "collections__grep_collection",
+    "collections__search",
     "web__web_search",
     "web__web_fetch",
     "system__invoke_agent",
@@ -38,7 +38,7 @@ BUILDER_TOOLS: tuple[str, ...] = (
     "crud__list_python_tools",
     "collections__collection_tree",
     "collections__read_document",
-    "collections__grep_collection",
+    "collections__search",
     "web__web_search",
     "system__ask_user",
 )
@@ -59,7 +59,7 @@ OPERATOR_PROMPT: tuple[str, ...] = (
     "Grounding rule: before you claim a capability exists or is missing, "
     "consult the system collection first. Its root index is the map: use "
     "collection_tree on the 'system' collection to see the subtrees, "
-    "read_document to read an index or an entry, and grep_collection to "
+    "read_document to read an index or an entry, and search to "
     "search it. /agents, /graphs and /tools are regenerated from live "
     "platform state, so they are the truth about what exists; /how-to "
     "carries the guides for configuring things.",

@@ -34,7 +34,7 @@ def test_operator_states_its_identity() -> None:
 def test_operator_grounds_itself_in_the_system_collection_first() -> None:
     text = _operator_text()
     assert "system collection" in text
-    for tool in ("collection_tree", "read_document", "grep_collection"):
+    for tool in ("collection_tree", "read_document", "search"):
         assert tool in text, tool
 
 

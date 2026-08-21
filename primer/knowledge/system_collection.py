@@ -124,10 +124,14 @@ def _graph_body(g) -> str:
 
 
 def _collection_body(c) -> str:
-    enabled = "enabled" if c.search is not None else "disabled"
+    best = (
+        "semantic"
+        if c.search is not None and c.search.state == "ready"
+        else "fulltext"
+    )
     return (
         f"# {c.id}\n\n{c.description or ''}\n\n"
-        f"- semantic search: {enabled}\n"
+        f"- search: {best}\n"
     )
 
 

@@ -1,11 +1,12 @@
 """``collections`` internal toolset - navigate and edit document trees.
 
 Always registered: a collection is a text wiki first, so listing,
-reading, grepping and editing need no embedder, no vector store and no
-indexing pass. ``semantic_search`` is registered too, but answers with a
-pointer to ``grep_collection`` when the target collection has no search
-block, so an agent that reaches for it on a grep-only collection learns
-what to use instead rather than hitting a bare failure.
+reading, searching and editing need no embedder, no vector store and no
+indexing pass. One ``search`` tool covers the whole capability ladder:
+mode auto resolves to the best rung the collection offers (semantic when
+its index is ready, else the backend's built-in full-text), the result
+states ``mode_used``, and an explicit ask for an unavailable rung fails
+naming the modes that are available.
 
 Navigation ergonomics are the contract here: a miss reports the siblings
 it did find, and every write refuses a system-owned collection.
@@ -61,17 +62,6 @@ class _TreeArgs(_CollArgs):
 
 class _ReadArgs(_CollArgs):
     path: str = Field(..., min_length=1, description="Slug path of the document.")
-
-
-class _GrepArgs(_CollArgs):
-    pattern: str = Field(..., min_length=1, description="Regex to match.")
-    path_prefix: str | None = Field(default=None)
-    max_results: int = Field(default=50, ge=1, le=500)
-
-
-class _SemArgs(_CollArgs):
-    query: str = Field(..., min_length=1)
-    top_k: int = Field(default=10, ge=1, le=100)
 
 
 class _SearchArgs(_CollArgs):
@@ -201,7 +191,7 @@ def build_collections_toolset(
                 "id": c.id,
                 "description": c.description,
                 "system": c.system,
-                "search_enabled": c.search is not None,
+                "search": _capability(c),
             }
             for c in sorted(rows, key=lambda c: c.id)
         ]})
@@ -210,7 +200,7 @@ def build_collections_toolset(
         make_tool(
             id="collections_list",
             toolset_id=COLLECTIONS_TOOLSET_ID,
-            purpose="List every collection with whether semantic search is on.",
+            purpose="List every collection with the best search each offers.",
             when=(
                 "Use when you need to find which wiki holds the material you "
                 "want, before reading or grepping it."
@@ -218,8 +208,8 @@ def build_collections_toolset(
             args_schema={"type": "object", "properties": {}, "additionalProperties": False},
             examples=[ToolExample(
                 args={},
-                returns='{"collections": [{"id": "kb", "search_enabled": false, ...}]}',
-                note="search_enabled false means grep_collection, not semantic_search",
+                returns='{"collections": [{"id": "kb", "search": "fulltext", ...}]}',
+                note="search names the best rung: semantic or fulltext",
             )],
             required_role="user",
         ),
@@ -293,42 +283,6 @@ def build_collections_toolset(
         _read_document,
     )
 
-    async def _grep_collection(arguments: dict[str, Any]) -> ToolCallResult:
-        args, error = _parse(_GrepArgs, arguments)
-        if error is not None:
-            return error
-        _, error = await _load(args.collection)
-        if error is not None:
-            return error
-        try:
-            result = await _grep(
-                content, collection_id=args.collection, pattern=args.pattern,
-                path_prefix=args.path_prefix, max_results=args.max_results,
-            )
-        except PrimerError as exc:
-            return _map_error(exc)
-        return _ok(result.model_dump(mode="json"))
-
-    registry["grep_collection"] = (
-        make_tool(
-            id="grep_collection",
-            toolset_id=COLLECTIONS_TOOLSET_ID,
-            purpose="Regex line search across a collection's document bodies.",
-            when=(
-                "Use for exact strings, identifiers and error text, and "
-                "whenever semantic search is not enabled."
-            ),
-            args_schema=_GrepArgs.model_json_schema(),
-            examples=[ToolExample(
-                args={"collection": "kb", "pattern": "TimeoutError"},
-                returns='{"hits": [{"path": "runbook", "line": 12, ...}], "truncated": false}',
-                note="truncated true means the cap was hit; narrow the pattern",
-            )],
-            required_role="user",
-        ),
-        _grep_collection,
-    )
-
     async def _run_semantic(coll, query: str, top_k: int):
         """Embed + query the vector store; (hits, error) like _parse."""
         from primer.model.chat import TextPart
@@ -366,54 +320,6 @@ def build_collections_toolset(
                 "score": hit.score,
             })
         return out, None
-
-    async def _semantic_search(arguments: dict[str, Any]) -> ToolCallResult:
-        args, error = _parse(_SemArgs, arguments)
-        if error is not None:
-            return error
-        coll, error = await _load(args.collection)
-        if error is not None:
-            return error
-        if coll.search is None:
-            return _err(
-                "semantic search is not enabled on this collection; "
-                "grep_collection is available",
-                error_type="conflict",
-            )
-        if coll.search.state == "error":
-            return _err(
-                f"semantic search is in error state: {coll.search.error}",
-                error_type="unavailable",
-            )
-        if provider_registry is None or semantic_search_registry is None:
-            return _err(
-                "semantic search is not wired in this context",
-                error_type="unavailable",
-            )
-        out, error = await _run_semantic(coll, args.query, args.top_k)
-        if error is not None:
-            return error
-        return _ok({"hits": out})
-
-    registry["semantic_search"] = (
-        make_tool(
-            id="semantic_search",
-            toolset_id=COLLECTIONS_TOOLSET_ID,
-            purpose="Meaning-based search over a collection's indexed chunks.",
-            when=(
-                "Use for conceptual questions where wording differs from the "
-                "text; use grep_collection for exact strings."
-            ),
-            args_schema=_SemArgs.model_json_schema(),
-            examples=[ToolExample(
-                args={"collection": "kb", "query": "how do refunds work"},
-                returns='{"hits": [{"path": "policies/refunds", "score": 0.82, ...}]}',
-                note="answers with a pointer to grep when search is not enabled",
-            )],
-            required_role="user",
-        ),
-        _semantic_search,
-    )
 
     def _capability(coll: Collection) -> str:
         """Best rung this collection offers right now."""

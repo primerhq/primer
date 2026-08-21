@@ -49,7 +49,7 @@ async def test_collections_list(env):
     assert {r["id"]: r["system"] for r in rows} == {
         "collection-u": False, "collection-s": True,
     }
-    assert all(r["search_enabled"] is False for r in rows)
+    assert all(r["search"] == "fulltext" for r in rows)
 
 
 async def test_read_document_returns_children(env):
@@ -71,23 +71,14 @@ async def test_missing_path_names_alternatives(env):
     assert "guides" in json.loads(res.output)["message"]
 
 
-async def test_grep_carries_truncated_flag(env):
-    res = await env.call(tool_name="grep_collection", arguments={
-        "collection": "collection-u", "pattern": "needle", "max_results": 1,
+async def test_search_literal_carries_line_hits(env):
+    res = await env.call(tool_name="search", arguments={
+        "collection": "collection-u", "query": "needle",
+        "mode": "literal", "limit": 1,
     })
     data = json.loads(res.output)
     assert data["hits"][0]["path"] == "guides"
     assert data["truncated"] is False
-
-
-async def test_semantic_search_disabled_is_informative(env):
-    res = await env.call(
-        tool_name="semantic_search",
-        arguments={"collection": "collection-u", "query": "x"},
-    )
-    assert res.is_error
-    msg = json.loads(res.output)["message"]
-    assert "not enabled" in msg and "grep_collection" in msg
 
 
 async def test_system_collection_write_forbidden(env):
