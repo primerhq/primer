@@ -70,6 +70,14 @@ var SH_OVERLAY_MOUNTS = {
       return (
         <window.CollectionsPage
           pushToast={window.primerApi.toastPush}
+          // The id slot says which collection is open, so addressing the
+          // overlay without one shows the list. It used to be local
+          // state, which meant navigating "back to the list" was a
+          // request identical to where you already were.
+          selectedId={state.id || null}
+          onNavigate={function (cid) {
+            shell.openOverlay("collections", null, cid || null);
+          }}
           onOpen={function (cid) {
             // Was window.SH_OVERLAY_OPEN_DOC, defined NOWHERE: opening a
             // collection threw "not a function" instead.
@@ -77,7 +85,6 @@ var SH_OVERLAY_MOUNTS = {
               kind: "wiki", ref: cid + "/" + (state.id || ""), preview: false,
             });
           }}
-          onNavigate={function () {}}
         />
       );
     },

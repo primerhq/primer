@@ -44,6 +44,13 @@ def test_u0010_embedding_provider_modal_shows_t0025_static_models_helper(
     open_legacy_route(page, console_url, "providers/embedding")
     form = page.get_by_test_id("provider-form-embedding_providers")
     form.wait_for(state="visible", timeout=15_000)
+    # The form root renders before /\_types resolves, so wait for the
+    # field the helper hangs off before reading the text: a bare
+    # inner_text() here reads an empty shell and reports the copy as
+    # missing.
+    form.locator('[data-field="models"]').wait_for(
+        state="visible", timeout=15_000,
+    )
 
     # The helper is field help on the models list, which the API supplies
     # with the rest of the form shape. Substring matches so a punctuation

@@ -831,7 +831,7 @@ function KN_NewCollectionModal({ pushToast, onClose, onCreate }) {
 // Page
 // ============================================================================
 
-function CollectionsPage({ pushToast, onOpen, onNavigate }) {
+function CollectionsPage({ pushToast, onOpen, onNavigate, selectedId }) {
   const { useResource, useRouter, useViewport, apiFetch, usePagedList, Pager } = window.primerApi;
   const { isMobile } = useViewport();
 
@@ -851,7 +851,6 @@ function CollectionsPage({ pushToast, onOpen, onNavigate }) {
     { pollMs: null },
   );
 
-  const [selected, setSelected] = React.useState(null);
   const [createOpen, setCreateOpen] = React.useState(false);
   const [reloadKey, setReloadKey] = React.useState(0);
 
@@ -861,6 +860,23 @@ function CollectionsPage({ pushToast, onOpen, onNavigate }) {
     { pollMs: null },
   );
   const rows = list.data?.items ?? [];
+
+  // Which collection is open is ADDRESSED, not remembered. It used to
+  // live in local state and never reach the url, so the address said
+  // "collections" whichever one you were inside; navigating back to the
+  // list left you in the collection, because nothing about the request
+  // differed from where you already were. The id slot decides which
+  // renders, the same way it does for every other overlay here.
+  const [localSelected, setLocalSelected] = React.useState(null);
+  const addressed = selectedId
+    ? rows.find((c) => c.id === selectedId) || null
+    : null;
+  const selected = onNavigate ? addressed : localSelected;
+  const select = (row) => {
+    if (onNavigate) onNavigate(row ? row.id : null);
+    else setLocalSelected(row);
+  };
+  const setSelected = select;
 
   if (selected) {
     return (
