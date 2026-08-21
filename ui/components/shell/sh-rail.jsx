@@ -143,7 +143,10 @@ function SH_FilesList() {
     function (signal) { return SH_api.filesTree(shell.wid, ".", signal); },
     { pollMs: 5000, deps: [shell.wid] }
   );
-  var entries = (tree.data && tree.data.entries) || [];
+  // The tree route answers {path, items}. This read `entries`, a key it
+  // has never sent, so the list was empty every time and the rail showed
+  // its empty state for every workspace, however many files were in it.
+  var entries = (tree.data && tree.data.items) || [];
   return (
     <ul className="sh-rail-list" data-testid="rail-files">
       {entries.map(function (entry) {
@@ -153,7 +156,10 @@ function SH_FilesList() {
               type="button"
               data-testid={"rail-file:" + entry.path}
               onClick={function () {
-                if (entry.type === "dir") return;
+                // is_dir, not type: the same payload, read correctly.
+                // A directory opened as a file would have asked the file
+                // route to read a folder.
+                if (entry.is_dir) return;
                 shell.openDoc({ kind: "file", ref: entry.path, preview: true });
               }}
             >{entry.path}</button>

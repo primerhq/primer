@@ -59,3 +59,30 @@ def test_rows_render_verbs_from_the_registry() -> None:
     """Dual-render rule: rail rows are registry-rendered affordances."""
     src = _src()
     assert 'forSurface("rail")' in src
+
+
+def test_the_file_rail_reads_the_keys_the_tree_route_sends() -> None:
+    """Regression: the file rail was empty for every workspace.
+
+    GET /workspaces/{id}/files/tree answers {"path", "items"}, and each
+    item carries "is_dir". The rail read "entries" and "type", neither of
+    which that route has ever sent, so the list was empty however many
+    files a workspace held and the empty state showed every time.
+
+    Pinned against the route rather than restating its keys, so the two
+    cannot drift apart again.
+    """
+    import inspect
+
+    from primer.api.routers.workspaces import file_tree
+
+    body = inspect.getsource(file_tree)
+    assert '"items": items' in body
+    assert '"is_dir"' in body
+
+    src = _src()
+    tree = src[src.index("function SH_FilesList"):]
+    tree = tree[:tree.index("window.SH_")] if "window.SH_" in tree else tree
+    assert "tree.data.items" in tree
+    assert "entry.is_dir" in tree
+    assert "tree.data.entries" not in tree
