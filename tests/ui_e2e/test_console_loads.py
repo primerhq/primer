@@ -36,7 +36,9 @@ _ROUTES: list[tuple[str, str]] = [
     ("providers/llm",                   "Open Providers Catalog"),
     ("providers/embedding",             "Open Providers Catalog"),
     ("providers/cross_encoder",         "Open Providers Catalog"),
-    ("subsystems/internal-collections", "Open Collections"),
+    # The subsystem now has its own overlay; it used to resolve to the
+    # knowledge browser, which is a different surface entirely.
+    ("subsystems/internal-collections", "Open Internal Collections"),
     ("workers",                         "Open Workers"),
     ("health",                          "Open Workers"),
 ]
