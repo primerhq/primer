@@ -59,7 +59,9 @@ function SV_ServicesPage({ serviceId }) {
 }
 
 function SV_ServicesList() {
-  const { useResource, apiFetch } = window.primerApi;
+  const { useResource, apiFetch, useRouter } = window.primerApi;
+  // Row clicks navigate; see the note on the detail view below.
+  const { navigate } = useRouter();
   const [filter, setFilter] = React.useState("");
   const [creating, setCreating] = React.useState(false);
 
@@ -133,7 +135,7 @@ function SV_ServicesList() {
                 <tr
                   key={s.id}
                   style={{ cursor: "pointer" }}
-                  onClick={() => { window.location.hash = "#/services/" + encodeURIComponent(s.id); }}
+                  onClick={() => { navigate("/services/" + encodeURIComponent(s.id)); }}
                   data-testid={`service-row-${s.name}`}
                 >
                   <td className="mono">{s.name}</td>
@@ -283,7 +285,11 @@ function SV_ServiceModal({ existing, onClose, onSaved }) {
 
 function SV_ServiceDetail({ serviceId }) {
   const { useResource, apiFetch, useRouter } = window.primerApi;
-  const { query } = useRouter();
+  // navigate, not window.location.hash: a direct hash write bypasses the
+  // router shim and speaks the pre-S8 grammar, which the shell's url
+  // parser does not understand, so it falls back to the default
+  // workspace and rewrites the address away.
+  const { query, navigate } = useRouter();
   const tab = query.tab === "versions" ? "versions" : "config";
   const [editing, setEditing] = React.useState(false);
   const [confirmDelete, setConfirmDelete] = React.useState(false);
@@ -303,8 +309,8 @@ function SV_ServiceDetail({ serviceId }) {
   const vitems = (versions.data && versions.data.items) || [];
 
   const setTab = (t) => {
-    window.location.hash = "#/services/" + encodeURIComponent(serviceId)
-      + (t === "versions" ? "?tab=versions" : "");
+    navigate("/services/" + encodeURIComponent(serviceId)
+      + (t === "versions" ? "?tab=versions" : ""));
   };
 
   const activate = async (versionId) => {
@@ -323,7 +329,7 @@ function SV_ServiceDetail({ serviceId }) {
   const doDelete = async () => {
     try {
       await apiFetch("DELETE", "/services/" + encodeURIComponent(serviceId));
-      window.location.hash = "#/services";
+      navigate("/services");
     } catch (err) {
       setError(SV_extractError(err));
       setConfirmDelete(false);

@@ -443,8 +443,18 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   const wid = workspaceId || params.id;
 
   const tab = WS_TABS.includes(query.tab) ? query.tab : "files";
+  // Through navigate, not by writing the hash.
+  //
+  // Assigning window.location.hash bypasses the router shim, and the
+  // address it wrote -- "#/workspaces/<wid>?tab=<t>" -- is the pre-S8
+  // grammar, which the shell's url parser does not understand. It
+  // therefore read no workspace at all, fell back to the default one and
+  // rewrote the address to match, so clicking any tab in a workspace's
+  // settings threw you out of that workspace entirely. navigate hands the
+  // same path to the shim, which puts the tab in the section slot and
+  // hands it back as query.tab, which is what this component reads.
   const setTab = (t) => {
-    window.location.hash = "#/workspaces/" + encodeURIComponent(wid) + "?tab=" + t;
+    navigate("/workspaces/" + encodeURIComponent(wid) + "?tab=" + t);
   };
 
   const [diagOpen, setDiagOpen] = React.useState(false);

@@ -217,7 +217,11 @@ var SH_OVERLAY_MOUNTS = {
           />
         );
       }
-      if (state.section === "detail" && state.id) {
+      // An id names ONE workspace, whatever the section says. The
+      // section slot doubles as the tab for a tabbed detail page, so
+      // "workspaces:files:<wid>" is the Files tab of that workspace, not
+      // a reason to fall through to the list of all of them.
+      if (state.id) {
         return (
           <window.WorkspaceDetail
             workspaceId={state.id}

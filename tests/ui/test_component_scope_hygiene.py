@@ -155,3 +155,37 @@ def test_every_shell_global_called_is_a_shell_global_defined() -> None:
         "these throw \"not a function\" the first time anyone clicks the "
         f"thing that calls them: {missing}"
     )
+
+
+def test_no_page_writes_the_hash_behind_the_router() -> None:
+    """A direct hash write bypasses the shell's router shim.
+
+    Assigning window.location.hash skips SH_shimNavigate, and every such
+    site wrote the pre-S8 grammar ("#/workspaces/<id>?tab=files"), which
+    the shell's url parser does not understand: it read no workspace,
+    fell back to the default one and rewrote the address to match. So
+    clicking a tab inside a workspace's settings threw you out of that
+    workspace, and a service row navigated nowhere.
+
+    The shell's own foundation is exempt: shell-url.js and the shell
+    components own the address bar and speak the current grammar.
+    """
+    import re
+    from pathlib import Path
+
+    ui = Path(__file__).resolve().parents[2] / "ui"
+    offenders = []
+    for path in sorted(ui.rglob("*.jsx")) + sorted(ui.rglob("*.js")):
+        rel = path.relative_to(ui).as_posix()
+        if "vendor/" in rel or rel.startswith("components/shell/"):
+            continue
+        if rel.startswith("foundation/shell-"):
+            continue
+        for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"window\.location\.hash\s*=", line):
+                offenders.append(f"{rel}:{i}")
+    assert not offenders, (
+        "these write the hash directly instead of using the router's "
+        "navigate(), so the shell never sees the navigation: "
+        + ", ".join(offenders)
+    )
