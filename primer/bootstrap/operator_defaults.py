@@ -44,13 +44,15 @@ BUILDER_TOOLS: tuple[str, ...] = (
 )
 
 OPERATOR_DESCRIPTION = (
-    "The operator of this primer install; the primary interface to "
-    "everything it can do."
+    "The operator of this primer install: answers, delegates and conducts. "
+    "Use when you need the platform's front door for any request. Returns "
+    "the answer itself, or the result of the specialists it invoked."
 )
 
 BUILDER_DESCRIPTION = (
-    "Builds and edits platform objects (agents, graphs, triggers, python "
-    "toolsets) on the operator's behalf."
+    "Builds and edits platform objects: agents, graphs, triggers and "
+    "python toolsets. Use when a needed capability does not exist yet and "
+    "must be constructed. Returns what it built, by id, ready to invoke."
 )
 
 OPERATOR_PROMPT: tuple[str, ...] = (
@@ -66,11 +68,15 @@ OPERATOR_PROMPT: tuple[str, ...] = (
     "Decision ladder, in order. 1) Answer directly when you already know. "
     "2) Execute existing capability: call a granted tool, invoke_agent for a "
     "self-contained subtask, or invoke_graph for a multi-step workflow. "
-    "3) Delegate construction: when the user needs a capability that does "
-    "not exist yet, call invoke_agent with agent_id 'builder' and a precise "
-    "brief. The builder runs inline inside your turn and returns its result "
-    "to you; you stay responsible for the answer. 4) Guide configuration: "
-    "walk the user through the relevant /how-to entry.",
+    "3) Plan first for multi-step work: call invoke_agent with agent_id "
+    "'planner', passing the task and a one-paragraph context digest. "
+    "Execute the returned plan by invoking the named specialist per step, "
+    "carrying only each step's result forward. 4) Delegate construction: "
+    "when the user needs a capability that does not exist yet, call "
+    "invoke_agent with agent_id 'builder' and a precise brief. The builder "
+    "runs inline inside your turn and returns its result to you; you stay "
+    "responsible for the answer. 5) Guide configuration: walk the user "
+    "through the relevant /how-to entry.",
     "Use switch_binding when the user wants a different agent or graph to "
     "own the rest of this session, rather than a one-off subtask. It takes "
     "effect at the next turn.",

@@ -85,3 +85,32 @@ def test_the_seeded_rows_carry_the_prompts_and_grants() -> None:
     assert builder.system_prompt == list(BUILDER_PROMPT)
     assert operator.tools == list(OPERATOR_TOOLS)
     assert builder.tools == list(BUILDER_TOOLS)
+
+
+# ---- the phase-1 conductor contract ---------------------------------------
+
+
+def test_operator_plans_before_multi_step_work() -> None:
+    text = _operator_text()
+    assert "'planner'" in text, "the ladder must name the planner rung"
+    assert "one-paragraph context digest" in text
+
+
+def test_every_base_description_is_an_advertisement() -> None:
+    """Does X. Use when Y. Returns Z. - the searchable surface."""
+    from primer.bootstrap.operator_defaults import (
+        BUILDER_DESCRIPTION,
+        EXPLORER_DESCRIPTION,
+        OPERATOR_DESCRIPTION,
+        PLANNER_DESCRIPTION,
+        TOOL_RUNNER_DESCRIPTION,
+    )
+    for name, desc in {
+        "operator": OPERATOR_DESCRIPTION,
+        "builder": BUILDER_DESCRIPTION,
+        "planner": PLANNER_DESCRIPTION,
+        "explorer": EXPLORER_DESCRIPTION,
+        "tool-runner": TOOL_RUNNER_DESCRIPTION,
+    }.items():
+        assert "Use when" in desc, name
+        assert "Returns" in desc, name
