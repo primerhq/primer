@@ -152,6 +152,18 @@ function SH_FilesList() {
           </li>
         );
       })}
+      {/* An empty <ul> has no height, so a workspace with no files (or
+          one whose tree has not arrived yet) rendered a list that was
+          not merely empty but invisible: nothing on screen said whether
+          there were no files or the rail had failed. The sessions list
+          beside it has always said. */}
+      {entries.length ? null : (
+        <li className="sh-empty">
+          <span data-testid="rail-files-empty">
+            {tree.loading ? "Loading files…" : "No files"}
+          </span>
+        </li>
+      )}
     </ul>
   );
 }

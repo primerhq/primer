@@ -152,7 +152,16 @@ function SH_Shell(props) {
       if (parsed.doc) {
         setDocs(function (s) {
           return SH_openDoc(s, {
-            kind: parsed.doc.kind, ref: parsed.doc.ref, preview: false,
+            kind: parsed.doc.kind, ref: parsed.doc.ref,
+            // Spec section 8, VS Code semantics: opening a document
+            // gives a reused italic PREVIEW tab that an edit promotes,
+            // so following a url to one is not tab creep. A SESSION is
+            // the exception the same section names: the operator's
+            // session is pinned by default, and it is the working
+            // context the rest of the shell hangs off, so it must not
+            // sit in the single preview slot where the next open
+            // replaces it.
+            preview: parsed.doc.kind !== "session",
           });
         });
       }
@@ -195,7 +204,16 @@ function SH_Shell(props) {
     setDocs(
       parsed.doc
         ? SH_openDoc(fresh, {
-            kind: parsed.doc.kind, ref: parsed.doc.ref, preview: false,
+            kind: parsed.doc.kind, ref: parsed.doc.ref,
+            // Spec section 8, VS Code semantics: opening a document
+            // gives a reused italic PREVIEW tab that an edit promotes,
+            // so following a url to one is not tab creep. A SESSION is
+            // the exception the same section names: the operator's
+            // session is pinned by default, and it is the working
+            // context the rest of the shell hangs off, so it must not
+            // sit in the single preview slot where the next open
+            // replaces it.
+            preview: parsed.doc.kind !== "session",
           })
         : fresh
     );
