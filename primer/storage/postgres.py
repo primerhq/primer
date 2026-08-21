@@ -1091,7 +1091,7 @@ class PostgresDocumentContentStore(DocumentContentStore):
             "ts_headline('english', content, "
             "websearch_to_tsquery('english', $2), "
             "'MaxFragments=1, MaxWords=18, MinWords=6, "
-            "StartSel=, StopSel=') AS excerpt, "
+            "StartSel=\"\", StopSel=\"\"') AS excerpt, "
             "ts_rank(to_tsvector('english', content), "
             "websearch_to_tsquery('english', $2)) AS score "
             f"FROM {self._qualified} "
