@@ -309,9 +309,14 @@ def test_u0027_empty_collection_search_renders_no_matches(
         # like "Search this collection" — fallback to first textbox
         # inside the collection-detail layout.
         page.wait_for_timeout(800)  # let the detail panel render
-        search_inputs = page.get_by_role("textbox").all()
+        # Scope to the overlay: the shell behind it has textboxes of its
+        # own, and the composer is earlier in the DOM, so a page-wide
+        # search found that instead and pressing Enter steered the
+        # session rather than running the grep.
+        overlay = page.get_by_test_id("shell-overlay-body")
+        search_inputs = overlay.get_by_role("textbox").all()
         assert len(search_inputs) >= 1, "no textbox visible on collection detail"
-        # Use the first visible textbox (the per-collection search box).
+        # Use the first visible textbox (the per-collection grep box).
         target = None
         for inp in search_inputs:
             if inp.is_visible():

@@ -314,16 +314,15 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
         # /workspaces/{wid}/sessions every 3s (the shell rail).
         open_studio(page, console_url, wid)
 
-        # --- 2. Sessions section shows the empty state ----------------------
-        # SessionsSection renders "No sessions yet." before any is seeded.
+        # --- 2. The rail's session list is up -------------------------------
+        # NOT the empty state: landing on a workspace with no sessions
+        # lazily creates one (S1 spec section 8), so an empty workspace
+        # does not stay empty long enough to assert that here. What this
+        # test is about is the rail reflecting a session seeded through
+        # the API, which step 4 checks.
         expect(sessions_list(page)).to_be_visible(
             timeout=15_000,
         )
-        expect(
-            sessions_list(page).get_by_text(
-                "No sessions yet", exact=False,
-            )
-        ).to_be_visible(timeout=15_000)
 
         # --- 3. Seed the session in the background --------------------------
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
