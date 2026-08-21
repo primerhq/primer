@@ -250,6 +250,7 @@ function WorkspacesPage({ onOpen, pushToast }) {
         <WS_NewWorkspaceModal
           onClose={() => setCreateOpen(false)}
           pushToast={pushToast}
+          onCreated={onOpen}
         />
       )}
       {renaming && (
@@ -313,7 +314,7 @@ function WS_RenameWorkspaceModal({ workspace, onClose, onRenamed, pushToast }) {
   );
 }
 
-function WS_NewWorkspaceModal({ onClose, pushToast }) {
+function WS_NewWorkspaceModal({ onClose, pushToast, onCreated }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
@@ -346,7 +347,13 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
         if (typeof pushToast === "function") {
           pushToast({ kind: "success", title: "Workspace created", detail: row.id });
         }
-        navigate("/workspaces/" + row.id);
+        // Land the operator in the workspace they just made. onCreated is
+        // the host's own "open this workspace" -- in the shell that is a
+        // workspace switch. navigate() is the fallback for a host that
+        // supplies none, and it addresses the record rather than
+        // entering it, which is what that route means everywhere else.
+        if (typeof onCreated === "function") onCreated(row.id);
+        else navigate("/workspaces/" + row.id);
       },
       onError: _wsToastErr(pushToast, "Create failed"),
     }

@@ -312,21 +312,7 @@ function SH_OverlayHost() {
     installedRef.current = true;
     window.SH_installRouterShim(
       function () { return overlayRef.current; },
-      function (name, section, id) {
-        // A bare workspace id means GO THERE. Pre-S8, navigate("/workspaces/
-        // <id>") opened that workspace's Studio, and both callers still mean
-        // it that way: the list's row chevron, and the create modal's
-        // onSuccess, which is how an operator lands in the workspace they
-        // just made. Routed as an overlay it did nothing useful, showing the
-        // list of every workspace under a heading naming one of them.
-        // The detail section keeps its meaning: configure it, don't enter it.
-        if (name === "workspaces" && id && !section) {
-          shell.switchWorkspace(id);
-          shell.closeOverlay();
-          return;
-        }
-        shell.openOverlay(name, section, id);
-      }
+      function (name, section, id) { shell.openOverlay(name, section, id); }
     );
   }
 
