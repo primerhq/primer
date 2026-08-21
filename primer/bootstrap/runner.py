@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from primer.common.optional import has_extra
+from primer.model.except_ import ConflictError
 from primer.bootstrap.defaults import (
     RESERVED_CROSS_ENCODERS,
     RESERVED_EMBEDDERS,
@@ -205,6 +206,17 @@ class BootstrapRunner:
             await self._wp_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created workspace provider %r", reserved_id)
+        except ConflictError:
+            # Another pod won the create between the miss above and here.
+            # A fresh install boots the API and every worker together and
+            # they all bootstrap, so this is the normal outcome for all but
+            # one of them, not a failure: recording it as an error is what
+            # stops the marker being stamped.
+            result.skipped.append(reserved_id)
+            logger.debug(
+                "bootstrap: %r created concurrently by another boot",
+                reserved_id,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "bootstrap: _ensure_local_workspace_provider failed: %s", exc
@@ -226,6 +238,17 @@ class BootstrapRunner:
             await self._wt_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created workspace template %r", reserved_id)
+        except ConflictError:
+            # Another pod won the create between the miss above and here.
+            # A fresh install boots the API and every worker together and
+            # they all bootstrap, so this is the normal outcome for all but
+            # one of them, not a failure: recording it as an error is what
+            # stops the marker being stamped.
+            result.skipped.append(reserved_id)
+            logger.debug(
+                "bootstrap: %r created concurrently by another boot",
+                reserved_id,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "bootstrap: _ensure_local_workspace_template failed: %s", exc
@@ -261,6 +284,17 @@ class BootstrapRunner:
             await self._embedder_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created embedder %r", reserved_id)
+        except ConflictError:
+            # Another pod won the create between the miss above and here.
+            # A fresh install boots the API and every worker together and
+            # they all bootstrap, so this is the normal outcome for all but
+            # one of them, not a failure: recording it as an error is what
+            # stops the marker being stamped.
+            result.skipped.append(reserved_id)
+            logger.debug(
+                "bootstrap: %r created concurrently by another boot",
+                reserved_id,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "bootstrap: _ensure_huggingface_embedder failed: %s", exc
@@ -295,6 +329,17 @@ class BootstrapRunner:
             await self._ssp_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created SSP %r", reserved_id)
+        except ConflictError:
+            # Another pod won the create between the miss above and here.
+            # A fresh install boots the API and every worker together and
+            # they all bootstrap, so this is the normal outcome for all but
+            # one of them, not a failure: recording it as an error is what
+            # stops the marker being stamped.
+            result.skipped.append(reserved_id)
+            logger.debug(
+                "bootstrap: %r created concurrently by another boot",
+                reserved_id,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "bootstrap: _ensure_lance_ssp failed: %s", exc
@@ -328,6 +373,17 @@ class BootstrapRunner:
             await self._cross_encoder_storage.create(entity)
             result.created.append(reserved_id)
             logger.debug("bootstrap: created cross-encoder %r", reserved_id)
+        except ConflictError:
+            # Another pod won the create between the miss above and here.
+            # A fresh install boots the API and every worker together and
+            # they all bootstrap, so this is the normal outcome for all but
+            # one of them, not a failure: recording it as an error is what
+            # stops the marker being stamped.
+            result.skipped.append(reserved_id)
+            logger.debug(
+                "bootstrap: %r created concurrently by another boot",
+                reserved_id,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "bootstrap: _ensure_huggingface_cross_encoder failed: %s", exc

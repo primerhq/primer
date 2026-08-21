@@ -96,11 +96,20 @@ async def _ensure_collection(storage_provider) -> Collection:
     if existing is not None:
         # Preserve an operator-enabled search block across regeneration.
         return existing
-    return await colls.create(Collection(
-        id=SYSTEM_COLLECTION_ID,
-        description="Primer system reference",
-        system=True,
-    ))
+    try:
+        return await colls.create(Collection(
+            id=SYSTEM_COLLECTION_ID,
+            description="Primer system reference",
+            system=True,
+        ))
+    except ConflictError:
+        # A fresh install starts the API and every worker at once and they
+        # all seed, so the miss above races the create. Losing means the
+        # collection exists, which is the whole point of the call.
+        existing = await colls.get(SYSTEM_COLLECTION_ID)
+        if existing is None:
+            raise
+        return existing
 
 
 def _agent_body(a) -> str:

@@ -302,3 +302,36 @@ async def test_regeneration_survives_a_page_created_underneath_it(sp, monkeypatc
     )
     assert page.body != "written by the convergence hook"
     assert "agent-raced" in page.body
+
+
+async def test_regeneration_survives_the_collection_being_created_first(sp):
+    """The system collection itself races on a fresh multi-pod install.
+
+    _ensure_collection is get-then-create, and a fresh install boots the API
+    and every worker together, so all but one of them find nothing and then
+    lose the create. Uncaught, that failed the whole seed step.
+    """
+    from primer.model.except_ import ConflictError
+
+    colls = sp.get_storage(Collection)
+    real_create = type(colls).create
+    raced: dict[str, bool] = {}
+
+    async def create_that_loses(self, entity, *a, **kw):
+        if entity.id == SYSTEM_COLLECTION_ID and not raced.get("done"):
+            raced["done"] = True
+            await real_create(self, entity, *a, **kw)
+            raise ConflictError(
+                f"Collection with id {entity.id!r} already exists"
+            )
+        return await real_create(self, entity, *a, **kw)
+
+    mp = pytest.MonkeyPatch()
+    mp.setattr(type(colls), "create", create_that_loses)
+    try:
+        await regenerate_system_collection(sp, toolset_providers={})
+    finally:
+        mp.undo()
+
+    assert raced.get("done"), "the racing create never fired"
+    assert await colls.get(SYSTEM_COLLECTION_ID) is not None
