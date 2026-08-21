@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from primer.bootstrap.defaults import (
+    RESERVED_EXPLORER_AGENT,
+    RESERVED_PLANNER_AGENT,
+    RESERVED_TOOL_RUNNER_AGENT,
     RESERVED_BUILDER_AGENT,
     RESERVED_OPERATOR_AGENT,
 )
@@ -33,7 +36,14 @@ async def test_reset_agents_restores_prompt_and_grants(client, app):
 
     r = await client.post("/v1/setup/reset_agents")
     assert r.status_code == 200
-    assert r.json()["reset"] == [RESERVED_OPERATOR_AGENT, RESERVED_BUILDER_AGENT]
+    # Phase 1 widened the reset to the whole base roster.
+    assert r.json()["reset"] == [
+        RESERVED_OPERATOR_AGENT,
+        RESERVED_BUILDER_AGENT,
+        RESERVED_PLANNER_AGENT,
+        RESERVED_EXPLORER_AGENT,
+        RESERVED_TOOL_RUNNER_AGENT,
+    ]
 
     restored = await agents.get(RESERVED_OPERATOR_AGENT)
     assert restored.system_prompt == list(OPERATOR_PROMPT)
