@@ -47,7 +47,7 @@ function SH_statusFromTap(events, sessionId, nowMs) {
       continue;
     }
     if (kind === "user_input") {
-      current = { verb: "thinking", object: "", startedMs: ev.ts_ms || 0 };
+      current = { verb: "thinking", object: "", startedMs: SH_eventStartedMs(ev, nowMs) };
       continue;
     }
     if (kind === "tool_call") {
@@ -63,13 +63,28 @@ function SH_statusFromTap(events, sessionId, nowMs) {
       current = {
         verb: SH_bareToolName(ev.payload && ev.payload.name),
         object: object,
-        startedMs: ev.ts_ms || 0,
+        startedMs: SH_eventStartedMs(ev, nowMs),
       };
     }
   }
   if (!current) return null;
   if (nowMs !== undefined && current.startedMs > nowMs) return null;
   return current;
+}
+
+// TapEvent.ts is an ISO datetime. The status line read a field named
+// ts_ms, which that event does not have, so every start time fell back
+// to 0 and the elapsed clock measured from the Unix epoch: a session
+// that had just started reported "29787968m 43s" of thinking. An event
+// with no readable timestamp is treated as starting now, so the clock
+// reads 0s rather than fifty-five years.
+function SH_eventStartedMs(ev, nowMs) {
+  var raw = ev && ev.ts;
+  if (raw) {
+    var parsed = Date.parse(raw);
+    if (!isNaN(parsed)) return parsed;
+  }
+  return nowMs === undefined ? 0 : nowMs;
 }
 
 function SH_scrollDecision(input) {
@@ -90,5 +105,6 @@ function SH_scrollDecision(input) {
 window.SH_FOLLOW_PX = SH_FOLLOW_PX;
 window.SH_bareToolName = SH_bareToolName;
 window.SH_statusLine = SH_statusLine;
+window.SH_eventStartedMs = SH_eventStartedMs;
 window.SH_statusFromTap = SH_statusFromTap;
 window.SH_scrollDecision = SH_scrollDecision;

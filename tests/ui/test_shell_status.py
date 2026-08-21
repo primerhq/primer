@@ -45,16 +45,25 @@ def test_long_runs_read_in_minutes() -> None:
 
 
 def test_status_is_derived_from_the_latest_tool_call_on_the_tap() -> None:
+    """Timestamps are ISO strings, as TapEvent sends them.
+
+    This test used to build events with a ``ts_ms`` number, a field the
+    real event has never had. It passed while the product was broken:
+    the status line read that same absent field, fell back to 0 and
+    reported the age of the Unix epoch as the elapsed time.
+    """
     ctx = _ctx()
     out = json.loads(ctx.eval(
         """
         (function () {
           var evs = [
-            {"class": "user_input", session_id: "s1", seq: 1, ts_ms: 1000,
-             payload: {}},
-            {"class": "tool_call", session_id: "s1", seq: 2, ts_ms: 2000,
+            {"class": "user_input", session_id: "s1", seq: 1,
+             ts: "1970-01-01T00:00:01.000Z", payload: {}},
+            {"class": "tool_call", session_id: "s1", seq: 2,
+             ts: "1970-01-01T00:00:02.000Z",
              payload: {name: "workspace__grep", arguments: {path: "src/"}}},
-            {"class": "tool_call", session_id: "s2", seq: 9, ts_ms: 2500,
+            {"class": "tool_call", session_id: "s2", seq: 9,
+             ts: "1970-01-01T00:00:02.500Z",
              payload: {name: "workspace__read_file", arguments: {path: "x"}}}
           ];
           return JSON.stringify(SH_statusFromTap(evs, "s1", 14000));
@@ -69,9 +78,11 @@ def test_a_terminated_session_has_no_status() -> None:
     assert ctx.eval(
         """
         SH_statusFromTap([
-          {"class": "tool_call", session_id: "s1", seq: 2, ts_ms: 2000,
+          {"class": "tool_call", session_id: "s1", seq: 2,
+           ts: "1970-01-01T00:00:02.000Z",
            payload: {name: "workspace__grep", arguments: {}}},
-          {"class": "done", session_id: "s1", seq: 3, ts_ms: 3000, payload: {}}
+          {"class": "done", session_id: "s1", seq: 3,
+           ts: "1970-01-01T00:00:03.000Z", payload: {}}
         ], "s1", 9000) === null
         """
     ) is True
@@ -103,3 +114,37 @@ def test_scrolling_up_freezes_and_offers_the_jump() -> None:
         'JSON.stringify(SH_scrollDecision({distanceFromBottom: 900, newTurns: 0}))'
     ))
     assert none == {"follow": False, "showJump": False, "jumpLabel": None}
+
+
+def test_the_status_clock_reads_the_field_the_tap_actually_sends() -> None:
+    """Regression: a session that had just started said "29787968m 43s".
+
+    TapEvent carries ``ts``, an ISO datetime. The status line read
+    ``ts_ms``, which that event does not have, so every start time fell
+    back to 0 and the elapsed clock measured from the Unix epoch.
+    """
+    from primer.tap.event import TapEvent
+
+    assert "ts" in TapEvent.model_fields
+    assert "ts_ms" not in TapEvent.model_fields
+
+    ctx = _ctx()
+    ctx.eval(
+        """
+        var now = 1750000000000;
+        var evs = [{
+          session_id: "s1", "class": "user_input",
+          ts: "2025-06-15T14:26:20.000Z", payload: {}
+        }];
+        var st = SH_statusFromTap(evs, "s1", now);
+        var elapsed = Math.round((now - st.startedMs) / 1000);
+        // An event with no usable timestamp starts now, so the clock
+        // reads zero rather than fifty-five years.
+        var noTs = SH_statusFromTap(
+          [{session_id: "s1", "class": "user_input", payload: {}}], "s1", now);
+        """
+    )
+    assert ctx.eval("st.verb") == "thinking"
+    # Under a minute of elapsed time, not the age of the epoch.
+    assert 0 <= ctx.eval("elapsed") < 3600, ctx.eval("elapsed")
+    assert ctx.eval("noTs.startedMs") == 1750000000000
