@@ -77,3 +77,65 @@ def test_every_read_takes_an_abort_signal() -> None:
         m = re.search(name + r":\s*function\s*\(([^)]*)\)", src)
         assert m, name
         assert m.group(1).strip().endswith("signal"), name
+
+
+def test_steer_sends_the_field_the_endpoint_declares() -> None:
+    """Regression: every send from the composer 422'd.
+
+    SteerBody names the field ``instruction`` because the one endpoint
+    covers invoking, steering and resuming a session. The shell sent
+    ``content``, which is not a field on that model at all, so sending a
+    message -- the single most-used action in the console -- failed on
+    every use and said only "Steer failed" in a toast.
+
+    Pinned against the model itself rather than restating the name, so
+    the two cannot drift apart again.
+    """
+    from primer.api.routers.workspaces import SteerBody
+
+    assert "instruction" in SteerBody.model_fields
+    assert "content" not in SteerBody.model_fields
+
+    src = _src()
+    body = src[src.index("steer: function"):]
+    body = body[:body.index("},")]
+    assert "instruction: instruction" in body
+    assert "content:" not in body
+
+
+def test_every_shell_request_body_matches_its_endpoint_model() -> None:
+    """One sweep, so the next mismatch is caught before it ships.
+
+    Two of these were wrong at once and both broke an everyday action
+    silently: steer sent ``content`` where SteerBody declares
+    ``instruction``, so every message sent from the composer 422'd, and
+    rewind sent ``seq`` where RewindBody declares ``to_seq``. Both showed
+    only a generic failure toast.
+    """
+    from primer.api.routers.tool_approval import ToolApprovalRespondBody
+    from primer.api.routers.workspaces import (
+        FileWriteBody,
+        RewindBody,
+        SteerBody,
+    )
+
+    src = _src()
+
+    def body_of(fn: str) -> str:
+        chunk = src[src.index(f"{fn}: function"):]
+        return chunk[:chunk.index("},")]
+
+    cases = [
+        ("steer", SteerBody, ["instruction"]),
+        ("rewind", RewindBody, ["to_seq"]),
+        ("fileWrite", FileWriteBody, ["content", "encoding"]),
+        ("approve", ToolApprovalRespondBody, ["tool_call_id", "decision"]),
+        ("reject", ToolApprovalRespondBody,
+         ["tool_call_id", "decision", "reason"]),
+    ]
+    for fn, model, sent in cases:
+        chunk = body_of(fn)
+        for field in sent:
+            assert field in model.model_fields, f"{fn} sends {field!r}, " \
+                f"which is not a field on {model.__name__}"
+            assert f"{field}:" in chunk, f"{fn} no longer sends {field!r}"

@@ -120,11 +120,15 @@ var SH_api = {
       body || {});
   },
 
-  steer: function (wid, sid, content) {
+  // The field is `instruction`. SteerBody names it that because the one
+  // endpoint covers invoking, steering and resuming, and "content" was
+  // not a field at all: every send from the composer 422'd, which is the
+  // most important action in the console failing on every use.
+  steer: function (wid, sid, instruction) {
     return window.primerApi.apiFetch(
       "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
         + encodeURIComponent(sid) + "/steer",
-      { content: content });
+      { instruction: instruction });
   },
 
   interrupt: function (wid, sid) {
@@ -179,10 +183,12 @@ var SH_api = {
   // S1 port of the chat rewind (primer/api/routers/chats.py:1072-1110,
   // body {seq} at :1047-1058). Conversation-only: workspace files are
   // git-committed already and scoped restore is a programme follow-up.
-  rewind: function (wid, sid, seq) {
+  // RewindBody names it `to_seq`, not `seq`: rewinding sent an unknown
+  // field and the call 422'd every time.
+  rewind: function (wid, sid, toSeq) {
     return window.primerApi.apiFetch(
       "POST", "/workspaces/" + encodeURIComponent(wid) + "/sessions/"
-        + encodeURIComponent(sid) + "/rewind", { seq: seq });
+        + encodeURIComponent(sid) + "/rewind", { to_seq: toSeq });
   },
 
   // S1 plan pinned decision 14. 409 when a turn is open or the session is
