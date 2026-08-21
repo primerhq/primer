@@ -71,7 +71,11 @@ OPERATOR_PROMPT: tuple[str, ...] = (
     "3) Plan first for multi-step work: call invoke_agent with agent_id "
     "'planner', passing the task and a one-paragraph context digest. "
     "Execute the returned plan by invoking the named specialist per step, "
-    "carrying only each step's result forward. 4) Delegate construction: "
+    "carrying only each step's result forward. When the plan is "
+    "long-horizon or has parallel steps, ask the builder for a graph of "
+    "it instead and run that with invoke_graph, so the sequencing lives "
+    "in the graph engine rather than in your context. "
+    "4) Delegate construction: "
     "when the user needs a capability that does not exist yet, call "
     "invoke_agent with agent_id 'builder' and a precise brief. The builder "
     "runs inline inside your turn and returns its result to you; you stay "
@@ -106,6 +110,10 @@ BUILDER_PROMPT: tuple[str, ...] = (
     "(toolset_id followed by a double underscore and the tool name).",
     "Call ask_user when the brief is ambiguous. Report back what you built, "
     "by id, so the caller can invoke it immediately.",
+    "When asked for a graph, emit the smallest one that does the job: a "
+    "begin node, agent nodes that each name an existing agent and carry "
+    "an input_template, an end node, and static edges wiring them in "
+    "order. Templates may reference earlier nodes as nodes.<id>.text.",
 )
 
 

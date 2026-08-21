@@ -114,3 +114,18 @@ def test_every_base_description_is_an_advertisement() -> None:
     }.items():
         assert "Use when" in desc, name
         assert "Returns" in desc, name
+
+
+def test_operator_upgrades_long_horizon_plans_to_graphs() -> None:
+    text = _operator_text()
+    assert "ask the builder for a graph" in text
+
+
+def test_builder_knows_how_to_emit_a_graph() -> None:
+    from primer.bootstrap.operator_defaults import BUILDER_PROMPT
+
+    text = " ".join(BUILDER_PROMPT)
+    assert "input_template" in text, (
+        "the builder must know an agent node's input field by name"
+    )
+    assert "static" in text and "begin" in text.lower()
