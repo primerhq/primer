@@ -211,9 +211,13 @@ def test_u0107_graph_builder_persistence_journey(
         # assert BOTH: no spurious diff, AND the step actually came back.
         save_after = gb.save_button(page)
         expect(save_after).to_be_disabled(timeout=15_000)
-        assert gb.outline_row_count(page) == rows_staged, (
-            "the step added before Save did not survive the reload - the PUT "
-            "body did not persist it"
+        # Retrying, not a bare count: wait_for_builder returns when the
+        # builder SHELL is visible, which is before the reloaded graph has
+        # finished arriving, so a single sample can catch the outline half
+        # populated. Every other check here is a retrying expect() for the
+        # same reason; this one was the odd one out and flaked on CI.
+        expect(page.locator('[data-testid="gb-outline-row"]')).to_have_count(
+            rows_staged, timeout=15_000
         )
         expect(
             page.locator('[data-testid="gb-outline-row"]', has_text="Finish").first
