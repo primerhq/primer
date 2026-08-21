@@ -97,6 +97,26 @@ var SA_KIND_TO_TRANSCRIPT = {
   error: "error",
 };
 
+// The text a row shows. Messages keep theirs at payload.text; a record
+// with none (a tool call, a lifecycle marker) has nothing to say here and
+// the renderer draws its own chip for it.
+function SA_rowText(rec) {
+  var payload = rec.payload || {};
+  if (typeof payload.text === "string" && payload.text) return payload.text;
+  // Pending steers are stored as parts, so a realized one may arrive in
+  // that shape too. Join the text parts, as the queue chip does.
+  if (Array.isArray(payload.parts)) {
+    var out = [];
+    for (var i = 0; i < payload.parts.length; i++) {
+      var part = payload.parts[i];
+      if (part && part.type === "text" && part.text) out.push(part.text);
+    }
+    if (out.length) return out.join("\n");
+  }
+  return undefined;
+}
+
+
 // Divider label for the three kinds SA_KIND_TO_TRANSCRIPT maps to "divider".
 // invocation_divider (written by reset_session on ENDED->CREATED re-open,
 // payload: {invocation: N}) renders "— invocation N —"; graph_transition
@@ -133,7 +153,15 @@ function SA_toTranscript(records, session) {
       seq: rec.seq,
       kind: kind,
       nodeId: rec.node_id || null,
-      label: kind === "divider" ? SA_dividerLabel(rec) : undefined,
+      // What the row actually SAYS. Only dividers got a label, so every
+      // message row rendered an empty body: a transcript of identity
+      // chips with nothing beside them, for the operator's own messages
+      // and the agent's answers alike. user_input and assistant_token
+      // both carry their text at payload.text (primer/session/enqueue.py
+      // and persistence.py), which is the one place it lives.
+      label: kind === "divider"
+        ? SA_dividerLabel(rec)
+        : SA_rowText(rec),
       payload: rec.payload || {},
       createdAt: rec.created_at,
     });

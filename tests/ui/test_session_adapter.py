@@ -184,6 +184,12 @@ def test_sa_to_transcript_maps_records_via_mini_racer() -> None:
     )
     assert ctx.eval("out.length") == 4
     assert ctx.eval("out[0].kind") == "user_message"
+    # What the row SAYS. This sample has always fed a user_input with
+    # payload.text and never checked that it survived the mapping, so the
+    # transcript rendered every message row with an empty body: identity
+    # chips and nothing beside them, for the operator's own messages and
+    # the agent's answers alike.
+    assert ctx.eval("out[0].label") == "hi"
     assert ctx.eval("out[1].kind") == "divider"
     assert ctx.eval("out[1].label") == "n1 · enter"
     assert ctx.eval("out[1].nodeId") == "n1"
@@ -192,3 +198,32 @@ def test_sa_to_transcript_maps_records_via_mini_racer() -> None:
     # A DONE record maps to Message()'s own "done" kind (muted "· done" row),
     # not a generic "lifecycle" bucket.
     assert ctx.eval("out[3].kind") == "done"
+
+
+def test_transcript_rows_carry_the_text_they_display() -> None:
+    """Every message kind, and the parts shape a realized steer arrives in."""
+    from py_mini_racer import MiniRacer
+
+    ctx = MiniRacer()
+    ctx.eval("var window = {};")
+    ctx.eval(ADAPTER.read_text(encoding="utf-8"))
+    ctx.eval(
+        """
+        var records = [
+          {seq: 1, kind: "user_input", payload: {text: "ask"}, created_at: "t1"},
+          {seq: 2, kind: "assistant_token", payload: {text: "answer"}, created_at: "t2"},
+          {seq: 3, kind: "user_input",
+           payload: {parts: [{type: "text", text: "queued"}]}, created_at: "t3"},
+          {seq: 4, kind: "tool_call",
+           payload: {name: "workspace__grep", arguments: {}}, created_at: "t4"},
+        ];
+        var out = window.SA_toTranscript(records, {id: "s1"});
+        """
+    )
+    assert ctx.eval("out[0].label") == "ask"
+    assert ctx.eval("out[1].label") == "answer"
+    # A steer stored as parts is realized into the same transcript.
+    assert ctx.eval("out[2].label") == "queued"
+    # A tool call draws its own chip, so it needs no label. MiniRacer
+    # hands back JSUndefined rather than None for an absent property.
+    assert not ctx.eval("out[3].label")

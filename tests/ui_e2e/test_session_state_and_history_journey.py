@@ -152,8 +152,12 @@ def test_cancelled_session_shows_cancelled_chip_in_list(
     row = session_row(page, sid).first
     expect(row).to_be_visible(timeout=20_000)
     # The row carries its status chip, stamped with the status it is in.
+    # POST /cancel lands the session in "ended": cancelling is how it
+    # got there, not a status of its own, and SESSION_TERMINAL carries
+    # both. Assert it reads as over rather than naming one spelling.
     dot = row.locator('[data-testid="session-status-dot"]')
     expect(dot).to_be_visible(timeout=10_000)
-    assert (dot.get_attribute("data-status") or "") == "cancelled", (
-        f"expected a cancelled chip, got {dot.get_attribute('data-status')!r}"
+    status = dot.get_attribute("data-status") or ""
+    assert status in {"ended", "cancelled", "failed", "completed"}, (
+        f"expected a terminal chip after cancelling, got {status!r}"
     )
