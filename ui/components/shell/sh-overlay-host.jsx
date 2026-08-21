@@ -226,6 +226,18 @@ var SH_OVERLAY_MOUNTS = {
       // Templates are workspace-shaped configuration, so they belong to
       // this overlay rather than a surface of their own.
       if (state.section === "templates") {
+        // ...and an id under that section names ONE template. Without
+        // this the detail view had no route: every address for a single
+        // template rendered the list of all of them, so a template's own
+        // Edit, Delete and recipe tabs were unreachable.
+        if (state.id) {
+          return (
+            <window.WorkspaceTemplateDetail
+              templateId={state.id}
+              pushToast={window.primerApi.toastPush}
+            />
+          );
+        }
         return (
           <window.WorkspaceTemplatesPage
             pushToast={window.primerApi.toastPush}
