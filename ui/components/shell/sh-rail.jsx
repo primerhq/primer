@@ -134,10 +134,14 @@ function SH_SessionsList() {
 
 function SH_FilesList() {
   var shell = SH_useShell();
+  // The workspace tree changes while an agent works, which is the whole
+  // reason to watch a session. Fetched once on mount and never again, a
+  // file the agent had just written did not appear in the rail until the
+  // page was reloaded. Same cadence as the session list beside it.
   var tree = window.primerApi.useResource(
     SH_api.keys.tree(shell.wid, "."),
     function (signal) { return SH_api.filesTree(shell.wid, ".", signal); },
-    { pollMs: 0, deps: [shell.wid] }
+    { pollMs: 5000, deps: [shell.wid] }
   );
   var entries = (tree.data && tree.data.entries) || [];
   return (

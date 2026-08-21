@@ -11,6 +11,8 @@ Covers:
 
 from __future__ import annotations
 
+import re
+
 import httpx
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
 from tests.ui_e2e._shell_helpers import open_legacy_route
@@ -127,18 +129,12 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
         # now" escape hatch.
         modal.get_by_test_id("workspace-create-submit").click()
 
-        # Wait for modal close + URL change to #/workspaces/<id>.
-        # The new id is backend-allocated so we glob.
-        page.wait_for_url(
-            lambda url: "#/workspaces/" in url and not url.endswith(
-                "#/workspaces"
-            ),
-            timeout=15_000,
-        )
-        # Capture the id from the URL.
+        # Creating a workspace ENTERS it, which is what the pre-S8 route
+        # did too; the shell spells that "#/w/<wid>". The id is
+        # backend-allocated, so match the shape and read it back.
+        page.wait_for_url(re.compile(r"#/w/ws-[0-9a-f]+"), timeout=15_000)
         url = page.url
-        # url is e.g. http://127.0.0.1:8765/console/#/workspaces/ws-XXXX
-        created_ws_id = url.rsplit("/", 1)[-1].split("?")[0]
+        created_ws_id = url.split("#/w/", 1)[1].split("?")[0].split("#")[0]
         assert created_ws_id.startswith("ws-"), (
             f"unexpected workspace id format in URL: {url}"
         )
