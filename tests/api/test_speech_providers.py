@@ -65,20 +65,40 @@ class TestTtsCrud:
         assert got.json()["default_voice"] == "af_heart"
 
 
+def _keys(fields) -> list[str]:
+    """Field specs are either a bare key or {key, label, required, ...}."""
+    return [f["key"] if isinstance(f, dict) else f for f in fields]
+
+
+def _required(fields) -> set[str]:
+    return {
+        f["key"] for f in fields
+        if isinstance(f, dict) and f.get("required")
+    }
+
+
 class TestHelperRoutesBeatTheIdPattern:
     @pytest.mark.asyncio
     async def test_stt_types_is_not_captured_as_an_id(self, client) -> None:
         r = await client.get("/v1/stt_providers/_types")
         assert r.status_code == 200, r.text
         assert set(r.json()) == {"openai"}
-        assert r.json()["openai"]["config_fields"] == ["url", "api_key"]
-        assert r.json()["openai"]["row_fields"] == ["default_model"]
+        spec = r.json()["openai"]
+        # Fields carry their required-ness now, so compare KEYS and then
+        # the flag: url and default_model are required on the model, and
+        # a form told otherwise offers Save on a row the server rejects.
+        assert _keys(spec["config_fields"]) == ["url", "api_key"]
+        assert _keys(spec["row_fields"]) == ["default_model"]
+        assert _required(spec["config_fields"]) == {"url"}
+        assert _required(spec["row_fields"]) == {"default_model"}
 
     @pytest.mark.asyncio
     async def test_tts_types_lists_the_voice_field(self, client) -> None:
         r = await client.get("/v1/tts_providers/_types")
         assert r.status_code == 200, r.text
-        assert r.json()["openai"]["row_fields"] == ["default_model", "default_voice"]
+        spec = r.json()["openai"]
+        assert _keys(spec["row_fields"]) == ["default_model", "default_voice"]
+        assert _required(spec["row_fields"]) == {"default_model", "default_voice"}
 
     @pytest.mark.asyncio
     async def test_stt_test_reports_ok_with_the_model_list(self, client, monkeypatch) -> None:

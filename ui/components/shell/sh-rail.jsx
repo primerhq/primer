@@ -116,12 +116,11 @@ function SH_SessionsList() {
   return (
     <ul className="sh-rail-list" data-testid="rail-sessions">
       {roots.map(function (s) { return row(s, 0); })}
+      {/* Say what is true, then offer the remedy. A lone button left the
+          operator to infer the workspace was empty from the absence of
+          rows, which reads the same as a list that has not loaded. */}
       {roots.length ? null : (
         <li className="sh-empty">
-          {/* Say what is true before offering the remedy. A lone button
-              left the operator to infer the workspace was empty from the
-              absence of rows, which reads the same as a list that has
-              not loaded. The files list beside it says which. */}
           <span>No sessions yet</span>
           <button type="button" data-testid="rail-sessions-empty"
             onClick={function () { shell.registry.get("session.create").run(); }}>
@@ -162,11 +161,17 @@ function SH_FilesList() {
           not merely empty but invisible: nothing on screen said whether
           there were no files or the rail had failed. The sessions list
           beside it has always said. */}
+      {/* Every empty state is a prompt WITH an action (spec section 8),
+          so this says which of the two situations it is and then offers
+          the way on. An empty <ul> has no height, which is how a
+          workspace with no files rendered a list that was not merely
+          empty but invisible. */}
       {entries.length ? null : (
         <li className="sh-empty">
-          <span data-testid="rail-files-empty">
-            {tree.loading ? "Loading files…" : "No files"}
-          </span>
+          <button type="button" data-testid="rail-files-empty"
+            onClick={function () { shell.registry.get("doc.openQuick").run(); }}>
+            {tree.loading ? "Loading files…" : "Open File"}
+          </button>
         </li>
       )}
     </ul>
