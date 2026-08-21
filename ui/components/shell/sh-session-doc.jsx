@@ -529,7 +529,12 @@ function SH_SessionDoc(props) {
           epoch={session && session.binding_epoch} />
         <SH_TokenMeter session={session} />
         {shell.registry.forSurface("tab-menu").map(function (verb) {
-          if (verb.contexts && verb.contexts.indexOf("session") < 0) return null;
+          // The header offers the same verbs as the tab menu, so it has
+          // to answer the same question: a verb that needs a live
+          // session is not offered once the session is over.
+          if (!window.SH_verbApplies(shell, verb, { kind: "session", ref: sid })) {
+            return null;
+          }
           return (
             <button key={verb.id} type="button" className="sh-verb"
               data-verb={verb.id} onClick={function () { verb.run(); }}

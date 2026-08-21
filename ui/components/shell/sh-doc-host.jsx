@@ -186,6 +186,7 @@ function SH_registerCoreVerbs(shell) {
   shell.registry.register({
     id: "session.interrupt", label: "Interrupt Session", destructive: true,
     contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    requiresLive: true,
     run: function () {
       var group = shell.docs.groups[shell.docs.activeGroup];
       var tab = null;
@@ -214,6 +215,7 @@ function SH_registerCoreVerbs(shell) {
   shell.registry.register({
     id: "session.pause", label: "Park Session",
     contexts: ["session"], surfaces: ["tab-menu", "palette"],
+    requiresLive: true,
     run: function () {
       var ref = activeSessionRef();
       if (ref) SH_api.pause(shell.wid, ref).then(function () {
@@ -245,12 +247,30 @@ function SH_registerCoreVerbs(shell) {
   }
 }
 
+// Some verbs only mean something while a session is still going.
+// Interrupting or parking one that has already ended does nothing, and
+// offering it says the shell has not noticed. The status comes from the
+// rail's own session list, which is the same answer the rail row shows.
+function SH_verbApplies(shell, verb, tab) {
+  if (verb.contexts && verb.contexts.indexOf(tab.kind) < 0) return false;
+  if (!verb.requiresLive) return true;
+  if (tab.kind !== "session") return false;
+  var items = (shell.sessions.data && shell.sessions.data.items) || [];
+  for (var i = 0; i < items.length; i++) {
+    if (items[i].session_id === tab.ref) {
+      var terminal = window.SESSION_TERMINAL;
+      return !(terminal && terminal.has(items[i].status));
+    }
+  }
+  return true;
+}
+
 function SH_TabMenu(props) {
   var shell = SH_useShell();
   return (
     <span className="sh-tab-menu" data-testid={"shell-tab-menu:" + props.tab.id}>
       {shell.registry.forSurface("tab-menu").map(function (verb) {
-        if (verb.contexts && verb.contexts.indexOf(props.tab.kind) < 0) return null;
+        if (!SH_verbApplies(shell, verb, props.tab)) return null;
         return (
           <button key={verb.id} type="button" className="sh-verb"
             data-verb={verb.id} onClick={function () { verb.run(props.tab); }}>
@@ -466,6 +486,7 @@ function SH_Topbar() {
   );
 }
 
+window.SH_verbApplies = SH_verbApplies;
 window.SH_OVERLAY_LABELS = SH_OVERLAY_LABELS;
 window.SH_registerCoreVerbs = SH_registerCoreVerbs;
 window.SH_DocHost = SH_DocHost;
