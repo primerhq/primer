@@ -38,6 +38,9 @@ from primer.storage.migrations.m001_document_content import M001DocumentContent
 from primer.storage.migrations.m002_model_profiles import M002ModelProfiles
 from primer.storage.migrations.m003_session_cutover import M003SessionCutover
 from primer.storage.migrations.m004_document_slugs import M004DocumentSlugs
+from primer.storage.migrations.m005_document_directories import (
+    M005DocumentDirectories,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,7 @@ MIGRATIONS: tuple[Migration, ...] = (
     M002ModelProfiles(),
     M003SessionCutover(),
     M004DocumentSlugs(),
+    M005DocumentDirectories(),
 )
 
 #: Highest version this build knows how to apply.

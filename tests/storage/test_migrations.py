@@ -384,3 +384,65 @@ async def test_m003_legacy_document_gets_a_slug_and_parent(sp):
     assert child.parent_id == "document-root"
     # path is untouched: it was already correct and the tree reads it.
     assert child.path == "guides/onboarding.md"
+
+
+async def test_m005_synthesises_the_directory_a_flat_document_names(sp):
+    """Pre-tree data is flat: a nested path with no row at its parent.
+
+    Demoting the child to a root would keep it readable but leave its path
+    inconsistent with its slug, so the first move would compute a new path
+    and strand the body under the old one. The directory is created instead.
+    """
+    from primer.knowledge.tree import DocumentTreeService
+    from primer.model.collection import Document as LiveDocument
+    from primer.storage.migrations.m005_document_directories import (
+        Document as DocumentView,
+    )
+
+    await sp.get_content_store().ensure_schema()
+    await sp.get_storage(DocumentView).create(
+        DocumentView(
+            id="document-flat",
+            collection_id="coll-1",
+            name="deploy-bot.md",
+            path="cookbook/deploy-bot.md",
+        )
+    )
+    await sp.get_content_store().upsert(
+        document_id="document-flat", collection_id="coll-1",
+        path="cookbook/deploy-bot.md", content="how to deploy",
+    )
+
+    await run_migrations(sp, is_fresh_install=False)
+
+    docs = sp.get_storage(LiveDocument)
+    child = await docs.get("document-flat")
+    assert child is not None
+    assert child.slug == "deploy-bot.md"
+    assert child.parent_id is not None, "the directory should have been created"
+
+    parent = await docs.get(child.parent_id)
+    assert parent is not None
+    assert parent.slug == "cookbook"
+    assert parent.path == "cookbook"
+    assert parent.parent_id is None
+
+    # The synthesised directory resolves as a parent, which is what the
+    # tree service needs to list or create anything beneath it.
+    tree = DocumentTreeService(sp)
+    page = await tree.read(collection_id="coll-1", path="cookbook/deploy-bot.md")
+    assert page.body == "how to deploy"
+    # path is still parent.path + "/" + slug, so a move cannot strand the body.
+    assert child.path == f"{parent.path}/{child.slug}"
+
+    # Re-running must not build a second directory alongside the first.
+    from primer.model.storage import OffsetPage
+    from primer.storage.migrations.m005_document_directories import (
+        M005DocumentDirectories,
+    )
+
+    before = (await docs.list(OffsetPage(offset=0, length=100))).items
+    await M005DocumentDirectories().apply(sp)
+    after = (await docs.list(OffsetPage(offset=0, length=100))).items
+    assert len(after) == len(before)
+    assert {d.id for d in after} == {d.id for d in before}
