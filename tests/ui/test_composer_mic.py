@@ -72,3 +72,29 @@ def test_the_composer_is_the_only_host_the_mic_needs() -> None:
     assert "window.location" not in block
     assert "studio" not in block
     assert "conversation" not in block
+
+
+def test_the_mic_gate_is_not_frozen_at_page_load() -> None:
+    """Regression: registering a speech provider needed a page reload.
+
+    The mic hangs off capabilities.speech.stt_configured, which is "does
+    a provider row exist" and changes while the console is open. The
+    capabilities resource was fetched once and never again, so the answer
+    was a snapshot from whenever the page happened to load: register a
+    provider, go back to a session, and the mic was still missing.
+
+    The extras block genuinely IS per-process, which is why it was
+    written that way; the speech block joining it is what made the
+    freeze wrong.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parents[2] / "ui" / "foundation"
+           / "capabilities.js").read_text(encoding="utf-8")
+    block = src[src.index("function useCapabilities()"):]
+    block = block[:block.index("function extraInstalled")]
+    assert "pollMs: 0" not in block, (
+        "a gate on a mutable fact cannot be answered once and cached "
+        "for the life of the page"
+    )
+    assert "pollMs: 10000" in block
