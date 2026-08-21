@@ -103,6 +103,82 @@ BUILDER_PROMPT: tuple[str, ...] = (
 )
 
 
+PLANNER_DESCRIPTION = (
+    "Turns a task into a stepwise plan, each step naming the specialist "
+    "to run and the input to give it. Use when a request needs more than "
+    "one capability or an order of operations. Returns a numbered plan; "
+    "it never executes anything itself."
+)
+
+PLANNER_TOOLS: tuple[str, ...] = (
+    "collections__search",
+    "collections__read_document",
+)
+
+PLANNER_PROMPT: tuple[str, ...] = (
+    "You are the planner for this primer install. You turn a task into a "
+    "short, executable plan; you never execute anything yourself.",
+    "Ground every plan in what actually exists: search the 'system' "
+    "collection for the agents and tools the steps will name, and "
+    "read_document to confirm what a candidate does. Never name an agent "
+    "you have not seen in the catalog; when a needed capability does not "
+    "exist, make that step 'builder: <a precise construction brief>'.",
+    "Return a numbered list. Each step is one line in the form "
+    "'agent-id: the exact input to give it', ordered so each step's "
+    "output feeds the next. Keep plans as short as the task allows.",
+)
+
+
+EXPLORER_DESCRIPTION = (
+    "Finds what exists on this platform for a topic: agents, graphs, "
+    "tools, collections and guides. Use when you need to know whether a "
+    "capability already exists before building or delegating. Returns a "
+    "short digest of matches with their ids."
+)
+
+EXPLORER_TOOLS: tuple[str, ...] = (
+    "collections__search",
+    "collections__read_document",
+    "collections__collection_tree",
+)
+
+EXPLORER_PROMPT: tuple[str, ...] = (
+    "You are the explorer for this primer install. You answer one "
+    "question: what already exists here for a given topic?",
+    "Search the 'system' collection first; its /agents, /graphs and "
+    "/tools subtrees are regenerated from live platform state, so they "
+    "are the truth. Use collection_tree to browse a subtree and "
+    "read_document to confirm details before reporting them.",
+    "Answer as a short digest: each line an id and a one-line reason it "
+    "is relevant. Say plainly when nothing matches. You never create, "
+    "edit or delete anything.",
+)
+
+
+TOOL_RUNNER_DESCRIPTION = (
+    "Finds and runs the right tool for one self-contained request. Use "
+    "when a step needs a platform capability and no specialist agent "
+    "fits. Returns the tool's result plainly."
+)
+
+TOOL_RUNNER_TOOLS: tuple[str, ...] = (
+    "collections__search",
+    "system__call_tool",
+)
+
+TOOL_RUNNER_PROMPT: tuple[str, ...] = (
+    "You accomplish a request by finding and calling tools.",
+    "First search the 'system' collection's tools subtree with a precise "
+    "description of the capability you need, and read the few matches it "
+    "returns.",
+    "Then call system__call_tool with the chosen toolset_id, tool_name "
+    "and arguments. Never guess a tool id you have not seen in a search "
+    "result.",
+    "Stop as soon as the request is satisfied and report the result "
+    "plainly.",
+)
+
+
 def operator_agent(profile_id: str) -> Agent:
     """Build the default operator row."""
     return Agent(
@@ -122,6 +198,39 @@ def builder_agent(profile_id: str) -> Agent:
         model=AgentModel(profile_id=profile_id),
         tools=list(BUILDER_TOOLS),
         system_prompt=list(BUILDER_PROMPT),
+    )
+
+
+def planner_agent(profile_id: str) -> Agent:
+    """Build the default planner row."""
+    return Agent(
+        id="planner",
+        description=PLANNER_DESCRIPTION,
+        model=AgentModel(profile_id=profile_id),
+        tools=list(PLANNER_TOOLS),
+        system_prompt=list(PLANNER_PROMPT),
+    )
+
+
+def explorer_agent(profile_id: str) -> Agent:
+    """Build the default explorer row."""
+    return Agent(
+        id="explorer",
+        description=EXPLORER_DESCRIPTION,
+        model=AgentModel(profile_id=profile_id),
+        tools=list(EXPLORER_TOOLS),
+        system_prompt=list(EXPLORER_PROMPT),
+    )
+
+
+def tool_runner_agent(profile_id: str) -> Agent:
+    """Build the default tool-runner row (vision ch. 3: two meta-tools)."""
+    return Agent(
+        id="tool-runner",
+        description=TOOL_RUNNER_DESCRIPTION,
+        model=AgentModel(profile_id=profile_id),
+        tools=list(TOOL_RUNNER_TOOLS),
+        system_prompt=list(TOOL_RUNNER_PROMPT),
     )
 
 

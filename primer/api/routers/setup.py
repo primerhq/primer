@@ -21,9 +21,18 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.bootstrap.defaults import (
     RESERVED_BUILDER_AGENT,
+    RESERVED_EXPLORER_AGENT,
     RESERVED_OPERATOR_AGENT,
+    RESERVED_PLANNER_AGENT,
+    RESERVED_TOOL_RUNNER_AGENT,
 )
-from primer.bootstrap.operator_defaults import builder_agent, operator_agent
+from primer.bootstrap.operator_defaults import (
+    builder_agent,
+    explorer_agent,
+    operator_agent,
+    planner_agent,
+    tool_runner_agent,
+)
 from primer.bootstrap.seed import default_profile_id, run_ensure_pass
 from primer.bootstrap.setup_state import evaluate_setup_state
 from primer.model.agent import Agent
@@ -86,6 +95,9 @@ async def reset_agents(request: Request) -> dict:
     for agent_id, factory in (
         (RESERVED_OPERATOR_AGENT, operator_agent),
         (RESERVED_BUILDER_AGENT, builder_agent),
+        (RESERVED_PLANNER_AGENT, planner_agent),
+        (RESERVED_EXPLORER_AGENT, explorer_agent),
+        (RESERVED_TOOL_RUNNER_AGENT, tool_runner_agent),
     ):
         existing = await agents.get(agent_id)
         profile_id = (

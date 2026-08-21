@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from primer.bootstrap.defaults import (
+    RESERVED_EXPLORER_AGENT,
+    RESERVED_PLANNER_AGENT,
+    RESERVED_TOOL_RUNNER_AGENT,
     RESERVED_BUILDER_AGENT,
     RESERVED_OPERATOR_AGENT,
 )
@@ -37,7 +40,11 @@ async def test_the_next_pass_repairs_the_agents(fake_storage_provider):
     await ensure_seeded_agents(fake_storage_provider)
     profile_id = await _seed_profile(fake_storage_provider)
     created = await ensure_seeded_agents(fake_storage_provider)
-    assert set(created) == {RESERVED_OPERATOR_AGENT, RESERVED_BUILDER_AGENT}
+    assert set(created) == {
+        RESERVED_OPERATOR_AGENT, RESERVED_BUILDER_AGENT,
+        RESERVED_PLANNER_AGENT, RESERVED_EXPLORER_AGENT,
+        RESERVED_TOOL_RUNNER_AGENT,
+    }
     agents = fake_storage_provider.get_storage(Agent)
     operator = await agents.get(RESERVED_OPERATOR_AGENT)
     builder = await agents.get(RESERVED_BUILDER_AGENT)
@@ -73,3 +80,56 @@ async def test_a_deleted_builder_is_repaired(fake_storage_provider):
     assert await ensure_seeded_agents(fake_storage_provider) == [
         RESERVED_BUILDER_AGENT
     ]
+
+
+# ---- the phase-1 roster ---------------------------------------------------
+
+
+async def test_roster_grants_match_the_design(fake_storage_provider):
+    """Each specialist gets exactly the spec table's tools, nothing more."""
+    fake_storage_provider.get_storage(ModelProfile)._data.clear()
+    await _seed_profile(fake_storage_provider)
+    await ensure_seeded_agents(fake_storage_provider)
+    agents = fake_storage_provider.get_storage(Agent)
+
+    planner = await agents.get(RESERVED_PLANNER_AGENT)
+    assert planner.tools == [
+        "collections__search", "collections__read_document",
+    ], "the planner grounds but never mutates"
+
+    explorer = await agents.get(RESERVED_EXPLORER_AGENT)
+    assert explorer.tools == [
+        "collections__search", "collections__read_document",
+        "collections__collection_tree",
+    ]
+
+    runner = await agents.get(RESERVED_TOOL_RUNNER_AGENT)
+    assert runner.tools == [
+        "collections__search", "system__call_tool",
+    ], "vision ch.3: two meta-tools and nothing else"
+
+
+async def test_a_deleted_planner_is_repaired(fake_storage_provider):
+    fake_storage_provider.get_storage(ModelProfile)._data.clear()
+    await _seed_profile(fake_storage_provider)
+    await ensure_seeded_agents(fake_storage_provider)
+    agents = fake_storage_provider.get_storage(Agent)
+    await agents.delete(RESERVED_PLANNER_AGENT)
+    created = await ensure_seeded_agents(fake_storage_provider)
+    assert created == [RESERVED_PLANNER_AGENT]
+    assert await agents.get(RESERVED_PLANNER_AGENT) is not None
+
+
+async def test_descriptions_carry_the_advertisement_convention(
+    fake_storage_provider,
+):
+    """Does X. Use when Y. Returns Z. - the searchable surface."""
+    fake_storage_provider.get_storage(ModelProfile)._data.clear()
+    await _seed_profile(fake_storage_provider)
+    await ensure_seeded_agents(fake_storage_provider)
+    agents = fake_storage_provider.get_storage(Agent)
+    for agent_id in (RESERVED_PLANNER_AGENT, RESERVED_EXPLORER_AGENT,
+                     RESERVED_TOOL_RUNNER_AGENT):
+        row = await agents.get(agent_id)
+        assert "Use when" in row.description, agent_id
+        assert "Returns" in row.description, agent_id

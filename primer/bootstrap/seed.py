@@ -148,9 +148,18 @@ async def ensure_seeded_agents(storage_provider) -> list[str]:
     """
     from primer.bootstrap.defaults import (
         RESERVED_BUILDER_AGENT,
+        RESERVED_EXPLORER_AGENT,
         RESERVED_OPERATOR_AGENT,
+        RESERVED_PLANNER_AGENT,
+        RESERVED_TOOL_RUNNER_AGENT,
     )
-    from primer.bootstrap.operator_defaults import builder_agent, operator_agent
+    from primer.bootstrap.operator_defaults import (
+        builder_agent,
+        explorer_agent,
+        operator_agent,
+        planner_agent,
+        tool_runner_agent,
+    )
     from primer.model.agent import Agent
 
     profile_id = await default_profile_id(storage_provider)
@@ -162,6 +171,9 @@ async def ensure_seeded_agents(storage_provider) -> list[str]:
     for agent_id, factory in (
         (RESERVED_OPERATOR_AGENT, operator_agent),
         (RESERVED_BUILDER_AGENT, builder_agent),
+        (RESERVED_PLANNER_AGENT, planner_agent),
+        (RESERVED_EXPLORER_AGENT, explorer_agent),
+        (RESERVED_TOOL_RUNNER_AGENT, tool_runner_agent),
     ):
         if await agents.get(agent_id) is not None:
             continue
