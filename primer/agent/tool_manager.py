@@ -261,6 +261,36 @@ class ToolExecutionManager:
             external_call_storage=external_call_storage,
         )
 
+    def rebind_workspace(
+        self,
+        session: "AgentSession",
+        *,
+        initiated_by: "PrincipalRef | None" = None,
+    ) -> "ToolExecutionManager":
+        """A new manager bound to ``session``, preserving everything else.
+
+        The graph path composes the workspace's tools onto per-node
+        managers by rebuilding them. Rebuilding from scratch was how a
+        node lost the agent allowlist and the approval resolver at once:
+        every tool in every granted toolset offered, and no gate able to
+        fire. Deriving from the live manager keeps the security-relevant
+        state in one place, so a new constructor argument cannot be
+        silently dropped by a second call site again.
+        """
+        return type(self).for_workspace(
+            toolset_providers=dict(self._toolsets),
+            session=session,
+            approval_resolver=self._approval_resolver,
+            provider_registry=self._provider_registry,
+            tools=(
+                list(self._tools_allowlist)
+                if self._tools_allowlist is not None
+                else None
+            ),
+            graph_invocation_services=self._graph_services,
+            initiated_by=initiated_by or self._initiated_by,
+        )
+
     async def list_tools(
         self,
         *,
