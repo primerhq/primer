@@ -201,3 +201,138 @@ class _FakeMigration:
 
     async def apply(self, _sp: StorageProvider) -> None:
         self._sink.append(self.version)
+
+
+# ---------------------------------------------------------------------------
+# m003: the session cutover left channel and collection rows unreadable
+# ---------------------------------------------------------------------------
+
+
+async def test_m003_legacy_channel_loads_through_the_live_model(sp):
+    """A channel written before bindings must survive the upgrade.
+
+    The three agent-routing fields moved out of ``config.chats`` and
+    ``ChatConfig`` forbids extras, so without the migration the live
+    model rejects the row outright.
+    """
+    from primer.model.channel import Channel as LiveChannel
+    from primer.storage.migrations.m003_session_cutover import Channel as ChannelView
+
+    legacy = sp.get_storage(ChannelView)
+    await legacy.create(
+        ChannelView(
+            id="channel-legacy",
+            provider_id="slack-1",
+            provider="slack",
+            external_id="C0123",
+            config={
+                "chats": {
+                    "enabled": True,
+                    "relay_mode": "all",
+                    "default_agent": None,
+                    "allowed_agents": [],
+                    "allow_agent_switch": False,
+                }
+            },
+        )
+    )
+
+    with pytest.raises(Exception):
+        await sp.get_storage(LiveChannel).get("channel-legacy")
+
+    await run_migrations(sp, is_fresh_install=False)
+
+    row = await sp.get_storage(LiveChannel).get("channel-legacy")
+    assert row is not None
+    # The settings that outlived the cutover are still there.
+    assert row.config.chats.enabled is True
+    assert row.config.chats.relay_mode == "all"
+
+
+async def test_m003_legacy_collection_search_moves_under_search(sp):
+    """embedder and search_provider_id move into the nested search block."""
+    from primer.model.collection import Collection as LiveCollection
+    from primer.storage.migrations.m003_session_cutover import (
+        Collection as CollectionView,
+    )
+
+    legacy = sp.get_storage(CollectionView)
+    await legacy.create(
+        CollectionView(
+            id="collection-legacy",
+            description="a wiki written before the move",
+            embedder={"provider_id": "emb-1", "model": "text-embedding-3-small"},
+            search_provider_id="vec-1",
+            search={
+                "cer": {"provider_id": "cer-1", "model": "cross-encoder/ms-marco"},
+                "mmr": {"lambda_mult": 0.5},
+            },
+        )
+    )
+
+    with pytest.raises(Exception):
+        await sp.get_storage(LiveCollection).get("collection-legacy")
+
+    await run_migrations(sp, is_fresh_install=False)
+
+    row = await sp.get_storage(LiveCollection).get("collection-legacy")
+    assert row is not None
+    assert row.search is not None
+    assert row.search.embedder.provider_id == "emb-1"
+    assert row.search.embedder.model == "text-embedding-3-small"
+    assert row.search.vector_store_provider_id == "vec-1"
+    # The rerank config rides along under its new name; mmr has no home.
+    assert row.search.cross_encoder is not None
+    assert row.search.cross_encoder.provider_id == "cer-1"
+    # The vectors the old build wrote are still in the store, so the row
+    # must not claim an index pass is in flight.
+    assert row.search.state == "ready"
+
+
+async def test_m003_collection_without_a_vector_store_stays_grep_only(sp):
+    """A row with no complete legacy config is not given an invented one."""
+    from primer.model.collection import Collection as LiveCollection
+    from primer.storage.migrations.m003_session_cutover import (
+        Collection as CollectionView,
+    )
+
+    await sp.get_storage(CollectionView).create(
+        CollectionView(
+            id="collection-grep",
+            description="never had a vector store",
+            search={"mmr": {"lambda_mult": 0.5}},
+        )
+    )
+
+    await run_migrations(sp, is_fresh_install=False)
+
+    row = await sp.get_storage(LiveCollection).get("collection-grep")
+    assert row is not None
+    assert row.search is None
+
+
+async def test_m003_is_idempotent(sp):
+    """Re-running over already-migrated rows changes nothing."""
+    from primer.model.collection import Collection as LiveCollection
+    from primer.storage.migrations.m003_session_cutover import (
+        Collection as CollectionView,
+        M003SessionCutover,
+    )
+
+    await sp.get_storage(CollectionView).create(
+        CollectionView(
+            id="collection-twice",
+            description="migrated twice",
+            embedder={"provider_id": "emb-1", "model": "text-embedding-3-small"},
+            search_provider_id="vec-1",
+        )
+    )
+
+    await run_migrations(sp, is_fresh_install=False)
+    first = await sp.get_storage(LiveCollection).get("collection-twice")
+
+    await M003SessionCutover().apply(sp)
+    second = await sp.get_storage(LiveCollection).get("collection-twice")
+
+    assert first is not None and second is not None
+    assert first.search.model_dump() == second.search.model_dump()

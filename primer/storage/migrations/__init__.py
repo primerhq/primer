@@ -36,6 +36,7 @@ from typing import Protocol, runtime_checkable
 from primer.int.storage_provider import StorageProvider
 from primer.storage.migrations.m001_document_content import M001DocumentContent
 from primer.storage.migrations.m002_model_profiles import M002ModelProfiles
+from primer.storage.migrations.m003_session_cutover import M003SessionCutover
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,7 @@ class Migration(Protocol):
 MIGRATIONS: tuple[Migration, ...] = (
     M001DocumentContent(),
     M002ModelProfiles(),
+    M003SessionCutover(),
 )
 
 #: Highest version this build knows how to apply.
