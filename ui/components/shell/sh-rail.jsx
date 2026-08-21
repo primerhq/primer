@@ -132,6 +132,46 @@ function SH_SessionsList() {
   );
 }
 
+// One level below an opened folder. Its own resource, so opening a folder
+// costs one request for that folder and closing it stops the polling.
+function SH_FilesSubtree(props) {
+  var shell = SH_useShell();
+  var path = props.path;
+  var tree = window.primerApi.useResource(
+    SH_api.keys.tree(shell.wid, path),
+    function (signal) { return SH_api.filesTree(shell.wid, path, signal); },
+    { pollMs: 5000, deps: [shell.wid, path] }
+  );
+  var entries = (tree.data && tree.data.items) || [];
+  if (!entries.length) {
+    return (
+      <ul className="sh-rail-children">
+        <li className="sh-empty">
+          <span>{tree.loading ? "Loading…" : "Empty folder"}</span>
+        </li>
+      </ul>
+    );
+  }
+  return (
+    <ul className="sh-rail-children">
+      {entries.map(function (entry) {
+        return (
+          <li key={entry.path} className="sh-rail-row">
+            <button
+              type="button"
+              data-testid={"rail-file:" + entry.path}
+              onClick={function () {
+                if (entry.is_dir) return;
+                shell.openDoc({ kind: "file", ref: entry.path, preview: true });
+              }}
+            >{entry.name || entry.path}</button>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
 function SH_FilesList() {
   var shell = SH_useShell();
   // The workspace tree changes while an agent works, which is the whole
@@ -147,6 +187,22 @@ function SH_FilesList() {
   // has never sent, so the list was empty every time and the rail showed
   // its empty state for every workspace, however many files were in it.
   var entries = (tree.data && tree.data.items) || [];
+
+  // A folder opens to show what is in it. The route answers one level at
+  // a time (recursive=false), so descending means asking for the child
+  // path; without that the rail listed the workspace root and nothing
+  // under it, which is not a tree.
+  var openState = React.useState({});
+  var open = openState[0];
+  var setOpen = openState[1];
+  function toggle(path) {
+    setOpen(function (prev) {
+      var next = Object.assign({}, prev);
+      if (next[path]) delete next[path]; else next[path] = true;
+      return next;
+    });
+  }
+
   return (
     <ul className="sh-rail-list" data-testid="rail-files">
       {entries.map(function (entry) {
@@ -155,14 +211,18 @@ function SH_FilesList() {
             <button
               type="button"
               data-testid={"rail-file:" + entry.path}
+              aria-expanded={entry.is_dir ? !!open[entry.path] : undefined}
               onClick={function () {
-                // is_dir, not type: the same payload, read correctly.
-                // A directory opened as a file would have asked the file
+                // is_dir, not type: the same payload, read correctly. A
+                // directory opened as a file would have asked the file
                 // route to read a folder.
-                if (entry.is_dir) return;
+                if (entry.is_dir) { toggle(entry.path); return; }
                 shell.openDoc({ kind: "file", ref: entry.path, preview: true });
               }}
             >{entry.path}</button>
+            {entry.is_dir && open[entry.path]
+              ? <SH_FilesSubtree path={entry.path} />
+              : null}
           </li>
         );
       })}

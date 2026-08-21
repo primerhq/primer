@@ -86,3 +86,24 @@ def test_the_file_rail_reads_the_keys_the_tree_route_sends() -> None:
     assert "tree.data.items" in tree
     assert "entry.is_dir" in tree
     assert "tree.data.entries" not in tree
+
+
+def test_a_folder_in_the_file_rail_opens_to_show_what_is_in_it() -> None:
+    """Regression: the rail listed the root and nothing under it.
+
+    The tree route answers one level at a time (recursive=false), so
+    descending means asking for the child path. Without that a folder row
+    did nothing at all, which is not a tree: the workspace root was the
+    only thing the rail could ever show.
+    """
+    src = _src()
+    assert "function SH_FilesSubtree(" in src
+    subtree = src[src.index("function SH_FilesSubtree("):]
+    subtree = subtree[:subtree.index("function SH_FilesList")]
+    # Fetches the folder it was given, not the root again.
+    assert "SH_api.filesTree(shell.wid, path, signal)" in subtree
+    assert "tree.data.items" in subtree
+
+    lst = src[src.index("function SH_FilesList"):]
+    assert "toggle(entry.path)" in lst, "a folder row has to open the folder"
+    assert "<SH_FilesSubtree path={entry.path} />" in lst
