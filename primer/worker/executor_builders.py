@@ -593,7 +593,7 @@ def infer_post_turn_status(
     # Graph dispatch sets a sentinel - the graph executor runs the
     # whole graph in one invoke() call, so there's no follow-up
     # turn for the worker to schedule.
-    if last_reason == "graph_ended":
+    if last_reason in ("graph_ended", "graph_failed"):
         return SessionStatus.ENDED
     if last_reason in ("max_tokens", "error", "content_filter"):
         return SessionStatus.WAITING

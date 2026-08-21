@@ -937,6 +937,7 @@ _STOP_REASON_TO_STATUS: dict[str, tuple[SessionStatus, str | None]] = {
     "error": (SessionStatus.ENDED, "failed"),
     "content_filter": (SessionStatus.WAITING, None),
     "graph_ended": (SessionStatus.ENDED, "completed"),
+    "graph_failed": (SessionStatus.ENDED, "failed"),
 }
 
 

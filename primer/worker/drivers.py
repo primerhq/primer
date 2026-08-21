@@ -68,9 +68,13 @@ class _GraphTurnDriver:
       passes uniformly.
     * The graph executor runs the WHOLE graph in one ``invoke()`` call
       (multiple supersteps complete internally before returning), so
-      ``last_done_reason`` is a fixed ``"graph_ended"`` sentinel that
-      :meth:`WorkerPool._infer_post_turn_status` recognises as ENDED
-      — the session is never re-enqueued.
+      ``last_done_reason`` is a terminal sentinel the worker recognises
+      as ENDED: ``"graph_ended"`` when the run completed, and
+      ``"graph_failed"`` when the executor's ``_last_ended_reason``
+      says anything else. That attribute exists precisely because the
+      event stream cannot tell success from failure; reporting a fixed
+      sentinel here was how a failed node ended its session
+      ``completed``.
     """
 
     def __init__(self, executor) -> None:
@@ -78,6 +82,9 @@ class _GraphTurnDriver:
 
     @property
     def last_done_reason(self) -> str:
+        outcome = getattr(self._executor, "_last_ended_reason", None)
+        if outcome is not None and outcome != "completed":
+            return "graph_failed"
         return "graph_ended"
 
     @property
