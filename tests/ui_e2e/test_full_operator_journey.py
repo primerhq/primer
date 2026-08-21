@@ -17,6 +17,8 @@ LM Studio reachability.
 
 from __future__ import annotations
 
+import re
+
 from pathlib import Path
 
 import httpx
@@ -191,10 +193,13 @@ def test_multi_page_operator_journey_no_llm(
             state="visible", timeout=10_000,
         )
 
-        # ----- 3. Workspace detail (click the row)
+        # ----- 3. Enter the workspace (click the row)
+        # A row ENTERS the workspace rather than addressing its record:
+        # "#/w/<wid>" is how the shell says which workspace it is in.
         page.locator(f"tr:has-text('{ids['workspace']}')").first.click()
-        # URL transitions to /workspaces/{id}
-        wait_for_overlay_url(page, f"workspaces/{ids['workspace']}", timeout=10_000)
+        page.wait_for_url(
+            re.compile(rf"#/w/{re.escape(ids['workspace'])}\b"), timeout=10_000,
+        )
         # The detail page renders the workspace id somewhere in the
         # header — be permissive on layout, just confirm presence.
         page.get_by_text(ids["workspace"], exact=False).first.wait_for(

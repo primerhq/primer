@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import time
 
+import re
+
 import httpx
 import pytest
 from playwright.sync_api import expect
@@ -130,14 +132,15 @@ def test_workspace_chain_create_journey(
         template_select.select_option(template_id)
         modal.get_by_role("button", name="Create").first.click()
 
-        # Modal closes; URL navigates to the workspace detail page.
+        # Modal closes and the shell ENTERS the workspace just created,
+        # which is what the pre-S8 route did too and what the shell
+        # spells "#/w/<wid>". It is not the workspaces overlay: that
+        # addresses a workspace record rather than going there.
         expect(modal).not_to_be_visible(timeout=15_000)
-        wait_for_overlay_url(page, "workspaces", timeout=20_000)
+        page.wait_for_url(re.compile(r"#/w/ws-[0-9a-f]+"), timeout=20_000)
         # Grab the workspace id from the URL for cleanup.
         url = page.url
-        wid = url.rsplit("/", 1)[-1]
-        # Strip any trailing #/? fragments.
-        wid = wid.split("?")[0].split("#")[0]
+        wid = url.split("#/w/", 1)[1].split("?")[0].split("#")[0]
         workspace_ids.append(wid)
     finally:
         _cleanup(base_url, workspace_ids, [template_id], [provider_id])
