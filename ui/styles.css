@@ -2870,16 +2870,80 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .sh-ws:hover { background: var(--bg-hover); border-color: var(--border); }
 
-.sh-topbar-verbs {
-  display: flex;
+/* Search-first chrome: an input-look button that opens the palette. */
+.sh-topbar-search {
+  display: inline-flex;
   align-items: center;
-  gap: 2px;
-  margin-left: auto;
-  min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+  gap: var(--sp-2);
+  flex: 0 1 420px;
+  min-width: 160px;
+  margin-left: var(--sp-3);
+  font: inherit;
+  font-size: var(--fs-12);
+  color: var(--text-4);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-6);
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: border-color 150ms ease, background 150ms ease;
 }
-.sh-topbar-verbs::-webkit-scrollbar { display: none; }
+.sh-topbar-search:hover { border-color: var(--border-strong); }
+.sh-topbar-search .sh-topbar-search-hint {
+  flex: 1;
+  text-align: left;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sh-topbar-right {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+
+/* Native-details dropdowns: no outside-click JS, keyboard-dismissable. */
+.sh-topbar-menu, .sh-topbar-user { position: relative; }
+.sh-topbar-menu > summary, .sh-topbar-user > summary {
+  list-style: none;
+  user-select: none;
+}
+.sh-topbar-menu > summary::-webkit-details-marker,
+.sh-topbar-user > summary::-webkit-details-marker { display: none; }
+.sh-topbar-menu-panel {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 70;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  min-width: 220px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-9);
+  box-shadow: var(--shadow);
+  padding: var(--sp-1);
+}
+.sh-topbar-menu-panel .sh-verb { justify-content: flex-start; }
+
+.sh-topbar-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-size: var(--fs-11);
+  font-weight: 700;
+}
 
 /* ---- Verb buttons (the shell's universal action affordance) ---------- */
 

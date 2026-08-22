@@ -452,17 +452,21 @@ function SH_WorkerPill() {
     <div
       className={"worker-pill " + cls}
       data-testid="worker-pill"
-      title="Worker pool: click to view"
+      title={
+        "Workers " + active + "/" + items.length + " active, "
+        + inFlight + " in flight. Click to view."
+      }
       onClick={function () { shell.openOverlay("workers"); }}
     >
       <span className="dot" />
       <span className={busy ? "num-warn" : ""}>{active + "/" + items.length}</span>
-      <span>workers</span>
-      <span className="sep">·</span>
-      <span>{inFlight + " in flight"}</span>
     </div>
   );
 }
+
+// Verbs that own dedicated chrome; the "Open..." menu skips them so
+// the same affordance never renders twice in one bar.
+var SH_TOPBAR_PROMOTED = { "palette.open": true, "theme.toggle": true };
 
 function SH_Topbar() {
   var shell = SH_useShell();
@@ -483,16 +487,64 @@ function SH_Topbar() {
           shell.openOverlay("workspaces", "detail", shell.wid);
         }}
       >{shell.wid}</button>
-      <SH_WorkerPill />
-      <span className="sh-topbar-verbs">
-        {shell.registry.forSurface("topbar").map(function (verb) {
-          return (
-            <button key={verb.id} type="button" className="sh-verb"
-              data-verb={verb.id} onClick={function () { verb.run(); }}>
-              {verb.label}
-            </button>
-          );
-        })}
+
+      {/* Search-first chrome (revamp section 3): the field IS the
+          palette's third door (Ctrl+K, composer "/", and this). */}
+      <button
+        type="button"
+        className="sh-topbar-search"
+        data-testid="shell-topbar-search"
+        onClick={function () { shell.openPalette(); }}
+      >
+        <span className="sh-topbar-search-hint">Search or run a verb</span>
+        <kbd className="sh-kbd">Ctrl+K</kbd>
+      </button>
+
+      <span className="sh-topbar-right">
+        <SH_WorkerPill />
+
+        {/* TEMPORARY chrome (step 2 of the migration): one menu over
+            the topbar-surface verbs until the Studio area (step 6)
+            absorbs the management surfaces. Registry-rendered, so the
+            dual-render guard still sees every verb. */}
+        <details className="sh-topbar-menu" data-testid="shell-topbar-menu">
+          <summary className="sh-verb">Open&hellip;</summary>
+          <div className="sh-topbar-menu-panel">
+            {shell.registry.forSurface("topbar").map(function (verb) {
+              if (SH_TOPBAR_PROMOTED[verb.id]) return null;
+              return (
+                <button key={verb.id} type="button" className="sh-verb"
+                  data-verb={verb.id} onClick={function () { verb.run(); }}>
+                  {verb.label}
+                </button>
+              );
+            })}
+          </div>
+        </details>
+
+        <details className="sh-topbar-user" data-testid="shell-topbar-user">
+          <summary className="sh-verb" title={shell.username}>
+            <span className="sh-topbar-avatar">
+              {(shell.username || "?").charAt(0).toUpperCase()}
+            </span>
+          </summary>
+          <div className="sh-topbar-menu-panel">
+            <button type="button" className="sh-verb"
+              data-verb="theme.toggle"
+              onClick={function () {
+                var verb = shell.registry.get("theme.toggle");
+                if (verb) verb.run();
+              }}>Toggle Theme</button>
+            <button type="button" className="sh-verb"
+              data-testid="shell-signout"
+              onClick={function () {
+                fetch("/v1/auth/logout", { method: "POST" }).then(
+                  function () { window.location.reload(); },
+                  function () { window.location.reload(); },
+                );
+              }}>Sign Out</button>
+          </div>
+        </details>
       </span>
     </div>
   );
