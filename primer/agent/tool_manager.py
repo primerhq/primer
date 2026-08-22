@@ -437,7 +437,7 @@ class ToolExecutionManager:
                     call, principal=principal, bypass_approval=bypass_approval,
                 )
                 _metrics.tool_calls_total.labels(call.name, "ok").inc()
-                await self._emit_tool_called(call, ok=not result.is_error)
+                await self._emit_tool_called(call, ok=not result.error)
                 return result
             except Exception as _exc:
                 _span.record_exception(_exc)
