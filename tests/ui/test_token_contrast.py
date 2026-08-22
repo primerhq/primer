@@ -33,6 +33,8 @@ PAIRS: list[tuple[str, str, float]] = [
     ("--text-2", "--bg-2", 4.5),
     ("--text-3", "--bg", 4.5),
     ("--text-4", "--bg", 4.5),
+    ("--accent-fg", "--accent", 4.5),
+    ("--attention-fg", "--attention", 4.5),
 ]
 
 _BLOCK_RE = {

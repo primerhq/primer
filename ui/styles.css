@@ -1,10 +1,6 @@
 /* Primer Web Console — design tokens & base styles */
 
 :root {
-  --accent-h: 145;
-  --accent-c: 0.18;
-  --accent-l: 0.85;
-
   /* Monospace stack — theme-independent. Consumers use var(--font-mono,
      monospace); defining it here upgrades them from the generic fallback to
      IBM Plex Mono (matching the .mono class). */
@@ -43,11 +39,18 @@
   /* FC5b: was oklch(0.4 …) → 2.12:1 on --bg (fails WCAG-AA). Raised to
      0.58 → 4.56:1 so secondary/placeholder text is legible in dark mode. */
   --text-4: oklch(0.58 0.005 250);
-  --accent: oklch(var(--accent-l) var(--accent-c) var(--accent-h));
-  --accent-2: oklch(0.72 0.18 var(--accent-h));
-  --accent-dim: oklch(var(--accent-l) var(--accent-c) var(--accent-h) / 0.12);
-  --accent-border: oklch(var(--accent-l) var(--accent-c) var(--accent-h) / 0.3);
+  /* Revamp spec section 9: blue primary (#2563EB family), lifted L for
+     dark surfaces. Orange is RESERVED for attention. */
+  --accent: oklch(0.68 0.17 262);
+  --accent-2: oklch(0.76 0.14 262);
+  --accent-dim: oklch(0.68 0.17 262 / 0.14);
+  --accent-border: oklch(0.68 0.17 262 / 0.35);
   --accent-fg: oklch(0.15 0.005 250);
+
+  --attention: oklch(0.72 0.17 45);
+  --attention-dim: oklch(0.72 0.17 45 / 0.15);
+  --attention-border: oklch(0.72 0.17 45 / 0.4);
+  --attention-fg: oklch(0.15 0.005 250);
 
   --green: oklch(0.82 0.18 145);
   --green-dim: oklch(0.82 0.18 145 / 0.14);
@@ -83,11 +86,20 @@
   /* FC5b: was oklch(0.7 …) → 2.56:1 on --bg (fails WCAG-AA). On a near-white
      bg contrast rises as L drops, so lowered to 0.55 → 4.65:1. */
   --text-4: oklch(0.55 0.005 250);
-  --accent: oklch(0.55 0.16 var(--accent-h));
-  --accent-2: oklch(0.45 0.18 var(--accent-h));
-  --accent-dim: oklch(0.55 0.16 var(--accent-h) / 0.1);
-  --accent-border: oklch(0.55 0.16 var(--accent-h) / 0.4);
+  /* Revamp spec section 9: accent IS #2563EB; attention IS the
+     #EA580C family (deepened where white text needs 4.5:1). */
+  --accent: oklch(0.546 0.245 262.9);
+  --accent-2: oklch(0.62 0.21 262.9);
+  --accent-dim: oklch(0.546 0.245 262.9 / 0.1);
+  --accent-border: oklch(0.546 0.245 262.9 / 0.35);
   --accent-fg: oklch(1 0 0);
+
+  /* Contrast guard: #EA580C (L 0.646) is 3.59:1 under white text.
+     Deepened to the orange-700 zone so the fg clears AA. */
+  --attention: oklch(0.56 0.2 40);
+  --attention-dim: oklch(0.56 0.2 40 / 0.12);
+  --attention-border: oklch(0.56 0.2 40 / 0.4);
+  --attention-fg: oklch(1 0 0);
 
   --green: oklch(0.55 0.16 145);
   --green-dim: oklch(0.55 0.16 145 / 0.12);
@@ -914,7 +926,7 @@ input, textarea, select { font: inherit; color: inherit; }
   transition: 0.15s;
 }
 .icon-btn:hover { border-color: var(--border-strong); color: var(--text); }
-.icon-btn.warn { color: var(--amber); border-color: oklch(var(--accent-l) 0 0 / 0); position: relative; }
+.icon-btn.warn { color: var(--amber); border-color: transparent; position: relative; }
 .icon-btn.warn::after {
   content: ""; position: absolute; top: 4px; right: 4px;
   width: 6px; height: 6px; border-radius: 50%;
