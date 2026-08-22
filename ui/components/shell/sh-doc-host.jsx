@@ -109,6 +109,18 @@ function SH_registerCoreVerbs(shell) {
     surfaces: ["topbar", "palette"],
     run: function () { shell.openPalette(); },
   });
+  // Light-first theming (revamp spec section 9): the toggle persists an
+  // explicit choice; clearing it back to follow-OS lives in tweaks.
+  shell.registry.register({
+    id: "theme.toggle", label: "Toggle Theme",
+    surfaces: ["topbar", "palette"],
+    run: function () {
+      var cur = document.documentElement.getAttribute("data-theme");
+      var next = cur === "dark" ? "light" : "dark";
+      window.primerApi.setTweak("theme", next);
+      document.documentElement.setAttribute("data-theme", next);
+    },
+  });
   // diff and wiki are addressable doc kinds, so each needs a verb that
   // opens one: a kind the URL can reach but no verb can is an orphan.
   shell.registry.register({

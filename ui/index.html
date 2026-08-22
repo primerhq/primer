@@ -1,14 +1,28 @@
 <!doctype html>
 <!-- styles.css only defines design tokens under :root[data-theme="dark"]
-     / :root[data-theme="light"], so an unset attribute leaves --bg /
-     --text / --accent undefined and the page paints with browser
-     defaults (white background, no card, no green button). Pin the
-     initial theme to "dark" so the auth screen and any other pre-App
-     render shows correctly; App.jsx still overrides this from the
-     persisted tweaks once it mounts. -->
-<html lang="en" data-theme="dark">
+     / :root[data-theme="light"], so the attribute must be set before
+     first paint. The inline script below resolves it: the operator's
+     persisted choice wins, else the OS preference (light-first revamp,
+     spec 2026-08-23 section 9). -->
+<html lang="en">
 <head>
 <meta charset="utf-8" />
+<script>
+  // Resolve the theme before first paint: operator choice, else OS.
+  (function () {
+    var theme = null;
+    try {
+      var saved = JSON.parse(localStorage.getItem("primer.tweaks") || "{}");
+      if (saved.theme === "dark" || saved.theme === "light") theme = saved.theme;
+    } catch (e) { /* private mode etc. */ }
+    if (!theme) {
+      theme = window.matchMedia &&
+        window.matchMedia("(prefers-color-scheme: dark)").matches
+        ? "dark" : "light";
+    }
+    document.documentElement.setAttribute("data-theme", theme);
+  })();
+</script>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Primer · Console</title>
 <link rel="icon" type="image/svg+xml" href="brand/logo-light.svg" />
