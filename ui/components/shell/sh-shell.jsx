@@ -358,9 +358,10 @@ function SH_Shell(props) {
         <main className="sh-center" data-testid="shell-center">
           {typeof window.SH_DocHost === "function" ? <window.SH_DocHost /> : null}
         </main>
-        <footer className="sh-statusbar" data-testid="shell-statusbar">
-          {typeof window.SH_StatusBar === "function" ? <window.SH_StatusBar /> : null}
-        </footer>
+        {/* The IDE statusbar retired with the 2026-08-23 revamp: its
+            status line was a strict duplicate of the composer strip
+            (sh-session-doc), and the rail chips + tab labels carry the
+            other altitudes. */}
         {typeof window.SH_Palette === "function" ? <window.SH_Palette /> : null}
         {typeof window.SH_OverlayHost === "function" ? <window.SH_OverlayHost /> : null}
         <SH_ToastHost />

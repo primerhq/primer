@@ -378,33 +378,6 @@ function SH_DocHost() {
   );
 }
 
-function SH_StatusBar() {
-  var shell = SH_useShell();
-  var tap = window.useWorkspaceTap(shell.wid);
-  var group = shell.docs.groups[shell.docs.activeGroup];
-  var tab = null;
-  for (var i = 0; group && i < group.tabs.length; i++) {
-    if (group.tabs[i].id === group.activeId) tab = group.tabs[i];
-  }
-  var live = tab && tab.kind === "session"
-    ? SH_statusFromTap(tap.events, tab.ref, Date.now())
-    : null;
-  return (
-    <div className="sh-status" data-testid="shell-status-line">
-      {live ? SH_statusLine({
-        verb: live.verb, object: live.object,
-        elapsedSec: Math.round((Date.now() - live.startedMs) / 1000),
-      }) : "idle"}
-      {live ? (
-        <button type="button" className="sh-verb" data-testid="shell-interrupt"
-          onClick={function () { shell.registry.get("session.interrupt").run(); }}>
-          Interrupt Session
-        </button>
-      ) : null}
-    </div>
-  );
-}
-
 // The worker pool, at a glance.
 //
 // The old console carried this in its topbar and the shell dropped it,
@@ -554,5 +527,4 @@ window.SH_verbApplies = SH_verbApplies;
 window.SH_OVERLAY_LABELS = SH_OVERLAY_LABELS;
 window.SH_registerCoreVerbs = SH_registerCoreVerbs;
 window.SH_DocHost = SH_DocHost;
-window.SH_StatusBar = SH_StatusBar;
 window.SH_Topbar = SH_Topbar;

@@ -2804,7 +2804,8 @@ input, textarea, select { font: inherit; color: inherit; }
 /* ==========================================================================
    Shell (sh-*) - the S8 studio shell frame and its surfaces.
    Layout constants follow the consolidation mockup: 40px topbar, 232px
-   rail, 26px statusbar. Everything reads from the existing token set, so
+   rail (the statusbar retired 2026-08-23; the composer strip, rail chips
+   and tab labels carry status). Everything reads from the token set, so
    both themes work unchanged.
    ========================================================================== */
 
@@ -2812,12 +2813,11 @@ input, textarea, select { font: inherit; color: inherit; }
   position: fixed;
   inset: 0;
   display: grid;
-  grid-template-rows: 40px 1fr 26px;
+  grid-template-rows: 40px 1fr;
   grid-template-columns: 232px 1fr;
   grid-template-areas:
     "topbar topbar"
-    "rail   center"
-    "status status";
+    "rail   center";
   background: var(--bg);
   color: var(--text);
   overflow: hidden;
@@ -3421,28 +3421,6 @@ input, textarea, select { font: inherit; color: inherit; }
 
 /* ---- Status bar ------------------------------------------------------- */
 
-.sh-statusbar {
-  grid-area: status;
-  background: var(--bg-elev);
-  border-top: 1px solid var(--border);
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  font-family: var(--font-mono, monospace);
-  font-size: var(--fs-11);
-  color: var(--text-3);
-}
-.sh-status {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-2);
-  padding: 0 var(--sp-3);
-  width: 100%;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-}
-.sh-statusbar .sh-verb { padding: 0 6px; font-size: var(--fs-11); }
 
 /* ---- Palette ---------------------------------------------------------- */
 
@@ -3530,7 +3508,7 @@ input, textarea, select { font: inherit; color: inherit; }
 
 .sh-overlay {
   position: fixed;
-  inset: 40px 0 26px auto;
+  inset: 40px 0 0 auto;
   /* 980px: the agents table's natural width; the 860px sheet clipped
      its STATUS column (2026-08-23 audit). */
   width: min(980px, calc(100vw - 232px));

@@ -41,11 +41,13 @@ def test_the_gate_chain_is_auth_then_shell() -> None:
     assert re.search(r"AuthGate[\s\S]{0,400}SH_RootGate", app)
 
 
-def test_the_shell_renders_the_four_regions() -> None:
+def test_the_shell_renders_the_three_regions() -> None:
+    # The statusbar retired with the 2026-08-23 revamp: the composer
+    # strip, rail chips and tab labels carry the status altitudes.
     src = _src()
-    for testid in ("shell-root", "shell-topbar", "shell-rail", "shell-center",
-                   "shell-statusbar"):
+    for testid in ("shell-root", "shell-topbar", "shell-rail", "shell-center"):
         assert f'data-testid="{testid}"' in src, testid
+    assert 'data-testid="shell-statusbar"' not in src
 
 
 def test_landing_opens_the_most_recent_session_and_lazily_creates_one() -> None:
