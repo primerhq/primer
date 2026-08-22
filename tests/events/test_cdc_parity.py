@@ -103,6 +103,27 @@ async def test_seed_is_idempotent_and_repairs(sp):
     assert await ensure_system_event_subscriptions(sp) == ["system-logger"]
 
 
+async def test_seed_converges_drifted_filter_preserving_paused(sp):
+    """A shipped default change reaches existing installs; the
+    operator's paused switch survives the convergence."""
+    from primer.model.event import EventFilter
+
+    await ensure_system_event_subscriptions(sp)
+    subs = sp.get_storage(EventSubscription)
+    row = await subs.get("system-logger")
+    drifted = row.model_copy(update={
+        "filter": EventFilter(event_types=["*"], exclude_types=[]),
+        "paused": True,
+    })
+    await subs.update(drifted)
+
+    assert await ensure_system_event_subscriptions(sp) == []
+    converged = await subs.get("system-logger")
+    assert "llm.called" in converged.filter.exclude_types
+    assert "workspace.file_changed" in converged.filter.exclude_types
+    assert converged.paused is True
+
+
 async def test_converge_page_writes_do_not_feed_back(sp):
     """The system-cdc filter excludes document events, so the pages the
     sink writes never re-enter the sink (no recursion, no churn)."""

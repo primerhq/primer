@@ -253,7 +253,10 @@ async def ensure_system_event_subscriptions(storage_provider) -> list[str]:
                 "platform event (tool.called excluded for volume)."
             ),
             filter=EventFilter(
-                event_types=["*"], exclude_types=["tool.called"],
+                event_types=["*"],
+                exclude_types=[
+                    "tool.called", "llm.called", "workspace.file_changed",
+                ],
             ),
             sink=LogSink(),
             managed_by="system",
@@ -261,7 +264,19 @@ async def ensure_system_event_subscriptions(storage_provider) -> list[str]:
     ]
     created: list[str] = []
     for row in wanted:
-        if await subs.get(row.id) is not None:
+        existing = await subs.get(row.id)
+        if existing is not None:
+            # Converge system-owned config (filter / sink / description)
+            # so a shipped default change reaches existing installs;
+            # the operator's paused switch is theirs and is preserved.
+            if (
+                existing.filter != row.filter
+                or existing.sink != row.sink
+                or existing.description != row.description
+            ):
+                await subs.update(row.model_copy(
+                    update={"paused": existing.paused},
+                ))
             continue
         try:
             await subs.create(row)

@@ -313,6 +313,12 @@ async def run_one_session_turn(
 
     # `started` marks the boundary just before the executor begins streaming.
     _turn_started_at = _now()
+    await _event_recorder(deps).emit(
+        "turn.started",
+        workspace_id=session.workspace_id,
+        session_id=session_id,
+        payload={"turn_no": session.turn_no},
+    )
     await _safe_turn_log(turn_log, TurnLogStarted(
         seq=0,
         ts=_turn_started_at,
@@ -384,6 +390,8 @@ async def run_one_session_turn(
                 await deps.event_bus.publish(
                     f"session:{session_id}:tick", {"seq": seq}
                 )
+                if rec.kind == SessionMessageKind.GRAPH_TRANSITION:
+                    await _emit_graph_transition(deps, session, rec)
 
             # Honour cancel after processing the current batch
             if cancel_event.is_set():
@@ -1053,6 +1061,42 @@ def _event_recorder(deps: SessionDispatchDeps):
     from primer.events.recorder import recorder_for
 
     return recorder_for(deps.storage_provider, deps.event_bus)
+
+
+async def _emit_graph_transition(
+    deps: SessionDispatchDeps,
+    session: "WorkspaceSession",
+    rec: "SessionMessageRecord",
+) -> None:
+    """Land graph.node_entered/exited from a GRAPH_TRANSITION record.
+
+    One site for every executor: the record loop is where node
+    lifecycle already surfaces, so no recorder threading into the
+    graph package is needed.
+    """
+    payload = rec.payload or {}
+    phase = payload.get("phase")
+    if phase not in ("enter", "exit"):
+        return
+    event_payload = {
+        "graph_node_id": payload.get("node_id"),
+        "node_kind": payload.get("node_kind"),
+    }
+    if phase == "enter":
+        await _event_recorder(deps).emit(
+            "graph.node_entered",
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            payload=event_payload,
+        )
+    else:
+        event_payload["status"] = payload.get("status")
+        await _event_recorder(deps).emit(
+            "graph.node_exited",
+            workspace_id=session.workspace_id,
+            session_id=session.id,
+            payload=event_payload,
+        )
 
 
 async def _publish_terminal(

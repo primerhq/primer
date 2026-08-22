@@ -102,7 +102,9 @@ async def build_subagent_toolmanager(
 
     ``context`` is an :class:`~primer.worker.frames.AgentResumeContext`
     (``session_id``, ``workspace_id``, ``chat_id``, ``principal``, ``tools``).
-    ``storage_provider`` is accepted for call-site symmetry but unused here.
+    ``storage_provider`` wires the platform event recorder so nested
+    subagent tool calls land ``tool.called`` / ``llm.called`` like
+    top-level ones (None keeps the manager recorder-less).
 
     Shared by :func:`run_subagent` (initial dispatch), :func:`resume_subagent`
     (rebuild-and-continue), and ``frames.apply_leaf`` (re-dispatch of an
@@ -134,6 +136,11 @@ async def build_subagent_toolmanager(
     # identically. System fallback keeps a None invoker from failing closed
     # and denying every toolset call the subagent makes.
     initiated_by = getattr(context, "initiated_by", None) or PrincipalRef.system()
+    recorder = None
+    if storage_provider is not None:
+        from primer.events.recorder import recorder_for
+
+        recorder = recorder_for(storage_provider)
     return ToolExecutionManager(
         toolset_providers=toolset_providers,
         workspace_session=subagent_session,
@@ -142,6 +149,7 @@ async def build_subagent_toolmanager(
         tools=tools,
         chat_id=context.chat_id if subagent_session is None else None,
         initiated_by=initiated_by,
+        event_recorder=recorder,
     )
 
 

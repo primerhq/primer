@@ -225,6 +225,24 @@ class ToolExecutionManager:
         """Attach the one-way inform sink used by the inform_user tool."""
         self._inform_sink = sink
 
+    @property
+    def event_recorder(self):
+        """The wired platform event recorder, or None.
+
+        Read by the shared model-call loop so ``llm.called`` rides the
+        same wiring as ``tool.called`` without a second thread-through.
+        """
+        return self._event_recorder
+
+    @property
+    def workspace_session_scope(self) -> tuple[str | None, str | None]:
+        """(session_id, workspace_id) of the bound session, or Nones."""
+        sess = self._workspace_session
+        return (
+            getattr(sess, "session_id", None),
+            getattr(sess, "workspace_id", None),
+        )
+
     @classmethod
     def for_workspace(
         cls,
@@ -288,6 +306,7 @@ class ToolExecutionManager:
             session=session,
             approval_resolver=self._approval_resolver,
             provider_registry=self._provider_registry,
+            event_recorder=self._event_recorder,
             tools=(
                 list(self._tools_allowlist)
                 if self._tools_allowlist is not None

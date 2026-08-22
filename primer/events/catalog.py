@@ -26,6 +26,10 @@ ACTION_EVENT_TYPES: frozenset[str] = frozenset({
     "trigger.fired",
     "mcp.tool_called",
     "tool.called",
+    "turn.started",
+    "llm.called",
+    "graph.node_entered",
+    "graph.node_exited",
 })
 
 _CRUD_VERBS = ("created", "updated", "deleted")

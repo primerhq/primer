@@ -85,6 +85,39 @@ def _observe_llm_call(
     return elapsed
 
 
+async def _emit_llm_called(
+    tool_manager: ToolExecutionManager,
+    llm_model: "ResolvedModel",
+    call_usage: "Usage | None",
+    elapsed: float,
+    status: str,
+) -> None:
+    """Land one ``llm.called`` on the platform event log (when wired).
+
+    Same seam argument as :func:`_observe_llm_call`: every executor
+    shares this loop, so emitting here counts every provider call
+    exactly once - nested subagents included.
+    """
+    recorder = getattr(tool_manager, "event_recorder", None)
+    if recorder is None:
+        return
+    session_id, workspace_id = tool_manager.workspace_session_scope
+    await recorder.emit(
+        "llm.called",
+        session_id=session_id,
+        workspace_id=workspace_id,
+        payload={
+            "profile_id": llm_model.profile_id,
+            "provider_id": llm_model.provider_id,
+            "model": llm_model.model_name,
+            "input_tokens": call_usage.input_tokens if call_usage else None,
+            "output_tokens": call_usage.output_tokens if call_usage else None,
+            "duration_ms": max(0, int(elapsed * 1000)),
+            "status": status,
+        },
+    )
+
+
 async def run_agent_turn(
     *,
     agent: "Agent",
@@ -175,9 +208,17 @@ async def run_agent_turn(
                     else:
                         last_input_tokens_out[0] = event.input_tokens
         except Exception:
-            _observe_llm_call(llm_model, call_t0, call_usage, "error")
+            err_elapsed = _observe_llm_call(
+                llm_model, call_t0, call_usage, "error",
+            )
+            await _emit_llm_called(
+                tool_manager, llm_model, call_usage, err_elapsed, "error",
+            )
             raise
         elapsed = _observe_llm_call(llm_model, call_t0, call_usage, "ok")
+        await _emit_llm_called(
+            tool_manager, llm_model, call_usage, elapsed, "ok",
+        )
         yield ExtendedEvent(
             extended=_LlmCall(
                 profile_id=llm_model.profile_id,
