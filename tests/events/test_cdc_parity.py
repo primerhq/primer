@@ -58,7 +58,7 @@ async def sp(tmp_path):
 async def test_storage_mutation_converges_via_the_subscription(sp):
     await regenerate_system_collection(sp, toolset_providers={})
     created = await ensure_system_event_subscriptions(sp)
-    assert set(created) == {"system-cdc", "system-logger"}
+    assert set(created) == {"system-cdc", "system-logger", "system-session-flip"}
 
     dispatcher = EventDispatcher(storage_provider=sp)
     await dispatcher.drain_once()  # pin cursors at head
@@ -97,7 +97,7 @@ async def test_storage_mutation_converges_via_the_subscription(sp):
 
 
 async def test_seed_is_idempotent_and_repairs(sp):
-    assert len(await ensure_system_event_subscriptions(sp)) == 2
+    assert len(await ensure_system_event_subscriptions(sp)) == 3
     assert await ensure_system_event_subscriptions(sp) == []
     await sp.get_storage(EventSubscription).delete("system-logger")
     assert await ensure_system_event_subscriptions(sp) == ["system-logger"]

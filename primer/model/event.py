@@ -134,8 +134,18 @@ class SessionWakeSink(BaseModel):
     one_shot: bool = True
 
 
+class FlipSink(BaseModel):
+    """Wake delivery: flip sessions parked on the event's
+    ``payload.event_key`` to resumable (the YieldEventListener's core,
+    driven from the durable log so lost volatile publishes replay)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["flip"] = "flip"
+
+
 EventSink = Annotated[
-    Union[ConvergeSink, LogSink, SessionWakeSink],
+    Union[ConvergeSink, LogSink, SessionWakeSink, FlipSink],
     Field(discriminator="kind"),
 ]
 
@@ -169,6 +179,7 @@ __all__ = [
     "ConvergeSink",
     "LogSink",
     "SessionWakeSink",
+    "FlipSink",
     "EventSink",
     "EventSubscription",
 ]

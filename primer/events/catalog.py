@@ -30,6 +30,7 @@ ACTION_EVENT_TYPES: frozenset[str] = frozenset({
     "llm.called",
     "graph.node_entered",
     "graph.node_exited",
+    "session.wake",
 })
 
 _CRUD_VERBS = ("created", "updated", "deleted")

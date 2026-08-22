@@ -302,3 +302,71 @@ __all__ = [
     "durably_wake_session",
     "respond_to_yield",
 ]
+
+
+async def flip_sessions_parked_on(
+    event_key: str,
+    payload,
+    *,
+    session_storage,
+    engine,
+) -> int:
+    """Find every session parked on ``event_key`` and durably flip it.
+
+    The single shared core behind BOTH wake deliveries: the volatile
+    bus's YieldEventListener (transport-fast) and the event-log
+    dispatcher's flip sink (durable replay). Guarded flips make the
+    two racing each other a harmless no-op.
+
+    Single-event parks match on the singular ``parked_event_key``; a
+    membership fallback covers multi-event parks (graph supersteps),
+    gated to human-reply keys so the common path stays one keyed
+    query. Returns the number of rows advanced.
+    """
+    from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+
+    predicate = Predicate(
+        left=Predicate(
+            left=FieldRef(name="parked_status"),
+            op=Op.EQ,
+            right=Value(value="parked"),
+        ),
+        op=Op.AND,
+        right=Predicate(
+            left=FieldRef(name="parked_event_key"),
+            op=Op.EQ,
+            right=Value(value=event_key),
+        ),
+    )
+    page = await session_storage.find(predicate, OffsetPage(length=200))
+    flipped = 0
+    for sess in page.items:
+        if await durably_mark_session_resumable(
+            sess, event_key=event_key, payload=payload,
+            session_storage=session_storage, engine=engine,
+        ):
+            flipped += 1
+
+    if flipped == 0 and event_key.startswith(("ask_user:", "tool_approval:")):
+        member_pred = Predicate(
+            left=Predicate(
+                left=FieldRef(name="parked_status"),
+                op=Op.IN,
+                right=Value(value=["parked", "resumable"]),
+            ),
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="parked_event_keys"),
+                op=Op.CONTAINS,
+                right=Value(value=event_key),
+            ),
+        )
+        page2 = await session_storage.find(member_pred, OffsetPage(length=200))
+        for sess in page2.items:
+            if await durably_mark_session_resumable(
+                sess, event_key=event_key, payload=payload,
+                session_storage=session_storage, engine=engine,
+            ):
+                flipped += 1
+    return flipped
+

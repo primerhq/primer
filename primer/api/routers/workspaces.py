@@ -1470,6 +1470,7 @@ async def steer_session(
             session_storage=sessions,
             engine=engine,
             event_bus=event_bus,
+            storage_provider=storage_provider,
         )
         row = await sessions.get(session_id)  # refreshed park state
 

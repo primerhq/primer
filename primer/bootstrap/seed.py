@@ -211,6 +211,7 @@ class EnsureResult:
 
 SYSTEM_CDC_SUBSCRIPTION = "system-cdc"
 SYSTEM_LOGGER_SUBSCRIPTION = "system-logger"
+SYSTEM_FLIP_SUBSCRIPTION = "system-session-flip"
 
 
 async def ensure_system_event_subscriptions(storage_provider) -> list[str]:
@@ -229,6 +230,7 @@ async def ensure_system_event_subscriptions(storage_provider) -> list[str]:
         ConvergeSink,
         EventFilter,
         EventSubscription,
+        FlipSink,
         LogSink,
     )
 
@@ -259,6 +261,17 @@ async def ensure_system_event_subscriptions(storage_provider) -> list[str]:
                 ],
             ),
             sink=LogSink(),
+            managed_by="system",
+        ),
+        EventSubscription(
+            id=SYSTEM_FLIP_SUBSCRIPTION,
+            description=(
+                "Replays durable session.wake events into parked-session "
+                "flips (the volatile bus keeps the fast path; this closes "
+                "the lost-publish window)."
+            ),
+            filter=EventFilter(event_types=["session.wake"]),
+            sink=FlipSink(),
             managed_by="system",
         ),
     ]

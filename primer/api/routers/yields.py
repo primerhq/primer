@@ -36,6 +36,7 @@ from primer.api.deps import (
     get_event_bus,
     get_external_tool_call_storage,
     get_session_storage,
+    get_storage_provider,
 )
 from primer.api.errors import common_responses
 from primer.int.claim import ClaimEngine
@@ -137,6 +138,7 @@ async def _durable_wake(
     session_storage,
     engine: ClaimEngine | None,
     event_bus: EventBus,
+    storage_provider=None,
 ) -> bool:
     """Durably flip the parked row to resumable, then wake the bus.
 
@@ -161,6 +163,13 @@ async def _durable_wake(
         session_storage=session_storage,
         engine=engine,  # type: ignore[arg-type]
     )
+    if storage_provider is not None:
+        from primer.events.wake import emit_session_wake
+
+        await emit_session_wake(
+            storage_provider, event_bus, event_key, payload,
+        )
+        return did
     try:
         await event_bus.publish(event_key, payload)
     except Exception:  # noqa: BLE001
@@ -309,6 +318,7 @@ async def post_ask_user_respond(
     session_storage=Depends(get_session_storage),
     event_bus: EventBus = Depends(get_event_bus),
     engine: ClaimEngine | None = Depends(get_claim_engine),
+    storage_provider=Depends(get_storage_provider),
 ) -> dict[str, str]:
     sess = await _load_session_or_404(session_storage, session_id)
     blob = _parked_blob(sess)
@@ -347,6 +357,7 @@ async def post_ask_user_respond(
                 session_storage=session_storage,
                 engine=engine,
                 event_bus=event_bus,
+                storage_provider=storage_provider,
             )
             return {"status": "accepted"}
         # A graph tool_call ask_user node: its prompt + schema live in
@@ -380,6 +391,7 @@ async def post_ask_user_respond(
             session_storage=session_storage,
             engine=engine,
             event_bus=event_bus,
+            storage_provider=storage_provider,
         )
         return {"status": "accepted"}
     if yielded.get("tool_name") != "ask_user":
@@ -409,6 +421,7 @@ async def post_ask_user_respond(
         session_storage=session_storage,
         engine=engine,
         event_bus=event_bus,
+        storage_provider=storage_provider,
     )
     return {"status": "accepted"}
 

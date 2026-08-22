@@ -484,11 +484,13 @@ def _make_lifespan(config: AppConfig):
             timer_scheduler = TimerScheduler(
                 bus=event_bus,
                 session_storage=storage_provider.get_storage(_WorkspaceSession),
+                storage_provider=storage_provider,
             )
             timer_scheduler.start(coordinator.leader_elector)
             timeout_sweeper = TimeoutSweeper(
                 bus=event_bus,
                 session_storage=storage_provider.get_storage(_WorkspaceSession),
+                storage_provider=storage_provider,
             )
             timeout_sweeper.start(coordinator.leader_elector)
             from primer.events.dispatcher import (
@@ -499,6 +501,7 @@ def _make_lifespan(config: AppConfig):
                 event_bus=event_bus,
                 provider_registry=provider_registry,
                 semantic_search_registry=semantic_search_registry,
+                claim_engine=claim_engine,
                 poll_seconds=config.event_dispatch_poll_seconds,
                 batch=config.event_dispatch_batch,
                 max_failures=config.event_sink_max_failures,
@@ -566,6 +569,7 @@ def _make_lifespan(config: AppConfig):
                 bus=event_bus,
                 scheduler=scheduler,
                 workspace_root_resolver=_resolve_probe,
+                storage_provider=storage_provider,
             )
             watcher_manager.start(coordinator.leader_elector)
             logger.info("lifespan: watcher manager started")
@@ -579,6 +583,7 @@ def _make_lifespan(config: AppConfig):
                 bus=event_bus,
                 scheduler=scheduler,
                 provider_registry=provider_registry,
+                storage_provider=storage_provider,
             )
             mcp_task_bridge.start(coordinator.leader_elector)
             logger.info("lifespan: mcp task bridge started")

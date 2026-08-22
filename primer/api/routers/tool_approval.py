@@ -247,6 +247,7 @@ async def _publish_decision(
     event_bus: EventBus,
     session_storage,
     engine: ClaimEngine | None,
+    storage_provider=None,
 ) -> bool:
     """Validate the decision, durably flip the row, then wake the bus.
 
@@ -283,6 +284,11 @@ async def _publish_decision(
         session_storage=session_storage,
         engine=engine,
     )
+    if storage_provider is not None:
+        from primer.events.wake import emit_session_wake
+
+        await emit_session_wake(storage_provider, event_bus, event_key, payload)
+        return did
     try:
         await event_bus.publish(event_key, payload)
     except Exception:  # noqa: BLE001
@@ -373,6 +379,7 @@ def make_tool_approval_router() -> APIRouter:
             event_bus=event_bus,
             session_storage=session_storage,
             engine=engine,
+            storage_provider=get_storage_provider(request),
         )
         from primer.events.recorder import actor_of, recorder_for
 

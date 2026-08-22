@@ -177,11 +177,13 @@ class TimerScheduler(_BackgroundTask):
         bus: EventBus,
         session_storage: Storage,
         poll_seconds: float = DEFAULT_TIMER_POLL_SECONDS,
+        storage_provider=None,
     ) -> None:
         super().__init__(name="yield-timer-scheduler")
         self._bus = bus
         self._storage = session_storage
         self._poll = poll_seconds
+        self._sp = storage_provider
 
     async def _run(self) -> None:
         while not self._stopping:
@@ -200,7 +202,12 @@ class TimerScheduler(_BackgroundTask):
         """One iteration: find due timer parks, publish events."""
         keys = await _find_due_timer_keys(self._storage)
         for event_key in keys:
-            await self._bus.publish(event_key, payload={})
+            if self._sp is not None:
+                from primer.events.wake import emit_session_wake
+
+                await emit_session_wake(self._sp, self._bus, event_key, {})
+            else:
+                await self._bus.publish(event_key, payload={})
 
 
 class TimeoutSweeper(_BackgroundTask):
@@ -220,11 +227,13 @@ class TimeoutSweeper(_BackgroundTask):
         bus: EventBus,
         session_storage: Storage,
         poll_seconds: float = DEFAULT_SWEEPER_POLL_SECONDS,
+        storage_provider=None,
     ) -> None:
         super().__init__(name="yield-timeout-sweeper")
         self._bus = bus
         self._storage = session_storage
         self._poll = poll_seconds
+        self._sp = storage_provider
 
     async def _run(self) -> None:
         while not self._stopping:
@@ -244,7 +253,14 @@ class TimeoutSweeper(_BackgroundTask):
         keys = await _find_expired_non_timer_keys(self._storage)
         payload = make_timeout_payload()
         for event_key in keys:
-            await self._bus.publish(event_key, payload=payload)
+            if self._sp is not None:
+                from primer.events.wake import emit_session_wake
+
+                await emit_session_wake(
+                    self._sp, self._bus, event_key, payload,
+                )
+            else:
+                await self._bus.publish(event_key, payload=payload)
 
 
 #: A session's first turn is claimed moments after the row is created. One that is still at

@@ -31,6 +31,7 @@ from primer.int.coordinator import ROLE_EVENT_DISPATCHER, ROLE_EVENT_RETENTION
 from primer.model.event import (
     Event,
     EventSubscription,
+    FlipSink,
     LogSink,
     SessionWakeSink,
 )
@@ -49,6 +50,7 @@ class EventDispatcher(_BackgroundTask):
         event_bus: Any = None,
         provider_registry: Any = None,
         semantic_search_registry: Any = None,
+        claim_engine: Any = None,
         poll_seconds: float = 5.0,
         batch: int = 200,
         max_failures: int = 5,
@@ -58,6 +60,7 @@ class EventDispatcher(_BackgroundTask):
         self._bus = event_bus
         self._provider_registry = provider_registry
         self._semantic_search_registry = semantic_search_registry
+        self._claim_engine = claim_engine
         self._poll = poll_seconds
         self._batch = batch
         self._max_failures = max_failures
@@ -208,6 +211,8 @@ class EventDispatcher(_BackgroundTask):
                 return True
             if isinstance(sink, SessionWakeSink):
                 return await self._deliver_session_wake(sub, sink, event)
+            if isinstance(sink, FlipSink):
+                return await self._deliver_flip(event)
             return await self._deliver_converge(event)
         except Exception:  # noqa: BLE001 - failure counted by caller
             logger.warning(
@@ -215,6 +220,28 @@ class EventDispatcher(_BackgroundTask):
                 "event %d", sub.id, event.id, exc_info=True,
             )
             return False
+
+    async def _deliver_flip(self, event: Event) -> bool:
+        """Replay-safe wake: flip sessions parked on the wake key.
+
+        The same guarded core the YieldEventListener runs from the
+        volatile bus; a wake the listener already delivered is a
+        no-op here, and one whose publish was lost is delivered from
+        the cursor.
+        """
+        event_key = (event.payload or {}).get("event_key")
+        if not event_key:
+            return True  # malformed but consumable; nothing to wake
+        from primer.model.workspace_session import WorkspaceSession
+        from primer.session.yields import flip_sessions_parked_on
+
+        await flip_sessions_parked_on(
+            event_key,
+            (event.payload or {}).get("wake_payload") or {},
+            session_storage=self._sp.get_storage(WorkspaceSession),
+            engine=self._claim_engine,
+        )
+        return True
 
     async def _deliver_converge(self, event: Event) -> bool:
         if not event.entity_kind or not event.entity_id:

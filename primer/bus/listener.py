@@ -123,52 +123,12 @@ class YieldEventListener:
         event is processed regardless.
         """
         try:
-            predicate = Predicate(
-                left=Predicate(
-                    left=FieldRef(name="parked_status"),
-                    op=Op.EQ,
-                    right=Value(value="parked"),
-                ),
-                op=Op.AND,
-                right=Predicate(
-                    left=FieldRef(name="parked_event_key"),
-                    op=Op.EQ,
-                    right=Value(value=event.event_key),
-                ),
+            from primer.session.yields import flip_sessions_parked_on
+
+            flipped = await flip_sessions_parked_on(
+                event.event_key, event.payload,
+                session_storage=self._storage, engine=self._engine,
             )
-            # event_key encodes the session + tool_call (e.g.
-            # "ask_user:<session_id>:<tool_call_id>"), so in practice it
-            # matches at most one parked row; the 200 cap is a generous
-            # safety bound, not a real fan-out limit.
-            page = await self._storage.find(predicate, OffsetPage(length=200))
-            flipped = await self._flip_rows(page.items, event)
-
-            # Multi-event-park fallback: a reply to a non-primary node, or a
-            # second concurrent reply arriving while the session is already
-            # 'resumable'. Match rows whose ``parked_event_keys`` array holds
-            # this key (CONTAINS -> the jsonb ``?`` operator, GIN-backed) and
-            # are still parked/resumable, so neither is dropped.
-            if flipped == 0 and event.event_key.startswith(
-                ("ask_user:", "tool_approval:")
-            ):
-                member_pred = Predicate(
-                    left=Predicate(
-                        left=FieldRef(name="parked_status"),
-                        op=Op.IN,
-                        right=Value(value=["parked", "resumable"]),
-                    ),
-                    op=Op.AND,
-                    right=Predicate(
-                        left=FieldRef(name="parked_event_keys"),
-                        op=Op.CONTAINS,
-                        right=Value(value=event.event_key),
-                    ),
-                )
-                page2 = await self._storage.find(
-                    member_pred, OffsetPage(length=200),
-                )
-                flipped += await self._flip_rows(page2.items, event)
-
             if flipped:
                 logger.info(
                     "yield-event-listener: resumed %d session(s) for "
