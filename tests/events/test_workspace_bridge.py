@@ -151,3 +151,32 @@ async def test_opt_out_stops_the_stream(sp):
         assert not bridge._streams
     finally:
         await bridge.stop()
+
+
+async def test_state_bookkeeping_noise_is_dropped(sp):
+    """One live exec produced 131 .state git-object events against 3
+    the operator cared about; the bridge drops them by default and an
+    explicit .state prefix opts back in."""
+    await sp.get_storage(Workspace).create(_workspace(
+        "ws-noise", WorkspaceEventsConfig(),
+    ))
+    resolver = _ScriptedResolver([
+        {"kind": "file_changed", "path": "/workspace/.state/.git/objects/ab"},
+        {"kind": "file_changed", "path": ".state/sessions/s1/session.json"},
+        {"kind": "file_changed", "path": "/workspace/probe.txt"},
+    ])
+    bridge = WorkspaceEventBridge(
+        storage_provider=sp, stream_resolver=resolver,
+        scan_interval_seconds=0.05,
+    )
+    bridge.start()
+    try:
+        events = await _drain_until(sp, 1)
+        assert [e.payload["path"] for e in events] == ["/workspace/probe.txt"]
+        await asyncio.sleep(0.2)
+        events = await sp.get_event_store().read_after(
+            0, event_type_prefix="workspace.",
+        )
+        assert len(events) == 1
+    finally:
+        await bridge.stop()

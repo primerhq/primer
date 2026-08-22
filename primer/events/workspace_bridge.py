@@ -45,6 +45,22 @@ StreamResolver = Callable[
 ]
 
 
+def _is_state_noise(path: str, config: WorkspaceEventsConfig) -> bool:
+    """Drop the platform's own ``.state/`` bookkeeping churn.
+
+    A session turn writes dozens of git objects under ``.state/`` -
+    live, one exec produced 131 such events against 3 the operator
+    cared about. Excluded by default; an explicit path prefix into
+    ``.state`` opts back in.
+    """
+    if "/.state/" not in path and not path.startswith(".state/"):
+        return False
+    return not any(
+        p.startswith(".state") or "/.state" in p
+        for p in (config.path_prefixes or [])
+    )
+
+
 class WorkspaceEventBridge(_BackgroundTask):
     role = ROLE_WORKSPACE_EVENTS
 
@@ -126,6 +142,10 @@ class WorkspaceEventBridge(_BackgroundTask):
                     if kind not in WORKSPACE_EVENT_KINDS:
                         continue
                     if kind not in config.kinds:
+                        continue
+                    if kind == "file_changed" and _is_state_noise(
+                        item.get("path", ""), config,
+                    ):
                         continue
                     payload = {
                         k: v for k, v in item.items() if k != "kind"
