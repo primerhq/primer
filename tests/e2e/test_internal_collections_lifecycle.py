@@ -126,6 +126,33 @@ async def _wait_bootstrap(
     return row
 
 
+async def _wait_for_system_page(
+    client: httpx.AsyncClient, path: str, needle: str,
+    *, timeout_s: float = 20.0,
+) -> None:
+    """Poll the system-collection page until it exists and carries needle.
+
+    CDC is a subscription on the platform event log now: the leader
+    dispatcher converges the page within its poll interval (5s default)
+    rather than inline with the mutating request, so page reads after a
+    mutation must wait, exactly like the search assertions below.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    last = ""
+    while asyncio.get_running_loop().time() < deadline:
+        page = await client.get(
+            f"/v1/collections/{_SYSTEM_COLLECTION_ID}/documents",
+            params={"path": path},
+        )
+        last = page.text
+        if page.status_code == 200 and needle in page.text:
+            return
+        await asyncio.sleep(0.5)
+    raise AssertionError(
+        f"system page {path!r} never converged with {needle!r}; last: {last}"
+    )
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def _drain_inflight_bootstrap(client: httpx.AsyncClient):
     """Ensure no internal-collections bootstrap is in-flight before each test.
@@ -2472,16 +2499,14 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
         assert cr.status_code == 201, cr.text
         coll_created = True
 
-        # The new collection gets a page in the system collection, and
-        # because bootstrap left search on there, the CRUD hook indexes
-        # it in the same write. Asserted here rather than through
+        # The new collection gets a page in the system collection: the
+        # event-log dispatcher converges it within its poll interval,
+        # and because bootstrap left search on there, the converge
+        # carries the indexing hooks. Asserted here rather than through
         # /v1/collections/search, which S2 left inert.
-        page = await client.get(
-            f"/v1/collections/{_SYSTEM_COLLECTION_ID}/documents",
-            params={"path": f"collections/{collection_id}"},
+        await _wait_for_system_page(
+            client, f"collections/{collection_id}", distinctive,
         )
-        assert page.status_code == 200, page.text
-        assert distinctive in page.text, page.text
 
         found = False
         last: dict = {}
@@ -2866,9 +2891,9 @@ async def test_new_agent_is_searchable_through_the_system_collection(
 ) -> None:
     """Creating an agent makes it findable, with no second bootstrap.
 
-    The CRUD hooks converge that agent's page in the system collection
-    and, because bootstrap left search enabled on it, the write carries
-    the indexing hooks. This is the successor to the CDC coverage that
+    The seeded system-cdc event subscription converges that agent's
+    page in the system collection and, because bootstrap left search
+    enabled on it, the converge carries the indexing hooks. This is the successor to the CDC coverage that
     used to assert the same thing through /v1/agents/search, which S2
     left inert.
     """
@@ -2903,13 +2928,11 @@ async def test_new_agent_is_searchable_through_the_system_collection(
         assert ag.status_code == 201, ag.text
         agent_created = True
 
-        # The page exists immediately, written by the CRUD hook.
-        page = await client.get(
-            f"/v1/collections/{_SYSTEM_COLLECTION_ID}/documents",
-            params={"path": f"agents/{agent_id}"},
+        # The page converges via the event-log dispatcher (bounded by
+        # its poll interval), not inline with the POST.
+        await _wait_for_system_page(
+            client, f"agents/{agent_id}", distinctive,
         )
-        assert page.status_code == 200, page.text
-        assert distinctive in page.text, page.text
 
         # And it is searchable, without bootstrapping a second time.
         found = False
