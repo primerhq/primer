@@ -762,6 +762,7 @@ def _make_lifespan(config: AppConfig):
             },
             provider_registry=provider_registry,
             semantic_search_registry=semantic_search_registry,
+            default_workspace_template=config.default_workspace_template,
         )
         if _ensure.errors:
             logger.warning("seed: ensure pass finished with errors", extra={

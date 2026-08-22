@@ -207,6 +207,18 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    default_workspace_template: str = Field(
+        default="local-default",
+        description=(
+            "Workspace template the seed materialises the default 'primer' "
+            "workspace from. A deployment whose pods are ephemeral must "
+            "point this at a template on a durable provider (e.g. "
+            "k3s-default): the reserved local-default template puts the "
+            "workspace on the API pod's own disk, which a k8s install "
+            "loses at the first pod replacement."
+        ),
+    )
+
     # --- Observability ---------------------------------------------------
     observability: ObservabilityConfig = Field(
         default_factory=ObservabilityConfig,

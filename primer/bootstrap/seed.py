@@ -66,7 +66,7 @@ async def ensure_crud_approval_policies(storage_provider) -> list[str]:
 
 
 async def ensure_default_workspace(
-    storage_provider, *, workspace_registry,
+    storage_provider, *, workspace_registry, template_id: str | None = None,
 ) -> str | None:
     """Ensure the default ``primer`` workspace exists.
 
@@ -89,13 +89,17 @@ async def ensure_default_workspace(
     if workspace_registry is None:
         logger.info("seed: no workspace registry; default workspace deferred")
         return None
-    template = await storage_provider.get_storage(WorkspaceTemplate).get(
-        RESERVED_LOCAL_WORKSPACE_TEMPLATE
-    )
+    # The deployment declares which template the default workspace comes
+    # from (config: default_workspace_template). The reserved local
+    # template stays the fallback for bare installs, but a k8s deployment
+    # must name a durable provider's template or its default workspace
+    # dies at the first pod replacement.
+    wanted = template_id or RESERVED_LOCAL_WORKSPACE_TEMPLATE
+    template = await storage_provider.get_storage(WorkspaceTemplate).get(wanted)
     if template is None:
         logger.info(
             "seed: workspace template %r absent; default workspace deferred",
-            RESERVED_LOCAL_WORKSPACE_TEMPLATE,
+            wanted,
         )
         return None
     live = await workspace_registry.materialise(
@@ -106,7 +110,7 @@ async def ensure_default_workspace(
             Workspace(
                 id=RESERVED_DEFAULT_WORKSPACE,
                 name="primer",
-                template_id=RESERVED_LOCAL_WORKSPACE_TEMPLATE,
+                template_id=wanted,
                 provider_id=template.provider_id,
                 created_at=datetime.now(timezone.utc),
                 # phase="running" because materialise returned a live
@@ -212,6 +216,7 @@ async def run_ensure_pass(
     toolset_providers: dict | None = None,
     provider_registry=None,
     semantic_search_registry=None,
+    default_workspace_template: str | None = None,
 ) -> EnsureResult:
     """Run every S5 ensure step. Idempotent, marker-independent.
 
@@ -261,6 +266,7 @@ async def run_ensure_pass(
         "default_workspace",
         lambda: ensure_default_workspace(
             storage_provider, workspace_registry=workspace_registry,
+            template_id=default_workspace_template,
         ),
     )
     if created_workspace:
