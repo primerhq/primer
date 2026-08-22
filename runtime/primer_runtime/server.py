@@ -60,7 +60,7 @@ _MUTATING_OPS: frozenset[str] = frozenset({
 # Version constants
 # ---------------------------------------------------------------------------
 
-PROTOCOL_VERSION: str = "1.2"
+PROTOCOL_VERSION: str = "1.3"
 RUNTIME_VERSION: str = "1.0.0"
 
 _PROTOCOL_MAJOR: int = int(PROTOCOL_VERSION.split(".")[0])
