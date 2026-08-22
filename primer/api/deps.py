@@ -132,6 +132,13 @@ def get_artifact_storage_provider_storage(
     return storage_provider.get_storage(ArtifactStorageProvider)
 
 
+def get_event_subscription_storage(
+    storage_provider=Depends(get_storage_provider),
+) -> "Storage":
+    from primer.model.event import EventSubscription
+    return storage_provider.get_storage(EventSubscription)
+
+
 def get_oidc_provider_storage(
     storage_provider=Depends(get_storage_provider),
 ) -> "Storage":

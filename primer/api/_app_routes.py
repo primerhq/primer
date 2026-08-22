@@ -103,6 +103,17 @@ def _mount_routers(
     from primer.api.routers.api_tokens import api_tokens_router
     app.include_router(api_tokens_router, prefix=prefix, dependencies=user_dep)
 
+    # Platform event log (read window) + event subscriptions. Payloads
+    # mirror stored entities, so both surfaces are admin-only.
+    from primer.api.routers.events import (
+        event_subscription_router,
+        events_router,
+    )
+    app.include_router(events_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(
+        event_subscription_router, prefix=prefix, dependencies=admin_dep,
+    )
+
     # Which optional extras this deployment has. Read-only and computed
     # from importability, so the console can render capability-aware
     # states instead of failing at use time.
