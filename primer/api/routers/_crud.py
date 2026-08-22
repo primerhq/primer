@@ -225,15 +225,12 @@ def make_crud_router(
         auto-generated reference hook runs **before** any user-supplied
         ``on_pre_delete`` hook.
     cdc_kind
-        When set, the factory:
-
-        * Calls ``register_cdc_kind(cdc_kind, model_cls)`` immediately
-          (at factory call time / module import) so the kind appears in
-          :func:`~primer.api.routers._cdc_hooks.known_cdc_kinds`.
-        * Auto-wires the three CDC hooks from
-          :func:`~primer.api.routers._cdc_hooks.make_cdc_hooks` into
-          ``on_create`` / ``on_update`` / ``on_delete``.  The CDC hooks
-          run *before* any user-supplied post-mutate hooks.
+        When set, the factory calls ``register_cdc_kind(cdc_kind,
+        model_cls)`` immediately (at factory call time / module import)
+        so the kind appears in
+        :func:`~primer.api.routers._cdc_hooks.known_cdc_kinds` and the
+        storage layer emits its CRUD events; the seeded ``system-cdc``
+        event subscription converges the system collection from those.
     search_fields
         When set, the unscoped ``GET /<plural>`` list route accepts an
         optional ``?q=`` query param and, when it is non-empty, filters
@@ -302,23 +299,18 @@ def make_crud_router(
 
         on_pre_delete = _pre_delete_with_refs
 
-    # Auto-wire CDC hooks. Register the kind in the global registry at
-    # factory call time (i.e. when the router module is imported), then
-    # compose the three CDC hooks ahead of any user-supplied post-mutate
-    # hooks so CDC events always fire.
+    # Register the kind in the global event registry at factory call
+    # time (i.e. when the router module is imported). The storage layer
+    # emits <kind>.created/updated/deleted for registered kinds and the
+    # seeded 'system-cdc' event subscription converges the system
+    # collection - the imperative per-router CDC hooks this used to
+    # wire are gone (spec: 2026-08-22-event-bus-design.md).
     if cdc_kind is not None:
         from primer.api.routers._cdc_hooks import (  # noqa: PLC0415
-            make_cdc_hooks,
             register_cdc_kind,
         )
 
         register_cdc_kind(cdc_kind, model_cls)
-        cdc_create_hook, cdc_update_hook, cdc_delete_hook = make_cdc_hooks(
-            cdc_kind, model_cls  # type: ignore[arg-type]
-        )
-        on_create = _compose(cdc_create_hook, on_create)
-        on_update = _compose(cdc_update_hook, on_update)
-        on_delete = _compose(cdc_delete_hook, on_delete)
 
     router = APIRouter(tags=[tag])
 

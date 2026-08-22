@@ -419,11 +419,14 @@ def _make_lifespan(config: AppConfig):
         yield_listener = None
         timer_scheduler = None
         timeout_sweeper = None
+        event_dispatcher = None
+        event_retention_pruner = None
         stuck_session_sweeper = None
         harness_sweeper = None
         watcher_manager = None
         mcp_task_bridge = None
         app.state.coordinator_sweeper = None
+        app.state.event_dispatcher = None
         if scheduler is not None:
             from primer.bus.in_memory import InMemoryEventBus
             from primer.bus.listener import YieldEventListener
@@ -488,6 +491,25 @@ def _make_lifespan(config: AppConfig):
                 session_storage=storage_provider.get_storage(_WorkspaceSession),
             )
             timeout_sweeper.start(coordinator.leader_elector)
+            from primer.events.dispatcher import (
+                EventDispatcher, EventRetentionPruner,
+            )
+            event_dispatcher = EventDispatcher(
+                storage_provider=storage_provider,
+                event_bus=event_bus,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+                poll_seconds=config.event_dispatch_poll_seconds,
+                batch=config.event_dispatch_batch,
+                max_failures=config.event_sink_max_failures,
+            )
+            event_dispatcher.start(coordinator.leader_elector)
+            event_retention_pruner = EventRetentionPruner(
+                storage_provider=storage_provider,
+                retention_days=config.event_retention_days,
+            )
+            event_retention_pruner.start(coordinator.leader_elector)
+            app.state.event_dispatcher = event_dispatcher
 
             # Ends sessions whose first turn never ran. Without this a lost claim leaves a
             # non-terminal row forever, and a `parallelism="skip"` subscription will not fire
@@ -916,6 +938,8 @@ def _make_lifespan(config: AppConfig):
                 (mcp_task_bridge, "mcp_task_bridge"),
                 (watcher_manager, "watcher_manager"),
                 (harness_sweeper, "harness_sweeper"),
+                (event_retention_pruner, "event_retention_pruner"),
+                (event_dispatcher, "event_dispatcher"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),
                 (timer_scheduler, "timer_scheduler"),

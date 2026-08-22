@@ -209,6 +209,68 @@ class EnsureResult:
     errors: list[tuple[str, str]] = field(default_factory=list)
 
 
+SYSTEM_CDC_SUBSCRIPTION = "system-cdc"
+SYSTEM_LOGGER_SUBSCRIPTION = "system-logger"
+
+
+async def ensure_system_event_subscriptions(storage_provider) -> list[str]:
+    """Seed (and repair) the two system event subscriptions.
+
+    * ``system-cdc``: converges the system collection on every agent /
+      graph / collection event - exactly the kinds ``converge_entity``
+      handles, so page writes (document events) never re-enter the sink.
+    * ``system-logger``: one structured log line per platform event,
+      minus the high-volume ``tool.called``.
+
+    Same contract as the seeded agents: absent rows are recreated,
+    present rows are left alone (operators may pause them).
+    """
+    from primer.model.event import (
+        ConvergeSink,
+        EventFilter,
+        EventSubscription,
+        LogSink,
+    )
+
+    subs = storage_provider.get_storage(EventSubscription)
+    wanted = [
+        EventSubscription(
+            id=SYSTEM_CDC_SUBSCRIPTION,
+            description=(
+                "Converges the system collection page of every mutated "
+                "agent, graph and collection (the CDC path)."
+            ),
+            filter=EventFilter(
+                event_types=["agent.*", "graph.*", "collection.*"],
+            ),
+            sink=ConvergeSink(),
+            managed_by="system",
+        ),
+        EventSubscription(
+            id=SYSTEM_LOGGER_SUBSCRIPTION,
+            description=(
+                "Default system logger: one structured log line per "
+                "platform event (tool.called excluded for volume)."
+            ),
+            filter=EventFilter(
+                event_types=["*"], exclude_types=["tool.called"],
+            ),
+            sink=LogSink(),
+            managed_by="system",
+        ),
+    ]
+    created: list[str] = []
+    for row in wanted:
+        if await subs.get(row.id) is not None:
+            continue
+        try:
+            await subs.create(row)
+            created.append(row.id)
+        except ConflictError:
+            pass  # concurrent seeder won the race; converged either way
+    return created
+
+
 async def run_ensure_pass(
     storage_provider,
     *,
@@ -262,6 +324,12 @@ async def run_ensure_pass(
             [RESERVED_OPERATOR_AGENT, RESERVED_BUILDER_AGENT]
         )
 
+    created_subs = await _step(
+        "system_event_subscriptions",
+        lambda: ensure_system_event_subscriptions(storage_provider),
+    )
+    result.created.extend(created_subs or [])
+
     created_workspace = await _step(
         "default_workspace",
         lambda: ensure_default_workspace(
@@ -294,6 +362,7 @@ __all__ = [
     "ensure_crud_approval_policies",
     "ensure_default_workspace",
     "ensure_seeded_agents",
+    "ensure_system_event_subscriptions",
     "default_profile_id",
     "EnsureResult",
     "run_ensure_pass",

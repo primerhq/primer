@@ -1,131 +1,27 @@
-"""CDC hook factory for the internal-collections subsystem.
+"""Historical home of the CDC kind registry and hook factory.
 
-Wires :class:`make_crud_router`'s ``on_create`` / ``on_update`` /
-``on_delete`` callbacks to :meth:`InternalCollectionsSubsystem.enqueue`
-so every API mutation of a tracked entity (Agent, Graph, Collection,
-Tool) propagates into the vector store between bootstraps. Without
-this, the only way to refresh the vector index is to re-run
-``POST /v1/internal_collections/bootstrap``.
+The registry moved to :mod:`primer.events.registry`; this module
+re-exports it under the old names so existing call sites keep working.
 
-Safe before the subsystem is activated: when
-``request.app.state.internal_collections`` is ``None`` the hooks no-op
-silently, so routers can wire them unconditionally.
+The ``make_cdc_hooks`` factory is gone: entity CRUD events now emit
+from the storage layer itself and the seeded ``system-cdc`` event
+subscription converges the system collection through the
+:class:`primer.events.dispatcher.EventDispatcher`
+(spec: ``docs/superpowers/specs/2026-08-22-event-bus-design.md``).
+The InternalCollectionsSubsystem enqueue path the old hooks also fed
+was already dead - its queue has had no worker since the legacy
+per-entity namespaces went.
 """
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Awaitable, Callable
-
-from fastapi import Request
-
-from primer.internal_collections import EntityType, IngestEvent
-from primer.model.common import Identifiable
-
-
-logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# CDC kind registry — moved to primer.events.registry; re-exported here
-# under the historical names so existing call sites keep working.
-# ---------------------------------------------------------------------------
-
-from primer.events.registry import (  # noqa: E402
+from primer.events.registry import (
     _reset_for_test,
     known_event_kinds as known_cdc_kinds,
     register_event_kind as register_cdc_kind,
 )
 
-
-# ---------------------------------------------------------------------------
-
-_OnMutateHook = Callable[[str, Request], Awaitable[None]]
-
-
-def make_cdc_hooks(
-    entity_type: EntityType,
-    model_cls: type[Identifiable],
-) -> tuple[_OnMutateHook, _OnMutateHook, _OnMutateHook]:
-    """Return ``(on_create, on_update, on_delete)`` hooks that keep the
-    system collection in step with the named ``entity_type``.
-
-    Each mutation converges that entity's page and its subtree index. If
-    the system collection has semantic search enabled, the write carries
-    the indexing hooks, so the change is searchable straight away rather
-    than at the next startup regeneration.
-
-    The hooks also still enqueue an event on the
-    :class:`InternalCollectionsSubsystem` when one is attached, which is
-    what the legacy per-entity namespaces consumed; that queue has no
-    worker draining it any more and goes when the surface does.
-
-    Never raises: a stale page must not fail the write that changed the
-    entity, so convergence is best-effort and logs on failure.
-    """
-
-    async def _converge(entity_id: str, request: Request) -> None:
-        from primer.knowledge.system_collection import converge_entity
-
-        sp = getattr(request.app.state, "storage_provider", None)
-        if sp is None:
-            return
-        await converge_entity(
-            sp,
-            entity_type=entity_type,
-            entity_id=entity_id,
-            provider_registry=getattr(
-                request.app.state, "provider_registry", None,
-            ),
-            semantic_search_registry=getattr(
-                request.app.state, "semantic_search_registry", None,
-            ),
-        )
-
-    async def _upsert(entity_id: str, request: Request) -> None:
-        await _converge(entity_id, request)
-        ic = getattr(request.app.state, "internal_collections", None)
-        if ic is None:
-            return
-        sp = getattr(request.app.state, "storage_provider", None)
-        if sp is None:
-            return
-        storage = sp.get_storage(model_cls)
-        entity = await storage.get(entity_id)
-        if entity is None:
-            # Mutation hook fired but the row vanished between commit and
-            # this read -- treat as a delete to keep the index consistent.
-            ic.enqueue(IngestEvent(
-                op="delete",
-                entity_type=entity_type,
-                entity_id=entity_id,
-            ))
-            return
-        ic.enqueue(IngestEvent(
-            op="upsert",
-            entity_type=entity_type,
-            entity_id=entity_id,
-            payload=entity.model_dump(mode="json"),
-        ))
-
-    async def _delete(entity_id: str, request: Request) -> None:
-        await _converge(entity_id, request)
-        ic = getattr(request.app.state, "internal_collections", None)
-        if ic is None:
-            return
-        ic.enqueue(IngestEvent(
-            op="delete",
-            entity_type=entity_type,
-            entity_id=entity_id,
-        ))
-
-    _upsert.__name__ = f"_cdc_upsert_{entity_type}"
-    _delete.__name__ = f"_cdc_delete_{entity_type}"
-    return _upsert, _upsert, _delete
-
-
 __all__ = [
-    "make_cdc_hooks",
     "register_cdc_kind",
     "known_cdc_kinds",
     "_reset_for_test",
