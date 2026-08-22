@@ -417,6 +417,12 @@ async def run_one_session_turn(
         await deps.event_bus.publish(
             f"session:{session_id}:tick", {"seq": seq}
         )
+        await _event_recorder(deps).emit(
+            "session.parked",
+            workspace_id=session.workspace_id,
+            session_id=session_id,
+            payload={"event_key": park.yielded.event_key},
+        )
         await turn_log.aclose()
 
         yielded = park.yielded
@@ -618,7 +624,7 @@ async def run_one_session_turn(
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
         await _publish_terminal(
-            deps.event_bus, session_id, SessionStatus.ENDED, "failed",
+            deps, session, SessionStatus.ENDED, "failed",
         )
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
@@ -689,7 +695,7 @@ async def run_one_session_turn(
             await _persist_last_seq(session_storage, session_id, writer.last_seq)
             await _advance_drain_cursor(session_storage, session_id)
         await _publish_terminal(
-            deps.event_bus, session_id, new_status, ended_reason,
+            deps, session, new_status, ended_reason,
         )
         await turn_log.aclose()
         await _apply_pending_switch_at_checkpoint(deps, session)
@@ -739,8 +745,17 @@ async def run_one_session_turn(
         await _persist_last_seq(session_storage, session_id, writer.last_seq)
         await _advance_drain_cursor(session_storage, session_id)
 
+    await _event_recorder(deps).emit(
+        "session.replied",
+        workspace_id=session.workspace_id,
+        session_id=session_id,
+        payload={
+            "turn_no": session.turn_no,
+            "finish_reason": last_done_reason,
+        },
+    )
     await _publish_terminal(
-        deps.event_bus, session_id, new_status, ended_reason,
+        deps, session, new_status, ended_reason,
     )
 
     # Every terminal exit drains, not just this one: a queued steer is
@@ -1033,9 +1048,16 @@ async def _advance_drain_cursor(session_storage, session_id: str) -> None:
         )
 
 
+def _event_recorder(deps: SessionDispatchDeps):
+    """Recorder over the deps refs; built per call, it is stateless."""
+    from primer.events.recorder import recorder_for
+
+    return recorder_for(deps.storage_provider, deps.event_bus)
+
+
 async def _publish_terminal(
-    event_bus,
-    session_id: str,
+    deps: SessionDispatchDeps,
+    session: "WorkspaceSession",
     status: SessionStatus,
     ended_reason: str | None,
 ) -> None:
@@ -1045,11 +1067,22 @@ async def _publish_terminal(
     instead of polling the row, per S6 section 9. Advisory: a publish
     failure must never block the lease release, so it is swallowed with a
     log and the hold falls back to its wait cap.
+
+    An ENDED status additionally lands a durable ``session.ended`` on
+    the platform event log (the recorder swallows its own failures).
     """
-    if event_bus is None:
+    session_id = session.id
+    if status == SessionStatus.ENDED:
+        await _event_recorder(deps).emit(
+            "session.ended",
+            workspace_id=session.workspace_id,
+            session_id=session_id,
+            payload={"ended_reason": ended_reason},
+        )
+    if deps.event_bus is None:
         return
     try:
-        await event_bus.publish(
+        await deps.event_bus.publish(
             f"session:{session_id}:terminal",
             {"status": status.value, "ended_reason": ended_reason},
         )

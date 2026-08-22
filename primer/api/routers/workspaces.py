@@ -1447,6 +1447,19 @@ async def steer_session(
             "enabled; external_tools rejected"
         )
 
+    # The steer is accepted for delivery from here on (remaining
+    # branches route it, they don't reject it).
+    from primer.events.recorder import recorder_for
+    await recorder_for(storage_provider, event_bus).emit(
+        "session.steered",
+        workspace_id=workspace_id,
+        session_id=session_id,
+        payload={
+            "has_instruction": bool(body.instruction),
+            "has_tool_results": bool(body.tool_results),
+        },
+    )
+
     # Dispatch rule (external-tools spec §6), in order:
     # 1+2. Validate then apply tool_results (409-atomic inside the helper).
     if body.tool_results:

@@ -33,7 +33,7 @@ EVENTS_APPENDED_KEY = "events_appended"
 class EventRecorder:
     def __init__(
         self,
-        event_store: "EventStore",
+        event_store: "EventStore | None",
         bus: "EventBus | None" = None,
     ) -> None:
         self._store = event_store
@@ -60,6 +60,10 @@ class EventRecorder:
                 f"unknown event type {event_type!r}: add it to "
                 "primer/events/catalog.py or register the entity kind"
             )
+        if self._store is None:
+            # Store-less harness (duck-typed test provider): the type
+            # check above still ran, the append is skipped.
+            return None
         try:
             event_id = await self._store.append(
                 event_type=event_type,
@@ -93,4 +97,26 @@ class EventRecorder:
             logger.warning("events_appended hint failed", exc_info=True)
 
 
-__all__ = ["EventRecorder", "EVENTS_APPENDED_KEY"]
+def recorder_for(storage_provider: Any, bus: Any = None) -> EventRecorder:
+    """Tolerant factory: a provider without ``get_event_store`` (duck-
+    typed fakes in older test harnesses) yields a store-less recorder
+    whose emits validate and then no-op."""
+    getter = getattr(storage_provider, "get_event_store", None)
+    store = getter() if callable(getter) else None
+    return EventRecorder(store, bus)
+
+
+def actor_of(ref: Any) -> str:
+    """Compact actor string for the event envelope.
+
+    Accepts a PrincipalRef-shaped object (``type`` + ``id``) or None;
+    anything else degrades to "system" rather than raising.
+    """
+    ref_type = getattr(ref, "type", None)
+    ref_id = getattr(ref, "id", None)
+    if ref_type and ref_id:
+        return f"{ref_type}:{ref_id}"
+    return "system"
+
+
+__all__ = ["EventRecorder", "EVENTS_APPENDED_KEY", "actor_of", "recorder_for"]

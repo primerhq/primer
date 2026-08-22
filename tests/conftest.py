@@ -408,6 +408,13 @@ class _FakeStorageProvider:
     def get_content_store(self) -> Any:
         return self._content_store
 
+    def get_event_store(self) -> Any:
+        from primer.events.memory_store import InMemoryEventStore
+
+        if not hasattr(self, "_event_store"):
+            self._event_store = InMemoryEventStore()
+        return self._event_store
+
     def transaction(self) -> Any:
         return _NoOpTransaction()
 

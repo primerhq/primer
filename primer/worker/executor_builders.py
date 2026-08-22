@@ -22,6 +22,20 @@ from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.pool import _toolset_ids_from_scoped
 
+
+def _pool_event_recorder(pool):
+    """Platform event recorder over the pool's storage + bus refs.
+
+    None when the pool was built without storage (unit-test pools), so
+    the tool manager simply skips tool.called emission.
+    """
+    storage = getattr(pool, "_storage", None)
+    if storage is None:
+        return None
+    from primer.events.recorder import recorder_for
+
+    return recorder_for(storage, getattr(pool, "_event_bus", None))
+
 if TYPE_CHECKING:
     from primer.worker.pool import WorkerPool
 
@@ -165,6 +179,7 @@ def build_graph_invocation_services(
             provider_registry=pool._provider_registry,
             tools=agent.tools,
             initiated_by=initiated_by,
+            event_recorder=_pool_event_recorder(pool),
         )
 
     async def graph_resolver(graph_id: str):
@@ -301,6 +316,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         tools=agent.tools,
         graph_invocation_services=gis,
         initiated_by=initiated_by,
+        event_recorder=_pool_event_recorder(pool),
         external_tools=_external_defs_for(session, agent),
         # ``pool._storage`` is always present in production; some pool
         # unit-tests construct the pool with ``storage=None`` (see the
@@ -464,6 +480,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 initiated_by=initiated_by,
                 external_tools=node_external_tools,
                 external_call_storage=node_call_storage,
+                event_recorder=_pool_event_recorder(pool),
             )
         return ToolExecutionManager(
             toolset_providers=toolset_providers,
@@ -473,6 +490,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
             initiated_by=initiated_by,
             external_tools=node_external_tools,
             external_call_storage=node_call_storage,
+            event_recorder=_pool_event_recorder(pool),
         )
 
     # (4) Optional handles wired in later phases.

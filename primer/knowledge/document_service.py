@@ -101,6 +101,23 @@ class DocumentService:
         # indexing (the unit-test / search-off configuration).
         self._indexer = indexer
 
+    async def _emit_document_event(
+        self, event_type: str, *, collection_id: str, path: str,
+        document_id: str,
+    ) -> None:
+        """Action event beside the CRUD event: carries the collection
+        addressing the raw document.created/updated/deleted lacks.
+        Post-commit and swallow-on-failure, so a log hiccup never
+        fails the write that already happened."""
+        from primer.events.recorder import recorder_for
+
+        await recorder_for(self._sp).emit(
+            event_type,
+            entity_kind="document",
+            entity_id=document_id,
+            payload={"collection_id": collection_id, "path": path},
+        )
+
     async def upsert(
         self,
         *,
@@ -128,7 +145,7 @@ class DocumentService:
         single document with no 500.
         """
         try:
-            return await self._upsert_once(
+            doc = await self._upsert_once(
                 collection_id=collection_id,
                 path=path,
                 content=content,
@@ -138,13 +155,18 @@ class DocumentService:
         except ConflictError:
             # Lost the create race: another upsert took this path. Re-resolve
             # and retry as an update against the now-existing document id.
-            return await self._upsert_once(
+            doc = await self._upsert_once(
                 collection_id=collection_id,
                 path=path,
                 content=content,
                 title=title,
                 meta=meta,
             )
+        await self._emit_document_event(
+            "collection.document_pushed",
+            collection_id=collection_id, path=path, document_id=doc.id,
+        )
+        return doc
 
     async def _upsert_once(
         self,
@@ -231,6 +253,10 @@ class DocumentService:
         async with self._sp.transaction() as conn:
             await self._docs.delete(doc_id, conn=conn)
             await self._content.delete(doc_id, conn=conn)
+        await self._emit_document_event(
+            "collection.document_deleted",
+            collection_id=collection_id, path=path, document_id=doc_id,
+        )
 
     async def move(self, *, collection_id: str, src: str, dst: str) -> None:
         """Move the document from ``src`` to ``dst`` within a collection.

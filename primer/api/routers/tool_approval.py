@@ -360,6 +360,7 @@ def make_tool_approval_router() -> APIRouter:
     async def post_session_tool_approval_respond(
         session_id: Annotated[str, Path()],
         body: Annotated[ToolApprovalRespondBody, Body()],
+        request: Request,
         session_storage=Depends(get_session_storage),
         event_bus: EventBus = Depends(get_event_bus),
         engine: ClaimEngine | None = Depends(get_claim_engine),
@@ -372,6 +373,18 @@ def make_tool_approval_router() -> APIRouter:
             event_bus=event_bus,
             session_storage=session_storage,
             engine=engine,
+        )
+        from primer.events.recorder import actor_of, recorder_for
+
+        sp = get_storage_provider(request)
+        await recorder_for(sp, event_bus).emit(
+            "approval.decided",
+            actor=actor_of(getattr(request.state, "actor", None)),
+            session_id=session_id,
+            payload={
+                "decision": body.decision,
+                "tool_call_id": body.tool_call_id,
+            },
         )
         return {"status": "accepted"}
 

@@ -134,7 +134,11 @@ class ToolExecutionManager:
         initiated_by: "PrincipalRef | None" = None,
         external_tools: "list | None" = None,
         external_call_storage: "Any | None" = None,
+        event_recorder: "Any | None" = None,
     ) -> None:
+        # Optional platform event recorder: when wired (worker executor
+        # builds), every dispatched call lands a ``tool.called`` event.
+        self._event_recorder = event_recorder
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
         # Invoker-supplied per-invocation tools (spec: external tool
         # calls). Registered as one more toolset provider under the
@@ -234,6 +238,7 @@ class ToolExecutionManager:
         initiated_by: "PrincipalRef | None" = None,
         external_tools: "list | None" = None,
         external_call_storage: "Any | None" = None,
+        event_recorder: "Any | None" = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -249,6 +254,7 @@ class ToolExecutionManager:
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
         return cls(
+            event_recorder=event_recorder,
             toolset_providers=toolset_providers,
             workspace_tools=ws_tools,
             workspace_session=session,
@@ -431,15 +437,35 @@ class ToolExecutionManager:
                     call, principal=principal, bypass_approval=bypass_approval,
                 )
                 _metrics.tool_calls_total.labels(call.name, "ok").inc()
+                await self._emit_tool_called(call, ok=not result.is_error)
                 return result
             except Exception as _exc:
                 _span.record_exception(_exc)
                 _metrics.tool_calls_total.labels(call.name, "fail").inc()
+                await self._emit_tool_called(call, ok=False)
                 raise
             finally:
                 _metrics.tool_duration_seconds.labels(call.name).observe(
                     _time.monotonic() - _t0
                 )
+
+    async def _emit_tool_called(self, call: ToolCallPart, *, ok: bool) -> None:
+        """Land a ``tool.called`` on the platform event log (when wired).
+
+        The recorder swallows its own failures, and a yielded call (the
+        park path raises through execute) records ok=False here then a
+        fresh event on the resumed dispatch: the log narrates attempts,
+        not tool semantics.
+        """
+        if self._event_recorder is None:
+            return
+        sess = self._workspace_session
+        await self._event_recorder.emit(
+            "tool.called",
+            session_id=getattr(sess, "session_id", None),
+            workspace_id=getattr(sess, "workspace_id", None),
+            payload={"tool": call.name, "ok": ok},
+        )
 
     async def _execute_inner(
         self,
@@ -523,6 +549,15 @@ class ToolExecutionManager:
                     session_or_chat = (
                         ctx.session_id or ctx.chat_id or "unknown"
                     )
+                    if self._event_recorder is not None:
+                        await self._event_recorder.emit(
+                            "approval.requested",
+                            session_id=ctx.session_id,
+                            payload={
+                                "tool": call.name,
+                                "policy_id": policy.id,
+                            },
+                        )
                     raise YieldToWorker(
                         Yielded(
                             tool_name="_approval",

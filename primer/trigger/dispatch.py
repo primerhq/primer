@@ -104,6 +104,22 @@ async def fire_trigger(
         )
         return FireResult(skipped=True, fire_id=fire_id)
 
+    from primer.events.recorder import recorder_for
+
+    await recorder_for(deps.storage_provider).emit(
+        "trigger.fired",
+        actor=f"trigger:{trigger.id}",
+        entity_kind="trigger",
+        entity_id=trigger.id,
+        payload={
+            "fire_id": fire_id,
+            "kind": str(trigger.config.kind),
+            "scheduled_for": (
+                scheduled_for.isoformat() if scheduled_for else None
+            ),
+        },
+    )
+
     subs_storage = deps.storage_provider.get_storage(Subscription)
     q = Q(Subscription).where_op("trigger_id", Op.EQ, trigger.id)
     # Page in batches of 200 (OffsetPage max) to capture every sub

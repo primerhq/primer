@@ -95,6 +95,7 @@ def _make_lifespan(config: AppConfig):
         storage_provider = _app_facade._build_storage_provider(config)
         await storage_provider.initialize()
         await storage_provider.get_content_store().ensure_schema()
+        await storage_provider.get_event_store().ensure_schema()
         # Ordered data migrations. Runs BEFORE auto-bootstrap so a migration
         # never has to reason about whether a reserved row exists yet: it
         # only ever transforms rows that were already there. A fresh install
@@ -572,6 +573,13 @@ def _make_lifespan(config: AppConfig):
                 app.state.coordinator_sweeper = coordinator_sweeper
         app.state.event_bus = event_bus
         app.state.claim_engine = claim_engine
+        # Action-event recorder: every non-CRUD emission site goes
+        # through this. bus=None (scheduler disabled) still records;
+        # the dispatcher then relies on its poll interval.
+        from primer.events.recorder import EventRecorder as _EventRecorder
+        app.state.event_recorder = _EventRecorder(
+            storage_provider.get_event_store(), event_bus,
+        )
 
         # Now that the claim engine exists, hand it to the channel registry so
         # warmed (and lazily built) adapters can wake the worker via

@@ -282,7 +282,7 @@ async def start_workspace_session(
     # Persist the row + (optionally) auto-start + always register a
     # forward-compat ClaimEngine upsert via the shared service helper.
     # workspace_registry=None because the slot is already allocated above.
-    return await create_session(
+    row = await create_session(
         workspace_id=workspace_id,
         binding=binding,
         initial_instructions=initial_instructions,
@@ -302,6 +302,18 @@ async def start_workspace_session(
             workspace_registry=None,
         ),
     )
+    from primer.events.recorder import actor_of, recorder_for
+    await recorder_for(deps.storage_provider).emit(
+        "session.invoked",
+        actor=actor_of(initiated_by),
+        workspace_id=workspace_id,
+        session_id=row.id,
+        payload={
+            "binding": binding.model_dump(mode="json"),
+            "auto_start": auto_start,
+        },
+    )
+    return row
 
 
 async def create_session(
