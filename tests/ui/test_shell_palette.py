@@ -31,10 +31,15 @@ def test_rows_show_their_chord_and_graduation_hint() -> None:
     assert "graduation" in src.lower()
 
 
-def test_a_persistent_chip_advertises_the_palette() -> None:
+def test_a_persistent_affordance_advertises_the_palette() -> None:
+    # 2026-08-23 revamp: the advertisement moved from a floating chip
+    # (which collided with the composer's Send) to the topbar search
+    # field, which shows the chord and opens the palette.
     src = _src()
-    assert 'data-testid="shell-palette-chip"' in src
-    assert "Cmd+K" in src or "Ctrl+K" in src
+    assert 'data-testid="shell-palette-chip"' not in src
+    doc_host = (SRC.parent / "sh-doc-host.jsx").read_text(encoding="utf-8")
+    m = re.search(r'data-testid="shell-topbar-search"[\s\S]{0,400}', doc_host)
+    assert m and "Ctrl+K" in m.group(0)
 
 
 def test_every_chord_points_at_a_registered_verb_id() -> None:

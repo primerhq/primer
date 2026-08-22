@@ -3424,23 +3424,6 @@ input, textarea, select { font: inherit; color: inherit; }
 
 /* ---- Palette ---------------------------------------------------------- */
 
-.sh-palette-chip {
-  position: fixed;
-  right: var(--sp-3);
-  bottom: calc(26px + var(--sp-2));
-  z-index: 40;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: var(--fs-12);
-  color: var(--text-3);
-  background: var(--bg-elev);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 3px 10px;
-  cursor: pointer;
-}
-.sh-palette-chip:hover { color: var(--text); border-color: var(--border-strong); }
 
 .sh-palette {
   position: fixed;

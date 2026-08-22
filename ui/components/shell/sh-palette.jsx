@@ -188,14 +188,9 @@ function SH_Palette() {
 
   return (
     <React.Fragment>
-      <button
-        type="button"
-        className="sh-palette-chip"
-        data-testid="shell-palette-chip"
-        onClick={function () { setQuery(""); setOpen(true); }}
-      >
-        <kbd className="sh-kbd">Ctrl+K</kbd> verbs
-      </button>
+      {/* The floating Ctrl+K chip retired 2026-08-23: the topbar search
+          field is the persistent advertisement now (same kbd, same
+          opener), and the chip collided with the composer's Send. */}
       {open ? (
         <div className="sh-palette" data-testid="shell-palette" role="dialog">
           <input
