@@ -421,6 +421,7 @@ def _make_lifespan(config: AppConfig):
         timeout_sweeper = None
         event_dispatcher = None
         event_retention_pruner = None
+        workspace_event_bridge = None
         stuck_session_sweeper = None
         harness_sweeper = None
         watcher_manager = None
@@ -573,6 +574,51 @@ def _make_lifespan(config: AppConfig):
             )
             watcher_manager.start(coordinator.leader_elector)
             logger.info("lifespan: watcher manager started")
+
+            # Workspace lifecycle events (wave-2 spec Part 3): one
+            # runtime stream per opted-in workspace, emitted onto the
+            # platform event log by the leader.
+            from primer.events.workspace_bridge import WorkspaceEventBridge
+
+            async def _resolve_events_stream(workspace_id: str, config):
+                from primer.workspace.runtime.ws_sandbox import WSSandbox
+                try:
+                    ws = await workspace_registry.get_workspace(workspace_id)
+                except Exception:  # noqa: BLE001
+                    return None
+                sandbox = getattr(ws, "_sandbox", None)
+                if isinstance(sandbox, WSSandbox):
+                    return sandbox._client.events_subscribe(
+                        kinds=list(config.kinds),
+                        path_prefixes=config.path_prefixes,
+                    )
+                # Local workspace: host-side inotify serves the file
+                # kind; there is no runtime to observe execs.
+                root = getattr(ws, "root", None)
+                if root is not None and "file_changed" in config.kinds:
+                    from primer.bus.host_inotify_probe import HostInotifyProbe
+
+                    async def _file_stream():
+                        probe = HostInotifyProbe(root=str(root))
+                        async for change in probe.watch(
+                            list(config.path_prefixes or ["."]),
+                        ):
+                            yield {
+                                "kind": "file_changed",
+                                "path": change.path,
+                                "mtime": change.mtime,
+                                "size": change.size,
+                            }
+
+                    return _file_stream()
+                return None
+
+            workspace_event_bridge = WorkspaceEventBridge(
+                storage_provider=storage_provider,
+                stream_resolver=_resolve_events_stream,
+                event_bus=event_bus,
+            )
+            workspace_event_bridge.start(coordinator.leader_elector)
 
             # MCP task bridge — polls parked mcp_task:* sessions
             # and republishes results onto the bus. The bridge looks
@@ -943,6 +989,7 @@ def _make_lifespan(config: AppConfig):
                 (mcp_task_bridge, "mcp_task_bridge"),
                 (watcher_manager, "watcher_manager"),
                 (harness_sweeper, "harness_sweeper"),
+                (workspace_event_bridge, "workspace_event_bridge"),
                 (event_retention_pruner, "event_retention_pruner"),
                 (event_dispatcher, "event_dispatcher"),
                 (timeout_sweeper, "timeout_sweeper"),

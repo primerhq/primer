@@ -31,6 +31,9 @@ ACTION_EVENT_TYPES: frozenset[str] = frozenset({
     "graph.node_entered",
     "graph.node_exited",
     "session.wake",
+    "workspace.file_changed",
+    "workspace.exec_started",
+    "workspace.exec_exited",
 })
 
 _CRUD_VERBS = ("created", "updated", "deleted")

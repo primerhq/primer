@@ -482,6 +482,61 @@ class RuntimeClient:
         finally:
             self._streams.pop(req_id, None)
 
+    async def events_subscribe(
+        self,
+        *,
+        kinds: list[str] | None = None,
+        path_prefixes: list[str] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Subscribe to workspace lifecycle events (EVENTS_SUBSCRIBE).
+
+        Yields normalized dicts until the caller closes the iterator or
+        the connection drops:
+
+        * ``{"kind": "file_changed", "path": ..., "mtime": ..., "size": ...}``
+          (the runtime serves these through its watch machinery, so the
+          wire frames are ``watch_open`` / ``change`` / ``watch_closed``);
+        * ``{"kind": "exec_started" | "exec_exited", ...}`` from
+          ``ws_event`` frames.
+        """
+        req_id = self._alloc_req_id()
+        q: asyncio.Queue[Any] = asyncio.Queue()
+        self._streams[req_id] = q
+        try:
+            args: dict[str, Any] = {}
+            if kinds is not None:
+                args["kinds"] = kinds
+            if path_prefixes is not None:
+                args["path_prefixes"] = path_prefixes
+            await self._send_raw(
+                Request(
+                    req_id=req_id,
+                    op=OpName.EVENTS_SUBSCRIBE,
+                    args=args,
+                )
+            )
+            async for item in self._iter_stream(req_id, q):
+                if not isinstance(item, dict):
+                    continue
+                event = item.get("event")
+                data = item.get("data") if isinstance(item.get("data"), dict) else {}
+                if event == "ws_event" and data.get("kind"):
+                    yield dict(data)
+                    continue
+                if event == "change":
+                    yield {
+                        "kind": "file_changed",
+                        "path": data.get("path", ""),
+                        "mtime": data.get("mtime"),
+                        "size": data.get("size"),
+                    }
+                    continue
+                if event == "watch_closed":
+                    return
+                # watch_open / ok acks: skip
+        finally:
+            self._streams.pop(req_id, None)
+
     async def open_pty(
         self,
         *,
