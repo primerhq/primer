@@ -28,9 +28,32 @@ function SH_chordFor(event) {
   return SH_CHORDS[chord] ? chord : null;
 }
 
+// Search-first (revamp section 8): sessions match beside verbs, so the
+// palette is the one field that reaches both actions and places.
+function SH_matchSessions(sessions, query) {
+  var q = String(query || "").toLowerCase().trim();
+  if (!q) return [];
+  var items = (sessions && sessions.data && sessions.data.items) || [];
+  var out = [];
+  for (var i = 0; i < items.length && out.length < 5; i++) {
+    var s = items[i];
+    var label = s.name || s.session_id;
+    if (String(label).toLowerCase().indexOf(q) >= 0
+      || String(s.session_id).toLowerCase().indexOf(q) >= 0) {
+      out.push({ id: s.session_id, label: label });
+    }
+  }
+  return out;
+}
+
 // Shared row list: the palette and the composer's "/" both mount this.
+// Arrow keys move a selection over the COMBINED list (sessions first);
+// Enter runs it. Click always works too (dual-render in miniature).
 function SH_PaletteRows(props) {
   var shell = SH_useShell();
+  var selState = React.useState(0);
+  var sel = selState[0];
+  var setSel = selState[1];
   var active = null;
   var group = shell.docs.groups[shell.docs.activeGroup];
   if (group) {
@@ -38,14 +61,68 @@ function SH_PaletteRows(props) {
       if (group.tabs[i].id === group.activeId) active = group.tabs[i];
     }
   }
-  var rows = SH_rankVerbs(shell.registry, props.query, {
+  var sessionRows = SH_matchSessions(shell.sessions, props.query);
+  var verbRows = SH_rankVerbs(shell.registry, props.query, {
     docKind: active ? active.kind : null,
     frecency: shell.frecency,
   });
+  var total = sessionRows.length + verbRows.length;
+
+  function runSession(row) {
+    shell.openDoc({
+      kind: "session", ref: row.id, title: row.label, preview: true,
+    });
+    if (props.onRun) props.onRun(null);
+  }
+  function runVerb(verb) {
+    shell.frecency.record(verb.id);
+    shell.frecency.remember(props.query, verb.id);
+    verb.run();
+    if (props.onRun) props.onRun(verb);
+  }
+
+  React.useEffect(function () { setSel(0); }, [props.query]);
+  React.useEffect(function () {
+    function onKey(ev) {
+      if (ev.key === "ArrowDown") {
+        ev.preventDefault();
+        setSel(function (v) { return total ? (v + 1) % total : 0; });
+      } else if (ev.key === "ArrowUp") {
+        ev.preventDefault();
+        setSel(function (v) { return total ? (v - 1 + total) % total : 0; });
+      } else if (ev.key === "Enter") {
+        if (!total) return;
+        ev.preventDefault();
+        var idx = Math.min(sel, total - 1);
+        if (idx < sessionRows.length) runSession(sessionRows[idx]);
+        else runVerb(verbRows[idx - sessionRows.length]);
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return function () { window.removeEventListener("keydown", onKey); };
+  });
+
   return (
     <ul className="sh-palette-rows">
-      {rows.map(function (verb) {
+      {sessionRows.map(function (row, i) {
+        return (
+          <li key={"s:" + row.id}>
+            <button
+              type="button"
+              className="sh-palette-row"
+              data-testid="shell-palette-session-row"
+              data-active={i === sel ? "true" : "false"}
+              onClick={function () { runSession(row); }}
+            >
+              <span className="sh-chip">session</span>
+              <span className="sh-palette-label">{row.label}</span>
+            </button>
+          </li>
+        );
+      })}
+      {verbRows.map(function (verb, i) {
         var uses = shell.frecency.scoreFor(verb.id);
+        var idx = sessionRows.length + i;
         return (
           <li key={verb.id}>
             <button
@@ -53,12 +130,8 @@ function SH_PaletteRows(props) {
               className="sh-palette-row"
               data-testid="shell-palette-row"
               data-verb={verb.id}
-              onClick={function () {
-                shell.frecency.record(verb.id);
-                shell.frecency.remember(props.query, verb.id);
-                verb.run();
-                if (props.onRun) props.onRun(verb);
-              }}
+              data-active={idx === sel ? "true" : "false"}
+              onClick={function () { runVerb(verb); }}
             >
               <span className="sh-palette-label">{verb.label}</span>
               {verb.chord ? <kbd className="sh-kbd">{verb.chord}</kbd> : null}
@@ -142,5 +215,6 @@ function SH_Palette() {
 
 window.SH_CHORDS = SH_CHORDS;
 window.SH_chordFor = SH_chordFor;
+window.SH_matchSessions = SH_matchSessions;
 window.SH_PaletteRows = SH_PaletteRows;
 window.SH_Palette = SH_Palette;

@@ -55,3 +55,20 @@ def test_the_composer_slash_reuses_the_same_rows() -> None:
 def test_palette_state_never_reaches_the_url() -> None:
     src = _src()
     assert "pushState" not in src and "location.hash" not in src
+
+
+def test_sessions_match_beside_verbs() -> None:
+    """Revamp section 8: the palette is search-first - session rows
+    render above verb rows on query match, from shell.sessions."""
+    src = _src()
+    assert "SH_matchSessions" in src
+    assert 'data-testid="shell-palette-session-row"' in src
+    assert '"session", ref: row.id' in src.replace("kind: ", "")
+
+
+def test_arrow_keys_and_enter_span_both_row_kinds() -> None:
+    src = _src()
+    assert "ArrowDown" in src and "ArrowUp" in src
+    assert "sessionRows.length" in src, (
+        "Enter must index into the COMBINED session+verb list"
+    )
