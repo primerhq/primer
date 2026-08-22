@@ -29,20 +29,20 @@ from primer.storage.factory import StorageProviderFactory
 import pytest
 
 from primer.events.registry import register_event_kind
-
-# In the app process the router factories register the kinds at import
-# time; this suite runs without the routers, so mirror the production
-# registration explicitly (idempotent).
-register_event_kind("agent", Agent)
-from primer.model.collection import Document  # noqa: E402
-
-register_event_kind("document", Document)
+from primer.model.collection import Document
 
 # asyncio_mode = "auto" in pyproject.toml: async tests need no marker.
 
 
 @pytest_asyncio.fixture
 async def sp(tmp_path):
+    # In the app process the router factories register the kinds at
+    # import time. Registering here (idempotent) rather than at module
+    # import keeps the suite immune to another test's registry
+    # _reset_for_test() running between import and execution - the
+    # exact ordering CI's single-process sweep produced.
+    register_event_kind("agent", Agent)
+    register_event_kind("document", Document)
     cfg = StorageProviderConfig(
         provider=StorageProviderType.SQLITE,
         config=SqliteConfig(path=tmp_path / "t.sqlite"),

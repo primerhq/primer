@@ -36,13 +36,12 @@ class EvGadget(Identifiable):
     name: str = ""
 
 
-# Module-scope registration mirrors the router-factory idiom: kinds
-# register at import time and stay registered for the process.
-register_event_kind("evwidget", EvWidget)
-
-
 @pytest_asyncio.fixture
 async def sp(tmp_path: Path) -> AsyncIterator[SqliteStorageProvider]:
+    # Registered per-test (idempotent) rather than at module import so
+    # another suite's registry _reset_for_test() between import and
+    # execution cannot unregister the kind.
+    register_event_kind("evwidget", EvWidget)
     provider = SqliteStorageProvider(SqliteConfig(path=str(tmp_path / "t.sqlite")))
     await provider.initialize()
     try:
