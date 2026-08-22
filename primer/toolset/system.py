@@ -965,11 +965,11 @@ def build_system_toolset(
                 "``{timed_out}`` / ``{cancelled}``)."
             ),
             when=(
-                "Use to react to something happening on the platform - a "
-                "document pushed to a collection, an agent created, a "
-                "session ending - instead of polling. Pass event-type "
-                "globs plus optional field matchers / rego expr; "
-                "workspace sessions only."
+                "Use when you need to react to something happening on "
+                "the platform - a document pushed to a collection, an "
+                "agent created, a session ending - instead of polling. "
+                "Pass event-type globs plus optional field matchers / "
+                "rego expr; workspace sessions only."
             ),
             args_schema=_WaitForEventArgs.model_json_schema(),
             examples=[
