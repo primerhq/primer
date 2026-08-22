@@ -97,8 +97,8 @@ class InMemoryEventStore(EventStore):
         ]
         return before - len(self._events)
 
-    async def get_cursor(self, subscriber_id: str) -> int:
-        return self._cursors.get(subscriber_id, 0)
+    async def get_cursor(self, subscriber_id: str) -> int | None:
+        return self._cursors.get(subscriber_id)
 
     async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
         self._cursors[subscriber_id] = event_id

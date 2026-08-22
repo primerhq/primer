@@ -85,8 +85,9 @@ class EventStore(ABC):
     # -- cursors ----------------------------------------------------------
 
     @abstractmethod
-    async def get_cursor(self, subscriber_id: str) -> int:
-        """Last consumed event id for ``subscriber_id`` (0 when new)."""
+    async def get_cursor(self, subscriber_id: str) -> int | None:
+        """Last consumed event id for ``subscriber_id``, or ``None``
+        when no cursor row exists yet (a brand-new subscriber)."""
 
     @abstractmethod
     async def set_cursor(self, subscriber_id: str, event_id: int) -> None:

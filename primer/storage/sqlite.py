@@ -1477,7 +1477,7 @@ class SqliteEventStore(EventStore):
 
     # -- cursors ----------------------------------------------------------
 
-    async def get_cursor(self, subscriber_id: str) -> int:
+    async def get_cursor(self, subscriber_id: str) -> int | None:
         try:
             cur = await self._conn.execute(
                 "SELECT cursor FROM event_cursors WHERE subscriber_id = ?",
@@ -1488,7 +1488,7 @@ class SqliteEventStore(EventStore):
             raise _wrap_sqlite_error(
                 exc, model_name="event_cursors", op="get_cursor",
             ) from exc
-        return int(row[0]) if row else 0
+        return int(row[0]) if row else None
 
     async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
         now = datetime.now(timezone.utc).isoformat()

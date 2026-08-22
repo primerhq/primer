@@ -1495,14 +1495,14 @@ class PostgresEventStore(EventStore):
 
     # -- cursors ----------------------------------------------------------
 
-    async def get_cursor(self, subscriber_id: str) -> int:
+    async def get_cursor(self, subscriber_id: str) -> int | None:
         async with self._pool.acquire() as conn:
             value = await conn.fetchval(
                 f'SELECT cursor FROM {self._qualified_cursors} '
                 'WHERE subscriber_id = $1',
                 subscriber_id,
             )
-        return int(value) if value is not None else 0
+        return int(value) if value is not None else None
 
     async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
         async with self._pool.acquire() as conn:

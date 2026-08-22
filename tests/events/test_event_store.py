@@ -112,9 +112,9 @@ async def test_prune_honors_both_bounds(sp):
     assert [e.id for e in await store.read_after(0)] == [fresh]
 
 
-async def test_cursors_default_zero_upsert_and_floor(sp):
+async def test_cursors_default_missing_upsert_and_floor(sp):
     store = sp.get_event_store()
-    assert await store.get_cursor("sub-1") == 0
+    assert await store.get_cursor("sub-1") is None
     assert await store.active_cursor_floor() is None
     await store.set_cursor("sub-1", 10)
     await store.set_cursor("sub-2", 4)

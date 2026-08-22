@@ -49,6 +49,8 @@ ROLE_WATCHER_MANAGER = "watcher-manager"
 ROLE_MCP_BRIDGE = "mcp-bridge"
 ROLE_COORDINATOR_SWEEPER = "coordinator-sweeper"
 ROLE_STUCK_SESSION_SWEEPER = "stuck-session-sweeper"
+ROLE_EVENT_DISPATCHER = "event-dispatcher"
+ROLE_EVENT_RETENTION = "event-retention"
 
 
 class RateLimiterLease(AbstractAsyncContextManager["RateLimiterLease"]):
