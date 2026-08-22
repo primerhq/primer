@@ -36,7 +36,6 @@ from primer.workspace.local.tools.exec_ import Exec
 # build_* factories.
 from primer.api.registries import ProviderRegistry, WorkspaceRegistry
 from primer.toolset.misc import MISC_TOOLSET_ID, build_misc_toolset
-from primer.toolset.search import SEARCH_TOOLSET_ID, build_search_toolset
 from primer.toolset.harness import HARNESS_TOOLSET_ID, build_harness_toolset_provider
 from primer.toolset.trigger import TRIGGER_TOOLSET_ID, build_trigger_toolset_provider
 from primer.toolset.workspaces import WORKSPACES_TOOLSET_ID, build_workspaces_toolset
@@ -52,7 +51,6 @@ from tests.conftest import _FakeStorageProvider
 from tests.toolset.test_harness_toolset import _SP as _HarnessSP, _EventBus
 from tests.toolset.test_system import _SP as _SystemSP
 from tests.toolset.test_workspaces import _SP as _WorkspacesSP, _StubBackend
-from tests.toolset.test_search import stub_subsystem  # noqa: F401 - fixture reuse
 from tests.toolset.web.test_factory import (
     _FakeWebFetchService,
     _FakeWebSearchService,
@@ -70,9 +68,6 @@ def _build_providers():
     """
     from unittest.mock import AsyncMock, MagicMock
 
-    # search: a MagicMock subsystem (as tests/toolset/test_search.py builds it).
-    search_subsystem = MagicMock()
-    search_subsystem.search = AsyncMock()
 
     # system: ProviderRegistry over the in-memory storage fake.
     system_sp = _SystemSP()
@@ -90,7 +85,6 @@ def _build_providers():
 
     return [
         build_misc_toolset(),
-        build_search_toolset(search_subsystem),
         build_harness_toolset_provider(
             storage_provider=_HarnessSP(),
             event_bus=_EventBus(),
@@ -137,7 +131,6 @@ async def test_every_internal_toolset_conforms():
     # secondary sanity check (~159 internal tools across the seven toolsets).
     expected_ids = {
         MISC_TOOLSET_ID,
-        SEARCH_TOOLSET_ID,
         HARNESS_TOOLSET_ID,
         TRIGGER_TOOLSET_ID,
         WORKSPACES_TOOLSET_ID,

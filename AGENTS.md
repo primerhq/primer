@@ -49,18 +49,17 @@ files a task touches (never `git add -A`).
 - **Stack:** Python 3.12, `uv`, FastAPI, asyncio, Postgres + pgvector, a
   vanilla-React (JSX, no build step) console.
 - **Setup:** `uv sync --all-extras` (the optional backends - huggingface,
-  docling, lance, channels, docker, kubernetes - live behind extras; the dev
+  lance, channels, docker, kubernetes - live behind extras; the dev
   and test env needs them all); Postgres via `docker compose up -d postgres`; run with
   `uv run primer api` (starts the API plus an in-process worker). A dogfood
   instance is expected to stay healthy on `:9000` between tasks.
 - **Layout:**
   - `primer/<subsystem>/` - the backend, one package per subsystem: `api`,
-    `model`, `agent`, `chat`, `session`, `worker`, `claim`, `graph`,
-    `workspace`, `channel`, `toolset`, `llm`, `embedder`, `vector`, `trigger`,
-    `bus`, `mcp`, `harness`, `storage`, `bootstrap`, and more.
-  - `ui/` - the operator console (JSX components, `window`-exported pages,
-    a hash router).
-  - `primectl/` - the CLI client over the REST API.
+    `model`, `agent`, `session`, `knowledge`, `speech`, `worker`, `claim`,
+    `graph`, `workspace`, `channel`, `toolset`, `llm`, `embedder`, `vector`,
+    `trigger`, `bus`, `mcp`, `harness`, `storage`, `bootstrap`, and more.
+  - `ui/` - the workspace shell (JSX components, `window`-exported
+    surfaces, one URL grammar; no page router).
   - `tests/` - `tests/<subsystem>/` unit tests, `tests/e2e/` end-to-end against
     a live server, `tests/ui_e2e/` Playwright, `tests/distributed/`,
     `tests/docs/` hygiene.
@@ -111,9 +110,10 @@ checklist.
 1. **Backend** - models in `primer/model/`, storage wiring, REST routes under
    `primer/api/routers/` following the rest-api conventions, RFC7807 errors,
    observability hooks.
-2. **UI** - implement or update the respective console components in `ui/`
-   (page component, route, sidebar entry, mobile adaptation, loading/error/empty
-   states, toasts). A backend feature with no console surface is incomplete.
+2. **UI** - implement or update the surface in the workspace shell
+   (`ui/components/shell/`): the panel or overlay, its command-palette
+   verb, URL state, mobile adaptation, loading/error/empty states, and
+   toasts. A backend feature with no shell surface is incomplete.
 3. **System tools** - if the change adds new functionality, expose it as new
    tools in the appropriate toolset under `primer/toolset/` (built with
    `make_tool`, registered for internal-collection ingestion, callable over
@@ -130,8 +130,6 @@ checklist.
 7. **Regressions** - run the suites, capture any regressions in existing tests,
    and fix them. Do not merge with a red suite; do not weaken a test to hide a
    real regression - fix the cause.
-8. **primectl** - if the change introduces a new API/endpoint, update the
-   `primectl` CLI so it stays in parity with the REST surface.
 
 If a track is genuinely not applicable, say so explicitly with a one-line
 reason rather than skipping it silently.

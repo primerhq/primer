@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class SystemState(BaseModel):
@@ -27,5 +27,13 @@ class SystemState(BaseModel):
     schema_version: int = 1
     last_migration_at: datetime | None = None
     session_secret: str | None = None
+    default_agent_id: str | None = Field(
+        default=None,
+        description=(
+            "Agent that answers when a session is created without naming "
+            "one. None means no default is configured yet, so a "
+            "binding-less create is rejected rather than guessing."
+        ),
+    )
     sso_jit_enabled: bool = False
     sso_default_access: str | None = None

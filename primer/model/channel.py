@@ -189,48 +189,18 @@ class ChannelProvider(Identifiable):
 
 
 class ChatConfig(BaseModel):
-    """Chat-surface settings for a channel room."""
+    """Inbound settings for a channel room."""
 
     model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(
         default=False,
-        description="Whether channel-initiated chats are allowed on this room.",
-    )
-    default_agent: str | None = Field(
-        default=None,
-        description="Agent each new chat starts with; required when enabled.",
-    )
-    allow_agent_switch: bool = Field(
-        default=False,
-        description=(
-            "Whether users may switch a chat's agent via /agent. Off by "
-            "default so an operator who enables chats does not implicitly let "
-            "anyone change the agent. ``allowed_agents`` only applies when this "
-            "is on."
-        ),
-    )
-    allowed_agents: list[str] = Field(
-        default_factory=list,
-        description=(
-            "When agent switching is allowed, restricts /agent to these agents; "
-            "[] = any agent. Ignored when allow_agent_switch is off."
-        ),
+        description="Whether inbound messages on this room start sessions.",
     )
     relay_mode: Literal["final", "all"] = Field(
         default="final",
-        description="Outbound chat verbosity.",
+        description="Outbound verbosity.",
     )
-
-    @model_validator(mode="after")
-    def _validate_chat_constraints(self) -> "ChatConfig":
-        if self.allowed_agents and self.default_agent and self.default_agent not in self.allowed_agents:
-            raise ValueError(
-                "default_agent must be one of allowed_agents when allowed_agents is non-empty"
-            )
-        if self.enabled and not self.default_agent:
-            raise ValueError("default_agent is required when chats are enabled")
-        return self
 
 
 class SlackChannelConfig(BaseModel):

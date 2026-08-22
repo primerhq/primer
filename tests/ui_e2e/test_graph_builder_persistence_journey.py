@@ -52,6 +52,7 @@ from tests.ui_e2e import _graph_builder_helpers as gb
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-04")
 
 
@@ -142,7 +143,7 @@ def test_u0107_graph_builder_persistence_journey(
     graph_id_created: str | None = None
     try:
         # ----- 1. /graphs list ---------------------------------------
-        page.goto(f"{console_url}#/graphs", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "graphs")
         expect(page.locator("h1.page-title")).to_have_text(
             "Graphs", timeout=20_000,
         )
@@ -165,9 +166,7 @@ def test_u0107_graph_builder_persistence_journey(
         modal.get_by_role("button", name="Create", exact=True).click()
 
         # ----- 3. Land on /graphs/{gid}; editor renders ------------
-        page.wait_for_url(
-            f"**/console/#/graphs/{graph_id}", timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"graphs/{graph_id}")
         graph_id_created = graph_id
         expect(page.locator("h1.page-title", has_text=graph_id)).to_be_visible(
             timeout=20_000,
@@ -212,9 +211,13 @@ def test_u0107_graph_builder_persistence_journey(
         # assert BOTH: no spurious diff, AND the step actually came back.
         save_after = gb.save_button(page)
         expect(save_after).to_be_disabled(timeout=15_000)
-        assert gb.outline_row_count(page) == rows_staged, (
-            "the step added before Save did not survive the reload - the PUT "
-            "body did not persist it"
+        # Retrying, not a bare count: wait_for_builder returns when the
+        # builder SHELL is visible, which is before the reloaded graph has
+        # finished arriving, so a single sample can catch the outline half
+        # populated. Every other check here is a retrying expect() for the
+        # same reason; this one was the odd one out and flaked on CI.
+        expect(page.locator('[data-testid="gb-outline-row"]')).to_have_count(
+            rows_staged, timeout=15_000
         )
         expect(
             page.locator('[data-testid="gb-outline-row"]', has_text="Finish").first
@@ -222,7 +225,7 @@ def test_u0107_graph_builder_persistence_journey(
 
         # ----- 7. Click "Graphs" breadcrumb → /graphs list ---------
         page.locator(".crumb a", has_text="Graphs").click()
-        page.wait_for_url("**/console/#/graphs", timeout=10_000)
+        wait_for_overlay_url(page, "graphs", timeout=10_000)
         expect(page.locator("h1.page-title")).to_have_text(
             "Graphs", timeout=10_000,
         )
@@ -231,9 +234,7 @@ def test_u0107_graph_builder_persistence_journey(
 
         # ----- 8. Click row → back to /graphs/{gid} ----------------
         row.first.click()
-        page.wait_for_url(
-            f"**/console/#/graphs/{graph_id}", timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"graphs/{graph_id}")
         expect(page.locator("h1.page-title", has_text=graph_id)).to_be_visible(
             timeout=15_000,
         )

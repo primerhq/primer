@@ -143,9 +143,21 @@ iwin.addEventListener("error", (e) => {
     if (typeof iwin.AgentsPage !== "function") throw new Error("AgentsPage not defined in iframe");
     if (typeof iwin.DocsMakeStubApi !== "function") throw new Error("DocsMakeStubApi not defined in iframe");
 
-    // 4. Replace the live api with the fixture-backed stub. From here on,
-    //    anything the component reads comes from AGENTS_FIXTURE.
-    iwin.primerApi = iwin.DocsMakeStubApi(AGENTS_FIXTURE);
+    // 4. Layer the fixture-backed stub OVER the live api. From here on,
+    //    anything the component reads through the network members comes
+    //    from AGENTS_FIXTURE.
+    //
+    //    Layer rather than replace: the foundation contributes more than
+    //    the members the stub defines (useCapabilities, capabilityHint,
+    //    CapabilityGate, toastPush), and a bare assignment deleted all of
+    //    them, so AgentsPage threw "useCapabilities is not a function" the
+    //    moment it mounted. Safe because the stub overrides exactly the
+    //    network members; everything else reaches apiFetch and useResource
+    //    through the namespace at call time, so the embed still cannot
+    //    touch the network. Same reasoning as embed-preview.jsx, which is
+    //    the copy this page duplicates.
+    iwin.primerApi = Object.assign({}, iwin.primerApi,
+      iwin.DocsMakeStubApi(AGENTS_FIXTURE));
 
     // 5. Render the REAL AgentsPage into our own mount.
     setStatus("rendering");

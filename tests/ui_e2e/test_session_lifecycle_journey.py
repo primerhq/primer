@@ -178,17 +178,17 @@ def test_u0103_sessions_full_lifecycle_journey(
     try:
         # --- 1. Enter the Studio; the seeded session is a sidebar row -------
         # The row shows the session TITLE, not the raw sid — locate by the
-        # data-session-id stamp (studio-sidebar.jsx).
+        # data-session-id stamp (the shell rail).
         open_studio(page, console_url, wid)
         row_locator = session_row(page, sid)
         expect(row_locator.first).to_be_visible(timeout=20_000)
 
         # --- 2. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
             timeout=15_000,
         )
 
@@ -207,12 +207,14 @@ def test_u0103_sessions_full_lifecycle_journey(
             timeout=10_000,
         )
 
-        # --- 4. Panel-header status polls off CREATED -----------------------
-        # ST_SessionPanel polls /sessions/{id} every 2s while non-terminal;
-        # the header StatusPill catches up to cancelled/ended. Pin "left
-        # CREATED" (30s budget).
-        header = page.locator('[data-testid="panel-agent-header"]')
-        status_pill = header.locator(".pill").first
+        # --- 4. The session's status polls off CREATED ----------------------
+        # The rail's row for a session carries its status and polls while
+        # the session is non-terminal. Pin "left CREATED" (30s budget).
+        #
+        # NOT the composer's status line: that describes what a session is
+        # DOING and is empty whenever nothing is running, so it says
+        # nothing at all about a created-then-cancelled session.
+        status_pill = page.get_by_test_id(f"rail-session:{sid}")
         deadline = time.time() + 30.0
         last_seen = None
         while time.time() < deadline:
@@ -309,19 +311,18 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
         # --- 1. Enter the Studio for the workspace --------------------------
         # Re-pointed: the workspace-detail Sessions tab is retired; sessions
         # live in the Studio left-sidebar Sessions section, which polls
-        # /workspaces/{wid}/sessions every 3s (studio-sidebar.jsx).
+        # /workspaces/{wid}/sessions every 3s (the shell rail).
         open_studio(page, console_url, wid)
 
-        # --- 2. Sessions section shows the empty state ----------------------
-        # SessionsSection renders "No sessions yet." before any is seeded.
+        # --- 2. The rail's session list is up -------------------------------
+        # NOT the empty state: landing on a workspace with no sessions
+        # lazily creates one (S1 spec section 8), so an empty workspace
+        # does not stay empty long enough to assert that here. What this
+        # test is about is the rail reflecting a session seeded through
+        # the API, which step 4 checks.
         expect(sessions_list(page)).to_be_visible(
             timeout=15_000,
         )
-        expect(
-            sessions_list(page).get_by_text(
-                "No sessions yet", exact=False,
-            )
-        ).to_be_visible(timeout=15_000)
 
         # --- 3. Seed the session in the background --------------------------
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -343,10 +344,10 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
 
         # --- 5. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
             timeout=15_000,
         )
     finally:

@@ -1,18 +1,30 @@
-"""E2E: internal-collections subsystem activation/CDC/deactivation.
-
-Covers backlog items T0034 (CDC: new Agent appears in search) and
-T0053 (DELETE config deactivates subsystem).
+"""E2E: internal-collections subsystem activation and deactivation.
 
 The setup chain creates a HuggingFace EmbeddingProvider pointed at a
 local sentence-transformers model (no network creds required), PUTs
 the internal-collections config referencing it (which also requires a
-SemanticSearchProvider row as of the current API), calls bootstrap
-(which creates the vector tables), then exercises either the CDC sync
-path (T0034) or the deactivation path (T0053).
+SemanticSearchProvider row as of the current API), calls bootstrap,
+then exercises the activation and deactivation paths.
 
-Bootstrap is now asynchronous: POST /bootstrap returns 202 immediately;
-callers must poll GET /bootstrap/status until status == 'succeeded'
-(or 'failed', which causes a test skip).
+WHAT BOOTSTRAP MEANS NOW. S2 redefined it: it enables semantic search
+on the `system` collection, which startup regenerates from live state.
+It no longer builds the four `_internal_*` namespaces, and the CDC
+ingest worker that used to keep them current is no longer started. The
+per-entity routes (POST /v1/agents/search and friends) stay registered
+but INERT until they are deleted, answering 200 with no hits.
+
+The eighteen CDC-to-search tests that lived here went with that: they
+asserted that creating an agent made it findable through those routes
+within seconds, which was exactly the worker's job. Entity material is
+reachable through the system collection instead, and it refreshes at
+startup rather than per write.
+
+Bootstrap is SYNCHRONOUS as of S2: POST /bootstrap runs the pipeline
+inline and returns 200 carrying the terminal outcome, so there is
+nothing to poll and no in-flight state to race on. S2 also froze the
+vector-space fields (embedding provider, embedding model, search
+provider) once the subsystem is active, so re-configuring means
+DELETE-ing the config first.
 
 Both tests are SLOW: the embedder model load can take 30-60 s on the
 first bootstrap. The pytest timeouts are sized accordingly.
@@ -26,6 +38,16 @@ import httpx
 import pytest
 import pytest_asyncio
 from tests._support.model_profiles import agent_model, seed_llm_provider
+
+
+# Bootstrap is synchronous and now genuinely indexes the system
+# collection, so the call carries a real embedding pass. Kept under
+# the lane's own --timeout=180 per-test ceiling: a client timeout
+# above that can never fire, the test just dies at 180 s instead.
+_BOOTSTRAP_TIMEOUT = httpx.Timeout(120.0, connect=10.0)
+
+# The collection bootstrap enables search on.
+_SYSTEM_COLLECTION_ID = "system"
 
 
 def _embedding_provider_body(entity_id: str) -> dict:
@@ -81,31 +103,53 @@ async def _wait_bootstrap(
     timeout_seconds: float = 180.0,
     poll_interval: float = 0.5,
 ) -> dict:
-    """Poll GET /v1/internal_collections/bootstrap/status until terminal.
+    """Read the terminal bootstrap status row back.
 
-    Returns the final status row dict on success. Calls pytest.skip if
-    the bootstrap fails (e.g. embedder model unavailable) or times out.
+    Bootstrap is synchronous now, so once POST /bootstrap has returned
+    there is nothing left to wait for. This reads the row and skips when
+    the run failed (typically the embedder model being unavailable on
+    the runner), which is what every caller relied on the old polling
+    loop to do.
     """
-    deadline = asyncio.get_event_loop().time() + timeout_seconds
-    while asyncio.get_event_loop().time() < deadline:
-        r = await client.get(
-            "/v1/internal_collections/bootstrap/status",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+    del timeout_seconds, poll_interval  # kept so call sites need no edit
+    r = await client.get(
+        "/v1/internal_collections/bootstrap/status",
+        timeout=httpx.Timeout(30.0, connect=10.0),
+    )
+    assert r.status_code == 200, f"bootstrap/status returned {r.status_code}: {r.text}"
+    row = r.json()
+    if row.get("status") == "failed":
+        pytest.skip(
+            f"bootstrap failed (embedder model may be unavailable). "
+            f"Error: {row.get('error', 'unknown')!r}"
         )
-        assert r.status_code == 200, f"bootstrap/status returned {r.status_code}: {r.text}"
-        row = r.json()
-        status = row.get("status")
-        if status == "succeeded":
-            return row
-        if status == "failed":
-            pytest.skip(
-                f"bootstrap failed (embedder model may be unavailable). "
-                f"Error: {row.get('error', 'unknown')!r}"
-            )
-        await asyncio.sleep(poll_interval)
-    pytest.skip(
-        f"bootstrap did not complete within {timeout_seconds}s "
-        f"(last status: {row.get('status')!r})"
+    return row
+
+
+async def _wait_for_system_page(
+    client: httpx.AsyncClient, path: str, needle: str,
+    *, timeout_s: float = 20.0,
+) -> None:
+    """Poll the system-collection page until it exists and carries needle.
+
+    CDC is a subscription on the platform event log now: the leader
+    dispatcher converges the page within its poll interval (5s default)
+    rather than inline with the mutating request, so page reads after a
+    mutation must wait, exactly like the search assertions below.
+    """
+    deadline = asyncio.get_running_loop().time() + timeout_s
+    last = ""
+    while asyncio.get_running_loop().time() < deadline:
+        page = await client.get(
+            f"/v1/collections/{_SYSTEM_COLLECTION_ID}/documents",
+            params={"path": path},
+        )
+        last = page.text
+        if page.status_code == 200 and needle in page.text:
+            return
+        await asyncio.sleep(0.5)
+    raise AssertionError(
+        f"system page {path!r} never converged with {needle!r}; last: {last}"
     )
 
 
@@ -113,12 +157,10 @@ async def _wait_bootstrap(
 async def _drain_inflight_bootstrap(client: httpx.AsyncClient):
     """Ensure no internal-collections bootstrap is in-flight before each test.
 
-    The bootstrap status row is a global singleton. The in-flight and
-    concurrent cases below intentionally leave a bootstrap running, which
-    makes the NEXT test's POST /bootstrap return 409 instead of 202. Wait
-    for any running bootstrap to reach a terminal state first so every test
-    starts from a clean global state, independent of embedder speed or how
-    a prior test left the subsystem.
+    Bootstrap is synchronous now, so a run cannot outlive the request
+    that started it and there is normally nothing to drain. Kept as a
+    cheap guard: a row left ``running`` by an older build, or by a
+    process killed mid-run, would otherwise strand every test behind it.
     """
     deadline = asyncio.get_event_loop().time() + 180.0
     while asyncio.get_event_loop().time() < deadline:
@@ -163,13 +205,13 @@ async def test_t0053_config_delete_deactivates_subsystem(
         assert put.status_code == 200, put.text
         config_created = True
 
-        # 4. Bootstrap (async: returns 202, then poll status).
+        # 4. Bootstrap (synchronous: 200 carries the outcome).
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -229,110 +271,19 @@ def _agent_body(entity_id: str, *, provider_id: str, description: str) -> dict:
     }
 
 
-@pytest.mark.asyncio
-async def test_t0034_cdc_new_agent_appears_in_search(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0034 — after bootstrap, creating a new Agent via the CRUD route
-    triggers the CDC hook and the agent becomes findable via
-    `/agents/search` within a bounded poll window.
-
-    Uses a distinctive description with the unique_suffix so the search
-    query is unambiguous about which agent it should be retrieving.
-    """
-    embedder_id = f"emb-t0034-{unique_suffix}"
-    ssp_id = f"ssp-t0034-{unique_suffix}"
-    llm_id = f"llm-t0034-{unique_suffix}"
-    agent_id = f"agent-cdc-{unique_suffix}"
-    distinctive = f"distinctive-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    agent_created = False
-    try:
-        put = await client.put(
-            "/v1/internal_collections/config",
-            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
-        )
-        assert put.status_code == 200, put.text
-        config_created = True
-
-        boot = await client.post(
-            "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
-            f"{boot.status_code}: {boot.text}"
-        )
-        await _wait_bootstrap(client)
-
-        # Need an LLMProvider for the Agent's model reference.
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        # Create the agent — CDC hook should embed + ingest.
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=distinctive,
-            ),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        # Poll search for up to 30 s. The CDC ingest happens in the
-        # subsystem's worker queue and the embedder call is fast for
-        # a single short string with the model already loaded.
-        deadline_iters = 60  # 60 * 0.5 s = 30 s
-        found = False
-        for _ in range(deadline_iters):
-            search = await client.post(
-                "/v1/agents/search",
-                json={"query": distinctive, "top_k": 5},
-                timeout=httpx.Timeout(30.0, connect=10.0),
-            )
-            assert search.status_code == 200, search.text
-            hits = search.json()["hits"]
-            ids = [h["document_id"] for h in hits]
-            if agent_id in ids:
-                found = True
-                break
-            await asyncio.sleep(0.5)
-        assert found, (
-            f"agent {agent_id!r} did not appear in /agents/search results "
-            f"within 30 s; last response: {hits!r}"
-        )
-    finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
 async def _bootstrap_subsystem(
     client: httpx.AsyncClient,
     embedder_id: str,
     ssp_id: str,
 ) -> None:
-    """PUT config + POST bootstrap + poll until succeeded.
+    """DELETE any active config, PUT a fresh one, then bootstrap.
 
-    Used by many tests. Bootstrap is now async (202); this helper
-    waits for the terminal 'succeeded' state before returning.
+    Used by many tests. The DELETE is what makes re-configuration legal:
+    S2 freezes the vector-space fields while the subsystem is active, so
+    a PUT naming different providers 409s until it is deactivated.
     """
+    # Idempotent: 404 when nothing is configured yet, which is fine.
+    await client.delete("/v1/internal_collections/config")
     put = await client.put(
         "/v1/internal_collections/config",
         json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
@@ -340,111 +291,13 @@ async def _bootstrap_subsystem(
     assert put.status_code == 200, put.text
     boot = await client.post(
         "/v1/internal_collections/bootstrap",
-        timeout=httpx.Timeout(30.0, connect=10.0),
+        timeout=_BOOTSTRAP_TIMEOUT,
     )
-    assert boot.status_code == 202, (
-        f"bootstrap should return 202 (accepted); got "
+    assert boot.status_code == 200, (
+        f"bootstrap should return 200 with its outcome; got "
         f"{boot.status_code}: {boot.text}"
     )
     await _wait_bootstrap(client)
-
-
-async def _poll_search_for(
-    client: httpx.AsyncClient,
-    *,
-    query: str,
-    expected_id: str | None,
-    present: bool,
-    deadline_iters: int = 60,
-) -> list[str]:
-    """Poll /agents/search until ``expected_id`` is present (when
-    ``present=True``) or absent (when ``present=False``). Returns the
-    last observed list of ids.
-
-    Distinguishing presence and absence in the same primitive lets
-    T0035 and T0036 share polling logic.
-    """
-    last_ids: list[str] = []
-    for _ in range(deadline_iters):
-        search = await client.post(
-            "/v1/agents/search",
-            json={"query": query, "top_k": 10},
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        assert search.status_code == 200, search.text
-        last_ids = [h["document_id"] for h in search.json()["hits"]]
-        is_present = expected_id is not None and expected_id in last_ids
-        if (present and is_present) or (not present and not is_present):
-            return last_ids
-        await asyncio.sleep(0.5)
-    return last_ids
-
-
-@pytest.mark.asyncio
-async def test_t0035_cdc_deleted_agent_removed_from_search(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0035 — DELETE on an Agent removes it from /agents/search results
-    within a bounded poll window. CDC handles the removal hook the
-    same way it handles the create hook."""
-    embedder_id = f"emb-t0035-{unique_suffix}"
-    ssp_id = f"ssp-t0035-{unique_suffix}"
-    llm_id = f"llm-t0035-{unique_suffix}"
-    agent_id = f"agent-rm-{unique_suffix}"
-    distinctive = f"removable-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=distinctive,
-            ),
-        )
-        assert ag.status_code == 201, ag.text
-
-        # Wait for it to be indexed (CDC create hook).
-        ids = await _poll_search_for(
-            client, query=distinctive, expected_id=agent_id, present=True,
-        )
-        assert agent_id in ids, f"create-hook never indexed: {ids!r}"
-
-        # DELETE the agent.
-        rm = await client.delete(f"/v1/agents/{agent_id}")
-        assert rm.status_code == 204, rm.text
-
-        # Wait for it to disappear (CDC delete hook).
-        ids_after = await _poll_search_for(
-            client, query=distinctive, expected_id=agent_id, present=False,
-        )
-        assert agent_id not in ids_after, (
-            f"delete-hook did not remove agent within poll window: {ids_after!r}"
-        )
-    finally:
-        # agent already deleted in success path; suppress error in cleanup
-        await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 @pytest.mark.asyncio
@@ -493,10 +346,9 @@ async def test_t0062_search_top_k_caps_result_count(
             assert ag.status_code == 201, ag.text
             created_agents.append(aid)
 
-        # Wait for all three to be indexed (CDC).
-        await _poll_search_for(
-            client, query=shared_marker, expected_id=agent_ids[-1], present=True,
-        )
+        # No wait for indexing: CDC no longer feeds this surface, so the
+        # three agents never reach it. The cap is what is under test and
+        # it holds whether the index has three matches or none.
 
         # top_k=1 must cap the response, even though multiple match.
         resp = await client.post(
@@ -512,462 +364,6 @@ async def test_t0062_search_top_k_caps_result_count(
     finally:
         for aid in created_agents:
             await client.delete(f"/v1/agents/{aid}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
-@pytest.mark.asyncio
-async def test_t0059_search_ranks_marker_match_above_noise(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0059 — semantic search ranks the agent whose description
-    contains the queried marker strictly higher than an unrelated
-    agent's. Uses two distinct distinctive markers and queries one;
-    asserts the marker-A agent's score > marker-B agent's score.
-
-    Sentence-transformers cosine similarity gives a clear margin
-    between exact-marker match and an unrelated description, so this
-    pin is robust without a tight tolerance.
-    """
-    embedder_id = f"emb-t0059-{unique_suffix}"
-    ssp_id = f"ssp-t0059-{unique_suffix}"
-    llm_id = f"llm-t0059-{unique_suffix}"
-    agent_a = f"agent-a-{unique_suffix}"
-    agent_b = f"agent-b-{unique_suffix}"
-    marker_a = f"marker-aaa-{unique_suffix}"
-    marker_b = f"marker-bbb-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    created_agents: list[str] = []
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        # Two agents with completely distinct descriptions
-        for aid, desc in ((agent_a, marker_a), (agent_b, marker_b)):
-            ag = await client.post(
-                "/v1/agents",
-                json=_agent_body(aid, provider_id=llm_id, description=desc),
-            )
-            assert ag.status_code == 201, ag.text
-            created_agents.append(aid)
-
-        # Wait for both to be indexed
-        await _poll_search_for(
-            client, query=marker_a, expected_id=agent_a, present=True,
-        )
-        await _poll_search_for(
-            client, query=marker_b, expected_id=agent_b, present=True,
-        )
-
-        # Query for marker A -- both agents are eligible (they share
-        # the trailing unique_suffix), but agent_a's description is
-        # the one that contains marker_a verbatim, so it MUST rank
-        # strictly higher.
-        resp = await client.post(
-            "/v1/agents/search",
-            json={"query": marker_a, "top_k": 10},
-        )
-        assert resp.status_code == 200, resp.text
-        hits = {h["document_id"]: h["score"] for h in resp.json()["hits"]}
-        assert agent_a in hits, hits
-        assert agent_b in hits, hits
-        score_a = hits[agent_a]
-        score_b = hits[agent_b]
-        assert score_a is not None and score_b is not None, hits
-        assert score_a > score_b, (
-            f"expected agent_a (marker match) to outrank agent_b; "
-            f"got score_a={score_a}, score_b={score_b}"
-        )
-    finally:
-        for aid in created_agents:
-            await client.delete(f"/v1/agents/{aid}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
-@pytest.mark.asyncio
-async def test_t0128_collection_with_marker_searchable(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0128 — after bootstrap, a Collection whose description contains
-    a unique marker is findable via `/v1/collections/search`.
-
-    NB: the original backlog wording said "create collection + document,
-    search finds the document marker" — but there's no
-    `/v1/documents/search` endpoint, and `/v1/collections/search`
-    searches over Collection rows (not their documents). Reframed to
-    pin the Collection-search path through the internal-collections
-    subsystem, mirroring T0034 for Agent.
-    """
-    embedder_id = f"emb-t0128-{unique_suffix}"
-    ssp_id = f"ssp-t0128-{unique_suffix}"
-    coll_id = f"col-t0128-{unique_suffix}"
-    marker = f"collection-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    coll_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        # Create the Collection AFTER bootstrap so the CDC create-hook
-        # is responsible for indexing it (mirror of T0034).
-        coll = await client.post(
-            "/v1/collections",
-            json={
-                "id": coll_id,
-                "description": marker,
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
-            },
-        )
-        assert coll.status_code == 201, coll.text
-        coll_created = True
-
-        # Poll /v1/collections/search until the new collection appears
-        deadline_iters = 60  # ~30 s at 0.5 s cadence
-        found = False
-        last_ids: list[str] = []
-        for _ in range(deadline_iters):
-            search = await client.post(
-                "/v1/collections/search",
-                json={"query": marker, "top_k": 5},
-            )
-            assert search.status_code == 200, search.text
-            last_ids = [h["document_id"] for h in search.json()["hits"]]
-            if coll_id in last_ids:
-                found = True
-                break
-            await asyncio.sleep(0.5)
-        assert found, (
-            f"new collection not indexed within 30s; "
-            f"last hits={last_ids!r}"
-        )
-    finally:
-        if coll_created:
-            await client.delete(f"/v1/collections/{coll_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
-@pytest.mark.asyncio
-async def test_t0107_cdc_unicode_marker_searchable(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0107 — an Agent whose description contains a unique CJK + emoji
-    marker is findable via /v1/agents/search after CDC ingestion. Pins
-    that the embedder + vector store handle multi-byte unicode without
-    truncation or normalization-mismatch."""
-    embedder_id = f"emb-t0107-{unique_suffix}"
-    ssp_id = f"ssp-t0107-{unique_suffix}"
-    llm_id = f"llm-t0107-{unique_suffix}"
-    agent_id = f"agent-uni-{unique_suffix}"
-    # CJK + emoji marker. The unique_suffix at the end keeps this
-    # distinct from the (passing) plain-ascii T0034 marker.
-    marker = f"日本語マーカー 🎉 {unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    agent_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(agent_id, provider_id=llm_id, description=marker),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        ids = await _poll_search_for(
-            client, query=marker, expected_id=agent_id, present=True,
-        )
-        assert agent_id in ids, (
-            f"unicode-marker agent not indexed within poll window: {ids!r}"
-        )
-    finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
-@pytest.mark.asyncio
-async def test_t0090_cdc_burst_load_all_agents_indexed(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0090 — after bootstrap, POST 10 agents back-to-back with a
-    shared marker; ALL 10 must surface in `/agents/search` within
-    a bounded poll window. Catches CDC-queue dropping or coalescing
-    under burst load.
-    """
-    embedder_id = f"emb-t0090-{unique_suffix}"
-    ssp_id = f"ssp-t0090-{unique_suffix}"
-    llm_id = f"llm-t0090-{unique_suffix}"
-    shared_marker = f"burst-marker-{unique_suffix}"
-    n_agents = 10
-    agent_ids = [f"agent-burst-{unique_suffix}-{i:02d}" for i in range(n_agents)]
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    created_agents: list[str] = []
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        # Burst-create all 10 agents concurrently
-        responses = await asyncio.gather(
-            *[
-                client.post(
-                    "/v1/agents",
-                    json=_agent_body(
-                        aid, provider_id=llm_id, description=shared_marker,
-                    ),
-                )
-                for aid in agent_ids
-            ]
-        )
-        for r in responses:
-            assert r.status_code == 201, r.text
-        created_agents.extend(agent_ids)
-
-        # Poll up to 60s for ALL 10 ids to appear
-        deadline_iters = 120  # 60s @ 0.5s
-        last_ids: set[str] = set()
-        for _ in range(deadline_iters):
-            search = await client.post(
-                "/v1/agents/search",
-                json={"query": shared_marker, "top_k": n_agents + 5},
-                timeout=httpx.Timeout(30.0, connect=10.0),
-            )
-            assert search.status_code == 200, search.text
-            last_ids = {h["document_id"] for h in search.json()["hits"]}
-            if set(agent_ids).issubset(last_ids):
-                break
-            await asyncio.sleep(0.5)
-        missing = set(agent_ids) - last_ids
-        assert not missing, (
-            f"CDC dropped {len(missing)}/{n_agents} agents after 60s poll: "
-            f"missing={sorted(missing)!r}, present={sorted(last_ids)!r}"
-        )
-    finally:
-        for aid in created_agents:
-            await client.delete(f"/v1/agents/{aid}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
-@pytest.mark.asyncio
-async def test_t0091_cdc_reactivation_cycle_works(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0091 — full deactivation + reactivation cycle:
-    PUT config → bootstrap → DELETE config (subsystem inactive) →
-    PUT config → bootstrap → freshly-created Agent surfaces in search.
-
-    Catches state leakage between activation cycles (e.g. stale CDC
-    workers, stale subsystem references in the registry).
-    """
-    embedder_id = f"emb-t0091-{unique_suffix}"
-    ssp_id = f"ssp-t0091-{unique_suffix}"
-    llm_id = f"llm-t0091-{unique_suffix}"
-    agent_id = f"agent-cycle-{unique_suffix}"
-    marker = f"cycle-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_active = False
-    llm_created = False
-    agent_created = False
-    try:
-        # First activation cycle
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_active = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        # Deactivate
-        rm = await client.delete("/v1/internal_collections/config")
-        assert rm.status_code == 204, rm.text
-        config_active = False
-        # Confirm subsystem is inactive (search 503)
-        check = await client.post(
-            "/v1/agents/search", json={"query": "anything", "top_k": 3},
-        )
-        assert check.status_code == 503, check.text
-
-        # Re-activate
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_active = True
-
-        # Create a new agent AFTER re-activation; CDC must work again
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(agent_id, provider_id=llm_id, description=marker),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        ids = await _poll_search_for(
-            client, query=marker, expected_id=agent_id, present=True,
-        )
-        assert agent_id in ids, (
-            f"after reactivation, CDC did not re-index the new agent: {ids!r}"
-        )
-    finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_active:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
-@pytest.mark.asyncio
-async def test_t0036_cdc_updated_agent_description_indexed(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0036 — PUTing an Agent's description with a new distinctive
-    marker makes the agent findable by the new marker within the poll
-    window. The CDC update hook re-embeds with the latest text.
-    """
-    embedder_id = f"emb-t0036-{unique_suffix}"
-    ssp_id = f"ssp-t0036-{unique_suffix}"
-    llm_id = f"llm-t0036-{unique_suffix}"
-    agent_id = f"agent-upd-{unique_suffix}"
-    initial_marker = f"initial-marker-{unique_suffix}"
-    updated_marker = f"updated-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    agent_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=initial_marker,
-            ),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        # Wait for initial indexing.
-        await _poll_search_for(
-            client, query=initial_marker, expected_id=agent_id, present=True,
-        )
-
-        # PUT the agent with the new description.
-        put = await client.put(
-            f"/v1/agents/{agent_id}",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=updated_marker,
-            ),
-        )
-        assert put.status_code == 200, put.text
-
-        # Search by the NEW marker — must find the same agent_id.
-        ids = await _poll_search_for(
-            client, query=updated_marker, expected_id=agent_id, present=True,
-        )
-        assert agent_id in ids, (
-            f"update-hook did not re-index with new description: {ids!r}"
-        )
-    finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
         if llm_created:
             await client.delete(f"/v1/llm_providers/{llm_id}")
         if config_created:
@@ -995,96 +391,6 @@ def _graph_body(entity_id: str, *, agent_id: str, description: str) -> dict:
             {"kind": "static", "from_node": "n1", "to_node": "end"},
         ],
     }
-
-
-@pytest.mark.asyncio
-async def test_t0164_cdc_new_graph_appears_in_search(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0164 — after bootstrap, creating a new Graph via the CRUD route
-    triggers the CDC hook and the graph becomes findable via
-    `/v1/graphs/search` within a bounded poll window. Mirror of T0034
-    (Agent CDC) for the third CDC-mirrored entity kind.
-    """
-    embedder_id = f"emb-t0164-{unique_suffix}"
-    ssp_id = f"ssp-t0164-{unique_suffix}"
-    llm_id = f"llm-t0164-{unique_suffix}"
-    agent_id = f"agent-t0164-{unique_suffix}"
-    graph_id = f"graph-cdc-{unique_suffix}"
-    distinctive = f"graph-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    agent_created = False
-    graph_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        # Need an LLMProvider + Agent for the Graph's agent node reference
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id,
-                description=f"agent-for-{graph_id}",
-            ),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        # Create the graph — CDC hook should embed + ingest its description
-        gr = await client.post(
-            "/v1/graphs",
-            json=_graph_body(
-                graph_id, agent_id=agent_id, description=distinctive,
-            ),
-        )
-        assert gr.status_code == 201, gr.text
-        graph_created = True
-
-        # Poll /v1/graphs/search for the marker
-        deadline_iters = 60  # ~30 s at 0.5 s cadence
-        found = False
-        last_ids: list[str] = []
-        for _ in range(deadline_iters):
-            search = await client.post(
-                "/v1/graphs/search",
-                json={"query": distinctive, "top_k": 5},
-                timeout=httpx.Timeout(30.0, connect=10.0),
-            )
-            assert search.status_code == 200, search.text
-            last_ids = [h["document_id"] for h in search.json()["hits"]]
-            if graph_id in last_ids:
-                found = True
-                break
-            await asyncio.sleep(0.5)
-        assert found, (
-            f"graph {graph_id!r} did not appear in /v1/graphs/search "
-            f"results within 30 s; last hits={last_ids!r}"
-        )
-    finally:
-        if graph_created:
-            await client.delete(f"/v1/graphs/{graph_id}")
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -1149,103 +455,6 @@ async def test_t0165_tools_search_returns_200_after_bootstrap(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0174_search_query_distinguishes_two_agents(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0174 — index two agents with disjoint descriptions; searching for
-    a marker unique to agent A must rank agent A above agent B.
-
-    NB: spec §11 documents `SearchRequest = { query, top_k?, filter? }`
-    but primer/api/routers/internal_collections.py:97 actually only
-    accepts `{ query, top_k }` — the `filter` field is silently
-    ignored by Pydantic. This test pins the IMPLEMENTED behaviour
-    (semantic search via the query string) rather than the
-    unimplemented filter field. Sending a `filter` key in the body
-    must NOT crash the route.
-    """
-    embedder_id = f"emb-t0174-{unique_suffix}"
-    ssp_id = f"ssp-t0174-{unique_suffix}"
-    llm_id = f"llm-t0174-{unique_suffix}"
-    agent_a = f"agent-a-{unique_suffix}"
-    agent_b = f"agent-b-{unique_suffix}"
-    marker_a = f"marker-zebra-{unique_suffix}"
-    marker_b = f"marker-octopus-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    a_created = False
-    b_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        a = await client.post(
-            "/v1/agents",
-            json=_agent_body(agent_a, provider_id=llm_id, description=marker_a),
-        )
-        assert a.status_code == 201, a.text
-        a_created = True
-
-        b = await client.post(
-            "/v1/agents",
-            json=_agent_body(agent_b, provider_id=llm_id, description=marker_b),
-        )
-        assert b.status_code == 201, b.text
-        b_created = True
-
-        # Wait for both to be indexed
-        for _ in range(60):
-            s = await client.post(
-                "/v1/agents/search",
-                json={"query": marker_a, "top_k": 10},
-            )
-            assert s.status_code == 200, s.text
-            ids_seen = {h["document_id"] for h in s.json()["hits"]}
-            if {agent_a, agent_b}.issubset(ids_seen):
-                break
-            await asyncio.sleep(0.5)
-
-        # Search for marker_a — agent_a must rank above agent_b
-        s = await client.post(
-            "/v1/agents/search",
-            # Include an unsupported "filter" key to pin "no crash on
-            # extra body field" (spec §11 mentions it but it's unwired)
-            json={"query": marker_a, "top_k": 10, "filter": {"unused": True}},
-        )
-        assert s.status_code == 200, s.text
-        ranked = [h["document_id"] for h in s.json()["hits"]]
-        assert agent_a in ranked, f"agent_a not in results: {ranked!r}"
-        assert agent_b in ranked, f"agent_b not in results: {ranked!r}"
-        assert ranked.index(agent_a) < ranked.index(agent_b), (
-            f"search for marker_a should rank agent_a above agent_b; "
-            f"got {ranked!r}"
-        )
-    finally:
-        if a_created:
-            await client.delete(f"/v1/agents/{agent_a}")
-        if b_created:
-            await client.delete(f"/v1/agents/{agent_b}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
 # ============================================================================
 # T0167 — bootstrap is idempotent (second call returns 200 cleanly)
 # ============================================================================
@@ -1256,10 +465,10 @@ async def test_t0167_bootstrap_is_idempotent(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0167 — POST /v1/internal_collections/bootstrap a second time
-    after the first succeeds is idempotent (spec §11). Bootstrap now
-    returns 202 (async); both calls must accept 202 (new attempt
-    queued) or 409 (first still running). After both settle, search
-    routes must remain consistent.
+    after the first succeeds is idempotent (spec §11). Bootstrap runs
+    inline, so the second call returns 200 with its own outcome rather
+    than racing the first. Search routes must remain consistent
+    afterwards.
     """
     embedder_id = f"emb-t0167-{unique_suffix}"
     ssp_id = f"ssp-t0167-{unique_suffix}"
@@ -1280,14 +489,13 @@ async def test_t0167_bootstrap_is_idempotent(
         # First call already happened in _bootstrap_subsystem. Second call:
         boot2 = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        # 202 = new async attempt accepted; 409 = still running (also fine)
-        assert boot2.status_code in (202, 409), (
-            f"second bootstrap should be idempotent (202 or 409); got "
+        assert boot2.status_code == 200, (
+            f"second bootstrap should be idempotent and return 200; got "
             f"{boot2.status_code}: {boot2.text}"
         )
-        if boot2.status_code == 202:
+        if boot2.status_code == 200:
             await _wait_bootstrap(client)
         body = boot2.json()
         assert isinstance(body, dict), body
@@ -1530,10 +738,10 @@ async def test_t0203_bootstrap_on_empty_db_returns_sane_envelope(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot.status_code == 202, (
-            f"bootstrap on empty DB should return 202 (accepted), got "
+        assert boot.status_code == 200, (
+            f"bootstrap on empty DB should return 200 with its outcome, got "
             f"{boot.status_code}: {boot.text}"
         )
         status_row = await _wait_bootstrap(client)
@@ -1607,21 +815,23 @@ async def test_t0224_bootstrap_envelope_counts_shape(
         assert ag.status_code == 201, ag.text
         agent_created = True
 
-        # Bootstrap (async: 202 + poll) and pin the status-row shape
+        # Bootstrap (synchronous) and pin the status-row shape
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot.status_code == 202, boot.text
+        assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
-        # Counts come from the terminal status row, not the 202 body
+        # Counts come from the persisted status row. S2 replaced the old
+        # per-namespace "counts" dict with two flat totals: the run
+        # covers one collection now, so there is nothing left to break
+        # down by entity type.
         body = status_row
         assert isinstance(body, dict), body
-        # Shape: status row has counts with at least one int value
-        counts = body.get("counts", {})
-        int_values = [v for v in counts.values() if isinstance(v, int)]
-        assert int_values, (
-            f"bootstrap status row contains no integer counts: {body!r}"
+        assert isinstance(body.get("documents_total"), int), body
+        assert isinstance(body.get("documents_indexed"), int), body
+        assert body["documents_indexed"] > 0, (
+            f"bootstrap reported success having indexed nothing: {body!r}"
         )
         # No "error" key indicating a failed path
         for forbidden in ("error", "errors", "failed"):
@@ -1696,100 +906,6 @@ async def test_t0225_get_config_after_put_echoes_written_values(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0226_agents_search_ranking_stable_across_calls(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0226 — Two sequential POST /v1/agents/search with the same query
-    must return the SAME ordered hit list. Pins ranking determinism
-    distinct from T0059 (which checks relative ordering of two
-    specific agents). Probes the embedder + vector store + score
-    aggregator chain for any nondeterminism.
-
-    Seeds 3 agents with distinct descriptions, queries with one
-    marker, captures the order, calls again, compares.
-    """
-    embedder_id = f"emb-t0226-{unique_suffix}"
-    ssp_id = f"ssp-t0226-{unique_suffix}"
-    llm_id = f"llm-t0226-{unique_suffix}"
-    agent_ids = [f"agent-t0226-{unique_suffix}-{i}" for i in range(3)]
-    markers = [
-        f"data analysis pipeline {unique_suffix}",
-        f"customer support email {unique_suffix}",
-        f"code review assistant {unique_suffix}",
-    ]
-    query = f"customer help {unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    created_agents: list[str] = []
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        for aid, marker in zip(agent_ids, markers):
-            ag = await client.post(
-                "/v1/agents",
-                json=_agent_body(aid, provider_id=llm_id, description=marker),
-            )
-            assert ag.status_code == 201, ag.text
-            created_agents.append(aid)
-
-        # Wait until all three agents are indexed
-        for _ in range(60):
-            s = await client.post(
-                "/v1/agents/search", json={"query": query, "top_k": 10},
-            )
-            assert s.status_code == 200, s.text
-            ids_seen = {h["document_id"] for h in s.json()["hits"]}
-            if all(aid in ids_seen for aid in agent_ids):
-                break
-            await asyncio.sleep(0.5)
-
-        # Two sequential calls — order must match
-        r1 = await client.post(
-            "/v1/agents/search", json={"query": query, "top_k": 10},
-        )
-        assert r1.status_code == 200, r1.text
-        r2 = await client.post(
-            "/v1/agents/search", json={"query": query, "top_k": 10},
-        )
-        assert r2.status_code == 200, r2.text
-
-        ranked_1 = [h["document_id"] for h in r1.json()["hits"]]
-        ranked_2 = [h["document_id"] for h in r2.json()["hits"]]
-        # Filter to seeded agents (other tests may have leftovers
-        # earlier in the iteration — they're rare since bringup wipes
-        # the DB, but be defensive)
-        ranked_1_seeded = [a for a in ranked_1 if a in created_agents]
-        ranked_2_seeded = [a for a in ranked_2 if a in created_agents]
-        assert ranked_1_seeded == ranked_2_seeded, (
-            f"ranking unstable between two sequential calls. "
-            f"first={ranked_1_seeded!r}, second={ranked_2_seeded!r}"
-        )
-    finally:
-        for aid in created_agents:
-            await client.delete(f"/v1/agents/{aid}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
 # ============================================================================
 # T0243 — Bootstrap counts envelope reflects per-collection seeded counts
 # ============================================================================
@@ -1800,12 +916,14 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0243 — Seed 3 agents + 2 graphs + 1 collection BEFORE bootstrap.
-    The bootstrap response envelope's integer counts must sum to at
-    least 6 (the seeded entity total) — implementations may also count
-    built-in tools, so the sum is `>= 6` rather than `== 6`.
 
-    Distinct from T0224 (which only pinned "at least one int present");
-    this pins "the integers actually correspond to real entity counts".
+    The indexed count must cover at least the seeded entities. Each one
+    becomes a document in the system collection, which also holds the
+    shipped docs and the subtree indexes, so the count is `>= 6` rather
+    than `== 6`.
+
+    Distinct from T0224 (which pins the envelope's shape); this pins
+    that the numbers track real entities.
     """
     embedder_id = f"emb-t0243-{unique_suffix}"
     ssp_id = f"ssp-t0243-{unique_suffix}"
@@ -1858,39 +976,24 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
             json={
                 "id": coll_id,
                 "description": "T0243",
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
         seeded.append(("collections", coll_id))
 
-        # Bootstrap (async: 202 + poll); counts come from the status row
+        # Bootstrap (synchronous); counts come from the status row
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot.status_code == 202, boot.text
+        assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
         body = status_row
-        # Counts live in status_row["counts"] after the terminal state
-        counts = body.get("counts", {})
-
-        # Pull every integer value from the counts dict
-        all_ints: list[int] = []
-        for v in counts.values():
-            if isinstance(v, int):
-                all_ints.append(v)
-
         seeded_total = len(seeded)  # 6
-        total = sum(all_ints)
-        assert total >= seeded_total, (
-            f"bootstrap status counts sum to {total}; expected at "
-            f"least {seeded_total} from seeded entities. "
-            f"counts: {counts!r}"
+        indexed = body.get("documents_indexed", 0)
+        assert indexed >= seeded_total, (
+            f"bootstrap indexed {indexed} documents; expected at least "
+            f"{seeded_total} from seeded entities. status row: {body!r}"
         )
     finally:
         for kind, eid in seeded:
@@ -1906,98 +1009,6 @@ async def test_t0243_bootstrap_counts_reflect_seeded_entities(
 # ============================================================================
 # T0244 — IC config DELETE then re-PUT (same embedder); search recovers
 # ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_t0244_ic_config_delete_then_reput_search_recovers(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0244 — Activate → seed an Agent → DELETE config (subsystem
-    deactivates per T0053) → re-PUT same config → re-bootstrap →
-    /v1/agents/search returns 200; a NEW post-cycle Agent created
-    after the re-PUT is searchable within the poll window.
-    """
-    embedder_id = f"emb-t0244-{unique_suffix}"
-    ssp_id = f"ssp-t0244-{unique_suffix}"
-    llm_id = f"llm-t0244-{unique_suffix}"
-    pre_agent_id = f"agent-pre-{unique_suffix}"
-    post_agent_id = f"agent-post-{unique_suffix}"
-    pre_marker = f"pre-cycle-marker-{unique_suffix}"
-    post_marker = f"post-cycle-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    llm_created = False
-    agents_created: list[str] = []
-    config_currently_active = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_currently_active = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        pre = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                pre_agent_id, provider_id=llm_id, description=pre_marker,
-            ),
-        )
-        assert pre.status_code == 201, pre.text
-        agents_created.append(pre_agent_id)
-
-        # DELETE config — subsystem deactivates
-        rm = await client.delete("/v1/internal_collections/config")
-        assert rm.status_code == 204, rm.text
-        config_currently_active = False
-
-        # Re-PUT and re-bootstrap
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_currently_active = True
-
-        # New agent post-cycle
-        post = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                post_agent_id, provider_id=llm_id, description=post_marker,
-            ),
-        )
-        assert post.status_code == 201, post.text
-        agents_created.append(post_agent_id)
-
-        # Poll search until post-cycle agent is indexed
-        found = False
-        for _ in range(60):
-            s = await client.post(
-                "/v1/agents/search",
-                json={"query": post_marker, "top_k": 10},
-            )
-            assert s.status_code == 200, s.text
-            ids = {h["document_id"] for h in s.json()["hits"]}
-            if post_agent_id in ids:
-                found = True
-                break
-            await asyncio.sleep(0.5)
-        assert found, (
-            f"post-cycle agent {post_agent_id!r} not indexed after "
-            f"DELETE+re-PUT cycle within 30s"
-        )
-    finally:
-        for aid in agents_created:
-            await client.delete(f"/v1/agents/{aid}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_currently_active:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -2044,9 +1055,9 @@ async def test_t0269_ic_config_put_with_empty_collections_list(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot.status_code == 202, boot.text
+        assert boot.status_code == 200, boot.text
         status_row = await _wait_bootstrap(client)
         assert isinstance(status_row, dict), status_row
 
@@ -2097,17 +1108,17 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
         assert put.status_code == 200, put.text
         config_created = True
 
-        # Fire two parallel bootstraps. Both return 202 (accepted) or
-        # the second returns 409 (first already running). Neither may
-        # return /errors/internal.
+        # Fire two parallel bootstraps. Bootstrap runs inline, so both
+        # return 200 with their own outcome. The invariant that matters
+        # is that neither returns /errors/internal.
         r1, r2 = await asyncio.gather(
             client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             ),
             client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             ),
         )
         for r, label in ((r1, "bootstrap A"), (r2, "bootstrap B")):
@@ -2115,8 +1126,8 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
             assert envelope.get("type") != "/errors/internal", (
                 f"{label} returned /errors/internal: {r.text}"
             )
-            # 202 (accepted) or 409 (already running) are both valid
-            assert r.status_code in (202, 409), (
+            # bootstrap runs inline, so 200 is the only valid outcome
+            assert r.status_code == 200, (
                 f"{label} unexpected status: {r.status_code}: {r.text}"
             )
 
@@ -2138,9 +1149,9 @@ async def test_t0277_concurrent_bootstraps_during_fresh_put_clean_envelope(
                 # Subsystem may still be warming up; kick another bootstrap
                 br = await client.post(
                     "/v1/internal_collections/bootstrap",
-                    timeout=httpx.Timeout(30.0, connect=10.0),
+                    timeout=_BOOTSTRAP_TIMEOUT,
                 )
-                if br.status_code == 202:
+                if br.status_code == 200:
                     await _wait_bootstrap(client)
             await asyncio.sleep(0.5)
         assert last is not None
@@ -2217,204 +1228,9 @@ async def test_t0286_get_config_collections_field_round_trip(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0287_cdc_put_collection_updates_search(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0287 — Mirror of T0036 (PUT Agent re-indexed) for the Collection
-    entity. Create + index, then PUT with new marker, search by new
-    marker — same collection_id surfaces in the poll window.
-    """
-    embedder_id = f"emb-t0287-{unique_suffix}"
-    ssp_id = f"ssp-t0287-{unique_suffix}"
-    coll_id = f"coll-upd-{unique_suffix}"
-    initial_marker = f"initial-coll-marker-{unique_suffix}"
-    updated_marker = f"updated-coll-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    coll_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        coll = await client.post(
-            "/v1/collections",
-            json={
-                "id": coll_id,
-                "description": initial_marker,
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
-            },
-        )
-        assert coll.status_code in (200, 201), coll.text
-        coll_created = True
-
-        # Wait for initial indexing
-        for _ in range(60):
-            s = await client.post(
-                "/v1/collections/search",
-                json={"query": initial_marker, "top_k": 5},
-            )
-            assert s.status_code == 200, s.text
-            ids = {h["document_id"] for h in s.json()["hits"]}
-            if coll_id in ids:
-                break
-            await asyncio.sleep(0.5)
-
-        # PUT with new description
-        put = await client.put(
-            f"/v1/collections/{coll_id}",
-            json={
-                "id": coll_id,
-                "description": updated_marker,
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
-            },
-        )
-        assert put.status_code == 200, put.text
-
-        found = False
-        last_ids: list[str] = []
-        for _ in range(60):
-            s = await client.post(
-                "/v1/collections/search",
-                json={"query": updated_marker, "top_k": 5},
-            )
-            assert s.status_code == 200, s.text
-            last_ids = [h["document_id"] for h in s.json()["hits"]]
-            if coll_id in last_ids:
-                found = True
-                break
-            await asyncio.sleep(0.5)
-        assert found, (
-            f"update-hook did not re-index collection: "
-            f"last hits={last_ids!r}"
-        )
-    finally:
-        if coll_created:
-            await client.delete(f"/v1/collections/{coll_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
 # ============================================================================
 # T0288 — CDC: DELETE Graph removes it from /v1/graphs/search
 # ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_t0288_cdc_delete_graph_removes_from_search(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0288 — Mirror of T0035 (DELETE Agent removed) for the Graph
-    entity. Create + index, DELETE it, search no longer returns the
-    id within the poll window.
-    """
-    embedder_id = f"emb-t0288-{unique_suffix}"
-    ssp_id = f"ssp-t0288-{unique_suffix}"
-    llm_id = f"llm-t0288-{unique_suffix}"
-    agent_id = f"agent-t0288-{unique_suffix}"
-    graph_id = f"graph-rm-{unique_suffix}"
-    distinctive = f"removable-graph-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    agent_created = False
-    graph_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(agent_id, provider_id=llm_id, description="x"),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        gr = await client.post(
-            "/v1/graphs",
-            json=_graph_body(
-                graph_id, agent_id=agent_id, description=distinctive,
-            ),
-        )
-        assert gr.status_code == 201, gr.text
-        graph_created = True
-
-        # Wait for indexing
-        for _ in range(60):
-            s = await client.post(
-                "/v1/graphs/search",
-                json={"query": distinctive, "top_k": 5},
-            )
-            assert s.status_code == 200, s.text
-            ids = {h["document_id"] for h in s.json()["hits"]}
-            if graph_id in ids:
-                break
-            await asyncio.sleep(0.5)
-
-        # DELETE
-        rm = await client.delete(f"/v1/graphs/{graph_id}")
-        assert rm.status_code == 204, rm.text
-        graph_created = False
-
-        # Wait for removal
-        gone = False
-        last_ids: list[str] = []
-        for _ in range(60):
-            s = await client.post(
-                "/v1/graphs/search",
-                json={"query": distinctive, "top_k": 10},
-            )
-            assert s.status_code == 200, s.text
-            last_ids = [h["document_id"] for h in s.json()["hits"]]
-            if graph_id not in last_ids:
-                gone = True
-                break
-            await asyncio.sleep(0.5)
-        assert gone, (
-            f"deleted graph {graph_id!r} still present in search "
-            f"after 30s: {last_ids!r}"
-        )
-    finally:
-        if graph_created:
-            await client.delete(f"/v1/graphs/{graph_id}")
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -2428,8 +1244,13 @@ async def test_t0289_concurrent_cdc_ingest_and_search_clean(
 ) -> None:
     """T0289 — Cross-entity concurrency: fire 5 Agent POSTs and 5
     /v1/agents/search calls concurrently. All responses have clean
-    envelopes (no /errors/internal); after the dust settles, all 5
-    seeded agents are findable in search.
+    envelopes (no /errors/internal) and every create still lands.
+
+    The tail that polled until all five turned up in that search is
+    gone: S2 left the per-entity routes inert, so nothing populates
+    them. Agents reaching search is covered against the system
+    collection instead, by
+    ``test_new_agent_is_searchable_through_the_system_collection``.
     """
     embedder_id = f"emb-t0289-{unique_suffix}"
     ssp_id = f"ssp-t0289-{unique_suffix}"
@@ -2493,23 +1314,14 @@ async def test_t0289_concurrent_cdc_ingest_and_search_clean(
             f"{agents_created!r}"
         )
 
-        # After load, all 5 indexed
-        last_ids: set[str] = set()
-        for _ in range(60):
-            s = await client.post(
-                "/v1/agents/search",
-                json={"query": common_marker, "top_k": 10},
-            )
-            assert s.status_code == 200, s.text
-            last_ids = {h["document_id"] for h in s.json()["hits"]}
-            if all(aid in last_ids for aid in agent_ids):
-                break
-            await asyncio.sleep(0.5)
-        else:
-            pytest.fail(
-                f"not all 5 agents indexed after concurrent load: "
-                f"last hits={last_ids!r}"
-            )
+        # The subsystem still answers cleanly after the concurrent load,
+        # which is what the race is here to check.
+        s = await client.post(
+            "/v1/agents/search",
+            json={"query": common_marker, "top_k": 10},
+        )
+        assert s.status_code == 200, s.text
+        assert isinstance(s.json()["hits"], list), s.text
     finally:
         for aid in agents_created:
             await client.delete(f"/v1/agents/{aid}")
@@ -2526,218 +1338,9 @@ async def test_t0289_concurrent_cdc_ingest_and_search_clean(
 # ============================================================================
 
 
-@pytest.mark.asyncio
-async def test_t0299_search_concurrent_with_agent_update_clean(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0299 — Cross-op CDC race: while /v1/agents/search is being
-    called, simultaneously PUT a new description on an indexed agent.
-    All calls return clean envelopes (no /errors/internal). After the
-    dust settles, search by the NEW marker finds the agent.
-    """
-    embedder_id = f"emb-t0299-{unique_suffix}"
-    ssp_id = f"ssp-t0299-{unique_suffix}"
-    llm_id = f"llm-t0299-{unique_suffix}"
-    agent_id = f"agent-t0299-{unique_suffix}"
-    initial_marker = f"initial-marker-{unique_suffix}"
-    updated_marker = f"updated-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    agent_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=initial_marker,
-            ),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        # Wait for initial indexing
-        for _ in range(60):
-            s = await client.post(
-                "/v1/agents/search",
-                json={"query": initial_marker, "top_k": 5},
-            )
-            assert s.status_code == 200, s.text
-            ids = {h["document_id"] for h in s.json()["hits"]}
-            if agent_id in ids:
-                break
-            await asyncio.sleep(0.5)
-
-        # Race PUT (new description) concurrently with multiple search calls
-        async def _put_update() -> httpx.Response:
-            return await client.put(
-                f"/v1/agents/{agent_id}",
-                json=_agent_body(
-                    agent_id, provider_id=llm_id,
-                    description=updated_marker,
-                ),
-            )
-
-        async def _search_call() -> httpx.Response:
-            return await client.post(
-                "/v1/agents/search",
-                json={"query": initial_marker, "top_k": 5},
-            )
-
-        tasks = [asyncio.create_task(_put_update())]
-        for _ in range(4):
-            tasks.append(asyncio.create_task(_search_call()))
-        results = await asyncio.gather(*tasks)
-        for i, r in enumerate(results):
-            envelope = r.json() if r.content else {}
-            assert envelope.get("type") != "/errors/internal", (
-                f"task {i} returned /errors/internal: {r.text}"
-            )
-
-        # PUT must have succeeded
-        assert results[0].status_code == 200, results[0].text
-
-        # After load, search by NEW marker finds the agent
-        for _ in range(60):
-            s = await client.post(
-                "/v1/agents/search",
-                json={"query": updated_marker, "top_k": 5},
-            )
-            assert s.status_code == 200, s.text
-            ids = {h["document_id"] for h in s.json()["hits"]}
-            if agent_id in ids:
-                break
-            await asyncio.sleep(0.5)
-        else:
-            pytest.fail(
-                "agent not re-indexed with updated marker after "
-                "concurrent PUT+search load"
-            )
-    finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
-
-
 # ============================================================================
 # T0333 — POST /v1/agents/search with `filter` body field is silently ignored
 # ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_t0333_search_filter_field_silently_ignored(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0333 — Spec §11 mentioned `filter?` on SearchRequest, but the
-    actual model only has `query` + `top_k` (T0174 documented this).
-    This test extends T0174 by confirming a `filter` body that WOULD
-    be restrictive (if implemented) yields the IDENTICAL result set
-    as a call without filter — proving the field is silently
-    dropped, not partially applied.
-    """
-    embedder_id = f"emb-t0333-{unique_suffix}"
-    ssp_id = f"ssp-t0333-{unique_suffix}"
-    llm_id = f"llm-t0333-{unique_suffix}"
-    agent_id = f"agent-t0333-{unique_suffix}"
-    marker = f"filter-ignored-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    agent_created = False
-    try:
-        await _bootstrap_subsystem(client, embedder_id, ssp_id)
-        config_created = True
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(agent_id, provider_id=llm_id, description=marker),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        # Wait for indexing
-        for _ in range(60):
-            s = await client.post(
-                "/v1/agents/search",
-                json={"query": marker, "top_k": 5},
-            )
-            assert s.status_code == 200, s.text
-            ids = {h["document_id"] for h in s.json()["hits"]}
-            if agent_id in ids:
-                break
-            await asyncio.sleep(0.5)
-
-        # Search WITHOUT filter
-        no_filter = await client.post(
-            "/v1/agents/search",
-            json={"query": marker, "top_k": 10},
-        )
-        assert no_filter.status_code == 200, no_filter.text
-        no_filter_ids = sorted(
-            h["document_id"] for h in no_filter.json()["hits"]
-        )
-
-        # Search WITH a restrictive filter that, IF honoured, would
-        # exclude everything (impossible-id match)
-        with_filter = await client.post(
-            "/v1/agents/search",
-            json={
-                "query": marker,
-                "top_k": 10,
-                "filter": {"id": "definitely-no-match-xyz"},
-            },
-        )
-        assert with_filter.status_code == 200, with_filter.text
-        with_filter_ids = sorted(
-            h["document_id"] for h in with_filter.json()["hits"]
-        )
-
-        # Identical result sets — filter was silently dropped
-        assert no_filter_ids == with_filter_ids, (
-            f"filter field was applied (changed result set) — pin "
-            f"expected silent ignore: no_filter={no_filter_ids!r}, "
-            f"with_filter={with_filter_ids!r}"
-        )
-    finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -2779,11 +1382,6 @@ async def test_t0346_search_after_embedder_delete_clean_envelope(
             json={
                 "id": coll_id,
                 "description": f"T0346-{unique_suffix}",
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert coll.status_code in (200, 201), coll.text
@@ -2932,7 +1530,7 @@ async def test_t0303_bootstrap_concurrent_with_search_clean(
         async def _bootstrap() -> httpx.Response:
             return await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
 
         async def _search() -> httpx.Response:
@@ -2950,10 +1548,10 @@ async def test_t0303_bootstrap_concurrent_with_search_clean(
             assert envelope.get("type") != "/errors/internal", (
                 f"task {i} returned /errors/internal: {r.text}"
             )
-            # Bootstrap result is at index 0 — must be 202 (accepted)
+            # Bootstrap result is at index 0 — must be 200
             # or 409 (already running from the first bootstrap)
             if i == 0:
-                assert r.status_code in (202, 409), (
+                assert r.status_code == 200, (
                     f"concurrent bootstrap unexpected status: {r.text}"
                 )
             else:
@@ -2971,122 +1569,6 @@ async def test_t0303_bootstrap_concurrent_with_search_clean(
 # ============================================================================
 # T0400 — CDC ingestion latency for Agent POST → /agents/search empirical pin
 # ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_t0400_cdc_agent_to_search_latency_recorded(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0400 — Empirical-pin: measure how long it takes from Agent POST
-    to first /agents/search hit, and assert it sits inside a generous
-    upper bound. Catches gross regressions (CDC queue stall, embedder
-    misconfiguration) without flaking on legitimate slowness.
-
-    Sibling of T0034 (CDC happy-path correctness) but with timing as
-    the assertion. Bound: 30 s — same poll budget T0034 uses.
-    """
-    import time
-
-    embedder_id = f"emb-t0400-{unique_suffix}"
-    ssp_id = f"ssp-t0400-{unique_suffix}"
-    llm_id = f"llm-t0400-{unique_suffix}"
-    agent_id = f"agent-t0400-{unique_suffix}"
-    distinctive = f"latency-marker-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-
-    config_created = False
-    llm_created = False
-    agent_created = False
-    try:
-        put = await client.put(
-            "/v1/internal_collections/config",
-            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
-        )
-        assert put.status_code == 200, put.text
-        config_created = True
-
-        boot = await client.post(
-            "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        if boot.status_code == 409:
-            # Another bootstrap is still running from a prior test; wait for
-            # it to settle before treating our PUT-scoped run as done.
-            await _wait_bootstrap(client)
-        else:
-            assert boot.status_code == 202, (
-                f"bootstrap should return 202 (accepted); got "
-                f"{boot.status_code}: {boot.text}"
-            )
-            await _wait_bootstrap(client)
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        # T0=just before POST /v1/agents
-        t_post = time.monotonic()
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=distinctive,
-            ),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        # Poll search until the agent appears
-        upper_bound_seconds = 30.0
-        deadline = t_post + upper_bound_seconds
-        observed_latency: float | None = None
-        last_hits: list = []
-        while time.monotonic() < deadline:
-            search = await client.post(
-                "/v1/agents/search",
-                json={"query": distinctive, "top_k": 5},
-                timeout=httpx.Timeout(30.0, connect=10.0),
-            )
-            assert search.status_code == 200, search.text
-            last_hits = search.json()["hits"]
-            ids = [h["document_id"] for h in last_hits]
-            if agent_id in ids:
-                observed_latency = time.monotonic() - t_post
-                break
-            await asyncio.sleep(0.2)
-
-        assert observed_latency is not None, (
-            f"agent {agent_id!r} did not appear in /agents/search within "
-            f"{upper_bound_seconds}s (last hits={last_hits!r}) — gross "
-            f"CDC ingestion regression"
-        )
-        # The hard pin is the upper bound (regression guard).
-        assert observed_latency < upper_bound_seconds, (
-            f"observed latency {observed_latency:.2f}s exceeded upper "
-            f"bound {upper_bound_seconds}s"
-        )
-        # Empirical record (visible in pytest -v output) so future runs
-        # can compare. Not asserted as a tight bound to avoid flakes.
-        # ASCII-only to survive Windows cp1252 stdout when run with -s.
-        print(
-            f"\n[T0400] CDC POST /agents -> /agents/search hit latency: "
-            f"{observed_latency:.3f}s (bound={upper_bound_seconds}s)"
-        )
-    finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -3131,7 +1613,7 @@ async def test_t0411_concurrent_bootstrap_and_delete_config_clean(
         # Race bootstrap × delete-config
         boot_task = asyncio.create_task(client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         ))
         rm_task = asyncio.create_task(client.delete(
             "/v1/internal_collections/config",
@@ -3148,9 +1630,9 @@ async def test_t0411_concurrent_bootstrap_and_delete_config_clean(
                 f"{label} race returned 5xx: {r.status_code}: {r.text}"
             )
 
-        # bootstrap: 202 (accepted before delete) or 409/503
+        # bootstrap: 200 (ran before delete) or 409/503
         # (subsystem already gone)
-        assert boot.status_code in (202, 409, 503, 404), (
+        assert boot.status_code in (200, 409, 503, 404), (
             f"bootstrap race: unexpected code {boot.status_code}: "
             f"{boot.text}"
         )
@@ -3227,15 +1709,15 @@ async def test_t0412_cdc_burst_create_with_concurrent_delete_config_clean(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
         if boot.status_code == 409:
             # Another bootstrap is still running from a prior test; wait for
             # it to settle before treating our PUT-scoped run as done.
             await _wait_bootstrap(client)
         else:
-            assert boot.status_code == 202, (
-                f"bootstrap should return 202 (accepted); got "
+            assert boot.status_code == 200, (
+                f"bootstrap should return 200 with its outcome; got "
                 f"{boot.status_code}: {boot.text}"
             )
             await _wait_bootstrap(client)
@@ -3442,10 +1924,10 @@ async def test_t0443_rapid_deactivate_reactivate_cycles_clean(
 
             boot = await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
-            assert boot.status_code == 202, (
-                f"cycle {cycle}: bootstrap should return 202 (accepted); "
+            assert boot.status_code == 200, (
+                f"cycle {cycle}: bootstrap should return 200 with its outcome; "
                 f"got {boot.status_code}: {boot.text}"
             )
             await _wait_bootstrap(client)
@@ -3532,9 +2014,6 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
     embedder_a = f"emb-t0487a-{unique_suffix}"
     embedder_b = f"emb-t0487b-{unique_suffix}"
     ssp_id = f"ssp-t0487-{unique_suffix}"
-    llm_id = f"llm-t0487-{unique_suffix}"
-    agent_id = f"agent-t0487-{unique_suffix}"
-    marker = f"swap-marker-{unique_suffix}"
 
     sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
     assert sr.status_code == 201, sr.text
@@ -3551,8 +2030,6 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
     assert pr_b.status_code == 201, pr_b.text
 
     config_active = False
-    llm_created = False
-    agent_created = False
     try:
         # First activation cycle with embedder A
         put_a = await client.put(
@@ -3564,10 +2041,10 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
 
         boot_a = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot_a.status_code == 202, (
-            f"first bootstrap should return 202 (accepted); got "
+        assert boot_a.status_code == 200, (
+            f"first bootstrap should return 200 with its outcome; got "
             f"{boot_a.status_code}: {boot_a.text}"
         )
         await _wait_bootstrap(client)
@@ -3594,41 +2071,34 @@ async def test_t0487_config_swap_reactivation_uses_latest_embedder(
 
         boot_b = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot_b.status_code == 202, (
-            f"second bootstrap should return 202 (accepted); got "
+        assert boot_b.status_code == 200, (
+            f"second bootstrap should return 200 with its outcome; got "
             f"{boot_b.status_code}: {boot_b.text}"
         )
         await _wait_bootstrap(client)
 
-        # Create LLMProvider + Agent post-swap; CDC must work against
-        # the new embedder
-        llm = await seed_llm_provider(client, _llm_body(llm_id))
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=marker,
-            ),
+        # The evidence used to be CDC: create an agent and watch it
+        # appear in search under the new embedder. CDC no longer feeds
+        # that surface, so the evidence is the run itself. Re-bootstrap
+        # after the swap indexes the whole system collection with
+        # embedder B; a stale embedder reference would fail outright,
+        # and a dimension clash with B's vectors would land in `error`.
+        status = await client.get("/v1/internal_collections/bootstrap/status")
+        assert status.status_code == 200, status.text
+        row = status.json()
+        assert row["state"] == "ready", row
+        assert row["error"] is None, row
+        assert row["documents_indexed"] > 0, (
+            f"re-bootstrap on embedder B indexed nothing: {row!r}"
         )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
 
-        # Poll search for the new agent's marker
-        ids = await _poll_search_for(
-            client, query=marker, expected_id=agent_id, present=True,
-        )
-        assert agent_id in ids, (
-            f"after embedder swap, CDC did not index the new agent: "
-            f"{ids!r}"
-        )
+        # The swapped-in provider is the one now recorded on the config.
+        cfg = await client.get("/v1/internal_collections/config")
+        assert cfg.status_code == 200, cfg.text
+        assert cfg.json()["embedding_provider_id"] == embedder_b, cfg.text
     finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
         if config_active:
             await client.delete("/v1/internal_collections/config")
         await client.delete(f"/v1/embedding_providers/{embedder_a}")
@@ -3649,8 +2119,7 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
     (burst-create + delete-config). T0488 races 5 agent CREATEs
     against an IN-FLIGHT bootstrap (no pre-wait — the bootstrap
     starts at the same instant as the POSTs). Pin: every call clean
-    (2xx/4xx, never /errors/internal); after the dust settles the
-    new agents are searchable via CDC.
+    (2xx/4xx, never /errors/internal) and the creates still land.
     """
     embedder_id = f"emb-t0488-{unique_suffix}"
     ssp_id = f"ssp-t0488-{unique_suffix}"
@@ -3691,7 +2160,7 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
         # through cleanly while the subsystem is still warming up.
         boot_task = asyncio.create_task(client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(180.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         ))
         agent_tasks = [
             asyncio.create_task(client.post(
@@ -3707,7 +2176,7 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
         boot_resp = all_results[0]
         agent_results = all_results[1:]
 
-        # Bootstrap may have been accepted (202) or rejected if already
+        # Bootstrap may have been run (200) or been rejected if already
         # running (409). Either is acceptable; what matters is no
         # /errors/internal anywhere.
         boot_envelope = boot_resp.json() if boot_resp.content else {}
@@ -3715,12 +2184,12 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
             f"in-flight bootstrap leaked /errors/internal: "
             f"{boot_resp.text}"
         )
-        if boot_resp.status_code not in (202, 409):
+        if boot_resp.status_code not in (200, 409):
             pytest.skip(
                 f"bootstrap returned {boot_resp.status_code} during "
-                f"race (expected 202/409): {boot_resp.text[:300]}"
+                f"race (expected 200/409): {boot_resp.text[:300]}"
             )
-        if boot_resp.status_code == 202:
+        if boot_resp.status_code == 200:
             await _wait_bootstrap(client)
 
         # Every agent CREATE clean
@@ -3743,17 +2212,15 @@ async def test_t0488_agents_concurrent_with_in_flight_bootstrap_clean(
             f"{[r.status_code for r in agent_results]!r}"
         )
 
-        # Each created agent must eventually become searchable. Poll
-        # for one of them — if CDC is broken across the race, this
-        # would hang past the 30s budget.
-        target = agents_created[0]
-        ids = await _poll_search_for(
-            client, query=distinctive, expected_id=target, present=True,
+        # The tail of this test used to poll until one of them turned up
+        # in /agents/search. CDC no longer feeds that surface, so what
+        # remains under test is that the race leaves the subsystem in a
+        # clean state rather than a half-written one.
+        search = await client.post(
+            "/v1/agents/search", json={"query": distinctive, "top_k": 5},
         )
-        assert target in ids, (
-            f"after in-flight bootstrap race, CDC did not index "
-            f"agent {target!r}: {ids!r}"
-        )
+        assert search.status_code == 200, search.text
+        assert isinstance(search.json()["hits"], list), search.text
     finally:
         for aid in agents_created:
             await client.delete(f"/v1/agents/{aid}")
@@ -3850,23 +2317,23 @@ async def test_t0502_three_consecutive_bootstraps_identical_shape(
         assert put.status_code == 200, put.text
         config_created = True
 
-        # Three consecutive bootstraps (async: 202 + poll each time).
+        # Three consecutive bootstraps (each runs inline).
         # Status rows come from GET /bootstrap/status after each settles.
         status_rows: list[dict] = []
         for i in range(3):
             r = await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
             if r.status_code == 409:
                 # Second/third call may hit "already running" -- wait and retry
                 await _wait_bootstrap(client)
                 r = await client.post(
                     "/v1/internal_collections/bootstrap",
-                    timeout=httpx.Timeout(30.0, connect=10.0),
+                    timeout=_BOOTSTRAP_TIMEOUT,
                 )
-            assert r.status_code == 202, (
-                f"bootstrap[{i}] should return 202 (accepted); "
+            assert r.status_code == 200, (
+                f"bootstrap[{i}] should return 200 with its outcome; "
                 f"got {r.status_code}: {r.text[:300]}"
             )
             row = await _wait_bootstrap(client)
@@ -3928,10 +2395,10 @@ async def test_t0537_search_post_bootstrap_empty_db_returns_empty_hits(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -3967,105 +2434,6 @@ async def test_t0537_search_post_bootstrap_empty_db_returns_empty_hits(
 # ============================================================================
 # T0538 — /v1/agents/search top_k=100 (max) returns documented hits envelope
 # ============================================================================
-
-
-@pytest.mark.asyncio
-async def test_t0538_search_top_k_100_documented_hit_shape(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """T0538 — Reframed from the original "top_k=200" proposal:
-    actual documented max is 100 (per T0061/T0318 — Pydantic
-    le=100). This pins the response shape AT the documented max.
-
-    After bootstrap + create one agent, search with top_k=100,
-    distinctive marker. Pin: 200; `hits` is a list of length ≤ 100;
-    each hit has document_id + score + text + meta keys (the
-    documented Hit shape from T0034).
-    """
-    embedder_id = f"emb-t0538-{unique_suffix}"
-    ssp_id = f"ssp-t0538-{unique_suffix}"
-    llm_id = f"llm-t0538-{unique_suffix}"
-    agent_id = f"agent-t0538-{unique_suffix}"
-    distinctive = f"distinctive-marker-t0538-{unique_suffix}"
-
-    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
-    assert sr.status_code == 201, sr.text
-
-    pr = await client.post(
-        "/v1/embedding_providers",
-        json=_embedding_provider_body(embedder_id),
-    )
-    assert pr.status_code == 201, pr.text
-    config_created = False
-    llm_created = False
-    agent_created = False
-    try:
-        put = await client.put(
-            "/v1/internal_collections/config",
-            json=_ic_config_body(embedder_id=embedder_id, ssp_id=ssp_id),
-        )
-        assert put.status_code == 200, put.text
-        config_created = True
-
-        boot = await client.post(
-            "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
-            f"{boot.status_code}: {boot.text}"
-        )
-        await _wait_bootstrap(client)
-
-        llm = await seed_llm_provider(client, _llm_body(llm_id),
-        )
-        assert llm.status_code == 201, llm.text
-        llm_created = True
-
-        ag = await client.post(
-            "/v1/agents",
-            json=_agent_body(
-                agent_id, provider_id=llm_id, description=distinctive,
-            ),
-        )
-        assert ag.status_code == 201, ag.text
-        agent_created = True
-
-        # Wait for CDC ingestion of the agent
-        ids_seen = await _poll_search_for(
-            client, query=distinctive, expected_id=agent_id,
-            present=True,
-        )
-        assert agent_id in ids_seen, ids_seen
-
-        # Now the load-bearing assertion: search with top_k=100
-        # (documented max) returns the documented hit shape
-        search = await client.post(
-            "/v1/agents/search",
-            json={"query": distinctive, "top_k": 100},
-            timeout=httpx.Timeout(30.0, connect=10.0),
-        )
-        assert search.status_code == 200, search.text
-        body = search.json()
-        assert isinstance(body.get("hits"), list), body
-        assert len(body["hits"]) <= 100, body
-        assert len(body["hits"]) >= 1, (
-            f"expected ≥1 hit for the seeded agent's marker: {body!r}"
-        )
-        for hit in body["hits"]:
-            assert "document_id" in hit, hit
-            assert "score" in hit, hit
-            assert "text" in hit, hit
-            assert "meta" in hit, hit
-    finally:
-        if agent_created:
-            await client.delete(f"/v1/agents/{agent_id}")
-        if llm_created:
-            await client.delete(f"/v1/llm_providers/{llm_id}")
-        if config_created:
-            await client.delete("/v1/internal_collections/config")
-        await client.delete(f"/v1/embedding_providers/{embedder_id}")
-        await client.delete(f"/v1/ssp/{ssp_id}")
 
 
 # ============================================================================
@@ -4112,10 +2480,10 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -4126,35 +2494,40 @@ async def test_t0554_post_collection_then_collections_search_reflects_cdc(
             json={
                 "id": collection_id,
                 "description": distinctive,
-                "embedder": {
-                    "provider_id": embedder_id,
-                    "model": "sentence-transformers/all-MiniLM-L6-v2",
-                },
-                "search_provider_id": ssp_id,
             },
         )
         assert cr.status_code == 201, cr.text
         coll_created = True
 
-        # Poll /v1/collections/search for the marker
-        last_ids: list[str] = []
-        for _ in range(60):
+        # The new collection gets a page in the system collection: the
+        # event-log dispatcher converges it within its poll interval,
+        # and because bootstrap left search on there, the converge
+        # carries the indexing hooks. Asserted here rather than through
+        # /v1/collections/search, which S2 left inert.
+        await _wait_for_system_page(
+            client, f"collections/{collection_id}", distinctive,
+        )
+
+        found = False
+        last: dict = {}
+        for _ in range(20):
             search = await client.post(
-                "/v1/collections/search",
+                f"/v1/collections/{_SYSTEM_COLLECTION_ID}/search",
                 json={"query": distinctive, "top_k": 5},
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=httpx.Timeout(60.0, connect=10.0),
             )
             assert search.status_code == 200, search.text
-            last_ids = [
-                h["document_id"] for h in search.json()["hits"]
-            ]
-            if collection_id in last_ids:
+            last = search.json()
+            if any(
+                h.get("meta", {}).get("path") == f"collections/{collection_id}"
+                for h in last["hits"]
+            ):
+                found = True
                 break
             await asyncio.sleep(0.5)
-        assert collection_id in last_ids, (
-            f"collection {collection_id!r} did not appear in "
-            f"/v1/collections/search results within 30s; last hits: "
-            f"{last_ids!r}"
+        assert found, (
+            f"collection {collection_id!r} was not searchable through the "
+            f"system collection; last response: {last!r}"
         )
     finally:
         if coll_created:
@@ -4238,7 +2611,7 @@ async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
         async def _bootstrap() -> httpx.Response:
             return await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
 
         async def _del(aid: str) -> httpx.Response:
@@ -4252,19 +2625,19 @@ async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
         boot_resp = results[0]
         del_resps = results[1:]
 
-        # Bootstrap: 202 (accepted async), 4xx (configured but couldn't
+        # Bootstrap: 200 (ran), 4xx (configured but couldn't
         # start), or skip on unexpected status.
         assert not isinstance(boot_resp, BaseException), boot_resp
         boot_env = boot_resp.json() if boot_resp.content else {}
         assert boot_env.get("type") != "/errors/internal", (
             f"bootstrap leaked /errors/internal: {boot_resp.text}"
         )
-        if boot_resp.status_code not in (202, 400, 409, 422):
+        if boot_resp.status_code not in (200, 400, 409, 422):
             pytest.skip(
                 f"bootstrap returned {boot_resp.status_code} — embedder "
                 f"may be unavailable. Body: {boot_resp.text[:300]}"
             )
-        if boot_resp.status_code == 202:
+        if boot_resp.status_code == 200:
             await _wait_bootstrap(client)
 
         # DELETEs: each 204 (success), 404 (already gone), or 4xx.
@@ -4326,18 +2699,24 @@ async def test_t0601_ic_bootstrap_racing_5_agent_deletes_clean_envelopes(
 
 
 @pytest.mark.asyncio
-async def test_t0602_ic_re_bootstrap_cycle_x5_clean_envelopes(
+async def test_t0602_ic_re_bootstrap_cycle_clean_envelopes(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
     """T0602 — Run the lifecycle DELETE config → PUT same config →
-    bootstrap five times. Each cycle ends with /v1/agents/search
-    returning 200; never /errors/internal across the 5 cycles.
+    bootstrap repeatedly. Each cycle ends with /v1/agents/search
+    returning 200; never /errors/internal.
 
-    Priority 5 — IC subsystem under churn. Re-bootstrap exercises
-    the vector-store table create / drop / recreate path. Many
-    backends accumulate state (open connections, cached schema)
-    that can leak across cycles; 5 cycles is enough to surface
-    a slow leak as a 5xx on later cycles.
+    Priority 5 — IC subsystem under churn. Re-bootstrap exercises the
+    vector-store table create / drop / recreate path, where backends
+    accumulate state (open connections, cached schema) that can leak
+    across cycles and surface as a 5xx on a later one.
+
+    Was five cycles. Bootstrap actually indexes the system collection
+    now, and deleting the config drops its vectors, so every cycle is a
+    genuine rebuild of roughly 900 chunks through a real embedder: five
+    of them is about 175 s and the lane caps a test at 180. Two cycles
+    still exercise create-drop-recreate, which is the leak this is
+    watching for; what is lost is only the depth of the repetition.
     """
     embedder_id = f"emb-t0602-{unique_suffix}"
     ssp_id = f"ssp-t0602-{unique_suffix}"
@@ -4351,7 +2730,7 @@ async def test_t0602_ic_re_bootstrap_cycle_x5_clean_envelopes(
     assert pr.status_code == 201, pr.text
 
     try:
-        for cycle in range(5):
+        for cycle in range(2):
             # DELETE config (no-op on cycle 0 since none exists yet).
             d = await client.delete("/v1/internal_collections/config")
             assert d.status_code in (204, 404), (
@@ -4368,18 +2747,18 @@ async def test_t0602_ic_re_bootstrap_cycle_x5_clean_envelopes(
                 f"cycle {cycle} PUT failed: {put.status_code}: {put.text}"
             )
 
-            # Bootstrap (async: 202 + poll to succeeded).
+            # Bootstrap (synchronous).
             boot = await client.post(
                 "/v1/internal_collections/bootstrap",
-                timeout=httpx.Timeout(30.0, connect=10.0),
+                timeout=_BOOTSTRAP_TIMEOUT,
             )
             boot_env = boot.json() if boot.content else {}
             assert boot_env.get("type") != "/errors/internal", (
                 f"cycle {cycle} bootstrap leaked /errors/internal: "
                 f"{boot.text}"
             )
-            assert boot.status_code == 202, (
-                f"cycle {cycle} bootstrap should return 202 (accepted); "
+            assert boot.status_code == 200, (
+                f"cycle {cycle} bootstrap should return 200 with its outcome; "
                 f"got {boot.status_code}: {boot.text[:300]}"
             )
             await _wait_bootstrap(client)
@@ -4453,10 +2832,10 @@ async def test_t0586_agents_search_top_k_1_empty_post_bootstrap(
 
         boot = await client.post(
             "/v1/internal_collections/bootstrap",
-            timeout=httpx.Timeout(30.0, connect=10.0),
+            timeout=_BOOTSTRAP_TIMEOUT,
         )
-        assert boot.status_code == 202, (
-            f"bootstrap should return 202 (accepted); got "
+        assert boot.status_code == 200, (
+            f"bootstrap should return 200 with its outcome; got "
             f"{boot.status_code}: {boot.text}"
         )
         await _wait_bootstrap(client)
@@ -4499,3 +2878,89 @@ async def test_t0586_agents_search_top_k_1_empty_post_bootstrap(
             await client.delete(f"/v1/ssp/{ssp_id}")
         except Exception:  # noqa: BLE001
             pass
+
+
+# ============================================================================
+# A new agent is searchable without waiting for a restart
+# ============================================================================
+
+
+@pytest.mark.asyncio
+async def test_new_agent_is_searchable_through_the_system_collection(
+    client: httpx.AsyncClient, unique_suffix: str,
+) -> None:
+    """Creating an agent makes it findable, with no second bootstrap.
+
+    The seeded system-cdc event subscription converges that agent's
+    page in the system collection and, because bootstrap left search
+    enabled on it, the converge carries the indexing hooks. This is the successor to the CDC coverage that
+    used to assert the same thing through /v1/agents/search, which S2
+    left inert.
+    """
+    embedder_id = f"emb-cdc-{unique_suffix}"
+    ssp_id = f"ssp-cdc-{unique_suffix}"
+    llm_id = f"llm-cdc-{unique_suffix}"
+    agent_id = f"agent-cdc-{unique_suffix}"
+    distinctive = f"pelagic cartography rota {unique_suffix}"
+
+    sr = await client.post("/v1/ssp", json=_ssp_body(ssp_id))
+    assert sr.status_code == 201, sr.text
+    pr = await client.post(
+        "/v1/embedding_providers", json=_embedding_provider_body(embedder_id),
+    )
+    assert pr.status_code == 201, pr.text
+
+    agent_created = False
+    llm_created = False
+    try:
+        await _bootstrap_subsystem(client, embedder_id, ssp_id)
+
+        llm = await seed_llm_provider(client, _llm_body(llm_id))
+        assert llm.status_code == 201, llm.text
+        llm_created = True
+
+        ag = await client.post(
+            "/v1/agents",
+            json=_agent_body(
+                agent_id, provider_id=llm_id, description=distinctive,
+            ),
+        )
+        assert ag.status_code == 201, ag.text
+        agent_created = True
+
+        # The page converges via the event-log dispatcher (bounded by
+        # its poll interval), not inline with the POST.
+        await _wait_for_system_page(
+            client, f"agents/{agent_id}", distinctive,
+        )
+
+        # And it is searchable, without bootstrapping a second time.
+        found = False
+        last: dict = {}
+        for _ in range(20):
+            search = await client.post(
+                f"/v1/collections/{_SYSTEM_COLLECTION_ID}/search",
+                json={"query": distinctive, "top_k": 5},
+                timeout=httpx.Timeout(60.0, connect=10.0),
+            )
+            assert search.status_code == 200, search.text
+            last = search.json()
+            if any(
+                f"agents/{agent_id}" == h.get("meta", {}).get("path")
+                for h in last["hits"]
+            ):
+                found = True
+                break
+            await asyncio.sleep(0.5)
+        assert found, (
+            f"agent {agent_id!r} was not searchable through the system "
+            f"collection; last response: {last!r}"
+        )
+    finally:
+        if agent_created:
+            await client.delete(f"/v1/agents/{agent_id}")
+        if llm_created:
+            await client.delete(f"/v1/llm_providers/{llm_id}")
+        await client.delete("/v1/internal_collections/config")
+        await client.delete(f"/v1/embedding_providers/{embedder_id}")
+        await client.delete(f"/v1/ssp/{ssp_id}")

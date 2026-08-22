@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import httpx
 from playwright.sync_api import expect
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 
 
 # 60-char Discord placeholder — matches the API-side check in
@@ -100,10 +101,7 @@ def test_u0111_channels_per_platform_create_form_journey(
 
     try:
         # --- 1. Navigate /channels/providers → "New provider" -------
-        page.goto(
-            f"{console_url}#/channels/providers",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "channels/providers")
         new_btn = page.get_by_role(
             "button", name="New provider", exact=True,
         )
@@ -190,9 +188,7 @@ def test_u0111_channels_per_platform_create_form_journey(
 
         # Modal closes + URL navigates to /channels/providers/{cp_id}
         expect(page.locator(".modal")).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/channels/providers/{cp_id}**", timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"channels/providers/{cp_id}")
 
         # --- 6. Detail page Probe button disabled with hint --------
         probe_btn = page.get_by_role("button", name="Probe", exact=True).first

@@ -695,7 +695,7 @@ function GR_GraphEditor({ graphId, loaded, onSaved, onRefresh, pushToast }) {
   // canvas), which means an x/y-only relayout is otherwise invisible.
   const [layoutNonce, setLayoutNonce] = React.useState(0);
   // Raw-spec import escape hatch (GAP-6): paste a full graph spec (the
-  // same JSON shape `PUT /graphs/{id}` / `primectl create graph -f`
+  // same JSON shape as `PUT /graphs/{id}`
   // takes) and load it into the editor as an alternate to clicking the
   // whole graph node-by-node. null = closed.
   const [importOpen, setImportOpen] = React.useState(false);
@@ -1266,7 +1266,7 @@ function GR_ImportSpecModal({ currentDraft, onClose, onApply }) {
     >
       <div className="field">
         <label className="field-label">
-          Graph spec JSON <span className="hint">same shape as PUT /graphs/{"{id}"} / primectl create graph -f</span>
+          Graph spec JSON <span className="hint">same shape as PUT /graphs/{"{id}"}</span>
         </label>
         <textarea
           className="textarea mono"

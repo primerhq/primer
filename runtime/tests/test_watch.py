@@ -215,3 +215,46 @@ async def test_watch_multiple_paths(server: ServerFixture) -> None:
         change_b = await _next_event(ws, timeout=5.0)
         assert change_b["event"] == "change"
         assert str(file_b) in change_b["data"]["path"]
+
+
+def test_dot_pattern_watches_the_root_not_its_parent(tmp_path):
+    """Regression: paths ["."] must watch the workspace root itself.
+
+    The old resolution took the PARENT of a directory match, so "."
+    escaped to "/" and awatch built a recursive watch of the whole
+    container filesystem synchronously on the event loop (100% CPU,
+    server wedged - found live on the k3s cluster).
+    """
+    from primer_runtime.watch import _resolve_watch_paths
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    dirs, patterns = _resolve_watch_paths(["."], str(root))
+    assert dirs == [str(root)]
+    assert patterns == [str(root)]
+
+
+def test_existing_directory_pattern_watches_that_directory(tmp_path):
+    from primer_runtime.watch import _resolve_watch_paths
+
+    root = tmp_path / "workspace"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "f.txt").write_text("x")
+    dirs, _ = _resolve_watch_paths(["src"], str(root))
+    assert dirs == [str(root / "src")]
+    # A FILE match still watches its parent.
+    dirs, _ = _resolve_watch_paths(["src/f.txt"], str(root))
+    assert dirs == [str(root / "src")]
+
+
+def test_watch_dirs_never_escape_the_root(tmp_path):
+    from primer_runtime.watch import _resolve_watch_paths
+
+    root = tmp_path / "workspace"
+    root.mkdir()
+    for pattern in (".", "*", "**/*.txt", "missing/deep/f.txt"):
+        dirs, _ = _resolve_watch_paths([pattern], str(root))
+        for d in dirs:
+            assert d == str(root) or d.startswith(str(root) + "/"), (
+                pattern, dirs,
+            )

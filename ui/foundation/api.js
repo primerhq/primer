@@ -158,5 +158,6 @@
 
   const ns = (window.primerApi = window.primerApi || {});
   ns.apiFetch = apiFetch;
+  ns.resolvePath = resolvePath;
   ns.ApiError = ApiError;
 })();

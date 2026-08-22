@@ -5,8 +5,8 @@ The console has NO bundler/module system: the server concatenates every
 `const/let` are rewritten to `var`). So two files that each declare a
 top-level `function Foo(` / `const Foo =` silently collide — the last one
 loaded wins, with no load-time error. That is exactly how the global ⌘K
-command palette broke (`CommandPalette` declared in both chrome.jsx and
-studio-palette.jsx). This test fails loudly on any such collision so the
+command palette broke (`CommandPalette` declared in two files at once).
+This test fails loudly on any such collision so the
 next one can't ship silently.
 """
 

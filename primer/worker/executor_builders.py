@@ -22,6 +22,20 @@ from primer.model.principal import PrincipalRef
 from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.pool import _toolset_ids_from_scoped
 
+
+def _pool_event_recorder(pool):
+    """Platform event recorder over the pool's storage + bus refs.
+
+    None when the pool was built without storage (unit-test pools), so
+    the tool manager simply skips tool.called emission.
+    """
+    storage = getattr(pool, "_storage", None)
+    if storage is None:
+        return None
+    from primer.events.recorder import recorder_for
+
+    return recorder_for(storage, getattr(pool, "_event_bus", None))
+
 if TYPE_CHECKING:
     from primer.worker.pool import WorkerPool
 
@@ -43,6 +57,37 @@ def _external_defs_for(session_row, agent) -> "list | None":
     from primer.model.external_tool import ExternalToolDef
 
     return [ExternalToolDef.model_validate(d) for d in raw]
+
+
+async def client_tools_attached(pool: "WorkerPool", session_row) -> bool:
+    """Does THIS turn carry the client toolset (S3 spec section 4)?
+
+    Decided ONCE per turn. A parked row already carries the decision its
+    turn started with, so a resume reuses it verbatim: without that, a
+    park outliving the 30s attachment TTL would silently drop the toolset
+    mid-turn and the resumed prompt would disagree with the parked one.
+    """
+    blob = session_row.parked_state or {}
+    if "client_tools_attached" in blob:
+        return bool(blob["client_tools_attached"])
+    if pool._storage is None:
+        return False
+    from primer.model.client_attachment import ClientAttachment
+    from primer.session.attachment import live_attachments
+
+    live = await live_attachments(
+        pool._storage.get_storage(ClientAttachment), session_row.id,
+    )
+    return bool(live)
+
+
+async def client_toolset_for(pool: "WorkerPool", session_row) -> dict:
+    """``{client: ClientToolsetProvider()}`` when attached, else ``{}``."""
+    if not await client_tools_attached(pool, session_row):
+        return {}
+    from primer.toolset.client import CLIENT_TOOLSET_ID, ClientToolsetProvider
+
+    return {CLIENT_TOOLSET_ID: ClientToolsetProvider()}
 
 
 async def build_executor(pool: "WorkerPool", session: WorkspaceSession, workspace):
@@ -134,6 +179,7 @@ def build_graph_invocation_services(
             provider_registry=pool._provider_registry,
             tools=agent.tools,
             initiated_by=initiated_by,
+            event_recorder=_pool_event_recorder(pool),
         )
 
     async def graph_resolver(graph_id: str):
@@ -226,6 +272,11 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         provider = await pool._provider_registry.get_toolset(toolset_id)
         toolset_providers[toolset_id] = provider
 
+    # Client tools ride the turn only while a browser has the session
+    # open. Gated by attachment alone: allow_external_tools stays the
+    # API-caller gate and says nothing about notifying client tools.
+    toolset_providers.update(await client_toolset_for(pool, session))
+
     # Get the on-disk AgentSession the API allocated at create
     # time (Wave 2). The id matches session.id.
     agent_session = await workspace.get_session(session.id)
@@ -265,6 +316,7 @@ async def build_agent_executor(pool: "WorkerPool", session: WorkspaceSession, wo
         tools=agent.tools,
         graph_invocation_services=gis,
         initiated_by=initiated_by,
+        event_recorder=_pool_event_recorder(pool),
         external_tools=_external_defs_for(session, agent),
         # ``pool._storage`` is always present in production; some pool
         # unit-tests construct the pool with ``storage=None`` (see the
@@ -428,6 +480,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
                 initiated_by=initiated_by,
                 external_tools=node_external_tools,
                 external_call_storage=node_call_storage,
+                event_recorder=_pool_event_recorder(pool),
             )
         return ToolExecutionManager(
             toolset_providers=toolset_providers,
@@ -437,6 +490,7 @@ async def build_graph_executor(pool: "WorkerPool", session: WorkspaceSession, wo
             initiated_by=initiated_by,
             external_tools=node_external_tools,
             external_call_storage=node_call_storage,
+            event_recorder=_pool_event_recorder(pool),
         )
 
     # (4) Optional handles wired in later phases.
@@ -557,7 +611,7 @@ def infer_post_turn_status(
     # Graph dispatch sets a sentinel - the graph executor runs the
     # whole graph in one invoke() call, so there's no follow-up
     # turn for the worker to schedule.
-    if last_reason == "graph_ended":
+    if last_reason in ("graph_ended", "graph_failed"):
         return SessionStatus.ENDED
     if last_reason in ("max_tokens", "error", "content_filter"):
         return SessionStatus.WAITING

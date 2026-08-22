@@ -73,7 +73,7 @@ def _parse_url(url: str) -> PostgresConfig:
 
 
 class _ChatNoJoin(ClaimAdapter):
-    kind = ClaimKind.CHAT
+    kind = ClaimKind.HARNESS
     entity_table = "chats"
 
     def eligibility_sql(self) -> str:
@@ -139,7 +139,7 @@ async def pg_engine_la(
 ) -> PostgresClaimEngine:
     """PostgresClaimEngine with all three no-join adapters."""
     adapters = {
-        ClaimKind.CHAT:    _ChatNoJoin(),
+        ClaimKind.HARNESS:    _ChatNoJoin(),
         ClaimKind.SESSION: _SessionNoJoin(),
         ClaimKind.HARNESS: _HarnessNoJoin(),
     }
@@ -161,7 +161,7 @@ _THROUGHPUT_THRESHOLD = 0.95  # 95 % of 20 leases = 19
 def _make_lease_ids() -> list[tuple[ClaimKind, str]]:
     """Return 20 (kind, entity_id) pairs — roughly 7 chat, 7 session, 6 harness."""
     items: list[tuple[ClaimKind, str]] = []
-    kinds = [ClaimKind.CHAT, ClaimKind.SESSION, ClaimKind.HARNESS]
+    kinds = [ClaimKind.HARNESS, ClaimKind.SESSION, ClaimKind.HARNESS]
     for i in range(_TOTAL_LEASES):
         kind = kinds[i % len(kinds)]
         items.append((kind, f"la-{kind.value}-{i:02d}"))

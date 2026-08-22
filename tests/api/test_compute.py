@@ -36,11 +36,15 @@ class TestAgentCRUD:
 
     @pytest.mark.asyncio
     async def test_list(self, client) -> None:
+        """The platform seeds an operator and a builder agent, so a list is
+        never empty; assert this agent joined it rather than a count."""
+        before = (await client.get("/v1/agents?limit=50&offset=0")).json()["length"]
         body = _agent().model_dump(mode="json")
         await client.post("/v1/agents", json=body)
-        listed = await client.get("/v1/agents?limit=20&offset=0")
+        listed = await client.get("/v1/agents?limit=50&offset=0")
         assert listed.status_code == 200
-        assert listed.json()["length"] == 1
+        assert listed.json()["length"] == before + 1
+        assert "agt-1" in [row["id"] for row in listed.json()["items"]]
 
 
 class TestAgentStatus:
@@ -109,7 +113,6 @@ class TestAgentStatus:
         body = _agent(tools=[
             "web__http_request",
             "web__web_search",
-            "search__semantic_search",
             "system__list_files",
             "workspaces__create_workspace",
             "workspace_ext__sleep",
@@ -159,11 +162,14 @@ class TestAgentSearch:
     @pytest.mark.asyncio
     async def test_q_absent_is_unfiltered(self, client) -> None:
         await self._seed(client)
-        resp = await client.get("/v1/agents?limit=20&offset=0")
+        resp = await client.get("/v1/agents?limit=50&offset=0")
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["length"] == 3
-        assert body["total"] == 3
+        # The three seeded here, plus the operator and builder the platform
+        # seeds itself.
+        ids = [row["id"] for row in body["items"]]
+        assert {"agt-alpha", "agt-beta", "agt-gamma"} <= set(ids)
+        assert body["length"] == body["total"]
 
     @pytest.mark.asyncio
     async def test_q_percent_is_literal(self, client) -> None:

@@ -65,7 +65,7 @@ async def test_warm_starts_enabled_chat_adapters(tmp_path: Path):
         provider=ChannelProviderType.TELEGRAM,
         external_id="555",
         config=TelegramChannelConfig(
-            chats=ChatConfig(enabled=True, default_agent="agent-x"),
+            chats=ChatConfig(enabled=True),
         ),
     ))
     await ch.create(Channel(

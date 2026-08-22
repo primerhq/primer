@@ -19,6 +19,7 @@ propagating, so consumers can rely on the iterator always closing
 cleanly.
 """
 
+import json
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator, Iterable
 from typing import Any
@@ -26,6 +27,34 @@ from typing import Any
 from pydantic import BaseModel
 
 from primer.model.chat import Message, StreamEvent, Tool, ToolChoice
+
+
+
+
+def _extract_json_object(text: str) -> dict[str, Any]:
+    """Parse the one JSON object out of a model's reply.
+
+    Structured output keeps most providers to bare JSON, but reasoning
+    models wrap the object in prose or code fences even then. Extract
+    rather than reject; raise when no object is present at all, so the
+    caller can fail closed instead of acting on a guess.
+    """
+    candidate = text.strip()
+    try:
+        parsed = json.loads(candidate)
+    except ValueError:
+        start = candidate.find("{")
+        end = candidate.rfind("}")
+        if start == -1 or end <= start:
+            raise ValueError(
+                f"no JSON object in judge output: {candidate[:200]!r}"
+            ) from None
+        parsed = json.loads(candidate[start:end + 1])
+    if not isinstance(parsed, dict):
+        raise ValueError(
+            f"judge output is JSON but not an object: {candidate[:200]!r}"
+        )
+    return parsed
 
 
 class LLM(ABC):
@@ -44,6 +73,50 @@ class LLM(ABC):
     those families have no profiles and still carry a model list on the
     provider row.
     """
+
+
+    async def judge_structured(
+        self,
+        *,
+        model: str,
+        system_prompt: str,
+        user_message: str,
+        response_schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        """One non-interactive structured verdict from this provider.
+
+        Used by the LLM approval gate. Implemented here, on the ABC, in
+        terms of the one thing every adapter already provides: a
+        ``stream()`` that accepts a JSON-schema ``response_format``.
+        Providers with native structured output enforce the schema
+        server-side; the rest are held to it by the prompt and the
+        strict parse below. Temperature is pinned to 0 because a
+        verdict must not be sampled hot.
+
+        Raises on a fatal stream error or unparseable output; the
+        approval gate treats any raise as fail-closed.
+        """
+        from primer.model.chat import Error, Message, TextDelta, TextPart
+
+        messages = [
+            Message(role="system", parts=[TextPart(text=system_prompt)]),
+            Message(role="user", parts=[TextPart(text=user_message)]),
+        ]
+        chunks: list[str] = []
+        async for event in self.stream(
+            model=model,
+            messages=messages,
+            temperature=0.0,
+            response_format=response_schema,
+        ):
+            if isinstance(event, TextDelta):
+                chunks.append(event.text)
+            elif isinstance(event, Error) and event.fatal:
+                raise RuntimeError(
+                    f"judge stream failed: {event.message}"
+                )
+        return _extract_json_object("".join(chunks))
+
 
     @abstractmethod
     def stream(

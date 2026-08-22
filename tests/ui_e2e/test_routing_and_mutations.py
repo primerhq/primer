@@ -11,8 +11,11 @@ Covers:
 
 from __future__ import annotations
 
+import re
+
 import httpx
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # ---------------------------------------------------------------------------
@@ -73,10 +76,10 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
     close, a success toast must appear, and the URL must navigate to
     ``#/workspaces/<new-id>``.
 
-    Re-pointed: ``#/workspaces/<id>`` now renders the Studio (not the old
-    workspace-detail page), so the post-create assertion pins the Studio
-    shell mounting for the new workspace (studio-root + the workspace
-    selector showing the new id) instead of an ``h1.page-title``.
+    Re-pointed: ``#/workspaces/<id>`` now renders the console shell (not
+    the old workspace-detail page), so the post-create assertion pins the
+    shell mounting for the new workspace (shell-root + the topbar naming
+    the new id) instead of an ``h1.page-title``.
 
     Priority 1 — mutation feedback. Sister to U0006 (agents) for the
     workspace-create flow. The New-workspace modal doesn't collect a
@@ -103,7 +106,7 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
         assert r.status_code == 201, f"seed template failed: {r.text}"
 
     try:
-        page.goto(f"{console_url}#/workspaces", wait_until="domcontentloaded")
+        open_legacy_route(page, console_url, "workspaces")
         page.locator("h1.page-title").get_by_text(
             "Workspaces", exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -115,35 +118,34 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
         modal.wait_for(state="visible", timeout=5_000)
 
         # The dropdown auto-selects the first template per
-        # NewWorkspaceModal's useEffect (workspaces.jsx:196). Pin via
-        # explicit selection so we don't depend on ordering.
-        page.locator("select.select").first.select_option(value=tpl_id)
+        # NewWorkspaceModal's useEffect. Pin via explicit selection so we
+        # don't depend on ordering. Scope to the modal: the list page
+        # behind it carries its own selects and its own Create buttons,
+        # and a page-wide ``.first`` picks by DOM order, not by intent.
+        modal.locator("select.select").first.select_option(value=tpl_id)
 
-        # Submit.
-        page.get_by_role("button", name="Create").first.click()
+        # Submit. By testid, not by role name: "Create" is a substring
+        # match, so it also catches the modal's own "Create a template
+        # now" escape hatch.
+        modal.get_by_test_id("workspace-create-submit").click()
 
-        # Wait for modal close + URL change to #/workspaces/<id>.
-        # The new id is backend-allocated so we glob.
-        page.wait_for_url(
-            lambda url: "#/workspaces/" in url and not url.endswith(
-                "#/workspaces"
-            ),
-            timeout=15_000,
-        )
-        # Capture the id from the URL.
+        # Creating a workspace ENTERS it, which is what the pre-S8 route
+        # did too; the shell spells that "#/w/<wid>". The id is
+        # backend-allocated, so match the shape and read it back.
+        page.wait_for_url(re.compile(r"#/w/ws-[0-9a-f]+"), timeout=15_000)
         url = page.url
-        # url is e.g. http://127.0.0.1:8765/console/#/workspaces/ws-XXXX
-        created_ws_id = url.rsplit("/", 1)[-1].split("?")[0]
+        created_ws_id = url.split("#/w/", 1)[1].split("?")[0].split("#")[0]
         assert created_ws_id.startswith("ws-"), (
             f"unexpected workspace id format in URL: {url}"
         )
 
-        # The new workspace's Studio shell mounts (studio-root), and its
-        # sub-header workspace selector shows the new id.
-        page.locator('[data-testid="studio-root"]').wait_for(
+        # The new workspace's shell mounts, and the topbar names it.
+        # S8 retired the Studio's workspace selector; the shell states
+        # the workspace id in the topbar instead.
+        page.get_by_test_id("shell-root").wait_for(
             state="visible", timeout=15_000,
         )
-        page.locator('[data-testid="workspace-selector"]').get_by_text(
+        page.get_by_test_id("shell-workspace").get_by_text(
             created_ws_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
 
@@ -193,10 +195,7 @@ def test_u0033_agent_config_tab_deep_link_survives_reload(
     _seed_agent(base_url, agent_id, provider_id)
 
     try:
-        page.goto(
-            f"{console_url}#/agents/{agent_id}?tab=config",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"agents/{agent_id}", tab="config")
         page.locator("h1.page-title").get_by_text(agent_id).first.wait_for(
             state="visible", timeout=10_000,
         )
@@ -221,9 +220,10 @@ def test_u0033_agent_config_tab_deep_link_survives_reload(
             f"aria-selected={config_tab_after.get_attribute('aria-selected')!r}"
         )
 
-        # Defence: URL still has ?tab=config.
-        assert "tab=config" in page.url, (
-            f"reload dropped ?tab=config query: {page.url}"
+        # Defence: the tab travels in the overlay target's section
+        # slot now, not as a ?tab= query.
+        assert f"overlay=agents:config:{agent_id}" in page.url, (
+            f"reload dropped the config tab: {page.url}"
         )
     finally:
         _cleanup(base_url, [

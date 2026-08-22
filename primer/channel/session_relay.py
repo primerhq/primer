@@ -1,6 +1,6 @@
 """Final-result session relay: post the last-turn outcome to the reply binding.
 
-Symmetric with the chat relay helpers in :mod:`primer.channel.chat_dispatcher`,
+Symmetric with the outbound gate helpers on each platform adapter,
 but for workspace sessions. When a channel event spawns a session the inbound
 router stamps a per-session reply binding into ``session.metadata`` (see
 :data:`primer.channel.reply_binding.SESSION_REPLY_BINDING_KEY`); otherwise the
@@ -71,6 +71,7 @@ async def _post_lifecycle(
         response_schema=None,
         choices=None,
         timeout_at_iso=None,
+        thread_anchor=getattr(binding, "anchor", None),
     )
     try:
         results = await dispatcher.dispatch_prompt(envelope=env, session=session)

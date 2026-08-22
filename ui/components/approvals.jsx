@@ -53,14 +53,6 @@ function ApprovalsPage({ pushToast, onNavigate }) {
     { pollMs: 5000 },
   );
 
-  // Chats: no /v1/chats/find route, no parked_status query param. Pull
-  // the full list (limit=200 — current scale) and filter client-side.
-  const parkedChats = useResource(
-    "approvals:parked-chats",
-    (signal) => apiFetch("GET", "/chats?limit=200", null, { signal }),
-    { pollMs: 5000 },
-  );
-
   // Resolved (approved/rejected/timeout/cancelled) records, persisted
   // durably and queried newest-first. Merged with the live pending rows
   // below so the records view shows full history, not just live parks.
@@ -76,11 +68,10 @@ function ApprovalsPage({ pushToast, onNavigate }) {
   );
 
   const sessionRows = (parkedSessions.data?.items ?? []);
-  const chatRows = (parkedChats.data?.items ?? []).filter((c) => c.parked_status === "parked");
   const recordRows = (resolvedRecords.data?.items ?? []);
 
   // The records list combines two sources: (1) per-row tool_approval/pending
-  // fetches for live (still-parked) sessions/chats, which are "pending", and
+  // fetches for live (still-parked) sessions, which are "pending", and
   // (2) the durable resolved records from /tool_approval/records. Each pending
   // row renders an <AP_RecordRow> that does its own useResource and renders
   // nothing on 404; resolved records are normalised into the same shape and
@@ -126,12 +117,11 @@ function ApprovalsPage({ pushToast, onNavigate }) {
         <div style={{ padding: 0 }}>
           <AP_RecordsPanel
             sessions={sessionRows}
-            chats={chatRows}
             resolved={recordRows}
             sortBy={sortBy}
             sortDir={sortDir}
-            loading={(parkedSessions.loading && !parkedSessions.data) || (parkedChats.loading && !parkedChats.data) || (resolvedRecords.loading && !resolvedRecords.data)}
-            error={parkedSessions.error || parkedChats.error || resolvedRecords.error}
+            loading={(parkedSessions.loading && !parkedSessions.data) || (resolvedRecords.loading && !resolvedRecords.data)}
+            error={parkedSessions.error || resolvedRecords.error}
             onNavigate={onNavigate}
             pushToast={pushToast}
           />
@@ -221,7 +211,7 @@ function AP_recordCompare(a, b, sortBy, sortDir) {
   return sortDir === "asc" ? -cmp : cmp;
 }
 
-function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, sortDir, loading, error, onNavigate, pushToast }) {
+function AP_RecordsPanel({ sessions, resolved: resolvedRecords, sortBy, sortDir, loading, error, onNavigate, pushToast }) {
   // Each source row resolves its own pending record asynchronously. We
   // collect them into a shared store so the panel can sort across all
   // rows. `onRecord(key, record|null)` reports a resolved record (or
@@ -259,23 +249,22 @@ function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, s
     );
   }
 
-  // Pending sources: each parked session/chat fetches its live pending
+  // Pending sources: each parked session fetches its live pending
   // record (404 = not parked on an approval -> skipped).
-  const sources = [
-    ...sessions.map((s) => ({ key: `session:${s.id}`, scope: "sessions", id: s.id })),
-    ...chats.map((c) => ({ key: `chats:${c.id}`, scope: "chats", id: c.id })),
-  ];
+  const sources = sessions.map((s) => ({ key: `session:${s.id}`, scope: "sessions", id: s.id }));
   const pendingResolved = sources
     .map((src) => ({ src, record: records[src.key] }))
     .filter((r) => r.record);
 
-  // Durable resolved records: normalised into the row shape and tagged with
-  // their originating session/chat for navigation. They are read-only.
-  const durableResolved = (resolvedRecords || []).map((rec) => ({
+  // Durable resolved records: normalised into the row shape and tagged
+  // with their originating session for navigation. They are read-only.
+  // Chat-scoped legacy records are dropped: the chat surface is gone, so
+  // their row would render a link that cannot resolve.
+  const durableResolved = (resolvedRecords || []).filter((rec) => !rec.chat_id).map((rec) => ({
     src: {
       key: `record:${rec.id}`,
-      scope: rec.chat_id ? "chats" : "sessions",
-      id: rec.chat_id || rec.session_id || rec.id,
+      scope: "sessions",
+      id: rec.session_id || rec.id,
     },
     record: AP_normResolved(rec),
   }));
@@ -298,7 +287,7 @@ function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, s
           <div className="sub">
             Pending records appear here when a tool call hits a gate; resolved
             (approved/rejected/timeout/cancelled) decisions are retained and
-            shown alongside. Polling every 5s across all sessions + chats.
+            shown alongside. Polling every 5s across all sessions.
           </div>
         </div>
       ) : (
@@ -322,7 +311,7 @@ function AP_RecordsPanel({ sessions, chats, resolved: resolvedRecords, sortBy, s
 // pure while each source still does its own poll/cache.
 function AP_RecordFetcher({ recordKey, scope, id, onRecord }) {
   const { useResource, apiFetch } = window.primerApi;
-  const cacheKey = `tool-approval:${scope === "sessions" ? "session" : "chat"}:${id}`;
+  const cacheKey = `tool-approval:session:${id}`;
   const pending = useResource(
     cacheKey,
     (signal) => apiFetch(
@@ -355,7 +344,7 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
 
   // Reuse the same cache key as the banner so a respond from either
   // surface refetches the other.
-  const cacheKey = `tool-approval:${scope === "sessions" ? "session" : "chat"}:${id}`;
+  const cacheKey = `tool-approval:session:${id}`;
 
   const respond = useMutation(
     (body) => apiFetch(
@@ -367,7 +356,6 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
       invalidates: [
         cacheKey,
         "approvals:parked-sessions",
-        "approvals:parked-chats",
       ],
       onSuccess: () => pushToast && pushToast({ kind: "success", title: "Decision sent" }),
       onError: AP_toastErr(pushToast, "Respond failed"),
@@ -392,7 +380,6 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
     // Mobile shortcut: open the inline rejection form inside the sheet.
     setRejecting(true);
   };
-  const navTarget = scope === "chats" ? "chat-detail" : "session-detail";
 
   if (isMobile) {
     const parkedSecLabel = parkedSec != null ? `parked ${relativeTime(parkedSec)}` : null;
@@ -405,7 +392,7 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
             renderCard={() => (
               <Card
                 title={a.tool_name}
-                subtitle={`${scope === "chats" ? "chat" : "session"} · ${id}`}
+                subtitle={`session · ${id}`}
                 pill={isPending ? <StatusPill status="paused" /> : <AP_StatusBadge status={a.status} />}
                 meta={parkedSecLabel}
                 onClick={() => setSheetOpen(true)}
@@ -512,9 +499,9 @@ function AP_RecordRow({ scope, id, record, onNavigate, pushToast }) {
             <a
               className="mono"
               style={{ color: "var(--accent)", cursor: "pointer" }}
-              onClick={() => onNavigate && onNavigate(navTarget, id)}
+              onClick={() => onNavigate && onNavigate("session-detail", id)}
             >
-              {scope === "chats" ? "chat" : "session"} · {id}
+              session · {id}
             </a>
             {a.policy_id && <> · policy <span className="mono">{a.policy_id}</span></>}
           </div>
@@ -858,7 +845,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
               <div className="field-help muted">Loading providers…</div>
             ) : providerItems.length === 0 ? (
               <div className="field-help warn">
-                No LLM providers configured yet. Create one under <span className="mono">/providers/llm</span>.
+                No LLM providers configured yet. Create one under <span className="mono">/providers?class=llm</span>.
               </div>
             ) : (
               <select
@@ -914,7 +901,7 @@ function AP_NewPolicyModal({ onClose, pushToast, existing }) {
 }
 
 // =============================================================
-// ApprovalBanner — embedded in session-detail.jsx + chats.jsx
+// ApprovalBanner - embedded in session-detail.jsx
 // =============================================================
 
 function ApprovalBanner({ data, scope, id, pushToast }) {
@@ -922,7 +909,7 @@ function ApprovalBanner({ data, scope, id, pushToast }) {
   const [rejecting, setRejecting] = React.useState(false);
   const [reason, setReason] = React.useState("");
 
-  const cacheKey = `tool-approval:${scope === "sessions" ? "session" : "chat"}:${id}`;
+  const cacheKey = `tool-approval:session:${id}`;
   const respond = useMutation(
     (body) => apiFetch(
       "POST",
@@ -934,7 +921,6 @@ function ApprovalBanner({ data, scope, id, pushToast }) {
         cacheKey,
         scope === "sessions" ? `session-detail:${id}` : null,
         "approvals:parked-sessions",
-        "approvals:parked-chats",
       ].filter(Boolean),
       onSuccess: () => pushToast && pushToast({ kind: "success", title: "Decision sent" }),
       onError: AP_toastErr(pushToast, "Respond failed"),

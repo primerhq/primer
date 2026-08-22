@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, ClassVar
 
 from primer.model.agent import Agent
 from primer.model.chat import TextPart, Tool
-from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.collection import Collection
 from primer.model.common import Describeable
 from primer.model.except_ import BadRequestError, ConfigError
 from primer.model.graph import Graph
@@ -191,15 +191,13 @@ class SemanticCatalog:
     ) -> Collection:
         existing = await self._collection_storage.get(collection_id)
         if existing is None:
+            # The row itself carries no search block: the catalog's vector
+            # operations run off its own configured provider ids, not off
+            # the Collection (S2).
             new_row = Collection(
                 id=collection_id,
                 description=_DEFAULT_DESCRIPTIONS[entity_type],
-                embedder=CollectionEmbedder(
-                    provider_id=self._embedder_provider_id,
-                    model=self._embedder_model,
-                ),
                 system=True,
-                search_provider_id=self._search_provider_id,
             )
             return await self._collection_storage.create(new_row)
         if not existing.system:
@@ -208,20 +206,12 @@ class SemanticCatalog:
                 "non-system Collection row; refusing to bind it to the "
                 "SemanticCatalog"
             )
-        if (
-            existing.embedder.provider_id != self._embedder_provider_id
-            or existing.embedder.model != self._embedder_model
-        ):
-            raise ConfigError(
-                f"system collection {collection_id!r} bound to "
-                f"provider/model "
-                f"{existing.embedder.provider_id!r}/"
-                f"{existing.embedder.model!r}; this catalog is "
-                f"configured for "
-                f"{self._embedder_provider_id!r}/"
-                f"{self._embedder_model!r}. Re-embedding is the "
-                "activation API's responsibility, not initialize()'s"
-            )
+        # S2 removed the row's embedder field, so there is no recorded
+        # provenance to compare the catalog's configured provider/model
+        # against. A reconfigured catalog whose new model has a different
+        # dimension is still caught downstream by the vector store's
+        # dimension check; a same-dimension model swap is not, and is the
+        # activation API's responsibility to re-embed.
         return existing
 
     # ---- Public API ------------------------------------------------------
@@ -358,6 +348,7 @@ class SemanticCatalog:
             collection=collection,
             embedder=self._embedder,
             vector_store=self._vector_store,
+            embedding_model=self._embedder_model,
         )
         self._searchers[entity_type] = searcher
         return searcher

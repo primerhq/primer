@@ -938,8 +938,8 @@ function TR_FireErrorChip({ error, testId }) {
 function TR_SubTargetLabel({ sub }) {
   const cfg = sub?.config || {};
   const kind = cfg.kind;
-  if (kind === "chat_message") {
-    return <span className="mono">{cfg.chat_id || "—"}</span>;
+  if (kind === "session_append") {
+    return <span className="mono">{cfg.session_id || "—"}</span>;
   }
   if (kind === "agent_fresh_session") {
     return (
@@ -1638,9 +1638,9 @@ function TR_TriggerDetail({ id }) {
 // TR_SubscriptionDialog — create / edit a subscription (Phase 10.2).
 //
 // Spec §13.5. Three creatable kinds:
-//   * chat_message            — chat picker
 //   * agent_fresh_session     — workspace + agent pickers
 //   * graph_fresh_session     — workspace + graph pickers
+//   * session_append          — session picker (steers an existing session)
 //
 // parked_session is intentionally EXCLUDED — it is created only by the
 // subscribe_to_trigger yielding tool (see Spec §5.4 and the
@@ -1655,9 +1655,9 @@ function TR_TriggerDetail({ id }) {
 // ============================================================================
 
 const TR_SUB_KIND_OPTIONS = [
-  { value: "chat_message", label: "chat_message", description: "Append a user message to an existing chat." },
   { value: "agent_fresh_session", label: "agent_fresh_session", description: "Start a fresh workspace session bound to an agent." },
   { value: "graph_fresh_session", label: "graph_fresh_session", description: "Start a fresh workspace session bound to a graph." },
+  { value: "session_append", label: "session_append", description: "Steer an existing session with the rendered payload." },
 ];
 
 // Help text shown beneath the payload_template textarea. Echoes Spec §3.3.
@@ -1671,14 +1671,13 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
   const { apiFetch, useResource } = window.primerApi;
   const isEdit = mode === "edit" && initial != null;
 
-  // Lock the kind in edit mode; default to chat_message in create mode.
-  const initialKind = isEdit ? (initial?.config?.kind || "chat_message") : "chat_message";
+  // Lock the kind in edit mode; default to agent_fresh_session in create
+  // mode. The chat kinds are gone with the chat surface (S6 P5);
+  // session_append replaces them for "put this text on that session".
+  const initialKind = isEdit ? (initial?.config?.kind || "agent_fresh_session") : "agent_fresh_session";
   const [kind, setKind] = React.useState(initialKind);
 
   // Per-kind config state.
-  const [chatId, setChatId] = React.useState(
-    isEdit && initial?.config?.kind === "chat_message" ? (initial.config.chat_id || "") : "",
-  );
   const [workspaceId, setWorkspaceId] = React.useState(
     isEdit && initial?.config?.workspace_id ? initial.config.workspace_id : "",
   );
@@ -1687,6 +1686,9 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
   );
   const [graphId, setGraphId] = React.useState(
     isEdit && initial?.config?.kind === "graph_fresh_session" ? (initial.config.graph_id || "") : "",
+  );
+  const [sessionId, setSessionId] = React.useState(
+    isEdit && initial?.config?.kind === "session_append" ? (initial.config.session_id || "") : "",
   );
 
   // Common fields.
@@ -1715,13 +1717,8 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
 
   // Picker data (always queried so hook count stays fixed; the form
   // only renders the relevant picker for the selected kind). We use the
-  // standard `?limit=200` pattern adopted by the chats / agents / graphs
-  // pages so the dropdown isn't capped to a default page size.
-  const chats = useResource(
-    "tr-sub-chats",
-    (signal) => apiFetch("GET", "/chats?limit=200", null, { signal }),
-    { pollMs: null },
-  );
+  // standard `?limit=200` pattern adopted by the agents / graphs pages
+  // so the dropdown isn't capped to a default page size.
   const workspaces = useResource(
     "tr-sub-workspaces",
     (signal) => apiFetch("GET", "/workspaces?limit=200", null, { signal }),
@@ -1738,7 +1735,6 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
     { pollMs: null },
   );
 
-  const chatItems = chats.data?.items ?? [];
   const workspaceItems = workspaces.data?.items ?? [];
   // Filter agents/graphs by workspace if the workspace picker is set.
   // Many agent/graph rows carry a workspace_id; if not, show the full list.
@@ -1751,19 +1747,19 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
 
   // Validation gates.
   const configValid = (
-    kind === "chat_message" ? !!chatId
-      : kind === "agent_fresh_session" ? (!!workspaceId && !!agentId)
-        : kind === "graph_fresh_session" ? (!!workspaceId && !!graphId)
+    kind === "agent_fresh_session" ? (!!workspaceId && !!agentId)
+      : kind === "graph_fresh_session" ? (!!workspaceId && !!graphId)
+        : kind === "session_append" ? !!sessionId
           : false
   );
   const canSubmit = isEdit ? !busy : (!busy && configValid);
 
   const buildConfig = () => {
-    if (kind === "chat_message") {
-      return { kind: "chat_message", chat_id: chatId };
-    }
     if (kind === "agent_fresh_session") {
       return { kind: "agent_fresh_session", workspace_id: workspaceId, agent_id: agentId };
+    }
+    if (kind === "session_append") {
+      return { kind: "session_append", session_id: sessionId };
     }
     return { kind: "graph_fresh_session", workspace_id: workspaceId, graph_id: graphId };
   };
@@ -1885,29 +1881,6 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
         </div>
 
         {/* Per-kind config */}
-        {kind === "chat_message" && !isEdit && (
-          <div className="field">
-            <label className="field-label" htmlFor="tr-sub-chat">Chat</label>
-            <select
-              id="tr-sub-chat"
-              className="input mono"
-              value={chatId}
-              onChange={(e) => setChatId(e.target.value)}
-              style={{ width: "100%" }}
-            >
-              <option value="">Select a chat…</option>
-              {chatItems.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.title ? `${c.title} · ${c.id}` : c.id}
-                </option>
-              ))}
-            </select>
-            {chats.loading && (
-              <div className="field-help muted text-sm">Loading chats…</div>
-            )}
-          </div>
-        )}
-
         {(kind === "agent_fresh_session" || kind === "graph_fresh_session") && !isEdit && (
           <div className="field">
             <label className="field-label" htmlFor="tr-sub-workspace">Workspace</label>
@@ -1984,6 +1957,26 @@ function TR_SubscriptionDialog({ triggerId, mode, initial, onClose, onSaved }) {
             <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
               The rendered payload must be JSON that validates against the
               graph&apos;s Begin <span className="mono">input_schema</span>.
+            </div>
+          </div>
+        )}
+
+        {kind === "session_append" && !isEdit && (
+          <div className="field">
+            <label className="field-label" htmlFor="tr-sub-session">Session id</label>
+            <input
+              id="tr-sub-session"
+              className="input mono"
+              value={sessionId}
+              onChange={(e) => setSessionId(e.target.value)}
+              placeholder="sess-..."
+              style={{ width: "100%" }}
+            />
+            <div className="field-help muted text-sm" style={{ marginTop: 4 }}>
+              The rendered payload becomes a user message on this session. A
+              steer that lands mid-turn is queued and realized when the turn
+              drains (parallelism <span className="mono">queue</span>) or
+              dropped (<span className="mono">skip</span>).
             </div>
           </div>
         )}

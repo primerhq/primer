@@ -37,8 +37,9 @@ from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
-from tests.ui_e2e._studio_helpers import files_list
+from tests.ui_e2e._studio_helpers import open_workspace_settings, files_list
 from tests._support.model_profiles import agent_model, profile_id_for, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -135,7 +136,7 @@ def test_u0032_toast_renders_request_id_on_5xx(
     envelope containing ``extensions.request_id``. Open the New
     agent modal, fill the required fields, click Create → the
     error toast (``kind=error``) must contain the literal text
-    ``request-id <rid>`` and a ``copy`` link (per chrome.jsx:525-532).
+    ``request-id <rid>`` and a ``copy`` link (per the console shell:525-532).
 
     Pins the documented "5xx surfaces copy-able request-id" toast
     contract - operators reach this affordance from any failing
@@ -168,13 +169,7 @@ def test_u0032_toast_renders_request_id_on_5xx(
     page.route("**/v1/agents", _on_post_agents)
 
     try:
-        page.goto(
-            f"{console_url}#/agents",
-            wait_until="domcontentloaded",
-        )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
+        open_legacy_route(page, console_url, "agents")
 
         # Click "New agent".
         new_btn = page.get_by_role(
@@ -200,7 +195,7 @@ def test_u0032_toast_renders_request_id_on_5xx(
         create_btn.click()
 
         # Toast must contain "request-id <rid>" + a "copy" affordance.
-        # The chrome.jsx ToastContainer renders ".req-id" with the
+        # The the console shell ToastContainer renders ".req-id" with the
         # literal "request-id <rid>" + "copy" link.
         expect(
             page.locator(".toast.toast-error").first
@@ -286,13 +281,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
                 )
             assert r.status_code in (200, 201, 204), r.text
 
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=files",
-            wait_until="domcontentloaded",
-        )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
+        open_workspace_settings(page, console_url, wid, "files")
 
         # v1 stacked Files under Sessions so the tree was always on screen; the
         # revamp's single rail defaults to Runs, so ask for Files first. No-op
@@ -326,7 +315,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
 # body; the Studio's center session panel reuses ``SessionLiveStream``, which
 # renders the live frame stream + a terminal "Session ended" notice but does
 # NOT surface a session-level ``last_error`` panel (there is no equivalent
-# data-testid or copy in studio-center.jsx). With no Studio surface to pin,
+# data-testid or copy in the shell session document). With no Studio surface to pin,
 # the test is removed with this documented note (last_error POPULATION stays
 # covered end-to-end by the API loop's T0739 / T0737).
 
@@ -343,7 +332,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
 # log tab were retired with the Studio. The Studio's center session panel
 # reuses ``SessionLiveStream`` (a live frame stream), not a per-turn "Turn
 # log" tab — there is no equivalent tab/empty-state surface in
-# studio-center.jsx — so the test is removed with this documented note.
+# the shell session document — so the test is removed with this documented note.
 # (Graph sessions DO keep a "Turn log" section inside the reused
 # SD_GraphRunView node inspector, exercised by test_graph_run_view_journey,
 # but that is the graph node inspector, not this agent-session turn tab.)

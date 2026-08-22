@@ -56,7 +56,9 @@ class AgentFreshSessionDispatcher:
         deps: DispatchDeps,
     ) -> SubscriptionDispatchResult:
         if sub.parallelism == "skip":
-            skip = await check_subscription_busy(sub, deps)
+            skip = await check_subscription_busy(
+                sub, deps, fire_context=fire_context,
+            )
             if skip is not None:
                 return skip
 

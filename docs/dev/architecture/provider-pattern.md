@@ -126,6 +126,16 @@ The steps are the same across families. Using an LLM adapter as the worked examp
 
 Embedder, CrossEncoder, ToolsetProvider, WebSearchAdapter, and VectorStoreProvider follow the identical recipe in their own packages; the only differences are the abstract method set and which factory function gains the new branch.
 
+Serve the class's form metadata. Every provider class exposes
+`GET /v1/{plural}/_types`, returning one entry per provider-type value with
+`{label, config_fields, row_fields, discoverable}` (plus `limits: true` when
+the class carries a limits block). Mount that helpers router BEFORE the CRUD
+router, or the literal `_types` path loses to `/{id}`. The console renders
+what this endpoint describes through one shared form
+(`ui/components/provider-form.jsx`); it carries no field table of its own, so
+a new provider type becomes usable in the UI the moment its enum and its
+`_types` entry land together.
+
 ## 5. Existing implementations
 
 LLM adapters (`primer/llm/`, re-exported from `primer.llm`):

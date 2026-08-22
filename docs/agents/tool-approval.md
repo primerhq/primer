@@ -2,7 +2,7 @@
 slug: tool-approval
 title: Tool approval policies
 summary: Pre-dispatch gates that pause tool execution behind operator approval, policy evaluation, or LLM-judge calls.
-related: [yielding, mcp-exposure, agents, chats]
+related: [yielding, mcp-exposure, agents, sessions]
 mcp_tools: []
 ---
 
@@ -18,9 +18,8 @@ before they execute. The mechanism is a generalisation of an
 must click approve), policy (evaluate a Rego rule against the call
 arguments), and llm (ask a judge model whether to allow). All three
 share a common shape: at LLM-call time, before the tool actually
-dispatches, the gate runs. If it says block, the call yields - parked
-like a yielding tool in a session or graph, or soft-yielded (the turn
-ends, resolved by the next reply) on a chat. If it says allow,
+dispatches, the gate runs. If it says block, the call yields and parks
+like any yielding tool, in a session or a graph. If it says allow,
 dispatch proceeds.
 
 A policy is identified by `(toolset_id, tool_name)` - a wildcard tool
@@ -79,12 +78,6 @@ The approval state lives on the session's parked-status fields:
 metadata embedded in the yield captures the original tool call. The
 worker picks all this back up when the resume event arrives.
 
-For chats the park mechanism is different: instead of a parked-state
-blob, the approval is recorded in `chat.pending_tool_call` with
-`mode="approval"` and the original call's `id`, `name`, and `arguments`.
-The chat does not suspend a worker slot; the pending approval waits for
-the next conversational turn (or an operator respond call).
-
 ## Lifecycle and states
 
 A policy itself has no lifecycle beyond `enabled / disabled`. The
@@ -102,7 +95,7 @@ A policy itself has no lifecycle beyond `enabled / disabled`. The
   field; null = no timeout), the worker injects a
   `YieldTimeout`, the resume hook produces a synthetic rejection,
   and the LLM continues.
-- **superseded (rejected).** If a new user turn arrives at the chat
+- **superseded (rejected).** If a new user turn arrives at the session
   while an approval is pending, the pending approval is auto-rejected
   with reason "superseded by new user input" - the user's next
   message takes priority over the stalled approval.
@@ -113,14 +106,13 @@ A policy itself has no lifecycle beyond `enabled / disabled`. The
 ## Pending-approval HTTP endpoints
 
 Operators (and channel bridges) can query which approval is currently
-waiting on a session or chat:
+waiting on a session:
 
 ```
 GET /v1/sessions/{session_id}/tool_approval/pending
-GET /v1/chats/{chat_id}/tool_approval/pending
 ```
 
-Both return 200 with the same envelope when an approval is pending:
+It returns 200 with this envelope when an approval is pending:
 
 ```json
 {
@@ -135,9 +127,9 @@ Both return 200 with the same envelope when an approval is pending:
 }
 ```
 
-Both return 404 `/errors/not-found` (RFC 7807) if the session/chat does
+Both return 404 `/errors/not-found` (RFC 7807) if the session does
 not exist or is not currently waiting on an `_approval` gate. To respond
-(sessions only today; chat approval is resolved via user reply):
+(a reply on a mapped platform thread resolves the same pending gate):
 
 ```
 POST /v1/sessions/{session_id}/tool_approval/respond
@@ -168,7 +160,7 @@ What an agent *does* see:
 1. Operator opens the Tool Approval Policies page in the console.
 2. Clicks "New policy". Picks toolset `system`, tool `delete_collection`,
    approval type `required`, enabled.
-3. The next time any agent (chat, session, or graph) calls
+3. The next time any agent (session or graph) calls
    `system::delete_collection`, the session parks and a prompt
    appears in the operator's pending-approvals queue.
 4. Operator clicks approve. The worker resumes; the tool dispatches;
@@ -205,7 +197,7 @@ but require human review for any other host.
   timeout, resolver storage outage - all of these produce a
   `required` outcome with the original exception captured for the
   operator. The agent never silently slips through a broken gate.
-- **A new user turn supersedes a pending approval.** If a chat is
+- **A new user turn supersedes a pending approval.** If a session is
   parked on approval and the user sends another message, the approval
   is auto-rejected with reason "superseded by new user input". The
   rationale: the user's later message implicitly redirects intent;
@@ -238,5 +230,4 @@ but require human review for any other host.
 - [channels](channels.md) - channels can forward approval prompts to
   Slack/Telegram/Discord so the operator doesn't have to watch the
   console.
-- [chats](chats.md) - the "new turn supersedes pending approval"
-  semantics live in the chat-turn drain loop.
+  semantics live in the session dispatch drain loop.

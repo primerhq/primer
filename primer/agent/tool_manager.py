@@ -41,7 +41,7 @@ from primer.agent.approval import (
 )
 from primer.authz import _role_allows
 from primer.int.toolset import ToolsetProvider
-from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart
+from primer.model.chat import Tool, ToolCallPart, ToolCallResult, ToolResultPart, NOTIFYING_TOOL_RESULT
 from primer.model.except_ import (
     AuthRequiredError,
     ConfigError,
@@ -76,6 +76,18 @@ WORKSPACE_EXT_TOOLSET_ID = "workspace_ext"
 # hot list/dispatch paths don't import that module unless a caller
 # actually registered external tools.
 _EXTERNAL_TOOLSET_ID = "external"
+
+# Reserved toolset id for the server-defined client (browser) vocabulary.
+# Canonical home: primer.toolset.client. Kept as a local constant so the
+# hot list/dispatch paths never import that module.
+_CLIENT_TOOLSET_ID = "client"
+
+# Per-invocation GRANT toolsets. Their tools ride a single turn rather than
+# being picked from the agent's ``tools`` list, so they bypass the agent
+# allowlist in both the catalogue filter and the dispatch gate.
+_GRANT_TOOLSET_IDS: frozenset[str] = frozenset(
+    {_EXTERNAL_TOOLSET_ID, _CLIENT_TOOLSET_ID}
+)
 
 # Tool ids surfaced to the LLM are scoped as ``toolset_id<sep>bare_name`` so
 # tools with colliding bare names across different toolsets stay
@@ -122,7 +134,11 @@ class ToolExecutionManager:
         initiated_by: "PrincipalRef | None" = None,
         external_tools: "list | None" = None,
         external_call_storage: "Any | None" = None,
+        event_recorder: "Any | None" = None,
     ) -> None:
+        # Optional platform event recorder: when wired (worker executor
+        # builds), every dispatched call lands a ``tool.called`` event.
+        self._event_recorder = event_recorder
         self._toolsets: dict[str, ToolsetProvider] = dict(toolset_providers or {})
         # Invoker-supplied per-invocation tools (spec: external tool
         # calls). Registered as one more toolset provider under the
@@ -174,6 +190,12 @@ class ToolExecutionManager:
         # toolsets; dispatch splits the scope back to the bare name before
         # calling the underlying provider.
         self._tool_to_toolset: dict[str, tuple[str, str]] = {}
+        # Scoped ids of every VISIBLE tool declared ``tool_class="notifying"``.
+        # Filled beside the catalogue in ``list_tools`` (after the agent
+        # allowlist filter), so the notifying set can never name a tool this
+        # agent may not call; the agent loop reads it to pick the self-resume
+        # branch.
+        self._notifying: set[str] = set()
         # Scoped workspace-tool id (``workspace__bare_name``) -> bare_name.
         # Separate map so dispatch can look up the WorkspaceTool from
         # ``_workspace_tools`` (still keyed by bare name).
@@ -203,6 +225,24 @@ class ToolExecutionManager:
         """Attach the one-way inform sink used by the inform_user tool."""
         self._inform_sink = sink
 
+    @property
+    def event_recorder(self):
+        """The wired platform event recorder, or None.
+
+        Read by the shared model-call loop so ``llm.called`` rides the
+        same wiring as ``tool.called`` without a second thread-through.
+        """
+        return self._event_recorder
+
+    @property
+    def workspace_session_scope(self) -> tuple[str | None, str | None]:
+        """(session_id, workspace_id) of the bound session, or Nones."""
+        sess = self._workspace_session
+        return (
+            getattr(sess, "session_id", None),
+            getattr(sess, "workspace_id", None),
+        )
+
     @classmethod
     def for_workspace(
         cls,
@@ -216,6 +256,7 @@ class ToolExecutionManager:
         initiated_by: "PrincipalRef | None" = None,
         external_tools: "list | None" = None,
         external_call_storage: "Any | None" = None,
+        event_recorder: "Any | None" = None,
     ) -> "ToolExecutionManager":
         """Build a manager pre-wired for a :class:`WorkspaceAgentExecutor`.
 
@@ -231,6 +272,7 @@ class ToolExecutionManager:
         """
         ws_tools = {t.id: t for t in session.workspace_tools}
         return cls(
+            event_recorder=event_recorder,
             toolset_providers=toolset_providers,
             workspace_tools=ws_tools,
             workspace_session=session,
@@ -241,6 +283,37 @@ class ToolExecutionManager:
             initiated_by=initiated_by,
             external_tools=external_tools,
             external_call_storage=external_call_storage,
+        )
+
+    def rebind_workspace(
+        self,
+        session: "AgentSession",
+        *,
+        initiated_by: "PrincipalRef | None" = None,
+    ) -> "ToolExecutionManager":
+        """A new manager bound to ``session``, preserving everything else.
+
+        The graph path composes the workspace's tools onto per-node
+        managers by rebuilding them. Rebuilding from scratch was how a
+        node lost the agent allowlist and the approval resolver at once:
+        every tool in every granted toolset offered, and no gate able to
+        fire. Deriving from the live manager keeps the security-relevant
+        state in one place, so a new constructor argument cannot be
+        silently dropped by a second call site again.
+        """
+        return type(self).for_workspace(
+            toolset_providers=dict(self._toolsets),
+            session=session,
+            approval_resolver=self._approval_resolver,
+            provider_registry=self._provider_registry,
+            event_recorder=self._event_recorder,
+            tools=(
+                list(self._tools_allowlist)
+                if self._tools_allowlist is not None
+                else None
+            ),
+            graph_invocation_services=self._graph_services,
+            initiated_by=initiated_by or self._initiated_by,
         )
 
     async def list_tools(
@@ -315,10 +388,12 @@ class ToolExecutionManager:
                     # message, not entries in Agent.tools.
                     if (
                         self._tools_allowlist is not None
-                        and toolset_id != _EXTERNAL_TOOLSET_ID
+                        and toolset_id not in _GRANT_TOOLSET_IDS
                         and scoped_id not in self._tools_allowlist
                     ):
                         continue
+                    if t.tool_class == "notifying":
+                        self._notifying.add(scoped_id)
                     scoped_tool = t.model_copy(update={"id": scoped_id})
                     catalogue.append(scoped_tool)
             # Workspace tools (always under the WORKSPACE_TOOLSET_ID scope).
@@ -342,6 +417,17 @@ class ToolExecutionManager:
                 self._workspace_scoped[scoped_id] = ws_tool.id
             self._catalogue = catalogue
             return list(self._catalogue)
+
+    def is_notifying(self, tool_name: str) -> bool:
+        """True iff the SCOPED ``tool_name`` was declared notifying.
+
+        The index is built beside the VISIBLE catalogue, so it is a subset
+        of what this agent may call. Anything else is False: a tool that
+        never entered the routing table, and a tool the agent's allowlist
+        hides, both fall through to the standard dispatch path and get the
+        usual not-registered rejection instead of a synthetic success.
+        """
+        return tool_name in self._notifying
 
     async def execute(
         self,
@@ -370,15 +456,35 @@ class ToolExecutionManager:
                     call, principal=principal, bypass_approval=bypass_approval,
                 )
                 _metrics.tool_calls_total.labels(call.name, "ok").inc()
+                await self._emit_tool_called(call, ok=not result.error)
                 return result
             except Exception as _exc:
                 _span.record_exception(_exc)
                 _metrics.tool_calls_total.labels(call.name, "fail").inc()
+                await self._emit_tool_called(call, ok=False)
                 raise
             finally:
                 _metrics.tool_duration_seconds.labels(call.name).observe(
                     _time.monotonic() - _t0
                 )
+
+    async def _emit_tool_called(self, call: ToolCallPart, *, ok: bool) -> None:
+        """Land a ``tool.called`` on the platform event log (when wired).
+
+        The recorder swallows its own failures, and a yielded call (the
+        park path raises through execute) records ok=False here then a
+        fresh event on the resumed dispatch: the log narrates attempts,
+        not tool semantics.
+        """
+        if self._event_recorder is None:
+            return
+        sess = self._workspace_session
+        await self._event_recorder.emit(
+            "tool.called",
+            session_id=getattr(sess, "session_id", None),
+            workspace_id=getattr(sess, "workspace_id", None),
+            payload={"tool": call.name, "ok": ok},
+        )
 
     async def _execute_inner(
         self,
@@ -414,7 +520,7 @@ class ToolExecutionManager:
             # list didn't include it.
             if (
                 self._tools_allowlist is not None
-                and toolset_id != _EXTERNAL_TOOLSET_ID
+                and toolset_id not in _GRANT_TOOLSET_IDS
                 and call.name not in self._tools_allowlist
             ):
                 raise UnsupportedContentError(
@@ -462,6 +568,15 @@ class ToolExecutionManager:
                     session_or_chat = (
                         ctx.session_id or ctx.chat_id or "unknown"
                     )
+                    if self._event_recorder is not None:
+                        await self._event_recorder.emit(
+                            "approval.requested",
+                            session_id=ctx.session_id,
+                            payload={
+                                "tool": call.name,
+                                "policy_id": policy.id,
+                            },
+                        )
                     raise YieldToWorker(
                         Yielded(
                             tool_name="_approval",
@@ -494,6 +609,41 @@ class ToolExecutionManager:
         )
 
     # ---- Internals -------------------------------------------------------
+
+    async def deliver_notifying(
+        self,
+        call: ToolCallPart,
+        *,
+        principal: str | None = None,
+    ) -> ToolResultPart:
+        """Dispatch one NOTIFYING-class call: never parks, always succeeds.
+
+        The class is a contract, not a hint: no response is expected from
+        any responder, so the handler's return value and its failures are
+        both discarded and the caller always gets the synthetic success.
+        A ``YieldToWorker`` raised under a notifying call is a contract
+        violation (or an approval policy targeting one): it is swallowed
+        here so the park machinery is never entered and the turn keeps
+        running.
+        """
+        try:
+            await self._execute_inner(call, principal=principal)
+        except YieldToWorker:
+            logger.warning(
+                "ToolExecutionManager: notifying tool %r tried to park; "
+                "delivery skipped and the turn continues",
+                call.name,
+            )
+        except Exception as exc:  # noqa: BLE001 - delivery is best-effort
+            logger.warning(
+                "ToolExecutionManager: notifying tool %r raised; the turn "
+                "continues (error=%s)",
+                call.name,
+                exc,
+            )
+        return ToolResultPart(
+            id=call.id, output=NOTIFYING_TOOL_RESULT, error=False
+        )
 
     async def _dispatch_toolset(
         self,

@@ -11,6 +11,7 @@ import httpx
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-05", status="partial")
 
 
@@ -73,10 +74,7 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
         assert r.status_code == 201, f"seed embedding provider failed: {r.text}"
 
     try:
-        page.goto(
-            f"{console_url}#/knowledge/collections",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "knowledge/collections")
         page.locator("h1.page-title").first.wait_for(
             state="visible", timeout=10_000,
         )
@@ -92,16 +90,11 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
         modal.locator("input.input").nth(0).fill(collection_id)
         modal.locator("input.input").nth(1).fill("u0025 test collection")
 
-        # The provider + model dropdowns auto-select on mount via
-        # the modal's useEffect (knowledge.jsx:272-283). With only
-        # one seeded provider + one model, the defaults work; we
-        # set explicitly for determinism.
-        modal.locator("select.select").nth(0).select_option(
-            value=provider_id,
-        )
-        modal.locator("select.select").nth(1).select_option(
-            value="sentence-transformers/all-MiniLM-L6-v2",
-        )
+        # No provider or model dropdowns: S2 took the vector-space
+        # fields off collection create and gave them their own route
+        # (PUT /collections/{id}/search), so a collection is created
+        # with an id and a description and is grep-only until search is
+        # turned on. The modal has exactly those two inputs.
 
         # Submit.
         modal.get_by_role("button", name="Create").first.click()
@@ -114,9 +107,15 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
             "Collection created", exact=False,
         ).first.wait_for(state="visible", timeout=5_000)
 
-        # New row appears in the table after the list.refetch().
-        page.locator(f"tr:has-text('{collection_id}')").first.wait_for(
-            state="visible", timeout=10_000,
+        # Creating a collection opens it. The overlay leaves the list and
+        # shows the new collection's document browser, so what proves the
+        # create landed is the breadcrumb naming it, not a row in a table
+        # that is no longer on screen.
+        page.get_by_test_id("shell-overlay-body").get_by_text(
+            collection_id, exact=False,
+        ).first.wait_for(state="visible", timeout=10_000)
+        assert "overlay=collections" in page.url, (
+            f"expected to land in the collections overlay, got {page.url}"
         )
 
         # Defence: storage round-trip.
@@ -127,7 +126,11 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
                 f"{r.status_code}: {r.text}"
             )
             assert r.json()["id"] == collection_id
-            assert r.json()["embedder"]["provider_id"] == provider_id
+            # S2: the console's create form still posts the pre-v2 embedder
+            # trio, which the server ignores, so the row comes back
+            # grep-only. Task 21 (S2 P4) rebuilds the form onto the search
+            # block; this assertion tightens to a real search block then.
+            assert r.json()["search"] is None
     finally:
         _cleanup(base_url, [
             f"/v1/collections/{collection_id}",

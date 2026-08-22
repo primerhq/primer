@@ -71,6 +71,12 @@ function AgentsPage({ onOpen, pushToast }) {
   // is what carries the provider, the wire model name, and the API-level
   // config, so the list resolves it to show the vendor dot and the
   // underlying model -- two agents on different profiles may share a model.
+  const caps = window.primerApi.useCapabilities();
+  const voices = window.primerApi.useResource(
+    "agent-voices",
+    (signal) => window.primerApi.apiFetch("GET", "/audio/voices", null, { signal }),
+    { pollMs: 0 },
+  );
   const profiles = useResource(
     "agents:model-profiles",
     (signal) => apiFetch("GET", "/model_profiles?limit=200", null, { signal }),
@@ -384,6 +390,17 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
     (signal) => apiFetch("GET", "/tools", null, { signal }),
     { pollMs: null }
   );
+  // The Advanced tab gates a tts_voice picker on the speech capability
+  // and fills it from the voice list. Both were read here while only
+  // AgentsPage fetched them, so opening this modal and reaching that
+  // tab threw ReferenceError: caps is not defined, and the whole tab
+  // rendered nothing -- taking the rest of its fields down with it.
+  const caps = window.primerApi.useCapabilities();
+  const voices = useResource(
+    "agents:voices",
+    (signal) => apiFetch("GET", "/audio/voices", null, { signal }),
+    { pollMs: 0 },
+  );
 
   // Initial values come from the existing agent in edit mode, else
   // blanks. system_prompt and compaction_prompt are stored as arrays
@@ -402,6 +419,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
   const [compactionPrompt, setCompactionPrompt] = React.useState(_joinPrompt(existing?.compaction_prompt));
   const [compactionToolAccess, setCompactionToolAccess] = React.useState(existing?.compaction_tool_access ?? false);
   const [allowExternalTools, setAllowExternalTools] = React.useState(existing?.allow_external_tools ?? false);
+  const [ttsVoice, setTtsVoice] = React.useState(existing?.tts_voice ?? null);
   // selectedScopedIds is a Set so toggles are O(1); persisted as a
   // sorted list at submit time for stable JSON.
   const [selectedScopedIds, setSelectedScopedIds] = React.useState(_initialTools);
@@ -586,6 +604,7 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
       compaction_prompt: compactionPrompt ? [compactionPrompt] : [],
       compaction_tool_access: compactionToolAccess,
       allow_external_tools: allowExternalTools,
+      tts_voice: ttsVoice,
     };
     if (temperature !== "" && !Number.isNaN(+temperature)) {
       body.temperature = Number(temperature);
@@ -701,12 +720,12 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             {profileMissing && (
               <div className="field-help" style={{ color: "var(--red)" }}>
                 This agent names a profile that no longer exists. Pick another
-                one, or recreate it at <span className="mono">/model-profiles</span>.
+                one, or recreate it at <span className="mono">/providers?class=llm</span>.
               </div>
             )}
             {profileOptions.length === 0 && !profiles.loading && (
               <div className="field-help" style={{ color: "var(--amber)" }}>
-                No model profiles configured. Create one at <span className="mono">/model-profiles</span> first.
+                No model profiles configured. Create one at <span className="mono">/providers?class=llm</span> first.
               </div>
             )}
             {fieldErrors["body.model.profile_id"] && (
@@ -937,6 +956,21 @@ function AG_NewAgentModal({ onClose, onCreate, pushToast, existing }) {
             </p>
           </div>
           <div className="field">
+        {!!(caps.data && caps.data.speech && caps.data.speech.tts_configured) && (
+          <label className="field">
+            <span>tts_voice</span>
+            <select
+              data-testid="agent-tts-voice"
+              value={ttsVoice || ""}
+              onChange={(e) => setTtsVoice(e.target.value || null)}
+            >
+              <option value="">(use the global default)</option>
+              {((voices.data && voices.data.voices) || []).map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
+          </label>
+        )}
             <AG_Toggle
               checked={compactionToolAccess}
               onChange={setCompactionToolAccess}
@@ -1067,20 +1101,22 @@ function AgentDetail({ agentId, pushToast }) {
   const [confirmDelete, setConfirmDelete] = React.useState(false);
   const [deleteError, setDeleteError] = React.useState(null);
 
-  // New "Chat" button: skip the workspace-session ceremony and just
-  // open an interactive chat with this agent — POST /chats then
-  // navigate to /chats/{id}. The chat detail page handles initial
-  // message + streaming.
+  // "Chat" button: open an interactive session bound to this agent.
+  // No auto_start - the session detail view takes the first message,
+  // the same way the old chat detail page did.
   const startChatMut = useMutation(
-    () => apiFetch("POST", "/chats", { agent_id: id }),
+    () => apiFetch("POST", "/sessions", {
+      binding: { kind: "agent", agent_id: id },
+      auto_start: false,
+    }),
     {
-      invalidates: ["chats:list"],
-      onSuccess: (row) => navigate("/chats/" + row.id),
+      invalidates: ["sessions:list"],
+      onSuccess: (row) => navigate("/sessions/" + row.id),
       onError: (err) => {
         if (typeof pushToast === "function") {
           pushToast({
             kind: "error",
-            title: err?.title || "Couldn't start chat",
+            title: err?.title || "Couldn't start session",
             detail: err?.detail || err?.message,
             requestId: err?.requestId,
           });
@@ -1374,7 +1410,7 @@ function AG_ReferencesPanel({ agent }) {
           <span className="label">Model profile</span>
           <span className="val">
             <a
-              onClick={() => profileId && navigate("/model-profiles")}
+              onClick={() => profileId && navigate("/providers", { class: "llm" })}
               style={{ cursor: profileId ? "pointer" : "default" }}
             >{profileId || "—"}</a>
             {profile.data ? (
@@ -1394,7 +1430,7 @@ function AG_ReferencesPanel({ agent }) {
           <span className="label">LLM provider</span>
           <span className="val">
             <a
-              onClick={() => providerId && navigate("/providers/llm/" + providerId)}
+              onClick={() => providerId && navigate("/providers", { class: "llm", id: providerId })}
               style={{ cursor: providerId ? "pointer" : "default" }}
             >{providerId || "—"}</a>
           </span>

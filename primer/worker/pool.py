@@ -1,8 +1,8 @@
-"""Background worker pool — claims sessions, chats and harnesses and runs one turn each.
+"""Background worker pool — claims sessions and harnesses and runs one turn each.
 
 Claim loop architecture:
 * A single ``_engine_claim_loop`` and ``_engine_bus_loop`` handle all claim
-  kinds (session, chat, harness) via the injected ``ClaimEngine``.
+  kinds (session, harness) via the injected ``ClaimEngine``.
 
 One unified ``_in_flight: set[tuple[ClaimKind, str]]`` tracks all in-flight
 items regardless of kind.  Capacity: ``free = max_concurrency - len(_in_flight)``.
@@ -33,8 +33,10 @@ from primer.model.workspace_session import WorkspaceSession, SessionStatus
 from primer.worker.turn import _CancelScope
 from primer.worker.drivers import _GraphTurnDriver, _TurnDriver  # noqa: F401  re-export
 from primer.worker.io_shim import _WorkspaceIOShim
+from primer.worker.identity import stable_worker_label
 from primer.worker._toolset_ids import _toolset_ids_from_scoped  # noqa: F401  re-export
 
+import primer.observability.metrics as _metrics
 from primer.session.dispatch import SessionDispatchDeps, run_one_session_turn
 
 if TYPE_CHECKING:
@@ -44,7 +46,6 @@ if TYPE_CHECKING:
     from primer.int.claim import ClaimEngine
     from primer.int.event_bus import EventBus
     from primer.int.storage_provider import StorageProvider
-    from primer.chat.tick_router import ChatTickRouter
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,6 @@ class WorkerPool:
         approval_resolver: "ApprovalResolver | None" = None,
         channel_dispatcher=None,
         event_bus: "EventBus | None" = None,
-        chat_tick_router: "ChatTickRouter | None" = None,
         artifact_storage_registry: Any | None = None,
         engine: "ClaimEngine",
     ) -> None:
@@ -85,11 +85,14 @@ class WorkerPool:
         self._approval_resolver = approval_resolver
         self._channel_dispatcher = channel_dispatcher
         self._event_bus = event_bus
-        self._chat_tick_router = chat_tick_router
         self._artifact_storage_registry = artifact_storage_registry
         self._engine = engine
 
         self._worker_id: str = ""
+        # Stable metric label (hostname + index). Computed here, not in
+        # start(), so unit tests that never start the pool still label
+        # their instrument samples.
+        self._worker_label: str = stable_worker_label(config)
         self._tasks: list[asyncio.Task] = []
         self._active_scopes: dict[tuple[ClaimKind, str], _CancelScope] = {}
 
@@ -122,6 +125,11 @@ class WorkerPool:
     def worker_id(self) -> str:
         return self._worker_id
 
+    @property
+    def worker_label(self) -> str:
+        """Stable, bounded metric label. See primer.worker.identity."""
+        return self._worker_label
+
     async def start(self) -> None:
         self._worker_id = f"wrk-{uuid.uuid4().hex[:12]}"
         # Tell the scheduler our lease TTL so its claim/heartbeat SQL
@@ -151,7 +159,6 @@ class WorkerPool:
         # Build the dispatch table now that _worker_id is known.
         self._dispatch = {
             ClaimKind.SESSION: self._run_engine_session,
-            ClaimKind.CHAT:    self._run_engine_chat,
             ClaimKind.HARNESS: self._run_engine_harness,
             ClaimKind.TRIGGER: self._run_engine_trigger,
         }
@@ -316,8 +323,8 @@ class WorkerPool:
     async def _engine_claim_loop(self) -> None:
         """Unified claim loop driven by ClaimEngine.claim_due.
 
-        Replaces _claim_loop + _claim_chat_loop + _claim_harness_loop when
-        an engine is injected. Claims any eligible lease (session, chat, or
+        Replaces _claim_loop + _claim_harness_loop when
+        an engine is injected. Claims any eligible lease (session or
         harness) and dispatches via self._dispatch[lease.kind].
         """
         assert self._engine is not None
@@ -389,20 +396,32 @@ class WorkerPool:
         key = (lease.kind, lease.entity_id)
         scope = _CancelScope()
         self._active_scopes[key] = scope
+        # Lease acquire -> release IS the task boundary (12-s7-design.md
+        # section 4): this wrapper brackets every lane's handler.
+        task_t0 = time.monotonic()
+        task_status = "ok"
         try:
             async with scope:
                 await handler(lease)
         except asyncio.CancelledError:
+            task_status = "cancelled"
             logger.info(
                 "engine handler for %s/%s cancelled (preempted)",
                 lease.kind, lease.entity_id,
             )
         except Exception:
+            task_status = "error"
             logger.exception(
                 "engine handler for %s/%s raised unexpectedly",
                 lease.kind, lease.entity_id,
             )
         finally:
+            _metrics.worker_tasks_total.labels(
+                self._worker_label, lease.kind.value, task_status,
+            ).inc()
+            _metrics.worker_task_duration_seconds.labels(
+                self._worker_label, lease.kind.value, task_status,
+            ).observe(time.monotonic() - task_t0)
             self._active_scopes.pop(key, None)
             self._in_flight.discard(key)
             self._wake.set()
@@ -497,6 +516,8 @@ class WorkerPool:
             channel_dispatcher=self._channel_dispatcher,
             workspace_registry=self._workspace_registry,
             artifact_registry=self._artifact_storage_registry,
+            scheduler=self._scheduler,
+            claim_engine=self._engine,
         )
 
         outcome = ReleaseOutcome(success=False, drop_lease=True)
@@ -597,13 +618,8 @@ class WorkerPool:
     async def _maybe_rearm_session(self, session_id: str) -> None:
         """Re-arm a fresh SESSION claim lease if a turn is still queued.
 
-        Mirrors the CHAT lane's keep-the-lease-while-there's-more-work rule
-        (``primer.worker.pool._run_engine_chat`` maps its turn's
-        disposition to ``drop_lease``, and ``ChatClaimAdapter.on_release``
-        is the single writer of the resulting ``turn_status``). Sessions
-        can't reuse that exact shape because every session
-        ``ReleaseOutcome`` drops the lease unconditionally (see
-        ``primer.session.dispatch``), so instead of keeping the old lease
+        Every session ``ReleaseOutcome`` drops the lease unconditionally
+        (see ``primer.session.dispatch``), so instead of keeping the old lease
         alive this re-upserts a brand-new one, once release has actually
         dropped the old one -- calling upsert first would just touch the
         (still held-by-us, about to be dropped) lease's priority and be
@@ -767,9 +783,6 @@ class WorkerPool:
         return session_resume_coordinator.repark_resumed_yield_outcome(
             self, session, parked, yld,
         )
-
-    async def _run_engine_chat(self, engine_lease: ClaimLease) -> None:
-        return await engine_handlers.run_engine_chat(self, engine_lease)
 
     async def _run_engine_harness(self, engine_lease: ClaimLease) -> None:
         return await engine_handlers.run_engine_harness(self, engine_lease)

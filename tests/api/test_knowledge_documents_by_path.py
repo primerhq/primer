@@ -22,7 +22,11 @@ from httpx import ASGITransport
 
 from primer.api.app import create_test_app
 from primer.api.registries import ProviderRegistry
-from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+)
 from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
@@ -94,8 +98,12 @@ async def collection_id(client) -> str:
     body = Collection(
         id="kb-1",
         description="test collection",
-        embedder=CollectionEmbedder(provider_id="hf-1", model="all-MiniLM-L6-v2"),
-        search_provider_id="ssp-test",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(
+                provider_id="hf-1", model="all-MiniLM-L6-v2"
+            ),
+            vector_store_provider_id="ssp-test",
+        ),
     ).model_dump(mode="json")
     created = await client.post("/v1/collections", json=body)
     assert created.status_code == 201, created.text

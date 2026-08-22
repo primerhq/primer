@@ -16,7 +16,7 @@ import httpx
 import pytest
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import open_session_in_studio
+from tests.ui_e2e._studio_helpers import open_workspace_settings, open_session_in_studio
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +111,7 @@ def test_u0068_steer_queue_renders_submitted_instruction(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
     """U0068 — Re-pointed to the Studio's Composer send. The retired
-    ``ctrl-steer``/``steer-popover`` cluster (studio-center.jsx's
+    ``ctrl-steer``/``steer-popover`` cluster (the shell session document's
     ST_SessionControls) is no longer mounted by the agent panel — per
     the studio-agents-interact brief, steering IS sending a message via
     the Composer (SessionAgentPanel's onSend -> session-adapter.jsx's
@@ -212,13 +212,7 @@ def test_u0072_workspace_files_tab_lists_api_written_file(
                 )
 
         # Navigate to workspace detail Files tab.
-        page.goto(
-            f"{console_url}#/workspaces/{wid}?tab=files",
-            wait_until="domcontentloaded",
-        )
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
+        open_workspace_settings(page, console_url, wid, "files")
 
         # The file tree renders each file by its base name. Wait
         # for our filename to appear (the tab loads → fetches /files
@@ -245,7 +239,7 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
     and should update from "1/1" to "0/1" within ~10s.
 
     Pins the worker-pill polling cadence + status filter in
-    primer's chrome.jsx TopBar.
+    primer's the console shell TopBar.
     """
     # Find the registered worker via API. If no active workers
     # remain (a prior test already drained the sole worker — drain
@@ -266,9 +260,6 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
 
     try:
         page.goto(console_url, wait_until="domcontentloaded")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
         # The worker pill is the .worker-pill element in the topbar.
         pill = page.locator(".worker-pill").first
         pill.wait_for(state="visible", timeout=10_000)
@@ -277,7 +268,7 @@ def test_u0073_worker_pill_reflects_drain_within_polling(
         # Tolerate any "{n}/{total}" — we want the active part
         # specifically.
         initial_text = (pill.text_content() or "").strip()
-        # Format from chrome.jsx:262 is "{activeWorkers}/{totalWorkers || '—'}"
+        # Format from the console shell:262 is "{activeWorkers}/{totalWorkers || '—'}"
         # so it should look like "1/1".
         assert "/" in initial_text, (
             f"unexpected pill text format: {initial_text!r}"

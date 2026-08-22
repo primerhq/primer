@@ -1239,9 +1239,8 @@ class GraphThread(Identifiable):
 class GraphNodeMessage(Identifiable):
     """One message persisted under a :class:`GraphThread`'s node.
 
-    Parallel to :class:`primer.model.thread.ThreadMessage` but
-    additionally scoped by ``node_id`` so a single graph thread
-    holds many independent message histories (one per node).
+    Scoped by ``node_id`` so a single graph thread holds many
+    independent message histories (one per node).
     """
 
     graph_thread_id: str = Field(..., min_length=1)

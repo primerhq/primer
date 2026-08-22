@@ -3,7 +3,7 @@
 from pathlib import Path
 
 TRIGGERS = Path(__file__).resolve().parents[2] / "ui" / "components" / "triggers.jsx"
-CHROME = Path(__file__).resolve().parents[2] / "ui" / "components" / "chrome.jsx"
+OVERLAYS = Path(__file__).resolve().parents[2] / "ui" / "foundation" / "shell-url.js"
 APP = Path(__file__).resolve().parents[2] / "ui" / "app.jsx"
 
 
@@ -15,14 +15,16 @@ def test_triggers_grid_testid():
     assert 'data-testid="triggers-grid"' in TRIGGERS.read_text()
 
 
-def test_sidebar_has_triggers_entry():
-    src = CHROME.read_text()
-    assert '"triggers"' in src or "'triggers'" in src
+def test_triggers_is_a_registered_overlay():
+    """The shell has no sidebar: every page-shaped surface is an overlay."""
+    assert '"triggers"' in OVERLAYS.read_text()
 
 
-def test_app_routes_triggers():
-    src = APP.read_text()
-    assert "/triggers" in src or "triggers" in src
+def test_the_overlay_host_renders_the_triggers_page():
+    """The console has no route table: the overlay host IS the wiring."""
+    src = (Path(__file__).resolve().parents[2] / "ui" / "components"
+           / "shell" / "sh-overlay-host.jsx").read_text()
+    assert "TR_TriggersPage" in src
 
 
 def test_window_export():

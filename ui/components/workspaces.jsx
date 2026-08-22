@@ -250,6 +250,7 @@ function WorkspacesPage({ onOpen, pushToast }) {
         <WS_NewWorkspaceModal
           onClose={() => setCreateOpen(false)}
           pushToast={pushToast}
+          onCreated={onOpen}
         />
       )}
       {renaming && (
@@ -313,7 +314,7 @@ function WS_RenameWorkspaceModal({ workspace, onClose, onRenamed, pushToast }) {
   );
 }
 
-function WS_NewWorkspaceModal({ onClose, pushToast }) {
+function WS_NewWorkspaceModal({ onClose, pushToast, onCreated }) {
   const { useResource, useMutation, useRouter, apiFetch } = window.primerApi;
   const { navigate } = useRouter();
 
@@ -324,38 +325,10 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
   );
   const tplItems = templates.data?.items ?? [];
 
-  const collections = useResource(
-    "collections:list",
-    (signal) => apiFetch("GET", "/collections?limit=200", null, { signal }),
-    {}
-  );
-  const collItems = collections.data?.items ?? [];
-
+  
   const [templateId, setTemplateId] = React.useState("");
   const [name, setName] = React.useState("");
   const [templateCreateOpen, setTemplateCreateOpen] = React.useState(false);
-  const [mountSel, setMountSel] = React.useState(() => new Set());
-  const toggleMount = (id) => setMountSel((prev) => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
-  // Mounting is opt-in: the picker only renders once this toggle is on, so the
-  // create form stays uncluttered for the common no-mount case. Search +
-  // pagination keep the list usable when there are many collections.
-  const [mountEnabled, setMountEnabled] = React.useState(false);
-  const [collSearch, setCollSearch] = React.useState("");
-  const [collPage, setCollPage] = React.useState(0);
-  const COLL_PAGE_SIZE = 8;
-  const collFiltered = collItems.filter(
-    (c) => c.id.toLowerCase().indexOf(collSearch.trim().toLowerCase()) !== -1
-  );
-  const collPageCount = Math.max(1, Math.ceil(collFiltered.length / COLL_PAGE_SIZE));
-  const collSafePage = Math.min(collPage, collPageCount - 1);
-  const collPageItems = collFiltered.slice(
-    collSafePage * COLL_PAGE_SIZE,
-    collSafePage * COLL_PAGE_SIZE + COLL_PAGE_SIZE,
-  );
 
   // Auto-pick the first template once it lands so a happy-path submission
   // doesn't need a manual selection if the server only has one template.
@@ -374,7 +347,13 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
         if (typeof pushToast === "function") {
           pushToast({ kind: "success", title: "Workspace created", detail: row.id });
         }
-        navigate("/workspaces/" + row.id);
+        // Land the operator in the workspace they just made. onCreated is
+        // the host's own "open this workspace" -- in the shell that is a
+        // workspace switch. navigate() is the fallback for a host that
+        // supplies none, and it addresses the record rather than
+        // entering it, which is what that route means everywhere else.
+        if (typeof onCreated === "function") onCreated(row.id);
+        else navigate("/workspaces/" + row.id);
       },
       onError: _wsToastErr(pushToast, "Create failed"),
     }
@@ -384,7 +363,6 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
     if (!templateId) return;
     const body = { template_id: templateId };
     if (name.trim()) body.name = name.trim();
-    if (mountEnabled && mountSel.size) body.mounts = Array.from(mountSel).map((id) => ({ collection_id: id }));
     create.mutate(body);
   };
 
@@ -442,63 +420,6 @@ function WS_NewWorkspaceModal({ onClose, pushToast }) {
           </select>
         )}
       </div>
-      {collItems.length > 0 && (
-        <div className="field">
-          <label
-            data-testid="create-mount-toggle"
-            style={{ display: "flex", gap: 8, alignItems: "center", cursor: "pointer" }}
-          >
-            <input
-              type="checkbox"
-              checked={mountEnabled}
-              onChange={(e) => setMountEnabled(e.target.checked)}
-            />
-            <span className="field-label" style={{ margin: 0 }}>Mount collections <span className="hint">optional</span></span>
-          </label>
-          {mountEnabled && (
-            <div style={{ border: "1px solid var(--border)", borderRadius: 6, overflow: "hidden", marginTop: 8 }}>
-              <div style={{ position: "relative", borderBottom: "1px solid var(--border)" }}>
-                <Icon name="search" size={13} className="icon" style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", opacity: 0.6 }} />
-                <input
-                  className="input mono"
-                  placeholder="Search collections…"
-                  value={collSearch}
-                  onChange={(e) => { setCollSearch(e.target.value); setCollPage(0); }}
-                  data-testid="create-mount-search"
-                  style={{ width: "100%", border: "none", borderRadius: 0, paddingLeft: 28 }}
-                />
-              </div>
-              <div style={{ maxHeight: 200, overflowY: "auto" }}>
-                {collPageItems.length === 0 ? (
-                  <div className="muted text-sm" style={{ padding: "10px 12px" }}>No matching collections.</div>
-                ) : collPageItems.map((c) => (
-                  <label
-                    key={c.id}
-                    data-testid="create-mount-collection"
-                    title={c.description || undefined}
-                    style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", cursor: "pointer", fontSize: 12.5 }}
-                  >
-                    <input type="checkbox" checked={mountSel.has(c.id)} onChange={() => toggleMount(c.id)} />
-                    <span className="mono">{c.id}</span>
-                  </label>
-                ))}
-              </div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", borderTop: "1px solid var(--border)", background: "var(--bg-2)" }}>
-                <span className="muted text-sm" data-testid="create-mount-selected-count">
-                  {mountSel.size} selected{collFiltered.length !== collItems.length ? ` · ${collFiltered.length} match` : ""}
-                </span>
-                {collPageCount > 1 && (
-                  <span data-testid="create-mount-pager" style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                    <Btn kind="ghost" disabled={collSafePage <= 0} onClick={() => setCollPage(collSafePage - 1)}>‹</Btn>
-                    <span className="muted text-sm">{collSafePage + 1}/{collPageCount}</span>
-                    <Btn kind="ghost" disabled={collSafePage >= collPageCount - 1} onClick={() => setCollPage(collSafePage + 1)}>›</Btn>
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
       <div className="banner banner-info" style={{ margin: 0, fontSize: 11.5 }}>
         <Icon name="info" size={12} className="ico" />
         <div>ID is generated by the backend — any <span className="mono">id</span> field in this body is silently ignored (spec §12).</div>
@@ -529,8 +450,18 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
   const wid = workspaceId || params.id;
 
   const tab = WS_TABS.includes(query.tab) ? query.tab : "files";
+  // Through navigate, not by writing the hash.
+  //
+  // Assigning window.location.hash bypasses the router shim, and the
+  // address it wrote -- "#/workspaces/<wid>?tab=<t>" -- is the pre-S8
+  // grammar, which the shell's url parser does not understand. It
+  // therefore read no workspace at all, fell back to the default one and
+  // rewrote the address to match, so clicking any tab in a workspace's
+  // settings threw you out of that workspace entirely. navigate hands the
+  // same path to the shim, which puts the tab in the section slot and
+  // hands it back as query.tab, which is what this component reads.
   const setTab = (t) => {
-    window.location.hash = "#/workspaces/" + encodeURIComponent(wid) + "?tab=" + t;
+    navigate("/workspaces/" + encodeURIComponent(wid) + "?tab=" + t);
   };
 
   const [diagOpen, setDiagOpen] = React.useState(false);
@@ -637,6 +568,10 @@ function WorkspaceDetail({ workspaceId, onOpenSession, onNavigate, pushToast }) 
             <button
               key={t.id}
               type="button"
+              // Stable handle for the e2e facade: the visible label is
+              // copy and the icon carries no name, so a tab is otherwise
+              // only reachable by text that is free to change.
+              data-testid={"workspace-tab:" + t.id}
               onClick={() => setTab(t.id)}
               style={{
                 background: "none",

@@ -23,9 +23,6 @@ from primer.api._app_bootstrap import (
 )
 from primer.api._app_lifespan_phases import (
     assert_harness_kinds_registered,
-    forward_chat_relays,
-    forward_chat_ticks,
-    recover_chats,
     recover_ic_bootstrap,
     recover_sessions,
     recover_webhook_deliveries,
@@ -47,10 +44,10 @@ from primer.model.provider import SemanticSearchProvider
 from primer.model.scheduler import RuntimeMode, SchedulerProviderType
 from primer.toolset.harness import build_harness_toolset_provider
 from primer.toolset.misc import build_misc_toolset
-from primer.toolset.search import build_search_toolset
 from primer.toolset.system import build_system_toolset
 from primer.toolset.trigger import build_trigger_toolset_provider
 from primer.toolset.web import build_web_toolset
+from primer.toolset.crud import build_crud_toolset
 from primer.toolset.workspace_ext import build_workspace_ext_toolset
 from primer.toolset.workspaces import build_workspaces_toolset
 from primer.workspace.probe import WorkspaceProbeTask
@@ -98,6 +95,7 @@ def _make_lifespan(config: AppConfig):
         storage_provider = _app_facade._build_storage_provider(config)
         await storage_provider.initialize()
         await storage_provider.get_content_store().ensure_schema()
+        await storage_provider.get_event_store().ensure_schema()
         # Ordered data migrations. Runs BEFORE auto-bootstrap so a migration
         # never has to reason about whether a reserved row exists yet: it
         # only ever transforms rows that were already there. A fresh install
@@ -226,6 +224,13 @@ def _make_lifespan(config: AppConfig):
         # Build the always-on _misc toolset (stateless utilities).
         misc_toolset = build_misc_toolset()
         provider_registry._misc_toolset_provider = misc_toolset  # noqa: SLF001
+        from primer.toolset.collections import build_collections_toolset
+        collections_toolset = build_collections_toolset(
+            storage_provider=storage_provider,
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
+        )
+        provider_registry._collections_toolset_provider = collections_toolset  # noqa: SLF001
         # Bootstrap web-search reserved rows BEFORE building the toolset.
         await _bootstrap_web_search(storage_provider)
         logger.info("bootstrap: web-search rows materialised")
@@ -271,6 +276,30 @@ def _make_lifespan(config: AppConfig):
         )
         app.state.web_fetch_registry = web_fetch_registry
         app.state.web_fetch_service = web_fetch_service
+        from primer.api.registries.speech_registry import (
+            SpeechRegistry,
+            default_stt_factory,
+            default_tts_factory,
+        )
+        from primer.model.provider import (
+            SpeechToTextProvider as _STT,
+            TextToSpeechProvider as _TTS,
+        )
+
+        stt_registry = SpeechRegistry(
+            storage=storage_provider.get_storage(_STT),
+            factory=default_stt_factory,
+            label="stt",
+        )
+        tts_registry = SpeechRegistry(
+            storage=storage_provider.get_storage(_TTS),
+            factory=default_tts_factory,
+            label="tts",
+        )
+        app.state.stt_registry = stt_registry
+        app.state.tts_registry = tts_registry
+        logger.info("lifespan: speech registries constructed")
+
         logger.info("lifespan: web-fetch registry + service constructed")
         # Build the always-on `web` toolset (web-search dispatching via
         # the WebSearchService + http-request primitives). Reserved id
@@ -291,7 +320,6 @@ def _make_lifespan(config: AppConfig):
         app.state.misc_toolset = misc_toolset
         app.state.web_toolset = web_toolset
         app.state.internal_collections = None
-        app.state.search_toolset = None
         app.state.config = config
 
         # Workspace health-probe loop. Pings each running/failed
@@ -391,12 +419,15 @@ def _make_lifespan(config: AppConfig):
         yield_listener = None
         timer_scheduler = None
         timeout_sweeper = None
+        event_dispatcher = None
+        event_retention_pruner = None
+        workspace_event_bridge = None
         stuck_session_sweeper = None
-        chat_sweeper = None
         harness_sweeper = None
         watcher_manager = None
         mcp_task_bridge = None
         app.state.coordinator_sweeper = None
+        app.state.event_dispatcher = None
         if scheduler is not None:
             from primer.bus.in_memory import InMemoryEventBus
             from primer.bus.listener import YieldEventListener
@@ -454,13 +485,35 @@ def _make_lifespan(config: AppConfig):
             timer_scheduler = TimerScheduler(
                 bus=event_bus,
                 session_storage=storage_provider.get_storage(_WorkspaceSession),
+                storage_provider=storage_provider,
             )
             timer_scheduler.start(coordinator.leader_elector)
             timeout_sweeper = TimeoutSweeper(
                 bus=event_bus,
                 session_storage=storage_provider.get_storage(_WorkspaceSession),
+                storage_provider=storage_provider,
             )
             timeout_sweeper.start(coordinator.leader_elector)
+            from primer.events.dispatcher import (
+                EventDispatcher, EventRetentionPruner,
+            )
+            event_dispatcher = EventDispatcher(
+                storage_provider=storage_provider,
+                event_bus=event_bus,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+                claim_engine=claim_engine,
+                poll_seconds=config.event_dispatch_poll_seconds,
+                batch=config.event_dispatch_batch,
+                max_failures=config.event_sink_max_failures,
+            )
+            event_dispatcher.start(coordinator.leader_elector)
+            event_retention_pruner = EventRetentionPruner(
+                storage_provider=storage_provider,
+                retention_days=config.event_retention_days,
+            )
+            event_retention_pruner.start(coordinator.leader_elector)
+            app.state.event_dispatcher = event_dispatcher
 
             # Ends sessions whose first turn never ran. Without this a lost claim leaves a
             # non-terminal row forever, and a `parallelism="skip"` subscription will not fire
@@ -475,13 +528,7 @@ def _make_lifespan(config: AppConfig):
             )
             stuck_session_sweeper.start(coordinator.leader_elector)
 
-            from primer.bus.scheduler_tasks import ChatSweeper, HarnessSweeper
-            chat_sweeper = ChatSweeper(
-                storage_provider=storage_provider,
-                scheduler=scheduler,
-                event_bus=event_bus,
-            )
-            chat_sweeper.start(coordinator.leader_elector)
+            from primer.bus.scheduler_tasks import HarnessSweeper
 
             harness_sweeper = HarnessSweeper(
                 storage_provider=storage_provider,
@@ -523,9 +570,55 @@ def _make_lifespan(config: AppConfig):
                 bus=event_bus,
                 scheduler=scheduler,
                 workspace_root_resolver=_resolve_probe,
+                storage_provider=storage_provider,
             )
             watcher_manager.start(coordinator.leader_elector)
             logger.info("lifespan: watcher manager started")
+
+            # Workspace lifecycle events (wave-2 spec Part 3): one
+            # runtime stream per opted-in workspace, emitted onto the
+            # platform event log by the leader.
+            from primer.events.workspace_bridge import WorkspaceEventBridge
+
+            async def _resolve_events_stream(workspace_id: str, config):
+                from primer.workspace.runtime.ws_sandbox import WSSandbox
+                try:
+                    ws = await workspace_registry.get_workspace(workspace_id)
+                except Exception:  # noqa: BLE001
+                    return None
+                sandbox = getattr(ws, "_sandbox", None)
+                if isinstance(sandbox, WSSandbox):
+                    return sandbox._client.events_subscribe(
+                        kinds=list(config.kinds),
+                        path_prefixes=config.path_prefixes,
+                    )
+                # Local workspace: host-side inotify serves the file
+                # kind; there is no runtime to observe execs.
+                root = getattr(ws, "root", None)
+                if root is not None and "file_changed" in config.kinds:
+                    from primer.bus.host_inotify_probe import HostInotifyProbe
+
+                    async def _file_stream():
+                        probe = HostInotifyProbe(root=str(root))
+                        async for change in probe.watch(
+                            list(config.path_prefixes or ["."]),
+                        ):
+                            yield {
+                                "kind": "file_changed",
+                                "path": change.path,
+                                "mtime": change.mtime,
+                                "size": change.size,
+                            }
+
+                    return _file_stream()
+                return None
+
+            workspace_event_bridge = WorkspaceEventBridge(
+                storage_provider=storage_provider,
+                stream_resolver=_resolve_events_stream,
+                event_bus=event_bus,
+            )
+            workspace_event_bridge.start(coordinator.leader_elector)
 
             # MCP task bridge — polls parked mcp_task:* sessions
             # and republishes results onto the bus. The bridge looks
@@ -536,6 +629,7 @@ def _make_lifespan(config: AppConfig):
                 bus=event_bus,
                 scheduler=scheduler,
                 provider_registry=provider_registry,
+                storage_provider=storage_provider,
             )
             mcp_task_bridge.start(coordinator.leader_elector)
             logger.info("lifespan: mcp task bridge started")
@@ -552,6 +646,13 @@ def _make_lifespan(config: AppConfig):
                 app.state.coordinator_sweeper = coordinator_sweeper
         app.state.event_bus = event_bus
         app.state.claim_engine = claim_engine
+        # Action-event recorder: every non-CRUD emission site goes
+        # through this. bus=None (scheduler disabled) still records;
+        # the dispatcher then relies on its poll interval.
+        from primer.events.recorder import EventRecorder as _EventRecorder
+        app.state.event_recorder = _EventRecorder(
+            storage_provider.get_event_store(), event_bus,
+        )
 
         # Now that the claim engine exists, hand it to the channel registry so
         # warmed (and lazily built) adapters can wake the worker via
@@ -562,14 +663,16 @@ def _make_lifespan(config: AppConfig):
         # readiness is not gated on bot gateway connects (a Discord gateway can
         # take seconds to reach READY).
         channel_registry.set_claim_engine(claim_engine)
+        channel_registry.set_session_wiring(
+            workspace_registry=workspace_registry, scheduler=scheduler,
+        )
 
         # Only a process that OWNS inbound may open channel gateways. Warming a
         # chat adapter opens its inbound listener (Telegram long-poll / Slack
         # socket / Discord gateway); doing that in a worker-only process would
         # be a SECOND inbound connection competing with the API's (Telegram 409
         # Conflict; duplicate Slack/Discord deliveries). Worker-only processes
-        # relay outbound over the bus instead (see _forward_chat_relays_from_bus
-        # below + ChatChannelDispatcher), so they must NOT warm.
+        # do not open inbound at all, so they must NOT warm.
         owns_inbound = config.runtime_mode in (
             RuntimeMode.API, RuntimeMode.API_PLUS_WORKER,
         )
@@ -635,9 +738,6 @@ def _make_lifespan(config: AppConfig):
         # eligibility predicate requires turn_status in {claimable,
         # running} and chat.status='active', so we only re-arm rows
         # that match.
-        if claim_engine is not None:
-            await recover_chats(claim_engine, storage_provider)
-
         # --- Webhook delivery recovery on startup --------------------------
         # The webhook endpoint persists a pending WebhookDelivery row before
         # its fire-and-forget BackgroundTask dispatches. A crash between the
@@ -711,45 +811,44 @@ def _make_lifespan(config: AppConfig):
         )
         app.state.workspace_ext_toolset = workspace_ext_toolset
 
-        # Process-local router for chat tick events. One bus subscription
-        # per process feeds it; WS handlers subscribe per-chat.
-        from primer.chat.tick_router import ChatTickRouter
+        # Build the always-on ``crud`` toolset (S5): agent/graph/trigger
+        # construction plus python-toolset management, all behind the
+        # seeded approval policies. Needs claim_engine/event_bus for the
+        # trigger handlers, so it is built alongside the trigger toolset.
+        crud_toolset = build_crud_toolset(
+            storage_provider=storage_provider,
+            claim_engine=claim_engine,
+            event_bus=event_bus,
+        )
+        provider_registry._crud_toolset_provider = crud_toolset  # noqa: SLF001
+        app.state.crud_toolset = crud_toolset
 
-        chat_tick_router = ChatTickRouter()
-        app.state.chat_tick_router = chat_tick_router
+        from primer.bootstrap.seed import run_ensure_pass
 
-        if event_bus is not None:
-            chat_tick_task = asyncio.create_task(
-                forward_chat_ticks(event_bus, chat_tick_router),
-                name="chat-tick-forwarder",
-            )
-            app.state.chat_tick_forwarder_task = chat_tick_task
-        else:
-            chat_tick_task = None
-            app.state.chat_tick_forwarder_task = None
-
-        # Chat -> channel relay forwarder. An out-of-proc worker cannot post to
-        # a channel (it deliberately does not own the inbound gateway), so it
-        # publishes a tiny ``chat:<id>:relay`` signal; the inbound-owning
-        # process re-derives the text/gate from storage and posts via its warm
-        # adapter. Only runs where inbound lives (API / api+worker). In a
-        # single api+worker process the worker posts directly via the shared
-        # warm registry and never publishes, so this stays idle there.
-        if event_bus is not None and owns_inbound:
-            chat_relay_task = asyncio.create_task(
-                forward_chat_relays(
-                    event_bus,
-                    storage_provider,
-                    channel_registry,
-                    artifact_storage_registry,
-                ),
-                name="chat-relay-forwarder",
-            )
-            app.state.chat_relay_forwarder_task = chat_relay_task
-        else:
-            chat_relay_task = None
-            app.state.chat_relay_forwarder_task = None
-
+        _ensure = await run_ensure_pass(
+            storage_provider,
+            workspace_registry=workspace_registry,
+            toolset_providers={
+                "system": system_toolset,
+                "crud": crud_toolset,
+                "workspaces": ws_toolset,
+                "misc": misc_toolset,
+                "web": web_toolset,
+                "harness": harness_toolset,
+                "trigger": trigger_toolset,
+                "workspace_ext": workspace_ext_toolset,
+                # The superseded standalone call also passed this one; the
+                # /tools subtree loses the collections toolset without it.
+                "collections": collections_toolset,
+            },
+            provider_registry=provider_registry,
+            semantic_search_registry=semantic_search_registry,
+            default_workspace_template=config.default_workspace_template,
+        )
+        if _ensure.errors:
+            logger.warning("seed: ensure pass finished with errors", extra={
+                "seed_errors": _ensure.errors,
+            })
         # (The workspace tap router is constructed earlier, before the
         # workspaces toolset, so the ``workspace_tap`` drain tool can
         # capture it. See above.)
@@ -771,7 +870,6 @@ def _make_lifespan(config: AppConfig):
                 approval_resolver=approval_resolver,
                 channel_dispatcher=channel_dispatcher,
                 event_bus=event_bus,
-                chat_tick_router=chat_tick_router,
                 artifact_storage_registry=artifact_storage_registry,
                 engine=claim_engine,
             )
@@ -793,7 +891,7 @@ def _make_lifespan(config: AppConfig):
         # previous API process exited, its asyncio task is gone but the
         # status row still says "running". Mark it as failed so the
         # UI surfaces the interruption and the operator can re-trigger.
-        await recover_ic_bootstrap(storage_provider)
+        # Bootstrap recovery went with the boot-time vector pass.
         if ic_config is not None:
             ic_subsystem = build_subsystem(
                 config=ic_config,
@@ -811,14 +909,13 @@ def _make_lifespan(config: AppConfig):
                     "harness": harness_toolset,
                     "trigger": trigger_toolset,
                     "workspace_ext": workspace_ext_toolset,
+                    "collections": collections_toolset,
                 },
             )
-            search_toolset = build_search_toolset(ic_subsystem)
-            ic_subsystem.register_toolset_provider("search", search_toolset)
-            provider_registry._search_toolset_provider = search_toolset  # noqa: SLF001
             app.state.internal_collections = ic_subsystem
-            app.state.search_toolset = search_toolset
-            ic_subsystem.start_worker()
+            # The CDC vector worker no longer starts: vectorisation is
+            # the explicit search lifecycle now. The subsystem stays
+            # constructed so the reserved `search` toolset resolves.
         # Startup invariant: every kind the harness service manages must
         # appear in the CDC kinds registry.  _harness_kind_models() ensures
         # the registry is fully populated (handles test-reset and lazy-import
@@ -827,24 +924,6 @@ def _make_lifespan(config: AppConfig):
         # omits "document" and "toolset" (no IC vector index for those),
         # so we check harness-managed storage kinds rather than EntityType.
         assert_harness_kinds_registered()
-
-        # --- Document vector backfill ------------------------------------
-        # Index any user document whose vector chunks are missing (stored
-        # before the embed-on-ingest hook existed, or whose embedding failed
-        # at ingest time). Cheap and idempotent: on a healthy boot where
-        # everything is already indexed, no embeds run. Best-effort so a bad
-        # embedder never blocks startup.
-        try:
-            from primer.knowledge.indexing import (  # noqa: PLC0415
-                backfill_missing_document_vectors,
-            )
-            await backfill_missing_document_vectors(
-                storage_provider=storage_provider,
-                provider_registry=provider_registry,
-                semantic_search_registry=semantic_search_registry,
-            )
-        except Exception:
-            logger.exception("lifespan: document vector backfill failed")
 
         # --- MCP server mount (/v1/mcp) ----------------------------------
         # Spec §4-5: StreamableHTTP MCP transport exposed at /v1/mcp,
@@ -910,7 +989,9 @@ def _make_lifespan(config: AppConfig):
                 (mcp_task_bridge, "mcp_task_bridge"),
                 (watcher_manager, "watcher_manager"),
                 (harness_sweeper, "harness_sweeper"),
-                (chat_sweeper, "chat_sweeper"),
+                (workspace_event_bridge, "workspace_event_bridge"),
+                (event_retention_pruner, "event_retention_pruner"),
+                (event_dispatcher, "event_dispatcher"),
                 (timeout_sweeper, "timeout_sweeper"),
                 (stuck_session_sweeper, "stuck_session_sweeper"),
                 (timer_scheduler, "timer_scheduler"),
@@ -921,29 +1002,11 @@ def _make_lifespan(config: AppConfig):
                         await task.stop()
                     except Exception:
                         logger.exception("%s.stop failed", name)
-            if chat_tick_task is not None:
-                try:
-                    chat_tick_task.cancel()
-                    try:
-                        await chat_tick_task
-                    except asyncio.CancelledError:
-                        pass
-                except Exception:
-                    logger.exception("chat_tick_task teardown failed")
             if workspace_tap_router is not None:
                 try:
                     await workspace_tap_router.aclose()
                 except Exception:
                     logger.exception("workspace_tap_router teardown failed")
-            if chat_relay_task is not None:
-                try:
-                    chat_relay_task.cancel()
-                    try:
-                        await chat_relay_task
-                    except asyncio.CancelledError:
-                        pass
-                except Exception:
-                    logger.exception("chat_relay_task teardown failed")
             if _claim_depth_task is not None:
                 try:
                     _claim_depth_task.cancel()
@@ -992,6 +1055,14 @@ def _make_lifespan(config: AppConfig):
                 await web_fetch_registry.aclose()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("lifespan: web_fetch_registry aclose failed: %s", exc)
+            try:
+                await stt_registry.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("lifespan: stt_registry aclose failed: %s", exc)
+            try:
+                await tts_registry.aclose()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("lifespan: tts_registry aclose failed: %s", exc)
             try:
                 await channel_registry.aclose()
             except Exception:

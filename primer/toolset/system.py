@@ -12,7 +12,7 @@ Tool catalog
 
 Per-entity CRUD set (10 entities × 6 tools = 60 tools) for:
     llm_provider, embedding_provider, cross_encoder_provider, toolset,
-    agent, graph, collection, document, agent_thread, graph_thread,
+    agent, graph, collection, document, graph_thread,
     semantic_search_provider
 
 Plus entity-specific operations:
@@ -20,7 +20,6 @@ Plus entity-specific operations:
   ``fetch_cross_encoder_provider_models`` — live model lists.
 * ``list_toolset_tools`` — enumerate the tools a toolset exposes.
 * ``call_tool`` — meta-dispatch: invoke any tool from any toolset.
-* Agent threads CRUD — ``list/get/create/update/delete_agent_thread``.
 * Graph threads CRUD — ``list/get/create/update/delete_graph_thread``.
 * Collection extras — ``list_collection_documents``,
   ``find_collection_documents_by_meta``, ``search_collection``,
@@ -66,7 +65,7 @@ ask_user). Everything historically imported as
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, Field, ValidationError
 
@@ -86,6 +85,7 @@ from primer.model.except_ import (
     PrimerError,
 )
 from primer.model.graph import Graph, GraphThread
+from primer.model.workspace_session import WorkspaceSession
 from primer.model.provider import (
     ArtifactStorageProvider,
     CrossEncoderProvider,
@@ -94,7 +94,6 @@ from primer.model.provider import (
     SemanticSearchProvider,
     Toolset,
 )
-from primer.model.thread import Thread
 from primer.model.channel import (
     Channel,
     ChannelProvider,
@@ -237,7 +236,6 @@ def build_system_toolset(
         ("graph", "graphs", Graph, None, None, None, "user"),
         ("collection", "collections", Collection, None, None, None, "user"),
         ("document", "documents", Document, None, None, None, "user"),
-        ("agent_thread", "agent_threads", Thread, None, None, None, "user"),
         ("graph_thread", "graph_threads", GraphThread, None, None, None, "user"),
         ("semantic_search_provider", "semantic_search_providers", SemanticSearchProvider, None, _inv_ssp, _inv_ssp, "admin"),
         ("artifact_storage_provider", "artifact_storage_providers", ArtifactStorageProvider, None, None, None, "admin"),
@@ -467,8 +465,8 @@ def build_system_toolset(
         config: SubscriptionConfig = Field(
             ...,
             description=(
-                "Action discriminated union: start_chat / chat_message / "
-                "agent_fresh_session / graph_fresh_session."
+                "Action discriminated union: agent_fresh_session / "
+                "graph_fresh_session / session_append."
             ),
         )
         reply_target: ReplyTarget | None = Field(
@@ -519,8 +517,8 @@ def build_system_toolset(
             ),
             when=(
                 "Use when mapping a normalized channel event (message.posted "
-                "/ command.invoked) to a platform action (start_chat / "
-                "chat_message / agent_fresh_session / graph_fresh_session). "
+                "/ command.invoked) to a platform action (agent_fresh_session "
+                "/ graph_fresh_session / session_append). "
                 "The trigger must already exist as a channel-kind trigger; "
                 "unknown trigger returns ``type=trigger_not_found``."
             ),
@@ -756,27 +754,27 @@ def build_system_toolset(
 
     async def _switch_to_agent_handler(
         arguments: dict[str, Any], *, ctx: ToolContext,
-    ) -> ToolCallResult | Yielded:
+    ) -> ToolCallResult:
+        """Hand the conversation to another agent.
+
+        Kept as the agent-facing name for this capability, delegating to
+        the session binding switch. It used to be chat-only and to yield
+        into the chat dispatch loop; with chats gone that loop no longer
+        exists, so the yield would have parked a session nobody resumes.
+        The behaviour it named is unchanged: the rest of THIS
+        conversation runs under the new agent, from the next turn.
+        """
         try:
             args = _SwitchToAgentArgs.model_validate(arguments)
         except ValidationError as exc:
             return _err_from_validation(exc)
-        if ctx.chat_id is None or ctx.session_id is not None:
-            return _err(
-                "switch_to_agent is only available in chats (not workspace "
-                "sessions)",
-                error_type="bad-request",
-            )
-        agents = storage_provider.get_storage(Agent)
-        if await agents.get(args.agent_id) is None:
-            return _err(
-                f"agent {args.agent_id!r} does not exist",
-                error_type="not-found",
-            )
-        return Yielded(
-            tool_name="",  # provider stamps "switch_to_agent"
-            event_key=f"switch_to_agent:{ctx.chat_id}:{ctx.tool_call_id}",
-            resume_metadata={"agent_id": args.agent_id, "prompt": args.prompt},
+        return await _switch_binding_handler(
+            {
+                "kind": "agent",
+                "agent_id": args.agent_id,
+                "reason": args.prompt,
+            },
+            ctx=ctx,
         )
 
     registry["switch_to_agent"] = (
@@ -784,12 +782,14 @@ def build_system_toolset(
             id="switch_to_agent",
             toolset_id=toolset_id,
             purpose=(
-                "Hand the current chat off to another agent with a prompt; "
-                "the new agent takes over."
+                "Hand this conversation off to another agent with a prompt; "
+                "the new agent takes over from the next turn."
             ),
             when=(
                 "Use when you want to delegate the rest of THIS conversation "
-                "to another agent; for a one-off subtask use invoke_agent."
+                "to another agent; for a one-off subtask use invoke_agent. "
+                "To hand off to a GRAPH, or to carry a model profile across "
+                "the switch, use switch_binding."
             ),
             args_schema=_SwitchToAgentArgs.model_json_schema(),
             examples=[
@@ -798,13 +798,126 @@ def build_system_toolset(
                         "agent_id": "agent-coder",
                         "prompt": "Implement the plan above.",
                     },
-                    returns="(turn handed off)",
-                    note="chat-only; ends the turn",
+                    returns="binding switch to 'agent-coder' queued",
+                    note="applies at the end of this turn",
                 ),
             ],
-            yields=True,
+            yields=False,
+            # must be explicit: tests/mcp/test_required_role_completeness.py.
+            # It became exposable when the port dropped the chat-era yield,
+            # so it needs the same role its switch_binding twin declares.
+            required_role="user",
         ),
         _switch_to_agent_handler,
+    )
+
+    # ---- switch_binding (session hand-off; never yields) -------------
+    class _SwitchBindingArgs(BaseModel):
+        kind: Literal["agent", "graph"] = Field(
+            ..., description="Whether to hand off to an agent or a graph."
+        )
+        agent_id: str | None = Field(
+            default=None, description="Agent to hand off to (kind='agent')."
+        )
+        graph_id: str | None = Field(
+            default=None, description="Graph to hand off to (kind='graph')."
+        )
+        profile_id: str | None = Field(
+            default=None,
+            description="Optional model profile to apply with the switch.",
+        )
+        reason: str | None = Field(
+            default=None,
+            description="Why the hand-off is happening, for the transcript.",
+        )
+
+    async def _switch_binding_handler(
+        arguments: dict[str, Any], *, ctx: ToolContext,
+    ) -> ToolCallResult:
+        try:
+            args = _SwitchBindingArgs.model_validate(arguments)
+        except ValidationError as exc:
+            return _err_from_validation(exc)
+        if ctx.session_id is None:
+            return _err(
+                "switch_binding is only available in workspace sessions",
+                error_type="bad-request",
+            )
+        if args.kind == "agent" and not args.agent_id:
+            return _err("kind 'agent' requires agent_id",
+                        error_type="bad-request")
+        if args.kind == "graph" and not args.graph_id:
+            return _err("kind 'graph' requires graph_id",
+                        error_type="bad-request")
+
+        # Verified before the request is stored: a queued switch to a
+        # target that does not exist would fail at the checkpoint, long
+        # after the agent that asked for it could react.
+        if args.kind == "graph":
+            if await storage_provider.get_storage(Graph).get(
+                args.graph_id
+            ) is None:
+                return _err(f"graph {args.graph_id!r} does not exist",
+                            error_type="not-found")
+        elif await storage_provider.get_storage(Agent).get(
+            args.agent_id
+        ) is None:
+            return _err(f"agent {args.agent_id!r} does not exist",
+                        error_type="not-found")
+
+        sessions = storage_provider.get_storage(WorkspaceSession)
+        row = await sessions.get(ctx.session_id)
+        if row is None:
+            return _err(f"session {ctx.session_id!r} does not exist",
+                        error_type="not-found")
+
+        await sessions.update(row.model_copy(update={
+            "pending_binding_switch": {
+                "kind": args.kind,
+                "agent_id": args.agent_id,
+                "graph_id": args.graph_id,
+                "profile_id": args.profile_id,
+                "actor": "agent",
+                "reason": args.reason,
+            },
+        }))
+        target = args.graph_id if args.kind == "graph" else args.agent_id
+        return ToolCallResult(
+            output=(
+                f"binding switch to {target!r} queued; applies at the end "
+                "of this turn"
+            ),
+            is_error=False,
+        )
+
+    registry["switch_binding"] = (
+        make_tool(
+            id="switch_binding",
+            toolset_id=toolset_id,
+            purpose=(
+                "Hand this session off to a different agent or graph from "
+                "the next turn onward."
+            ),
+            when=(
+                "Use when the rest of THIS session should be handled by "
+                "someone else; for a one-off subtask use invoke_agent "
+                "instead, which returns here when it finishes."
+            ),
+            args_schema=_SwitchBindingArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={"kind": "agent", "agent_id": "agent-coder",
+                          "reason": "implementation work from here"},
+                    returns="binding switch queued; applies at the end of "
+                            "this turn",
+                    note="sessions only; the current turn finishes first",
+                ),
+            ],
+            yields=False,
+            # must be explicit: tests/mcp/test_required_role_completeness.py
+            required_role="user",
+        ),
+        _switch_binding_handler,
     )
 
     # ---- ask_user (yielding; available everywhere incl. chats) -------
@@ -834,6 +947,48 @@ def build_system_toolset(
             yields=True,
         ),
         _ask_user_handler,
+    )
+
+    # ---- wait_for_event (yielding; parks on the platform event log) --
+    from primer.toolset.events_wait import (
+        _WaitForEventArgs,
+        make_wait_for_event_handler,
+    )
+
+    registry["wait_for_event"] = (
+        make_tool(
+            id="wait_for_event",
+            toolset_id=toolset_id,
+            purpose=(
+                "Pause this turn until a platform event matching the "
+                "filter occurs; returns ``{event: <envelope>}`` (or "
+                "``{timed_out}`` / ``{cancelled}``)."
+            ),
+            when=(
+                "Use when you need to react to something happening on "
+                "the platform - a document pushed to a collection, an "
+                "agent created, a session ending - instead of polling. "
+                "Pass event-type globs plus optional field matchers / "
+                "rego expr; workspace sessions only."
+            ),
+            args_schema=_WaitForEventArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={
+                        "event_types": ["collection.document_pushed"],
+                        "fields": [{
+                            "path": "payload.collection_id",
+                            "op": "eq", "value": "kb",
+                        }],
+                    },
+                    returns="``{event: {...}}`` when a matching doc lands",
+                    note="yielding; worker released",
+                ),
+            ],
+            yields=True,
+            requires_workspace=True,
+        ),
+        make_wait_for_event_handler(storage_provider),
     )
 
     # ---- read_doc_content (workspace-only document -> text) ----------
@@ -878,221 +1033,6 @@ def build_system_toolset(
         toolset_id,
     )
 
-    # ---- python toolsets ---------------------------------------------------
-    #
-    # These are the escalation path the runner's isolation exists to contain:
-    # a tool that registers arbitrary python is, by construction, a tool that
-    # runs arbitrary python. They are admin-gated so a default agent cannot
-    # reach them.
-
-    class _CreatePythonToolsetArgs(BaseModel):
-        toolset_id: str = Field(
-            ..., min_length=1, description="Id for the new python toolset."
-        )
-        source: str = Field(
-            ...,
-            min_length=1,
-            description=(
-                "Python module source. Every @primer_tool function in it "
-                "becomes a tool."
-            ),
-        )
-        default_timeout_seconds: float = Field(
-            default=30.0,
-            gt=0.0,
-            le=300.0,
-            description="Wall-clock ceiling for tools that declare none.",
-        )
-
-    class _UpdatePythonToolsetSourceArgs(BaseModel):
-        toolset_id: str = Field(
-            ..., min_length=1, description="Id of the python toolset to edit."
-        )
-        source: str = Field(..., min_length=1, description="Replacement module source.")
-
-    class _ListPythonToolsArgs(BaseModel):
-        toolset_id: str = Field(
-            ..., min_length=1, description="Id of the python toolset to inspect."
-        )
-
-    def _derived(source: str, toolset_id: str, timeout: float) -> list[dict]:
-        from primer.toolset.python_runner.registration import register_module
-
-        return [
-            {
-                "id": reg.tool.id,
-                "yields": reg.tool.yields,
-                "timeout_seconds": reg.timeout_seconds,
-                "args": sorted(reg.tool.args_schema.get("properties", {})),
-            }
-            for reg in register_module(source, toolset_id, timeout)
-        ]
-
-    async def _create_python_toolset_handler(args_json: dict) -> str:
-        from primer.model.providers.toolset import (
-            PythonConfig,
-            Toolset,
-            ToolsetProviderType,
-        )
-        from primer.toolset.python_runner.registration import RegistrationError
-
-        args = _CreatePythonToolsetArgs(**args_json)
-        try:
-            tools = _derived(
-                args.source, args.toolset_id, args.default_timeout_seconds
-            )
-        except RegistrationError as exc:
-            return _ok(
-                {"ok": False, "error": str(exc), "field": exc.field,
-                 "lineno": exc.lineno}
-            )
-        row = Toolset(
-            id=args.toolset_id,
-            provider=ToolsetProviderType.PYTHON,
-            config=PythonConfig(
-                source=args.source,
-                source_version=1,
-                default_timeout_seconds=args.default_timeout_seconds,
-            ),
-        )
-        await storage_provider.get_storage(Toolset).create(row)
-        return _ok({"ok": True, "toolset_id": args.toolset_id, "tools": tools})
-
-    async def _update_python_toolset_source_handler(args_json: dict) -> str:
-        from primer.model.providers.toolset import Toolset
-        from primer.toolset.python_runner.registration import RegistrationError
-
-        args = _UpdatePythonToolsetSourceArgs(**args_json)
-        store = storage_provider.get_storage(Toolset)
-        existing = await store.get(args.toolset_id)
-        if existing is None:
-            return _ok({"ok": False, "error": "not-found"})
-        try:
-            tools = _derived(
-                args.source,
-                args.toolset_id,
-                existing.config.default_timeout_seconds,
-            )
-        except RegistrationError as exc:
-            return _ok(
-                {"ok": False, "error": str(exc), "field": exc.field,
-                 "lineno": exc.lineno}
-            )
-        existing.config.source = args.source
-        # Bumped here as well as in the router: a resume must be able to tell
-        # that the code changed under it, whichever surface did the edit.
-        existing.config.source_version += 1
-        await store.update(existing)
-        return _ok(
-            {
-                "ok": True,
-                "toolset_id": args.toolset_id,
-                "source_version": existing.config.source_version,
-                "tools": tools,
-            }
-        )
-
-    async def _list_python_tools_handler(args_json: dict) -> str:
-        from primer.model.providers.toolset import Toolset
-        from primer.toolset.python_runner.registration import RegistrationError
-
-        args = _ListPythonToolsArgs(**args_json)
-        existing = await storage_provider.get_storage(Toolset).get(args.toolset_id)
-        if existing is None:
-            return _ok({"ok": False, "error": "not-found"})
-        try:
-            tools = _derived(
-                existing.config.source,
-                args.toolset_id,
-                existing.config.default_timeout_seconds,
-            )
-        except RegistrationError as exc:
-            return _ok({"ok": False, "error": str(exc)})
-        return _ok({"ok": True, "toolset_id": args.toolset_id, "tools": tools})
-
-    registry["create_python_toolset"] = (
-        make_tool(
-            id="create_python_toolset",
-            toolset_id=SYSTEM_TOOLSET_ID,
-            purpose=(
-                "Register a python module as a toolset so its functions "
-                "become callable tools."
-            ),
-            when=(
-                "Use when you need a capability that is easier to express as "
-                "a python function than to assemble from existing tools. "
-                "Every @primer_tool function needs a docstring with a "
-                "'Use when' line and a documented entry per argument, or "
-                "registration fails and names the offending parameter."
-            ),
-            args_schema=_CreatePythonToolsetArgs.model_json_schema(),
-            examples=[
-                ToolExample(
-                    args={
-                        "toolset_id": "my-tools",
-                        "source": (
-                            "@primer_tool()\n"
-                            "def greet(name: str) -> str:\n"
-                            '    """Greet a person.\n\n'
-                            "    Use when greeting someone.\n\n"
-                            '    Args:\n        name: Who to greet.\n    """\n'
-                            "    return 'hi ' + name\n"
-                        ),
-                    },
-                    returns="``{ok: true, toolset_id, tools: [{id, yields, args}]}``",
-                )
-            ],
-            required_role="admin",
-        ),
-        _create_python_toolset_handler,
-    )
-
-    registry["update_python_toolset_source"] = (
-        make_tool(
-            id="update_python_toolset_source",
-            toolset_id=SYSTEM_TOOLSET_ID,
-            purpose="Replace a python toolset's module source.",
-            when=(
-                "Use when a python tool needs changing. The version is bumped "
-                "so a session parked in one of its tools resumes against the "
-                "code that parked, not the new code."
-            ),
-            args_schema=_UpdatePythonToolsetSourceArgs.model_json_schema(),
-            examples=[
-                ToolExample(
-                    args={"toolset_id": "my-tools", "source": "# new source\n"},
-                    returns="``{ok: true, toolset_id, source_version, tools}``",
-                )
-            ],
-            required_role="admin",
-        ),
-        _update_python_toolset_source_handler,
-    )
-
-    registry["list_python_tools"] = (
-        make_tool(
-            id="list_python_tools",
-            toolset_id=SYSTEM_TOOLSET_ID,
-            purpose="List the tools a python toolset's source currently derives.",
-            when=(
-                "Use when you want to see what a python toolset exposes, "
-                "including whether each tool yields and what arguments it "
-                "takes, without calling any of them."
-            ),
-            args_schema=_ListPythonToolsArgs.model_json_schema(),
-            examples=[
-                ToolExample(
-                    args={"toolset_id": "my-tools"},
-                    returns="``{ok: true, toolset_id, tools: [{id, yields, args}]}``",
-                )
-            ],
-            # Reading what a toolset exposes is not privileged, but the role
-            # must be explicit: tests/mcp/test_required_role_completeness.py
-            # requires every exposable reserved tool to declare one.
-            required_role="user",
-        ),
-        _list_python_tools_handler,
-    )
 
     return InternalToolsetProvider(toolset_id=toolset_id, registry=registry)
 

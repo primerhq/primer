@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import httpx
 from playwright.sync_api import expect
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 # ---------------------------------------------------------------------------
@@ -90,10 +91,7 @@ def test_u0101_workspaces_list_filter_narrows_table(
             cleanup_urls.insert(0, f"/v1/workspaces/{wsid}")
 
     try:
-        page.goto(f"{console_url}#/workspaces", wait_until="domcontentloaded")
-        page.locator(".nav-item").first.wait_for(
-            state="visible", timeout=20_000,
-        )
+        open_legacy_route(page, console_url, "workspaces")
 
         # Wait for both rows to land in the table. Scope to tbody so
         # we don't match the templateFilter dropdown's hidden <option>

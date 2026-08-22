@@ -672,6 +672,19 @@ class Tool(Describeable):
             "serialization."
         ),
     )
+    tool_class: Literal["standard", "notifying"] = Field(
+        default="standard",
+        validation_alias="class",
+        exclude=True,
+        description=(
+            "Tool class. 'standard' tools return a result the model reads. "
+            "'notifying' tools are declared no-response: the runner answers "
+            "them itself with a successful synthetic tool_result and "
+            "continues the turn, and their delivery to any responder is "
+            "best-effort. Wire alias is 'class'. In-memory metadata only; "
+            "excluded from serialization."
+        ),
+    )
     required_role: str | None = Field(
         default=None,
         exclude=True,
@@ -1243,6 +1256,14 @@ class SafetyRatings(BaseModel):
     )
 
 
+NOTIFYING_TOOL_RESULT = '{"delivered": true}'
+"""Canonical synthetic tool_result body for a notifying-class tool call.
+
+Delivered semantics, not rendered: it says the runner handed the action
+off, never that a client acted on it.
+"""
+
+
 class _ExecutorToolResult(BaseModel):
     """Synthetic event: an agent executor fed a tool result back to the LLM.
 
@@ -1324,6 +1345,93 @@ class _GraphNodeEvent(BaseModel):
     )
 
 
+class _ClientAction(BaseModel):
+    """Synthetic event: the runner delivered a NOTIFYING tool call.
+
+    Reachable only through :class:`ExtendedEvent`. The agent loop emits
+    one per notifying call, just before the call's synthetic tool_result.
+    The session persistence translator turns it into a ``client_action``
+    record, which flows the existing workspace tap to every attached
+    client; the browser executes it best-effort. Not produced by any LLM
+    adapter.
+
+    Lives in this module for the same reason as
+    :class:`_ExecutorToolResult`: keeping the
+    :data:`ExtendedStreamContent` union self-contained.
+    """
+
+    type: Literal["client_action"] = Field(
+        default="client_action",
+        description="Discriminator tag identifying this as a client-action delivery event.",
+    )
+    call_id: str = Field(
+        ...,
+        min_length=1,
+        description="Identifier of the ToolCallPart this delivery belongs to.",
+    )
+    name: str = Field(
+        ...,
+        min_length=1,
+        description="Scoped tool id of the notifying call (toolset_id__bare_name).",
+    )
+    arguments: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The call's arguments, passed through verbatim to the client.",
+    )
+
+
+class _LlmCall(BaseModel):
+    """Synthetic event: one completed model call at the agent-loop seam.
+
+    Reachable only through :class:`ExtendedEvent`. Emitted by
+    :func:`primer.agent.loop.run_agent_turn` once per ``llm.stream`` call
+    (so once per tool round), immediately BEFORE that round's
+    :class:`Done` so the record it becomes lands inside the turn's seq
+    window. Not produced by any LLM adapter.
+
+    Lives in this module for the same reason as
+    :class:`_ExecutorToolResult`: keeping the
+    :data:`ExtendedStreamContent` union self-contained.
+    """
+
+    type: Literal["llm_call"] = Field(
+        default="llm_call",
+        description="Discriminator tag identifying this as a model-call event.",
+    )
+    profile_id: str = Field(
+        ...,
+        description="ModelProfile the call resolved under.",
+    )
+    provider_id: str = Field(
+        ...,
+        description="Provider row id the profile resolved to.",
+    )
+    model: str = Field(
+        ...,
+        description="Concrete model name sent to the provider.",
+    )
+    input_tokens: int | None = Field(
+        default=None,
+        description="Prompt tokens reported by the stream's Usage event, if any.",
+    )
+    output_tokens: int | None = Field(
+        default=None,
+        description="Completion tokens reported by the stream's Usage event, if any.",
+    )
+    duration_ms: int = Field(
+        default=0,
+        ge=0,
+        description="Wall-clock duration of the model call in milliseconds.",
+    )
+    status: Literal["ok"] = Field(
+        default="ok",
+        description=(
+            "Only successful calls produce a record: a failed stream "
+            "re-raises, and the dispatch error path writes the ERROR "
+            "record. The failure is still counted on llm_calls_total."
+        ),
+    )
+
 ExtendedStreamContent = Annotated[
     RawReasoningDelta
     | RefusalDelta
@@ -1334,6 +1442,8 @@ ExtendedStreamContent = Annotated[
     | Logprobs
     | SafetyRatings
     | _ExecutorToolResult
+    | _ClientAction
+    | _LlmCall
     | _GraphNodeEvent,
     Field(discriminator="type"),
 ]

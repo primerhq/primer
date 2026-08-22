@@ -340,11 +340,16 @@ def build_rendered_entries(
         )
 
         rid = resolved_id(file_slug, f.template_name)
-        # Document gained a required ``path`` (Phase 1). Templates predating
-        # that field carry no path; derive a minimal one from the resolved id
-        # so build-time validation passes. Later tasks thread a real path.
-        if f.kind == "document" and not rewritten_payload.get("path"):
-            rewritten_payload = {**rewritten_payload, "path": f"{rid}.md"}
+        # Document gained a required ``path`` (Phase 1) and a required
+        # ``slug`` (S2). Templates predating those fields carry neither;
+        # derive minimal ones from the resolved id so build-time
+        # validation passes. Later tasks thread real values through.
+        if f.kind == "document":
+            if not rewritten_payload.get("path"):
+                rewritten_payload = {**rewritten_payload, "path": f"{rid}.md"}
+            if not rewritten_payload.get("slug"):
+                leaf = str(rewritten_payload["path"]).rsplit("/", 1)[-1]
+                rewritten_payload = {**rewritten_payload, "slug": leaf}
         entity, validation_errors = _validate_payload(f.kind, rid, rewritten_payload)
 
         if validation_errors:
@@ -395,11 +400,14 @@ def _entity_from_entry(
         **entry.rendered_payload,
         "harness_id": harness_id,
     }
-    # Document gained a required ``path`` (Phase 1). Templates predating
-    # that field carry no path; derive a minimal one from the resolved id
-    # so reconstruction stays valid. Later tasks thread a real path through.
-    if entry.kind == "document" and not data.get("path"):
-        data["path"] = f"{entry.resolved_id}.md"
+    # Document gained a required ``path`` (Phase 1) and a required
+    # ``slug`` (S2). Templates predating those fields carry neither;
+    # derive minimal ones so reconstruction stays valid.
+    if entry.kind == "document":
+        if not data.get("path"):
+            data["path"] = f"{entry.resolved_id}.md"
+        if not data.get("slug"):
+            data["slug"] = str(data["path"]).rsplit("/", 1)[-1]
     return model_cls.model_validate(data)
 
 

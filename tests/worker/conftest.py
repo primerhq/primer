@@ -43,7 +43,6 @@ async def app(
         provider_registry=fake_provider_registry,
         start_chat_worker=True,
     )
-    forwarder = await _app.state.start_chat_tick_forwarder()
     await _app.state.start_worker_pool()
     try:
         yield _app
@@ -51,9 +50,4 @@ async def app(
         try:
             await _app.state.stop_worker_pool()
         except Exception:
-            pass
-        forwarder.cancel()
-        try:
-            await forwarder
-        except asyncio.CancelledError:
             pass

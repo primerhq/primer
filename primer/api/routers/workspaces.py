@@ -1,23 +1,23 @@
-"""Workspace REST surface — providers, templates, workspaces + sub-resources.
+"""Workspace REST surface - providers, templates, workspaces + sub-resources.
 
 Three entity routers and three sub-resources on Workspace:
 
-* ``WorkspaceProvider`` — list / get / create / update / delete. Reserved
+* ``WorkspaceProvider`` - list / get / create / update / delete. Reserved
   bootstrap-managed providers (see
   :data:`~primer.api.registries.provider_registry.RESERVED_WORKSPACE_PROVIDER_IDS`)
   are read-only: PUT and DELETE against a reserved id return 403.
-* ``WorkspaceTemplate`` — full CRUD (list / get / create / update /
+* ``WorkspaceTemplate`` - full CRUD (list / get / create / update /
   delete).
-* ``Workspace`` — list / get / create / delete (no update). Body of
+* ``Workspace`` - list / get / create / delete (no update). Body of
   ``POST`` is :class:`WorkspaceCreateBody` (template id + optional
   overrides).
 
 Sub-resources on ``/v1/workspaces/{id}``:
 
-* Sessions — list, get, pause, resume, steer.
-* Files — list (paginated ls), info, read, download, delete, write.
-* Log — git log over the ``.state`` repo.
-* Yields — aggregated pending yields across all sessions (Studio A3).
+* Sessions - list, get, pause, resume, steer.
+* Files - list (paginated ls), info, read, download, delete, write.
+* Log - git log over the ``.state`` repo.
+* Yields - aggregated pending yields across all sessions (Studio A3).
 """
 
 from __future__ import annotations
@@ -33,12 +33,13 @@ from typing import Any, Literal
 from fastapi import APIRouter, Body, Depends, HTTPException, Path, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field, model_validator
+from pydantic import ValidationError as PydanticValidationError
 
 from primer.api.deps import (
     get_claim_engine,
     get_collection_storage,
-    get_document_service,
     get_event_bus,
+    get_provider_registry,
     get_scheduler,
     get_session_storage,
     get_storage_provider,
@@ -55,6 +56,7 @@ from primer.api.registries.provider_registry import RESERVED_WORKSPACE_PROVIDER_
 from primer.api.routers._crud import make_crud_router
 from primer.bootstrap.defaults import RESERVED_WORKSPACE_TEMPLATES
 from primer.model.except_ import (
+    ConfigError,
     BadRequestError,
     ConflictError,
     NotFoundError,
@@ -72,6 +74,7 @@ from primer.model.storage import (
     PageRequest,
 )
 from primer.model.workspace import (
+    WorkspaceEventsConfig,
     FileEntry,
     Workspace as WorkspaceRow,
     WorkspaceChannelLink,
@@ -82,13 +85,6 @@ from primer.model.workspace import (
 )
 from primer.model.workspace_session import SessionStatus, WorkspaceSession
 from primer.session.mutation_lock import session_lifecycle_lock
-from primer.workspace import mount_manifest as mm
-from primer.workspace.collection_expand import (
-    build_base_snapshot,
-    expand_collection,
-    sanitize_dest,
-)
-from primer.workspace.mount_manifest import MountManifest, load_manifest
 
 
 logger = logging.getLogger(__name__)
@@ -97,22 +93,6 @@ logger = logging.getLogger(__name__)
 # ===========================================================================
 # Request / response bodies
 # ===========================================================================
-
-
-class MountRequest(BaseModel):
-    """Body of ``POST /v1/workspaces/{id}/mounts``.
-
-    Also reused as an item of ``WorkspaceCreateBody.mounts`` (Task 6) to
-    mount collections at workspace-creation time — defined here (ahead of
-    ``WorkspaceCreateBody``) so the create-time field can reference it
-    directly.
-    """
-
-    collection_id: str = Field(..., min_length=1)
-    dest: str | None = Field(
-        default=None,
-        description="Dir name under the workspace root; defaults to a sanitized collection id.",
-    )
 
 
 class WorkspaceCreateBody(BaseModel):
@@ -152,10 +132,6 @@ class WorkspaceCreateBody(BaseModel):
             "reply_binding already populated."
         ),
     )
-    mounts: list[MountRequest] = Field(
-        default_factory=list,
-        description="Collections to mount at creation time.",
-    )
 
 
 class FileWriteBody(BaseModel):
@@ -165,7 +141,7 @@ class FileWriteBody(BaseModel):
         ...,
         description=(
             "File content. Decoded according to ``encoding``. Empty "
-            "string is permitted — it produces an empty file."
+            "string is permitted - it produces an empty file."
         ),
     )
     encoding: Literal["text", "base64"] = Field(
@@ -198,7 +174,7 @@ class DiagnosticExecBody(BaseModel):
         description=(
             "Shell command to run. Must start with one of the "
             "whitelisted command names (``echo``, ``pwd``, ``whoami``, "
-            "``uname``, ``ls``) — anything else is rejected with 400. "
+            "``uname``, ``ls``) - anything else is rejected with 400. "
             "This is a read-only diagnostic surface, not arbitrary RCE."
         ),
     )
@@ -208,7 +184,7 @@ class DiagnosticExecBody(BaseModel):
         le=30.0,
         description=(
             "Per-call timeout ceiling. Defaults to 5.0 if omitted. "
-            "Hard-capped at 30s — the route is for liveness smokes, "
+            "Hard-capped at 30s - the route is for liveness smokes, "
             "not long-running jobs."
         ),
     )
@@ -231,6 +207,15 @@ class SteerBody(BaseModel):
     ``allow_external_tools``).
     """
 
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Structured-output JSON Schema for THIS turn only. Beats the "
+            "session's persistent response_format, which beats the "
+            "agent default. Consumed once: a retry of the same turn "
+            "falls back rather than silently re-applying it."
+        ),
+    )
     instruction: str | None = Field(
         default=None,
         min_length=1,
@@ -392,7 +377,7 @@ provider_router = make_crud_router(
 # Template router (full CRUD)
 # ===========================================================================
 
-# Reserved template ids — bootstrapped by BootstrapRunner on first boot
+# Reserved template ids - bootstrapped by BootstrapRunner on first boot
 # and protected against API mutation/deletion to keep runtime state in
 # sync with the bootstrap defaults.
 RESERVED_WORKSPACE_TEMPLATE_IDS: frozenset[str] = frozenset(
@@ -521,6 +506,38 @@ async def get_workspace(
     return row
 
 
+@workspace_router.put(
+    "/workspaces/{workspace_id}/events",
+    response_model=WorkspaceRow,
+    summary="Set the workspace's lifecycle-event streaming config",
+    responses=common_responses(404, 500),
+)
+async def set_workspace_events(
+    body: "WorkspaceEventsBody",
+    workspace_id: str = Path(..., description="Workspace id"),
+    storage=Depends(get_workspace_storage),
+) -> WorkspaceRow:
+    """Opt a workspace in or out of platform event streaming.
+
+    When enabled, the WorkspaceEventBridge holds one runtime stream
+    for this workspace and emits workspace.file_changed /
+    exec_started / exec_exited onto the event log. ``config: null``
+    switches it off.
+    """
+    row = await storage.get(workspace_id)
+    if row is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    return await storage.update(
+        row.model_copy(update={"events": body.config})
+    )
+
+
+class WorkspaceEventsBody(BaseModel):
+    """Wrapper so ``config: null`` is expressible (clears the opt-in)."""
+
+    config: WorkspaceEventsConfig | None = None
+
+
 @workspace_router.post(
     "/workspaces",
     response_model=WorkspaceRow,
@@ -531,6 +548,9 @@ async def get_workspace(
 async def create_workspace(
     body: WorkspaceCreateBody,
     request: Request,
+    storage_provider=Depends(get_storage_provider),
+    scheduler=Depends(get_scheduler),
+    engine=Depends(get_claim_engine),
     workspace_storage=Depends(get_workspace_storage),
     template_storage=Depends(get_workspace_template_storage),
     provider_storage=Depends(get_workspace_provider_storage),
@@ -548,7 +568,7 @@ async def create_workspace(
                 f"Workspace with id {body.id!r} already exists"
             )
 
-    # Reserve agent_sandbox slot — k8s provider variant=agent_sandbox is
+    # Reserve agent_sandbox slot - k8s provider variant=agent_sandbox is
     # accepted at provider-create time but workspace materialisation is
     # not implemented in v1 (see redesign spec §9).
     provider = await provider_storage.get(template.provider_id)
@@ -574,48 +594,6 @@ async def create_workspace(
         )
 
     overrides = body.overrides or WorkspaceTemplateOverrides()
-    mount_records = []  # (collection_id, collection_name, dest, base: list[BaseFile])
-    if body.mounts:
-        # Built lazily (only when mounts are actually requested) rather than
-        # as FastAPI Depends() parameters: get_document_service() eagerly
-        # constructs a DocumentService that calls
-        # storage_provider.get_content_store(), which not every
-        # StorageProvider stand-in implements (e.g. lightweight in-memory
-        # fakes used elsewhere in the test suite for workspace-only tests).
-        # Resolving these only inside the mounts branch keeps the no-mounts
-        # create path byte-for-byte unchanged.
-        service = get_document_service(request)
-        collections = get_collection_storage(get_storage_provider(request))
-        extra_files = list(overrides.files)
-        seen_collection_ids: set[str] = set()
-        seen_dests: set[str] = set()
-        for req in body.mounts:
-            if req.collection_id in seen_collection_ids:
-                raise ConflictError(
-                    f"Collection {req.collection_id!r} listed more than once in mounts"
-                )
-            seen_collection_ids.add(req.collection_id)
-            coll = await collections.get(req.collection_id)
-            if coll is None:
-                raise NotFoundError(
-                    f"Collection {req.collection_id!r} does not exist"
-                )
-            # Use the collection id, never its (long) description, for the
-            # dir name / manifest collection_name -- a Collection has no name
-            # field. Mirrors the runtime create_mount path.
-            dest = sanitize_dest(req.dest or coll.id)
-            if dest in seen_dests:
-                raise ConflictError(
-                    f"Multiple mounts resolve to the same directory {dest!r}"
-                )
-            seen_dests.add(dest)
-            extra_files += await expand_collection(service, req.collection_id, dest)
-            base = await build_base_snapshot(service, req.collection_id)
-            mount_records.append(
-                (req.collection_id, coll.id, dest, base)
-            )
-        overrides = overrides.model_copy(update={"files": extra_files})
-
     # Pin the live instance to the caller-supplied id (same id the row is
     # keyed by, below) so re-attach after cache eviction resolves the SAME
     # backend object instead of 404ing.
@@ -631,35 +609,8 @@ async def create_workspace(
     # effort tears the live workspace back down before re-raising the original
     # error unchanged.
     try:
-        if mount_records:
-            manifest = await mm.load_manifest(live)
-            for cid, cname, dest, base in mount_records:
-                if not base:
-                    # Zero-document collection: expand_collection produced no
-                    # FileMounts, so materialise() never created dest on disk.
-                    # Create it explicitly (mirrors the runtime create_mount
-                    # path in workspace_mounts.py) so GET /mounts doesn't 500 /
-                    # show a phantom dir with no backing directory. Only do
-                    # this when base is empty -- for non-empty collections the
-                    # dir already exists from materialise, and make_dir on an
-                    # existing dir raises.
-                    await live.make_dir(dest)
-                    await live.write_file(f"{dest}/.gitkeep", b"")
-                manifest = mm.add_mount(
-                    manifest,
-                    mm.MountEntry(
-                        mount_id=f"wsmnt-{uuid.uuid4().hex[:12]}",
-                        collection_id=cid,
-                        collection_name=cname,
-                        dest=dest,
-                        mounted_at=datetime.now(timezone.utc),
-                        base=base,
-                    ),
-                )
-            await mm.save_manifest(live, manifest)
-
         row_id = body.id if body.id is not None else live.id
-        # Mark the row "running" immediately — materialise() returned a live
+        # Mark the row "running" immediately - materialise() returned a live
         # handle, so the workspace IS up. The probe loop transitions from
         # running <-> failed thereafter; without this initial mark the row
         # would sit at the default "pending" forever and the probe skips it.
@@ -697,6 +648,62 @@ async def create_workspace(
                 "workspace %s after a post-materialise error", live.id,
             )
         raise
+
+    from primer.session.default_binding import resolve_initial_binding
+    from primer.workspace.session_factory import (
+        SessionFactoryDeps,
+        create_session,
+    )
+
+    # A new workspace arrives with somewhere to talk. "main" is an
+    # ordinary session: deletable, no reserved id, no flag, and nothing
+    # downstream special-cases it. Its only distinction is existing.
+    #
+    # Best effort on purpose. Before a default agent is configured there
+    # is nothing to bind to, and failing workspace creation over a
+    # convenience would make the product unusable in exactly the window
+    # where someone is setting it up.
+    try:
+        binding = await resolve_initial_binding(
+            requested=None, storage_provider=storage_provider,
+        )
+    except ConfigError:
+        logger.info(
+            "create_workspace: no default agent configured, so workspace "
+            "%s starts with no session", row.id,
+        )
+        return row
+    except Exception:  # noqa: BLE001 - the workspace is the deliverable
+        # A provider that cannot report system state is indistinguishable
+        # from one with no default configured. Either way the workspace
+        # is created and usable; only the convenience is skipped.
+        logger.exception(
+            "create_workspace: could not resolve a default binding for %s; "
+            "starting with no session", row.id,
+        )
+        return row
+
+    try:
+        await create_session(
+            workspace_id=row.id,
+            binding=binding,
+            initial_instructions=None,
+            graph_input=None,
+            auto_start=False,
+            metadata=None,
+            name="main",
+            deps=SessionFactoryDeps(
+                storage_provider=storage_provider,
+                claim_engine=engine,
+                scheduler=scheduler,
+                workspace_registry=registry,
+            ),
+        )
+    except Exception:  # noqa: BLE001 - the workspace exists and is usable
+        logger.exception(
+            "create_workspace: seeding the main session failed for %s",
+            row.id,
+        )
     return row
 
 
@@ -836,7 +843,7 @@ async def delete_workspace(
 @workspace_router.post(
     "/workspaces/{workspace_id}/pause",
     status_code=501,
-    summary="Pause a workspace (reserved — not implemented in v1)",
+    summary="Pause a workspace (reserved - not implemented in v1)",
 )
 async def pause_workspace(workspace_id: str) -> dict:
     raise HTTPException(
@@ -855,7 +862,7 @@ async def pause_workspace(workspace_id: str) -> dict:
 @workspace_router.post(
     "/workspaces/{workspace_id}/resume",
     status_code=501,
-    summary="Resume a workspace (reserved — not implemented in v1)",
+    summary="Resume a workspace (reserved - not implemented in v1)",
 )
 async def resume_workspace(workspace_id: str) -> dict:
     raise HTTPException(
@@ -991,8 +998,8 @@ async def rename_session(
     """Set (or clear) a session's friendly name.
 
     Rewrites the ``name`` on the on-disk :class:`SessionInfo`
-    (``session.json``) via :meth:`AgentSession.set_name` — the authoritative
-    display source for the workspace sessions list — and best-effort mirrors
+    (``session.json``) via :meth:`AgentSession.set_name` - the authoritative
+    display source for the workspace sessions list - and best-effort mirrors
     it onto the scheduler-visible :class:`WorkspaceSession` row so the
     top-level ``GET /sessions/{id}`` read agrees. An empty / null name clears
     the label (the console falls back to the id). Returns the updated
@@ -1017,7 +1024,7 @@ async def rename_session(
         if row is not None and row.workspace_id == workspace_id:
             row.name = info.name
             await session_storage.update(row)
-    except Exception as exc:  # noqa: BLE001 — advisory mirror, never fatal
+    except Exception as exc:  # noqa: BLE001 - advisory mirror, never fatal
         logger.warning(
             "rename_session: failed to mirror name onto scheduler row",
             extra={
@@ -1032,9 +1039,395 @@ async def rename_session(
 
 
 @sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/compact",
+    summary="Compact a session's history into a summary marker",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def compact_session_endpoint(
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+    provider_registry=Depends(get_provider_registry),
+    event_bus=Depends(get_event_bus),
+) -> dict:
+    """Summarise the visible history and append the fold marker.
+
+    The summarising call takes seconds, so the session row is re-read
+    afterwards: a concurrent write may have moved last_seq while the
+    model was working, and the marker has to land after it.
+    """
+    from primer.agent.compaction import CompactionStrategy
+    from primer.agent.compaction_mixin import force_compact
+    from primer.agent.prompts import DEFAULT_COMPACTION_PROMPT
+    from primer.model.agent import Agent
+    from primer.model_profile import resolve_model
+    from primer.session.compaction import compact_session, guard_compactable
+    from primer.workspace.session import reconstruct_compacted_history
+    from primer.worker.io_shim import _WorkspaceIOShim
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    guard_compactable(row)  # 409: graph-bound, or a turn in flight
+
+    # Snapshot-first, matching build_agent_executor: a frozen session
+    # compacts under the definition it has been running with.
+    agent = getattr(row.binding, "agent_snapshot", None)
+    if agent is None:
+        agent = await storage_provider.get_storage(Agent).get(
+            row.binding.agent_id
+        )
+    if agent is None:
+        raise NotFoundError(
+            f"Agent {row.binding.agent_id!r} for session {session_id!r} "
+            "no longer exists"
+        )
+
+    try:
+        llm_model = await resolve_model(
+            storage_provider,
+            default_profile_id=agent.model.profile_id,
+            override_profile_id=getattr(row.binding, "profile_id", None),
+        )
+    except NotFoundError as exc:
+        raise ConfigError(
+            f"Agent {agent.id!r} names model profile "
+            f"{agent.model.profile_id!r}, which does not exist: {exc}"
+        ) from exc
+    try:
+        llm = await provider_registry.get_llm(llm_model.provider_id)
+    except (NotFoundError, ConfigError) as exc:
+        raise ConfigError(
+            f"Agent {agent.id!r} has no resolvable LLM provider "
+            f"({llm_model.provider_id!r}): {exc}"
+        ) from exc
+
+    workspace = await registry.get_workspace(workspace_id)
+    if workspace is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} is not available")
+    state_path = getattr(workspace, "state_path", ".state")
+    rel = f"{state_path}/sessions/{session_id}/messages.jsonl"
+    try:
+        raw = await workspace.read_file(rel)
+    except Exception as exc:  # noqa: BLE001 - absent log is a 422, not a 5xx
+        raise SemanticValidationError(
+            "session has no recorded history to compact"
+        ) from exc
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    history = reconstruct_compacted_history(text.splitlines())
+    if not history:
+        raise SemanticValidationError(
+            "session has no visible history to compact"
+        )
+
+    prompt_field = getattr(agent, "compaction_prompt", None)
+    compaction_prompt = (
+        "\n\n".join(prompt_field) if prompt_field else DEFAULT_COMPACTION_PROMPT
+    )
+
+    async def _run(hist):
+        return await force_compact(
+            llm=llm,
+            strategy=CompactionStrategy(),
+            history=list(hist),
+            compaction_prompt=compaction_prompt,
+            model_name=llm_model.model_name,
+            context_length=llm_model.context_length,
+        )
+
+    io_shim = _WorkspaceIOShim(workspace_registry=registry)
+    io_shim.register_session(session_id, workspace_id)
+    fresh = await sessions.get(session_id) or row
+    outcome = await compact_session(
+        row=fresh, workspace_io=io_shim, history=history, run_compaction=_run,
+    )
+    await sessions.update(
+        fresh.model_copy(update={"last_seq": outcome.compaction_marker_seq})
+    )
+    try:
+        await event_bus.publish(
+            f"session:{session_id}:tick",
+            {"seq": outcome.compaction_marker_seq},
+        )
+    except Exception:  # noqa: BLE001 - the marker landed; the tick is a hint
+        logger.exception("compaction tick publish failed for %s", session_id)
+    return {
+        "compaction_marker_seq": outcome.compaction_marker_seq,
+        "summary": outcome.summary,
+        "tokens_before": outcome.tokens_before,
+        "tokens_after": outcome.tokens_after,
+    }
+
+
+class BindingSwitchBody(BaseModel):
+    """Body of ``POST .../sessions/{sid}/binding``."""
+
+    kind: Literal["agent", "graph"] = Field(
+        ...,
+        description="Which kind of target this session should run next.",
+    )
+    agent_id: str | None = Field(default=None)
+    graph_id: str | None = Field(default=None)
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional ModelProfile override to apply with the switch, so "
+            "target and model change in one gesture."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def _target_matches_kind(self) -> "BindingSwitchBody":
+        if self.kind == "agent" and not self.agent_id:
+            raise ValueError("kind 'agent' requires agent_id")
+        if self.kind == "graph" and not self.graph_id:
+            raise ValueError("kind 'graph' requires graph_id")
+        return self
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/binding",
+    response_model=WorkspaceSession,
+    summary="Switch which agent or graph runs this session's next turn",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def switch_session_binding(
+    body: BindingSwitchBody,
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> WorkspaceSession:
+    """Point a session at a different agent or graph.
+
+    An idle session switches immediately. A busy one queues the request
+    and the drain checkpoint applies it before the next turn, so the
+    running turn finishes under the binding it started with.
+    """
+    from primer.model.agent import Agent
+    from primer.model.graph import Graph
+    from primer.session.abandon import abandon_session_gate
+    from primer.session.binding_switch import apply_binding_switch
+    from primer.worker.io_shim import _WorkspaceIOShim
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    if row.status is SessionStatus.ENDED:
+        raise ConflictError(
+            f"session {session_id!r} has ended; reopen it before switching"
+        )
+
+    # Verified before anything is written: a switch to a target that
+    # does not exist would strand the session on an unbuildable binding.
+    if body.kind == "graph":
+        target = await storage_provider.get_storage(Graph).get(body.graph_id)
+        if target is None:
+            raise NotFoundError(f"Graph {body.graph_id!r} does not exist")
+    else:
+        target = await storage_provider.get_storage(Agent).get(body.agent_id)
+        if target is None:
+            raise NotFoundError(f"Agent {body.agent_id!r} does not exist")
+
+    request = {
+        "kind": body.kind,
+        "agent_id": body.agent_id,
+        "graph_id": body.graph_id,
+        "profile_id": body.profile_id,
+        "actor": "user",
+    }
+
+    io_shim = _WorkspaceIOShim(workspace_registry=registry)
+    io_shim.register_session(session_id, workspace_id)
+
+    async def _resolve(_binding):
+        return target
+
+    if row.parked_status is not None:
+        # A parked session waits on a human, and the gate belongs to the
+        # OUTGOING agent. Queueing would leave the switch stuck behind a
+        # gate only the agent being replaced can answer, which is the
+        # deadlock switching exists to escape. Close the gate, then
+        # switch, both under the lifecycle lock so a racing resume
+        # cannot interleave between them.
+        async with session_lifecycle_lock().acquire(session_id):
+            fresh = await sessions.get(session_id)
+            if fresh is None:
+                raise NotFoundError(
+                    f"Session {session_id!r} does not exist"
+                )
+            abandoned = await abandon_session_gate(
+                sessions=sessions,
+                workspace_io=io_shim,
+                row=fresh,
+                reason="binding switched",
+            )
+            return await apply_binding_switch(
+                sessions=sessions,
+                workspace_io=io_shim,
+                row=abandoned,
+                request=request,
+                actor="user",
+                resolve_snapshot=_resolve,
+            )
+
+    if row.turn_status in ("claimable", "running"):
+        queued = row.model_copy(update={"pending_binding_switch": request})
+        await sessions.update(queued)
+        return queued
+
+    return await apply_binding_switch(
+        sessions=sessions,
+        workspace_io=io_shim,
+        row=row,
+        request=request,
+        actor="user",
+        resolve_snapshot=_resolve,
+    )
+
+
+class ResponseFormatBody(BaseModel):
+    """Body of ``PUT .../sessions/{sid}/response_format``."""
+
+    response_format: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "JSON Schema to constrain this session's turns, or null to "
+            "clear it and fall back to the agent default."
+        ),
+    )
+
+
+@sessions_router.put(
+    "/workspaces/{workspace_id}/sessions/{session_id}/response_format",
+    response_model=WorkspaceSession,
+    summary="Set or clear a session's persistent structured-output schema",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def set_session_response_format(
+    body: ResponseFormatBody,
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    storage_provider=Depends(get_storage_provider),
+) -> WorkspaceSession:
+    """Persist a schema for every later turn of this session.
+
+    Refused mid-turn: the in-flight turn already resolved its format,
+    so accepting would suggest an effect this call cannot have.
+    """
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    if row.turn_status != "idle":
+        raise ConflictError(
+            "session has a turn in flight; response_format applies from "
+            "the next turn, so set it once the current one finishes"
+        )
+    # model_copy skips validation, so the schema is re-validated here and
+    # the pydantic error converted: raw, it escapes as a 500 instead of
+    # the 422 an invalid schema deserves.
+    updated = row.model_copy(update={"response_format": body.response_format})
+    try:
+        WorkspaceSession.model_validate(updated.model_dump(mode="json"))
+    except PydanticValidationError as exc:
+        raise SemanticValidationError(
+            f"response_format is not a valid JSON Schema: {exc}"
+        ) from exc
+    await sessions.update(updated)
+    return updated
+
+
+class RewindBody(BaseModel):
+    """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/rewind``."""
+
+    to_seq: int = Field(
+        ...,
+        ge=1,
+        description=(
+            "Seq of the user_input record to keep. Every visible record "
+            "after it is dropped from the reconstructed history; nothing "
+            "is deleted from the log."
+        ),
+    )
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/rewind",
+    summary="Rewind a session's visible history to a kept user_input",
+    responses=common_responses(404, 409, 422, 500),
+)
+async def rewind_session(
+    body: RewindBody,
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    registry: WorkspaceRegistry = Depends(get_workspace_registry),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Cut a session's visible history back to an earlier user message.
+
+    Appends a rewind marker; nothing is deleted. The read-time replay
+    walk drops what follows, so the cut is auditable and the log stays
+    append-only.
+
+    Rejects unless the session is fully idle: rewinding under a running
+    or parked turn would race the writer that turn is still using, and
+    the seq the marker names could move underneath it.
+    """
+    from primer.session.rewind import append_rewind_marker, check_rewind_target
+    from primer.worker.io_shim import _WorkspaceIOShim
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    if row.turn_status != "idle" or row.parked_status is not None:
+        raise ConflictError(
+            "session is not idle; rewind requires no turn in flight"
+        )
+
+    workspace = await registry.get_workspace(workspace_id)
+    if workspace is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} is not available")
+    state_path = getattr(workspace, "state_path", ".state")
+    rel = f"{state_path}/sessions/{session_id}/messages.jsonl"
+    try:
+        raw = await workspace.read_file(rel)
+    except Exception as exc:  # noqa: BLE001 - absent log is a 422, not a 5xx
+        raise SemanticValidationError(
+            "session has no recorded history to rewind"
+        ) from exc
+    text = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+    lines = text.splitlines()
+
+    # Raises ConflictError for the compaction case (amendment C2) and
+    # ValidationError for a malformed target; both before any write.
+    check_rewind_target(lines, to_seq=body.to_seq)
+
+    io_shim = _WorkspaceIOShim(workspace_registry=registry)
+    io_shim.register_session(session_id, workspace_id)
+    marker_seq = await append_rewind_marker(
+        workspace_io=io_shim,
+        session_id=session_id,
+        start_seq=row.last_seq,
+        to_seq=body.to_seq,
+        actor="user",
+    )
+    await sessions.update(row.model_copy(update={"last_seq": marker_seq}))
+    return {
+        "session_id": session_id,
+        "to_seq": body.to_seq,
+        "marker_seq": marker_seq,
+    }
+
+
+@sessions_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/steer",
     response_model=WorkspaceSession,
-    summary="Send a message — invoke / steer / resume (auto-wake)",
+    summary="Send a message - invoke / steer / resume (auto-wake)",
     responses=common_responses(404, 409, 422, 500),
 )
 async def steer_session(
@@ -1063,6 +1456,8 @@ async def steer_session(
         apply_tool_results,
         cancel_pending_external,
     )
+    from primer.session.pending_messages import store_pending_steer
+    from primer.session.steer_routing import ROUTE_PENDING, route_steer
     from primer.session.yields import durably_wake_session
     from primer.worker.yield_runtime import make_cancelled_payload
 
@@ -1085,6 +1480,19 @@ async def steer_session(
             "enabled; external_tools rejected"
         )
 
+    # The steer is accepted for delivery from here on (remaining
+    # branches route it, they don't reject it).
+    from primer.events.recorder import recorder_for
+    await recorder_for(storage_provider, event_bus).emit(
+        "session.steered",
+        workspace_id=workspace_id,
+        session_id=session_id,
+        payload={
+            "has_instruction": bool(body.instruction),
+            "has_tool_results": bool(body.tool_results),
+        },
+    )
+
     # Dispatch rule (external-tools spec §6), in order:
     # 1+2. Validate then apply tool_results (409-atomic inside the helper).
     if body.tool_results:
@@ -1095,6 +1503,7 @@ async def steer_session(
             session_storage=sessions,
             engine=engine,
             event_bus=event_bus,
+            storage_provider=storage_provider,
         )
         row = await sessions.get(session_id)  # refreshed park state
 
@@ -1121,6 +1530,40 @@ async def steer_session(
                     logger.exception(
                         "external tool cancel publish failed for %r", key
                     )
+
+        # A session runs one turn at a time, so an instruction that
+        # arrives while a turn is still open is queued rather than
+        # written as a second user message, which would break the
+        # 1:1 user-message-to-terminal pairing the drain counts. The
+        # drain realizes it at the next checkpoint. Results-carrying
+        # bodies are exempt: those resume the open turn on purpose, and
+        # the instruction is meant to steer that same resumed turn.
+        # Bodies carrying tool defs are exempt alongside results: a
+        # pending row has nowhere to hold external_tools, so deferring
+        # one would silently drop the registration for the turn it was
+        # meant to arm.
+        if (
+            row is not None
+            and not body.tool_results
+            and not body.external_tools
+            and route_steer(row) == ROUTE_PENDING
+        ):
+            await store_pending_steer(
+                storage_provider=storage_provider,
+                session_id=session_id,
+                text=body.instruction,
+            )
+            return await sessions.get(session_id)
+
+        # Stamp the per-turn schema where the dispatch pops it. Written
+        # before the wake so the turn it arms is the one that sees it.
+        if body.response_format is not None and row is not None:
+            from primer.session.response_format import EPHEMERAL_KEY
+
+            meta = dict(row.metadata or {})
+            meta[EPHEMERAL_KEY] = body.response_format
+            row = row.model_copy(update={"metadata": meta})
+            await sessions.update(row)
 
         deps = SessionWakeDeps(
             storage_provider=storage_provider,
@@ -1248,22 +1691,98 @@ async def interrupt_session(
         return s
 
 
+class SessionAttachBody(BaseModel):
+    """Body of ``POST /v1/workspaces/{id}/sessions/{sid}/attach``."""
+
+    client_id: str = Field(
+        ...,
+        min_length=1,
+        max_length=128,
+        description=(
+            "Opaque per-tab client identifier. Re-posting with the same id "
+            "is the heartbeat: it extends the TTL and leaves the "
+            "attach-time high-water mark untouched."
+        ),
+    )
+
+
+@sessions_router.post(
+    "/workspaces/{workspace_id}/sessions/{session_id}/attach",
+    summary="Attach a client to a session (also the heartbeat)",
+    responses=common_responses(404, 422, 500),
+)
+async def attach_session(
+    body: SessionAttachBody = Body(...),
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Register (or refresh) a live client attachment for this session.
+
+    Turns STARTED while an attachment is live carry the client toolset
+    (S3 spec section 4). ``attached_seq`` is the replay fence the caller
+    must apply to delivery records: execute above it, render at or below.
+    """
+    from primer.model.client_attachment import ClientAttachment
+    from primer.session.attachment import ATTACH_TTL_SECONDS, attach_or_refresh
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    att = await attach_or_refresh(
+        storage_provider.get_storage(ClientAttachment),
+        workspace_id=workspace_id,
+        session_id=session_id,
+        client_id=body.client_id,
+        last_seq=row.last_seq,
+    )
+    return {
+        "client_id": att.client_id,
+        "attached_seq": att.attached_seq,
+        "expires_at": att.expires_at.isoformat(),
+        "ttl_seconds": ATTACH_TTL_SECONDS,
+    }
+
+
+@sessions_router.delete(
+    "/workspaces/{workspace_id}/sessions/{session_id}/attach",
+    summary="Detach a client from a session",
+    responses=common_responses(404, 422, 500),
+)
+async def detach_session(
+    workspace_id: str = Path(...),
+    session_id: str = Path(...),
+    client_id: str = Query(..., min_length=1),
+    storage_provider=Depends(get_storage_provider),
+) -> dict:
+    """Best-effort detach. The TTL covers a client that never calls it."""
+    from primer.model.client_attachment import ClientAttachment
+    from primer.session.attachment import detach
+
+    sessions = storage_provider.get_storage(WorkspaceSession)
+    row = await sessions.get(session_id)
+    if row is None or row.workspace_id != workspace_id:
+        raise NotFoundError(
+            f"Session {session_id!r} does not exist on workspace "
+            f"{workspace_id!r}"
+        )
+    removed = await detach(
+        storage_provider.get_storage(ClientAttachment),
+        session_id=session_id,
+        client_id=client_id,
+    )
+    return {"detached": removed}
+
+
 # ===========================================================================
 # Files sub-resource
 # ===========================================================================
 
 files_router = APIRouter(tags=["workspace-files"])
-
-
-def _decorate_origins(
-    entries: list[FileEntry], manifest: MountManifest
-) -> list[FileEntry]:
-    """Mark each entry whose path is a mount root's ``dest`` with origin='collection'."""
-    dests = {m.dest for m in manifest.mounts}
-    for e in entries:
-        if e.kind == "dir" and e.path in dests:
-            e.origin = "collection"
-    return entries
 
 
 @files_router.get(
@@ -1279,8 +1798,9 @@ async def file_tree(
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
+    # No origin decoration: with collection mounting retired, every entry
+    # is workspace-native and nothing is collection-backed.
     entries = await ws.list_files(path, recursive=False)
-    entries = _decorate_origins(entries, await load_manifest(ws))
     items = []
     for entry in entries:
         name = entry.path.rsplit("/", 1)[-1] if "/" in entry.path else entry.path
@@ -1315,8 +1835,9 @@ async def list_files(
     registry: WorkspaceRegistry = Depends(get_workspace_registry),
 ) -> dict:
     ws = await registry.get_workspace(workspace_id)
+    # No origin decoration: with collection mounting retired, every
+    # entry is workspace-native and nothing is collection-backed.
     entries = await ws.list_files(path, recursive=recursive)
-    entries = _decorate_origins(entries, await load_manifest(ws))
     sliced = entries[offset : offset + limit]
     return {
         "items": [e.model_dump(mode="json") for e in sliced],
@@ -1523,7 +2044,7 @@ async def write_file(
     else:
         try:
             raw = base64.b64decode(body.content, validate=True)
-        except Exception as exc:  # noqa: BLE001 — base64.binascii.Error
+        except Exception as exc:  # noqa: BLE001 - base64.binascii.Error
             raise BadRequestError(f"invalid base64 content: {exc}") from exc
     if_unmodified_since_hdr = request.headers.get("if-unmodified-since")
     if etag is not None or if_unmodified_since_hdr is not None:
@@ -1546,7 +2067,7 @@ async def write_file(
                     )
                     if entry.modified_at > parsed_date:
                         conflict = True
-                except Exception:  # noqa: BLE001 — ignore malformed header
+                except Exception:  # noqa: BLE001 - ignore malformed header
                     pass
             if conflict:
                 problem = ProblemDetails(
@@ -1576,7 +2097,7 @@ async def write_file(
             scheduler=scheduler,
             event_bus=event_bus,
         )
-    except Exception:  # noqa: BLE001 — wake is best-effort
+    except Exception:  # noqa: BLE001 - wake is best-effort
         logger.exception(
             "wake_watch_files_on_write failed for workspace=%r path=%r",
             workspace_id,
@@ -1875,7 +2396,7 @@ async def list_workspace_events(
 
     Each item is a wire-shape :class:`~primer.tap.event.TapEvent`
     (``class`` / ``ts`` / ``seq`` / ``session_id`` / ``payload`` …) so it merges
-    1:1 with live tap frames — the same reader (:func:`read_session_since`) that
+    1:1 with live tap frames - the same reader (:func:`read_session_since`) that
     backs the SSE tick loop produces these, just drained from byte 0.
 
     Response shape::

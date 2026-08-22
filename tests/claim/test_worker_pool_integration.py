@@ -115,14 +115,14 @@ async def test_engine_claim_loop_dispatches_all_three_kinds():
     # Override dispatch table AFTER start() populates it.
     pool._dispatch = {
         ClaimKind.SESSION: _record_and_release,
-        ClaimKind.CHAT:    _record_and_release,
+        ClaimKind.HARNESS:    _record_and_release,
         ClaimKind.HARNESS: _record_and_release,
     }
 
     try:
         # Seed one lease per kind.
         await engine.upsert(ClaimKind.SESSION, "sess-1", priority=10)
-        await engine.upsert(ClaimKind.CHAT,    "chat-1", priority=20)
+        await engine.upsert(ClaimKind.HARNESS,    "chat-1", priority=20)
         await engine.upsert(ClaimKind.HARNESS, "harn-1", priority=30)
 
         # Wait for all three to be dispatched (poll up to 2 s).
@@ -138,7 +138,7 @@ async def test_engine_claim_loop_dispatches_all_three_kinds():
         f"expected 3 dispatched, got {len(dispatched)}: {dispatched}"
     )
     kinds_seen = {k for k, _ in dispatched}
-    assert kinds_seen == {ClaimKind.SESSION, ClaimKind.CHAT, ClaimKind.HARNESS}, (
+    assert kinds_seen == {ClaimKind.SESSION, ClaimKind.HARNESS, ClaimKind.HARNESS}, (
         f"not all kinds dispatched: {kinds_seen}"
     )
     entity_ids_seen = {eid for _, eid in dispatched}
@@ -190,13 +190,13 @@ async def test_engine_claim_loop_respects_concurrency():
     await pool.start()
     pool._dispatch = {
         ClaimKind.SESSION: _slow_handler,
-        ClaimKind.CHAT:    _slow_handler,
+        ClaimKind.HARNESS:    _slow_handler,
         ClaimKind.HARNESS: _slow_handler,
     }
 
     try:
         await engine.upsert(ClaimKind.SESSION, "sess-x", priority=10)
-        await engine.upsert(ClaimKind.CHAT,    "chat-x", priority=10)
+        await engine.upsert(ClaimKind.HARNESS,    "chat-x", priority=10)
         await engine.upsert(ClaimKind.HARNESS, "harn-x", priority=10)
 
         await asyncio.wait_for(done_event.wait(), timeout=5.0)
@@ -242,7 +242,7 @@ async def test_engine_bus_loop_wakes_claim_loop_on_upsert():
     await pool.start()
     pool._dispatch = {
         ClaimKind.SESSION: _record,
-        ClaimKind.CHAT:    _record,
+        ClaimKind.HARNESS:    _record,
         ClaimKind.HARNESS: _record,
     }
 
@@ -250,7 +250,7 @@ async def test_engine_bus_loop_wakes_claim_loop_on_upsert():
         t0 = asyncio.get_event_loop().time()
         # Give the claim loop time to go to sleep on poll_interval (10 s).
         await asyncio.sleep(0.05)
-        await engine.upsert(ClaimKind.CHAT, "chat-wake", priority=10)
+        await engine.upsert(ClaimKind.HARNESS, "chat-wake", priority=10)
 
         for _ in range(50):
             if dispatched_at:

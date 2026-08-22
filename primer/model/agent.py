@@ -207,6 +207,15 @@ class Agent(Describeable):
             "as a graph agent-node's per-node ``response_format``."
         ),
     )
+    tts_voice: str | None = Field(
+        default=None,
+        description=(
+            "Provider-side voice this agent speaks with, overriding the "
+            "install-wide default. Voice names are not portable across "
+            "providers, so this is only meaningful alongside the TTS "
+            "provider that serves it."
+        ),
+    )
     harness_id: str | None = Field(
         default=None,
         description=(

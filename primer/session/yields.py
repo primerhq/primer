@@ -190,6 +190,43 @@ def _tool_call_id_for(blob: dict[str, Any]) -> str | None:
     return metadata.get("tool_call_id")
 
 
+# Tokens that read as an affirmative approval. Matched case-folded
+# against the reply's whitespace-split tokens.
+_AFFIRMATIVE = {"yes", "y", "approve", "approved", "ok", "okay", "sure", "go"}
+# Tokens that read as a refusal. A negative anywhere in the reply vetoes
+# a co-occurring affirmative ("no yes" -> rejected) so the parse fails
+# closed against ambiguous intent, which is the only safe direction for
+# something that decides whether a tool runs.
+_NEGATIVE = {
+    "no", "n", "nope", "nah", "deny", "denied", "reject", "rejected",
+    "cancel", "stop", "dont", "don't", "do not",
+}
+
+
+def classify_approval_text(text: str) -> bool | None:
+    """Read a free-text reply to an approval gate.
+
+    Returns True to approve, False to reject, and None when the reply
+    is not a decision at all, so the caller can keep asking rather than
+    guess.
+
+    Ported verbatim from the chat surface, including its tokenisation:
+    replies are lowercased and split on whitespace, with no punctuation
+    stripping. "yes." therefore does not approve, and the multi-word
+    "do not" entry above can never match. Both are worth fixing, but not
+    silently inside a port, because either change alters which replies
+    approve a tool call.
+    """
+    tokens = (text or "").strip().lower().split()
+    if not tokens:
+        return None
+    if any(t in _NEGATIVE for t in tokens):
+        return False
+    if any(t in _AFFIRMATIVE for t in tokens):
+        return True
+    return None
+
+
 async def respond_to_yield(
     *,
     session_id: str,
@@ -265,3 +302,71 @@ __all__ = [
     "durably_wake_session",
     "respond_to_yield",
 ]
+
+
+async def flip_sessions_parked_on(
+    event_key: str,
+    payload,
+    *,
+    session_storage,
+    engine,
+) -> int:
+    """Find every session parked on ``event_key`` and durably flip it.
+
+    The single shared core behind BOTH wake deliveries: the volatile
+    bus's YieldEventListener (transport-fast) and the event-log
+    dispatcher's flip sink (durable replay). Guarded flips make the
+    two racing each other a harmless no-op.
+
+    Single-event parks match on the singular ``parked_event_key``; a
+    membership fallback covers multi-event parks (graph supersteps),
+    gated to human-reply keys so the common path stays one keyed
+    query. Returns the number of rows advanced.
+    """
+    from primer.model.storage import FieldRef, OffsetPage, Op, Predicate, Value
+
+    predicate = Predicate(
+        left=Predicate(
+            left=FieldRef(name="parked_status"),
+            op=Op.EQ,
+            right=Value(value="parked"),
+        ),
+        op=Op.AND,
+        right=Predicate(
+            left=FieldRef(name="parked_event_key"),
+            op=Op.EQ,
+            right=Value(value=event_key),
+        ),
+    )
+    page = await session_storage.find(predicate, OffsetPage(length=200))
+    flipped = 0
+    for sess in page.items:
+        if await durably_mark_session_resumable(
+            sess, event_key=event_key, payload=payload,
+            session_storage=session_storage, engine=engine,
+        ):
+            flipped += 1
+
+    if flipped == 0 and event_key.startswith(("ask_user:", "tool_approval:")):
+        member_pred = Predicate(
+            left=Predicate(
+                left=FieldRef(name="parked_status"),
+                op=Op.IN,
+                right=Value(value=["parked", "resumable"]),
+            ),
+            op=Op.AND,
+            right=Predicate(
+                left=FieldRef(name="parked_event_keys"),
+                op=Op.CONTAINS,
+                right=Value(value=event_key),
+            ),
+        )
+        page2 = await session_storage.find(member_pred, OffsetPage(length=200))
+        for sess in page2.items:
+            if await durably_mark_session_resumable(
+                sess, event_key=event_key, payload=payload,
+                session_storage=session_storage, engine=engine,
+            ):
+                flipped += 1
+    return flipped
+

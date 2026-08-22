@@ -35,7 +35,6 @@ from primer.storage.q import Q
 logger = logging.getLogger(__name__)
 
 
-ACTIVE_CHAT_ANCHOR = "__active_chat__"
 
 # Name of the JSONB table the ChannelCorrelation model is stored in
 # (model class name lowercased -- see primer.storage.{postgres,sqlite}
@@ -208,27 +207,73 @@ class CorrelationStore:
             return await self._fallback_upsert(record)
         return await self._atomic_upsert(record)
 
-    async def upsert_chat(
+    async def upsert_thread_session(
         self,
         *,
         channel_id: str,
         anchor: str,
-        chat_id: str,
+        workspace_id: str,
+        session_id: str,
     ) -> ChannelCorrelation:
-        """Create or update a ``kind="chat"`` correlation record.
+        """Bind a platform thread to its session (S6 section 5).
 
-        Atomic on (channel_id, anchor) -- see :meth:`upsert_session`."""
+        ``tool_call_id`` is deliberately None: the record says "this thread
+        IS this session" and nothing about an open gate. A later ask_user on
+        the same anchor upgrades the SAME row with a tool_call_id; answering
+        it clears the field again via :meth:`clear_gate`, so the thread stays
+        mapped for the next reply.
+        """
         now = datetime.now(timezone.utc)
         record = ChannelCorrelation(
             channel_id=channel_id,
             anchor=anchor,
-            kind="chat",
-            chat_id=chat_id,
+            kind="session",
+            workspace_id=workspace_id,
+            session_id=session_id,
+            tool_call_id=None,
             updated_at=now,
         )
         if self._backend() == "other":
             return await self._fallback_upsert(record)
         return await self._atomic_upsert(record)
+
+    async def clear_gate(self, channel_id: str, anchor: str) -> None:
+        """Blank a resolved gate's ``tool_call_id``, keeping the mapping.
+
+        Without this the next reply in the thread would re-publish onto a
+        resume key nobody is waiting on any more, instead of steering the
+        mapped session.
+        """
+        existing = await self.lookup(channel_id, anchor)
+        if existing is None or existing.tool_call_id is None:
+            return
+        await self._storage().update(
+            existing.model_copy(update={
+                "tool_call_id": None,
+                "updated_at": datetime.now(timezone.utc),
+            })
+        )
+
+    async def clear_for_session(self, session_id: str) -> int:
+        """Delete every mapping pointing at ``session_id``. Returns the count.
+
+        Called from the session DELETE path so a mapping never outlives its
+        session (S6 section 9: mappings are garbage-collected with their
+        sessions).
+        """
+        removed = 0
+        while True:
+            page = await self._storage().find(
+                Q(ChannelCorrelation).where("session_id", session_id).build(),
+                OffsetPage(offset=0, length=200),
+            )
+            if not page.items:
+                return removed
+            for record in page.items:
+                await self._storage().delete(record.id)
+                removed += 1
+            if len(page.items) < 200:
+                return removed
 
     async def _fallback_upsert(
         self, record: ChannelCorrelation
@@ -239,7 +284,6 @@ class CorrelationStore:
         if existing is not None:
             update = {
                 "kind": record.kind,
-                "chat_id": record.chat_id,
                 "workspace_id": record.workspace_id,
                 "session_id": record.session_id,
                 "tool_call_id": record.tool_call_id,
@@ -250,14 +294,6 @@ class CorrelationStore:
             return updated
         await self._storage().create(record)
         return record
-
-    async def set_active_chat(self, channel_id: str, chat_id: str) -> ChannelCorrelation:
-        """Set the ``ACTIVE_CHAT_ANCHOR`` record for *channel_id* to *chat_id*."""
-        return await self.upsert_chat(
-            channel_id=channel_id,
-            anchor=ACTIVE_CHAT_ANCHOR,
-            chat_id=chat_id,
-        )
 
     async def list_for_channel(self, channel_id: str) -> list[ChannelCorrelation]:
         """Return all correlation records for *channel_id*.
@@ -284,4 +320,4 @@ class CorrelationStore:
             await self._storage().delete(existing.id)
 
 
-__all__ = ["CorrelationStore", "ACTIVE_CHAT_ANCHOR"]
+__all__ = ["CorrelationStore"]

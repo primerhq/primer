@@ -67,7 +67,7 @@ def test_factory_in_memory_engine_has_all_three_adapters():
     )
     assert isinstance(engine, InMemoryClaimEngine)
     assert ClaimKind.SESSION in engine._adapters
-    assert ClaimKind.CHAT in engine._adapters
+    assert ClaimKind.HARNESS in engine._adapters
     assert ClaimKind.HARNESS in engine._adapters
 
 
@@ -78,5 +78,5 @@ def test_factory_postgres_engine_has_all_three_adapters():
     )
     assert isinstance(engine, PostgresClaimEngine)
     assert ClaimKind.SESSION in engine._adapters
-    assert ClaimKind.CHAT in engine._adapters
+    assert ClaimKind.HARNESS in engine._adapters
     assert ClaimKind.HARNESS in engine._adapters

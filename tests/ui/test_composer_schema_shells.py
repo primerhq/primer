@@ -1,14 +1,14 @@
 """Task B4 of docs/superpowers/plans/2026-07-05-chat-refactor.md —
 extract two shells out of <Conversation> (ui/components/chat/conversation.jsx):
 
-* <Composer> (ui/components/chat/composer.jsx) — the input surface
+* <Composer> (ui/components/shared/composer.jsx) - the input surface
   (textarea + attachment strip + send control), moved verbatim out of
   the inline JSX that used to live in <Conversation>. Wires the
   Send/Stop context-aware control (`running ? Stop : Send`) and the
   `disabled || schemaInvalid` send-gate (a hook for Task F2). Slash
   commands / mention autocomplete land in Task D1-D3 — the shell only
   needs to accept the props, not implement the behavior yet.
-* <SchemaPanel> (ui/components/chat/schema-panel.jsx) — a collapsible
+* <SchemaPanel> (ui/components/shared/schema-panel.jsx) - a collapsible
   right panel shell with a [Builder|JSON] tab strip + placeholder
   body, collapsed by default. Builder/JSON bodies land in Task F2.
 
@@ -24,8 +24,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 CHAT_DIR = UI / "components" / "chat"
-COMPOSER = CHAT_DIR / "composer.jsx"
-SCHEMA_PANEL = CHAT_DIR / "schema-panel.jsx"
+SHARED_DIR = UI / "components" / "shared"
+COMPOSER = SHARED_DIR / "composer.jsx"
+SCHEMA_PANEL = SHARED_DIR / "schema-panel.jsx"
 CONVERSATION = CHAT_DIR / "conversation.jsx"
 CHATS = UI / "components" / "chats.jsx"
 INDEX = UI / "index.html"
@@ -47,7 +48,7 @@ def _order() -> list[str]:
 
 
 def test_composer_module_exists_and_exports() -> None:
-    assert COMPOSER.exists(), "ui/components/chat/composer.jsx is missing"
+    assert COMPOSER.exists(), "ui/components/shared/composer.jsx is missing"
     src = COMPOSER.read_text(encoding="utf-8")
     assert "function Composer(" in src
     assert "window.Composer = Composer;" in src
@@ -107,7 +108,7 @@ def test_composer_is_pure_no_data_fetching_or_ws() -> None:
 
 
 def test_schema_panel_module_exists_and_exports() -> None:
-    assert SCHEMA_PANEL.exists(), "ui/components/chat/schema-panel.jsx is missing"
+    assert SCHEMA_PANEL.exists(), "ui/components/shared/schema-panel.jsx is missing"
     src = SCHEMA_PANEL.read_text(encoding="utf-8")
     assert "function SchemaPanel(" in src
     assert "window.SchemaPanel = SchemaPanel;" in src
@@ -153,36 +154,9 @@ def test_schema_panel_is_pure_no_data_fetching_or_ws() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_conversation_renders_composer() -> None:
-    src = CONVERSATION.read_text(encoding="utf-8")
-    assert "<Composer" in src, "<Conversation> must mount <Composer> as its input surface"
-
-
-def test_conversation_no_longer_owns_the_raw_composer_jsx() -> None:
-    # Behavior moved, not duplicated — the raw textarea/attach controls
-    # must be defined exactly once, in composer.jsx now.
-    src = CONVERSATION.read_text(encoding="utf-8")
-    assert "<textarea" not in src
-    assert 'data-testid="chat-attach-btn"' not in src
-
-
-def test_conversation_accepts_schema_panel_sibling() -> None:
-    src = CONVERSATION.read_text(encoding="utf-8")
-    assert "<SchemaPanel" in src, "<Conversation> should mount <SchemaPanel> behind showSchemaPanel"
-    assert "showSchemaPanel" in src
-
-
 # ---------------------------------------------------------------------------
 # Registration + transpile
 # ---------------------------------------------------------------------------
-
-
-def test_new_chat_scripts_registered_before_chats_jsx() -> None:
-    order = _order()
-    assert "components/chat/composer.jsx" in order
-    assert "components/chat/schema-panel.jsx" in order
-    assert order.index("components/chat/composer.jsx") < order.index("components/chats.jsx")
-    assert order.index("components/chat/schema-panel.jsx") < order.index("components/chats.jsx")
 
 
 def test_bundle_transpiles_with_composer_and_schema_panel_files() -> None:
@@ -191,5 +165,5 @@ def test_bundle_transpiles_with_composer_and_schema_panel_files() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body, "bundle did not build (Babel/vendor missing?)"
     text = body.decode("utf-8")
-    assert "/* === components/chat/composer.jsx === */" in text
-    assert "/* === components/chat/schema-panel.jsx === */" in text
+    assert "/* === components/shared/composer.jsx === */" in text
+    assert "/* === components/shared/schema-panel.jsx === */" in text

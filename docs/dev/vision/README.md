@@ -59,7 +59,7 @@ implementation.
 | Internal collections and system tools | [04](04-internal-collections.md) | [knowledge](../subsystems/knowledge.md) |
 | Shared file and process space | [05](05-workspaces.md) | [workspaces](../subsystems/workspaces.md), [sessions](../subsystems/sessions.md) |
 | Directed cyclic graphs | [06](06-graphs.md) | [graphs](../subsystems/graphs.md) |
-| Park and resume; long-running work | [07](07-event-driven-execution.md) | [chats](../subsystems/chats.md), [triggers](../subsystems/triggers.md), [channels](../subsystems/channels.md) |
+| Park and resume; long-running work | [07](07-event-driven-execution.md) | [sessions](../subsystems/sessions.md), [triggers](../subsystems/triggers.md), [channels](../subsystems/channels.md) |
 | Portable, shareable bundles | [08](08-harnesses.md) | [harness](../subsystems/harness.md) |
 | First-class web search; approvals | [09](09-web-search-and-safety.md) | [web-search](../subsystems/web-search.md), [agents](../subsystems/agents.md) |
 | The uniform provider shape underneath | all | [provider-pattern](../architecture/provider-pattern.md) |

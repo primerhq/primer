@@ -34,11 +34,11 @@ jobs:
           version: "latest"
       - name: Sync
         # --all-extras so the test env has every optional backend
-        # (huggingface / docling / lance / channels / docker / kubernetes);
+        # (huggingface / lance / channels / docker / kubernetes);
         # without it the backend-specific suites would be skipped or fail.
         run: |
           uv sync --all-extras --dev --group docs
-          uv pip install --no-deps ./primectl ./runtime
+          uv pip install --no-deps ./runtime
       - name: Lint (ruff)
         run: uv run ruff check .
       - name: Import contracts (import-linter)

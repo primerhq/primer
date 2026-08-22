@@ -37,8 +37,10 @@ from primer.model.chat import (
     ToolCallEnd,
     ToolCallStart,
     Usage,
+    _ClientAction,
     _ExecutorToolResult,
     _GraphNodeEvent,
+    _LlmCall,
 )
 from primer.model.workspace_session import SessionMessageKind, SessionMessageRecord
 
@@ -244,6 +246,8 @@ def translate_stream_event(
     | ToolCallStart        | None (records name in state.tool_names[node,id])|
     | ToolCallEnd          | flush text buffer (if any), then TOOL_CALL      |
     | ExtendedEvent(_ExecutorToolResult) | TOOL_RESULT                    |
+    | ExtendedEvent(_ClientAction)       | CLIENT_ACTION                  |
+    | ExtendedEvent(_LlmCall)            | LLM_CALL                       |
     | ExtendedEvent(_GraphNodeEvent) | reconstruct inner StreamEvent and    |
     |                      |   recurse with node_id=event.extended.node_id   |
     | Done                 | flush text buffer (if any), then DONE           |
@@ -401,6 +405,24 @@ def translate_stream_event(
             return records[0]
         return records
 
+    if isinstance(event, ExtendedEvent) and isinstance(event.extended, _LlmCall):
+        call = event.extended
+        return SessionMessageRecord(
+            seq=1,  # WorkspaceMessageWriter overwrites
+            kind=SessionMessageKind.LLM_CALL,
+            payload={
+                "profile_id": call.profile_id,
+                "provider_id": call.provider_id,
+                "model": call.model,
+                "input_tokens": call.input_tokens,
+                "output_tokens": call.output_tokens,
+                "duration_ms": call.duration_ms,
+                "status": call.status,
+            },
+            node_id=node_id,
+            created_at=now,
+        )
+
     if isinstance(event, ExtendedEvent) and isinstance(
         event.extended, _ExecutorToolResult
     ):
@@ -411,6 +433,21 @@ def translate_stream_event(
                 "call_id": event.extended.call_id,
                 "output": event.extended.output,
                 "error": event.extended.error,
+            },
+            node_id=node_id,
+            created_at=now,
+        )
+
+    if isinstance(event, ExtendedEvent) and isinstance(
+        event.extended, _ClientAction
+    ):
+        return SessionMessageRecord(
+            seq=1,
+            kind=SessionMessageKind.CLIENT_ACTION,
+            payload={
+                "call_id": event.extended.call_id,
+                "name": event.extended.name,
+                "arguments": dict(event.extended.arguments or {}),
             },
             node_id=node_id,
             created_at=now,

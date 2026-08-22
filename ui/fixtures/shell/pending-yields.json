@@ -1,0 +1,24 @@
+{
+  "items": [
+    {
+      "session_id": "sess-4f1a2b3c",
+      "tool_call_id": "tc-2",
+      "tool_name": "ask_approval",
+      "yielded_at": "2026-08-16T09:41:00+00:00",
+      "resume_metadata": {
+        "original_call": {
+          "name": "workspace__write_file",
+          "arguments": {"path": "src/api.ts"}
+        },
+        "preview": "@@ -1,4 +1,14 @@\n+  const sig = req.headers.get(\"stripe-signature\");\n"
+      }
+    },
+    {
+      "session_id": "sess-77de01aa",
+      "tool_call_id": "tc-9",
+      "tool_name": "ask_user",
+      "yielded_at": "2026-08-16T09:30:00+00:00",
+      "resume_metadata": {"prompt": "Which currency should partial refunds use?"}
+    }
+  ]
+}

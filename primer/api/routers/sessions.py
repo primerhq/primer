@@ -1,4 +1,4 @@
-"""Session REST surface — nested create + cancel + top-level routes."""
+"""Session REST surface - nested create + cancel + top-level routes."""
 
 from __future__ import annotations
 
@@ -27,17 +27,21 @@ from primer.api.deps import (
 from primer.api.errors import common_responses
 from primer.api.pagination import FindRequest, parse_order_by, parse_page
 from primer.session.mutation_lock import session_lifecycle_lock
+from primer.session.timeline import build_turn_timeline
 from primer.model.except_ import (
     ConflictError,
     NotFoundError,
 )
+from primer.session.default_binding import resolve_initial_binding
 from primer.model.workspace_session import (
+    PendingSessionMessage,
     WorkspaceSession,
     SessionBinding,
     SessionStatus,
 )
 from primer.model.storage import (
     FieldRef,
+    OffsetPage,
     Op,
     OrderBy,
     PageRequest,
@@ -62,7 +66,15 @@ class SessionCreateBody(BaseModel):
     the row to ``RUNNING`` and enqueues with the scheduler in one call.
     """
 
-    binding: SessionBinding
+    binding: SessionBinding | None = Field(
+        default=None,
+        description=(
+            "Agent or graph this session runs. Omit it to use the system "
+            "default agent, which is what lets a caller open a session "
+            "without choosing. With no default configured, omitting it "
+            "is an error rather than a guess."
+        ),
+    )
     name: str | None = Field(
         default=None,
         description=(
@@ -140,7 +152,7 @@ async def create_session(
        row and the workspace's ``.state/sessions/<sid>/`` directory
        share the same id (spec §11.4 step 5). Agent bindings get a
        slot keyed by the resolved agent. Graph bindings get a *holder*
-       slot whose synthetic agent_id is ``graph:<graph_id>`` — the
+       slot whose synthetic agent_id is ``graph:<graph_id>`` - the
        graph executor (primer/worker/pool.py) looks the holder up via
        :meth:`Workspace.get_session` and composes the workspace's
        tools into every per-node ``ToolExecutionManager``. Without the
@@ -172,9 +184,13 @@ async def create_session(
         if actor is not None
         else PrincipalRef.system()
     )
+    # Explicit wins; the default is a fallback, never an override.
+    binding = await resolve_initial_binding(
+        requested=body.binding, storage_provider=storage_provider,
+    )
     return await start_workspace_session(
         workspace_id=workspace_id,
-        binding=body.binding,
+        binding=binding,
         initial_instructions=body.initial_instructions,
         graph_input=body.graph_input,
         auto_start=body.auto_start,
@@ -189,7 +205,7 @@ async def create_session(
 
 
 # ===========================================================================
-# Task 20 — resume / pause / cancel + top-level list / find / get
+# Task 20 - resume / pause / cancel + top-level list / find / get
 # ===========================================================================
 
 
@@ -220,7 +236,7 @@ async def resume_session(
     # Serialize against a concurrent cancel/pause on the same session: the
     # status read-modify-write and the lease upsert must not interleave with
     # a cancel's ENDED write + delete_lease, or the row can land RUNNING with
-    # no lease — a stuck session no worker can claim (T0432). See
+    # no lease - a stuck session no worker can claim (T0432). See
     # primer.session.mutation_lock.
     async with session_lifecycle_lock().acquire(session_id):
         s = await sessions.get(session_id)
@@ -265,7 +281,7 @@ async def pause_session(
 
     * For sessions that no worker is holding a lease on (CREATED /
       WAITING) we transition directly to PAUSED.
-    * For RUNNING sessions we set ``pause_requested=True`` and return —
+    * For RUNNING sessions we set ``pause_requested=True`` and return -
       the worker will observe the flag at the next turn boundary and
       transition the row itself.
     * 409 when the session is already ENDED.
@@ -293,7 +309,7 @@ async def pause_session(
 @nested_session_router.post(
     "/workspaces/{workspace_id}/sessions/{session_id}/cancel",
     response_model=WorkspaceSession,
-    summary="Hard cancel — transitions to ENDED/cancelled",
+    summary="Hard cancel - transitions to ENDED/cancelled",
     responses=common_responses(404, 409, 500),
 )
 async def cancel_session(
@@ -310,7 +326,7 @@ async def cancel_session(
     * For sessions no worker is leasing (CREATED / WAITING / PAUSED) we
       transition directly to ENDED with ``ended_reason='cancelled'``.
     * For RUNNING sessions we set the cancel flag and publish the
-      ``session:{sid}:cancel`` event bus key — the engine-path worker's
+      ``session:{sid}:cancel`` event bus key - the engine-path worker's
       ``_cancel_watcher`` (``primer/session/dispatch.py``) listens on
       that key and preempts the running turn. We also call the
       legacy ``scheduler.signal_cancel`` for backward compat with the
@@ -362,7 +378,7 @@ async def delete_session(
     force: bool = Query(
         False,
         description=(
-            "Force-delete a RUNNING session — bypass the 409 gate that "
+            "Force-delete a RUNNING session - bypass the 409 gate that "
             "normally protects against a worker writing back to a "
             "deleted row. Use only to evict orphaned / stuck rows where "
             "no worker is actually executing (e.g. after the previous "
@@ -375,6 +391,7 @@ async def delete_session(
     workspace_registry=Depends(get_workspace_registry),
     event_bus=Depends(get_event_bus),
     call_storage=Depends(get_external_tool_call_storage),
+    storage_provider=Depends(get_storage_provider),
 ) -> None:
     """Permanently remove a session row + best-effort cleanup of its
     on-disk slot under ``<workspace>/.state/sessions/<sid>/``.
@@ -382,7 +399,7 @@ async def delete_session(
     For CREATED/WAITING/PAUSED rows we transition to ENDED inline (no
     worker is holding the lease, so the cleanup is safe to do in this
     request). ENDED / FAILED / CANCELLED rows are removed as-is.
-    RUNNING rows return 409 — a worker holds the lease and would
+    RUNNING rows return 409 - a worker holds the lease and would
     write back to a deleted row; the caller must POST /cancel and
     wait for the worker to land in ENDED first. Pass ``?force=true``
     to override (e.g. when the worker is provably dead).
@@ -414,7 +431,7 @@ async def delete_session(
         )
     if s.status == SessionStatus.RUNNING and force:
         # Publish cancel so any worker actually holding the lease
-        # preempts cleanly before its complete_turn CAS. Best-effort —
+        # preempts cleanly before its complete_turn CAS. Best-effort -
         # if the bus publish fails we still proceed with the delete
         # (force semantics).
         if event_bus is not None:
@@ -438,7 +455,7 @@ async def delete_session(
 
     # CREATED / WAITING / PAUSED: nobody's holding a lease, so we can
     # transition to ENDED inline. Drop any stale lease and signal the
-    # scheduler — symmetric with cancel_session's CREATED/WAITING/PAUSED
+    # scheduler - symmetric with cancel_session's CREATED/WAITING/PAUSED
     # branch, then the row gets removed below.
     if s.status in {
         SessionStatus.CREATED,
@@ -488,6 +505,19 @@ async def delete_session(
                 # best-effort log into a 500 that skips the row delete below.
                 "error": str(exc),
             },
+        )
+
+    # Drop the thread mappings that pointed here. Best-effort: the row must
+    # still be deleted if the correlation table is unreachable, but a leaked
+    # mapping would steer a session that no longer exists (S6 section 9).
+    try:
+        from primer.channel.correlation import CorrelationStore
+
+        await CorrelationStore(storage_provider).clear_for_session(session_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "delete_session: correlation cleanup failed (row still removed)",
+            extra={"session_id": session_id, "error": str(exc)},
         )
 
     await sessions.delete(session_id)
@@ -640,20 +670,65 @@ async def find_sessions(
     return await sessions.find(body.predicate, body.page, order_by=body.order_by)
 
 
+class SessionDetail(WorkspaceSession):
+    """A session row plus the follow-ups it has not run yet.
+
+    Subclasses rather than wraps, so every existing field stays a
+    literal sibling and no client reading WorkspaceSession today has to
+    change. Only ever constructed for a response, never stored.
+    """
+
+    pending_messages: list[PendingSessionMessage] = Field(
+        default_factory=list,
+        description=(
+            "Steers that arrived while a turn was running and have not "
+            "been realized yet, oldest first. Each carries parts rather "
+            "than a flattened string, matching what the drain joins back "
+            "out when it realizes one."
+        ),
+    )
+
+
+# A pathological queue must not make a detail read unbounded.
+_PENDING_PAGE = 100
+
+
 @top_session_router.get(
     "/sessions/{session_id}",
-    response_model=WorkspaceSession,
+    response_model=SessionDetail,
     summary="Get session by id (no workspace context required)",
     responses=common_responses(404, 500),
 )
 async def get_session_by_id(
     session_id: str = Path(...),
     sessions=Depends(get_session_storage),
-) -> WorkspaceSession:
+    storage_provider=Depends(get_storage_provider),
+) -> SessionDetail:
     s = await sessions.get(session_id)
     if s is None:
         raise NotFoundError(f"Session {session_id!r} does not exist")
-    return s
+
+    pending: list[PendingSessionMessage] = []
+    try:
+        page = await storage_provider.get_storage(PendingSessionMessage).find(
+            Predicate(
+                left=FieldRef(name="session_id"), op=Op.EQ,
+                right=Value(value=session_id),
+            ),
+            OffsetPage(offset=0, length=_PENDING_PAGE),
+            order_by=[
+                OrderBy(field="enqueued_at", direction="asc"),
+                OrderBy(field="id", direction="asc"),
+            ],
+        )
+        pending = list(page.items)
+    except Exception:  # noqa: BLE001 - the row is the answer; the queue is extra
+        logger.exception(
+            "session detail: reading pending messages failed for %s",
+            session_id,
+        )
+
+    return SessionDetail(**s.model_dump(), pending_messages=pending)
 
 
 @top_session_router.get(
@@ -703,24 +778,31 @@ async def _read_workspace_turn_log(
     offset: int,
     since_seq: int | None,
     tail: bool = False,
+    visible: bool = False,
 ) -> dict:
     """JSONL-parse the file at ``relative_path`` inside ``workspace``.
 
     Missing file is treated as an empty log (a fresh session that's
-    written nothing yet). Bogus lines are skipped silently — the turn
+    written nothing yet). Bogus lines are skipped silently - the turn
     log is observability data, not a contract.
 
     ``tail`` flips the window to the *end* of the log: the console loads a
     session transcript newest-page-first (most-recent ``limit`` rows) and pages
     older rows on demand, instead of pulling the whole file at once (#3/#7).
-    With ``tail`` the ``offset`` counts rows from the tail — ``offset=0`` is the
-    most-recent ``limit`` rows, ``offset=limit`` the next-older page — so
+    With ``tail`` the ``offset`` counts rows from the tail - ``offset=0`` is the
+    most-recent ``limit`` rows, ``offset=limit`` the next-older page - so
     paging is anchored to the end of the log, not a shifting start. Rows are
     always returned in ascending ``seq`` order.
+
+    ``visible`` folds the log through the replay walk first, so the
+    caller sees what the conversation currently shows: rewound rows
+    disappear and a compacted span collapses to its marker. It defaults
+    off because the audit and trace views need the raw stream, and a
+    rewound span has to stay fetchable to render as a collapsed region.
     """
     try:
         raw = await workspace.read_file(relative_path)
-    except Exception:  # noqa: BLE001 — NotFoundError / IO / decode
+    except Exception:  # noqa: BLE001 - NotFoundError / IO / decode
         raw = b""
     items: list[dict] = []
     for line in raw.decode("utf-8", errors="replace").splitlines():
@@ -734,6 +816,16 @@ async def _read_workspace_turn_log(
         if since_seq is not None and int(obj.get("seq", 0)) <= since_seq:
             continue
         items.append(obj)
+    if visible:
+        # Folded BEFORE paging, so offsets describe the conversation the
+        # caller asked to see rather than the raw file underneath it.
+        from primer.session.replay import visible_records
+
+        visible_seqs = {
+            rec.get("seq")
+            for rec in visible_records([json.dumps(obj) for obj in items])
+        }
+        items = [obj for obj in items if obj.get("seq") in visible_seqs]
     total = len(items)
     if tail:
         end = max(0, total - offset)
@@ -759,6 +851,16 @@ async def get_session_messages(
     limit: int = Query(default=200, ge=1, le=1000),
     offset: int = Query(default=0, ge=0),
     after_seq: int | None = Query(default=None, ge=0),
+    visible: bool = Query(
+        False,
+        description=(
+            "Fold the log through the replay walk before paging: rewound "
+            "rows disappear and a compacted span collapses to its marker. "
+            "Off by default, because the audit and trace views need the "
+            "raw stream and a rewound span must stay fetchable to render "
+            "as a collapsed region."
+        ),
+    ),
     tail: bool = Query(
         default=False,
         description=(
@@ -793,7 +895,63 @@ async def get_session_messages(
         offset=offset,
         since_seq=after_seq,
         tail=tail,
+        visible=visible,
     )
+
+
+@top_session_router.get(
+    "/sessions/{session_id}/turns/{turn_no}/timeline",
+    summary="Derive one turn's execution timeline",
+    responses=common_responses(404, 500),
+)
+async def get_session_turn_timeline(
+    session_id: str = Path(..., description="Session id"),
+    turn_no: int = Path(..., ge=0, description="Turn index (0-based)"),
+    sessions=Depends(get_session_storage),
+    workspace_registry=Depends(get_workspace_registry),
+) -> dict:
+    """Fold this turn's records into a tree: model calls, tool round-trips,
+    graph nodes, delegated subagent calls, and any wait segment.
+
+    Pure derivation (12-s7-design.md section 6): no trace system, no new
+    write path. ``turn_no`` is the window ordinal produced by terminal
+    counting over every record in messages.jsonl, and it selects the
+    turn-log envelope run at the same ordinal. Counting is deliberately
+    done on the UNFOLDED log so a compaction or a rewind cannot retarget
+    a turn_no already in circulation; the response echoes the window's
+    ``terminal_seq`` for callers that want to re-resolve it. Works on any
+    historical session.
+    """
+    sess = await sessions.get(session_id)
+    if sess is None:
+        raise NotFoundError(f"Session {session_id!r} does not exist")
+    workspace = await workspace_registry.get_workspace(sess.workspace_id)
+    if workspace is None:
+        raise NotFoundError(
+            f"Workspace {sess.workspace_id!r} for session {session_id!r} "
+            "is unavailable"
+        )
+    state_path = getattr(workspace, "state_path", ".state")
+
+    async def _lines(name: str) -> list[str]:
+        try:
+            raw = await workspace.read_file(
+                f"{state_path}/sessions/{session_id}/{name}"
+            )
+        except Exception:  # noqa: BLE001 - NotFoundError / IO / decode
+            return []
+        return raw.decode("utf-8", errors="replace").splitlines()
+
+    timeline = build_turn_timeline(
+        message_lines=await _lines("messages.jsonl"),
+        turn_log_lines=await _lines("turns.jsonl"),
+        turn_no=turn_no,
+    )
+    if timeline is None:
+        raise NotFoundError(
+            f"Session {session_id!r} has no turn {turn_no}"
+        )
+    return {"session_id": session_id, **timeline}
 
 
 __all__ = [
@@ -803,6 +961,7 @@ __all__ = [
     "delete_session",
     "find_sessions",
     "get_session_by_id",
+    "get_session_turn_timeline",
     "list_sessions",
     "nested_session_router",
     "pause_session",

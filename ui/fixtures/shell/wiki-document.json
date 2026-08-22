@@ -1,0 +1,11 @@
+{
+  "collection_id": "system",
+  "path": "capabilities/tools/web-search",
+  "title": "Web Search",
+  "body": "# Web Search\n\nThe web search toolset exposes `web__web_search`.\n\n## Configuration\n\nPick an active provider in the providers catalog.\n",
+  "children": [
+    {"path": "capabilities/tools/web-search/limits", "title": "Limits"}
+  ],
+  "system_owned": true,
+  "updated_at": "2026-08-16T07:00:00+00:00"
+}

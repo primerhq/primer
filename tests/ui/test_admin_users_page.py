@@ -4,9 +4,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ADMIN = ROOT / "ui" / "components" / "admin_users.jsx"
-CHROME = ROOT / "ui" / "components" / "chrome.jsx"
+ADMIN_OVERLAY = ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx"
 APP = ROOT / "ui" / "app.jsx"
-ROUTER = ROOT / "ui" / "foundation" / "router.js"
 INDEX = ROOT / "ui" / "index.html"
 
 
@@ -70,19 +69,16 @@ def test_registered_in_bundle_order() -> None:
     assert order.index("components/admin_users.jsx") < order.index("app.jsx")
 
 
-def test_router_has_admin_users_route() -> None:
-    assert "AdminUsersPage" in ROUTER.read_text()
-    assert "/admin/users" in ROUTER.read_text()
-
-
-def test_app_wires_admin_users_page() -> None:
-    src = APP.read_text()
-    assert "admin-users" in src
+def test_the_admin_overlay_renders_the_users_page() -> None:
+    """The console has no route table: the overlay host IS the wiring."""
+    src = (ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx").read_text()
     assert "ADM_AdminUsersPage" in src
 
 
-def test_chrome_nav_has_users_entry() -> None:
-    assert "admin-users" in CHROME.read_text()
+def test_admin_overlay_has_users_section() -> None:
+    """The shell has no per-page nav: admin surfaces are sections of
+    the one search-first admin overlay."""
+    assert 'id: "users"' in ADMIN_OVERLAY.read_text()
 
 
 def test_keys_drilldown_present() -> None:

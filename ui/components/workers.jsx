@@ -24,6 +24,15 @@ function WorkersPage({ pushToast }) {
     (signal) => apiFetch("GET", "/workers", null, { signal }),
     { pollMs: 2000 }
   );
+  // S7: per-lane task counters from the in-process instruments. The
+  // Prometheus text format is a scrape target, not a UI API, so this
+  // reads the JSON view instead.
+  const laneStats = useResource(
+    "workers:stats",
+    (signal) => apiFetch("GET", "/workers/stats", null, { signal }),
+    { pollMs: 5000 }
+  );
+  const lanes = laneStats.data?.items ?? [];
   const workers = (list.data?.items ?? []).map((w) => ({
     // Real WorkerInfo: {id, host, pid, capacity, started_at, last_heartbeat, status}
     // The Designer's row expects: in_flight, heartbeat (seconds-ago number).
@@ -250,6 +259,35 @@ function WorkersPage({ pushToast }) {
         </span>
       </div>
 
+      {lanes.length > 0 && (
+        <div
+          data-testid="worker-lane-counters"
+          style={{
+            display: "flex", flexWrap: "wrap", gap: 10, padding: "8px 12px",
+            borderBottom: "1px solid var(--border)",
+          }}
+        >
+          {lanes.map((lane) => {
+            const mean =
+              lane.duration_count > 0
+                ? lane.duration_sum_seconds / lane.duration_count
+                : 0;
+            return (
+              <div
+                key={`${lane.worker}:${lane.kind}:${lane.status}`}
+                className="mono"
+                style={{ fontSize: 11, color: "var(--text-2)" }}
+              >
+                <span style={{ color: "var(--text)" }}>{lane.kind}</span>
+                <span style={{ color: "var(--text-4)" }}>
+                  {" "}/ {lane.status}
+                </span>
+                {" "}{lane.tasks} tasks · {mean.toFixed(2)}s avg
+              </div>
+            );
+          })}
+        </div>
+      )}
       <div className="tbl-wrap">
         <table className="tbl">
           <thead>

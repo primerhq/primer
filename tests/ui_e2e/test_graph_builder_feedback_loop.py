@@ -39,6 +39,7 @@ import pytest
 
 from tests._support.smk import smk
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 # Module-level gate — even though tests/ui_e2e/conftest.py already
 # collect-ignores the whole directory when PRIMER_RUN_UI_E2E is unset,
@@ -225,10 +226,7 @@ def test_graph_builder_feedback_loop_journey(
         #    branch conditions, the editor would show an empty router
         #    side-panel after reload).
         # ------------------------------------------------------------------
-        page.goto(
-            f"{console_url}#/graphs/{graph_id}",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"graphs/{graph_id}")
         expect(page.locator("h1.page-title", has_text=graph_id)).to_be_visible(
             timeout=20_000,
         )
@@ -254,10 +252,8 @@ def test_graph_builder_feedback_loop_journey(
         # The session-create modal is launched from the Sessions list
         # page (the per-workspace "New session" button was removed; the
         # modal carries its own workspace selector).
-        page.goto(
-            f"{console_url}#/sessions",
-            wait_until="domcontentloaded",
-        )
+        # Sessions are the shell's own rail, not a list page.
+        open_shell(page, console_url, workspace_id_created)
         page.get_by_role("button", name="New session", exact=False).first.click()
         modal = page.locator(".modal").first
         modal.wait_for(state="visible", timeout=10_000)
@@ -328,10 +324,7 @@ def test_graph_builder_feedback_loop_journey(
         #    messages panel).
         # ------------------------------------------------------------------
         sid = end_state["id"]
-        page.goto(
-            f"{console_url}#/workspaces/{workspace_id_created}/sessions/{sid}",
-            wait_until="domcontentloaded",
-        )
+        open_doc(page, console_url, workspace_id_created, "session", sid)
         # The session-detail page renders End structured output as a
         # collapsible "Structured output" block (per commit a45fec2).
         expect(

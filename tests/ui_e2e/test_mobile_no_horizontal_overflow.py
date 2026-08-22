@@ -1,6 +1,6 @@
 """No console page may scroll the DOCUMENT sideways on a phone.
 
-Regression: `.topbar` and `.main` are grid items, so both defaulted to
+Regression: the topbar and `.main` are grid items, so both defaulted to
 `min-width: auto`, which floors an item at its min-content width. The
 topbar's min-content is ~410px (brand + hamburger + the status cluster,
 whose worker pill alone was 182px and could not shrink), so on any
@@ -24,6 +24,7 @@ from playwright.sync_api import Page  # noqa: E402
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 pytestmark = smk("SMK-UI-01", status="partial")
 
@@ -33,7 +34,10 @@ pytestmark = smk("SMK-UI-01", status="partial")
 PHONE_WIDTHS = [(390, 844), (360, 800)]
 
 # One per top-level nav section that renders the standard shell.
-ROUTES = ["#/", "#/agents", "#/workspaces", "#/toolsets", "#/chats"]
+# "" means the shell root itself; the rest are legacy routes the
+# facade translates into overlays. The chats route went with the chat
+# surface in S6.
+SURFACES = ["", "agents", "workspaces", "toolsets"]
 
 
 def _overflow(page: Page) -> dict:
@@ -57,7 +61,7 @@ def _overflow(page: Page) -> dict:
             scrollWidth: de.scrollWidth,
             // The shell itself must never be a culprit.
             topbar: (() => {
-              const e = document.querySelector('.topbar');
+              const e = document.querySelector('.sh-topbar');
               return e ? Math.round(e.getBoundingClientRect().width) : null;
             })(),
             widest: widest.slice(0, 3),
@@ -69,12 +73,15 @@ def _overflow(page: Page) -> dict:
 
 @pytest.mark.ui_e2e
 @pytest.mark.parametrize(("width", "height"), PHONE_WIDTHS)
-@pytest.mark.parametrize("route", ROUTES)
+@pytest.mark.parametrize("route", SURFACES)
 def test_the_document_does_not_scroll_sideways_on_a_phone(
     page: Page, console_url: str, route: str, width: int, height: int,
 ) -> None:
     page.set_viewport_size({"width": width, "height": height})
-    page.goto(f"{console_url}{route}")
+    if route:
+        open_legacy_route(page, console_url, route)
+    else:
+        page.goto(f"{console_url}#/")
     page.wait_for_load_state("domcontentloaded")
     # The shell mounts before data arrives; give the topbar's live pill a beat
     # so we measure it populated rather than empty.

@@ -72,15 +72,22 @@ async def test_collection_document_by_path_lifecycle(
 
     cleanup: list[str] = []
     try:
-        # Create the collection bound to (embedder, SSP). Search stays on.
         r = await client.post("/v1/collections", json={
             "id": cid,
             "description": "e2e path-addressed document test collection",
-            "embedder": {"provider_id": eid, "model": "all-MiniLM-L6-v2"},
-            "search_provider_id": sid,
         })
         assert r.status_code == 201, r.text
         cleanup.append(f"/v1/collections/{cid}")
+
+        # Search stays on. S2 moved the binding off the create body and
+        # onto its own route, so setting it here is what actually binds
+        # the collection to (embedder, SSP): passing the old top-level
+        # keys to create leaves the collection grep-only.
+        r = await client.put(f"/v1/collections/{cid}/search", json={
+            "embedder": {"provider_id": eid, "model": "all-MiniLM-L6-v2"},
+            "vector_store_provider_id": sid,
+        })
+        assert r.status_code in (200, 201, 202), r.text
 
         docs_url = f"/v1/collections/{cid}/documents"
 

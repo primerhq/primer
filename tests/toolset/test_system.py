@@ -18,7 +18,11 @@ from pydantic import SecretStr
 
 from primer.api.registries import ProviderRegistry
 from primer.model.agent import Agent, AgentModel
-from primer.model.collection import Collection, CollectionEmbedder
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+)
 from primer.model.except_ import ConflictError, NotFoundError
 from primer.model.provider import (
     AnthropicConfig,
@@ -34,7 +38,6 @@ from primer.model.storage import (
     CursorPageResponse,
     OffsetPageResponse,
 )
-from primer.model.thread import Thread
 from primer.toolset.system import SYSTEM_TOOLSET_ID, build_system_toolset
 
 
@@ -254,23 +257,20 @@ def _agent() -> Agent:
     )
 
 
-def _collection() -> Collection:
+def _collection(*, with_search: bool = False) -> Collection:
+    search = None
+    if with_search:
+        search = CollectionSearchConfig(
+            embedder=CollectionEmbedder(
+                provider_id="hf-1",
+                model="sentence-transformers/all-MiniLM-L6-v2",
+            ),
+            vector_store_provider_id="ssp-1",
+        )
     return Collection(
         id="kb-1",
         description="test collection",
-        embedder=CollectionEmbedder(provider_id="hf-1", model="all-MiniLM-L6-v2"),
-        search_provider_id="ssp-test",
-    )
-
-
-def _thread() -> Thread:
-    now = datetime.now(timezone.utc)
-    return Thread(
-        id="th-1",
-        agent_id="agt-1",
-        title="hello",
-        created_at=now,
-        last_activity_at=now,
+        search=search,
     )
 
 
@@ -285,7 +285,6 @@ _CRUD_ENTITIES = [
     ("graph", "graphs"),
     ("collection", "collections"),
     ("document", "documents"),
-    ("agent_thread", "agent_threads"),
     ("graph_thread", "graph_threads"),
     ("semantic_search_provider", "semantic_search_providers"),
     ("tool_approval_policy", "tool_approval_policies"),
@@ -318,7 +317,6 @@ class TestCatalog:
             ("graph", "graphs"),
             ("collection", "collections"),
             ("document", "documents"),
-            ("agent_thread", "agent_threads"),
             ("graph_thread", "graph_threads"),
             ("semantic_search_provider", "semantic_search_providers"),
         ]:
@@ -641,26 +639,6 @@ class TestToolsetExtras:
 
 
 # ===========================================================================
-# Threads CRUD (Agent thread is the exemplar)
-# ===========================================================================
-
-
-class TestAgentThreads:
-    @pytest.mark.asyncio
-    async def test_create_then_get_thread(self, system_toolset) -> None:
-        body = _thread().model_dump(mode="json")
-        result = await system_toolset.call(
-            tool_name="create_agent_thread", arguments={"entity": body}
-        )
-        assert not result.is_error, result.output
-        result = await system_toolset.call(
-            tool_name="get_agent_thread", arguments={"id": "th-1"}
-        )
-        assert not result.is_error
-        assert json.loads(result.output)["agent_id"] == "agt-1"
-
-
-# ===========================================================================
 # Collection extras + deferred stubs
 # ===========================================================================
 
@@ -676,7 +654,7 @@ class TestCollectionExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "path": "hello.txt",
+                "slug": "hello.txt", "path": "hello.txt",
                 "content": "hello world",
             },
         )
@@ -742,7 +720,7 @@ class TestDocumentExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "path": "hello.txt",
+                "slug": "hello.txt", "path": "hello.txt",
                 "content": "this is the content",
                 "title": "Hello",
             },
@@ -750,7 +728,7 @@ class TestDocumentExtras:
         assert not result.is_error, result.output
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"collection_id": "kb-1", "path": "hello.txt"},
+            arguments={"collection_id": "kb-1", "slug": "hello.txt", "path": "hello.txt"},
         )
         assert not result.is_error
         body = json.loads(result.output)
@@ -769,14 +747,14 @@ class TestDocumentExtras:
                 tool_name="put_document",
                 arguments={
                     "collection_id": "kb-1",
-                    "path": "x.txt",
+                    "slug": "x.txt", "path": "x.txt",
                     "content": content,
                 },
             )
             assert not result.is_error, result.output
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"collection_id": "kb-1", "path": "x.txt"},
+            arguments={"collection_id": "kb-1", "slug": "x.txt", "path": "x.txt"},
         )
         assert json.loads(result.output)["content"] == "second"
 
@@ -855,7 +833,7 @@ class TestProviderRegistrySystemHandling:
 # ===========================================================================
 # Per-entity smoke - every CRUD set actually dispatches to storage
 # (covers the closures generated for embedding/cross_encoder/toolset/agent/
-# graph/collection/document/vector_store_config/agent_thread/graph_thread)
+# graph/collection/document/vector_store_config/graph_thread)
 # ===========================================================================
 
 
@@ -991,7 +969,7 @@ class TestExtras:
             tool_name="put_document",
             arguments={
                 "collection_id": "kb-1",
-                "path": "x.txt",
+                "slug": "x.txt", "path": "x.txt",
                 "content": "x",
                 "meta": {"author": "alice"},
             },
@@ -1038,7 +1016,7 @@ class TestExtras:
     async def test_get_document_content_404(self, system_toolset) -> None:
         result = await system_toolset.call(
             tool_name="get_document_content",
-            arguments={"collection_id": "kb-1", "path": "missing.md"},
+            arguments={"collection_id": "kb-1", "slug": "missing.md", "path": "missing.md"},
         )
         assert result.is_error
         assert json.loads(result.output)["type"] == "not-found"
@@ -1268,7 +1246,9 @@ class TestSearchCollectionWired:
         )
         await wired_toolset.call(
             tool_name="create_collection",
-            arguments={"entity": _collection().model_dump(mode="json")},
+            arguments={
+                "entity": _collection(with_search=True).model_dump(mode="json")
+            },
         )
         result = await wired_toolset.call(
             tool_name="search_collection",

@@ -54,6 +54,24 @@ class WorkerConfig(BaseModel):
     max_attempts: int = Field(default=5, ge=1, le=100)
     base_backoff_seconds: float = Field(default=2.0, ge=0.1)
     max_backoff_seconds: float = Field(default=300.0, ge=1.0)
+    worker_label: str | None = Field(
+        default=None,
+        description=(
+            "Stable metric label for this process's worker pool. None "
+            "derives it from the host name plus worker_index. This is "
+            "never the lease-ownership id: that stays a per-start uuid so "
+            "two pools on one host cannot claim each other's leases."
+        ),
+    )
+    worker_index: int = Field(
+        default=0,
+        ge=0,
+        le=1023,
+        description=(
+            "Ordinal distinguishing worker processes that share a host. "
+            "Used only to build the stable metric label."
+        ),
+    )
 
     @model_validator(mode="after")
     def _lease_ttl_at_least_2x_heartbeat(self) -> "WorkerConfig":

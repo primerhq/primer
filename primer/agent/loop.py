@@ -24,11 +24,15 @@ Behaviour:
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator
 from typing import TYPE_CHECKING, Any
 
+import primer.observability.metrics as _metrics
+
 from primer.agent.tool_manager import ToolExecutionManager
 from primer.model.chat import (
+    Done,
     ExtendedEvent,
     Message,
     StreamEvent,
@@ -36,7 +40,9 @@ from primer.model.chat import (
     ToolResultPart,
     Usage,
     output_to_message,
+    _ClientAction,
     _ExecutorToolResult,
+    _LlmCall,
 )
 from primer.model.except_ import AuthRequiredError, PrimerError
 
@@ -48,6 +54,68 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
+
+
+def _observe_llm_call(
+    llm_model: "ResolvedModel",
+    t0: float,
+    usage: "Usage | None",
+    status: str,
+) -> float:
+    """Record one model call against the per-profile instruments.
+
+    This loop is the ONE model-call seam every executor shares (the base
+    agent executor, the graph agent node and the subagent runner all call
+    run_agent_turn), so instrumenting here counts every call exactly once.
+    Returns the elapsed seconds so the caller can reuse them.
+    """
+    elapsed = time.monotonic() - t0
+    _metrics.llm_calls_total.labels(
+        llm_model.provider_id, llm_model.profile_id, status,
+    ).inc()
+    if usage is not None:
+        if usage.input_tokens:
+            _metrics.llm_profile_tokens_total.labels(
+                llm_model.profile_id, "in",
+            ).inc(usage.input_tokens)
+        if usage.output_tokens:
+            _metrics.llm_profile_tokens_total.labels(
+                llm_model.profile_id, "out",
+            ).inc(usage.output_tokens)
+    return elapsed
+
+
+async def _emit_llm_called(
+    tool_manager: ToolExecutionManager,
+    llm_model: "ResolvedModel",
+    call_usage: "Usage | None",
+    elapsed: float,
+    status: str,
+) -> None:
+    """Land one ``llm.called`` on the platform event log (when wired).
+
+    Same seam argument as :func:`_observe_llm_call`: every executor
+    shares this loop, so emitting here counts every provider call
+    exactly once - nested subagents included.
+    """
+    recorder = getattr(tool_manager, "event_recorder", None)
+    if recorder is None:
+        return
+    session_id, workspace_id = tool_manager.workspace_session_scope
+    await recorder.emit(
+        "llm.called",
+        session_id=session_id,
+        workspace_id=workspace_id,
+        payload={
+            "profile_id": llm_model.profile_id,
+            "provider_id": llm_model.provider_id,
+            "model": llm_model.model_name,
+            "input_tokens": call_usage.input_tokens if call_usage else None,
+            "output_tokens": call_usage.output_tokens if call_usage else None,
+            "duration_ms": max(0, int(elapsed * 1000)),
+            "status": status,
+        },
+    )
 
 
 async def run_agent_turn(
@@ -105,6 +173,9 @@ async def run_agent_turn(
     tool_round = 0
     while True:
         buffered: list[StreamEvent] = []
+        held_done: StreamEvent | None = None
+        call_t0 = time.monotonic()
+        call_usage: Usage | None = None
         stream = llm.stream(
             model=llm_model.model_name,
             messages=prompt,
@@ -114,17 +185,53 @@ async def run_agent_turn(
             tools=tools,
             tool_choice="auto",
         )
-        async for event in stream:
-            buffered.append(event)
-            yield event
-            if (
-                last_input_tokens_out is not None
-                and isinstance(event, Usage)
-            ):
-                if not last_input_tokens_out:
-                    last_input_tokens_out.append(event.input_tokens)
-                else:
-                    last_input_tokens_out[0] = event.input_tokens
+        try:
+            async for event in stream:
+                buffered.append(event)
+                if isinstance(event, Usage):
+                    call_usage = event
+                if isinstance(event, Done) and held_done is None:
+                    # Held so the llm_call event below reaches consumers
+                    # FIRST: the record it becomes must land inside this
+                    # turn's seq window, and a DONE record closes that
+                    # window (primer/session/timeline.py). ``buffered``
+                    # keeps the original order for output_to_message.
+                    held_done = event
+                    continue
+                yield event
+                if (
+                    last_input_tokens_out is not None
+                    and isinstance(event, Usage)
+                ):
+                    if not last_input_tokens_out:
+                        last_input_tokens_out.append(event.input_tokens)
+                    else:
+                        last_input_tokens_out[0] = event.input_tokens
+        except Exception:
+            err_elapsed = _observe_llm_call(
+                llm_model, call_t0, call_usage, "error",
+            )
+            await _emit_llm_called(
+                tool_manager, llm_model, call_usage, err_elapsed, "error",
+            )
+            raise
+        elapsed = _observe_llm_call(llm_model, call_t0, call_usage, "ok")
+        await _emit_llm_called(
+            tool_manager, llm_model, call_usage, elapsed, "ok",
+        )
+        yield ExtendedEvent(
+            extended=_LlmCall(
+                profile_id=llm_model.profile_id,
+                provider_id=llm_model.provider_id,
+                model=llm_model.model_name,
+                input_tokens=call_usage.input_tokens if call_usage else None,
+                output_tokens=call_usage.output_tokens if call_usage else None,
+                duration_ms=max(0, int(elapsed * 1000)),
+                status="ok",
+            )
+        )
+        if held_done is not None:
+            yield held_done
 
         try:
             assistant_msg = output_to_message(buffered)
@@ -165,11 +272,18 @@ async def run_agent_turn(
             )
             return
 
+        client_actions: list[_ClientAction] = []
         tool_result_msgs = await _dispatch_tool_calls(
             tool_calls,
             tool_manager=tool_manager,
             principal=principal,
+            actions_out=client_actions,
         )
+        # Delivery frames go out BEFORE the results so the session log
+        # reads tool_call -> client_action -> tool_result, matching the
+        # notifying contract (deliver, then answer).
+        for action in client_actions:
+            yield ExtendedEvent(extended=action)
         for trm in tool_result_msgs:
             if messages_out is not None:
                 messages_out.append(trm)
@@ -192,6 +306,7 @@ async def _dispatch_tool_calls(
     *,
     tool_manager: ToolExecutionManager,
     principal: str | None,
+    actions_out: list[_ClientAction],
 ) -> list[Message]:
     """Dispatch tool calls; return tool-role messages to feed back to the LLM.
 
@@ -202,6 +317,21 @@ async def _dispatch_tool_calls(
     """
     result_parts: list[ToolResultPart] = []
     for call in calls:
+        if tool_manager.is_notifying(call.name):
+            actions_out.append(
+                _ClientAction(
+                    call_id=call.id,
+                    name=call.name,
+                    arguments=dict(call.arguments or {}),
+                )
+            )
+            # Notifying class (S3 spec section 3): the runner answers the
+            # call itself with a successful synthetic tool_result and keeps
+            # looping. The park machinery is never entered.
+            result_parts.append(
+                await tool_manager.deliver_notifying(call, principal=principal)
+            )
+            continue
         try:
             rp = await tool_manager.execute(call, principal=principal)
         except AuthRequiredError:

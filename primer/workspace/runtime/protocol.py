@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
-PROTOCOL_VERSION: str = "1.2"
+PROTOCOL_VERSION: str = "1.3"
 
 
 class OpName(StrEnum):
@@ -29,6 +29,7 @@ class OpName(StrEnum):
     EXEC = "exec"
     WATCH_START = "watch_start"
     WATCH_CANCEL = "watch_cancel"
+    EVENTS_SUBSCRIBE = "events_subscribe"
     STATE_COMMIT = "state_commit"
     STATE_READ = "state_read"
     STATE_HISTORY = "state_history"

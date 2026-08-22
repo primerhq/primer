@@ -78,45 +78,67 @@ async def test_semantic_search_full_journey(
         r = await client.post("/v1/embedding_providers", json=_emb_body(emb_id))
         assert r.status_code == 201, r.text
 
-        # ----- Create Collection bound to both -----
+        # ----- Create Collection, then bind both through search -----
         r = await client.post("/v1/collections", json={
             "id": coll_id,
             "description": "ssp journey",
-            "embedder": {"provider_id": emb_id, "model": "stub-embed"},
-            "search_provider_id": ssp_id,
         })
         assert r.status_code == 201, r.text
 
-        # ----- Verify in list with search_provider_id field intact -----
+        # S2: the embedder and the vector store are the per-collection
+        # search config, not top-level collection fields.
+        r = await client.put(f"/v1/collections/{coll_id}/search", json={
+            "embedder": {"provider_id": emb_id, "model": "stub-embed"},
+            "vector_store_provider_id": ssp_id,
+        })
+        assert r.status_code in (200, 201, 202), r.text
+
+        # ----- Verify the binding survives a list read -----
         r = await client.get("/v1/collections?length=50")
         assert r.status_code == 200, r.text
         items = [c for c in r.json().get("items", []) if c["id"] == coll_id]
         assert len(items) == 1, items
-        assert items[0]["search_provider_id"] == ssp_id, items[0]
+        assert items[0]["search"]["vector_store_provider_id"] == ssp_id, items[0]
 
-        # ----- Cascade-block: DELETE SSP while collection is live -----
-        # The hook raises ConflictError → RFC 7807 flat envelope.
+        # ----- DELETE the SSP while the collection still references it --
+        # This used to be blocked with a 409. S2 dropped that reference
+        # check deliberately: an operator retiring a provider should not
+        # have to hunt down every collection first. The collection is
+        # left pointing at something that is gone, and says so through
+        # its own search state rather than by vetoing the delete.
         r = await client.delete(f"/v1/ssp/{ssp_id}")
-        assert r.status_code == 409, r.text
-        body = r.json()
-        assert body.get("type") == "/errors/conflict", body
-        # Detail names the referencing collection id
-        assert coll_id in body.get("detail", ""), body
+        assert r.status_code == 204, r.text
 
-        # ----- Confirm SSP row is STILL present (cascade-block worked) -----
-        r = await client.get(f"/v1/ssp/{ssp_id}")
-        assert r.status_code == 200, r.text
-
-        # ----- Delete the collection, then SSP delete should succeed -----
-        r = await client.delete(f"/v1/collections/{coll_id}")
-        assert r.status_code in (200, 204), r.text
-        r = await client.delete(f"/v1/ssp/{ssp_id}")
-        assert r.status_code in (200, 204), r.text
-
-        # ----- Post-delete: GET returns 404 for both -----
         r = await client.get(f"/v1/ssp/{ssp_id}")
         assert r.status_code == 404, r.text
+
+        # The collection keeps the binding, and searching through it now
+        # reports the missing provider instead of pretending to work.
         r = await client.get(f"/v1/collections/{coll_id}")
+        assert r.status_code == 200, r.text
+        assert r.json()["search"]["vector_store_provider_id"] == ssp_id, r.text
+
+        r = await client.post(
+            f"/v1/collections/{coll_id}/search", json={"query": "anything"},
+        )
+        assert r.status_code != 200, r.text
+        # The message names the collection, not the provider: this
+        # embedder stub is unreachable by design, so the query fails at
+        # embedding time and never reaches the missing vector store.
+        # What matters is that it refuses and says which collection.
+        assert coll_id in r.text, r.text
+
+        # ----- The collection goes too, and both are then gone ---------
+        # This used to be the point where the SSP delete finally became
+        # legal, once nothing referenced it. It is legal from the start
+        # now, so all that is left to pin is that removing the
+        # collection afterwards works and neither row lingers.
+        r = await client.delete(f"/v1/collections/{coll_id}")
+        assert r.status_code in (200, 204), r.text
+
+        r = await client.get(f"/v1/collections/{coll_id}")
+        assert r.status_code == 404, r.text
+        r = await client.get(f"/v1/ssp/{ssp_id}")
         assert r.status_code == 404, r.text
 
     finally:
@@ -127,26 +149,36 @@ async def test_semantic_search_full_journey(
 
 
 @pytest.mark.asyncio
-async def test_semantic_search_collection_with_unknown_ssp_returns_404(
+async def test_semantic_search_collection_with_unknown_ssp_is_rejected(
     client: httpx.AsyncClient, unique_suffix: str,
 ):
-    """Sister: Collection create with unknown search_provider_id is
-    rejected with 404 + /errors/not-found flat RFC 7807 envelope."""
+    """Sister: enabling search against an unknown vector store is refused.
+
+    409, not 404: the route reads it as a conflict with the platform's
+    current state rather than a missing route target, and answers the
+    same way for an unregistered embedder. Deleting a provider that
+    collections already reference stays allowed (see the journey above);
+    it is MAKING a reference to something absent that is refused.
+    """
     emb_id = f"emb-unk-{unique_suffix}"
     try:
         r = await client.post("/v1/embedding_providers", json=_emb_body(emb_id))
         assert r.status_code == 201, r.text
 
+        coll_id = f"coll-unk-{unique_suffix}"
         r = await client.post("/v1/collections", json={
-            "id": f"coll-unk-{unique_suffix}",
-            "description": "unknown ssp",
-            "embedder": {"provider_id": emb_id, "model": "stub-embed"},
-            "search_provider_id": "ssp-does-not-exist-xyz",
+            "id": coll_id, "description": "unknown ssp",
         })
-        assert r.status_code == 404, r.text
-        # _validate_ssp_exists raises NotFoundError → RFC 7807 flat envelope
+        assert r.status_code == 201, r.text
+
+        r = await client.put(f"/v1/collections/{coll_id}/search", json={
+            "embedder": {"provider_id": emb_id, "model": "stub-embed"},
+            "vector_store_provider_id": "ssp-does-not-exist-xyz",
+        })
+        assert r.status_code == 409, r.text
         body = r.json()
-        assert body.get("type") == "/errors/not-found", body
+        assert body.get("type") == "/errors/conflict", body
         assert "ssp-does-not-exist-xyz" in body.get("detail", ""), body
     finally:
+        await client.delete(f"/v1/collections/coll-unk-{unique_suffix}")
         await client.delete(f"/v1/embedding_providers/{emb_id}")

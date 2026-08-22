@@ -26,6 +26,10 @@ async def test_prometheus_metrics_endpoint(authed_client):
     body = r.text
     assert "# TYPE" in body  # Prometheus exposition format
     assert "_total" in body  # at least one counter is exported
+    # S7: the gap instruments are declared at import time, so their TYPE
+    # lines are exported even before the first sample lands.
+    for family in ("worker_tasks_total", "turns_total", "sessions_active"):
+        assert f"# TYPE {family}" in body, f"{family} missing from /metrics"
 
 
 @smk("SMK-OBS-02")

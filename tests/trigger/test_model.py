@@ -9,7 +9,7 @@ from pydantic import ValidationError
 from primer.model.trigger import (
     Trigger, Subscription, TriggerKind, SubscriptionKind,
     DelayedTriggerConfig, ScheduledTriggerConfig,
-    ChatMessageSubConfig, AgentFreshSubConfig,
+    SessionAppendSubConfig, AgentFreshSubConfig,
     GraphFreshSubConfig, ParkedSessionSubConfig,
 )
 from primer.model.event_matcher import EventMatcher
@@ -20,7 +20,7 @@ from primer.int.claim import ClaimKind
 def test_subscription_event_matcher_field():
     s = Subscription(
         id="sb-m", trigger_id="tr-c",
-        config=ChatMessageSubConfig(chat_id="cn-1"),
+        config=SessionAppendSubConfig(session_id="cn-1"),
         event_matcher=EventMatcher(
             event_type=NormalizedEventType.MESSAGE_POSTED, command_name=None,
         ),
@@ -31,7 +31,7 @@ def test_subscription_event_matcher_field():
 
     s2 = Subscription(
         id="sb-n", trigger_id="tr-c",
-        config=ChatMessageSubConfig(chat_id="cn-1"),
+        config=SessionAppendSubConfig(session_id="cn-1"),
         created_at=datetime.now(timezone.utc),
     )
     assert s2.event_matcher is None
@@ -65,23 +65,23 @@ def test_scheduled_trigger_catchup_validates():
         ScheduledTriggerConfig(cron="0 9 * * *", catchup="bogus")
 
 
-def test_subscription_chat_message_config():
+def test_subscription_session_append_config():
     s = Subscription(
         id="sb-1", trigger_id="tr-1",
-        config=ChatMessageSubConfig(chat_id="cn-x"),
+        config=SessionAppendSubConfig(session_id="cn-x"),
         payload_template="Hello at {{ fired_at }}",
         parallelism="skip", enabled=True,
         created_at=datetime.now(timezone.utc),
     )
-    assert s.config.kind == "chat_message"
-    assert s.config.chat_id == "cn-x"
+    assert s.config.kind == "session_append"
+    assert s.config.session_id == "cn-x"
 
 
 def test_subscription_parallelism_validates():
     with pytest.raises(ValidationError):
         Subscription(
             id="sb-1", trigger_id="tr-1",
-            config=ChatMessageSubConfig(chat_id="cn-x"),
+            config=SessionAppendSubConfig(session_id="cn-x"),
             parallelism="bogus",
             created_at=datetime.now(timezone.utc),
         )

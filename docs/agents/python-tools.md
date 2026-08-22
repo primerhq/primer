@@ -16,7 +16,7 @@ mcp_tools:
 A python toolset is one module. Every function in it decorated with
 `@primer_tool` becomes a tool you can call like any other. Source lives in the
 toolset record and is edited from the console, the REST API, or
-`primectl toolset create-python`.
+`POST /v1/toolsets` with the python provider.
 
 A new toolset starts empty. In the console, **Add function** inserts a
 scaffold with the contract spelled out in `#` comments -- one for a plain
@@ -72,7 +72,7 @@ def whoami(ctx) -> str:
 ```
 
 `ctx` is **data only**: `tool_call_id`, `session_id`, `workspace_id`,
-`chat_id`, `parked_at`. It is not the live `ToolContext` object, because the
+`parked_at`. It is not the live `ToolContext` object, because the
 tool runs in a separate process. `ctx.inform` is not available.
 
 ### Yielding tools
@@ -128,7 +128,7 @@ infinite loop returns a timeout error rather than wedging a worker.
 ### What the sandbox allows
 
 Tools run in a separate process with resource limits. What else is enforced
-depends on the deployment; `primectl toolset list-python-tools --id <id>`
+depends on the deployment; `GET /v1/toolsets/{id}` lists the tools it exposes
 reports the level, and the console shows it beside the editor.
 
 - The standard library is available. Third-party packages are only available

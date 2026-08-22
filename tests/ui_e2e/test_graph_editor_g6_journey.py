@@ -20,6 +20,7 @@ import httpx
 from playwright.sync_api import expect
 
 from . import _graph_builder_helpers as gb
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 def _seed_graph(base_url: str, gid: str) -> None:
@@ -43,7 +44,7 @@ def test_graph_editor_g6_journey(base_url, console_url, page) -> None:
     gid = "g6e2e-editor"
     _seed_graph(base_url, gid)
 
-    page.goto(f"{console_url}#/graphs/{gid}")
+    open_legacy_route(page, console_url, f"graphs/{gid}")
 
     gb.wait_for_builder(page)
 

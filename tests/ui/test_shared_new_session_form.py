@@ -1,12 +1,15 @@
-"""FD2 — the two near-identical "new session" create forms (app.jsx's
-NewSessionModal + studio-sidebar.jsx's NewSessionForm) were unified into ONE
-shared component: ui/components/new-session-form.jsx (window.SharedNewSessionForm).
+"""FD2 -- the two near-identical "new session" create forms were unified
+into ONE shared component: ui/components/new-session-form.jsx
+(window.SharedNewSessionForm).
 
-The shared component is the SUPERSET of both: binding-kind toggle, agent/graph
-select, optional session `name` (#22), initial instructions, AND a graph's
-Begin.input_schema dynamic form (which previously only the app modal had — the
-Studio sidebar now inherits it too). These checks pin that wiring so the two
-forms can't silently diverge again.
+The shared component is the SUPERSET of both: binding-kind toggle,
+agent/graph select, optional session `name` (#22), initial instructions,
+AND a graph's Begin.input_schema dynamic form. These checks pin that
+wiring so a second create form cannot quietly grow beside it.
+
+Its consumer is now the shell's `new-session` overlay, which covers the
+case lazy creation cannot: a session bound to an agent or graph the
+operator picks rather than the workspace default.
 """
 
 from __future__ import annotations
@@ -17,7 +20,6 @@ ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 SHARED = UI / "components" / "new-session-form.jsx"
 APP = UI / "app.jsx"
-SIDEBAR = UI / "components" / "studio-sidebar.jsx"
 INDEX = UI / "index.html"
 
 
@@ -32,11 +34,11 @@ def test_shared_component_exists_and_is_exported() -> None:
     assert "window.SharedNewSessionForm = SharedNewSessionForm" in src
 
 
-def test_shared_component_is_used_by_both_call_sites() -> None:
-    # app.jsx's NewSessionModal + the Studio sidebar's NewSessionForm both
-    # render the ONE shared component instead of their own duplicated fields.
-    assert "SharedNewSessionForm" in APP.read_text(encoding="utf-8")
-    assert "SharedNewSessionForm" in SIDEBAR.read_text(encoding="utf-8")
+def test_every_create_surface_renders_the_shared_component() -> None:
+    """Anything that offers session creation must render the ONE shared
+    component instead of growing its own duplicated fields."""
+    host = UI / "components" / "shell" / "sh-overlay-host.jsx"
+    assert "SharedNewSessionForm" in host.read_text(encoding="utf-8")
 
 
 def test_shared_component_supports_graph_input_schema() -> None:
@@ -75,7 +77,7 @@ def test_index_loads_shared_form_before_both_sites() -> None:
         return next(i for i, ln in enumerate(order) if needle in ln)
 
     shared_i = idx("components/new-session-form.jsx")
-    assert shared_i < idx("components/studio-sidebar.jsx")
+    assert shared_i < idx("components/shell/sh-overlay-host.jsx")
     assert shared_i < idx("app.jsx")
     # Loaded after shared.jsx (which defines Modal/Btn/Icon it consumes).
     assert idx("components/shared.jsx") < shared_i
@@ -87,3 +89,23 @@ def test_bundle_transpiles_with_shared_new_session_form() -> None:
     etag, body = build_jsx_bundle(UI)
     assert etag and body
     assert "/* === components/new-session-form.jsx === */" in body.decode("utf-8")
+
+
+def test_agent_binding_may_be_left_unpicked() -> None:
+    """Submitting with no agent selected means "the system default".
+
+    The gate used to require a pick, which made a default agent
+    unreachable from the console even once one was configured.
+    """
+    src = _shared()
+    assert 'kind === "agent" ? true : !!graphId' in src, (
+        "the agent branch of canSubmit must not require an agentId"
+    )
+
+
+def test_unpicked_agent_omits_binding_rather_than_sending_null() -> None:
+    """{kind:"agent", agent_id:null} would ask to bind to an agent
+    named null; omitting the key is what requests the default."""
+    src = _shared()
+    assert "if (binding) body.binding = binding;" in src
+

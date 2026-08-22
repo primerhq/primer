@@ -1,20 +1,23 @@
-"""E2E: Collection search config (MMR + CER) create/edit and embedder immutability.
+"""E2E: the v2 Collection search block, created / edited / removed.
 
-Covers the user-2 collection-search-config-ui task:
+S2 replaced the embedder trio with one optional ``search`` block, so the
+cases this module used to cover changed shape:
 
-- KNW-SC-01: Create a collection with MMR config; verify persisted.
-- KNW-SC-02: Create a collection with CER config; verify persisted.
-- KNW-SC-03: Edit (PUT) a collection to update MMR; embedder unchanged; 200.
-- KNW-SC-04: Edit (PUT) a collection to update CER top_n; 200.
-- KNW-SC-05: Edit (PUT) that changes embedder.provider_id returns 422.
-- KNW-SC-06: Edit (PUT) that changes embedder.model returns 422.
-- KNW-SC-07: Edit (PUT) that changes search_provider_id returns 422.
-- KNW-SC-08: Remove search config via PUT (set to null); 200.
+- KNW-SC-01: Create a grep-only collection (no search block); searching
+  it answers 409.
+- KNW-SC-02: Create with a search block carrying a cross encoder.
+- KNW-SC-03: Edit (PUT) the cross encoder's top_n; 200.
+- KNW-SC-04: Remove the search block via PUT (set to null); searching
+  the collection then answers 409 again.
+
+Dropped with the model: the MMR cases (MMR was deleted when its config
+became unreachable) and the embedder / search_provider_id immutability
+cases (those validators only made sense while the trio was required).
 
 These tests are safe to run against a live server with a real postgres
 SSP configured. They do NOT require an LLM or a cross-encoder provider
-to be configured: CER config is just stored as a reference (it is only
-resolved when a search is executed).
+to be configured: the cross-encoder reference is only resolved when a
+search is executed.
 """
 
 from __future__ import annotations
@@ -65,199 +68,111 @@ def _coll_body(
     coll_id: str,
     eid: str,
     sid: str,
-    search: dict | None = None,
+    cross_encoder: dict | None = None,
+    with_search: bool = True,
 ) -> dict:
     body: dict = {
         "id": coll_id,
         "description": "e2e search-config test collection",
-        "embedder": {"provider_id": eid, "model": "all-MiniLM-L6-v2"},
-        "search_provider_id": sid,
     }
-    if search is not None:
+    if with_search:
+        search: dict = {
+            "embedder": {"provider_id": eid, "model": "all-MiniLM-L6-v2"},
+            "vector_store_provider_id": sid,
+        }
+        if cross_encoder is not None:
+            search["cross_encoder"] = cross_encoder
         body["search"] = search
     return body
 
 
 @pytest.mark.asyncio
-async def test_knw_sc_01_create_with_mmr(
+async def test_knw_sc_01_grep_only_collection_rejects_search(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """Collection created with MMR config persists mmr fields."""
-    sid = await _make_ssp(client, unique_suffix)
-    eid = await _make_embedder(client, unique_suffix)
+    """A collection with no search block is created fine and answers 409."""
     coll_id = f"coll-sc01-{unique_suffix}"
-
-    body = _coll_body(
-        coll_id=coll_id,
-        eid=eid,
-        sid=sid,
-        search={"mmr": {"lambda_mult": 0.7, "fetch_k": 40}},
+    resp = await client.post(
+        "/v1/collections",
+        json={"id": coll_id, "description": "grep-only"},
     )
-    resp = await client.post("/v1/collections", json=body)
     assert resp.status_code == 201, resp.text
-    data = resp.json()
-    assert data["search"] is not None
-    assert data["search"]["mmr"] is not None
-    assert data["search"]["mmr"]["lambda_mult"] == pytest.approx(0.7)
-    assert data["search"]["mmr"]["fetch_k"] == 40
-    assert data["search"]["cer"] is None
+    assert resp.json()["search"] is None
+
+    hit = await client.post(f"/v1/collections/{coll_id}/search", json={"query": "x"})
+    assert hit.status_code == 409, hit.text
+    assert "semantic search is not enabled" in hit.text
 
 
 @pytest.mark.asyncio
-async def test_knw_sc_02_create_with_cer(
+async def test_knw_sc_02_create_with_cross_encoder(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """Collection created with CER config persists cer fields."""
+    """A search block persists its embedder, vector store and reranker."""
     sid = await _make_ssp(client, unique_suffix)
     eid = await _make_embedder(client, unique_suffix)
     coll_id = f"coll-sc02-{unique_suffix}"
 
     body = _coll_body(
-        coll_id=coll_id,
-        eid=eid,
-        sid=sid,
-        search={
-            "cer": {
-                "provider_id": "ce-provider-fake",
-                "model": "BAAI/bge-reranker-v2-m3",
-                "top_n": 50,
-            }
+        coll_id=coll_id, eid=eid, sid=sid,
+        cross_encoder={
+            "provider_id": "ce-provider-fake",
+            "model": "BAAI/bge-reranker-v2-m3",
+            "top_n": 50,
         },
     )
     resp = await client.post("/v1/collections", json=body)
     assert resp.status_code == 201, resp.text
-    data = resp.json()
-    assert data["search"] is not None
-    assert data["search"]["cer"] is not None
-    assert data["search"]["cer"]["provider_id"] == "ce-provider-fake"
-    assert data["search"]["cer"]["top_n"] == 50
-    assert data["search"]["mmr"] is None
+    search = resp.json()["search"]
+    assert search["embedder"]["provider_id"] == eid
+    assert search["vector_store_provider_id"] == sid
+    assert search["cross_encoder"]["top_n"] == 50
+    assert search["state"] == "indexing"
 
 
 @pytest.mark.asyncio
-async def test_knw_sc_03_edit_mmr(
+async def test_knw_sc_03_edit_cross_encoder_top_n(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """PUT updates MMR settings while keeping embedder unchanged."""
+    """PUT updating the reranker's top_n succeeds."""
     sid = await _make_ssp(client, unique_suffix)
     eid = await _make_embedder(client, unique_suffix)
     coll_id = f"coll-sc03-{unique_suffix}"
 
-    body = _coll_body(coll_id=coll_id, eid=eid, sid=sid)
-    await client.post("/v1/collections", json=body)
+    body = _coll_body(
+        coll_id=coll_id, eid=eid, sid=sid,
+        cross_encoder={"provider_id": "ce-fake", "model": "m", "top_n": 10},
+    )
+    created = await client.post("/v1/collections", json=body)
+    assert created.status_code == 201, created.text
 
-    updated = {
-        **body,
-        "search": {"mmr": {"lambda_mult": 0.3, "fetch_k": None}},
-    }
-    put = await client.put(f"/v1/collections/{coll_id}", json=updated)
+    body["search"]["cross_encoder"]["top_n"] = 25
+    put = await client.put(f"/v1/collections/{coll_id}", json=body)
     assert put.status_code == 200, put.text
-    data = put.json()
-    assert data["search"]["mmr"]["lambda_mult"] == pytest.approx(0.3)
-    assert data["search"]["mmr"]["fetch_k"] is None
-    # Embedder must be unchanged.
-    assert data["embedder"]["provider_id"] == eid
-    assert data["embedder"]["model"] == "all-MiniLM-L6-v2"
+    assert put.json()["search"]["cross_encoder"]["top_n"] == 25
 
 
 @pytest.mark.asyncio
-async def test_knw_sc_04_edit_cer_top_n(
+async def test_knw_sc_04_remove_search_block(
     client: httpx.AsyncClient, unique_suffix: str,
 ) -> None:
-    """PUT updates CER top_n."""
+    """Setting search to null turns the collection back into grep-only."""
     sid = await _make_ssp(client, unique_suffix)
     eid = await _make_embedder(client, unique_suffix)
     coll_id = f"coll-sc04-{unique_suffix}"
 
-    body = _coll_body(
-        coll_id=coll_id,
-        eid=eid,
-        sid=sid,
-        search={"cer": {"provider_id": "ce-fake", "model": "m", "top_n": 100}},
+    created = await client.post(
+        "/v1/collections",
+        json=_coll_body(coll_id=coll_id, eid=eid, sid=sid),
     )
-    await client.post("/v1/collections", json=body)
+    assert created.status_code == 201, created.text
 
-    updated = {
-        **body,
-        "search": {"cer": {"provider_id": "ce-fake", "model": "m", "top_n": 25}},
-    }
-    put = await client.put(f"/v1/collections/{coll_id}", json=updated)
-    assert put.status_code == 200, put.text
-    assert put.json()["search"]["cer"]["top_n"] == 25
-
-
-@pytest.mark.asyncio
-async def test_knw_sc_05_embedder_provider_id_immutable(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """PUT with changed embedder.provider_id returns 422."""
-    sid = await _make_ssp(client, unique_suffix)
-    eid = await _make_embedder(client, unique_suffix)
-    coll_id = f"coll-sc05-{unique_suffix}"
-
-    body = _coll_body(coll_id=coll_id, eid=eid, sid=sid)
-    await client.post("/v1/collections", json=body)
-
-    bad = {
-        **body,
-        "embedder": {"provider_id": "other-provider", "model": "all-MiniLM-L6-v2"},
-    }
-    put = await client.put(f"/v1/collections/{coll_id}", json=bad)
-    assert put.status_code == 422, put.text
-
-
-@pytest.mark.asyncio
-async def test_knw_sc_06_embedder_model_immutable(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """PUT with changed embedder.model returns 422."""
-    sid = await _make_ssp(client, unique_suffix)
-    eid = await _make_embedder(client, unique_suffix)
-    coll_id = f"coll-sc06-{unique_suffix}"
-
-    body = _coll_body(coll_id=coll_id, eid=eid, sid=sid)
-    await client.post("/v1/collections", json=body)
-
-    bad = {**body, "embedder": {"provider_id": eid, "model": "other-model"}}
-    put = await client.put(f"/v1/collections/{coll_id}", json=bad)
-    assert put.status_code == 422, put.text
-
-
-@pytest.mark.asyncio
-async def test_knw_sc_07_search_provider_id_immutable(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """PUT with changed search_provider_id returns 422."""
-    sid = await _make_ssp(client, unique_suffix)
-    eid = await _make_embedder(client, unique_suffix)
-    coll_id = f"coll-sc07-{unique_suffix}"
-
-    body = _coll_body(coll_id=coll_id, eid=eid, sid=sid)
-    await client.post("/v1/collections", json=body)
-
-    bad = {**body, "search_provider_id": "other-ssp"}
-    put = await client.put(f"/v1/collections/{coll_id}", json=bad)
-    assert put.status_code == 422, put.text
-
-
-@pytest.mark.asyncio
-async def test_knw_sc_08_remove_search_config(
-    client: httpx.AsyncClient, unique_suffix: str,
-) -> None:
-    """PUT with search=null removes retrieval augmentation."""
-    sid = await _make_ssp(client, unique_suffix)
-    eid = await _make_embedder(client, unique_suffix)
-    coll_id = f"coll-sc08-{unique_suffix}"
-
-    body = _coll_body(
-        coll_id=coll_id,
-        eid=eid,
-        sid=sid,
-        search={"mmr": {"lambda_mult": 0.5}},
+    put = await client.put(
+        f"/v1/collections/{coll_id}",
+        json=_coll_body(coll_id=coll_id, eid=eid, sid=sid, with_search=False),
     )
-    await client.post("/v1/collections", json=body)
-
-    updated = {**body, "search": None}
-    put = await client.put(f"/v1/collections/{coll_id}", json=updated)
     assert put.status_code == 200, put.text
     assert put.json()["search"] is None
+
+    hit = await client.post(f"/v1/collections/{coll_id}/search", json={"query": "x"})
+    assert hit.status_code == 409, hit.text

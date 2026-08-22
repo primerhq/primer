@@ -53,6 +53,8 @@ class SlackChannelAdapter(ChannelAdapter):
         event_bus=None,
         claim_engine=None,
         artifact_registry=None,
+        workspace_registry=None,
+        scheduler=None,
     ) -> None:
         self._provider = provider
         self._channel = channel
@@ -64,6 +66,9 @@ class SlackChannelAdapter(ChannelAdapter):
         self._bus = event_bus
         self._claim_engine = claim_engine
         self._artifacts = artifact_registry
+        # S6 section 5: the inbound path creates and steers sessions.
+        self._workspace_registry = workspace_registry
+        self._scheduler = scheduler
         self._conn: Any | None = None
         # session_id → root message ts (the per-session conversation thread).
         # Bounded so a long-lived bot does not grow this map without limit; an
@@ -113,13 +118,16 @@ class SlackChannelAdapter(ChannelAdapter):
         if self._conn is None:
             raise ProviderError("SlackChannelAdapter used before initialize()")
         client = _get_web_client(self._conn)
-        root_ts = await self._session_root_ts(client, envelope.session_id)
+        root_ts = await self._session_root_ts(
+            client, envelope.session_id,
+            getattr(envelope, "thread_anchor", None),
+        )
         media = getattr(envelope, "media", None)
         if media and self._artifacts is not None:
             from primer.channel.media import hydrate_media_dicts
             parts = await hydrate_media_dicts(self._artifacts, media)
             if parts:
-                await self.post_chat_media(parts, thread_ts=root_ts)
+                await self.post_thread_media(parts, thread_ts=root_ts)
         header = attribution_header(envelope)
         if envelope.kind == "inform":
             await client.chat_postMessage(
@@ -163,7 +171,7 @@ class SlackChannelAdapter(ChannelAdapter):
                     )
         return {"ts": ts, "channel": resp.get("channel", ""), "thread_ts": root_ts}
 
-    async def post_chat_message(
+    async def post_thread_message(
         self, text: str, *, thread_ts: str | None = None,
     ) -> dict:
         """Outbound chat relay: post the reply to the channel/thread.
@@ -180,7 +188,7 @@ class SlackChannelAdapter(ChannelAdapter):
             thread_ts=thread_ts, text=text)
         return {"ok": True}
 
-    async def post_chat_media(
+    async def post_thread_media(
         self, parts: list, *, thread_ts: str | None = None,
     ) -> dict:
         """Outbound media relay: upload each hydrated media part to the channel
@@ -203,12 +211,20 @@ class SlackChannelAdapter(ChannelAdapter):
             kwargs["thread_ts"] = thread_ts
         await client.files_upload_v2(**kwargs)
 
-    async def _session_root_ts(self, client: Any, session_id: str) -> str:
+    async def _session_root_ts(
+        self, client: Any, session_id: str, anchor: str | None = None,
+    ) -> str:
         """Get-or-create the root message ts for this session's thread.
 
         The first prompt posts a small anchor message to the channel; its ts is
         the thread root every later prompt for the session replies under.
+
+        A thread-mapped session (S6 section 5) already HAS its thread: the
+        anchor wins and no new anchor message is posted.
         """
+        if anchor:
+            self._session_threads[session_id] = anchor
+            return anchor
         ts = self._session_threads.get(session_id)
         if ts:
             return ts
@@ -224,48 +240,12 @@ class SlackChannelAdapter(ChannelAdapter):
     # _handle_decision / _handle_text_reply / _inbound_router / _event_router
     # / _resolve_thread_chat are inherited from ChannelAdapter.
 
-    async def handle_inbound_chat_message(
-        self, *, thread_ts: str | None, message_ts: str,
-        sender_name: str, text: str,
-        files: list[dict] | None = None,
-    ):
-        """Multi-type inbound: top-level opens a new thread-chat; an in-thread
-        message routes to that thread's chat. The thread id is message_ts on a
-        top-level message (Slack threads anchor on the parent ts).
 
-        A message typed as a /command in a thread is intercepted and handled
-        in-thread (interactive /agent select, etc.) instead of being routed as
-        a chat turn. Slack native slash commands carry no thread_ts, so this is
-        the only path that can target a specific thread's chat.
-
-        Slack ``event["files"]`` (images, documents, audio) are downloaded,
-        stored as artifacts and delivered alongside the text as media parts;
-        the text becomes the leading caption. Files that are too large or fail
-        to download are skipped (the turn still lands as text)."""
-        from primer.channel.commands import parse_command
-        parsed = parse_command(text)
-        if parsed is not None:
-            await self._handle_thread_command(
-                parsed=parsed, thread_ts=thread_ts or message_ts)
-            return None
-        text, media_parts = await self._collect_inbound_media(text, files)
-        router = self._inbound_router()
-        if router is None:
-            return None
-        # Top-level message (no thread_ts) opens a new thread-chat keyed on
-        # message_ts; an in-thread message routes to thread_ts's chat.
-        await router.route(
-            channel=self._channel,
-            anchor=thread_ts,
-            reply_to=message_ts,
-            is_thread_channel=True,
-            sender=sender_name,
-            text=text,
-            media_parts=media_parts or None,
+    async def collect_inbound_media(self, raw: Any) -> list:
+        _text, parts = await self._collect_inbound_media(
+            "", (raw or {}).get("files"),
         )
-        # Resolve the resulting chat for callers/tests (side-effect already done).
-        thread_external_id = thread_ts or message_ts
-        return await self._resolve_thread_chat(thread_external_id)
+        return parts
 
     async def _collect_inbound_media(
         self, text: str, files: list[dict] | None,
@@ -313,69 +293,6 @@ class SlackChannelAdapter(ChannelAdapter):
             parts.append(part)
         return text, parts
 
-    async def _handle_thread_command(self, *, parsed, thread_ts: str) -> None:
-        """Handle a /command typed inside a chat thread: render the result
-        in-thread. /agent shows an interactive select dropdown seeded with
-        THIS thread's chat so picking switches it."""
-        from primer.channel.chat_router import ChatChannelRouter
-        from primer.channel.commands import CommandExecutor, help_text
-        from primer.channel.slack.blocks import build_agent_select_blocks
-        if self._sp is None or self._conn is None:
-            return
-        client = _get_web_client(self._conn)
-        channel = self._channel.external_id
-        ex = CommandExecutor(storage_provider=self._sp)
-        # Resolve THIS thread's chat so commands target it.
-        router = ChatChannelRouter(storage_provider=self._sp)
-        chat, _ = await router.resolve_or_create(
-            channel_id=self._channel.id, thread_external_id=thread_ts,
-            supports_threads=True)
-
-        async def _post(text=None, blocks=None):
-            kwargs = {"channel": channel, "thread_ts": thread_ts}
-            if blocks is not None:
-                kwargs["blocks"] = blocks
-                kwargs["text"] = text or "Pick an agent:"
-            else:
-                kwargs["text"] = text or ""
-            await client.chat_postMessage(**kwargs)
-
-        verb = parsed.verb
-        if verb == "agent":
-            if parsed.arg:
-                res = await ex.set_agent(
-                    chat_id=chat.id, agent_id=parsed.arg,
-                    channel_id=self._channel.id)
-                await _post(text=res.text or "Agent switched.")
-            else:
-                picker = await ex.agent_picker(channel_id=self._channel.id)
-                if not picker.items:
-                    await _post(text="No agents available.")
-                    return
-                blocks = build_agent_select_blocks(result=picker, chat_id=chat.id)
-                await _post(text="Pick an agent:", blocks=blocks)
-            return
-        if verb == "list":
-            res = await ex.list_chats(channel_id=self._channel.id)
-            if res.items:
-                lines = [f"- {it['title']} ({it['agent_id']})" for it in res.items]
-                await _post(text="Chats on this channel:\n" + "\n".join(lines))
-            else:
-                await _post(text="No chats yet.")
-            return
-        if verb == "help":
-            await _post(text=help_text(supports_threads=True))
-            return
-        if verb == "new":
-            await _post(
-                text="Post a new top-level message in the channel to start a "
-                "new chat.")
-            return
-        if verb == "switch":
-            await _post(
-                text="On Slack, each thread is its own chat - use a new thread "
-                "instead of /switch.")
-            return
 
 
 

@@ -161,9 +161,16 @@ def test_registry_llm_ids_is_empty():
 
 
 def test_registry_toolset_ids_unchanged():
-    """Toolset reserved ids still include the original built-in set."""
-    for tid in ("system", "search", "workspaces", "misc", "web", "harness"):
+    """Toolset reserved ids still include the built-in set.
+
+    ``search`` left with the search toolset in S2; ``crud`` joined in S5.
+    """
+    for tid in (
+        "system", "workspaces", "misc", "web", "harness",
+        "trigger", "workspace_ext", "collections", "crud",
+    ):
         assert tid in RESERVED_TOOLSET_IDS
+    assert "search" not in RESERVED_TOOLSET_IDS
 
 
 # ---------------------------------------------------------------------------

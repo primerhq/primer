@@ -14,7 +14,7 @@ end-to-end:
 * **Selector** arrives as an optional ``?selector=`` query parameter carrying a
   base64url- or raw-JSON-encoded :class:`TapSelector`. A GET stream has no
   body, so a query parameter keeps the surface cacheable, reconnect-friendly,
-  and CLI-trivial (``primectl tap`` just appends ``?selector=``).
+  and trivial for any client to build: append ``?selector=``.
 * **Cursor / reconnect** comes from the ``Last-Event-ID`` request header
   (SSE-native, set automatically by browsers/`httpx-sse` on reconnect) and
   falls back to ``?cursor=``; the header wins. Both decode via the tolerant
@@ -270,6 +270,81 @@ async def _stream_tap(
                 yield _frame(ev)
     finally:
         await sub.aclose()
+
+
+# ---------------------------------------------------------------------------
+# Derived envelopes
+# ---------------------------------------------------------------------------
+#
+# These are frames, not records. They are built from the session row plus
+# the log, never advance the tap cursor, and carry STATE rather than
+# deltas, so a client that reconnects re-derives the current snapshot
+# instead of replaying a historical one, and one that receives the same
+# frame twice renders it twice with no effect.
+
+
+def build_usage_frame(raw_lines: list[str]) -> dict:
+    """Token totals for what the session currently shows."""
+    from primer.session.usage import session_usage
+
+    usage = session_usage(raw_lines)
+    return {
+        "turns": usage.turns,
+        "last_input_tokens": usage.last_input_tokens,
+        "last_output_tokens": usage.last_output_tokens,
+        "total_input_tokens": usage.total_input_tokens,
+        "total_output_tokens": usage.total_output_tokens,
+        "total_cached_input_tokens": usage.total_cached_input_tokens,
+        "total_reasoning_tokens": usage.total_reasoning_tokens,
+    }
+
+
+def build_compaction_frame(raw_lines: list[str]) -> dict | None:
+    """The newest visible compaction, or None if nothing is folded.
+
+    Derived from the marker rather than parsed off the wire: the tap
+    reader deliberately skips compaction_marker records, because the
+    executor assigns them a seq out of band and parsing one would let a
+    shared seq drop a real record. Deriving sidesteps that entirely.
+    """
+    from primer.model.workspace_session import SessionMessageKind
+    from primer.session.replay import visible_records
+
+    marker = None
+    for rec in visible_records(raw_lines):
+        if rec.get("kind") == SessionMessageKind.COMPACTION_MARKER.value:
+            marker = rec
+    if marker is None:
+        return None
+    payload = marker.get("payload") or {}
+    return {
+        "marker_seq": marker.get("seq"),
+        "summary": payload.get("summary"),
+        "replaced_from_seq": payload.get("replaced_from_seq"),
+        "replaced_to_seq": payload.get("replaced_to_seq"),
+        "tokens_before": payload.get("tokens_before"),
+        "tokens_after": payload.get("tokens_after"),
+    }
+
+
+def build_pending_steer_frame(rows: list) -> dict:
+    """Queued steers that have not been realized yet.
+
+    Always returns a frame, even when empty: the client has to be able
+    to watch the queue reach zero, which a frame emitted only when
+    non-empty could never express.
+    """
+    return {
+        "count": len(rows),
+        "items": [
+            {
+                "id": row.id,
+                "parts": list(row.parts or []),
+                "enqueued_at": row.enqueued_at.isoformat(),
+            }
+            for row in rows
+        ],
+    }
 
 
 @tap_router.get("/workspaces/{workspace_id}/tap")

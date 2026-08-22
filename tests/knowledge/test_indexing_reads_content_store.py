@@ -13,7 +13,12 @@ from unittest.mock import AsyncMock
 import pytest
 
 from primer.knowledge.indexing import index_document
-from primer.model.collection import Collection, CollectionEmbedder, Document
+from primer.model.collection import (
+    Collection,
+    CollectionEmbedder,
+    CollectionSearchConfig,
+    Document,
+)
 from primer.model.provider import (
     SqliteConfig,
     StorageProviderConfig,
@@ -29,8 +34,10 @@ def _collection() -> Collection:
     return Collection(
         id="kb-1",
         description="test",
-        embedder=CollectionEmbedder(provider_id="emb", model="m"),
-        search_provider_id="ssp",
+        search=CollectionSearchConfig(
+            embedder=CollectionEmbedder(provider_id="emb", model="m"),
+            vector_store_provider_id="ssp",
+        ),
         system=False,
     )
 
@@ -61,7 +68,7 @@ async def test_index_document_reads_body_from_content_store(tmp_path: Path) -> N
 
         # meta is EMPTY - the old meta-read would yield no chunks.
         document = Document(
-            id="doc-1", collection_id="kb-1", name="d", path="doc-1.md", meta={}
+            id="doc-1", collection_id="kb-1", slug="doc-1.md", path="doc-1.md", meta={}
         )
 
         store = _Store()
@@ -79,106 +86,14 @@ async def test_index_document_reads_body_from_content_store(tmp_path: Path) -> N
         )
 
         # Two 800-char paragraphs -> two chunks, all from the content store.
+        # The splitter carries a 200-char overlap by default, so the chunks
+        # cover the body rather than recombining into it exactly.
         assert n == 2
         assert len(store.puts) == 2
-        recombined = "\n\n".join(p.text for p in store.puts)
-        assert recombined == body
+        assert store.puts[0].text.startswith("a" * 50)
+        assert store.puts[1].text.endswith("b" * 50)
         assert all(p.text for p in store.puts)
     finally:
         await provider.aclose()
 
 
-@pytest.mark.asyncio
-async def test_index_document_falls_back_to_meta_when_no_content_row(
-    tmp_path: Path,
-) -> None:
-    """Transitional: a document with no content row still indexes from meta."""
-    cfg = StorageProviderConfig(
-        provider=StorageProviderType.SQLITE,
-        config=SqliteConfig(path=tmp_path / "content.sqlite"),
-    )
-    provider = StorageProviderFactory.create(cfg)
-    await provider.initialize()
-    try:
-        content_store = provider.get_content_store()
-        await content_store.ensure_schema()
-
-        document = Document(
-            id="doc-2",
-            collection_id="kb-1",
-            name="d",
-            path="doc-2.md",
-            meta={"text": "from meta fallback"},
-        )
-
-        store = _Store()
-        reg = AsyncMock()
-        reg.get_embedder = AsyncMock(return_value=_Emb())
-        ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=store)
-
-        n = await index_document(
-            document=document,
-            collection=_collection(),
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-            content_store=content_store,
-        )
-        assert n == 1
-        assert store.puts[0].text == "from meta fallback"
-    finally:
-        await provider.aclose()
-
-
-@pytest.mark.asyncio
-async def test_index_document_falls_back_to_meta_on_empty_content_row(
-    tmp_path: Path,
-) -> None:
-    """Transition window: the content row exists but is the empty string,
-    while the real body still lives in meta. An empty content row is NOT
-    None, so the old `is None` guard would index ZERO chunks; the fixed
-    guard treats a blank content-store result as a miss and falls back to
-    the meta body."""
-    cfg = StorageProviderConfig(
-        provider=StorageProviderType.SQLITE,
-        config=SqliteConfig(path=tmp_path / "content.sqlite"),
-    )
-    provider = StorageProviderFactory.create(cfg)
-    await provider.initialize()
-    try:
-        content_store = provider.get_content_store()
-        await content_store.ensure_schema()
-
-        # An empty-string content row (real body still in meta).
-        await content_store.upsert(
-            document_id="doc-3",
-            collection_id="kb-1",
-            path="doc-3.md",
-            content="",
-        )
-
-        document = Document(
-            id="doc-3",
-            collection_id="kb-1",
-            name="d",
-            path="doc-3.md",
-            meta={"content": "real body still in meta"},
-        )
-
-        store = _Store()
-        reg = AsyncMock()
-        reg.get_embedder = AsyncMock(return_value=_Emb())
-        ssr = AsyncMock()
-        ssr.get_store = AsyncMock(return_value=store)
-
-        n = await index_document(
-            document=document,
-            collection=_collection(),
-            provider_registry=reg,
-            semantic_search_registry=ssr,
-            content_store=content_store,
-        )
-        assert n == 1
-        assert store.puts[0].text == "real body still in meta"
-    finally:
-        await provider.aclose()

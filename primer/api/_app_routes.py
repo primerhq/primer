@@ -12,7 +12,6 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from primer.api.routers import (
-    chats as chats_router,
     compute,
     health,
     internal_collections,
@@ -104,6 +103,17 @@ def _mount_routers(
     from primer.api.routers.api_tokens import api_tokens_router
     app.include_router(api_tokens_router, prefix=prefix, dependencies=user_dep)
 
+    # Platform event log (read window) + event subscriptions. Payloads
+    # mirror stored entities, so both surfaces are admin-only.
+    from primer.api.routers.events import (
+        event_subscription_router,
+        events_router,
+    )
+    app.include_router(events_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(
+        event_subscription_router, prefix=prefix, dependencies=admin_dep,
+    )
+
     # Which optional extras this deployment has. Read-only and computed
     # from importability, so the console can render capability-aware
     # states instead of failing at use time.
@@ -121,7 +131,17 @@ def _mount_routers(
     app.include_router(sso_authed_router, prefix=prefix, dependencies=user_dep)
 
     # Phase 1 — providers (system configuration => admin only).
+    # helpers BEFORE CRUD so the literal /_types path wins over /{id},
+    # same ordering rule as web_search / web_fetch below.
+    app.include_router(providers.llm_provider_types_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(providers.embedding_provider_types_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(providers.cross_encoder_provider_types_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.llm_provider_router, prefix=prefix, dependencies=admin_dep)
+
+    # First-run setup: explicit seeding + the operator/builder reset.
+    # Admin-only; the wizard calls /setup/seed on completion.
+    from primer.api.routers.setup import setup_router
+    app.include_router(setup_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.embedding_provider_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(providers.cross_encoder_provider_router, prefix=prefix, dependencies=admin_dep)
     # ModelProfile CRUD. A profile is provider configuration (it names a
@@ -153,6 +173,24 @@ def _mount_routers(
     app.include_router(web_fetch_providers_helpers_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(web_fetch_providers_router, prefix=prefix, dependencies=admin_dep)
     app.include_router(web_fetch_active_config_router, prefix=prefix, dependencies=admin_dep)
+    # Speech providers (ASR / TTS) - system configuration => admin.
+    # helpers BEFORE CRUD so /_test and /_types beat /{id}.
+    from primer.api.routers.speech import (
+        speech_active_config_router,
+        stt_providers_helpers_router,
+        stt_providers_router,
+        tts_providers_helpers_router,
+        tts_providers_router,
+    )
+    app.include_router(stt_providers_helpers_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(stt_providers_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(tts_providers_helpers_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(tts_providers_router, prefix=prefix, dependencies=admin_dep)
+    app.include_router(speech_active_config_router, prefix=prefix, dependencies=admin_dep)
+    # Audio proxy. Browser-facing, so it is a FEATURE surface (require_user)
+    # rather than admin: any signed-in operator may dictate or listen.
+    from primer.api.routers.audio import audio_router
+    app.include_router(audio_router, prefix=prefix, dependencies=user_dep)
     # Phase 2 — compute (Agent + Graph) — authoring feature => require_user.
     app.include_router(compute.agent_router, prefix=prefix, dependencies=user_dep)
     app.include_router(compute.graph_router, prefix=prefix, dependencies=user_dep)
@@ -171,8 +209,6 @@ def _mount_routers(
     app.include_router(workspaces_router.files_router, prefix=prefix, dependencies=user_dep)
     # Collection<->Workspace mounts — import/list/detach a collection into a
     # running workspace; a workspace sub-resource like files => require_user.
-    from primer.api.routers.workspace_mounts import mounts_router
-    app.include_router(mounts_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.log_router, prefix=prefix, dependencies=user_dep)
     app.include_router(workspaces_router.yields_pending_router, prefix=prefix, dependencies=user_dep)
     # Workspace events history — bounded backfill for the Studio activity
@@ -194,12 +230,6 @@ def _mount_routers(
     # Feature => require_user, same tier as yields.
     from primer.api.routers.external_tools import external_tools_router
     app.include_router(external_tools_router, prefix=prefix, dependencies=user_dep)
-    # Chat REST + WS — feature => require_user. NOTE: the WS endpoint
-    # inside this router cannot use the include-time dep (FastAPI does not
-    # enforce deps on WebSocket routes the same way); the WS handler
-    # enforces its own role gate via require_auth_ws + accept-then-close
-    # 4403 — see chats.py / Task 8.
-    app.include_router(chats_router.chats_router, prefix=prefix, dependencies=user_dep)
     # Workspace integrated terminal — bidirectional PTY WebSocket (Studio
     # spec §6.5). Feature => require_user at include time; the WS handler
     # additionally admin-OR-explicit-enable gates (Task 8).

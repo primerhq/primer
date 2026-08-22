@@ -16,6 +16,7 @@ existing UI consumers.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from fastapi import APIRouter, Depends
@@ -49,6 +50,11 @@ _BUILTIN_TOOLSET_IDS: tuple[str, ...] = (
 
 tools_router = APIRouter(tags=["tools"])
 
+# Per-toolset ceiling for catalogue enumeration. A toolset backed by an
+# unreachable MCP server blocks rather than raising, so the skip-broken-
+# provider contract needs a clock behind it, not just except handlers.
+_ENUMERATE_TIMEOUT_S = 10.0
+
 
 @tools_router.get(
     "/tools/catalogue",
@@ -75,24 +81,26 @@ async def list_tools(
 
     async def _emit(toolset_id: str) -> None:
         try:
-            provider = await registry.get_toolset(toolset_id)
-        except Exception as exc:  # noqa: BLE001 -- skip broken toolset
+            async with asyncio.timeout(_ENUMERATE_TIMEOUT_S):
+                provider = await registry.get_toolset(toolset_id)
+                async for tool in provider.list_tools(principal=principal):
+                    scoped = f"{toolset_id}__{tool.id}"
+                    if scoped in seen_ids:
+                        continue
+                    seen_ids.add(scoped)
+                    items.append({
+                        "id": scoped,
+                        "description": tool.description or "",
+                        "input_schema": tool.args_schema or {},
+                    })
+        except TimeoutError:
+            # An unreachable MCP server accepts the connection and then
+            # never answers; it does not raise. Without this bound one
+            # such toolset stalls the whole catalogue forever.
             logger.warning(
-                "list_tools: get_toolset(%r) failed: %s: %s",
-                toolset_id, type(exc).__name__, exc,
+                "list_tools: enumerate %r timed out after %ss; skipped",
+                toolset_id, _ENUMERATE_TIMEOUT_S,
             )
-            return
-        try:
-            async for tool in provider.list_tools(principal=principal):
-                scoped = f"{toolset_id}__{tool.id}"
-                if scoped in seen_ids:
-                    continue
-                seen_ids.add(scoped)
-                items.append({
-                    "id": scoped,
-                    "description": tool.description or "",
-                    "input_schema": tool.args_schema or {},
-                })
         except BaseExceptionGroup as group:
             logger.warning(
                 "list_tools: enumerate %r raised group: %s",

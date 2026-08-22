@@ -33,13 +33,17 @@ import aiosqlite
 from pydantic import BaseModel
 
 from primer.int.document_content import (
+    FulltextHit,
     ContentListEntry,
     ContentRow,
     DocumentContentStore,
 )
+from primer.events.registry import kind_for_model
+from primer.int.event_store import EventStore
 from primer.int.storage import Storage
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable, dump_for_storage
+from primer.model.event import Event
 from primer.model.system_state import SystemState
 from primer.model.except_ import BadRequestError, ConfigError, ConflictError, NotFoundError, ProviderError, ServerError
 from primer.model.provider import SqliteConfig
@@ -141,6 +145,23 @@ class SqliteStorageProvider(StorageProvider):
         # unit). Any OTHER task's write is a foreign write: it blocks on the
         # lock and gets its own commit.
         self._txn_task: asyncio.Task[Any] | None = None
+
+    async def _ensure_events_schema(self) -> None:
+        """Lazily create the event-log tables once per provider.
+
+        The storage write path appends CRUD events for registered
+        kinds; tests construct providers without running the lifespan's
+        explicit ``ensure_schema``, so the seam ensures it on first
+        need and caches the fact.
+        """
+        if getattr(self, "_events_schema_ready", False):
+            return
+        await self.get_event_store().ensure_schema()
+        # Inside a caller's transaction the DDL joined that transaction
+        # and rolls back with it; only a standalone ensure is durable
+        # enough to cache.
+        if not self._in_own_transaction():
+            self._events_schema_ready = True
 
     def _in_own_transaction(self) -> bool:
         """True iff the calling task is the one that opened an active
@@ -329,7 +350,8 @@ class SqliteStorageProvider(StorageProvider):
                 "  last_migration_at      TEXT,"
                 "  session_secret         TEXT,"
                 "  sso_jit_enabled        INTEGER NOT NULL DEFAULT 0,"
-                "  sso_default_access     TEXT"
+                "  sso_default_access     TEXT,"
+                "  default_agent_id       TEXT"
                 ")"
             )
             # Schema-evolution shim: for installs created before
@@ -349,6 +371,10 @@ class SqliteStorageProvider(StorageProvider):
             if "sso_default_access" not in cols:
                 await self._conn.execute(
                     "ALTER TABLE system_state ADD COLUMN sso_default_access TEXT"
+                )
+            if "default_agent_id" not in cols:
+                await self._conn.execute(
+                    "ALTER TABLE system_state ADD COLUMN default_agent_id TEXT"
                 )
             await self._conn.execute(
                 "INSERT INTO system_state (id) VALUES ('singleton') "
@@ -395,7 +421,7 @@ class SqliteStorageProvider(StorageProvider):
         sql = (
             "SELECT id, bootstrap_completed_at, schema_version, "
             "       last_migration_at, session_secret, "
-            "       sso_jit_enabled, sso_default_access "
+            "       sso_jit_enabled, sso_default_access, default_agent_id "
             "FROM system_state WHERE id = ?"
         )
         cur = await self.connection.execute(sql, ("singleton",))
@@ -410,6 +436,7 @@ class SqliteStorageProvider(StorageProvider):
             session_secret,
             sso_jit_enabled,
             sso_default_access,
+            default_agent_id,
         ) = row
 
         def _parse_ts(s: str | None) -> datetime | None:
@@ -429,7 +456,16 @@ class SqliteStorageProvider(StorageProvider):
             session_secret=session_secret,
             sso_jit_enabled=bool(sso_jit_enabled),
             sso_default_access=sso_default_access,
+            default_agent_id=default_agent_id,
         )
+
+    async def set_default_agent_id(self, agent_id: str | None) -> None:
+        """Set (or clear, with None) the system default agent."""
+        await self.connection.execute(
+            "UPDATE system_state SET default_agent_id = ? WHERE id = ?",
+            (agent_id, "singleton"),
+        )
+        await self.connection.commit()
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         """Stamp ``bootstrap_completed_at`` on the singleton row."""
@@ -484,6 +520,38 @@ class SqliteStorageProvider(StorageProvider):
     def get_content_store(self) -> "SqliteDocumentContentStore":
         """Return the document-body store bound to this provider's connection."""
         return SqliteDocumentContentStore(self)
+
+    def get_event_store(self) -> "SqliteEventStore":
+        """Return the event-log store bound to this provider's connection."""
+        return SqliteEventStore(self)
+
+
+async def _append_crud_event(
+    conn: aiosqlite.Connection,
+    *,
+    event_type: str,
+    entity_kind: str,
+    entity_id: str,
+    payload_json: str,
+) -> None:
+    """Append one CRUD event on ``conn`` WITHOUT acquiring the write guard.
+
+    Called from inside a Storage write's guard block so the event rides
+    the exact same commit (or rollback) as the entity statement. The
+    payload is the row's own JSON dump, so the event carries exactly
+    what was stored.
+    """
+    await conn.execute(
+        "INSERT INTO events (event_type, occurred_at, actor, entity_kind,"
+        " entity_id, payload) VALUES (?, ?, 'system', ?, ?, ?)",
+        (
+            event_type,
+            datetime.now(timezone.utc).isoformat(),
+            entity_kind,
+            entity_id,
+            payload_json,
+        ),
+    )
 
 
 class SqliteStorage(Storage[ModelT]):
@@ -590,6 +658,9 @@ class SqliteStorage(Storage[ModelT]):
         # thread; accept the kwarg for Protocol parity and ignore it.
         del conn
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         entity_id, data_json = self._to_row(entity)
         sql = (
             f'INSERT INTO "{self._table}" (id, data) VALUES (?, ?) '
@@ -601,6 +672,13 @@ class SqliteStorage(Storage[ModelT]):
                     sql, (entity_id, data_json),
                 )
                 row = await cur.fetchone()
+                if event_kind is not None:
+                    await _append_crud_event(
+                        self._provider.connection,
+                        event_type=f"{event_kind}.created",
+                        entity_kind=event_kind, entity_id=entity_id,
+                        payload_json=data_json,
+                    )
                 if should_commit:
                     await self._provider.connection.commit()
         except Exception as exc:
@@ -616,6 +694,9 @@ class SqliteStorage(Storage[ModelT]):
         # thread; accept the kwarg for Protocol parity and ignore it.
         del conn
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         entity_id, data_json = self._to_row(entity)
         sql = (
             f'UPDATE "{self._table}" '
@@ -628,6 +709,13 @@ class SqliteStorage(Storage[ModelT]):
                     sql, (data_json, entity_id),
                 )
                 row = await cur.fetchone()
+                if event_kind is not None and row is not None:
+                    await _append_crud_event(
+                        self._provider.connection,
+                        event_type=f"{event_kind}.updated",
+                        entity_kind=event_kind, entity_id=entity_id,
+                        payload_json=data_json,
+                    )
                 if should_commit:
                     await self._provider.connection.commit()
         except Exception as exc:
@@ -645,13 +733,23 @@ class SqliteStorage(Storage[ModelT]):
         # thread; accept the kwarg for Protocol parity and ignore it.
         del conn
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         sql = f'DELETE FROM "{self._table}" WHERE id = ?'
         try:
             async with self._provider._write_guard() as should_commit:  # noqa: SLF001
                 cur = await self._provider.connection.execute(sql, (id,))
+                rowcount = cur.rowcount
+                if event_kind is not None and rowcount > 0:
+                    await _append_crud_event(
+                        self._provider.connection,
+                        event_type=f"{event_kind}.deleted",
+                        entity_kind=event_kind, entity_id=id,
+                        payload_json=json.dumps({"id": id}),
+                    )
                 if should_commit:
                     await self._provider.connection.commit()
-                rowcount = cur.rowcount
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="delete",
@@ -952,12 +1050,90 @@ class SqliteDocumentContentStore(DocumentContentStore):
                     "CREATE INDEX IF NOT EXISTS document_content_coll "
                     "ON document_content (collection_id)"
                 )
+                # External-content FTS5 mirror. The triggers keep it in
+                # sync on every write path, and the 'rebuild' insert makes
+                # rows that predate the index searchable after an upgrade
+                # (idempotent; cheap at this table's scale).
+                await self._conn.execute(
+                    "CREATE VIRTUAL TABLE IF NOT EXISTS document_content_fts "
+                    "USING fts5(content, content='document_content', "
+                    "content_rowid='rowid')"
+                )
+                for trg, body in (
+                    ("document_content_fts_ai",
+                     "AFTER INSERT ON document_content BEGIN "
+                     "INSERT INTO document_content_fts(rowid, content) "
+                     "VALUES (new.rowid, new.content); END"),
+                    ("document_content_fts_ad",
+                     "AFTER DELETE ON document_content BEGIN "
+                     "INSERT INTO document_content_fts"
+                     "(document_content_fts, rowid, content) "
+                     "VALUES ('delete', old.rowid, old.content); END"),
+                    ("document_content_fts_au",
+                     "AFTER UPDATE ON document_content BEGIN "
+                     "INSERT INTO document_content_fts"
+                     "(document_content_fts, rowid, content) "
+                     "VALUES ('delete', old.rowid, old.content); "
+                     "INSERT INTO document_content_fts(rowid, content) "
+                     "VALUES (new.rowid, new.content); END"),
+                ):
+                    await self._conn.execute(
+                        f"CREATE TRIGGER IF NOT EXISTS {trg} {body}"
+                    )
+                await self._conn.execute(
+                    "INSERT INTO document_content_fts"
+                    "(document_content_fts) VALUES ('rebuild')"
+                )
                 if should_commit:
                     await self._conn.commit()
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name="document_content", op="ensure_schema",
             ) from exc
+
+    @staticmethod
+    def _fts_query(query: str) -> str:
+        """Quote every token so user punctuation is text, not FTS5 syntax."""
+        tokens = [t for t in query.split() if t]
+        return " ".join('"' + t.replace('"', '""') + '"' for t in tokens)
+
+    async def search_fulltext(
+        self,
+        collection_id: str,
+        query: str,
+        *,
+        path_prefix: str | None = None,
+        limit: int = 20,
+        conn: object | None = None,
+    ) -> list[FulltextHit]:
+        fts = self._fts_query(query)
+        if not fts:
+            return []
+        sql = (
+            "SELECT dc.path AS path, "
+            "snippet(document_content_fts, 0, '', '', ' ... ', 16) AS excerpt, "
+            "-bm25(document_content_fts) AS score "
+            "FROM document_content_fts "
+            "JOIN document_content dc ON dc.rowid = document_content_fts.rowid "
+            "WHERE document_content_fts MATCH ? AND dc.collection_id = ? "
+            "AND (? IS NULL OR dc.path LIKE ? || '%') "
+            "ORDER BY score DESC LIMIT ?"
+        )
+        try:
+            cur = await self._conn.execute(
+                sql, (fts, collection_id, path_prefix, path_prefix, limit),
+            )
+            rows = await cur.fetchall()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="document_content", op="search_fulltext",
+            ) from exc
+        # -bm25 because FTS5 ranks lower-is-better; the interface promises
+        # higher-is-better.
+        return [
+            FulltextHit(path=r[0], excerpt=r[1], score=float(r[2]))
+            for r in rows
+        ]
 
     async def get(self, document_id: str, *, conn: Any | None = None) -> str | None:
         del conn
@@ -1098,6 +1274,263 @@ class SqliteDocumentContentStore(DocumentContentStore):
 
 __all__ = [
     "SqliteDocumentContentStore",
+    "SqliteEventStore",
     "SqliteStorage",
     "SqliteStorageProvider",
 ]
+
+
+class SqliteEventStore(EventStore):
+    """Platform event log on the provider's shared SQLite connection.
+
+    Sibling of :class:`SqliteDocumentContentStore`: same connection,
+    same write-guard discipline, ``ensure_schema`` on boot. Because
+    SQLite serialises every write on the shared connection, an append
+    issued inside a caller's write-guard block commits atomically with
+    the caller's own statements.
+    """
+
+    def __init__(self, provider: "SqliteStorageProvider") -> None:
+        self._provider = provider
+
+    @property
+    def _conn(self) -> aiosqlite.Connection:
+        return self._provider.connection
+
+    async def ensure_schema(self) -> None:
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS events ("
+                    "  id             INTEGER PRIMARY KEY AUTOINCREMENT,"
+                    "  event_type     TEXT NOT NULL,"
+                    "  occurred_at    TEXT NOT NULL,"
+                    "  actor          TEXT NOT NULL,"
+                    "  entity_kind    TEXT,"
+                    "  entity_id      TEXT,"
+                    "  workspace_id   TEXT,"
+                    "  session_id     TEXT,"
+                    "  correlation_id TEXT,"
+                    "  payload        TEXT NOT NULL"
+                    ")"
+                )
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS events_type "
+                    "ON events (event_type)"
+                )
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS events_entity "
+                    "ON events (entity_kind, entity_id)"
+                )
+                await self._conn.execute(
+                    "CREATE INDEX IF NOT EXISTS events_occurred "
+                    "ON events (occurred_at)"
+                )
+                await self._conn.execute(
+                    "CREATE TABLE IF NOT EXISTS event_cursors ("
+                    "  subscriber_id TEXT PRIMARY KEY,"
+                    "  cursor        INTEGER NOT NULL,"
+                    "  updated_at    TEXT NOT NULL"
+                    ")"
+                )
+                if should_commit:
+                    await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="events", op="ensure_schema",
+            ) from exc
+
+    async def append(
+        self,
+        *,
+        event_type: str,
+        actor: str = "system",
+        payload: dict[str, Any] | None = None,
+        entity_kind: str | None = None,
+        entity_id: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        correlation_id: str | None = None,
+        occurred_at: datetime | None = None,
+        conn: Any | None = None,
+    ) -> int:
+        # Single shared connection: nothing to thread (Storage parity).
+        del conn
+        ts = (occurred_at or datetime.now(timezone.utc)).isoformat()
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                cur = await self._conn.execute(
+                    "INSERT INTO events (event_type, occurred_at, actor,"
+                    " entity_kind, entity_id, workspace_id, session_id,"
+                    " correlation_id, payload)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+                    (
+                        event_type, ts, actor, entity_kind, entity_id,
+                        workspace_id, session_id, correlation_id,
+                        json.dumps(payload or {}),
+                    ),
+                )
+                row = await cur.fetchone()
+                if should_commit:
+                    await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="events", op="append",
+            ) from exc
+        assert row is not None
+        return int(row[0])
+
+    @staticmethod
+    def _row_to_event(row: Any) -> "Event":
+        return Event(
+            id=int(row[0]),
+            event_type=row[1],
+            occurred_at=datetime.fromisoformat(row[2]),
+            actor=row[3],
+            entity_kind=row[4],
+            entity_id=row[5],
+            workspace_id=row[6],
+            session_id=row[7],
+            correlation_id=row[8],
+            payload=json.loads(row[9]),
+        )
+
+    async def read_after(
+        self,
+        after_id: int,
+        *,
+        limit: int = 200,
+        event_type_prefix: str | None = None,
+        entity_kind: str | None = None,
+        entity_id: str | None = None,
+        workspace_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list["Event"]:
+        where = ["id > ?"]
+        params: list[Any] = [after_id]
+        if event_type_prefix is not None:
+            where.append("event_type LIKE ?")
+            params.append(
+                event_type_prefix.replace("%", r"\%").replace("_", r"\_")
+                + "%"
+            )
+        if entity_kind is not None:
+            where.append("entity_kind = ?")
+            params.append(entity_kind)
+        if entity_id is not None:
+            where.append("entity_id = ?")
+            params.append(entity_id)
+        if workspace_id is not None:
+            where.append("workspace_id = ?")
+            params.append(workspace_id)
+        if since is not None:
+            where.append("occurred_at >= ?")
+            params.append(since.isoformat())
+        like_escape = (
+            " ESCAPE '\\'" if event_type_prefix is not None else ""
+        )
+        sql = (
+            "SELECT id, event_type, occurred_at, actor, entity_kind,"
+            " entity_id, workspace_id, session_id, correlation_id, payload"
+            " FROM events WHERE "
+            + " AND ".join(
+                w + like_escape if w.startswith("event_type LIKE") else w
+                for w in where
+            )
+            + " ORDER BY id ASC LIMIT ?"
+        )
+        params.append(max(0, limit))
+        try:
+            cur = await self._conn.execute(sql, params)
+            rows = await cur.fetchall()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="events", op="read_after",
+            ) from exc
+        return [self._row_to_event(r) for r in rows]
+
+    async def max_id(self) -> int:
+        try:
+            cur = await self._conn.execute("SELECT MAX(id) FROM events")
+            row = await cur.fetchone()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="events", op="max_id",
+            ) from exc
+        return int(row[0]) if row and row[0] is not None else 0
+
+    async def prune(self, *, older_than: datetime, keep_after_id: int) -> int:
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                cur = await self._conn.execute(
+                    "DELETE FROM events WHERE occurred_at < ? AND id <= ?",
+                    (older_than.isoformat(), keep_after_id),
+                )
+                if should_commit:
+                    await self._conn.commit()
+                removed = cur.rowcount
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="events", op="prune",
+            ) from exc
+        return max(0, removed)
+
+    # -- cursors ----------------------------------------------------------
+
+    async def get_cursor(self, subscriber_id: str) -> int | None:
+        try:
+            cur = await self._conn.execute(
+                "SELECT cursor FROM event_cursors WHERE subscriber_id = ?",
+                (subscriber_id,),
+            )
+            row = await cur.fetchone()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="event_cursors", op="get_cursor",
+            ) from exc
+        return int(row[0]) if row else None
+
+    async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await self._conn.execute(
+                    "INSERT INTO event_cursors (subscriber_id, cursor,"
+                    " updated_at) VALUES (?, ?, ?)"
+                    " ON CONFLICT(subscriber_id) DO UPDATE SET"
+                    "   cursor = excluded.cursor,"
+                    "   updated_at = excluded.updated_at",
+                    (subscriber_id, event_id, now),
+                )
+                if should_commit:
+                    await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="event_cursors", op="set_cursor",
+            ) from exc
+
+    async def delete_cursor(self, subscriber_id: str) -> None:
+        try:
+            async with self._provider._write_guard() as should_commit:  # noqa: SLF001
+                await self._conn.execute(
+                    "DELETE FROM event_cursors WHERE subscriber_id = ?",
+                    (subscriber_id,),
+                )
+                if should_commit:
+                    await self._conn.commit()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="event_cursors", op="delete_cursor",
+            ) from exc
+
+    async def active_cursor_floor(self) -> int | None:
+        try:
+            cur = await self._conn.execute(
+                "SELECT MIN(cursor) FROM event_cursors",
+            )
+            row = await cur.fetchone()
+        except Exception as exc:
+            raise _wrap_sqlite_error(
+                exc, model_name="event_cursors", op="active_cursor_floor",
+            ) from exc
+        return int(row[0]) if row and row[0] is not None else None

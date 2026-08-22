@@ -666,8 +666,12 @@ async def test_t0151_sessions_find_returns_full_binding(
         resp = await client.post("/v1/sessions/find", json=body)
         assert resp.status_code == 200, resp.text
         items = resp.json()["items"]
-        assert len(items) == 1, items
-        s = items[0]
+        # Pick our session out rather than assuming it is alone: the
+        # platform can seed an operator-bound session alongside it, and
+        # what this test is about is the SHAPE of a returned binding.
+        matches = [it for it in items if it["id"] == session_id]
+        assert len(matches) == 1, items
+        s = matches[0]
         assert s["id"] == session_id
         binding = s.get("binding")
         assert isinstance(binding, dict), s
@@ -1071,12 +1075,20 @@ async def test_t0180_sessions_find_cursor_with_status_predicate_covers_all_once(
             if not cursor:
                 break
 
-        # Each seeded session appears exactly once
-        assert sorted(seen_ids) == sorted(seeded_session_ids), (
-            f"cursor walk did not cover each session exactly once. "
-            f"seeded={sorted(seeded_session_ids)!r}, "
+        # Each seeded session appears exactly once. The predicate is
+        # global, so sessions this test did not create (the platform
+        # seeds an operator one) legitimately share the page; what the
+        # cursor contract owes us is that OUR seeds are each covered
+        # once, not that we are alone on the platform.
+        missed = set(seeded_session_ids) - set(seen_ids)
+        assert not missed, (
+            f"cursor walk missed seeded sessions: {sorted(missed)!r}, "
             f"seen={sorted(seen_ids)!r}"
         )
+        for sid in seeded_session_ids:
+            assert seen_ids.count(sid) == 1, (
+                f"cursor walk returned {sid!r} {seen_ids.count(sid)} times"
+            )
         # No duplicates within the walk
         assert len(seen_ids) == len(set(seen_ids)), (
             f"duplicates in cursor walk: {seen_ids!r}"
@@ -1415,16 +1427,21 @@ async def test_t0298_sessions_find_order_by_created_at_desc(
         assert resp.status_code == 200, resp.text
         result_ids = [item["id"] for item in resp.json()["items"]]
 
-        # Result has all seeded ids
-        assert sorted(result_ids) == sorted(seeded_ids), (
-            f"missed seeded sessions: result={sorted(result_ids)!r}, "
-            f"seeded={sorted(seeded_ids)!r}"
+        # Result has all seeded ids. Other sessions may share the page
+        # (the platform seeds an operator one), so the ordering contract
+        # is checked over OUR seeds in the order the result returned
+        # them, not over the whole page.
+        missed = set(seeded_ids) - set(result_ids)
+        assert not missed, (
+            f"missed seeded sessions: {sorted(missed)!r}, "
+            f"result={sorted(result_ids)!r}"
         )
         # Order is reverse-insertion (newest first)
+        ours = [sid for sid in result_ids if sid in set(seeded_ids)]
         expected_desc = list(reversed(seeded_ids))
-        assert result_ids == expected_desc, (
+        assert ours == expected_desc, (
             f"order_by created_at desc returned wrong sequence: "
-            f"got {result_ids!r}, expected {expected_desc!r}"
+            f"got {ours!r}, expected {expected_desc!r}"
         )
     finally:
         if workspace_id is not None:
@@ -2960,35 +2977,22 @@ async def test_t0429_graph_bound_session_terminates_via_fatal_path(
     """T0429 — Graph-bound session must reach a terminal state and
     not get stuck in RUNNING after resume.
 
-    The graph executor is now fully implemented. For THIS graph
-    (begin -> agent(n1) -> end) the session-row ended_reason is
-    DETERMINISTICALLY "completed". Rationale (static trace through
-    the worker + graph executor):
+    For THIS graph (begin -> agent(n1) -> end) the session-row
+    ended_reason is DETERMINISTICALLY "failed":
       * The agent node n1 makes a real Anthropic call with the bogus
         "sk-test-placeholder" key, so the LLM turn raises an auth
-        error. _BaseGraphExecutor._stream_node catches that
-        BaseException (primer/graph/base.py:1597) and packages it as
-        a _NodeDone(error=...) -- it never re-raises out of invoke().
-      * The superstep loop marks the node FAILED, sets any_failed,
-        breaks, and writes the GRAPH state.json with
-        ended_reason="failed" (primer/graph/base.py:1151-1159,
-        1234-1243). The generator still returns NORMALLY.
-      * _GraphTurnDriver.invoke() just drains that stream, so the
-        worker sees a clean completion and reports the fixed
-        last_done_reason="graph_ended" sentinel
-        (primer/worker/pool.py:1716-1735).
-      * dispatch reaches the clean-completion path (step 6) and maps
-        "graph_ended" -> (ENDED, "completed")
-        (primer/session/dispatch.py:485, 607).
-    So the SESSION ROW is "completed" even though the graph's own
-    state.json is "failed" -- the worker driver does not surface
-    node-level failures. "failed" on the session row would require
-    invoke() ITSELF to raise (e.g. _build_graph_executor config
-    error), which cannot happen for this well-formed graph on a
-    LocalWorkspace; "cancelled" cannot happen with no cancel in
-    flight. We pin "completed" exactly so a future regression that
-    lets a node failure escape to the worker (flipping the row to
-    "failed") is CAUGHT instead of silently accepted.
+        error; the executor packages it as _NodeDone(error=...), the
+        superstep loop marks the node FAILED and the run ends with
+        the graph's own ended_reason="failed".
+      * _BaseGraphExecutor.last_done_reason exposes that outcome as
+        "graph_failed", and dispatch maps it to (ENDED, "failed").
+    This pin used to be "completed": the worker read no outcome off
+    the executor and defaulted every drained graph stream to a clean
+    stop, so the session row said completed while the graph's own
+    state.json said failed -- the silent-success defect, fixed on
+    this branch. The pin stays exact in the other direction now: a
+    regression that swallows a node failure again must flip this row
+    back to "completed" and be CAUGHT here.
     """
     env = await _full_setup(client, unique_suffix, tmp_path)
     graph_id = f"graph-t0429-{unique_suffix}"
@@ -3048,14 +3052,12 @@ async def test_t0429_graph_bound_session_terminates_via_fatal_path(
             f"graph-bound session did not converge to terminal in 30s "
             f"(stuck-in-RUNNING regression?): {final!r}"
         )
-        # Deterministic: node-level failures are swallowed by the
-        # graph executor and the worker reports "graph_ended" ->
-        # the session row is "completed". A "failed"/"cancelled"
-        # here is a real behaviour change (see docstring) and must
-        # fail the test, not be waved through.
-        assert final.get("ended_reason") == "completed", (
-            f"graph-bound session must end 'completed' (graph executor "
-            f"maps graph_ended -> completed); got {final!r}"
+        # Deterministic: the failed node makes the executor report
+        # graph_failed, and dispatch maps it to a failed session row.
+        # "completed" here means the silent-success defect is back.
+        assert final.get("ended_reason") == "failed", (
+            f"a graph whose node failed must end the session 'failed' "
+            f"(executor last_done_reason -> graph_failed); got {final!r}"
         )
     finally:
         if session_id is not None and workspace_id is not None:
@@ -4976,11 +4978,15 @@ async def test_t0671_order_by_int_column_turn_no_asc_desc(
             # set membership must match, but the asc/desc reversal
             # may not be strict if a tiebreaker is involved. Hard pin:
             # both result sets contain the same session_ids.
-            assert sorted(ids_asc) == sorted(session_ids), (
-                f"asc result missing sessions: {sorted(ids_asc)!r}"
+            # Membership over OUR seeds: other sessions may share the
+            # page, but every one we created must appear in both orders.
+            assert set(session_ids) <= set(ids_asc), (
+                f"asc result missing sessions: "
+                f"{sorted(set(session_ids) - set(ids_asc))!r}"
             )
-            assert sorted(ids_desc) == sorted(session_ids), (
-                f"desc result missing sessions: {sorted(ids_desc)!r}"
+            assert set(session_ids) <= set(ids_desc), (
+                f"desc result missing sessions: "
+                f"{sorted(set(session_ids) - set(ids_desc))!r}"
             )
     finally:
         if workspace_id is not None:

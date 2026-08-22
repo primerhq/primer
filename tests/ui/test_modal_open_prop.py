@@ -58,10 +58,8 @@ def test_no_caller_passes_open_to_modal() -> None:
     )
 
 
-def test_model_profiles_delete_confirm_is_gated() -> None:
-    """The dialog that regressed, pinned directly."""
-    src = (UI / "components" / "model-profiles.jsx").read_text(encoding="utf-8")
-    assert "{confirmDelete && (" in src
-    # Inside the guard the row is present, so no optional chaining is needed;
-    # `confirmDelete?.id` was what rendered the tell-tale blank "Delete ?".
-    assert "confirmDelete?.id" not in src
+def test_model_profile_delete_confirm_is_gated() -> None:
+    """The dialog that regressed, pinned where the profile list lives now."""
+    src = (UI / "components" / "provider-catalog.jsx").read_text(encoding="utf-8")
+    assert "confirmProfile === row.id" in src
+    assert "confirmProfile?.id" not in src

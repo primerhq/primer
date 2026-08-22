@@ -36,12 +36,6 @@ def test_session_entity_indexes_back_the_park_queries():
     assert "(data->'parked_event_keys')" in joined
 
 
-def test_base_adapter_entity_indexes_default_empty():
-    # A non-overriding adapter declares no indexes.
-    from primer.claim.adapters.chats import ChatClaimAdapter
-
-    a = ChatClaimAdapter(chat_storage=None)
-    assert a.entity_indexes('"public"."chats"') == []
 
 
 def test_session_eligibility_sql():

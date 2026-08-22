@@ -54,7 +54,6 @@ dependencies = [
 # Local HuggingFace embeddings + cross-encoder reranking (pulls torch).
 huggingface = ["sentence-transformers>=5.5.1", "transformers>=5.8.1"]
 # Rich multi-format document ingestion (PDF/DOCX/PPTX/HTML; pulls torch + OCR).
-docling = ["docling>=2.102.1"]
 # LanceDB embedded vector store (the alternative to the core pgvector backend).
 lance = ["lancedb>=0.33.0"]
 # Kubernetes workspace backend.
@@ -67,9 +66,13 @@ channels = [
     "python-telegram-bot>=22.8",
     "slack-bolt>=1.28.0",
     "slack-sdk>=3.42.0",
+    # Inbound image compression (primer/channel/media.py). It used to reach
+    # the tree transitively through the primectl workspace member; removing
+    # that member is what exposed the missing declaration.
+    "pillow>=11.0.0",
 ]
 # Everything: the batteries-included install.
-full = ["primer-ai[huggingface,docling,lance,kubernetes,docker,channels]"]
+full = ["primer-ai[huggingface,lance,kubernetes,docker,channels]"]
 
 [project.scripts]
 primer = "primer.cli:app"
@@ -88,9 +91,6 @@ build-backend = "hatchling.build"
 # Kept in the default groups so a docs checkout can build against this repo's
 # pinned stack without a separate --group docs sync.
 default-groups = ["dev", "docs"]
-
-[tool.uv.workspace]
-members = ["primectl"]
 
 
 [tool.hatch.build.targets.wheel]
@@ -139,6 +139,7 @@ markers = [
     "requires_llm: needs a reachable real LLM (set PRIMER_E2E_LLM_BASE_URL + PRIMER_E2E_LLM_MODEL + PRIMER_E2E_LLM_API_KEY); the mock-LLM lane deselects with -m 'not requires_llm'",
     "requires_cluster: e2e needs a live Kubernetes cluster (deselect with -m 'not requires_cluster')",
     "requires_channel: e2e needs live channel credentials (deselect with -m 'not requires_channel')",
+    "ui_e2e: Playwright journey against a live console; the lane selects tests/ui_e2e by path, so this marks intent and keeps a typo in it from passing unnoticed",
 ]
 
 
@@ -255,7 +256,6 @@ allow_zero_version = true
 version_toml = [
     "pyproject.toml:project.version",
     "runtime/pyproject.toml:project.version",
-    "primectl/pyproject.toml:project.version",
 ]
 build_command = ""
 commit_message = "chore(release): {version} [skip ci]"
@@ -307,7 +307,6 @@ source_modules = [
 forbidden_modules = [
     "primer.channel",
     "primer.knowledge",
-    "primer.ingest",
     "primer.embedder.huggingface",
     "primer.cross_encoder.huggingface",
     "primer.vector.lance",
@@ -315,11 +314,6 @@ forbidden_modules = [
     "primer.workspace.k8s",
 ]
 allow_indirect_imports = true
-ignore_imports = [
-    # Sanctioned lazy seam: the migration wrapper resolves knowledge at
-    # apply() time; a core-only install never runs it against documents.
-    "primer.storage.migrations.m001_document_content -> primer.knowledge.migration",
-]
 
 [[tool.importlinter.contracts]]
 name = "agent/worker reach channel only through sanctioned dispatch seams"
@@ -330,5 +324,4 @@ allow_indirect_imports = true
 ignore_imports = [
     "primer.agent.inform -> primer.channel.media",
     "primer.worker.yield_runtime -> primer.channel.media",
-    "primer.worker.engine_handlers -> primer.channel.chat_dispatcher",
 ]

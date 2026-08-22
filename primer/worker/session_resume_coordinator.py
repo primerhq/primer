@@ -108,6 +108,35 @@ async def resume_engine_session(pool: "WorkerPool", engine_lease, session):
         )
         return await pool._end_session(session, reason="failed")
 
+    # A switch applied while this session waited replaced the binding the
+    # park belongs to. Continuing would run the outgoing agent's
+    # half-finished turn under whoever holds the session now, so the
+    # resume is voided instead. The switch already moved the row, and the
+    # next turn starts cleanly under the current binding.
+    if (
+        parked.binding_epoch is not None
+        and parked.binding_epoch != session.binding_epoch
+    ):
+        logger.info(
+            "resume: voiding session %s parked at epoch %s (row is at "
+            "epoch %s); the binding was switched while it waited",
+            sid, parked.binding_epoch, session.binding_epoch,
+        )
+        return await pool._end_session(session, reason="cancelled")
+
+    from primer.events.recorder import recorder_for
+
+    await recorder_for(pool._storage, pool._event_bus).emit(
+        "session.resumed",
+        workspace_id=session.workspace_id,
+        session_id=sid,
+        payload={
+            "event_key": getattr(
+                getattr(parked, "yielded", None), "event_key", None,
+            ),
+        },
+    )
+
     if session.binding.kind == "graph":
         if parked.graph_checkpoint is None:
             logger.error(

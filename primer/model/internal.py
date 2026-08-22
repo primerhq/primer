@@ -24,7 +24,7 @@ from typing import Literal
 from pydantic import Field
 
 from primer.model.common import Identifiable
-from primer.model.search import CollectionCrossEncoder, MmrConfig
+from primer.model.search import CollectionCrossEncoder
 
 
 # Reserved row id for the singleton config row. Kept stable so the
@@ -52,10 +52,9 @@ INTERNAL_COLLECTION_IDS: dict[str, str] = {
 # from the four entity-keyed collections above: it does NOT track
 # storage rows. Its records are produced by walking
 # :mod:`primer.ai_docs` markdown files at bootstrap, chunking via the
-# Docling-backed :class:`primer.ingest.DocumentIngester`, and embedding
+# the shipped-docs ingest (removed in v2), and embedding
 # each chunk. Search-only from the agent side; no CDC events are ever
 # enqueued for this collection.
-AI_DOCS_COLLECTION_ID = "_internal_ai_docs"
 
 
 class InternalCollectionsConfig(Identifiable):
@@ -101,14 +100,6 @@ class InternalCollectionsConfig(Identifiable):
             "Id of the SemanticSearchProvider that backs the four reserved "
             "internal collections (_internal_agents, _internal_graphs, "
             "_internal_collections, _internal_tools)."
-        ),
-    )
-    mmr: MmrConfig | None = Field(
-        default=None,
-        description=(
-            "Optional Maximal Marginal Relevance diversification "
-            "applied during search. ``None`` disables MMR; default "
-            "vector ranking is preserved."
         ),
     )
     activated_at: datetime | None = Field(
@@ -272,7 +263,6 @@ class IngestFailure(Identifiable):
 
 
 __all__ = [
-    "AI_DOCS_COLLECTION_ID",
     "BootstrapPhase",
     "INTERNAL_COLLECTION_IDS",
     "INTERNAL_COLLECTIONS_BOOTSTRAP_STATUS_ID",

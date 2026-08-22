@@ -7,8 +7,8 @@ dispatchers share a result envelope and a deps bundle so the fire
 orchestrator (Phase 6) treats them uniformly.
 
 Kind-specific dispatchers live in sibling modules
-(``chat_message.py``, ``agent_fresh_session.py``,
-``graph_fresh_session.py``, ``parked_session.py``) and self-register at
+(``agent_fresh_session.py``, ``graph_fresh_session.py``,
+``parked_session.py``, ``session_append.py``) and self-register at
 import time by calling :func:`register`.
 """
 
@@ -78,9 +78,9 @@ class DispatchDeps:
     absent-scheduler enqueue best-effort.
 
     ``workspace_registry`` and ``event_bus`` are optional because not
-    every dispatcher uses them -- ``chat_message`` doesn't need either,
-    ``parked_session`` reaches for the event bus, the fresh-session
-    dispatchers may want the workspace registry for slot allocation.
+    every dispatcher uses them -- ``parked_session`` reaches for the event
+    bus, the fresh-session and ``session_append`` dispatchers want the
+    workspace registry for slot allocation.
     """
 
     storage_provider: Any
@@ -161,13 +161,24 @@ def session_holds_skip_gate(
 
 
 async def check_subscription_busy(
-    sub: Subscription, deps: DispatchDeps,
+    sub: Subscription,
+    deps: DispatchDeps,
+    *,
+    fire_context: dict | None = None,
 ) -> SubscriptionDispatchResult | None:
     """Return a ``skipped`` result if a live session attributed to *sub* exists, else ``None``.
 
-    Shared by the agent_fresh and graph_fresh dispatchers so the busy-check semantics stay
-    identical; liveness is decided by :func:`session_holds_skip_gate`.
+    Shared by the agent_fresh and graph_fresh dispatchers so the busy-check
+    semantics stay identical; liveness is decided by
+    :func:`session_holds_skip_gate`.
+
+    A fire carrying an inbound channel event is EXEMPT (crosscheck M7):
+    channel dispatch is thread-mapped, so a fire only reaches a fresh-session
+    subscriber when the thread has no session yet. Skipping there would
+    silently drop the user's first message in a brand-new thread.
     """
+    if fire_context is not None and fire_context.get("event") is not None:
+        return None
     sessions = deps.storage_provider.get_storage(WorkspaceSession)
     predicate = (
         Q(WorkspaceSession)

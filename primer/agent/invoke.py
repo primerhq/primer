@@ -102,7 +102,9 @@ async def build_subagent_toolmanager(
 
     ``context`` is an :class:`~primer.worker.frames.AgentResumeContext`
     (``session_id``, ``workspace_id``, ``chat_id``, ``principal``, ``tools``).
-    ``storage_provider`` is accepted for call-site symmetry but unused here.
+    ``storage_provider`` wires the platform event recorder so nested
+    subagent tool calls land ``tool.called`` / ``llm.called`` like
+    top-level ones (None keeps the manager recorder-less).
 
     Shared by :func:`run_subagent` (initial dispatch), :func:`resume_subagent`
     (rebuild-and-continue), and ``frames.apply_leaf`` (re-dispatch of an
@@ -134,6 +136,11 @@ async def build_subagent_toolmanager(
     # identically. System fallback keeps a None invoker from failing closed
     # and denying every toolset call the subagent makes.
     initiated_by = getattr(context, "initiated_by", None) or PrincipalRef.system()
+    recorder = None
+    if storage_provider is not None:
+        from primer.events.recorder import recorder_for
+
+        recorder = recorder_for(storage_provider)
     return ToolExecutionManager(
         toolset_providers=toolset_providers,
         workspace_session=subagent_session,
@@ -142,6 +149,7 @@ async def build_subagent_toolmanager(
         tools=tools,
         chat_id=context.chat_id if subagent_session is None else None,
         initiated_by=initiated_by,
+        event_recorder=recorder,
     )
 
 
@@ -259,11 +267,17 @@ async def run_subagent(
     # truth for the AgentFrame's mid-flight history.
     produced: list[Message] = []
     try:
+        from primer.session.delegation import current_delegation_sink
+
+        _sink = current_delegation_sink()
         async for _ev in run_agent_turn(
             agent=agent, llm=llm, llm_model=llm_model, tool_manager=tool_manager,
             prompt=prompt_msgs, principal=principal, messages_out=produced,
         ):
-            pass
+            if _sink is not None:
+                await _sink.on_event(
+                    _ev, delegate_tool_call_id=invoke_tool_call_id,
+                )
     except YieldToWorker as yld:
         _push_agent_frame_on_yield(
             yld,
@@ -378,12 +392,21 @@ async def resume_subagent(
     produced: list[Message] = []
     try:
         with _depth_set(depth):
+            from primer.session.delegation import current_delegation_sink
+
+            _sink = current_delegation_sink()
             async for _ev in run_agent_turn(
                 agent=agent, llm=llm, llm_model=llm_model,
                 tool_manager=tool_manager, prompt=resume_prompt,
                 principal=context.principal, messages_out=produced,
             ):
-                pass
+                if _sink is not None:
+                    await _sink.on_event(
+                        _ev,
+                        delegate_tool_call_id=getattr(
+                            context, "tool_call_id", None,
+                        ),
+                    )
     except YieldToWorker as yld:
         _push_agent_frame_on_yield(
             yld,

@@ -11,7 +11,7 @@ Covers:
 * U0003 — Topbar worker pool pill renders ``<active>/<total>``
   matching ``/v1/workers``.
 
-Polling intervals (per ui/components/chrome.jsx):
+Polling intervals (per ui/components/the console shell):
 * Sessions sub-counts (created+running+paused) — 5000 ms each.
 * Workers — 5000 ms.
 * Topbar /health — 2000 ms (drives the warn/err pill class).
@@ -22,7 +22,6 @@ batched render settles even on a cold start.
 
 from __future__ import annotations
 
-import re
 import time
 
 import httpx
@@ -48,7 +47,7 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
     count was removed with the sessions list (the ``studio`` nav item
     carries no count). The Studio's SessionsSection instead polls
     ``/workspaces/{wid}/sessions`` every 3s and renders the row count in
-    its ``sessions-header`` (studio-sidebar.jsx ``st-section-count``); a
+    its ``sessions-header`` (the shell rail ``st-section-count``); a
     new API-created row surfaces there without a manual refresh.
 
     Setup ladder: LLM provider → agent → workspace provider → template →
@@ -101,8 +100,13 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
         open_studio(page, console_url, workspace_id)
 
         def _row_count() -> int:
-            """Number of session-row entries currently rendered."""
-            return page.locator('[data-testid="session-row"]').count()
+            """Number of session rows currently rendered in the rail.
+
+            The rail keys each row by its session id
+            (``rail-session:<sid>``); the flat ``session-row`` handle
+            belonged to the sidebar it replaced.
+            """
+            return page.locator('[data-testid^="rail-session:"]').count()
 
         # Baseline: a brand-new workspace has zero session rows. Wait for
         # the Sessions section to have finished its first poll (the empty
@@ -125,23 +129,25 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
             session_id = r.json()["id"]
 
         # Wait for the sidebar to catch up (3s poll) — budget 15s.
+        # Wait for THIS session's row, not merely for the count to move.
+        # An empty workspace makes the shell create a session of its own,
+        # so any-increment was satisfied by that one and the wait exited
+        # before the seeded row had arrived.
         target = baseline + 1
         deadline = time.monotonic() + 15.0
         final = baseline
         while time.monotonic() < deadline:
             final = _row_count()
-            if final >= target:
+            if session_row(page, session_id).count() >= 1:
                 break
             page.wait_for_timeout(250)
-        assert final >= target, (
-            f"Studio sidebar session-row count did not catch up to API "
-            f"state within 15s: baseline={baseline} expected>={target} "
-            f"final={final}"
-        )
-        # The new row is the seeded session (located by data-session-id;
-        # the row shows the title, not the raw sid).
         assert session_row(page, session_id).count() >= 1, (
-            "seeded session row not found in sidebar"
+            f"seeded session row did not reach the rail within 15s: "
+            f"baseline={baseline} final={final} sid={session_id}"
+        )
+        assert final >= target, (
+            f"the rail's session-row count did not catch up to API state: "
+            f"baseline={baseline} expected>={target} final={final}"
         )
     finally:
         with httpx.Client(base_url=base_url, timeout=30.0) as c:
@@ -159,71 +165,3 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
                     c.delete(url)
                 except Exception:  # noqa: BLE001
                     pass
-
-
-def test_u0003_topbar_worker_pill_renders_active_total_from_workers(
-    page,
-    base_url: str,
-    console_url: str,
-) -> None:
-    """U0003 — The topbar worker pill renders ``<active>/<total>``
-    consistent with ``GET /v1/workers``. The bringup runs
-    ``primer api --run-worker`` so the live container always has at
-    least one worker; the pill text must include that worker's count.
-
-    Priority 4 — polling cadence. The pill text comes from
-    chrome.jsx:262 ``{activeWorkers}/{totalWorkers || "—"}`` where
-    both numbers derive from the polled ``/v1/workers`` response.
-    The poll fires every 5 s; we budget 12 s for first-render
-    settling.
-
-    The test does not write to the API — read-only against the
-    container's preexisting worker. Cleanup is therefore not
-    needed.
-    """
-    # Capture the live worker state up-front so we know what the
-    # pill should display.
-    with httpx.Client(base_url=base_url, timeout=30.0) as c:
-        r = c.get("/v1/workers")
-        assert r.status_code == 200, f"GET /v1/workers failed: {r.text}"
-        body = r.json()
-        items = body.get("items", [])
-        api_total = len(items)
-        api_active = sum(1 for w in items if w.get("status") == "active")
-    # Sanity: bringup runs --run-worker; if this is zero, the
-    # container is misconfigured and the loop should know.
-    assert api_total >= 1, (
-        f"GET /v1/workers returned 0 workers — UI cannot display a "
-        f"pill that exercises this contract. Body: {body!r}"
-    )
-
-    page.goto(f"{console_url}#/", wait_until="domcontentloaded")
-
-    # The pill carries class "worker-pill" (chrome.jsx:256). Locate
-    # via class so we don't fight title/attribute drift.
-    pill = page.locator(".worker-pill").first
-    pill.wait_for(state="visible", timeout=10_000)
-
-    # Wait for the pill to render a real "<active>/<total>" pair —
-    # default while polling is "0/—" (totalWorkers is undefined
-    # before the first response).
-    expected_text = f"{api_active}/{api_total}"
-    deadline = time.monotonic() + 12.0
-    last_seen = ""
-    while time.monotonic() < deadline:
-        last_seen = (pill.text_content() or "").strip()
-        if expected_text in last_seen:
-            break
-        page.wait_for_timeout(250)
-    assert expected_text in last_seen, (
-        f"Topbar worker pill never rendered {expected_text!r} "
-        f"matching /v1/workers; last text was {last_seen!r}"
-    )
-
-    # Defence: the pill text matches the active/total integer
-    # pattern (catches a regression where someone renders only one
-    # of the two values).
-    assert re.search(r"\d+/\d+", last_seen), (
-        f"Topbar worker pill text {last_seen!r} doesn't match "
-        f"the documented <active>/<total> pattern"
-    )

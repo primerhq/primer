@@ -32,11 +32,9 @@ logger = logging.getLogger(__name__)
 # Target chunk size in characters. Paragraph-aware: paragraphs are packed
 # up to this size, and any single paragraph longer than the hard cap is
 # split on character boundaries so one huge block still embeds.
-_CHUNK_TARGET_CHARS = 1500
-_CHUNK_HARD_CAP = 3000
 
 # Number of chunks embedded per embedder call. Mirrors
-# ``DocumentIngester.DEFAULT_BATCH_SIZE`` so user-collection ingestion and
+# the previous ingester's default so user-collection ingestion and
 # the internal-collection catalog batch identically.
 _EMBED_BATCH_SIZE = 32
 
@@ -54,62 +52,30 @@ def _parse_stored_dim(conflict_message: str, *, fallback: int) -> int:
     return fallback
 
 
-def document_body_text(doc: Document) -> str:
-    """Extract the indexable body text from a Document.
+async def probe_dimensions(*, collection: Collection, provider_registry) -> int:
+    """Ask the collection's embedder how wide its vectors are.
 
-    The REST create form stores prose under ``meta['text']``; the
-    system toolset's ``put_document`` uses ``meta['content']``. The
-    name is metadata, not body, so it is not indexed: a document with
-    no text body produces no chunks.
+    One cheap call. Split out so a backfill can do it once for the whole
+    collection instead of once per document: every document in a
+    collection shares one embedder, so the answer cannot differ between
+    them, and on a collection the size of the system map the repeated
+    probe doubled the number of embedder round-trips the pass made.
     """
-    meta = doc.meta or {}
-    for key in ("text", "content"):
-        val = meta.get(key)
-        if isinstance(val, str) and val.strip():
-            return val
-    return ""
-
-
-# Back-compat alias: existing callers import the private name.
-_document_text = document_body_text
-
-
-def chunk_text(text: str) -> list[str]:
-    """Split text into embedding-sized chunks, paragraph-aware.
-
-    Paragraphs (split on blank lines) are packed greedily up to
-    ``_CHUNK_TARGET_CHARS``. A paragraph longer than ``_CHUNK_HARD_CAP``
-    on its own is hard-split so no single chunk is unbounded. Returns an
-    empty list for empty input.
-    """
-    text = (text or "").strip()
-    if not text:
-        return []
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = [text]
-
-    chunks: list[str] = []
-    current = ""
-    for para in paragraphs:
-        # Hard-split an over-long paragraph on character boundaries.
-        if len(para) > _CHUNK_HARD_CAP:
-            if current:
-                chunks.append(current)
-                current = ""
-            for i in range(0, len(para), _CHUNK_TARGET_CHARS):
-                chunks.append(para[i:i + _CHUNK_TARGET_CHARS])
-            continue
-        if not current:
-            current = para
-        elif len(current) + 2 + len(para) <= _CHUNK_TARGET_CHARS:
-            current = f"{current}\n\n{para}"
-        else:
-            chunks.append(current)
-            current = para
-    if current:
-        chunks.append(current)
-    return chunks
+    if collection.search is None:  # pragma: no cover -- callers check first
+        raise PrimerError(f"collection {collection.id!r} has no search config")
+    embedder = await provider_registry.get_embedder(
+        collection.search.embedder.provider_id
+    )
+    response = await embedder.embed(
+        model=collection.search.embedder.model,
+        inputs=[TextPart(text="dimensionality probe")],
+    )
+    if not response.embeddings:
+        raise PrimerError(
+            f"embedder returned no embedding for dimensionality probe "
+            f"(collection {collection.id!r})"
+        )
+    return len(response.embeddings[0].vector)
 
 
 async def index_document(
@@ -119,6 +85,7 @@ async def index_document(
     provider_registry,
     semantic_search_registry,
     content_store: DocumentContentStore,
+    dimensions: int | None = None,
 ) -> int:
     """Chunk, embed, and upsert ``document`` into its collection's vector
     store. Returns the number of chunks indexed. Re-indexing embeds the new
@@ -131,27 +98,40 @@ async def index_document(
     migrated document with no content row, this falls back to the legacy
     ``meta['text']`` / ``meta['content']`` read so nothing breaks in transit.
 
-    System collections are skipped (returns 0). On embedder/store failure it
-    raises; the caller treats indexing as best-effort and swallows it.
+    A collection with no search config is skipped (returns 0). System
+    collections are NOT: the system collection is precisely what
+    /v1/internal_collections/bootstrap vectorises, so skipping them made
+    that toggle a no-op that still reported success (state "ready" with
+    zero documents indexed, and no vector-store collection ever created).
+    The guard dates from when "system" meant the four _internal_* rows a
+    separate ingest path owned. Search being unset is the real signal now.
+
+    ``dimensions`` skips the per-document probe when the caller already
+    knows the embedder's width (see :func:`probe_dimensions`).
+
+    On embedder/store failure it raises; the caller treats indexing as
+    best-effort and swallows it.
     """
-    if collection.system:
+    if collection.search is None:
         return 0
+    cfg = collection.search
 
     text = await content_store.get(document.id)
-    if text is None or not text.strip():
-        # Transitional: no content row yet, OR a blank/empty-string content
-        # row (the real body still lives in meta during the migration
-        # window). Either way, fall back to the legacy meta body. An empty
-        # string is NOT None, so the previous `is None` guard would have
-        # indexed zero chunks for a doc whose body was still in meta.
-        text = _document_text(document)
-    chunks = chunk_text(text)
+    if text is None:
+        text = ""
+    from primer.knowledge.splitter import split_text
+
+    chunks = split_text(
+        text,
+        max_chars=cfg.chunking.max_chars,
+        overlap=cfg.chunking.overlap,
+    )
 
     embedder = await provider_registry.get_embedder(
-        collection.embedder.provider_id
+        cfg.embedder.provider_id
     )
     store = await semantic_search_registry.get_store(
-        collection.search_provider_id
+        cfg.vector_store_provider_id
     )
 
     # Probe the embedder's output dimensionality with a single cheap call
@@ -160,16 +140,19 @@ async def index_document(
     # -- without wasting a full embedding pass on a batch that cannot be
     # stored. We register (or validate) the collection in the store now so
     # that a ConflictError (dim mismatch) surfaces here, not after work.
-    probe_response = await embedder.embed(
-        model=collection.embedder.model,
-        inputs=[TextPart(text="dimensionality probe")],
-    )
-    if not probe_response.embeddings:
-        raise PrimerError(
-            f"embedder returned no embedding for dimensionality probe "
-            f"(collection {collection.id!r})"
+    if dimensions is None:
+        probe_response = await embedder.embed(
+            model=cfg.embedder.model,
+            inputs=[TextPart(text="dimensionality probe")],
         )
-    probe_dim = len(probe_response.embeddings[0].vector)
+        if not probe_response.embeddings:
+            raise PrimerError(
+                f"embedder returned no embedding for dimensionality probe "
+                f"(collection {collection.id!r})"
+            )
+        probe_dim = len(probe_response.embeddings[0].vector)
+    else:
+        probe_dim = dimensions
     try:
         await store.create_collection(collection.id, dimensions=probe_dim)
     except ConflictError as exc:
@@ -196,7 +179,7 @@ async def index_document(
     # every new vector is in hand, so a failure here leaves the prior
     # index intact and the document still searchable.
     #
-    # Batch the chunk embeddings (mirrors DocumentIngester): each embed
+    # Batch the chunk embeddings: each embed
     # call carries up to ``_EMBED_BATCH_SIZE`` chunks and returns one
     # embedding per input in input order, so the records line up with the
     # chunks one-to-one. This is behaviour-equivalent to the previous
@@ -208,7 +191,7 @@ async def index_document(
     for batch_start in range(0, len(chunks), _EMBED_BATCH_SIZE):
         batch = chunks[batch_start : batch_start + _EMBED_BATCH_SIZE]
         response = await embedder.embed(
-            model=collection.embedder.model,
+            model=cfg.embedder.model,
             inputs=[TextPart(text=chunk) for chunk in batch],
         )
         if len(response.embeddings) != len(batch):
@@ -227,7 +210,7 @@ async def index_document(
                     chunk_id=str(idx),
                     text=chunk,
                     vector=list(emb.vector),
-                    meta={"document_name": document.name},
+                    meta={"path": document.path},
                 )
             )
 
@@ -266,6 +249,145 @@ async def index_document(
     return len(records)
 
 
+async def index_documents(
+    *,
+    documents,
+    collection: Collection,
+    provider_registry,
+    semantic_search_registry,
+    content_store: DocumentContentStore,
+) -> int:
+    """Index many documents in one pass.
+
+    Returns how many documents it actually (re)indexed, which is not the
+    number passed in: see the skip rule below.
+
+    Same contract as :func:`index_document`, batched. The per-document
+    form makes one embedder round-trip per document plus a probe, which
+    is fine for a single write and ruinous for a backfill: enabling
+    search on the system collection meant several hundred calls, and
+    the e2e lane hit its per-test ceiling re-bootstrapping five times.
+    Chunks are batched ACROSS documents here, so the number of calls
+    tracks total chunks rather than document count.
+
+    Documents whose stored chunks already match what they would produce
+    are skipped: a backfill re-run over unchanged content does no
+    embedding at all. That is what makes re-enabling search cheap, and
+    it is the difference between a bootstrap that costs a full re-index
+    every time and one that costs only the drift. Documents that are
+    absent from the index, or whose text has moved on, are re-embedded.
+
+    Embeds everything before touching the index, so a failure part-way
+    leaves the prior vectors intact exactly as the single-document path
+    does.
+    """
+    if collection.search is None:
+        return 0
+    cfg = collection.search
+    from primer.knowledge.splitter import split_text
+
+    embedder = await provider_registry.get_embedder(cfg.embedder.provider_id)
+    store = await semantic_search_registry.get_store(
+        cfg.vector_store_provider_id
+    )
+
+    # What the index already holds, read once for the whole pass. An
+    # unregistered collection means "nothing", which is the first run.
+    existing: dict[str, dict[str, str]] = {}
+    try:
+        for record in await store.search_by_meta(collection.id, {}):
+            existing.setdefault(record.document_id, {})[
+                record.chunk_id
+            ] = record.text
+    except Exception:  # noqa: BLE001 - absent index reads as empty
+        existing = {}
+
+    # (document, chunk_index, text) flattened across the documents that
+    # actually need work.
+    flat: list[tuple[str, int, str]] = []
+    stale: list[str] = []
+    for doc in documents:
+        chunks = split_text(
+            await content_store.get(doc.id) or "",
+            max_chars=cfg.chunking.max_chars,
+            overlap=cfg.chunking.overlap,
+        )
+        current = existing.get(doc.id, {})
+        if current == {str(i): c for i, c in enumerate(chunks)}:
+            continue
+        stale.append(doc.id)
+        flat.extend((doc.id, idx, chunk) for idx, chunk in enumerate(chunks))
+
+    if not stale:
+        logger.info(
+            "collection %s already indexed; nothing to backfill", collection.id,
+        )
+        return 0
+
+    dimensions = await probe_dimensions(
+        collection=collection, provider_registry=provider_registry,
+    )
+    try:
+        await store.create_collection(collection.id, dimensions=dimensions)
+    except ConflictError as exc:
+        stored_dim = _parse_stored_dim(str(exc), fallback=0)
+        raise DimensionMismatchError(
+            f"Embedder output dimension ({dimensions}) does not match the "
+            f"vector store dimension ({stored_dim}) recorded for collection "
+            f"{collection.id!r}. The collection was indexed with a different "
+            f"embedding model. To fix: delete all documents from this "
+            f"collection, then re-create it with the correct embedder, and "
+            f"re-ingest the documents.",
+            embedder_dim=dimensions,
+            collection_dim=stored_dim,
+            collection_id=collection.id,
+            cause=exc,
+        ) from exc
+
+    # Paths for the record meta, keyed by id so the loop below need not
+    # carry the Document objects around.
+    paths = {doc.id: doc.path for doc in documents}
+
+    records: list[EmbeddingRecord] = []
+    for start in range(0, len(flat), _EMBED_BATCH_SIZE):
+        batch = flat[start : start + _EMBED_BATCH_SIZE]
+        response = await embedder.embed(
+            model=cfg.embedder.model,
+            inputs=[TextPart(text=chunk) for _, _, chunk in batch],
+        )
+        if len(response.embeddings) != len(batch):
+            raise PrimerError(
+                f"embedder returned {len(response.embeddings)} embeddings "
+                f"for {len(batch)} chunk(s) of collection {collection.id!r}"
+            )
+        for (doc_id, idx, chunk), emb in zip(
+            batch, response.embeddings, strict=True
+        ):
+            records.append(EmbeddingRecord(
+                collection_id=collection.id,
+                document_id=doc_id,
+                chunk_id=str(idx),
+                text=chunk,
+                vector=list(emb.vector),
+                meta={"path": paths.get(doc_id, "")},
+            ))
+
+    # Every vector is in hand: only now replace what is stored.
+    for doc_id in stale:
+        try:
+            await store.delete(collection.id, doc_id)
+        except PrimerError:
+            pass
+    for record in records:
+        await store.put(record)
+
+    logger.info(
+        "indexed %d document(s) into collection %s (%d chunks)",
+        len(stale), collection.id, len(records),
+    )
+    return len(stale)
+
+
 async def remove_document_index(
     *,
     document_id: str,
@@ -273,10 +395,10 @@ async def remove_document_index(
     semantic_search_registry,
 ) -> None:
     """Delete every indexed chunk for a document. Best-effort, idempotent."""
-    if collection.system:
+    if collection.search is None:
         return
     store = await semantic_search_registry.get_store(
-        collection.search_provider_id
+        collection.search.vector_store_provider_id
     )
     try:
         await store.delete(collection.id, document_id)
@@ -284,106 +406,140 @@ async def remove_document_index(
         pass
 
 
-async def backfill_missing_document_vectors(
-    *,
-    storage_provider,
-    provider_registry,
-    semantic_search_registry,
-) -> int:
-    """Index every user document that has no vector chunks yet.
+# ---------------------------------------------------------------------------
+# Write-through hooks
+# ---------------------------------------------------------------------------
+#
+# A document written into a collection with search enabled has to reach the
+# vector store, whichever path wrote it. Three paths do: the REST document
+# routes, the collections toolset an agent drives, and the startup pass that
+# regenerates the system collection. Only the first wired these up, so an
+# agent could write a document into a search-enabled collection and leave it
+# unsearchable, and the system map went stale in the index the moment an
+# entity changed.
+#
+# They live here, keyed off registries rather than a Request, so the two
+# non-HTTP callers can use the same ones instead of growing their own.
 
-    The embed-on-ingest hook only fires when a Document is created or
-    updated. Documents that were stored before that hook existed (or whose
-    embedding failed at ingest time, since indexing is best-effort) keep a
-    storage row but never land in the vector store, so per-collection search
-    and the "view chunks" UI return nothing for them. This startup pass
-    closes that gap and is the system's self-healing path for any document
-    whose embedding was missed.
 
-    The check is cheap and idempotent: for each non-system collection we ask
-    the vector store once for the set of document ids that already have
-    chunks (``search_by_meta(meta={})``), then index only the documents
-    missing from that set. A collection that has never been registered in
-    the store raises, which we treat as "no documents indexed yet". On a
-    healthy boot where everything is already indexed, no embeds run.
+def make_document_indexer(
+    *, storage_provider, provider_registry, semantic_search_registry,
+):
+    """Best-effort ``(document, content) -> None`` index-on-write hook.
 
-    Returns the number of documents (re)indexed. Best-effort throughout:
-    a failure on one collection or document is logged and skipped so a bad
-    embedder never blocks startup.
+    A missing collection is a no-op and a dimension mismatch propagates
+    (it is an operator-configuration error the caller turns into a 422);
+    anything else is logged and swallowed, so a write still succeeds when
+    the embedding backend is down. The document simply is not searchable
+    until something indexes it again.
     """
-    from primer.model.collection import Collection, Document
-    from primer.model.storage import OffsetPage
 
-    doc_storage = storage_provider.get_storage(Document)
-    coll_storage = storage_provider.get_storage(Collection)
-    content_store = storage_provider.get_content_store()
-
-    # Group documents by collection so the "already indexed" lookup runs
-    # once per collection rather than once per document.
-    docs_by_collection: dict[str, list[Document]] = {}
-    offset = 0
-    page_size = 200
-    while True:
-        page = await doc_storage.list(OffsetPage(offset=offset, length=page_size))
-        for doc in page.items:
-            docs_by_collection.setdefault(doc.collection_id, []).append(doc)
-        if len(page.items) < page_size:
-            break
-        offset += page_size
-
-    indexed = 0
-    for collection_id, docs in docs_by_collection.items():
+    async def _indexer(*, document: Document, content: str) -> None:
+        collection = await storage_provider.get_storage(Collection).get(
+            document.collection_id
+        )
+        if collection is None:
+            return
         try:
-            collection = await coll_storage.get(collection_id)
-        except PrimerError:
-            collection = None
-        if collection is None or collection.system:
-            continue
-
-        # Which documents already have chunks? One query per collection.
-        # An unregistered collection (never embedded) raises; treat as empty.
-        try:
-            store = await semantic_search_registry.get_store(
-                collection.search_provider_id
+            await index_document(
+                document=document,
+                collection=collection,
+                provider_registry=provider_registry,
+                semantic_search_registry=semantic_search_registry,
+                content_store=storage_provider.get_content_store(),
             )
-            existing = await store.search_by_meta(collection.id, meta={})
-            indexed_doc_ids = {r.document_id for r in existing}
-        except PrimerError:
-            indexed_doc_ids = set()
-        except Exception:
+        except DimensionMismatchError:
+            raise
+        except Exception:  # noqa: BLE001 - best-effort indexing
             logger.exception(
-                "backfill: failed to read existing chunks for collection %s",
-                collection_id,
+                "document %s: indexing failed; row persisted but not searchable",
+                document.id,
             )
-            continue
 
-        for doc in docs:
-            if doc.id in indexed_doc_ids:
-                continue
-            try:
-                n = await index_document(
-                    document=doc,
-                    collection=collection,
-                    provider_registry=provider_registry,
-                    semantic_search_registry=semantic_search_registry,
-                    content_store=content_store,
-                )
-                if n:
-                    indexed += 1
-            except Exception:
-                logger.exception(
-                    "backfill: failed to index document %s in collection %s",
-                    doc.id, collection_id,
-                )
+    return _indexer
 
-    if indexed:
-        logger.info("backfill: indexed %d previously unindexed document(s)", indexed)
-    return indexed
+
+def make_document_unindexer(*, storage_provider, semantic_search_registry):
+    """Best-effort per-document vector cleanup for deletes."""
+
+    async def _unindexer(*, document_id: str, collection_id: str) -> None:
+        collection = await storage_provider.get_storage(Collection).get(
+            collection_id
+        )
+        if collection is None:
+            return
+        try:
+            await remove_document_index(
+                document_id=document_id, collection=collection,
+                semantic_search_registry=semantic_search_registry,
+            )
+        except Exception:  # noqa: BLE001 - best-effort cleanup
+            logger.exception(
+                "document %s: unindexing failed; chunks may linger", document_id,
+            )
+
+    return _unindexer
+
+
+def make_document_path_rewriter(*, storage_provider, semantic_search_registry):
+    """Best-effort chunk path-metadata rewrite after a move."""
+
+    async def _rewriter(
+        *, document_id: str, collection_id: str, new_path: str
+    ) -> None:
+        collection = await storage_provider.get_storage(Collection).get(
+            collection_id
+        )
+        if collection is None:
+            return
+        try:
+            await rewrite_document_path_meta(
+                document_id=document_id, collection=collection,
+                semantic_search_registry=semantic_search_registry,
+                new_path=new_path,
+            )
+        except Exception:  # noqa: BLE001 - best-effort rewrite
+            logger.exception(
+                "document %s: path-meta rewrite failed; stale paths may "
+                "linger in the index", document_id,
+            )
+
+    return _rewriter
+
+
+
+
+async def rewrite_document_path_meta(
+    *,
+    document_id: str,
+    collection: Collection,
+    semantic_search_registry,
+    new_path: str,
+) -> None:
+    """Rewrite each stored chunk's meta path after a move. Metadata only:
+    vectors are reused verbatim (spec section 6), so no embedder runs."""
+    if collection.search is None:
+        return
+    store = await semantic_search_registry.get_store(
+        collection.search.vector_store_provider_id
+    )
+    try:
+        records = await store.get(collection.id, document_id)
+        for record in records:
+            await store.put(record.model_copy(
+                update={"meta": {**record.meta, "path": new_path}}
+            ))
+    except PrimerError:
+        pass
 
 
 __all__ = [
-    "backfill_missing_document_vectors",
-    "chunk_text",
     "index_document",
+    "index_documents",
+    "make_document_indexer",
+    "make_document_path_rewriter",
+    "make_document_unindexer",
+    "probe_dimensions",
     "remove_document_index",
+    "rewrite_document_path_meta",
 ]

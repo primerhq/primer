@@ -347,8 +347,26 @@ class TestSessionMessageKind:
         expected = {
             "user_input",
             "assistant_token",
+            # Model reasoning text (S1 v2 transcript parity with chats).
+            # Display only: skipped when rebuilding the prompt, because
+            # replaying a model's own reasoning degrades the next turn.
+            "reasoning",
             "tool_call",
             "tool_result",
+            # Push-frame for an invoker-supplied external tool call, so a
+            # live client sees it immediately and on reconnect replay.
+            "external_tool_call",
+            # Binding hand-off attribution: a session's agent can change
+            # mid-workstream, and the shared transcript records who ran
+            # which turn.
+            "agent_marker",
+            # Structural rewind marker: the replay walk drops visible
+            # rows past its to_seq, keeping the log append-only.
+            "rewind_marker",
+            # Delivery frame for a notifying tool call (S3).
+            "client_action",
+            # One record per model call at the agent-loop seam (S7).
+            "llm_call",
             "yielded",
             "resumed",
             "done",

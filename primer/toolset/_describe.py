@@ -7,7 +7,7 @@ time, so a wrong example crashes on module load rather than in production.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Literal
 
 from jsonschema import Draft202012Validator
 
@@ -42,6 +42,7 @@ def make_tool(
     yields: bool = False,
     requires_workspace: bool = False,
     required_role: str | None = None,
+    tool_class: Literal["standard", "notifying"] = "standard",
 ) -> Tool:
     """Build a Tool with validated examples and the standard description anatomy.
 
@@ -74,4 +75,5 @@ def make_tool(
         yields=yields,
         requires_workspace=requires_workspace,
         required_role=required_role,
+        tool_class=tool_class,
     )

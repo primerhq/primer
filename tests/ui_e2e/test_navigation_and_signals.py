@@ -23,6 +23,7 @@ from tests.ui_e2e._studio_helpers import open_session_in_studio
 
 from tests._support.smk import smk  # noqa: E402
 from tests._support.model_profiles import agent_model, seed_llm_provider_with
+from tests.ui_e2e._shell_helpers import open_legacy_route
 pytestmark = smk("SMK-UI-01", status="partial")
 
 
@@ -128,10 +129,7 @@ def test_u0036_toolset_config_tab_deep_link_survives_reload(
         assert r.status_code == 201, f"seed toolset failed: {r.text}"
 
     try:
-        page.goto(
-            f"{console_url}#/toolsets/{toolset_id}?tab=config",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, f"toolsets/{toolset_id}", tab="config")
         page.locator("h1.page-title").get_by_text(
             toolset_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
@@ -154,8 +152,9 @@ def test_u0036_toolset_config_tab_deep_link_survives_reload(
             f"Config tab lost selected state after reload; "
             f"aria-selected={config_tab_after.get_attribute('aria-selected')!r}"
         )
-        assert "tab=config" in page.url, (
-            f"reload dropped ?tab=config query: {page.url}"
+        # The tab travels in the overlay target's section slot now.
+        assert f"overlay=toolsets:config:{toolset_id}" in page.url, (
+            f"reload dropped the config tab: {page.url}"
         )
     finally:
         _cleanup(base_url, [f"/v1/toolsets/{toolset_id}"])
@@ -198,7 +197,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
 ) -> None:
     """U0030 — Re-pointed to the Studio's ``ctrl-end``. This journey seeds
     an AGENT-bound session, which renders through ``SessionAgentPanel``
-    (studio-center.jsx) — the interactive control set is End/Restart
+    (the shell session document) — the interactive control set is End/Restart
     (``ctrl-end``/``ctrl-restart``); ``ctrl-cancel`` only exists on the
     GRAPH run view's ``SessionGraphPanel`` (autonomous sessions). Seed a
     CREATED agent session, open it in the Studio (agent panel), click the
@@ -209,7 +208,7 @@ def test_u0030_session_cancel_button_transitions_row_to_terminal(
     * the panel-header status transitions to a terminal value
       (ended / cancelled / failed) within a polling interval,
     * the ``ctrl-end`` control becomes disabled once terminal (per
-      studio-center.jsx ``disabled={!wid || isEnded || endMut.loading}``).
+      the shell session document ``disabled={!wid || isEnded || endMut.loading}``).
 
     Note: the Studio's ctrl-end fires the cancel POST DIRECTLY (no
     confirmation modal — that surface was retired), so the old confirm

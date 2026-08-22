@@ -1,4 +1,4 @@
-"""DiscordChannelAdapter.post_chat_media uploads files into the chat thread."""
+"""DiscordChannelAdapter.post_thread_media uploads files into the chat thread."""
 
 from __future__ import annotations
 
@@ -30,10 +30,10 @@ def _adapter(thread):
 
 
 @pytest.mark.asyncio
-async def test_post_chat_media_sends_files():
+async def test_post_thread_media_sends_files():
     thread = _FakeThread()
     a = _adapter(thread)
-    res = await a.post_chat_media(
+    res = await a.post_thread_media(
         [ImagePart(data=b"PNG", mime_type="image/png"),
          DocumentPart(data=b"PDF", mime_type="application/pdf", filename="r.pdf")],
         thread_ts="123")

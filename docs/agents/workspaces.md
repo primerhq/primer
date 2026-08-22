@@ -38,7 +38,7 @@ mcp_tools:
 A **Workspace** is primer's unit of execution isolation. Concretely,
 it's a filesystem (local directory, container volume, or Kubernetes
 PVC depending on the backing provider) plus a git repository on top
-of it that tracks state changes. Sessions and chat turns running on
+of it that tracks state changes. Session turns running on
 behalf of an agent operate inside one workspace; the workspace is
 their entire world for filesystem and command-execution purposes.
 

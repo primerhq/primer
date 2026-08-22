@@ -190,7 +190,7 @@ def seed_llm_provider_with(c: Any, body: dict[str, Any]):
 def profile_manifests(provider_id: str, models: list[dict[str, Any]]):
     """``(name, kind, spec)`` triples for one profile per declared model.
 
-    The primectl cookbook tests declare a provider's models inline the way
+    The cookbook tests declare a provider's models inline the way
     they always did; this turns that declaration into the manifests they
     now need, so each test keeps saying what it serves in one place.
     """

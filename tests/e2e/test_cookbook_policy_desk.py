@@ -2,10 +2,15 @@
 
 A compliance / legal Q&A desk over a dense regulatory corpus where retrieval
 PRECISION matters. Plain vector search returns fuzzily-relevant, near-duplicate
-clauses; this desk turns on **cross-encoder reranking + MMR** on the collection
-(``Collection.search = CollectionSearch{cer, mmr}``) so the top results are both
-precise (the cross-encoder promotes the clause that truly answers the question)
-and non-redundant (MMR drops near-duplicate chunks of the same decoy clause).
+clauses; this desk turns on **cross-encoder reranking** for the collection
+(``CollectionSearchConfig.cross_encoder``) so the top result is the clause that
+truly answers the question rather than the one that shares its vocabulary.
+
+MMR used to be the second half of this recipe, collapsing near-duplicate
+chunks. It is not part of the search config any more, and the key it was
+passed under was being ignored, so the third collection here was a duplicate of
+the second and its diversification assertions were reading plain rerank output.
+Covered here now: the two ranking modes that exist.
 
 Recipe: primerhq.github.io/docs_source/cookbook/policy-desk.md
 
@@ -16,21 +21,19 @@ search modes DISAGREE in a way that proves each augmentation takes effect:
   * **control** (no ``search`` config -> plain vector): ranks the verbose,
     keyword-dense *escalation* decoy FIRST and floods the top-k with its three
     near-duplicate paraphrases -- the precise 72-hour breach clause is only #2;
-  * **rerank** (``cer`` only): the cross-encoder reads each ``(query, clause)``
-    pair jointly, recognises the terse 72-hour clause as the real answer, and
-    promotes it to the TOP -- a demonstrable reordering vs plain vector;
-  * **policy-kb** (``cer`` + ``mmr``): MMR additionally collapses the three
-    near-duplicate escalation decoys down to one and diversifies the top-k with
-    distinct clauses.
+  * **rerank** (``cross_encoder``): the cross-encoder reads each
+    ``(query, clause)`` pair jointly, recognises the terse 72-hour clause as
+    the real answer, and promotes it to the TOP -- a demonstrable reordering
+    vs plain vector.
 
 The scripted Q&A agent searches the **rerank** collection (precise clause at the
 top) and grounds + cites that clause.
 
 The embedder + cross-encoder are REAL (LM Studio nomic embed + a local
 HuggingFace ``cross-encoder/ms-marco-MiniLM-L-6-v2`` reranker), so the
-assertions are on the RANKING FLIP / de-duplication between the modes and on the
-cited source PATH, never on exact scores or answer wording. The source PATH
-travels on each hit's ``meta.document_name`` (PUT-by-path mints an opaque
+assertions are on the RANKING FLIP between the modes and on the cited source
+PATH, never on exact scores or answer wording. The source PATH
+travels on each hit's ``meta.path`` (PUT-by-path mints an opaque
 ``document-<hex>`` id), so rank assertions key on that.
 
 Gated on the ``cross_encoder`` capability (plus ``embedder`` + ``pgvector``):
@@ -86,7 +89,7 @@ _PGVECTOR_DSN = {
 # escalates the decision, not the deadline. A bi-encoder (embedding) over-
 # rewards that keyword density and ranks a decoy first; a cross-encoder reads
 # the (query, clause) pair jointly and promotes the terse 72-hour clause. The
-# three decoy paraphrases also give MMR redundancy to collapse.
+# three decoy paraphrases keep plain vector search anchored on the decoy.
 
 _BREACH_PATH = "breach-notification.md"
 _DECOY_PATHS = [
@@ -237,27 +240,38 @@ async def _search_with_retry(
 
 
 def _src(hit: dict) -> str:
-    return str(hit.get("meta", {}).get("document_name", ""))
+    return str(hit.get("meta", {}).get("path", ""))
 
 
 async def _make_collection(
     client: httpx.AsyncClient, *, coll_id: str, desc: str, eid: str,
     model: str, ssp: str, search: dict | None,
 ) -> None:
-    body: dict = {
-        "id": coll_id,
-        "description": desc,
-        "embedder": {"provider_id": eid, "model": model},
-        "search_provider_id": ssp,
-    }
-    if search is not None:
-        body["search"] = search
-    r = await client.post("/v1/collections", json=body)
+    """Create a collection with search on, bound to (eid, ssp).
+
+    Two calls: S2 took the vector-space fields off the create body and
+    gave them their own route. Passing them to create still answers 201
+    and drops them, which left every collection built here grep-only.
+    ``search`` merges rank-time extras (the cross-encoder) into the
+    config.
+    """
+    r = await client.post(
+        "/v1/collections", json={"id": coll_id, "description": desc},
+    )
     assert r.status_code in (200, 201), r.text
+    r = await client.put(
+        f"/v1/collections/{coll_id}/search",
+        json={
+            "embedder": {"provider_id": eid, "model": model},
+            "vector_store_provider_id": ssp,
+            **(search or {}),
+        },
+    )
+    assert r.status_code in (200, 201, 202), r.text
 
 
 @smk("SMK-COOKBOOK-17")
-async def test_policy_desk_rerank_and_mmr(
+async def test_policy_desk_rerank(
     authed_client, mock_llm, unique_suffix, tmp_path,
 ):
     registry, base_url = mock_llm
@@ -271,38 +285,31 @@ async def test_policy_desk_rerank_and_mmr(
         sid_ssp = await _make_ssp(authed_client, sfx)
         ce_id, ce_model = await _make_cross_encoder(authed_client, sfx)
 
-        cer = {
+        cross_encoder = {
             "provider_id": ce_id,
             "model": ce_model,
             "top_n": 50,
             "batch_size": 32,
         }
 
-        # Three collections over the SAME corpus + SAME embedder/SSP, differing
-        # only in their `search` config: control (plain vector), rerank (CER
-        # only), policy-kb (CER + MMR). Comparing their rankings isolates the
-        # effect of each augmentation.
+        # Two collections over the SAME corpus + SAME embedder/SSP, differing
+        # only in whether a cross-encoder reranks. Comparing their rankings
+        # isolates its effect.
         ctrl_id = f"policy-ctrl-{sfx}"
         rerank_id = f"policy-rerank-{sfx}"
-        kb_id = f"policy-kb-{sfx}"
         await _make_collection(
             authed_client, coll_id=ctrl_id,
-            desc="Control: plain vector ranking, no rerank/MMR.",
+            desc="Control: plain vector ranking, no rerank.",
             eid=eid, model=model, ssp=sid_ssp, search=None)
         cleanup.append(f"/v1/collections/{ctrl_id}")
         await _make_collection(
             authed_client, coll_id=rerank_id,
-            desc="Cross-encoder rerank only (no MMR).",
-            eid=eid, model=model, ssp=sid_ssp, search={"cer": cer})
-        cleanup.append(f"/v1/collections/{rerank_id}")
-        await _make_collection(
-            authed_client, coll_id=kb_id,
-            desc="High-precision compliance KB: cross-encoder rerank + MMR.",
+            desc="High-precision compliance KB: cross-encoder rerank.",
             eid=eid, model=model, ssp=sid_ssp,
-            search={"cer": cer, "mmr": {"lambda_mult": 0.5, "fetch_k": 50}})
-        cleanup.append(f"/v1/collections/{kb_id}")
+            search={"cross_encoder": cross_encoder})
+        cleanup.append(f"/v1/collections/{rerank_id}")
 
-        for cid in (ctrl_id, rerank_id, kb_id):
+        for cid in (ctrl_id, rerank_id):
             await _seed(authed_client, cid)
 
         # --- Control: plain vector ranks the precise clause WRONG -----------
@@ -333,31 +340,6 @@ async def test_policy_desk_rerank_and_mmr(
         assert rr_order[0] != ctrl_top, (
             "rerank top hit equals the control top hit; the cross-encoder did "
             f"not reorder.\n  control: {ctrl_order}\n  rerank: {rr_order}"
-        )
-
-        # --- policy-kb (CER + MMR): MMR diversifies the reranked pool -------
-        kb_hits = await _search_with_retry(
-            authed_client, kb_id, _POLICY_QUERY, top_k=4)
-        assert kb_hits, "policy-kb search returned no hits"
-        kb_order = [_src(h) for h in kb_hits]
-
-        # (2) MMR DIVERSIFICATION: the control top-k floods with the near-
-        #     duplicate escalation paraphrases; policy-kb's top-k holds strictly
-        #     FEWER of them (MMR collapsed the redundancy) and is at least as
-        #     distinct.
-        ctrl_decoys = sum(1 for s in ctrl_order if s in _DECOY_PATHS)
-        kb_decoys = sum(1 for s in kb_order if s in _DECOY_PATHS)
-        assert ctrl_decoys >= 2, (
-            "the control top-k should flood with near-duplicate decoys for MMR "
-            f"to have something to collapse: {ctrl_order}"
-        )
-        assert kb_decoys < ctrl_decoys, (
-            "MMR did not reduce the near-duplicate escalation decoys relative to "
-            f"the control.\n  control: {ctrl_order}\n  policy-kb: {kb_order}"
-        )
-        assert len(set(kb_order)) >= len(set(ctrl_order)), (
-            "MMR did not diversify: policy-kb top-k is no more distinct than the "
-            f"control.\n  control: {ctrl_order}\n  policy-kb: {kb_order}"
         )
 
         # --- The scripted Q&A agent grounds on the reranked top hit ---------

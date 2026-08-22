@@ -86,6 +86,20 @@ class WebhookDelivery(Identifiable):
             "re-firing on every boot forever."
         ),
     )
+    fire_id: str | None = Field(
+        default=None,
+        description=(
+            "Correlation token of the fire this delivery dispatched. Written "
+            "when the dispatch completes; None while pending."
+        ),
+    )
+    results: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description=(
+            "Per-run outcome envelopes {artefact_id, final_text} for an "
+            "interactive webhook. Empty for a fire-and-forget delivery."
+        ),
+    )
 
 
 __all__ = ["WebhookDelivery", "WebhookDeliveryStatus"]

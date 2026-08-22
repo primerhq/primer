@@ -408,6 +408,13 @@ class _FakeStorageProvider:
     def get_content_store(self) -> Any:
         return self._content_store
 
+    def get_event_store(self) -> Any:
+        from primer.events.memory_store import InMemoryEventStore
+
+        if not hasattr(self, "_event_store"):
+            self._event_store = InMemoryEventStore()
+        return self._event_store
+
     def transaction(self) -> Any:
         return _NoOpTransaction()
 
@@ -426,7 +433,11 @@ class _FakeStorageProvider:
             session_secret=getattr(self, "_session_secret", None),
             sso_jit_enabled=getattr(self, "_sso_jit_enabled", False),
             sso_default_access=getattr(self, "_sso_default_access", None),
+            default_agent_id=getattr(self, "_default_agent_id", None),
         )
+
+    async def set_default_agent_id(self, agent_id: str | None) -> None:
+        self._default_agent_id = agent_id
 
     async def set_bootstrap_completed(self, ts: datetime) -> None:
         self._bootstrap_completed_at = ts

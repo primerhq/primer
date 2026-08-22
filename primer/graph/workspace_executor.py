@@ -323,17 +323,24 @@ class WorkspaceGraphExecutor(_BaseGraphExecutor):
             return base
 
         async def _resolve(agent: "Agent") -> ToolExecutionManager:
-            providers = {}
+            # System fallback so the RBAC tool floor never sees a None
+            # invoker (which fails closed and denies every toolset call);
+            # the worker-built graph path always supplies a real identity.
+            who = identity or PrincipalRef.system()
             if base is not None:
+                # Derive, never rebuild: the outer manager carries the
+                # agent's tool allowlist, the approval resolver and the
+                # provider registry, and rebuilding from scratch here is
+                # exactly how graph nodes came to offer every tool in
+                # every granted toolset with no gate able to fire.
                 outer = await base(agent)
-                providers = dict(outer.toolset_providers)
+                return outer.rebind_workspace(
+                    workspace_session, initiated_by=who,
+                )
             return ToolExecutionManager.for_workspace(
-                toolset_providers=providers,
+                toolset_providers={},
                 session=workspace_session,
-                # System fallback so the RBAC tool floor never sees a None
-                # invoker (which fails closed and denies every toolset call);
-                # the worker-built graph path always supplies a real identity.
-                initiated_by=identity or PrincipalRef.system(),
+                initiated_by=who,
             )
 
         return _resolve

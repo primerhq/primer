@@ -151,7 +151,7 @@ async def _seed_channel(p) -> Channel:
         provider=ChannelProviderType.TELEGRAM,
         external_id="555",
         config=TelegramChannelConfig(
-            chats={"enabled": False, "default_agent": None},
+            chats={"enabled": False},
         ),
     )
     await p.get_storage(Channel).create(ch)

@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import time
 
+import re
+
 import httpx
 import pytest
 from playwright.sync_api import expect
 
 
 from tests._support.smk import smk  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route, wait_for_overlay_url
 pytestmark = smk("SMK-UI-06", status="partial")
 
 
@@ -64,10 +67,7 @@ def test_workspace_chain_create_journey(
             "() => typeof window.WorkspaceProvidersPage === 'function'",
             timeout=20_000,
         )
-        page.goto(
-            f"{console_url}#/workspaces/providers",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "workspaces/providers")
         page.get_by_role(
             "button", name="New workspace provider",
         ).or_(
@@ -80,20 +80,14 @@ def test_workspace_chain_create_journey(
         modal.locator("[data-testid='ws-provider-path']").fill(f"/tmp/{provider_id}")
         modal.get_by_role("button", name="Create").first.click()
         expect(modal).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/workspaces/providers/{provider_id}**",
-            timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"workspaces/providers/{provider_id}")
 
         # ---- 2. Create the template via the UI ---------------------------
         page.wait_for_function(
             "() => typeof window.WorkspaceTemplatesPage === 'function'",
             timeout=20_000,
         )
-        page.goto(
-            f"{console_url}#/workspaces/templates",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "workspaces/templates")
         page.get_by_role(
             "button", name="New workspace template",
         ).or_(
@@ -111,20 +105,14 @@ def test_workspace_chain_create_journey(
         modal.locator("[data-testid='ws-template-description']").fill("chain test template")
         modal.get_by_role("button", name="Create").first.click()
         expect(modal).not_to_be_visible(timeout=10_000)
-        page.wait_for_url(
-            f"**/console/#/workspaces/templates/{template_id}**",
-            timeout=15_000,
-        )
+        wait_for_overlay_url(page, f"workspaces/templates/{template_id}")
 
         # ---- 3. Create the workspace via the existing modal --------------
         page.wait_for_function(
             "() => typeof window.WorkspacesPage === 'function'",
             timeout=20_000,
         )
-        page.goto(
-            f"{console_url}#/workspaces",
-            wait_until="domcontentloaded",
-        )
+        open_legacy_route(page, console_url, "workspaces")
         page.get_by_role(
             "button", name="New workspace",
         ).first.click()
@@ -144,14 +132,15 @@ def test_workspace_chain_create_journey(
         template_select.select_option(template_id)
         modal.get_by_role("button", name="Create").first.click()
 
-        # Modal closes; URL navigates to the workspace detail page.
+        # Modal closes and the shell ENTERS the workspace just created,
+        # which is what the pre-S8 route did too and what the shell
+        # spells "#/w/<wid>". It is not the workspaces overlay: that
+        # addresses a workspace record rather than going there.
         expect(modal).not_to_be_visible(timeout=15_000)
-        page.wait_for_url("**/console/#/workspaces/**", timeout=20_000)
+        page.wait_for_url(re.compile(r"#/w/ws-[0-9a-f]+"), timeout=20_000)
         # Grab the workspace id from the URL for cleanup.
         url = page.url
-        wid = url.rsplit("/", 1)[-1]
-        # Strip any trailing #/? fragments.
-        wid = wid.split("?")[0].split("#")[0]
+        wid = url.split("#/w/", 1)[1].split("?")[0].split("#")[0]
         workspace_ids.append(wid)
     finally:
         _cleanup(base_url, workspace_ids, [template_id], [provider_id])

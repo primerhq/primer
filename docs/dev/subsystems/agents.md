@@ -4,14 +4,15 @@
 
 The agent subsystem is the runtime that drives one LLM turn end to end: it assembles a prompt, streams the model, dispatches the tool calls the model asks for, feeds the tool results back, repeats until the model stops, and persists the materialised turn. It is the layer that sits between an `Agent` definition (system prompt, model, tool allowlist) and the raw LLM and tool primitives.
 
-The subsystem lives in `primer/agent/` and is organised around a single shared abstract base, `_BaseAgentExecutor` (`primer/agent/base.py`), with two concrete executors that differ only in where conversation state is persisted:
+The subsystem lives in `primer/agent/` and is organised around a shared abstract base, `_BaseAgentExecutor` (`primer/agent/base.py`), with one concrete executor:
 
-- `AgentExecutor` (`primer/agent/executor.py`) persists to `Storage[Thread]` plus `Storage[ThreadMessage]`. This is the chat-on-thread surface.
 - `WorkspaceAgentExecutor` (`primer/agent/workspace_executor.py`) persists to a workspace's `messages.jsonl` via `AgentSession.commit_state(op='message')`, one git commit per turn, and drives `SessionStatus` transitions for the worker pool.
+
+The base stays abstract because the graph executor reuses its turn loop verbatim, not because a second persistence backend is expected. A thread-backed executor existed alongside it while the chat surface did, and went with it.
 
 Around the executors sit the cross-cutting concerns that every turn touches: tool routing and dispatch (`ToolExecutionManager`), context compaction (`CompactionStrategy` plus the stateless `compaction_mixin`), the tool-call approval gate (`approval.py`, `rego.py`), and the per-turn loop helper (`loop.run_agent_turn`) that the graph executor reuses verbatim.
 
-This document covers the agent runtime. The WebSocket-driven chat surface (`primer.chat.executor.ChatTurnRunner` over `Chat` plus `ChatMessage`) is a distinct runner documented under `docs/dev/subsystems/chats.md`; it shares only the `compaction_mixin` module with the agent executors. Worker-pool ownership of parked sessions, the event bus, and the timer/sweeper background tasks live in `docs/dev/architecture/worker-system.md`. Turn-boundary logging lives in `docs/dev/architecture/observability.md`.
+This document covers the agent runtime. Worker-pool ownership of parked sessions, the event bus, and the timer/sweeper background tasks live in `docs/dev/architecture/worker-system.md`. Turn-boundary logging lives in `docs/dev/architecture/observability.md`.
 
 ## 2. Conceptual model
 
@@ -40,7 +41,7 @@ erDiagram
 
 - **Shared base, divergent persistence.** `_BaseAgentExecutor` owns the invoke flow, compaction integration, streaming fan-out, and hard-overflow recovery; subclasses implement only three hooks (`_load_history`, `_persist_turn`, `_replace_compacted_head`). The base class is deliberately non-public (leading underscore) rather than an exported ABC.
 - **Extracted free helper for the inner loop.** The per-turn stream-buffer-dispatch loop is factored out of the base class into `primer.agent.loop.run_agent_turn`, which mutates a caller-provided `messages_out` list. The graph executor reuses this same helper, so agent and graph turns share tool-dispatch semantics.
-- **Stateless mixin for compaction.** `compaction_mixin` exposes `should_compact`, `apply_compaction`, and `force_compact` as free async functions consumed by both `_BaseAgentExecutor` and `primer.chat.executor.ChatTurnRunner`, sharing compaction across two unrelated runner classes without a common base.
+- **Stateless mixin for compaction.** `compaction_mixin` exposes `should_compact`, `apply_compaction`, and `force_compact` as free async functions rather than base-class methods, so compaction can be shared by runner classes that have no common base. It was written when two such runners existed; the shape still earns its keep for the graph executor.
 - **Scoped tool ids with a single catalogue.** `ToolExecutionManager` surfaces every tool to the LLM as `toolset_id__bare_name` (separator `__`), so colliding bare names across toolsets, MCP servers, and workspace tools stay routable from one flat catalogue.
 - **Yield-as-control-flow for parking.** When the approval gate trips, `ToolExecutionManager.execute` raises `YieldToWorker` carrying a `Yielded` record; the base executor stamps the in-progress turn messages onto the exception so the worker can park and later resume.
 - **Fail-closed approval gate.** `evaluate_approval_gate` dispatches by `ApprovalType` (required / Rego policy / LLM judge); any failure path returns `required=True` with a diagnostic reason rather than letting the call through.
@@ -133,7 +134,7 @@ Tool dispatch errors become `ToolResultPart(error=True)` rather than aborting th
 
 `WorkspaceAgentExecutor` persists via `AgentSession.commit_state(op='message')`, writing `messages.jsonl` with one git commit per turn. The commit subject is built from an excerpt of the last assistant message text or the tool-use names, capped at 72 characters. Workspace-tool output that exceeds the truncation envelope (50 KiB / 2000 lines, with a 50-line preview head) is written in full to `session.cache_output` and referenced by path in the truncated tool result.
 
-Compaction persistence differs by backend: chat threads replace head rows in storage, while workspace sessions retain the prefix-string convention (`[earlier conversation compacted on <ts>]` on a synthetic assistant message in `messages.jsonl`); structured compaction-marker rows are a chats-only concern.
+Compaction persistence uses the prefix-string convention: `[earlier conversation compacted on <ts>]` on a synthetic assistant message in `messages.jsonl`.
 
 Parked turns persist outside the executor: when `YieldToWorker` is raised, the worker pool writes the stamped `llm_messages` into the session's `parked_state` blob so the resume path can re-pair the assistant tool_use with a synthesised tool result. `WorkspaceAgentExecutor.inject_resume_messages` appends that rehydrated `[assistant_tool_use, tool_result]` pair without driving a new turn.
 

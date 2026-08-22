@@ -142,9 +142,9 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
       7. Close settings; the session tab is still open (state coherence
          across the settings hop).
 
-    Cross-surface coherence exercised: sidebar session-row → center panel,
-    plus the settings-modal config panel — all bound to the same
-    workspace/session without leaving the Studio.
+    Cross-surface coherence exercised: rail session-row to center panel,
+    plus the workspace-detail overlay, all bound to the same workspace
+    and session without leaving the shell.
     """
     ids = _seed_ladder(base_url, unique_suffix)
     sid = ids["session"]
@@ -153,47 +153,51 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
         # ----- 1. Enter the Studio ----------------------------------
         open_studio(page, console_url, wid)
 
-        # ----- 2. The sub-header workspace-selector shows the wid ----
+        # ----- 2. The topbar names the workspace ---------------------
+        # S8 retired the Studio's sub-header workspace-selector; the
+        # shell states the workspace id in the topbar instead.
         expect(
-            page.locator('[data-testid="workspace-selector"]').get_by_text(
+            page.get_by_test_id("shell-workspace").get_by_text(
                 wid, exact=False,
             ).first
         ).to_be_visible(timeout=15_000)
 
         # ----- 3. Sidebar Sessions section lists the seeded row ------
         # The row renders the session TITLE, not the raw sid — locate it by
-        # its data-session-id stamp (studio-sidebar.jsx).
+        # its data-session-id stamp (the shell rail).
         row = session_row(page, sid)
         expect(row.first).to_be_visible(timeout=20_000)
 
         # ----- 4. Click the row → center tab + agent panel ----------
         row.first.click()
-        expect(page.locator('[data-testid="center-tab"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
             timeout=15_000,
         )
 
-        # ----- 5. Settings modal → Config surfaces the workspace ----
-        # Open the gear in-place (no re-navigation) so the open session tab
-        # is preserved for the coherence check below.
-        gear = page.locator('[data-testid="studio-settings-btn"]')
-        gear.click()
-        modal = page.locator('[data-testid="workspace-settings"]')
-        expect(modal).to_be_visible(timeout=10_000)
-        page.locator('[data-testid="workspace-settings-nav:config"]').click()
-        # The modal header carries the workspace id; the reused config
-        # panel renders inside it.
-        expect(modal.get_by_text(wid, exact=False).first).to_be_visible(
+        # ----- 5. Workspace settings surface the workspace ----------
+        # The Studio's gear + settings modal became an overlay: the
+        # topbar workspace name opens overlay=workspaces:detail:<wid>,
+        # which carries the same config / channels / log / destroy tabs.
+        # Opening it in place (no re-navigation) is the point: the open
+        # session tab has to survive, which is the coherence check below.
+        page.get_by_test_id("shell-workspace").click()
+        overlay = page.get_by_test_id("shell-overlay-body")
+        expect(overlay).to_be_visible(timeout=10_000)
+        assert f"overlay=workspaces:detail:{wid}" in page.url, (
+            f"expected the workspace-detail overlay, got {page.url}"
+        )
+        # The overlay header is titled by the record it shows.
+        expect(page.get_by_text(wid, exact=False).first).to_be_visible(
             timeout=10_000,
         )
-        # Close the settings modal via its close button.
-        modal.locator(".close").first.click()
-        expect(modal).to_have_count(0, timeout=5_000)
+        page.get_by_test_id("shell-overlay-close").click()
+        expect(overlay).to_have_count(0, timeout=5_000)
 
         # ----- 6. The session tab survived the settings hop ---------
-        expect(page.locator('[data-testid="panel-agent"]')).to_be_visible(
+        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
             timeout=10_000,
         )
     finally:

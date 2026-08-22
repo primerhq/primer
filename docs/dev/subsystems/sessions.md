@@ -24,6 +24,44 @@ The two are allowed to diverge for at most one turn (the at-least-once trade-off
 
 History and the per-turn audit log live as two append-only JSONL files inside the workspace, not in the database. The `WorkspaceSession` row holds only lifecycle and claim state.
 
+### The v2 model: a session is a workstream, not an agent's conversation
+
+A session is no longer bound to one agent for its lifetime. `binding` is a
+mutable pointer (`AgentSessionBinding` or `GraphSessionBinding`, each
+carrying an optional `profile_id` override), and `binding_epoch` counts
+every reapplication. History belongs to the SESSION: whichever agent runs
+the next turn sees the whole transcript, attributed per turn.
+
+Four rules make that safe:
+
+- **Switch timing is next-turn.** A switch requested mid-turn is queued on
+  `pending_binding_switch` and applied at the drain checkpoint, so the
+  running turn finishes under the binding it started with.
+- **The checkpoint order is switch-then-drain.** The applier runs
+  immediately before a queued steer is realized, at all three terminal
+  exits (executor failure, cancel/interrupt, clean completion), so a
+  follow-up runs under the INCOMING binding.
+- **Epochs fence stale writes.** A terminal status, a park and a resume
+  each carry the epoch they began under; the row rejects a write from an
+  epoch it has moved past, so a turn finishing under a replaced binding
+  cannot clobber the switch.
+- **One run per session.** A steer arriving while a turn is open becomes a
+  seq-less `PendingSessionMessage`, realized at the checkpoint. Allocating
+  a seq at receipt is what collided with in-flight token seqs on the older
+  surface.
+
+The message log stays append-only under all of this. Compaction appends a
+`compaction_marker` carrying its summary and the span it replaced; rewind
+appends a `rewind_marker` naming the seq to keep. Neither deletes a line,
+so the read-time replay walk (`primer/session/replay.py`) computes what a
+reader currently sees by folding markers in order. That is why rewind is
+auditable but not undoable, and why a rewind whose target lies inside a
+compacted span is rejected rather than performed: the folded rows are
+already gone from the visible set, so the turn would rebuild from nothing.
+
+Usage is folded from the same records rather than counted into a column,
+which is what makes a rewound turn stop counting for free.
+
 ```mermaid
 erDiagram
     WorkspaceSession ||--|| AgentSession : "live handle for"
@@ -181,15 +219,34 @@ History is `messages.jsonl` inside the workspace, written through `WorkspaceMess
 - Buffers up to 16 KB or 100 ms, flushing on size, age, explicit `flush()`, or `aclose()`. Per-line flush on container/k8s exec would cost roughly 50 ms per record; buffering keeps that under a few percent of turn time. The trade-off is that a worker crash mid-buffer loses unflushed records, which the reclaim then re-emits.
 - Fires the `session:{sid}:tick` publish per record (done by the dispatch layer, not the writer itself), so live WebSocket subscribers see real-time deltas even when a batch coalesces into one I/O write.
 
-`translate_stream_event(event, _CoalesceState)` implements the chat-selective persistence cadence: `TextDelta`s coalesce into a text buffer; `ToolCallEnd` flushes the buffer as one `assistant_token` then emits a `tool_call`; an `ExtendedEvent` wrapping `_ExecutorToolResult` becomes a `tool_result`; `Done` flushes the buffer then emits `done`; `Error` becomes an `error`. Graph runtime `_GraphErrorEvent` and `_GraphEndOutputEvent` are translated by the same function so graph sessions stream through the same path. `StreamStart`, `ReasoningDelta`, `ToolCallStart`, `ToolCallDelta`, `MediaDelta`, and `Usage` are silently dropped. The worker synthesises `user_input`, `cancelled`, and `yielded` records itself.
+`translate_stream_event(event, _CoalesceState)` implements the selective persistence cadence: `TextDelta`s coalesce into a text buffer; `ToolCallEnd` flushes the buffer as one `assistant_token` then emits a `tool_call`; an `ExtendedEvent` wrapping `_ExecutorToolResult` becomes a `tool_result`; `Done` flushes the buffer then emits `done`; `Error` becomes an `error`. Graph runtime `_GraphErrorEvent` and `_GraphEndOutputEvent` are translated by the same function so graph sessions stream through the same path. `StreamStart`, `ReasoningDelta`, `ToolCallStart`, `ToolCallDelta`, `MediaDelta`, and `Usage` are silently dropped. The worker synthesises `user_input`, `cancelled`, and `yielded` records itself.
 
 The per-turn structured log is `turns.jsonl` under `.state/sessions/<sid>/` (graph runs use `.state/graphs/<gsid>/turns.jsonl` and per-node `.../nodes/<nid>/turns.jsonl`). It is written through `WorkspaceTurnLogWriter`, which takes injected `append_line` / `read_existing` callables; `WorkerPool._run_engine_session` builds the factory pointed through `_WorkspaceIOShim.append_state_line` / `read_state_file` at `sessions/<sid>/turns.jsonl`. The writer lazily bootstraps its `seq` counter from the existing file on first append so a worker restart resumes the monotonic stream instead of clobbering disk and breaking `since_seq` pagination. The graph storage executor uses `StorageTurnLogWriter`, which persists `TurnLogRecord` rows instead, scoped by `(run_id, node_id)`.
 
 The scheduler-visible `WorkspaceSession` row holds only lifecycle and claim state; it survives process restart and is re-armed into the claim engine by the lifespan recovery loop. `WorkspaceSession.last_seq` is the cursor authority for WebSocket replay.
 
-Compaction of session history retains the prefix-string convention: a synthetic assistant message in `messages.jsonl` carries `[earlier conversation compacted on <ts>]`. Workspace sessions are auto-compaction only (the `compaction_mixin.should_compact` pre-turn pass in the executor); there is no on-demand `/compact` REST endpoint and no structured `compaction_marker` row, both of which are chat-only.
+Compaction of session history retains the prefix-string convention: a synthetic assistant message in `messages.jsonl` carries `[earlier conversation compacted on <ts>]`. Workspace sessions auto-compact through the `compaction_mixin.should_compact` pre-turn pass in the executor.
 
 ## 8. Public surfaces
+
+S1 adds, on the workspace-scoped sessions router:
+
+| endpoint | purpose |
+| --- | --- |
+| `POST .../sessions/{sid}/binding` | switch which agent or graph runs the next turn; applies immediately when idle, queues when busy, and abandons an open gate first when parked |
+| `POST .../sessions/{sid}/rewind` | append a rewind marker; 409 when busy or when the target lies inside compacted history, 422 for a malformed target |
+| `POST .../sessions/{sid}/compact` | summarise the visible history into a fold marker; 409 for a graph binding or a turn in flight |
+| `PUT .../sessions/{sid}/response_format` | persist a structured-output schema for later turns; a steer may carry a one-turn override that outranks it |
+
+`GET /v1/sessions/{sid}` returns the row plus its unrealized
+`pending_messages`, flat rather than wrapped, so existing readers of
+`WorkspaceSession` are unaffected. `GET /v1/sessions/{sid}/messages`
+takes `visible=true` to fold the log through the replay walk, and the
+tap carries derived usage, compaction and queued-steer envelopes that
+never advance its cursor.
+
+The `switch_binding` tool gives an agent the same hand-off, and never
+yields: it records the request and the checkpoint applies it.
 
 The REST + WebSocket surface lives in `primer/api/routers/sessions.py`, split across `nested_session_router` (workspace-scoped) and `top_session_router` (top-level).
 
@@ -206,7 +263,7 @@ Top-level under `/v1/sessions`:
 - `GET /` list, `POST /find` predicate find, `GET /{sid}` get.
 - `GET /{sid}/turn_log?limit&offset&since_seq` reads `turns.jsonl` via the workspace runtime (`_read_workspace_turn_log`); a missing file or a vanished workspace returns an empty page so the UI can still render the Turn-log tab.
 
-The session WebSocket mirrors the chat WebSocket at `/v1/chats/{id}/ws`; see [chats.md](./chats.md) for the symmetric surface.
+The session WebSocket is the only conversational socket: the chat surface it once mirrored was retired in S6, when a platform thread became a session.
 
 ## 9. Internal contracts
 
@@ -240,7 +297,7 @@ Per the project convention, smoke-test session changes with `uv run primer api` 
 - **Workers do not own parks: the park UPDATE releases the lease in the same statement and the claim predicate excludes parked rows.** Why: a worker restart between park and lease-release is impossible (single statement) and any worker can resume. Spec: docs/superpowers/specs/2026-05-22-yielding-tools-design.md.
 - **Cancel is dual-signalled (a `cancel_requested_at` DB flag plus a `session:{sid}:cancel` bus event) and the early-exit check honours `cancel_requested` before building an executor.** Why: the bus event wakes the running worker fast while the DB flag survives an API or worker restart so a cancel is not silently lost. Spec: docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
 - **Streaming writes are buffered (16 KB or 100 ms) with per-record ticks instead of a synchronous per-line flush.** Why: per-line flush on container/k8s exec costs roughly 50 ms per record; buffering keeps overhead under a few percent while ticks still fan out in real time, at the cost of losing unflushed records on a crash (the reclaim re-emits them). Spec: docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
-- **History persistence is chat-selective: only logical events land in `messages.jsonl`, deltas and lifecycle events are dropped.** Why: it matches the chat surface byte-for-byte so the UI's coalescing logic ports directly and keeps the per-session log bounded by logical events rather than token granularity. Spec: docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
+- **History persistence is selective: only logical events land in `messages.jsonl`, deltas and lifecycle events are dropped.** Why: it matched the streaming surface byte-for-byte so the UI's coalescing logic ported directly, and it keeps the per-session log bounded by logical events rather than token granularity. Spec: docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
 - **One bus subscription per process plus a per-process `SessionTickRouter` fans out to per-session queues.** Why: a per-WebSocket bus subscription would mean one `LISTEN` per socket on Postgres; process-scoped routing keeps a long-running multi-subscriber session from multiplying backend connections. Spec: docs/superpowers/specs/2026-05-27-workspace-session-streaming-design.md.
 - **The turn-log writer family lives in `primer/observability/`, not `primer/session/`.** Why: it is shared by agent sessions and both graph executors, so housing it under the session subsystem would force graph code to import from sessions; the observability module is owned by neither. Spec: docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md.
 - **The resumed turn-log event is emitted from `run_one_session_turn` keyed on `session.parked_at`, not from the claim adapter.** Why: the dispatch path already owns the turn boundary and has the writer open, so it can compute `wait_ms` without coordinating with the claim engine. Spec: docs/superpowers/specs/2026-06-05-per-session-turn-log-design.md.

@@ -21,6 +21,7 @@ pytest.importorskip("playwright")
 from playwright.sync_api import Page, expect  # noqa: E402
 
 from tests.ui_e2e._python_helpers import set_python_source  # noqa: E402
+from tests.ui_e2e._shell_helpers import open_legacy_route
 
 
 GREET = (
@@ -49,7 +50,7 @@ def _drop(base_url: str, tid: str) -> None:
 
 
 def _open(page: Page, console_url: str, tid: str) -> None:
-    page.goto(f"{console_url}#/toolsets/{tid}", wait_until="domcontentloaded")
+    open_legacy_route(page, console_url, f"toolsets/{tid}")
     expect(page.locator('[data-testid="python-editor"]')).to_be_visible(timeout=20_000)
 
 

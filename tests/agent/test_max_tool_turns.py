@@ -52,6 +52,10 @@ class _AlwaysToolLLM:
 
 
 class _OkToolManager:
+    def is_notifying(self, tool_name: str) -> bool:
+        del tool_name
+        return False
+
     """list_tools returns one tool; execute always returns a normal result."""
 
     def __init__(self) -> None:

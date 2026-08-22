@@ -267,6 +267,7 @@ async def _run_exec_stream(
     workspace_root: str,
     locks: WorkspaceLockTable,
     send: Callable[[str], Coroutine[Any, Any, None]],
+    broadcaster=None,
 ) -> None:
     """Task body: drive :func:`run_exec` and forward its frames via *send*.
 
@@ -278,8 +279,21 @@ async def _run_exec_stream(
     awaits each ``send`` in turn).
     """
     agen = run_exec(req_id, args, workspace_root, locks)
+    # Lifecycle broadcast (EVENTS_SUBSCRIBE subscribers): started before
+    # the stream, exited with the exit event's code. Never raises.
+    import time as _time
+
+    cmd = list(args.get("cmd") or [])
+    t0 = _time.monotonic()
+    exit_code = None
+    if broadcaster is not None:
+        await broadcaster.broadcast("exec_started", {
+            "cmd": cmd, "workdir": args.get("workdir"),
+        })
     try:
         async for event in agen:
+            if event.event == "exit" and isinstance(event.data, dict):
+                exit_code = event.data.get("code")
             await send(serialize(event))
     except OpError as exc:
         await send(serialize(Response(
@@ -303,6 +317,12 @@ async def _run_exec_stream(
         # GeneratorExit into run_exec so its teardown (reader-task cancel +
         # subprocess terminate/reap) still runs.
         await agen.aclose()
+        if broadcaster is not None:
+            await broadcaster.broadcast("exec_exited", {
+                "cmd": cmd,
+                "exit_code": exit_code,
+                "duration_ms": max(0, int((_time.monotonic() - t0) * 1000)),
+            })
 
 
 def start_exec(
@@ -312,6 +332,7 @@ def start_exec(
     locks: WorkspaceLockTable,
     send: Callable[[str], Coroutine[Any, Any, None]],
     registry: ExecRegistry,
+    broadcaster=None,
 ) -> asyncio.Task[None]:
     """Spawn a tracked exec stream task; returns it (tests await it).
 
@@ -319,7 +340,10 @@ def start_exec(
     close, and a done-callback deregisters it on normal completion.
     """
     task = asyncio.create_task(
-        _run_exec_stream(req_id, args, workspace_root, locks, send),
+        _run_exec_stream(
+            req_id, args, workspace_root, locks, send,
+            broadcaster=broadcaster,
+        ),
         name=f"exec:{req_id}",
     )
     registry.add(task)

@@ -7,8 +7,7 @@ from pathlib import Path
 _UI = Path(__file__).resolve().parents[2] / "ui"
 STYLES = (_UI / "styles.css").read_text()
 SHARED = (_UI / "components" / "shared.jsx").read_text()
-SIDEBAR = (_UI / "components" / "studio-sidebar.jsx").read_text()
-ACTIVITY = (_UI / "components" / "studio-activity.jsx").read_text()
+RAIL = (_UI / "components" / "shell" / "sh-rail.jsx").read_text()
 
 
 # ---- FC2: tokens + utility classes -----------------------------------------
@@ -23,8 +22,8 @@ def test_fc2_spacing_type_radius_tokens_defined() -> None:
 def test_fc2_st_utility_classes_defined_and_used() -> None:
     for cls in (".st-row", ".st-section-label", ".st-pill", ".st-panel-bar"):
         assert cls in STYLES, f"missing utility class {cls}"
-    # The recurring patterns were adopted in the two targeted files.
-    assert "st-section-label" in SIDEBAR or "st-section-label" in ACTIVITY
+    # The utility classes stay declared for any surface that wants them;
+    # the shell's own rail styles itself with sh-* classes.
 
 
 # ---- FC5a: Modal focus-trap + restore --------------------------------------
@@ -47,10 +46,12 @@ def test_fc5_text4_contrast_raised() -> None:
 
 # ---- FC5c: keyboard-accessible sidebar rows --------------------------------
 
-def test_fc5_sidebar_rows_are_keyboard_accessible() -> None:
-    assert "function ST_onRowKey(" in SIDEBAR
-    # Both the session row and the file row expose role/tabindex + key handler.
-    for testid in ('data-testid="session-row"', 'data-testid="file-row"'):
-        assert testid in SIDEBAR
-    assert SIDEBAR.count("onKeyDown={ST_onRowKey(") >= 2
-    assert SIDEBAR.count('role="button"') >= 2
+def test_fc5_rail_rows_are_keyboard_accessible() -> None:
+    """The shell rail satisfies this by construction: its rows are real
+    buttons, so focus, Enter and Space come from the platform instead of
+    a role/tabindex/onKeyDown retrofit."""
+    assert 'role="button"' not in RAIL, "a real button needs no role"
+    for testid in ('data-testid={"rail-session:', 'data-testid={"rail-file:'):
+        assert testid in RAIL
+    # Every clickable row is a <button>, never a bare div with onClick.
+    assert "<div onClick" not in RAIL

@@ -207,6 +207,49 @@ class AppConfig(BaseSettings):
         ),
     )
 
+    default_workspace_template: str = Field(
+        default="local-default",
+        description=(
+            "Workspace template the seed materialises the default 'primer' "
+            "workspace from. A deployment whose pods are ephemeral must "
+            "point this at a template on a durable provider (e.g. "
+            "k3s-default): the reserved local-default template puts the "
+            "workspace on the API pod's own disk, which a k8s install "
+            "loses at the first pod replacement."
+        ),
+    )
+
+    event_retention_days: int = Field(
+        default=30,
+        description=(
+            "Days of platform event-log history the retention pruner "
+            "keeps. Rows behind every active subscription cursor AND "
+            "older than this are deleted daily."
+        ),
+    )
+
+    event_dispatch_poll_seconds: float = Field(
+        default=5.0,
+        description=(
+            "Event dispatcher poll fallback interval. The events_appended "
+            "bus hint wakes it sooner; this bounds staleness when the "
+            "hint is lost."
+        ),
+    )
+
+    event_dispatch_batch: int = Field(
+        default=200,
+        description="Events read per dispatcher batch per subscription.",
+    )
+
+    event_sink_max_failures: int = Field(
+        default=5,
+        description=(
+            "Consecutive sink failures on one event before the "
+            "dispatcher skips it with an error log."
+        ),
+    )
+
     # --- Observability ---------------------------------------------------
     observability: ObservabilityConfig = Field(
         default_factory=ObservabilityConfig,

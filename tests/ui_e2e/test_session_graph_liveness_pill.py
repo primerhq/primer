@@ -132,11 +132,24 @@ def test_graph_session_liveness_pill_replaces_executor_missing_stub(
         # The hardcoded stub must be gone everywhere in the Studio.
         expect(page.get_by_text("executor missing")).to_have_count(0)
 
-        # The graph panel header shows the derived StatusPill; a CREATED
-        # session reads "created" (StatusPill labels — shared.jsx).
-        header = page.locator('[data-testid="panel-graph-header"]')
-        expect(header.locator(".pill").filter(has_text="created").first).to_be_visible(
-            timeout=10_000,
-        )
+        # The rail row carries the session's REAL status, which is the
+        # invariant this test exists for: a hardcoded stub is gone and
+        # what replaced it reflects the session. One session document
+        # serves every binding kind, so a graph session's status shows
+        # exactly where an agent session's does, and not on the
+        # composer's status line, which describes what a session is DOING
+        # and is empty while nothing runs.
+        #
+        # NOT pinned to "created": a seeded session does not reliably sit
+        # there to be observed, since the scheduler may claim it between
+        # the seed and the assertion.
+        row = page.get_by_test_id(f"rail-session:{sid}")
+        expect(row).to_be_visible(timeout=10_000)
+        chip = row.locator('[data-testid="session-status-dot"]')
+        expect(chip).to_be_visible(timeout=10_000)
+        assert (chip.get_attribute("data-status") or "") in {
+            "created", "running", "waiting", "ended", "cancelled", "failed",
+            "completed",
+        }, f"unexpected status {chip.get_attribute('data-status')!r}"
     finally:
         _cleanup(base_url, cleanup)

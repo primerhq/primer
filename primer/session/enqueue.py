@@ -2,7 +2,7 @@
 
 An inbound user message re-arms a session's scheduler claim so the worker
 runs a fresh turn, regardless of the session's current lifecycle state.
-Mirrors ``primer/chat/enqueue.py`` + ``send_chat_message``'s persist+wake
+Mirrors the deleted chat surface's persist+wake
 tail: the session's on-disk ``messages.jsonl`` IS the FIFO queue
 (``AgentSession.append_instruction``); the scheduler-visible
 ``WorkspaceSession`` row carries the claim state (``turn_status`` +
@@ -39,6 +39,7 @@ from primer.model.workspace_session import (
 from primer.session.mutation_lock import session_lifecycle_lock
 from primer.session.persistence import WorkspaceMessageWriter
 from primer.session.reset import _reopen_ended_locked
+from primer.session.title import derive_title_from_text
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,13 @@ async def wake_session(
         row.pause_requested_at = None
         if user_input_seq is not None:
             row.last_seq = user_input_seq
+        # Name the session from its opening instruction, once. Sessions
+        # are the only conversational surface now, so the session list
+        # needs the same readable titles the chat list had; a later
+        # rename by the user must never be overwritten, hence the
+        # None check rather than a blanket restamp.
+        if instruction and row.name is None:
+            row.name = derive_title_from_text(instruction)
         if row.status in _RESUMABLE:
             row.status = SessionStatus.RUNNING
             if row.started_at is None:
