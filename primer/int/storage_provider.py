@@ -37,6 +37,7 @@ from primer.model.system_state import SystemState
 
 if TYPE_CHECKING:
     from primer.int.document_content import DocumentContentStore
+    from primer.int.event_store import EventStore
 
 
 ModelT = TypeVar("ModelT", bound=Identifiable)
@@ -87,6 +88,12 @@ class StorageProvider(ABC):
     def get_content_store(self) -> "DocumentContentStore":
         """Return the document content-store handle, sharing this provider's
         backend connection/pool. Holds document bodies in the primary DB."""
+
+    @abstractmethod
+    def get_event_store(self) -> "EventStore":
+        """Return the platform event-log store, sharing this provider's
+        backend connection/pool. Holds the durable event log and the
+        per-subscription cursors that consume it."""
 
     @abstractmethod
     async def get_system_state(self) -> SystemState:

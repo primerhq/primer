@@ -68,9 +68,11 @@ from primer.int.document_content import (
     ContentRow,
     DocumentContentStore,
 )
+from primer.int.event_store import EventStore
 from primer.int.storage import Storage
 from primer.int.storage_provider import StorageProvider
 from primer.model.common import Identifiable, dump_for_storage
+from primer.model.event import Event
 from primer.model.system_state import SystemState
 from primer.model.except_ import (
     BadRequestError,
@@ -446,6 +448,10 @@ class PostgresStorageProvider(StorageProvider):
     def get_content_store(self) -> "PostgresDocumentContentStore":
         """Return the document-body store bound to this provider's pool."""
         return PostgresDocumentContentStore(self.pool, self._schema)
+
+    def get_event_store(self) -> "PostgresEventStore":
+        """Return the event-log store bound to this provider's pool."""
+        return PostgresEventStore(self.pool, self._schema)
 
     @asynccontextmanager
     async def transaction(self):
@@ -1234,3 +1240,215 @@ class PostgresDocumentContentStore(DocumentContentStore):
             for r in rows
         ]
 
+
+
+class PostgresEventStore(EventStore):
+    """Postgres-backed platform event log.
+
+    A ``<schema>.events`` BIGSERIAL append-only table plus the
+    ``<schema>.event_cursors`` consumption state, sharing the
+    provider's asyncpg pool. The ``conn`` kwarg on :meth:`append`
+    threads a caller-supplied connection so the event commits
+    atomically with the write it describes (same idiom as
+    :class:`PostgresDocumentContentStore`).
+    """
+
+    def __init__(self, pool: asyncpg.Pool, schema: str) -> None:
+        self._pool = pool
+        self._schema = schema
+        self._qualified = f'"{schema}".events'
+        self._qualified_cursors = f'"{schema}".event_cursors'
+
+    @asynccontextmanager
+    async def _acquire_or_use(self, conn: Any | None):
+        if conn is not None:
+            yield conn
+        else:
+            async with self._pool.acquire() as acquired:
+                yield acquired
+
+    async def ensure_schema(self) -> None:
+        ddl_table = (
+            f'CREATE TABLE IF NOT EXISTS {self._qualified} ('
+            'id             bigserial PRIMARY KEY, '
+            'event_type     text NOT NULL, '
+            'occurred_at    timestamptz NOT NULL DEFAULT now(), '
+            'actor          text NOT NULL, '
+            'entity_kind    text, '
+            'entity_id      text, '
+            'workspace_id   text, '
+            'session_id     text, '
+            'correlation_id text, '
+            'payload        jsonb NOT NULL'
+            ')'
+        )
+        ddl_type = (
+            'CREATE INDEX IF NOT EXISTS events_type '
+            f'ON {self._qualified} (event_type)'
+        )
+        ddl_entity = (
+            'CREATE INDEX IF NOT EXISTS events_entity '
+            f'ON {self._qualified} (entity_kind, entity_id)'
+        )
+        ddl_occurred = (
+            'CREATE INDEX IF NOT EXISTS events_occurred '
+            f'ON {self._qualified} (occurred_at)'
+        )
+        ddl_cursors = (
+            f'CREATE TABLE IF NOT EXISTS {self._qualified_cursors} ('
+            'subscriber_id text PRIMARY KEY, '
+            'cursor        bigint NOT NULL, '
+            'updated_at    timestamptz NOT NULL DEFAULT now()'
+            ')'
+        )
+        async with self._pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute(ddl_table)
+                await conn.execute(ddl_type)
+                await conn.execute(ddl_entity)
+                await conn.execute(ddl_occurred)
+                await conn.execute(ddl_cursors)
+
+    async def append(
+        self,
+        *,
+        event_type: str,
+        actor: str = "system",
+        payload: dict[str, Any] | None = None,
+        entity_kind: str | None = None,
+        entity_id: str | None = None,
+        workspace_id: str | None = None,
+        session_id: str | None = None,
+        correlation_id: str | None = None,
+        occurred_at: datetime | None = None,
+        conn: Any | None = None,
+    ) -> int:
+        sql = (
+            f'INSERT INTO {self._qualified} '
+            '(event_type, occurred_at, actor, entity_kind, entity_id, '
+            ' workspace_id, session_id, correlation_id, payload) '
+            'VALUES ($1, COALESCE($2, now()), $3, $4, $5, $6, $7, $8, '
+            '$9::jsonb) RETURNING id'
+        )
+        async with self._acquire_or_use(conn) as c:
+            row = await c.fetchrow(
+                sql, event_type, occurred_at, actor, entity_kind,
+                entity_id, workspace_id, session_id, correlation_id,
+                json.dumps(payload or {}),
+            )
+        return int(row["id"])
+
+    @staticmethod
+    def _row_to_event(row: Any) -> Event:
+        payload = row["payload"]
+        if isinstance(payload, str):
+            payload = json.loads(payload)
+        return Event(
+            id=int(row["id"]),
+            event_type=row["event_type"],
+            occurred_at=row["occurred_at"],
+            actor=row["actor"],
+            entity_kind=row["entity_kind"],
+            entity_id=row["entity_id"],
+            workspace_id=row["workspace_id"],
+            session_id=row["session_id"],
+            correlation_id=row["correlation_id"],
+            payload=payload,
+        )
+
+    async def read_after(
+        self,
+        after_id: int,
+        *,
+        limit: int = 200,
+        event_type_prefix: str | None = None,
+        entity_kind: str | None = None,
+        entity_id: str | None = None,
+        workspace_id: str | None = None,
+        since: datetime | None = None,
+    ) -> list[Event]:
+        where = ["id > $1"]
+        params: list[Any] = [after_id]
+
+        def _bind(clause: str, value: Any) -> None:
+            params.append(value)
+            where.append(clause.format(n=len(params)))
+
+        if event_type_prefix is not None:
+            _bind("event_type LIKE ${n}", event_type_prefix
+                  .replace("\\", "\\\\")
+                  .replace("%", r"\%").replace("_", r"\_") + "%")
+        if entity_kind is not None:
+            _bind("entity_kind = ${n}", entity_kind)
+        if entity_id is not None:
+            _bind("entity_id = ${n}", entity_id)
+        if workspace_id is not None:
+            _bind("workspace_id = ${n}", workspace_id)
+        if since is not None:
+            _bind("occurred_at >= ${n}", since)
+        params.append(max(0, limit))
+        sql = (
+            'SELECT id, event_type, occurred_at, actor, entity_kind, '
+            'entity_id, workspace_id, session_id, correlation_id, payload '
+            f'FROM {self._qualified} WHERE ' + " AND ".join(where)
+            + f' ORDER BY id ASC LIMIT ${len(params)}'
+        )
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
+        return [self._row_to_event(r) for r in rows]
+
+    async def max_id(self) -> int:
+        async with self._pool.acquire() as conn:
+            value = await conn.fetchval(
+                f'SELECT MAX(id) FROM {self._qualified}',
+            )
+        return int(value) if value is not None else 0
+
+    async def prune(self, *, older_than: datetime, keep_after_id: int) -> int:
+        async with self._pool.acquire() as conn:
+            tag = await conn.execute(
+                f'DELETE FROM {self._qualified} '
+                'WHERE occurred_at < $1 AND id <= $2',
+                older_than, keep_after_id,
+            )
+        try:
+            return int(tag.rsplit(" ", 1)[-1])
+        except (ValueError, AttributeError):
+            return 0
+
+    # -- cursors ----------------------------------------------------------
+
+    async def get_cursor(self, subscriber_id: str) -> int:
+        async with self._pool.acquire() as conn:
+            value = await conn.fetchval(
+                f'SELECT cursor FROM {self._qualified_cursors} '
+                'WHERE subscriber_id = $1',
+                subscriber_id,
+            )
+        return int(value) if value is not None else 0
+
+    async def set_cursor(self, subscriber_id: str, event_id: int) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f'INSERT INTO {self._qualified_cursors} '
+                '(subscriber_id, cursor, updated_at) '
+                'VALUES ($1, $2, now()) '
+                'ON CONFLICT (subscriber_id) DO UPDATE SET '
+                'cursor = excluded.cursor, updated_at = excluded.updated_at',
+                subscriber_id, event_id,
+            )
+
+    async def delete_cursor(self, subscriber_id: str) -> None:
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                f'DELETE FROM {self._qualified_cursors} '
+                'WHERE subscriber_id = $1',
+                subscriber_id,
+            )
+
+    async def active_cursor_floor(self) -> int | None:
+        async with self._pool.acquire() as conn:
+            value = await conn.fetchval(
+                f'SELECT MIN(cursor) FROM {self._qualified_cursors}',
+            )
+        return int(value) if value is not None else None
