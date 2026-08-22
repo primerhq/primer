@@ -37,7 +37,9 @@
   --border-strong: oklch(0.38 0.005 250);
   --text: oklch(0.95 0.005 250);
   --text-2: oklch(0.72 0.005 250);
-  --text-3: oklch(0.55 0.005 250);
+  /* Contrast guard: was oklch(0.55 ...) at 4.03:1 on --bg (fails AA).
+     Raised to 0.62 so tertiary copy (timestamps, meta) stays legible. */
+  --text-3: oklch(0.62 0.005 250);
   /* FC5b: was oklch(0.4 …) → 2.12:1 on --bg (fails WCAG-AA). Raised to
      0.58 → 4.56:1 so secondary/placeholder text is legible in dark mode. */
   --text-4: oklch(0.58 0.005 250);
@@ -75,7 +77,9 @@
   --border-strong: oklch(0.8 0.006 250);
   --text: oklch(0.2 0.01 250);
   --text-2: oklch(0.42 0.008 250);
-  --text-3: oklch(0.58 0.006 250);
+  /* Contrast guard: was oklch(0.58 ...) at 4.10:1 on --bg (fails AA).
+     On near-white contrast rises as L drops; lowered to 0.53. */
+  --text-3: oklch(0.53 0.006 250);
   /* FC5b: was oklch(0.7 …) → 2.56:1 on --bg (fails WCAG-AA). On a near-white
      bg contrast rises as L drops, so lowered to 0.55 → 4.65:1. */
   --text-4: oklch(0.55 0.005 250);
