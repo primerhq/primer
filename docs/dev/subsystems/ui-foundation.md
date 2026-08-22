@@ -123,7 +123,9 @@ The bundle lifecycle runs once at server startup: `_install_jsx_bundle` reads th
 
 The frontend persists no server data. It persists a small set of client preferences to `localStorage`:
 
-- `primer.tweaks` holds the `theme` key only (the persisted subset of the tweaks store). The persisted theme is applied to `document.documentElement` synchronously at script load to avoid a dark-mode flash on a light-theme reload. Mockup-era knobs (`demoState`, `subsystemOn`, `icState`) are deliberately not persisted so an operator cannot strand themselves in a broken demo state.
+- `primer.tweaks` holds the `theme` key only (the persisted subset of the tweaks store). Theme resolution is LIGHT-FIRST (2026-08-23 revamp): an inline script in `index.html` applies, before first paint, the persisted choice if one exists, else the OS `prefers-color-scheme`; the tweaks default is `null` (follow the OS), and a `matchMedia` listener keeps an unpersisted session following OS changes live. The `Toggle Theme` verb (`theme.toggle`) persists an explicit choice. Mockup-era knobs (`demoState`, `subsystemOn`, `icState`) are deliberately not persisted so an operator cannot strand themselves in a broken demo state.
+
+Design tokens (ui/styles.css) carry the revamp's color discipline: `--accent` (blue) is the ONLY interactive color, `--attention` (orange) is RESERVED for needs-attention surfaces (badges, decision chips), and `--green`/`--red` are status semantics; `--font-ui` (Plus Jakarta Sans, self-hosted latin VF) is the UI face while `--font-mono` stays confined to code, diffs and IDs. Both theme blocks are guarded by `tests/ui/test_token_contrast.py`, which parses the oklch tokens per theme and fails CI when any pair in its `PAIRS` manifest drops below WCAG AA (4.5:1); when adding a text/surface token pair, extend `PAIRS` with it.
 - `primer.sidebar.collapsed` (per-group collapsed state) and `primer.sidebar.iconsOnly` (the icons-only collapse mode) hold sidebar layout state.
 - `primer.force-desktop` records the `?force-desktop=1` opt-out so it survives navigation.
 
