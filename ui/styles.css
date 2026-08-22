@@ -6,6 +6,9 @@
      IBM Plex Mono (matching the .mono class). */
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
+  /* UI face (spec 2026-08-23 section 9). Mono stays IBM Plex Mono. */
+  --font-ui: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+
   /* Studio type / spacing / radius scale (FC2). Theme-independent, so declared
      once on the base :root. Names the recurring magic numbers the FE port-map
      flagged (≈10.5/11.5/12.5px type; 4/8/12/14px spacing; 6/9/12px radii) as
@@ -160,7 +163,7 @@
   width: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  font-family: var(--font-ui);
   font-size: 13px;
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
@@ -751,7 +754,7 @@ html, body, #root { height: 100%; }
 
 body {
   margin: 0;
-  font-family: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  font-family: var(--font-ui);
   font-size: 13px;
   line-height: 1.45;
   color: var(--text);
@@ -1903,14 +1906,14 @@ input, textarea, select { font: inherit; color: inherit; }
    auth-screen's auth-spin keyframes. */
 @keyframes ic-bootstrap-spin { to { transform: rotate(360deg); } }
 
-/* ---- IBM Plex Sans + Mono (self-hosted, latin subset) ---- */
-/* Variable font covers weights 100..700 in a single ~45KB file. */
+/* ---- Plus Jakarta Sans + IBM Plex Mono (self-hosted, latin subset) ---- */
+/* Variable font: weights 300..700 in a single ~27KB file (spec 9). */
 @font-face {
-  font-family: 'IBM Plex Sans';
+  font-family: 'Plus Jakarta Sans';
   font-style: normal;
-  font-weight: 100 700;
+  font-weight: 300 700;
   font-display: swap;
-  src: url('vendor/fonts/IBMPlexSans-VF-latin.woff2') format('woff2');
+  src: url('vendor/fonts/PlusJakartaSans-VF-latin.woff2') format('woff2');
 }
 @font-face {
   font-family: 'IBM Plex Mono';
