@@ -74,6 +74,7 @@ from primer.model.storage import (
     PageRequest,
 )
 from primer.model.workspace import (
+    WorkspaceEventsConfig,
     FileEntry,
     Workspace as WorkspaceRow,
     WorkspaceChannelLink,
@@ -503,6 +504,38 @@ async def get_workspace(
     if row is None:
         raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
     return row
+
+
+@workspace_router.put(
+    "/workspaces/{workspace_id}/events",
+    response_model=WorkspaceRow,
+    summary="Set the workspace's lifecycle-event streaming config",
+    responses=common_responses(404, 500),
+)
+async def set_workspace_events(
+    body: "WorkspaceEventsBody",
+    workspace_id: str = Path(..., description="Workspace id"),
+    storage=Depends(get_workspace_storage),
+) -> WorkspaceRow:
+    """Opt a workspace in or out of platform event streaming.
+
+    When enabled, the WorkspaceEventBridge holds one runtime stream
+    for this workspace and emits workspace.file_changed /
+    exec_started / exec_exited onto the event log. ``config: null``
+    switches it off.
+    """
+    row = await storage.get(workspace_id)
+    if row is None:
+        raise NotFoundError(f"Workspace {workspace_id!r} does not exist")
+    return await storage.update(
+        row.model_copy(update={"events": body.config})
+    )
+
+
+class WorkspaceEventsBody(BaseModel):
+    """Wrapper so ``config: null`` is expressible (clears the opt-in)."""
+
+    config: WorkspaceEventsConfig | None = None
 
 
 @workspace_router.post(

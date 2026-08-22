@@ -103,3 +103,43 @@ async def test_system_rows_reject_update_delete_but_pause(client, app) -> None:
     )
     assert paused.status_code == 200, paused.text
     assert paused.json()["paused"] is True
+
+
+@pytest.mark.asyncio
+async def test_workspace_events_toggle(client, app) -> None:
+    """PUT /v1/workspaces/{id}/events opts a workspace in and out."""
+    await _login(client)
+    from datetime import datetime, timezone
+
+    from pydantic import SecretStr
+
+    from primer.model.workspace import Workspace, WorkspaceRuntimeMeta
+
+    sp = app.state.storage_provider
+    await sp.get_storage(Workspace).create(Workspace(
+        id="ws-evt-1", description="events toggle probe",
+        template_id="tpl-1", provider_id="p-1",
+        created_at=datetime.now(timezone.utc),
+        runtime_meta=WorkspaceRuntimeMeta(
+            url="ws://127.0.0.1:1/", token=SecretStr("t"),
+        ),
+    ))
+
+    on = await client.put(
+        "/v1/workspaces/ws-evt-1/events",
+        json={"config": {"enabled": True, "kinds": ["file_changed"]}},
+    )
+    assert on.status_code == 200, on.text
+    assert on.json()["events"]["enabled"] is True
+    assert on.json()["events"]["kinds"] == ["file_changed"]
+
+    off = await client.put(
+        "/v1/workspaces/ws-evt-1/events", json={"config": None},
+    )
+    assert off.status_code == 200, off.text
+    assert off.json()["events"] is None
+
+    missing = await client.put(
+        "/v1/workspaces/nope/events", json={"config": None},
+    )
+    assert missing.status_code == 404, missing.text
