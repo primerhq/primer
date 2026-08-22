@@ -33,6 +33,7 @@ class OpName(StrEnum):
     EXEC = "exec"
     WATCH_START = "watch_start"
     WATCH_CANCEL = "watch_cancel"
+    EVENTS_SUBSCRIBE = "events_subscribe"
     STATE_COMMIT = "state_commit"
     STATE_READ = "state_read"
     STATE_HISTORY = "state_history"

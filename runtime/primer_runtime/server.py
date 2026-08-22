@@ -24,6 +24,10 @@ from aiohttp import WSMsgType
 from primer_runtime.exec import ExecRegistry, start_exec
 from primer_runtime.locks import WorkspaceLockTable
 from primer_runtime.ops import HANDLERS, OpError, start_mutating_op, MutatingOpRegistry
+from primer_runtime.events_sub import (
+    EventBroadcaster,
+    start_events_subscribe,
+)
 from primer_runtime.protocol import ErrorCode, OpName, Response, serialize
 from primer_runtime.pty_op import PtyRegistry, start_pty
 from primer_runtime.watch import WatchRegistry, cancel_watch, start_watch
@@ -37,6 +41,9 @@ log = logging.getLogger(__name__)
 _KEY_TOKEN: web.AppKey[str] = web.AppKey("runtime_token", str)
 _KEY_WORKSPACE_ROOT: web.AppKey[str] = web.AppKey("workspace_root", str)
 _KEY_LOCKS: web.AppKey[WorkspaceLockTable] = web.AppKey("workspace_locks", WorkspaceLockTable)
+_KEY_BROADCASTER: web.AppKey["EventBroadcaster"] = web.AppKey(
+    "event_broadcaster", object,  # type: ignore[arg-type]
+)
 
 # Mutating single-shot ops that acquire a Tier-A write lock and therefore may
 # park on a busy scope/path lock. These are offloaded off the message loop as
@@ -154,6 +161,10 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     # --- Post-handshake message loop -----------------------------------------
     workspace_root: str = request.app[_KEY_WORKSPACE_ROOT]
     locks: WorkspaceLockTable = request.app[_KEY_LOCKS]
+    broadcaster: EventBroadcaster = request.app[_KEY_BROADCASTER]
+    # Handles for this connection's EVENTS_SUBSCRIBE broadcast
+    # registrations; released at teardown below.
+    events_handles: list[int] = []
 
     # Per-connection watch registry — tracks active subscription tasks.
     watch_registry = WatchRegistry()
@@ -209,6 +220,20 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                 target_req_id: int = (args or {}).get("target_req_id", -1)
                 cancel_watch(target_req_id, watch_registry)
                 # watch_closed is emitted by the subscription task itself
+                continue
+
+            # --- Workspace lifecycle broadcast ---------------------------
+            if op_name == OpName.EVENTS_SUBSCRIBE:
+                handle = await start_events_subscribe(
+                    req_id=frame_req_id,
+                    args=args,
+                    workspace_root=workspace_root,
+                    send=ws.send_str,
+                    broadcaster=broadcaster,
+                    watch_registry=watch_registry,
+                )
+                if handle is not None:
+                    events_handles.append(handle)
                 continue
 
             # --- Interactive PTY ops --------------------------------------
@@ -282,6 +307,7 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
                     locks=locks,
                     send=ws.send_str,
                     registry=exec_registry,
+                    broadcaster=broadcaster,
                 )
                 continue
 
@@ -342,6 +368,8 @@ async def _ws_handler(request: web.Request) -> web.WebSocketResponse:
     pty_registry.cancel_all()
     exec_registry.cancel_all()
     op_registry.cancel_all()
+    for handle in events_handles:
+        broadcaster.unsubscribe(handle)
 
     return ws
 
@@ -373,6 +401,7 @@ def build_app(*, token: str | None = None, workspace_root: str | None = None) ->
     # One advisory write-lock table per app: shared across every WS connection
     # to this workspace so concurrent writers to the same file/scope serialize.
     app[_KEY_LOCKS] = WorkspaceLockTable()
+    app[_KEY_BROADCASTER] = EventBroadcaster()
 
     # Write the ready marker on startup (inside the event loop).
     async def _on_startup(application: web.Application) -> None:
