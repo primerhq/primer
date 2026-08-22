@@ -355,15 +355,9 @@ function SH_AttentionList() {
 
   return (
     <section className="sh-rail-list" data-testid="rail-attention">
-      <h3>
-        Attention
-        {/* Distinct from rail-head-badge:<name> on the collapsed section
-            head: both render a count for the same list, and sharing one
-            testid made every targeted lookup ambiguous. */}
-        <span className="sh-rail-badge" data-testid="rail-badge:attention">
-          {interrupts.length + ambient.length}
-        </span>
-      </h3>
+      {/* The count renders ONCE, on the section head's
+          rail-head-badge:attention. A second header here duplicated it
+          (2026-08-23 audit) and is gone. */}
 
       {/* Interrupts, and only interrupts, get an in-shell toast. No
           sound at any tier. */}

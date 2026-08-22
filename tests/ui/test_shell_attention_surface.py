@@ -46,7 +46,10 @@ def test_only_interrupts_toast_and_ambient_only_badges() -> None:
     src = _rail()
     assert 'data-testid={"attention-toast:"' in src
     assert re.search(r'tier\s*===\s*"interrupt"', src)
-    assert 'data-testid="rail-badge:attention"' in src
+    # The ONE attention count badge lives on the section head (the
+    # in-list h3 duplicate was removed by the 2026-08-23 revamp).
+    assert '"rail-head-badge:" + name' in src
+    assert 'data-testid="rail-badge:attention"' not in src
     assert "playSound" not in src and "Audio(" not in src
 
 

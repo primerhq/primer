@@ -2897,6 +2897,8 @@ input, textarea, select { font: inherit; color: inherit; }
   cursor: pointer;
   white-space: nowrap;
   line-height: 1.5;
+  transition: background 150ms ease, color 150ms ease,
+    border-color 150ms ease;
 }
 .sh-verb:hover:not(:disabled) {
   color: var(--text);
@@ -2928,7 +2930,8 @@ input, textarea, select { font: inherit; color: inherit; }
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  font-family: var(--font-mono, monospace);
+  /* Chips and badges are UI labels, not code: they inherit --font-ui
+     (spec 9: monospace confined to code, diffs and IDs). */
   font-size: var(--fs-11);
   color: var(--text-2);
   background: var(--bg-2);
@@ -2978,6 +2981,14 @@ input, textarea, select { font: inherit; color: inherit; }
   text-align: left;
 }
 .sh-rail-head:hover { color: var(--text-2); }
+
+/* The reserved attention color, exactly where "needs me" lives
+   (spec 9: orange is attention's alone). */
+.sh-rail-head [data-testid="rail-head-badge:attention"] {
+  color: var(--attention);
+  background: var(--attention-dim);
+  border-color: var(--attention-border);
+}
 
 .sh-rail-verbs { margin-left: auto; display: inline-flex; gap: 2px; }
 .sh-rail-verbs .sh-verb { padding: 1px 5px; font-size: var(--fs-11); }
@@ -3034,12 +3045,32 @@ input, textarea, select { font: inherit; color: inherit; }
   flex: 1;
 }
 
+/* Empty states: message above action, never overlapping (audit fix). */
 .sh-empty {
-  color: var(--text-4);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--sp-2);
+  color: var(--text-3);
   font-size: var(--fs-12);
-  padding: var(--sp-1) var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
   list-style: none;
 }
+
+/* The empty-state action is a REAL secondary button, not a ghost that
+   reads as disabled (audit fix: gray-on-gray Create Session). */
+.sh-empty button {
+  font: inherit;
+  font-size: var(--fs-12);
+  color: var(--text-2);
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-6);
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.sh-empty button:hover { background: var(--bg-hover); color: var(--text); }
 
 /* ---- Center: tab groups + docs --------------------------------------- */
 
@@ -3436,7 +3467,9 @@ input, textarea, select { font: inherit; color: inherit; }
 .sh-overlay {
   position: fixed;
   inset: 40px 0 26px auto;
-  width: min(860px, calc(100vw - 232px));
+  /* 980px: the agents table's natural width; the 860px sheet clipped
+     its STATUS column (2026-08-23 audit). */
+  width: min(980px, calc(100vw - 232px));
   z-index: 50;
   background: var(--bg);
   border-left: 1px solid var(--border-strong);
@@ -3456,8 +3489,30 @@ input, textarea, select { font: inherit; color: inherit; }
   padding: var(--sp-1) var(--sp-3);
   min-height: 34px;
 }
-.sh-overlay-title { font-size: var(--fs-12); font-weight: 600; color: var(--text); }
-.sh-overlay-verbs { margin-left: auto; display: inline-flex; gap: 2px; }
+.sh-overlay-title {
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--text);
+  flex: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+/* The registry renders every overlay-button verb in this strip; it
+   scrolls rather than squeezing the title or the Close button off the
+   sheet (2026-08-23 audit: "Close Overla..."). */
+.sh-overlay-verbs {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  justify-content: flex-end;
+  scrollbar-width: none;
+}
+.sh-overlay-bar > button.sh-verb { flex: none; white-space: nowrap; }
 .sh-overlay-body { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-4); }
 .sh-overlay-denied { padding: var(--sp-4); color: var(--text-3); }
 
@@ -3505,7 +3560,21 @@ input, textarea, select { font: inherit; color: inherit; }
 .sh-trace-empty { color: var(--text-4); font-size: var(--fs-12); }
 .sh-wiki-body { font-size: var(--fs-13); line-height: 1.65; max-width: 72ch; }
 
-.sh-admin-search { max-width: 320px; }
+.sh-admin-search {
+  max-width: 320px;
+  font: inherit;
+  font-size: var(--fs-12);
+  color: var(--text);
+  background: var(--bg-1);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-6);
+  padding: 6px 10px;
+}
+.sh-admin-search::placeholder { color: var(--text-4); }
+.sh-admin-search:focus-visible {
+  outline: 2px solid var(--accent-border);
+  outline-offset: 1px;
+}
 .sh-admin-section { border-top: 1px solid var(--border); padding-top: var(--sp-3); }
 .sh-admin-advanced { color: var(--text-3); }
 

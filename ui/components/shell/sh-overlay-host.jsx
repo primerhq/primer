@@ -389,8 +389,11 @@ function SH_OverlayHost() {
     <div className="sh-overlay" role="dialog" aria-modal="false"
       data-testid={"shell-overlay:" + name}>
       <div className="sh-overlay-bar">
+        {/* ONE-TITLE RULE (2026-08-23 revamp): the bar names the SURFACE
+            ("Agents"), never the verb that opened it ("Open Agents" -
+            the audit's wrong-altitude title). */}
         <span className="sh-overlay-title">
-          {window.SH_OVERLAY_LABELS[name]}
+          {SH_OVERLAY_TITLES[name] || name}
         </span>
         {/* Rendered from the registry so an overlay-surface verb cannot
             be declared and then never offered anywhere. */}
@@ -408,15 +411,12 @@ function SH_OverlayHost() {
           onClick={function () { shell.closeOverlay(); }}>Close Overlay</button>
       </div>
       <div className="sh-overlay-body" data-testid="shell-overlay-body">
-        <div className="page-header">
-          {/* The crumb, restored. Every re-hosted page states in its own
-              header comment that app.jsx renders the crumb and h1 for it,
-              which is why none of them draw their own; the flag day cut
-              app.jsx down to the mount and the crumb went with it. A
-              detail view has had no way back to its list since, so
-              opening one agent, graph, toolset or harness was a one-way
-              trip ending at Close Overlay. */}
-          {overlay.id || overlay.section ? (
+        {/* The crumb survives for detail views (the way back to the
+            list); the h1 that repeated the bar title is gone under the
+            one-title rule (2026-08-23 audit: "Open Agents" + "Agents"
+            double heading). */}
+        {overlay.id || overlay.section ? (
+          <div className="page-header">
             <div className="crumb">
               <a data-testid="shell-overlay-crumb"
                 onClick={function () { shell.openOverlay(name, null, null); }}
@@ -424,9 +424,8 @@ function SH_OverlayHost() {
               <span className="sep">/</span>
               <span className="mono">{SH_overlayTitle(overlay)}</span>
             </div>
-          ) : null}
-          <h1 className="page-title">{SH_overlayTitle(overlay)}</h1>
-        </div>
+          </div>
+        ) : null}
         {mount.render(overlay, shell)}
       </div>
     </div>

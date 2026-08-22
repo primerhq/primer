@@ -119,7 +119,10 @@ function SH_AdminOverlay(props) {
     return (
       <section key={section.id} className="sh-admin-section"
         data-testid={"shell-admin-section:" + section.id}>
-        <h4>{section.title}</h4>
+        {/* One-title rule: the re-hosted pages render their own
+            action-bearing panel headers ("API tokens" + Refresh/Create),
+            so a second h4 above each was pure duplication (2026-08-23
+            audit). */}
         {section.render(shell)}
       </section>
     );
