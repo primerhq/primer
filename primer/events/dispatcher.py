@@ -173,6 +173,12 @@ class EventDispatcher(_BackgroundTask):
                             event.id, sub.id, count,
                         )
                         self._fail_counts.pop(key, None)
+                        if self._sub_completed(sub):
+                            # A one-shot wake that kept failing is an
+                            # orphan (timed-out or cancelled park): GC
+                            # it rather than letting it stalk the log.
+                            await self._complete_one_shot(sub)
+                            return delivered
                     if ok:
                         self._fail_counts.pop((sub.id, event.id), None)
                         if self._sub_completed(sub):
@@ -227,6 +233,20 @@ class EventDispatcher(_BackgroundTask):
     async def _deliver_session_wake(
         self, sub: EventSubscription, sink: SessionWakeSink, event: Event,
     ) -> bool:
+        park = await self._park_state(sink)
+        if park == "gone":
+            # The session ended or vanished: the wait can never be
+            # answered. Consume the event and GC the subscription.
+            await self._complete_one_shot(sub)
+            return True
+        if park == "pending":
+            # The event beat the worker's park write (the tool creates
+            # the subscription before the park row is durable). Hold
+            # the cursor; the next tick re-checks. The failure counter
+            # doubles as the orphan GC: a park that resumed by timeout
+            # never becomes visible again, and the skip path deletes
+            # the one-shot.
+            return False
         if self._bus is None:
             logger.warning(
                 "event-dispatcher: no bus to wake session %s "
@@ -238,16 +258,47 @@ class EventDispatcher(_BackgroundTask):
             sink.event_key, event.model_dump(mode="json"),
         )
         if sink.one_shot:
-            store = self._sp.get_event_store()
-            subs_storage = self._sp.get_storage(EventSubscription)
-            try:
-                await subs_storage.delete(sub.id)
-            except Exception:  # noqa: BLE001 - already gone is fine
-                logger.debug(
-                    "one-shot subscription %s already deleted", sub.id,
-                )
-            await store.delete_cursor(sub.id)
+            await self._complete_one_shot(sub)
         return True
+
+    async def _park_state(self, sink: SessionWakeSink) -> str:
+        """'parked' (deliver), 'pending' (retry later), or 'gone' (GC)."""
+        from primer.model.workspace_session import (
+            SessionStatus,
+            WorkspaceSession,
+        )
+
+        try:
+            row = await self._sp.get_storage(WorkspaceSession).get(
+                sink.session_id,
+            )
+        except Exception:  # noqa: BLE001 - treat a read hiccup as pending
+            logger.warning(
+                "event-dispatcher: session %s read failed", sink.session_id,
+                exc_info=True,
+            )
+            return "pending"
+        if row is None or row.status == SessionStatus.ENDED:
+            return "gone"
+        keys = set(row.parked_event_keys or [])
+        if row.parked_event_key:
+            keys.add(row.parked_event_key)
+        if row.parked_status in ("parked", "resumable") and (
+            sink.event_key in keys
+        ):
+            return "parked"
+        return "pending"
+
+    async def _complete_one_shot(self, sub: EventSubscription) -> None:
+        store = self._sp.get_event_store()
+        subs_storage = self._sp.get_storage(EventSubscription)
+        try:
+            await subs_storage.delete(sub.id)
+        except Exception:  # noqa: BLE001 - already gone is fine
+            logger.debug(
+                "one-shot subscription %s already deleted", sub.id,
+            )
+        await store.delete_cursor(sub.id)
 
 
 class EventRetentionPruner(_BackgroundTask):

@@ -949,6 +949,48 @@ def build_system_toolset(
         _ask_user_handler,
     )
 
+    # ---- wait_for_event (yielding; parks on the platform event log) --
+    from primer.toolset.events_wait import (
+        _WaitForEventArgs,
+        make_wait_for_event_handler,
+    )
+
+    registry["wait_for_event"] = (
+        make_tool(
+            id="wait_for_event",
+            toolset_id=toolset_id,
+            purpose=(
+                "Pause this turn until a platform event matching the "
+                "filter occurs; returns ``{event: <envelope>}`` (or "
+                "``{timed_out}`` / ``{cancelled}``)."
+            ),
+            when=(
+                "Use to react to something happening on the platform - a "
+                "document pushed to a collection, an agent created, a "
+                "session ending - instead of polling. Pass event-type "
+                "globs plus optional field matchers / rego expr; "
+                "workspace sessions only."
+            ),
+            args_schema=_WaitForEventArgs.model_json_schema(),
+            examples=[
+                ToolExample(
+                    args={
+                        "event_types": ["collection.document_pushed"],
+                        "fields": [{
+                            "path": "payload.collection_id",
+                            "op": "eq", "value": "kb",
+                        }],
+                    },
+                    returns="``{event: {...}}`` when a matching doc lands",
+                    note="yielding; worker released",
+                ),
+            ],
+            yields=True,
+            requires_workspace=True,
+        ),
+        make_wait_for_event_handler(storage_provider),
+    )
+
     # ---- read_doc_content (workspace-only document -> text) ----------
     # Only wired when the workspace layer is available (it resolves the
     # live workspace from ctx.workspace_id to read the file). When

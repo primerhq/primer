@@ -18,7 +18,29 @@ from primer.model.event import (
     SessionWakeSink,
 )
 from primer.model.provider import SqliteConfig
+from primer.model.workspace_session import (
+    AgentSessionBinding,
+    SessionStatus,
+    WorkspaceSession,
+)
 from primer.storage.sqlite import SqliteStorageProvider
+
+
+async def _park_session(sp, session_id: str, event_key: str) -> None:
+    """Persist a session row parked on ``event_key`` so the wake sink
+    sees a deliverable park (the dispatcher refuses to wake sessions
+    that are not visibly parked on the key)."""
+    from datetime import datetime, timezone
+
+    row = WorkspaceSession(
+        id=session_id, workspace_id="w",
+        binding=AgentSessionBinding(agent_id="agent-a"),
+        status=SessionStatus.WAITING,
+        created_at=datetime.now(timezone.utc),
+        parked_status="parked",
+        parked_event_key=event_key,
+    )
+    await sp.get_storage(WorkspaceSession).create(row)
 
 # asyncio_mode = "auto" in pyproject.toml: async tests need no marker.
 
@@ -96,6 +118,7 @@ async def test_failed_sink_holds_cursor_then_skips_after_n(sp):
         sink=SessionWakeSink(event_key="evwait:s1:c1", session_id="s1",
                              one_shot=False),
     )
+    await _park_session(sp, "s1", "evwait:s1:c1")
     d = _dispatcher(sp, bus=bus, max_failures=3)
     await d.drain_once()
     base_cursor = await store.get_cursor("sub-1")
@@ -118,6 +141,7 @@ async def test_one_shot_wake_publishes_and_completes(sp):
         sink=SessionWakeSink(event_key="evwait:s1:c1", session_id="s1"),
         filter_=EventFilter(event_types=["collection.document_pushed"]),
     )
+    await _park_session(sp, "s1", "evwait:s1:c1")
     d = _dispatcher(sp, bus=bus)
     await d.drain_once()
 
