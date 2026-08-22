@@ -27,35 +27,15 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# CDC kind registry
+# CDC kind registry — moved to primer.events.registry; re-exported here
+# under the historical names so existing call sites keep working.
 # ---------------------------------------------------------------------------
 
-_CDC_KINDS: dict[str, type] = {}
-
-
-def register_cdc_kind(kind: str, model_cls: type) -> None:
-    """Register a CDC entity kind.
-
-    Raises :class:`ValueError` if *kind* is already registered with a
-    **different** model class.  Re-registering the same class is idempotent
-    (safe on module re-import).
-    """
-    existing = _CDC_KINDS.get(kind)
-    if existing is not None and existing is not model_cls:
-        raise ValueError(
-            f"CDC kind {kind!r} already registered with {existing!r}"
-        )
-    _CDC_KINDS[kind] = model_cls
-
-
-def known_cdc_kinds() -> dict[str, type]:
-    """Return a copy of the registered CDC kinds."""
-    return dict(_CDC_KINDS)
-
-
-def _reset_for_test() -> None:
-    """Test-only helper — clear the registry between test cases."""
-    _CDC_KINDS.clear()
+from primer.events.registry import (  # noqa: E402
+    _reset_for_test,
+    known_event_kinds as known_cdc_kinds,
+    register_event_kind as register_cdc_kind,
+)
 
 
 # ---------------------------------------------------------------------------

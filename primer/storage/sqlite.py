@@ -38,6 +38,7 @@ from primer.int.document_content import (
     ContentRow,
     DocumentContentStore,
 )
+from primer.events.registry import kind_for_model
 from primer.int.event_store import EventStore
 from primer.int.storage import Storage
 from primer.int.storage_provider import StorageProvider
@@ -144,6 +145,23 @@ class SqliteStorageProvider(StorageProvider):
         # unit). Any OTHER task's write is a foreign write: it blocks on the
         # lock and gets its own commit.
         self._txn_task: asyncio.Task[Any] | None = None
+
+    async def _ensure_events_schema(self) -> None:
+        """Lazily create the event-log tables once per provider.
+
+        The storage write path appends CRUD events for registered
+        kinds; tests construct providers without running the lifespan's
+        explicit ``ensure_schema``, so the seam ensures it on first
+        need and caches the fact.
+        """
+        if getattr(self, "_events_schema_ready", False):
+            return
+        await self.get_event_store().ensure_schema()
+        # Inside a caller's transaction the DDL joined that transaction
+        # and rolls back with it; only a standalone ensure is durable
+        # enough to cache.
+        if not self._in_own_transaction():
+            self._events_schema_ready = True
 
     def _in_own_transaction(self) -> bool:
         """True iff the calling task is the one that opened an active
@@ -508,6 +526,34 @@ class SqliteStorageProvider(StorageProvider):
         return SqliteEventStore(self)
 
 
+async def _append_crud_event(
+    conn: aiosqlite.Connection,
+    *,
+    event_type: str,
+    entity_kind: str,
+    entity_id: str,
+    payload_json: str,
+) -> None:
+    """Append one CRUD event on ``conn`` WITHOUT acquiring the write guard.
+
+    Called from inside a Storage write's guard block so the event rides
+    the exact same commit (or rollback) as the entity statement. The
+    payload is the row's own JSON dump, so the event carries exactly
+    what was stored.
+    """
+    await conn.execute(
+        "INSERT INTO events (event_type, occurred_at, actor, entity_kind,"
+        " entity_id, payload) VALUES (?, ?, 'system', ?, ?, ?)",
+        (
+            event_type,
+            datetime.now(timezone.utc).isoformat(),
+            entity_kind,
+            entity_id,
+            payload_json,
+        ),
+    )
+
+
 class SqliteStorage(Storage[ModelT]):
     """Per-model :class:`Storage` handle backed by a SQLite JSON-blob table.
 
@@ -612,6 +658,9 @@ class SqliteStorage(Storage[ModelT]):
         # thread; accept the kwarg for Protocol parity and ignore it.
         del conn
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         entity_id, data_json = self._to_row(entity)
         sql = (
             f'INSERT INTO "{self._table}" (id, data) VALUES (?, ?) '
@@ -623,6 +672,13 @@ class SqliteStorage(Storage[ModelT]):
                     sql, (entity_id, data_json),
                 )
                 row = await cur.fetchone()
+                if event_kind is not None:
+                    await _append_crud_event(
+                        self._provider.connection,
+                        event_type=f"{event_kind}.created",
+                        entity_kind=event_kind, entity_id=entity_id,
+                        payload_json=data_json,
+                    )
                 if should_commit:
                     await self._provider.connection.commit()
         except Exception as exc:
@@ -638,6 +694,9 @@ class SqliteStorage(Storage[ModelT]):
         # thread; accept the kwarg for Protocol parity and ignore it.
         del conn
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         entity_id, data_json = self._to_row(entity)
         sql = (
             f'UPDATE "{self._table}" '
@@ -650,6 +709,13 @@ class SqliteStorage(Storage[ModelT]):
                     sql, (data_json, entity_id),
                 )
                 row = await cur.fetchone()
+                if event_kind is not None and row is not None:
+                    await _append_crud_event(
+                        self._provider.connection,
+                        event_type=f"{event_kind}.updated",
+                        entity_kind=event_kind, entity_id=entity_id,
+                        payload_json=data_json,
+                    )
                 if should_commit:
                     await self._provider.connection.commit()
         except Exception as exc:
@@ -667,13 +733,23 @@ class SqliteStorage(Storage[ModelT]):
         # thread; accept the kwarg for Protocol parity and ignore it.
         del conn
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         sql = f'DELETE FROM "{self._table}" WHERE id = ?'
         try:
             async with self._provider._write_guard() as should_commit:  # noqa: SLF001
                 cur = await self._provider.connection.execute(sql, (id,))
+                rowcount = cur.rowcount
+                if event_kind is not None and rowcount > 0:
+                    await _append_crud_event(
+                        self._provider.connection,
+                        event_type=f"{event_kind}.deleted",
+                        entity_kind=event_kind, entity_id=id,
+                        payload_json=json.dumps({"id": id}),
+                    )
                 if should_commit:
                     await self._provider.connection.commit()
-                rowcount = cur.rowcount
         except Exception as exc:
             raise _wrap_sqlite_error(
                 exc, model_name=self._model.__name__, op="delete",

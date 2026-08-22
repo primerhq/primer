@@ -68,6 +68,7 @@ from primer.int.document_content import (
     ContentRow,
     DocumentContentStore,
 )
+from primer.events.registry import kind_for_model
 from primer.int.event_store import EventStore
 from primer.int.storage import Storage
 from primer.int.storage_provider import StorageProvider
@@ -453,6 +454,19 @@ class PostgresStorageProvider(StorageProvider):
         """Return the event-log store bound to this provider's pool."""
         return PostgresEventStore(self.pool, self._schema)
 
+    async def _ensure_events_schema(self) -> None:
+        """Lazily create the event-log tables once per provider.
+
+        The storage write path appends CRUD events for registered
+        kinds; tests construct providers without running the
+        lifespan's explicit ``ensure_schema``, so the seam ensures it
+        on first need and caches the fact.
+        """
+        if getattr(self, "_events_schema_ready", False):
+            return
+        await self.get_event_store().ensure_schema()
+        self._events_schema_ready = True
+
     @asynccontextmanager
     async def transaction(self):
         """Acquire a pooled connection and open a transaction on it.
@@ -564,6 +578,28 @@ def _hot_field_index_ddl(table: str, qualified: str) -> list[str]:
             f"ON {qualified} {expr}"
         )
     return out
+
+
+async def _append_crud_event(
+    conn: Any,
+    schema: str,
+    *,
+    event_type: str,
+    entity_kind: str,
+    entity_id: str,
+    payload_json: str,
+) -> None:
+    """Append one CRUD event on ``conn`` inside the caller's transaction.
+
+    The payload is the row's own JSON dump, so the event carries
+    exactly what was stored.
+    """
+    await conn.execute(
+        f'INSERT INTO "{schema}".events '
+        "(event_type, actor, entity_kind, entity_id, payload) "
+        "VALUES ($1, 'system', $2, $3, $4::jsonb)",
+        event_type, entity_kind, entity_id, payload_json,
+    )
 
 
 class PostgresStorage(Storage[ModelT]):
@@ -680,6 +716,9 @@ class PostgresStorage(Storage[ModelT]):
 
     async def create(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         entity_id, data_json = self._to_row(entity)
         sql = (
             f'INSERT INTO {self._qualified} (id, data) '
@@ -688,7 +727,17 @@ class PostgresStorage(Storage[ModelT]):
         )
         try:
             async with self._acquire_or_use(conn) as c:
-                row = await c.fetchrow(sql, entity_id, data_json)
+                if event_kind is None:
+                    row = await c.fetchrow(sql, entity_id, data_json)
+                else:
+                    async with c.transaction():
+                        row = await c.fetchrow(sql, entity_id, data_json)
+                        await _append_crud_event(
+                            c, self._provider.schema,
+                            event_type=f"{event_kind}.created",
+                            entity_kind=event_kind, entity_id=entity_id,
+                            payload_json=data_json,
+                        )
         except asyncpg.UniqueViolationError as exc:
             raise ConflictError(
                 f"{self._model.__name__} with id {entity_id!r} already exists",
@@ -700,6 +749,9 @@ class PostgresStorage(Storage[ModelT]):
 
     async def update(self, entity: ModelT, *, conn: Any | None = None) -> ModelT:
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         entity_id, data_json = self._to_row(entity)
         sql = (
             f'UPDATE {self._qualified} '
@@ -709,7 +761,18 @@ class PostgresStorage(Storage[ModelT]):
         )
         try:
             async with self._acquire_or_use(conn) as c:
-                row = await c.fetchrow(sql, entity_id, data_json)
+                if event_kind is None:
+                    row = await c.fetchrow(sql, entity_id, data_json)
+                else:
+                    async with c.transaction():
+                        row = await c.fetchrow(sql, entity_id, data_json)
+                        if row is not None:
+                            await _append_crud_event(
+                                c, self._provider.schema,
+                                event_type=f"{event_kind}.updated",
+                                entity_kind=event_kind, entity_id=entity_id,
+                                payload_json=data_json,
+                            )
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
         if row is None:
@@ -720,10 +783,24 @@ class PostgresStorage(Storage[ModelT]):
 
     async def delete(self, id: str, *, conn: Any | None = None) -> None:
         await self._ensure_table()
+        event_kind = kind_for_model(self._model)
+        if event_kind is not None:
+            await self._provider._ensure_events_schema()
         sql = f'DELETE FROM {self._qualified} WHERE id = $1'
         try:
             async with self._acquire_or_use(conn) as c:
-                result = await c.execute(sql, id)
+                if event_kind is None:
+                    result = await c.execute(sql, id)
+                else:
+                    async with c.transaction():
+                        result = await c.execute(sql, id)
+                        if not result.endswith(" 0"):
+                            await _append_crud_event(
+                                c, self._provider.schema,
+                                event_type=f"{event_kind}.deleted",
+                                entity_kind=event_kind, entity_id=id,
+                                payload_json=json.dumps({"id": id}),
+                            )
         except Exception as exc:
             raise self._wrap_db_error(exc) from exc
         # asyncpg returns the command tag string e.g. "DELETE 1" / "DELETE 0".
