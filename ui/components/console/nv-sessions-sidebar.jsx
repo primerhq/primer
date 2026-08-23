@@ -79,9 +79,20 @@ function NV_SessionContextMenu(props) {
 function NV_SessionsSidebar() {
   var con = NV_useConsole();
   var tap = window.useWorkspaceTap(con.wid);
+  // The TOP-LEVEL sessions route is the robust source (the
+  // workspace-scoped one reads on-disk state slots and misses rows
+  // whose slot is gone); filter to the selected workspace client-side.
   var sessions = window.primerApi.useResource(
-    SH_api.keys.sessions(con.wid),
-    function (signal) { return SH_api.sessions(con.wid, signal); },
+    "nv-sessions:" + con.wid,
+    function (signal) {
+      return SH_api.allSessions(signal).then(function (out) {
+        return {
+          items: (out.items || []).filter(function (s) {
+            return s.workspace_id === con.wid;
+          }),
+        };
+      });
+    },
     { pollMs: 5000, deps: [con.wid] }
   );
   var pending = window.primerApi.useResource(
