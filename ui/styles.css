@@ -915,7 +915,6 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .worker-pill.warn .dot { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-dim); }
 .worker-pill.err .dot { background: var(--red); box-shadow: 0 0 0 3px var(--red-dim); }
-.worker-pill .sep { color: var(--text-4); margin: 0 4px; }
 .worker-pill .num-warn { color: var(--amber); }
 
 .icon-btn {
@@ -3413,6 +3412,7 @@ input, textarea, select { font: inherit; color: inherit; }
 .sh-tab:focus-within .sh-tab-menu { display: inline-flex; }
 
 .sh-tab-status { font-size: var(--fs-11); }
+/* (worker-pill's .sep rule retired with its markup in step 2.) */
 .sh-tab-menu { display: inline-flex; gap: 2px; }
 
 .sh-doc {
