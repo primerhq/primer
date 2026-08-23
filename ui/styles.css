@@ -5605,3 +5605,113 @@ input, textarea, select { font: inherit; color: inherit; }
 }
 .nv-audit-mono { font-family: var(--font-mono); font-size: 11px; }
 .nv-audit-empty { color: var(--text-4); }
+
+/* =========================================================================
+   nv- SYSTEM (wiring plan P5 T11): dashboard health cards, worker fleet,
+   the cross-workspace attention panel, the profile page.
+   ========================================================================= */
+
+.nv-sys-title { margin-bottom: 14px; }
+.nv-sys-subtitle {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  margin: 18px 0 8px;
+}
+.nv-sys-row-head { display: flex; align-items: center; gap: 10px; }
+.nv-sys-row-head .nv-sys-subtitle { margin: 18px 0 8px; }
+.nv-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 10px;
+}
+.nv-health-card {
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  padding: 12px 13px;
+}
+.nv-health-k {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-4);
+}
+.nv-health-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.nv-health-v {
+  font-size: 21px;
+  font-weight: 600;
+  margin: 6px 0 2px;
+  font-variant-numeric: tabular-nums;
+}
+.nv-health-sub { font-size: 11px; color: var(--text-4); }
+.nv-worker-list {
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+.nv-worker-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  min-height: var(--hit);
+}
+.nv-worker-row:last-child { border-bottom: none; }
+.nv-worker-id {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text);
+}
+.nv-worker-fact {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--text-4);
+}
+.nv-sys-attn-title { color: var(--attention); }
+.nv-attn-list {
+  border: 1px solid var(--attention-border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+.nv-attn-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  min-height: var(--hit);
+}
+.nv-attn-row:last-child { border-bottom: none; }
+.nv-attn-session { font-family: var(--font-mono); font-size: 11.5px; }
+.nv-attn-kind {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--attention);
+  border: 1px solid var(--attention-border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.nv-attn-ws { font-size: 11px; color: var(--text-4); }
+.nv-profile-pw {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 360px;
+}
