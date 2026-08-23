@@ -31,7 +31,12 @@ function SH_InboxDoc() {
 
   var state = shell.attentionRef.current || { items: [], triage: null };
   var items = state.items || [];
-  var decisions = items.filter(function (i) { return i.kind === "approval"; });
+  // Digest-tier rows are RESOLVED records: they belong under "Show
+  // resolved", never among live decisions (a decided approval rendered
+  // as a decidable card again is the bug this filter kills).
+  var decisions = items.filter(function (i) {
+    return i.kind === "approval" && i.tier !== "digest";
+  });
   var asking = items.filter(function (i) {
     return i.kind === "question" && i.tier !== "digest";
   });

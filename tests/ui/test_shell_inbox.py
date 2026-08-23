@@ -61,3 +61,10 @@ def test_resolved_stays_queryable():
 
 def test_script_tag_present():
     assert "sh-inbox-doc.jsx" in HTML
+
+
+def test_resolved_records_never_render_as_live_decisions():
+    """A decided approval must not come back as a decidable card: the
+    records feed marks it digest-tier, and digest lives only behind
+    Show resolved (caught live by u0109's count-0 wait)."""
+    assert 'i.kind === "approval" && i.tier !== "digest"' in INBOX
