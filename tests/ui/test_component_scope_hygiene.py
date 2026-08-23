@@ -179,6 +179,10 @@ def test_no_page_writes_the_hash_behind_the_router() -> None:
         rel = path.relative_to(ui).as_posix()
         if "vendor/" in rel or rel.startswith("components/shell/"):
             continue
+        # The console owns the address bar (flag day), same as the shell
+        # dir before it.
+        if rel.startswith("components/console/"):
+            continue
         if rel.startswith("foundation/shell-"):
             continue
         for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):

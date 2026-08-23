@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
 SHARED = UI / "components" / "shared.jsx"
 APP = UI / "app.jsx"
-SESSION_DOC = UI / "components" / "shell" / "sh-session-doc.jsx"
+SESSION_DOC = UI / "components" / "console" / "nv-session-doc.jsx"
 TRIGGERS = UI / "components" / "triggers.jsx"
 PREDICATE = UI / "components" / "predicate-builder.jsx"
 
@@ -39,7 +39,8 @@ def test_dialog_host_uses_shared_modal_with_testids() -> None:
 
 def test_the_shell_mounts_confirm_host() -> None:
     """One host renders the active dialog for everything below it."""
-    src = (UI / "components" / "shell" / "sh-shell.jsx").read_text(encoding="utf-8")
+    src = (UI / "components" / "console" / "nv-shell.jsx").read_text(
+        encoding="utf-8")
     assert "window.ConfirmHost" in src
 
 

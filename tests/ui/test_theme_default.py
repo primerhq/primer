@@ -14,8 +14,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 HTML = (ROOT / "ui" / "index.html").read_text(encoding="utf-8")
 TWEAKS = (ROOT / "ui" / "foundation" / "tweaks.js").read_text(encoding="utf-8")
-DOC_HOST = (
-    ROOT / "ui" / "components" / "shell" / "sh-doc-host.jsx"
+CHROME = (
+    ROOT / "ui" / "components" / "console" / "nv-chrome.jsx"
 ).read_text(encoding="utf-8")
 
 
@@ -37,5 +37,9 @@ def test_tweaks_default_follows_system():
     )
 
 
-def test_toggle_verb_registered():
-    assert "theme.toggle" in DOC_HOST and "Toggle Theme" in DOC_HOST
+def test_theme_control_reachable():
+    # The profile menu's Dark/Light segment persists the choice and
+    # stamps the root attribute (nv chrome, flag day).
+    assert 'data-testid="nv-theme-seg"' in CHROME
+    assert 'setTweak("theme"' in CHROME
+    assert 'setAttribute("data-theme"' in CHROME

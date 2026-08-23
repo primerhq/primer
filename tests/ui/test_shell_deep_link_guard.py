@@ -23,9 +23,8 @@ REFS = {
     "file": "src/deep/nested path/api.ts",
     "diff": "9c1f2ab",
     "wiki": "col-1/guides/getting started",
-    "trace": "sess-4f1a2b3c:7",
-    # The Inbox is a singleton surface; "main" is its one ref.
-    "inbox": "main",
+    # trace and inbox died on the three-view flag day (the trace is a
+    # split inside the session doc; attention lives in the bands).
 }
 
 

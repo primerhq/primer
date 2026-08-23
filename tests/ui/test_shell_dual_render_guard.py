@@ -1,14 +1,12 @@
-"""The DUAL-RENDER guard: section 6's successor to the router guard.
+"""The DUAL-RENDER guard, re-aimed at the console on the flag day.
 
-tests/ui/test_sidebar_routes_resolve.py dies with the router it guards.
-This replaces it, and it guards a bigger thing: the palette is the
-router, so a surface with no verb is unreachable, and a verb with no
-pointer affordance is palette-only. Both are prohibited.
-
-Three assertions, all static, exactly as section 6 words them:
-  1. every registered verb renders a pointer affordance FROM the registry
-  2. every registered overlay and doc kind is reachable from the registry
-  3. every verb id referenced by chords or menus exists
+The palette is the router, so a surface with no verb is unreachable and
+a verb with no pointer affordance is palette-only. Both stay prohibited;
+what changed is the mechanism: the console registers verbs through the
+reg() wrapper in nv-shell and renders pointer affordances as
+data-verb attributes, overlays are opened by con.openOverlay (or the
+System view renders the same surface as a nav), and doc kinds are
+opened by con.setDoc / the adapter's openDoc.
 """
 
 from __future__ import annotations
@@ -21,24 +19,27 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
-SHELL = UI / "components" / "shell"
+CONSOLE = UI / "components" / "console"
 FOUNDATION = UI / "foundation"
 
 
-def _shell_sources() -> dict[str, str]:
-    return {p.name: p.read_text(encoding="utf-8") for p in sorted(SHELL.glob("*.jsx"))}
+def _console_sources() -> dict[str, str]:
+    return {
+        p.name: p.read_text(encoding="utf-8")
+        for p in sorted(CONSOLE.glob("*.jsx"))
+    }
 
 
-def _all_shell_text() -> str:
-    return "\n".join(_shell_sources().values())
+def _all_console_text() -> str:
+    return "\n".join(_console_sources().values())
 
 
 def _registrations() -> list[dict[str, str]]:
-    """Every registry.register({...}) literal in the shell, as a dict of
+    """Every reg({...}) / registry.register({...}) literal, as a dict of
     the scalar fields the guard cares about."""
     out: list[dict[str, str]] = []
-    for body in _shell_sources().values():
-        for match in re.finditer(r"registry\.register\(\{", body):
+    for body in _console_sources().values():
+        for match in re.finditer(r"(?:\breg|registry\.register)\(\{", body):
             start = match.end() - 1
             depth = 0
             for i in range(start, len(body)):
@@ -57,6 +58,9 @@ def _registrations() -> list[dict[str, str]]:
                 entry["id"] = vid.group(1)
             surfaces = re.search(r"surfaces:\s*\[([^\]]*)\]", block)
             entry["surfaces"] = surfaces.group(1) if surfaces else ""
+            chord = re.search(r'chord:\s*"([^"]+)"', block)
+            if chord:
+                entry["chord"] = chord.group(1)
             out.append(entry)
     return out
 
@@ -71,7 +75,7 @@ def _mini_racer_value(module: Path, expr: str):
 
 
 def test_every_registered_verb_declares_a_pointer_surface() -> None:
-    """Nothing is palette-only (section 8's dual-render rule)."""
+    """Nothing is palette-only (the dual-render rule)."""
     known = set(_mini_racer_value(FOUNDATION / "shell-verbs.js", "SH_SURFACES"))
     offenders = []
     for entry in _registrations():
@@ -82,63 +86,92 @@ def test_every_registered_verb_declares_a_pointer_surface() -> None:
     assert not offenders, f"palette-only verbs: {offenders}"
 
 
-def test_every_declared_surface_actually_renders_from_the_registry() -> None:
-    """A surface nobody calls forSurface() for is a declaration that
-    renders nothing, which is the failure mode the rule exists to
-    prevent."""
-    text = _all_shell_text()
-    declared: set[str] = set()
+def test_every_registered_verb_has_a_pointer_affordance() -> None:
+    """A declared pointer surface must actually render: every verb with
+    a non-palette surface carries a data-verb affordance somewhere, or
+    is one of the chrome verbs whose affordance IS the chrome control
+    (topbar toggles, the search field, the workspace selector)."""
+    text = _all_console_text()
+    rendered = set(re.findall(r'data-verb="([\w.]+)"', text))
+    # Chrome-owned verbs: the control is the affordance; the testid
+    # pins below keep them honest.
+    chrome_owned = {
+        "palette.open": 'data-testid="nv-search"',
+        "terminal.toggle": 'data-testid="nv-toggle-terminal"',
+        "events.toggle": 'data-testid="nv-toggle-events"',
+        "workspace.switch": 'data-testid="nv-ws-btn"',
+        "workspace.create": 'data-testid="nv-ws-create"',
+        "view.studio": 'data-testid="nv-go-studio"',
+        "view.platform": 'data-testid="nv-go-platform"',
+        "view.system": "nv-menu-row",
+    }
+    missing = []
     for entry in _registrations():
-        declared |= set(re.findall(r'"([\w-]+)"', entry["surfaces"]))
-    declared.discard("palette")  # the palette renders every verb by design
-    rendered = set(re.findall(r'forSurface\("([\w-]+)"\)', text))
-    missing = declared - rendered
-    assert not missing, f"surfaces declared but never rendered: {sorted(missing)}"
+        vid = entry.get("id")
+        if not vid:
+            continue
+        names = set(re.findall(r'"([\w-]+)"', entry["surfaces"]))
+        if not (names - {"palette"}):
+            continue
+        if vid in rendered:
+            continue
+        witness = chrome_owned.get(vid)
+        if witness and witness in text:
+            continue
+        missing.append(vid)
+    assert not missing, f"verbs with no pointer affordance: {sorted(missing)}"
 
 
 def test_every_overlay_is_reachable_from_the_registry() -> None:
+    """An overlay name no affordance opens is an address only a pasted
+    link can reach. Reachability witnesses: an openOverlay("<name>")
+    call, the shell's own setOverlay literal (the create verbs), or the
+    System view rendering the same surface as a nav row."""
     overlays = _mini_racer_value(FOUNDATION / "shell-url.js", "SH_OVERLAYS")
-    text = _all_shell_text()
-    # Task 15 generates one overlay.open.<name> verb per entry; assert the
-    # generator plus the label map that feeds it, then each name.
-    assert '"overlay.open." + name' in text
-    labels = re.search(r"var SH_OVERLAY_LABELS = \{([\s\S]*?)\n\};", text)
-    assert labels, "the overlay label map must be a literal"
-    # Keys are bare identifiers where the name allows one and quoted
-    # otherwise, which is the same thing to JS.
-    labelled = set(re.findall(r'"?([\w-]+)"?:\s*"', labels.group(1)))
-    assert labelled == set(overlays), (
-        f"unlabelled: {set(overlays) - labelled}; extra: {labelled - set(overlays)}"
-    )
+    text = _all_console_text()
+    system_equivalents = {
+        "activity": 'data-testid={"nv-sys-row:" + id}',
+        "internal-collections": 'data-testid={"nv-sys-row:" + id}',
+    }
+    unreachable = []
+    for name in overlays:
+        if f'openOverlay("{name}"' in text:
+            continue
+        if f'{{ name: "{name}", section: null, id: null }}' in text:
+            continue
+        witness = system_equivalents.get(name)
+        if witness and witness in text:
+            continue
+        unreachable.append(name)
+    assert not unreachable, f"unreachable overlays: {sorted(unreachable)}"
 
 
 def test_every_doc_kind_is_reachable_from_the_registry() -> None:
-    """An addressable doc kind that no verb can open is an orphan the URL
+    """An addressable doc kind no affordance opens is an orphan the URL
     can reach but the user cannot."""
     kinds = _mini_racer_value(FOUNDATION / "shell-url.js", "SH_DOC_KINDS")
-    text = _all_shell_text()
-    openers = set(re.findall(r'openDoc\(\{\s*kind:\s*"(\w+)"', text))
+    text = _all_console_text()
+    openers = set(re.findall(r'(?:setDoc|openDoc)\(\{\s*kind:\s*"(\w+)"', text))
     missing = set(kinds) - openers
-    assert not missing, f"doc kinds no verb opens: {sorted(missing)}"
+    assert not missing, f"doc kinds nothing opens: {sorted(missing)}"
 
 
 def test_every_chorded_verb_id_exists() -> None:
-    text = _all_shell_text()
-    chords = re.search(r"var SH_CHORDS = \{([\s\S]*?)\n\};", text)
-    assert chords, "SH_CHORDS must be a literal map"
-    wanted = set(re.findall(r':\s*"([\w.]+)"', chords.group(1)))
-    registered = {e["id"] for e in _registrations() if "id" in e}
-    # Generated overlay verbs are not literal ids in the source.
-    overlays = _mini_racer_value(FOUNDATION / "shell-url.js", "SH_OVERLAYS")
-    registered |= {"overlay.open." + name for name in overlays}
-    missing = wanted - registered
-    assert not missing, f"chords bound to unregistered verbs: {sorted(missing)}"
+    """A chord is a live binding through the registry dispatcher, so a
+    chord on an unregistered verb cannot happen by construction - what
+    CAN break is the dispatcher itself. Pin it."""
+    shell = _console_sources()["nv-shell.jsx"]
+    assert "chordMatches" in shell and "registry.all()" in shell
+    chorded = [e for e in _registrations() if e.get("chord")]
+    assert chorded, "at least the core chords must be registered"
+    for entry in chorded:
+        assert entry.get("id"), f"chord {entry['chord']} on an id-less verb"
 
 
 def test_every_data_verb_attribute_names_a_registered_verb() -> None:
     """The pointer affordances render data-verb="<id>"; a typo there is a
     button that looks live and does nothing."""
-    referenced = set(re.findall(r'data-verb="([\w.]+)"', _all_shell_text()))
+    referenced = set(re.findall(r'data-verb="([\w.]+)"', _all_console_text()))
     registered = {e["id"] for e in _registrations() if "id" in e}
     missing = referenced - registered
     assert not missing, f"data-verb pointing at nothing: {sorted(missing)}"

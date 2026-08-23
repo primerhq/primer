@@ -35,10 +35,14 @@ def test_shared_component_exists_and_is_exported() -> None:
 
 
 def test_every_create_surface_renders_the_shared_component() -> None:
-    """Anything that offers session creation must render the ONE shared
-    component instead of growing its own duplicated fields."""
-    host = UI / "components" / "shell" / "sh-overlay-host.jsx"
-    assert "SharedNewSessionForm" in host.read_text(encoding="utf-8")
+    """The create surface must not duplicate the tricky field logic.
+    The console's designer panel (flag day) re-implements the CHROME but
+    reuses the ONE schema-driven field component and keeps the submit
+    contract, which its own test file pins line by line."""
+    host = UI / "components" / "console" / "nv-overlays.jsx"
+    src = host.read_text(encoding="utf-8")
+    assert "SharedNewSessionSchemaField" in src
+    assert "graph_input" in src and "initial_instructions" in src
 
 
 def test_shared_component_supports_graph_input_schema() -> None:
@@ -77,7 +81,7 @@ def test_index_loads_shared_form_before_both_sites() -> None:
         return next(i for i, ln in enumerate(order) if needle in ln)
 
     shared_i = idx("components/new-session-form.jsx")
-    assert shared_i < idx("components/shell/sh-overlay-host.jsx")
+    assert shared_i < idx("components/console/nv-overlays.jsx")
     assert shared_i < idx("app.jsx")
     # Loaded after shared.jsx (which defines Modal/Btn/Icon it consumes).
     assert idx("components/shared.jsx") < shared_i

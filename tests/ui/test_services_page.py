@@ -13,7 +13,7 @@ def test_route_page_and_script() -> None:
     # The shell reaches page-shaped admin surfaces as overlays, addressed
     # by name in the URL hash rather than by a router table row.
     assert '"services"' in _read("foundation/shell-url.js")
-    assert "services: {" in _read("components/shell/sh-overlay-host.jsx")
+    assert "services: {" in _read("components/console/nv-overlays.jsx")
     assert 'src="components/services.jsx"' in _read("index.html")
 
 

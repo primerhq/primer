@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
-HOST = UI / "components" / "shell" / "sh-overlay-host.jsx"
+HOST = UI / "components" / "console" / "nv-overlays.jsx"
 MANIFEST = UI / "fixtures" / "shell" / "manifest.json"
 
 # name -> (file, exported component) from spec section 5's designations.
@@ -49,15 +49,15 @@ def _host() -> str:
 
 
 def _mount_names() -> set[str]:
-    m = re.search(r"var SH_OVERLAY_MOUNTS = \{([\s\S]*?)\n\};", _host())
+    m = re.search(r"var NV_OVERLAY_MOUNTS = \{([\s\S]*?)\n\};", _host())
     assert m, "the mount table must be a literal map"
     return set(re.findall(r'^\s{2}"?([\w-]+)"?:', m.group(1), re.MULTILINE))
 
 
 def test_every_overlay_name_has_a_mount() -> None:
-    """Admin arrives in Task 20; everything else must be here now."""
+    """The designer panels dispatch before the table; the rest mount here."""
     names = json.loads(MANIFEST.read_text(encoding="utf-8"))["overlays"]
-    missing = set(names) - _mount_names() - {"admin"}
+    missing = set(names) - _mount_names() - {"new-session", "new-workspace"}
     assert not missing, f"orphaned overlays: {sorted(missing)}"
 
 
@@ -79,7 +79,7 @@ def test_workers_and_channels_carry_their_second_surface() -> None:
 
 def test_switching_workspace_is_a_verb() -> None:
     """Spec section 3: switching is a palette verb and a rail affordance."""
-    src = (UI / "components" / "shell" / "sh-doc-host.jsx").read_text(
+    src = (UI / "components" / "console" / "nv-shell.jsx").read_text(
         encoding="utf-8"
     )
     assert "workspace.switch" in src

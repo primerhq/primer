@@ -73,7 +73,7 @@ def test_reuses_the_shared_schema_panel():
 def test_the_compaction_boundary_sentinel_is_gone():
     """Real compaction_marker rows are in the transcript now, so the
     client no longer guesses where the boundary is."""
-    doc = (UI / "components" / "shell" / "sh-session-doc.jsx").read_text(
+    doc = (UI / "components" / "console" / "nv-session-doc.jsx").read_text(
         encoding="utf-8"
     )
     assert "compactionBoundarySeq" not in doc

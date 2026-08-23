@@ -15,7 +15,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 UI = ROOT / "ui"
-SHELL = UI / "components" / "shell" / "sh-shell.jsx"
+SHELL = UI / "components" / "console" / "nv-shell.jsx"
 USE_MUTATION = UI / "foundation" / "use-mutation.js"
 
 

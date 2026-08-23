@@ -17,6 +17,87 @@ function NV_useConsole() {
   return React.useContext(NV_ConsoleContext);
 }
 
+// The ONE rendered toast stack (ported from the deleted sh shell on
+// flag day). primerApi.toastPush enqueues into module state that only
+// a rendered subscriber displays; without this host every toast is a
+// silent no-op. The host takes over the global entry points while
+// mounted so kind/timing rules live in one place.
+function NV_ToastHost() {
+  var toastState = React.useState([]);
+  var toasts = toastState[0];
+  var setToasts = toastState[1];
+  var toastSeq = React.useRef(1);
+
+  var pushToast = function (t) {
+    var id = String(toastSeq.current++);
+    setToasts(function (arr) {
+      return arr.concat([Object.assign({}, t, { id: id })]);
+    });
+    setTimeout(function () {
+      setToasts(function (arr) {
+        return arr.filter(function (x) { return x.id !== id; });
+      });
+    }, (t && t.kind === "error" ? 12 : 5) * 1000);
+  };
+  var removeToast = function (id) {
+    setToasts(function (arr) {
+      return arr.filter(function (x) { return x.id !== id; });
+    });
+  };
+
+  var pushToastRef = React.useRef(pushToast);
+  pushToastRef.current = pushToast;
+  var removeToastRef = React.useRef(removeToast);
+  removeToastRef.current = removeToast;
+
+  React.useEffect(function () {
+    var api = (window.primerApi = window.primerApi || {});
+    var prevPush = api.toastPush;
+    var prevDismiss = api.toastDismiss;
+    api.toastPush = function (t) { return pushToastRef.current(t); };
+    api.toastDismiss = function (id) { return removeToastRef.current(id); };
+    return function () {
+      api.toastPush = prevPush;
+      api.toastDismiss = prevDismiss;
+    };
+  }, []);
+
+  return (
+    <div className="toast-stack" data-testid="nv-toasts">
+      {toasts.map(function (t) {
+        var rid = t.requestId || t.reqId;
+        return (
+          <div key={t.id} className={"toast toast-" + (t.kind || "info")}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="title">{t.title || t.text}</div>
+              {t.detail ? <div className="detail">{t.detail}</div> : null}
+              {rid ? (
+                <div className="req-id">
+                  {"request-id "}
+                  <span style={{ color: "var(--text)" }}>{rid}</span>
+                  {" · "}
+                  {/* The request id is what an operator pastes into a
+                      bug report; copy beats transcription. */}
+                  <a
+                    data-testid="toast-copy-request-id"
+                    onClick={function () {
+                      if (navigator.clipboard && navigator.clipboard.writeText) {
+                        navigator.clipboard.writeText(rid).catch(function () {});
+                      }
+                    }}
+                  >copy</a>
+                </div>
+              ) : null}
+            </div>
+            <button type="button" className="close"
+              onClick={function () { removeToast(t.id); }}>x</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function NV_readUrl() {
   return SH_parseUrl(window.location.hash || "");
 }
@@ -291,6 +372,13 @@ function NV_Shell() {
           ? <window.NV_OverlayHost />
           : null}
         {typeof window.NV_Palette === "function" ? <window.NV_Palette /> : null}
+        {/* One host renders the active confirm/prompt dialog for
+            everything below it (FB9); window.confirmDialog resolves
+            through it, so without the mount every confirm hangs. */}
+        {typeof window.ConfirmHost === "function"
+          ? <window.ConfirmHost />
+          : null}
+        <NV_ToastHost />
       </div>
     </NV_ConsoleContext.Provider>
   );

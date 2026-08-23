@@ -137,6 +137,11 @@ function NV_WorkerFleet() {
         <div className="nv-sys-subtitle">Workers</div>
         <span style={{ flex: 1 }} />
         <button type="button" className="nv-btn-secondary"
+          data-testid="nv-sys-workers-manage"
+          onClick={function () { con.openOverlay("workers", null, null); }}>
+          Manage
+        </button>
+        <button type="button" className="nv-btn-secondary"
           data-testid="nv-sys-purge" onClick={purge}>Purge dead</button>
       </div>
       <div className="nv-worker-list">

@@ -24,8 +24,8 @@ def _read(rel: str) -> str:
 
 
 def test_the_binding_is_what_the_chip_reads() -> None:
-    src = _read("components/shell/sh-session-doc.jsx")
-    body = src.split("function SH_BindingChip(")[1].split("\n}")[0]
+    src = _read("components/console/nv-session-doc.jsx")
+    body = src.split("function NV_BindingChip(")[1].split("\n}")[0]
     assert 'binding.kind === "graph"' in body
     assert "binding.graph_id" in body
     assert "binding.agent_id" in body

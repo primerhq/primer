@@ -16,8 +16,6 @@
 (function () {
   const DEFAULT_DEFAULTS = {
     theme: null,  // null = follow the OS scheme (dark-first identity)
-    // The three-view console preview (wiring plan P0); dies at P7.
-    consoleNext: false,
     accent: "Primer green",
     density: "default",
     demoState: "happy",
@@ -45,7 +43,7 @@
   // deliberately don't persist demo-state knobs like `demoState` /
   // `subsystemOn` since those are mockup leftovers, not real
   // operator preferences.
-  const PERSISTED_KEYS = new Set(["theme", "consoleNext"]);
+  const PERSISTED_KEYS = new Set(["theme"]);
   const STORAGE_KEY = "primer.tweaks";
 
   function _readPersisted() {

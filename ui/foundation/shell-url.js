@@ -17,7 +17,10 @@
 // Web APIs are not ECMAScript, and a URL grammar that cannot be executed
 // in a test is a grammar nobody checks.
 
-var SH_DOC_KINDS = ["session", "file", "diff", "wiki", "trace", "inbox"];
+// trace and inbox died on the three-view flag day: the trace is a
+// split inside the session doc and attention lives in the bands + the
+// system dashboard, so neither is a document any more.
+var SH_DOC_KINDS = ["session", "file", "diff", "wiki"];
 
 // "admin" died on the flag day: users/sso/mcp/setup are the System
 // view's navs now, so an overlay=admin address drops on parse.

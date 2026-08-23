@@ -21,7 +21,7 @@ def test_banner_mounted_on_session_detail() -> None:
     # The chats.jsx mount went with the chat UI in S1 P7; the shell's
     # session document is the surviving surface that shows pending
     # external tool calls.
-    assert "ExternalPendingBanner" in _read("components/shell/sh-session-doc.jsx")
+    assert "ExternalPendingBanner" in _read("components/console/nv-session-doc.jsx")
 
 
 def test_agents_editor_has_flag_toggle() -> None:

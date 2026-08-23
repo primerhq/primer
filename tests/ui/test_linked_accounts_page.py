@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 LA = ROOT / "ui" / "components" / "linked_accounts.jsx"
-ADMIN_OVERLAY = ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx"
+ADMIN_OVERLAY = ROOT / "ui" / "components" / "console" / "nv-system.jsx"
 APP = ROOT / "ui" / "app.jsx"
 INDEX = ROOT / "ui" / "index.html"
 
@@ -114,8 +114,8 @@ def test_chrome_nav_has_linked_accounts_entry_without_admin_only() -> None:
     accounts — this nav item must NOT be adminOnly, unlike the admin SSO
     Providers entry right above it."""
     src = ADMIN_OVERLAY.read_text()
-    assert 'id: "linked-accounts"' in src
-    assert '"user"' in src, "the section must be reachable by a non-admin"
+    assert "LA_LinkedAccountsPage" in src
+    assert 'NV_SYS_USER_NAVS = ["apikeys", "profile"]' in src or '"apikeys", "profile"' in src, "profile (linked accounts) must be reachable by a non-admin"
 
 
 def test_index_has_script_tag() -> None:

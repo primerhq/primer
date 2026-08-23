@@ -236,18 +236,15 @@ def test_the_live_view_reflects_every_later_replacement() -> None:
 
 
 def test_both_registration_sites_pass_a_live_view() -> None:
-    """Neither site may hand the raw first-render object back in."""
-    for rel, call in (
-        ("components/shell/sh-doc-host.jsx", "SH_registerCoreVerbs"),
-        ("components/shell/sh-session-doc.jsx", "SH_registerSessionVerbs"),
-    ):
-        src = (ROOT / "ui" / rel).read_text(encoding="utf-8")
-        assert f"{call}(window.SH_liveShell(" in src, (
-            f"{rel} must register {call} against a live view, not a snapshot"
-        )
-        assert not re.search(rf"(?<!function ){call}\(shell\)", src), (
-            f"{rel} still registers {call} against a first-render snapshot"
-        )
+    """No verb may close over a first-render snapshot. The nv shell's
+    registrations run in its own effect and close over React setters
+    (stable across renders), never over derived state objects; the
+    idempotency guard keeps re-renders from double-registering."""
+    src = (
+        ROOT / "ui" / "components" / "console" / "nv-shell.jsx"
+    ).read_text(encoding="utf-8")
+    assert "function reg(v) { if (!registry.get(v.id)) registry.register(v); }" \
+        in src
 
 
 def test_requires_live_survives_registration() -> None:

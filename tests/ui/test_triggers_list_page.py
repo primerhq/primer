@@ -23,7 +23,7 @@ def test_triggers_is_a_registered_overlay():
 def test_the_overlay_host_renders_the_triggers_page():
     """The console has no route table: the overlay host IS the wiring."""
     src = (Path(__file__).resolve().parents[2] / "ui" / "components"
-           / "shell" / "sh-overlay-host.jsx").read_text()
+           / "console" / "nv-overlays.jsx").read_text()
     assert "TR_TriggersPage" in src
 
 

@@ -170,6 +170,8 @@ var NV_PLAT_PAGES = {
     open: function (con, row) { con.openOverlay("toolsets", null, row.id); },
     create: function (con) { con.openOverlay("toolsets", null, null); },
     delPath: function (row) { return "/toolsets/" + encodeURIComponent(row.id); },
+    // The flat tool catalog is its own overlay; this is its affordance.
+    extraNav: { label: "Tool catalog", run: function (con) { con.openOverlay("tools", null, null); } },
   },
   collections: {
     title: "Collections", createLabel: "New collection",
@@ -497,7 +499,7 @@ function NV_PlatPage() {
       ? "/" + provClass.plural + "/" + encodeURIComponent(row.id)
       : (page.delPath ? page.delPath(row) : null);
     if (!path) return;
-    window.confirmDialog({
+    confirmDialog({
       title: "Delete " + (row.name || row.id),
       message: "Permanently delete " + (row.id || row.name)
         + "? Referenced entities refuse deletion.",

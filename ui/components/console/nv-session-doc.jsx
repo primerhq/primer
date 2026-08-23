@@ -225,7 +225,7 @@ function NV_SessionHeader(props) {
             <button type="button" className="nv-menu-row" data-danger="true"
               onClick={function () {
                 setOvf(false);
-                window.confirmDialog({
+                confirmDialog({
                   title: "Delete session",
                   message: "Permanently delete this session?",
                   danger: true,
@@ -348,6 +348,106 @@ function NV_AskCard(props) {
 // ---------------------------------------------------------------------------
 // The trace split (right of the transcript; never an overlay)
 // ---------------------------------------------------------------------------
+// Inline artifacts (revamp decision 4, ported from the sh doc on flag
+// day): a write chip toggles a capped file preview IN PLACE under its
+// row; "Open as Tab" and "Maximize" are the escalations, and the
+// lightbox is transient UI that never reaches the URL.
+var NV_ARTIFACT_PREVIEW_LINES = 200;
+
+function NV_Lightbox(props) {
+  React.useEffect(function () {
+    function onKey(ev) { if (ev.key === "Escape") props.onClose(); }
+    window.addEventListener("keydown", onKey);
+    return function () { window.removeEventListener("keydown", onKey); };
+  });
+  return (
+    <div className="nv-lightbox" data-testid="nv-lightbox"
+      onClick={function (ev) {
+        if (ev.target === ev.currentTarget) props.onClose();
+      }}>
+      <div className="nv-lightbox-body">
+        <div className="nv-lightbox-bar">
+          <span className="nv-lightbox-title">{props.title}</span>
+          <button type="button" className="nv-btn-secondary"
+            data-testid="nv-lightbox-close"
+            onClick={props.onClose}>Close</button>
+        </div>
+        <pre className="nv-lightbox-content">{props.content}</pre>
+      </div>
+    </div>
+  );
+}
+
+function NV_ArtifactBlock(props) {
+  var con = NV_useConsole();
+  var maxState = React.useState(false);
+  var maximized = maxState[0];
+  var setMaximized = maxState[1];
+  var isFile = !!props.path;
+  var read = window.primerApi.useResource(
+    isFile
+      ? SH_api.keys.file(con.wid, props.path)
+      : "nv-artifact-none:" + props.seq,
+    function (signal) {
+      return isFile
+        ? SH_api.fileRead(con.wid, props.path, signal)
+        : Promise.resolve(null);
+    },
+    { pollMs: 0, deps: [con.wid, props.path || ""] }
+  );
+  var full = isFile
+    ? ((read.data && read.data.content) || "")
+    : String(props.output || "");
+  var lines = full.split("\n");
+  var capped = lines.length > NV_ARTIFACT_PREVIEW_LINES;
+  var preview = capped
+    ? lines.slice(0, NV_ARTIFACT_PREVIEW_LINES).join("\n")
+    : full;
+
+  return (
+    <div className="nv-artifact" data-testid={"nv-artifact:" + props.seq}>
+      <div className="nv-artifact-bar">
+        <span className="nv-artifact-title">
+          {isFile ? props.path : "output"}
+        </span>
+        {capped ? (
+          <span className="nv-artifact-note">
+            first {NV_ARTIFACT_PREVIEW_LINES} of {lines.length} lines
+          </span>
+        ) : null}
+        <span style={{ flex: 1 }} />
+        {isFile ? (
+          <button type="button" className="nv-artifact-verb"
+            data-testid="nv-artifact-open-tab"
+            onClick={function () {
+              con.setDoc({ kind: "file", ref: props.path });
+            }}>Open as Tab</button>
+        ) : null}
+        <button type="button" className="nv-artifact-verb"
+          data-testid="nv-artifact-maximize"
+          onClick={function () { setMaximized(true); }}>Maximize</button>
+      </div>
+      <pre className="nv-artifact-content">{preview}</pre>
+      {maximized ? (
+        <NV_Lightbox title={isFile ? props.path : "output"}
+          content={full}
+          onClose={function () { setMaximized(false); }} />
+      ) : null}
+    </div>
+  );
+}
+
+// What a chip can expand into: a written file's live content, else the
+// call's captured output. null = the chip is a plain label.
+function NV_artifactFor(row, info) {
+  if (info.tone === "write" && info.path) return { path: info.path };
+  var payload = row.payload || {};
+  var out = payload.output || payload.result_preview
+    || (typeof payload.result === "string" ? payload.result : null);
+  if (out) return { output: out };
+  return null;
+}
+
 function NV_TraceSplit(props) {
   var timeline = window.primerApi.useResource(
     SH_api.keys.timeline(props.sid, props.turnNo),
@@ -573,6 +673,12 @@ function NV_SessionDoc(props) {
   // speaks, and toggling on never replays backlog beyond the last
   // answer. Dictation is the composer's; nothing here commits a gate.
   var spokenRef = React.useRef({});
+  // seq -> expanded artifact descriptor. Inline-only (decision 4): a
+  // chip toggles its artifact IN PLACE; tabs are an explicit escalation
+  // on the block, never the click's side effect.
+  var expandedState = React.useState({});
+  var expanded = expandedState[0];
+  var setExpanded = expandedState[1];
   var graphViewState = React.useState(false);
   var graphView = graphViewState[0];
   var setGraphView = graphViewState[1];
@@ -738,16 +844,37 @@ function NV_SessionDoc(props) {
           </div>
           {isChip ? (
             <div className="nv-turn-chips">
-              <span className="nv-chip-pill" data-tone={chip.tone}>
-                <span className="nv-chip-icon">
-                  {NV_CHIP_ICONS[chip.tone] || NV_CHIP_ICONS.other}
-                </span>
-                {chip.label}
-              </span>
+              {(function () {
+                var artifact = NV_artifactFor(row, chip);
+                return (
+                  <button type="button" className="nv-chip-pill"
+                    data-tone={chip.tone}
+                    data-expandable={artifact ? "true" : "false"}
+                    onClick={function () {
+                      if (!artifact) return;
+                      setExpanded(function (prev) {
+                        var next = Object.assign({}, prev);
+                        if (next[row.seq]) delete next[row.seq];
+                        else next[row.seq] = artifact;
+                        return next;
+                      });
+                    }}>
+                    <span className="nv-chip-icon">
+                      {NV_CHIP_ICONS[chip.tone] || NV_CHIP_ICONS.other}
+                    </span>
+                    {chip.label}
+                  </button>
+                );
+              })()}
             </div>
           ) : (
             <div className="nv-turn-text">{row.label}</div>
           )}
+          {expanded[row.seq] ? (
+            <NV_ArtifactBlock seq={row.seq}
+              path={expanded[row.seq].path}
+              output={expanded[row.seq].output} />
+          ) : null}
           {(row.children || []).map(function (child) {
             var cInfo = child.kind === "tool_call"
               ? SH_toolChipLabel(child) : null;
@@ -781,6 +908,10 @@ function NV_SessionDoc(props) {
       {typeof window.NV_ClientTools === "function"
         ? <window.NV_ClientTools sid={sid} />
         : null}
+      {typeof window.ExternalPendingBanner === "function" ? (
+        <window.ExternalPendingBanner sessionId={sid}
+          pushToast={window.primerApi.toastPush} />
+      ) : null}
       <NV_SessionHeader sid={sid} session={session} usage={usage}
         voiceOn={voiceOn} ttsOk={ttsOk}
         onToggleVoice={function () {

@@ -5715,3 +5715,118 @@ input, textarea, select { font: inherit; color: inherit; }
   gap: 8px;
   max-width: 360px;
 }
+
+/* =========================================================================
+   nv- INLINE ARTIFACTS (flag day port of revamp decision 4): write chips
+   expand a capped preview in place; lightbox is the maximize escalation.
+   ========================================================================= */
+
+button.nv-chip-pill {
+  font: inherit;
+  text-align: left;
+  cursor: default;
+}
+button.nv-chip-pill[data-expandable="true"] { cursor: pointer; }
+button.nv-chip-pill[data-expandable="true"]:hover {
+  border-color: var(--accent-border);
+}
+.nv-artifact {
+  margin: 8px 0 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  overflow: hidden;
+}
+.nv-artifact-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.nv-artifact-title {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nv-artifact-note { font-size: 10px; color: var(--text-4); flex-shrink: 0; }
+.nv-artifact-verb {
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-size: 11px;
+  cursor: pointer;
+  padding: 2px 4px;
+  flex-shrink: 0;
+}
+.nv-artifact-verb:hover { text-decoration: underline; }
+.nv-artifact-content {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-2);
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.nv-lightbox {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.nv-lightbox-body {
+  width: min(980px, 94vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-10);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.nv-lightbox-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.nv-lightbox-title { font-family: var(--font-mono); font-size: 12px; }
+.nv-lightbox-content {
+  margin: 0;
+  padding: 14px 16px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Row buttons (FC5 keyboard access, flag day): the sidebar rows are
+   real <button>s so focus/Enter/Space come from the platform. These
+   resets let the existing row classes keep their layout. */
+button.nv-session-row,
+button.nv-file-row,
+button.nv-commit-row {
+  width: 100%;
+  text-align: left;
+  background: transparent;
+  border: none;
+  font: inherit;
+  color: inherit;
+  display: flex;
+}
+button.nv-commit-row { flex-direction: column; align-items: stretch; }

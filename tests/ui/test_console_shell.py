@@ -27,8 +27,11 @@ def test_regions_render():
 
 
 def test_flag_gates_the_mount():
-    assert "consoleNext" in APP and "NV_Shell" in APP
-    assert "SH_RootGate" in APP, "the current shell stays until flag day"
+    # Flag day (P7): the console mounts unconditionally; both the tweak
+    # and the old shell's gate are gone.
+    assert "NV_Shell" in APP
+    assert "consoleNext" not in APP
+    assert "SH_RootGate" not in APP
 
 
 def test_affordances_run_registered_verbs():

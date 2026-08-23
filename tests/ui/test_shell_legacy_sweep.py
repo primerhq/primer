@@ -15,8 +15,11 @@ ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "tests"
 SELF = Path(__file__).resolve()
 
+# Path-anchored: the console's OWN nv-chrome.jsx / nv-studio.jsx are
+# alive and well, so bare basenames would false-positive on them.
 DOOMED = [
-    "chrome.jsx", "dashboard.jsx", "studio.jsx", "studio-activity.jsx",
+    "components/chrome.jsx", "components/dashboard.jsx",
+    "components/studio.jsx", "studio-activity.jsx",
     "studio-center.jsx", "studio-palette.jsx", "studio-settings.jsx",
     "studio-sidebar.jsx", "studio-terminal.jsx", "components/studio/",
     "components/studio2/", "foundation/router.js",

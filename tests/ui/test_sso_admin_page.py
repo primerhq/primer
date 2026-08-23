@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SSO = ROOT / "ui" / "components" / "sso_admin.jsx"
-ADMIN = ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx"
+ADMIN = ROOT / "ui" / "components" / "console" / "nv-system.jsx"
 APP = ROOT / "ui" / "app.jsx"
 INDEX = ROOT / "ui" / "index.html"
 
@@ -100,8 +100,8 @@ def test_the_admin_overlay_renders_the_sso_page() -> None:
 
 def test_admin_overlay_has_sso_section() -> None:
     src = ADMIN.read_text()
-    assert 'id: "sso"' in src
-    assert "SSO Providers" in src
+    assert '"sso"' in src
+    assert "SSO" in src
 
 
 def test_index_has_script_tag() -> None:

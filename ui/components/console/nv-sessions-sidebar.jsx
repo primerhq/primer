@@ -28,7 +28,7 @@ function NV_SessionContextMenu(props) {
   var rows = [
     act("Open", function () { props.onOpen(s); }),
     act("Rename", function () {
-      window.promptDialog({
+      promptDialog({
         title: "Rename session", defaultValue: s.name || "",
       }).then(function (name) {
         if (name == null) return;
@@ -49,7 +49,7 @@ function NV_SessionContextMenu(props) {
     }, true));
   }
   rows.push(act("Delete", function () {
-    window.confirmDialog({
+    confirmDialog({
       title: "Delete session",
       message: "Permanently delete " + (s.name || sid) + "?",
       danger: true,
@@ -158,7 +158,7 @@ function NV_SessionsSidebar() {
                 : "?";
               var attention = band.id === "attention";
               return (
-                <div key={sid} className="nv-session-row"
+                <button type="button" key={sid} className="nv-session-row"
                   data-attention={attention ? "true" : "false"}
                   data-testid={"nv-session:" + sid}
                   onClick={function () { openDoc(s, false); }}
@@ -193,7 +193,7 @@ function NV_SessionsSidebar() {
                   {attention ? (
                     <span className="nv-dot-attention" title="needs you" />
                   ) : null}
-                </div>
+                </button>
               );
             })}
           </div>

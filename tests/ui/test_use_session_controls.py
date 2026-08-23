@@ -56,10 +56,11 @@ def test_hook_exposes_the_four_actions() -> None:
 
 def test_the_shells_own_control_verb_is_interrupt() -> None:
     """Pinned so the hook's disuse reads as a decision, not an omission."""
-    src = (UI / "components" / "shell" / "sh-doc-host.jsx").read_text(
+    src = (UI / "components" / "console" / "nv-session-doc.jsx").read_text(
         encoding="utf-8"
     )
-    assert 'id: "session.interrupt"' in src
+    assert 'data-testid="nv-interrupt"' in src
+    assert "SH_api.interrupt" in src
 
 
 def test_index_registers_the_hook() -> None:

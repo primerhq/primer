@@ -77,7 +77,7 @@ def test_fake_sessions_annotation_removed() -> None:
 def test_the_host_no_longer_passes_a_fake_sessions_prop() -> None:
     """The page reads workers from the API; a seeded sessions prop was
     design-canvas mock data leaking into production state."""
-    host = (UI / "components" / "shell" / "sh-overlay-host.jsx").read_text(
+    host = (UI / "components" / "console" / "nv-overlays.jsx").read_text(
         encoding="utf-8"
     )
     assert "window.WorkersPage" in host

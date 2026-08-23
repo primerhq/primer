@@ -4,7 +4,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 ADMIN = ROOT / "ui" / "components" / "admin_users.jsx"
-ADMIN_OVERLAY = ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx"
+ADMIN_OVERLAY = ROOT / "ui" / "components" / "console" / "nv-system.jsx"
 APP = ROOT / "ui" / "app.jsx"
 INDEX = ROOT / "ui" / "index.html"
 
@@ -71,14 +71,14 @@ def test_registered_in_bundle_order() -> None:
 
 def test_the_admin_overlay_renders_the_users_page() -> None:
     """The console has no route table: the overlay host IS the wiring."""
-    src = (ROOT / "ui" / "components" / "shell" / "sh-admin-overlay.jsx").read_text()
+    src = (ROOT / "ui" / "components" / "console" / "nv-system.jsx").read_text()
     assert "ADM_AdminUsersPage" in src
 
 
 def test_admin_overlay_has_users_section() -> None:
     """The shell has no per-page nav: admin surfaces are sections of
     the one search-first admin overlay."""
-    assert 'id: "users"' in ADMIN_OVERLAY.read_text()
+    assert '"users"' in ADMIN_OVERLAY.read_text()
 
 
 def test_keys_drilldown_present() -> None:

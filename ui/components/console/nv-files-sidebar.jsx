@@ -25,7 +25,7 @@ function NV_FilesSidebarVerbs() {
       <button type="button" className="nv-rail-iconbtn" title="New file"
         data-testid="nv-file-new"
         onClick={function () {
-          window.promptDialog({ title: "New file path" }).then(function (p) {
+          promptDialog({ title: "New file path" }).then(function (p) {
             if (!p) return;
             SH_api.fileWrite(con.wid, p, "").then(ui.refetch);
           });
@@ -68,7 +68,7 @@ function NV_FileContextMenu(props) {
   rows.push({
     label: "Rename",
     fn: function () {
-      window.promptDialog({
+      promptDialog({
         title: "Rename " + f.path, defaultValue: f.path,
       }).then(function (dst) {
         if (!dst || dst === f.path) return;
@@ -79,7 +79,7 @@ function NV_FileContextMenu(props) {
   rows.push({
     label: "Delete", danger: true,
     fn: function () {
-      window.confirmDialog({
+      confirmDialog({
         title: "Delete " + f.path,
         message: f.is_dir
           ? "Delete this folder and everything in it?"
@@ -195,7 +195,9 @@ function NV_FilesSidebar() {
     var expanded = !!open[entry.path];
     return (
       <React.Fragment key={entry.path}>
-        <div className="nv-file-row"
+        {/* A real button: focus, Enter and Space come from the
+            platform, not a role/tabindex retrofit (FC5). */}
+        <button type="button" className="nv-file-row"
           style={{ paddingLeft: 10 + depth * 14 }}
           data-testid={"nv-file:" + entry.path}
           onClick={function () {
@@ -241,7 +243,7 @@ function NV_FilesSidebar() {
           <span className="nv-file-name">
             {entry.path.split("/").pop()}
           </span>
-        </div>
+        </button>
         {entry.is_dir && expanded ? (
           <NV_FilesSubtree path={entry.path} depth={depth + 1} row={row} />
         ) : null}
@@ -282,7 +284,7 @@ function NV_FilesSidebar() {
             </div>
             {commitRows.map(function (c) {
               return (
-                <div key={c.sha} className="nv-commit-row"
+                <button type="button" key={c.sha} className="nv-commit-row"
                   data-testid={"nv-commit:" + c.sha}
                   onClick={function () {
                     con.setDoc({ kind: "diff", ref: c.sha });
@@ -296,7 +298,7 @@ function NV_FilesSidebar() {
                   <div className="nv-commit-meta">
                     {(c.session_id || "") + (c.op ? " · " + c.op : "")}
                   </div>
-                </div>
+                </button>
               );
             })}
             {!commitRows.length ? (
@@ -313,7 +315,7 @@ function NV_FilesSidebar() {
                 <button type="button" className="nv-btn-secondary"
                   data-testid="nv-files-empty-new"
                   onClick={function () {
-                    window.promptDialog({ title: "New file path" })
+                    promptDialog({ title: "New file path" })
                       .then(function (p) {
                         if (!p) return;
                         SH_api.fileWrite(con.wid, p, "").then(refetch);

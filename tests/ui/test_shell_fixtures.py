@@ -14,7 +14,8 @@ ROOT = Path(__file__).resolve().parents[2]
 FIXTURES = ROOT / "ui" / "fixtures" / "shell"
 MANIFEST = FIXTURES / "manifest.json"
 
-DOC_KINDS = ["session", "file", "diff", "wiki", "trace", "inbox"]
+# trace and inbox died on the three-view flag day (split + bands own them).
+DOC_KINDS = ["session", "file", "diff", "wiki"]
 # "admin" died on the flag day: its sections are the System view's navs.
 OVERLAYS = [
     "providers", "collections", "agents", "graphs", "triggers",

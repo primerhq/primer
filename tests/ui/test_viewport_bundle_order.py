@@ -35,5 +35,5 @@ def test_viewport_loads_before_shared() -> None:
 def test_viewport_loads_before_chrome() -> None:
     order = _script_order()
     assert order.index("foundation/viewport.js") < order.index(
-        "components/shell/sh-rail.jsx"
+        "components/console/nv-chrome.jsx"
     )

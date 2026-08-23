@@ -75,9 +75,7 @@
     "session",
     "file",
     "diff",
-    "wiki",
-    "trace",
-    "inbox"
+    "wiki"
   ],
   "overlays": [
     "providers",

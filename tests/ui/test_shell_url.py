@@ -243,10 +243,16 @@ def test_a_url_naming_another_workspace_is_ahead_not_wrong() -> None:
 
 
 def test_the_sync_effect_actually_consults_that_rule() -> None:
-    shell = (ROOT / "ui" / "components" / "shell" / "sh-shell.jsx").read_text(
-        encoding="utf-8",
-    )
-    assert "SH_urlIsAhead(SH_readUrl(), wid)" in shell
+    # The nv shell serves the same no-clobber rule structurally: the
+    # hashchange handler applies EVERY parsed field in one batch and the
+    # write effect refuses to touch a hash it did not author itself
+    # (ownHashRef), so an arriving deep link is never overwritten by a
+    # half-changed render.
+    shell = (
+        ROOT / "ui" / "components" / "console" / "nv-shell.jsx"
+    ).read_text(encoding="utf-8")
+    assert "ownHashRef" in shell
+    assert "if (current === ownHashRef.current) return;" in shell
 
 
 def test_views_match_the_manifest() -> None:

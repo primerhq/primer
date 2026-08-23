@@ -102,7 +102,10 @@ def test_no_reference_survives(token: str) -> None:
 def test_the_shell_is_mounted_unconditionally() -> None:
     src = (UI / "app.jsx").read_text(encoding="utf-8")
     assert "S2_RootGate" not in src
-    assert "SH_RootGate" in src
+    # The three-view flag day (2026-08 wiring plan P7) retired
+    # SH_RootGate in turn: NV_Shell mounts inside the same gate chain.
+    assert "SH_RootGate" not in src
+    assert "NV_Shell" in src
     assert "AuthGate" in src
     # S5 Task 8 builds SetupWizardGate as a LEAF (onDone only, no children
     # prop, never renders children) and S5 Task 9 owns the setup branch

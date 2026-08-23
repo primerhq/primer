@@ -49,10 +49,10 @@ def test_a_session_is_reachable_as_a_document() -> None:
     a session is a document in it, so a session link IS the shell URL."""
     url = (UI / "foundation" / "shell-url.js").read_text(encoding="utf-8")
     assert '"session"' in url, "session must be an addressable doc kind"
-    host = (UI / "components" / "shell" / "sh-doc-host.jsx").read_text(
-        encoding="utf-8"
-    )
-    assert 'kind: "session"' in host, "a verb must be able to open one"
+    host = (
+        UI / "components" / "console" / "nv-sessions-sidebar.jsx"
+    ).read_text(encoding="utf-8")
+    assert 'kind: "session"' in host, "an affordance must be able to open one"
     # The removed page component is never mounted.
     assert "<SessionDetail" not in APP
     assert "createElement(SessionDetail" not in APP

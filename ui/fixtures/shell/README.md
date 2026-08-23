@@ -20,14 +20,12 @@ Four doc kinds, addressed by wire id:
   `commit-log.json`, `commit-diff.json`.
 - `wiki` : a collection document addressed by its slug path. Fixture:
   `wiki-document.json`.
-- `trace` : one turn's exhaustive record, addressed as
-  `trace:<session-id>:<turn-no>`. It opens BESIDE the transcript in a
-  split group, never in an overlay, and it is the only place raw tool
-  arguments are shown. Fixture: `turn-timeline.json`.
-- `inbox` : the attention triage tab (2026-08-23 revamp): typed items
-  over the cross-workspace pending feed plus approval records, deciding
-  inline. Singleton; its one ref is `main`. Fixtures:
-  `pending-yields.json`, `approval-records.json`.
+
+The trace and inbox doc kinds died on the three-view flag day: the
+trace opens as a SPLIT inside the session doc (still the only place raw
+tool arguments are shown; fixture `turn-timeline.json`), and attention
+lives in the sessions bands plus the System dashboard's cross-workspace
+panel (fixtures `pending-yields.json`, `approval-records.json`).
 
 ## Overlays
 
@@ -35,26 +33,25 @@ Each is a self-contained management surface, opened over the shell and
 addressable in the URL. Names are the registry keys:
 
 `providers`, `collections`, `agents`, `graphs`, `triggers`, `toolsets`,
-`tools`, `workers`, `approvals`, `admin`, `harnesses`, `services`,
-`channels`, `workspaces`, `new-session`, `internal-collections`,
-`activity`.
+`tools`, `workers`, `approvals`, `harnesses`, `services`,
+`channels`, `workspaces`, `new-session`, `new-workspace`,
+`internal-collections`, `activity`.
 
-`activity` (2026-08-23 revamp) is the admin-gated events console over
-`GET /v1/events`. Since the same revamp these all render inside the
-full-screen STUDIO frame (grouped left nav), still addressed by
-`overlay=<name>`.
+`activity` is the admin-gated events console over `GET /v1/events`.
+Since the three-view flag day the overlays render as centered panels
+over whichever view is open, still addressed by `overlay=<name>`, and
+the old `admin` overlay is gone - its sections are the System view's
+navs (users, SSO, API keys, MCP, setup).
 
 `internal-collections` is the SUBSYSTEM: its config, its bootstrap
 control and the off-state that says why search is unavailable. It is not
 `collections`, which is the knowledge browser. The two were conflated
 once and the subsystem ended up addressable from nowhere.
 
-Fourteen re-host an existing component with no chrome. `new-session` hosts
-the shared create form for the case lazy creation cannot cover: starting a
-session with a binding, name and opening instructions the operator picks.
-`admin` is the only overlay designed from scratch: ONE search-first surface holding users, SSO,
-API tokens and MCP settings, common settings at level one, "Advanced"
-collapsed, admin sections role-gated, every setting palette-addressable.
+Most re-host an existing component with no chrome. `new-session` and
+`new-workspace` are the designer's create panels: binding picker (or
+template rows), name, and the advanced fold, keeping the shared submit
+contracts.
 
 Fixtures: `pending-yields.json`, `approval-records.json`,
 `workers-stats.json`, `capabilities.json`, `auth-status.json`.
