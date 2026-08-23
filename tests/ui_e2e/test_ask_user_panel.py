@@ -244,7 +244,7 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
         expect(card).to_have_attribute("data-kind", "question")
         expect(card.get_by_test_id("shell-decision-answer")).to_be_visible()
         # The rail badge reflects the single pending item.
-        expect(page.get_by_test_id("rail-badge:attention")).to_contain_text("1")
+        expect(page.get_by_test_id("rail-inbox-badge")).to_contain_text("1")
     finally:
         _cleanup(base_url, cleanup_urls)
 

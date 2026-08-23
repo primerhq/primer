@@ -9,7 +9,8 @@ Selectors mirror ui/components/shell/*.jsx exactly:
 
   shell-root / shell-topbar / shell-rail / shell-center / shell-statusbar
   shell-tab:<doc-id> · shell-overlay:<name> · shell-palette
-  rail-sessions / rail-files / rail-attention · attention-item:<sid>
+  rail-sessions / rail-files / rail-inbox · attention-item:<sid> (toast)
+  / inbox-item:<sid> (Inbox tab)
 """
 
 from __future__ import annotations

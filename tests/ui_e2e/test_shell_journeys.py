@@ -167,7 +167,9 @@ def test_landing_mounts_the_shell_and_lists_the_workspace(
     already listed. No route table, no page to pick."""
     wid, sid = seeded["workspace"], seeded["session"]
     open_shell(page, console_url, wid)
-    for region in ("shell-topbar", "shell-rail", "shell-center", "shell-statusbar"):
+    # Three regions since the 2026-08-23 revamp: the statusbar retired
+    # (status lives on the composer strip, rail chips and tab labels).
+    for region in ("shell-topbar", "shell-rail", "shell-center"):
         expect(page.get_by_test_id(region)).to_be_visible(timeout=15_000)
     expect(session_row(page, sid)).to_be_visible(timeout=20_000)
 

@@ -211,23 +211,29 @@ def open_workspace_settings(
 
 
 def expand_debug_sidebar(page: Page, *, timeout: int = 10_000) -> None:
-    """Assert the attention list is present.
+    """Open the attention surface.
 
-    Nothing to expand: attention is mounted in the rail at all times,
-    including when empty. That IS the shell's premise, so the Studio's
-    open-the-panel-first step becomes a visibility assertion.
+    The 2026-08-23 revamp moved triage into the INBOX tab (the rail's
+    pinned row opens it); interrupts additionally toast globally. Open
+    the Inbox so ambient items are in the DOM too, then assert it.
     """
-    expect(page.get_by_test_id("rail-attention")).to_be_visible(timeout=timeout)
+    page.get_by_test_id("rail-inbox").click()
+    expect(page.get_by_test_id("shell-inbox")).to_be_visible(timeout=timeout)
 
 
 def action_item_for_session(page: Page, sid: str):
     """The attention item for a session id.
 
-    ask_user / approval parks surface in the rail's attention list, one
-    item per pending yield, keyed by session so the match stays scoped to
-    THIS session even when the shared DB left other parks around.
+    Interrupt-tier parks (ask_user / approval) toast globally and keep
+    the attention-item testid; ambient items render as Inbox rows with
+    the inbox-item testid. Match either, keyed by session so the match
+    stays scoped to THIS session even when the shared DB left other
+    parks around.
     """
-    return page.get_by_test_id(f"attention-item:{sid}")
+    return page.locator(
+        f'[data-testid="attention-item:{sid}"],'
+        f' [data-testid="inbox-item:{sid}"]'
+    ).first
 
 
 def open_provider_catalog(
