@@ -195,6 +195,9 @@ async def test_tool_approval_respond_flips_row_without_listener(app, client):
     assert row.parked_state["resume_event_payload"] == {
         "decision": "approved",
         "reason": None,
+        # Stamped by the respond route (P6 approver routing); the
+        # fixture client's auto-registered first user is the admin.
+        "decided_by": "testuser",
     }
 
 

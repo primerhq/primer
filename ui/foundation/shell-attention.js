@@ -85,6 +85,11 @@ function SH_toAttentionItems(input) {
       // Stamped by the cross-workspace fan-out so the Inbox can jump
       // to a session in another workspace (revamp section 5).
       workspaceId: row.workspace_id || null,
+      // Who may decide (P6 approver routing); null = anyone. The
+      // decision card renders this as its routing label.
+      approvers: row.approvers
+        || ((row.resume_metadata || {}).approvers)
+        || null,
     };
     item.tier = SH_tierFor(item);
     out.push(item);

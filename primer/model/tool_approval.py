@@ -85,6 +85,37 @@ ApprovalConfig = Annotated[
 ]
 
 
+class ApproverSpec(BaseModel):
+    """Who may decide a gated call (2026-08-23 three-view wiring, P6).
+
+    ``anyone`` is the default and the historical behaviour. ``roles``
+    admits any caller whose role is listed; ``users`` admits the named
+    usernames. Admins are ALWAYS admitted regardless of kind: an admin
+    can edit or delete the policy anyway, so pretending to lock them
+    out is theater, and a users-routed decision whose named user is
+    gone must never wedge a parked session forever.
+    """
+
+    kind: Literal["anyone", "roles", "users"] = "anyone"
+    roles: list[str] = Field(
+        default_factory=list,
+        description="Admitted roles when kind='roles'.",
+    )
+    users: list[str] = Field(
+        default_factory=list,
+        description="Admitted usernames when kind='users'.",
+    )
+
+    def allows(self, *, username: str, role: str) -> bool:
+        if role == "admin":
+            return True
+        if self.kind == "anyone":
+            return True
+        if self.kind == "roles":
+            return role in self.roles
+        return username in self.users
+
+
 class ToolApprovalPolicy(Identifiable):
     """Operator-configured approval gate for one ``(toolset_id, tool_name)``."""
 
@@ -124,6 +155,14 @@ class ToolApprovalPolicy(Identifiable):
         description=(
             "Optional per-policy timeout. None falls back to the "
             "global yield cap."
+        ),
+    )
+    approvers: ApproverSpec | None = Field(
+        default=None,
+        description=(
+            "Who may decide calls this policy gates. None means anyone. "
+            "A policy/llm evaluation may override this per call by "
+            "returning an 'approvers' object in its verdict."
         ),
     )
 
@@ -208,12 +247,20 @@ class ToolApprovalRecord(Identifiable):
         default=None,
         description="Gating principal (caller identity), when available.",
     )
+    decided_by: str | None = Field(
+        default=None,
+        description=(
+            "Username that made the decision. None for synthesized "
+            "verdicts (timeout/cancel) and pre-P6 records."
+        ),
+    )
 
 
 __all__ = [
     "ApprovalConfig",
     "ApprovalDecision",
     "ApprovalType",
+    "ApproverSpec",
     "LlmApprovalConfig",
     "PolicyApprovalConfig",
     "RequiredApprovalConfig",

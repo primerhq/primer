@@ -74,6 +74,11 @@ async def write_approval_record_for_session(
         agent_id=getattr(session.binding, "agent_id", None),
         session_id=session.id,
         requested_at=session.parked_at,
+        # Stamped by the respond route (P6); synthesized verdicts
+        # (timeout/cancel) carry none.
+        decided_by=(
+            payload.get("decided_by") if isinstance(payload, dict) else None
+        ),
     )
     storage = (
         pool._storage.get_storage(ToolApprovalRecord)

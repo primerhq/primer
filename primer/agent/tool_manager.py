@@ -565,6 +565,9 @@ class ToolExecutionManager:
                     provider_registry=self._provider_registry,
                 )
                 if verdict.required:
+                    from primer.agent.approval import effective_approvers
+
+                    approvers = effective_approvers(policy, verdict)
                     session_or_chat = (
                         ctx.session_id or ctx.chat_id or "unknown"
                     )
@@ -588,6 +591,14 @@ class ToolExecutionManager:
                                 "policy_id": policy.id,
                                 "approval_type": policy.approval.type.value,
                                 "gate_reason": verdict.reason,
+                                # Who may decide (P6): the per-call spec
+                                # from the evaluator, else the policy
+                                # row's. None = anyone; the respond
+                                # route enforces this.
+                                "approvers": (
+                                    approvers.model_dump()
+                                    if approvers is not None else None
+                                ),
                                 "original_call": {
                                     "id": call.id,
                                     "name": call.name,

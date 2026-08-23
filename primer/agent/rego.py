@@ -32,6 +32,9 @@ class RegoVerdict:
 
     required: bool
     reason: str | None = None
+    # Optional per-call approver routing (P6): the raw 'approvers'
+    # object from the result document, validated by the approval layer.
+    approvers: Any | None = None
 
 
 _PACKAGE_QUERY = "data.primer.tool_approval"
@@ -90,7 +93,11 @@ def _coerce_verdict(raw: Any) -> RegoVerdict:
     else:
         reason = str(reason_raw)
 
-    return RegoVerdict(required=required, reason=reason)
+    return RegoVerdict(
+        required=required,
+        reason=reason,
+        approvers=doc.get("approvers"),
+    )
 
 
 def evaluate_policy(policy_text: str, input: dict[str, Any]) -> RegoVerdict:

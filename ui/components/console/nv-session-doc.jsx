@@ -253,11 +253,13 @@ function NV_DecisionCard(props) {
   var reasonState = React.useState("");
   var reason = reasonState[0];
   var setReason = reasonState[1];
+  // The ApproverSpec stamped at park time (P6): kind anyone|roles|users.
   var routing = item.approvers
     ? (item.approvers.kind === "anyone"
       ? "anyone may decide"
-      : "awaiting " + (item.approvers.roles || item.approvers.user_ids
-        || []).join(", "))
+      : "awaiting " + ((item.approvers.kind === "roles"
+        ? item.approvers.roles
+        : item.approvers.users) || []).join(", "))
     : "anyone may decide";
   return (
     <div className="nv-card nv-card-attention"

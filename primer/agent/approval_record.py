@@ -42,6 +42,7 @@ def record_from_parked_blob(
     chat_id: str | None = None,
     requested_at: datetime | None = None,
     decided_at: datetime | None = None,
+    decided_by: str | None = None,
 ) -> ToolApprovalRecord:
     """Build a record from a session/graph ``parked_state`` blob.
 
@@ -70,6 +71,7 @@ def record_from_parked_blob(
         approval_type=metadata.get("approval_type"),
         gate_reason=metadata.get("gate_reason"),
         principal=via.get("principal"),
+        decided_by=decided_by,
     )
 
 
@@ -82,6 +84,7 @@ def record_from_chat_pending(
     agent_id: str | None = None,
     requested_at: datetime | None = None,
     decided_at: datetime | None = None,
+    decided_by: str | None = None,
 ) -> ToolApprovalRecord:
     """Build a record from a chat ``pending_tool_call`` dict.
 
@@ -106,6 +109,7 @@ def record_from_chat_pending(
         approval_type=pending.get("approval_type"),
         gate_reason=pending.get("gate_reason"),
         principal=pending.get("principal"),
+        decided_by=decided_by,
     )
 
 

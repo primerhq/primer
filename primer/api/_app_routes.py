@@ -238,9 +238,19 @@ def _mount_routers(
     # additionally admin-OR-explicit-enable gates (Task 8).
     from primer.api.routers.terminal import terminal_router
     app.include_router(terminal_router, prefix=prefix, dependencies=user_dep)
-    # Tool approval policies — system policy => admin only.
-    from primer.api.routers.tool_approval import make_tool_approval_router
+    # Tool approval policies — system policy => admin only. The
+    # pending/respond/records OPERATOR surface is user-tier (P6):
+    # deciding a gated call is ordinary operator work, and who may
+    # decide a SPECIFIC call is the approver spec's business, enforced
+    # per park inside the respond route.
+    from primer.api.routers.tool_approval import (
+        make_tool_approval_ops_router,
+        make_tool_approval_router,
+    )
     app.include_router(make_tool_approval_router(), prefix=prefix, dependencies=admin_dep)
+    app.include_router(
+        make_tool_approval_ops_router(), prefix=prefix, dependencies=user_dep,
+    )
     # Channels. NAME-COLLISION: the channel PROVIDER CRUD is system
     # configuration => admin; channels + bindings (the feature) is
     # => require_user.

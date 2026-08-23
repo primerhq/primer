@@ -2309,6 +2309,8 @@ async def list_pending_yields(
                     "prompt": prompt,
                     "tool_call_id": tcid,
                     "parked_at": parked_at,
+                    # Who may decide (P6 approver routing); None = anyone.
+                    "approvers": metadata.get("approvers"),
                 }
             )
         if len(resp.items) < page_size:
@@ -2356,6 +2358,8 @@ async def list_session_pending_yields(
                 sess.parked_at.isoformat()
                 if sess.parked_at is not None else None
             ),
+            # Who may decide (P6 approver routing); None = anyone.
+            "approvers": metadata.get("approvers"),
         })
     return {"items": items}
 
