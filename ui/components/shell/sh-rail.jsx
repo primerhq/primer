@@ -24,6 +24,8 @@ var SH_RAIL_DEFAULT_PREFS = {
   // Collapsed OTHER-workspace groups in the cross-workspace sessions
   // list, keyed by workspace id (revamp section 3).
   groups: {},
+  // Persisted drag-resized section heights in px, keyed by list name.
+  sizes: {},
 };
 
 function SH_loadRailPrefs(username) {
@@ -534,8 +536,30 @@ function SH_Rail() {
         return SH_RAIL_LISTS.indexOf(name) >= 0 && prefs.hidden.indexOf(name) < 0;
       }).map(function (name) {
         var collapsed = !!prefs.collapsed[name];
+        // Native CSS resize + a ResizeObserver for persistence: drag
+        // the section's lower-right grip, the height sticks per
+        // account (revamp section 3, the unified-rail mitigation).
+        var sized = !collapsed && prefs.sizes && prefs.sizes[name];
         return (
-          <section key={name} className="sh-rail-section" data-collapsed={collapsed}>
+          <section key={name} className="sh-rail-section" data-collapsed={collapsed}
+            style={sized ? { height: prefs.sizes[name] + "px" } : null}
+            ref={function (el) {
+              if (!el || collapsed || !window.ResizeObserver) return;
+              if (el._shResizeObs) return;
+              var obs = new ResizeObserver(function (entries) {
+                var h = Math.round(entries[0].contentRect.height);
+                if (!h || Math.abs(h - (prefs.sizes[name] || 0)) < 4) return;
+                clearTimeout(el._shResizeT);
+                el._shResizeT = setTimeout(function () {
+                  var next = Object.assign({}, SH_loadRailPrefs(username));
+                  next.sizes = Object.assign({}, next.sizes);
+                  next.sizes[name] = h;
+                  update(next);
+                }, 300);
+              });
+              obs.observe(el);
+              el._shResizeObs = obs;
+            }}>
             <button
               type="button"
               className="sh-rail-head"

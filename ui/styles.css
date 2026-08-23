@@ -3025,7 +3025,15 @@ input, textarea, select { font: inherit; color: inherit; }
 
 .sh-rail-nav { display: flex; flex-direction: column; padding: var(--sp-2) 0; }
 
-.sh-rail-section { border-bottom: 1px solid transparent; }
+.sh-rail-section {
+  border-bottom: 1px solid transparent;
+  /* Native drag-resize (persisted by a ResizeObserver in SH_Rail);
+     collapsed sections lock to their header. */
+  resize: vertical;
+  overflow: auto;
+  min-height: 28px;
+}
+.sh-rail-section[data-collapsed="true"] { resize: none; height: auto !important; }
 .sh-rail-section + .sh-rail-section { margin-top: var(--sp-1); }
 
 .sh-rail-head {

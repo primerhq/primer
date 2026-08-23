@@ -131,3 +131,11 @@ def test_other_workspace_rows_navigate_by_url() -> None:
         "a session in another workspace navigates via the URL grammar"
     )
     assert "session.workspace_id !== shell.wid" in src
+
+
+def test_rail_sections_remember_their_size() -> None:
+    """Revamp section 3: unified-rail mitigation - persisted resize."""
+    src = _src()
+    assert "ResizeObserver" in src
+    assert "sizes" in re.search(
+        r"var SH_RAIL_DEFAULT_PREFS = \{[\s\S]*?\};", src).group(0)
