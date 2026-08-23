@@ -81,6 +81,18 @@ var SH_api = {
       "PUT", url, { content: content, encoding: "text" });
   },
 
+  // The platform event log window (events.py list_events; admin-gated).
+  events: function (opts, signal) {
+    var o = opts || {};
+    var q = ["limit=" + encodeURIComponent(o.limit || 100)];
+    if (o.afterId != null) q.push("after_id=" + encodeURIComponent(o.afterId));
+    if (o.eventType) q.push("event_type=" + encodeURIComponent(o.eventType));
+    if (o.entityKind) q.push("entity_kind=" + encodeURIComponent(o.entityKind));
+    if (o.workspaceId) q.push("workspace_id=" + encodeURIComponent(o.workspaceId));
+    return window.primerApi.apiFetch(
+      "GET", "/events?" + q.join("&"), null, { signal: signal });
+  },
+
   // PATCH rename (workspaces.py rename_session): {name}; null clears.
   renameSession: function (wid, sid, name) {
     return window.primerApi.apiFetch(

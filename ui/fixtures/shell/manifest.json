@@ -95,6 +95,7 @@
     "channels",
     "workspaces",
     "new-session",
-    "internal-collections"
+    "internal-collections",
+    "activity"
   ]
 }

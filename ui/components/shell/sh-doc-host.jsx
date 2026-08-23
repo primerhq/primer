@@ -22,6 +22,7 @@ var SH_OVERLAY_LABELS = {
   channels: "Open Channels",
   workspaces: "Open Workspaces",
   "internal-collections": "Open Internal Collections",
+  activity: "Open Activity",
 };
 
 function SH_registerCoreVerbs(shell) {
@@ -257,16 +258,27 @@ function SH_registerCoreVerbs(shell) {
       });
     },
   });
+  // The Studio (revamp section 7): every management surface renders as
+  // a nav row in the full-screen Studio; the palette reaches them all.
   for (var i = 0; i < SH_OVERLAYS.length; i++) {
     (function (name) {
       shell.registry.register({
         id: "overlay.open." + name,
         label: SH_OVERLAY_LABELS[name],
-        surfaces: ["topbar", "palette"],
+        surfaces: ["studio-nav", "palette"],
         run: function () { shell.openOverlay(name); },
       });
     })(SH_OVERLAYS[i]);
   }
+  shell.registry.register({
+    id: "studio.open", label: "Open Studio",
+    surfaces: ["topbar", "palette"],
+    run: function () {
+      var last = null;
+      try { last = window.localStorage.getItem("primer.shell.studio"); } catch (_e) { /* noop */ }
+      shell.openOverlay(last || "agents");
+    },
+  });
 }
 
 // Some verbs only mean something while a session is still going.
@@ -489,24 +501,21 @@ function SH_Topbar() {
       <span className="sh-topbar-right">
         <SH_WorkerPill />
 
-        {/* TEMPORARY chrome (step 2 of the migration): one menu over
-            the topbar-surface verbs until the Studio area (step 6)
-            absorbs the management surfaces. Registry-rendered, so the
-            dual-render guard still sees every verb. */}
-        <details className="sh-topbar-menu" data-testid="shell-topbar-menu">
-          <summary className="sh-verb">Open&hellip;</summary>
-          <div className="sh-topbar-menu-panel">
-            {shell.registry.forSurface("topbar").map(function (verb) {
-              if (SH_TOPBAR_PROMOTED[verb.id]) return null;
-              return (
-                <button key={verb.id} type="button" className="sh-verb"
-                  data-verb={verb.id} onClick={function () { verb.run(); }}>
-                  {verb.label}
-                </button>
-              );
-            })}
-          </div>
-        </details>
+        {/* Step 6: the "Open..." menu retired - management surfaces
+            live in the Studio's own nav. What remains of the topbar
+            surface renders here, from the registry (dual-render). */}
+        {shell.registry.forSurface("topbar").map(function (verb) {
+          if (SH_TOPBAR_PROMOTED[verb.id]) return null;
+          var isStudio = verb.id === "studio.open";
+          return (
+            <button key={verb.id} type="button" className="sh-verb"
+              data-testid={isStudio ? "shell-topbar-studio" : undefined}
+              data-verb={verb.id}
+              onClick={function () { verb.run(); }}>
+              {isStudio ? "Studio" : verb.label}
+            </button>
+          );
+        })}
 
         <details className="sh-topbar-user" data-testid="shell-topbar-user">
           <summary className="sh-verb" title={shell.username}>

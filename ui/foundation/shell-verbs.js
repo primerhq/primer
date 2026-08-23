@@ -11,7 +11,7 @@
 
 var SH_SURFACES = [
   "palette", "rail", "tab-menu", "overlay-button", "attention-item",
-  "composer-slash", "topbar",
+  "composer-slash", "topbar", "studio-nav",
 ];
 
 // Only these open a label. An allowlist is the one lint that actually

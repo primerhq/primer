@@ -3801,20 +3801,90 @@ input, textarea, select { font: inherit; color: inherit; }
 
 /* ---- Overlays (admin pages, catalogs, wiki, ...) ---------------------- */
 
+/* The Studio (revamp section 7): the overlay host grew a nav and went
+   full-screen. One management area, not fourteen sheets. */
 .sh-overlay {
   position: fixed;
-  inset: 40px 0 0 auto;
-  /* 980px: the agents table's natural width; the 860px sheet clipped
-     its STATUS column (2026-08-23 audit). */
-  width: min(980px, calc(100vw - 232px));
+  inset: 40px 0 0 0;
   z-index: 50;
   background: var(--bg);
-  border-left: 1px solid var(--border-strong);
-  box-shadow: var(--shadow);
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr);
+  min-height: 0;
+}
+.sh-studio-nav {
+  border-right: 1px solid var(--border);
+  background: var(--bg-1);
+  overflow-y: auto;
+  padding: var(--sp-3) var(--sp-2);
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+.sh-studio-group h4 {
+  margin: 0 0 var(--sp-1);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-11);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-3);
+}
+.sh-studio-row {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: var(--fs-12);
+  color: var(--text-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-6);
+  padding: 5px 10px;
+  cursor: pointer;
+  transition: background 150ms ease, color 150ms ease;
+}
+.sh-studio-row:hover { background: var(--bg-hover); color: var(--text); }
+.sh-studio-row[data-active="true"] {
+  background: var(--accent-dim);
+  color: var(--accent);
+  font-weight: 600;
+}
+.sh-studio-main {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
 }
+
+/* The Activity console. */
+.sh-activity { display: flex; flex-direction: column; gap: var(--sp-3); min-height: 0; }
+.sh-activity-bar { display: flex; gap: var(--sp-2); flex-wrap: wrap; align-items: center; }
+.sh-activity-tablewrap { overflow: auto; min-height: 0; }
+.sh-activity-table { border-collapse: collapse; width: 100%; font-size: var(--fs-12); }
+.sh-activity-table th {
+  text-align: left;
+  font-size: var(--fs-11);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-3);
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border-strong);
+  position: sticky;
+  top: 0;
+  background: var(--bg);
+}
+.sh-activity-table td {
+  padding: var(--sp-1) var(--sp-2);
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
+}
+.sh-activity-foot { display: flex; align-items: center; gap: var(--sp-2); }
+.sh-activity-count { font-size: var(--fs-11); color: var(--text-3); }
 
 .sh-overlay-bar {
   flex: none;
@@ -3926,11 +3996,13 @@ input, textarea, select { font: inherit; color: inherit; }
     grid-template-columns: 1fr;
     grid-template-areas:
       "topbar"
-      "center"
-      "status";
+      "center";
   }
   .sh-rail { display: none; }
-  .sh-overlay { width: 100vw; }
+  /* Narrow Studio: content only; the nav's rows stay reachable from
+     the palette (dual-render). */
+  .sh-overlay { grid-template-columns: 1fr; }
+  .sh-studio-nav { display: none; }
 }
 
 /* Shell refinements from the first visual pass. */

@@ -65,6 +65,13 @@ var SH_OVERLAY_MOUNTS = {
       );
     },
   },
+  activity: {
+    // The event log window rides the admin-gated /v1/events routes.
+    roles: ["admin"],
+    render: function () {
+      return <window.SH_ActivityPanel />;
+    },
+  },
   collections: {
     render: function (state, shell) {
       return (
@@ -306,6 +313,20 @@ var SH_OVERLAY_MOUNTS = {
 // The heading each overlay shows above its page. Distinct from
 // SH_OVERLAY_LABELS, which is palette wording ("Open Agents") for the
 // verb that gets you here and names no record.
+// The Studio nav's grouping (revamp section 7). "new-session" is a
+// quick action, not a place, so it is not a row.
+var SH_STUDIO_GROUPS = [
+  { label: "Build", names: [
+    "agents", "graphs", "toolsets", "tools", "collections",
+    "internal-collections",
+  ] },
+  { label: "Run", names: [
+    "workspaces", "workers", "approvals", "triggers", "channels",
+    "services", "harnesses",
+  ] },
+  { label: "Platform", names: ["providers", "activity", "admin"] },
+];
+
 var SH_OVERLAY_TITLES = {
   "new-session": "New session",
   providers: "Providers",
@@ -323,6 +344,7 @@ var SH_OVERLAY_TITLES = {
   channels: "Channels",
   workspaces: "Workspaces",
   "internal-collections": "Internal collections",
+  activity: "Activity",
 };
 
 
@@ -371,6 +393,14 @@ function SH_OverlayHost() {
     );
   }
 
+  // The Studio remembers where you were (revamp section 7). Declared
+  // before any early return: hooks must run unconditionally.
+  var currentName = overlay && overlay.name;
+  React.useEffect(function () {
+    if (!currentName || currentName === "new-session") return;
+    try { window.localStorage.setItem("primer.shell.studio", currentName); } catch (_e) { /* noop */ }
+  }, [currentName]);
+
   if (!overlay || !overlay.name) return null;
   var name = overlay.name;
   var mount = SH_OVERLAY_MOUNTS[name];
@@ -386,8 +416,43 @@ function SH_OverlayHost() {
   }
 
   return (
-    <div className="sh-overlay" role="dialog" aria-modal="false"
+    <div className="sh-overlay sh-studio" role="dialog" aria-modal="false"
       data-testid={"shell-overlay:" + name}>
+      {/* The Studio nav (revamp section 7): grouped rows rendered from
+          the registry's studio-nav surface, so the dual-render guard
+          keeps seeing every management surface. */}
+      <aside className="sh-studio-nav" data-testid="shell-studio-nav">
+        {/* Rendered FROM the surface listing, grouped by the map: the
+            dual-render guard checks the surface actually renders. */}
+        {(function () {
+          var navVerbs = {};
+          shell.registry.forSurface("studio-nav").forEach(function (v) {
+            navVerbs[v.id] = v;
+          });
+          return SH_STUDIO_GROUPS.map(function (group) {
+          return (
+            <div key={group.label} className="sh-studio-group">
+              <h4>{group.label}</h4>
+              {group.names.map(function (n) {
+                if (n === "activity" && shell.role !== "admin") return null;
+                var verb = navVerbs["overlay.open." + n];
+                if (!verb) return null;
+                return (
+                  <button key={n} type="button" className="sh-studio-row"
+                    data-verb={verb.id}
+                    data-active={n === name ? "true" : "false"}
+                    data-testid={"studio-nav:" + n}
+                    onClick={function () { verb.run(); }}>
+                    {SH_OVERLAY_TITLES[n] || n}
+                  </button>
+                );
+              })}
+            </div>
+          );
+          });
+        })()}
+      </aside>
+      <div className="sh-studio-main">
       <div className="sh-overlay-bar">
         {/* ONE-TITLE RULE (2026-08-23 revamp): the bar names the SURFACE
             ("Agents"), never the verb that opened it ("Open Agents" -
@@ -428,11 +493,13 @@ function SH_OverlayHost() {
         ) : null}
         {mount.render(overlay, shell)}
       </div>
+      </div>
     </div>
   );
 }
 
 window.SH_OVERLAY_MOUNTS = SH_OVERLAY_MOUNTS;
+window.SH_STUDIO_GROUPS = SH_STUDIO_GROUPS;
 window.SH_OVERLAY_TITLES = SH_OVERLAY_TITLES;
 window.SH_OVERLAY_SECTION_TITLES = SH_OVERLAY_SECTION_TITLES;
 window.SH_overlayTitle = SH_overlayTitle;

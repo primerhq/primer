@@ -31,10 +31,15 @@ def test_search_affordance_opens_palette():
     assert "openPalette" in m.group(0)
 
 
-def test_open_menu_renders_from_registry():
-    m = re.search(r'data-testid="shell-topbar-menu"[\s\S]{0,600}', SRC)
-    assert m, "Open... menu missing"
-    assert 'forSurface("topbar")' in m.group(0)
+def test_studio_button_replaced_the_open_menu():
+    # Step 6: the temporary "Open..." dropdown retired; management
+    # surfaces live in the Studio's own nav (studio-nav surface), and
+    # what remains of the topbar surface renders from the registry.
+    assert 'data-testid="shell-topbar-menu"' not in SRC
+    assert "shell-topbar-studio" in SRC and "studio.open" in SRC
+    assert '"studio-nav"' in SRC, (
+        "overlay verbs render in the Studio nav surface"
+    )
 
 
 def test_user_menu_has_theme_and_signout():
