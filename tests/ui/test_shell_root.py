@@ -226,3 +226,16 @@ def test_the_shell_only_overwrites_its_own_address() -> None:
     assert "ownHashRef.current = url;" in src, (
         "and a write must record what it wrote"
     )
+
+
+def test_narrow_screens_get_a_rail_drawer() -> None:
+    """Revamp section 3: the rail is a drawer on narrow screens, not
+    simply gone."""
+    src = _src()
+    assert 'data-rail-open=' in src
+    doc_host = (UI / "components" / "shell" / "sh-doc-host.jsx").read_text(
+        encoding="utf-8")
+    assert 'data-testid="shell-rail-toggle"' in doc_host
+    css = (UI / "styles.css").read_text(encoding="utf-8")
+    assert 'data-rail-open="true"' in css
+    assert "prefers-reduced-motion" in css

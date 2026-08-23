@@ -476,6 +476,15 @@ function SH_Topbar() {
           shell opened it for the workspace you are actually in, so the
           config, channels, log and destroy tabs were unreachable without
           hand-writing a URL. The name is the affordance. */}
+      {/* Narrow screens only (CSS-hidden above 860px): the rail's
+          drawer toggle. */}
+      <button
+        type="button"
+        className="sh-rail-toggle"
+        data-testid="shell-rail-toggle"
+        aria-label="Toggle the rail"
+        onClick={function () { shell.toggleRail(); }}
+      >&#9776;</button>
       <button
         type="button"
         className="sh-ws"

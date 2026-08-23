@@ -3991,6 +3991,9 @@ input, textarea, select { font: inherit; color: inherit; }
 .sh-voice { display: inline-flex; align-items: center; gap: var(--sp-1); }
 
 /* Small screens: rail collapses under the center pane. */
+/* The drawer toggle exists only where the drawer does. */
+.sh-rail-toggle { display: none; }
+
 @media (max-width: 860px) {
   .sh-root {
     grid-template-columns: 1fr;
@@ -3998,11 +4001,44 @@ input, textarea, select { font: inherit; color: inherit; }
       "topbar"
       "center";
   }
+  /* The rail becomes a drawer behind the topbar toggle (revamp
+     section 3): hidden until asked for, overlaying the center. */
   .sh-rail { display: none; }
+  .sh-root[data-rail-open="true"] .sh-rail {
+    display: block;
+    position: fixed;
+    inset: 40px auto 0 0;
+    width: min(300px, 85vw);
+    z-index: 55;
+    box-shadow: var(--shadow);
+  }
+  .sh-rail-toggle {
+    display: inline-flex;
+    align-items: center;
+    font: inherit;
+    font-size: var(--fs-13);
+    color: var(--text-2);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--r-6);
+    padding: 4px 8px;
+    cursor: pointer;
+  }
+  .sh-rail-toggle:hover { background: var(--bg-hover); }
   /* Narrow Studio: content only; the nav's rows stay reachable from
      the palette (dual-render). */
   .sh-overlay { grid-template-columns: 1fr; }
   .sh-studio-nav { display: none; }
+}
+
+/* Motion respects the reader (spec 9): reduced motion renders final
+   states immediately. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
 }
 
 /* Shell refinements from the first visual pass. */

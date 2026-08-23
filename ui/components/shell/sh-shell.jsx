@@ -29,6 +29,11 @@ function SH_Shell(props) {
   var anchorState = React.useState(initial.anchor);
   var anchor = anchorState[0];
   var setAnchor = anchorState[1];
+  // Narrow screens: the rail becomes a drawer behind a topbar toggle
+  // (revamp section 3); transient, never in the URL.
+  var railState = React.useState(false);
+  var railOpen = railState[0];
+  var setRailOpen = railState[1];
 
   var registry = React.useMemo(function () { return SH_createVerbRegistry(); }, []);
   var frecency = React.useMemo(function () { return SH_createFrecency(); }, []);
@@ -318,6 +323,9 @@ function SH_Shell(props) {
     openOverlay: function (name, section, id) {
       setOverlay({ name: name, section: section || null, id: id || null });
     },
+    toggleRail: function () {
+      setRailOpen(function (v) { return !v; });
+    },
     closeOverlay: function () { setOverlay(null); },
     // One active workspace at a time (spec section 3). Rebuilding the URL
     // rather than mutating state keeps refresh and back/forward honest.
@@ -359,7 +367,8 @@ function SH_Shell(props) {
 
   return (
     <SH_ShellContext.Provider value={ctx}>
-      <div className="sh-root" data-testid="shell-root">
+      <div className="sh-root" data-testid="shell-root"
+        data-rail-open={railOpen ? "true" : "false"}>
         <header className="sh-topbar" data-testid="shell-topbar">
           {typeof window.SH_Topbar === "function" ? <window.SH_Topbar /> : null}
         </header>
