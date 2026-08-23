@@ -66,13 +66,14 @@ def open_palette(page: Page) -> None:
     that is still booting goes nowhere and the palette simply never
     appears.
 
-    Clicks the chip rather than pressing Ctrl+K. The chip is the visible
-    way in, so a caller checking that a surface is reachable without
-    typing a URL is checking the path a person would actually take; the
-    chord has its own coverage in tests/ui.
+    Clicks the topbar search field rather than pressing Ctrl+K. Since
+    the 2026-08-23 revamp that field is the persistent, visible way in
+    (the floating chip retired), so a caller checking that a surface is
+    reachable without typing a URL is checking the path a person would
+    actually take; the chord has its own coverage in tests/ui.
     """
     expect(page.get_by_test_id("shell-root")).to_be_visible(timeout=20_000)
-    chip = page.get_by_test_id("shell-palette-chip")
+    chip = page.get_by_test_id("shell-topbar-search")
     expect(chip).to_be_visible(timeout=20_000)
     chip.click()
     expect(page.get_by_test_id("shell-palette")).to_be_visible(timeout=10_000)

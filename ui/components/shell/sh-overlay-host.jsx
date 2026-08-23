@@ -401,6 +401,17 @@ function SH_OverlayHost() {
     try { window.localStorage.setItem("primer.shell.studio", currentName); } catch (_e) { /* noop */ }
   }, [currentName]);
 
+  // A full-screen surface needs a keyboard way out: Esc closes the
+  // Studio (the palette's own Esc handler runs independently).
+  React.useEffect(function () {
+    if (!currentName) return undefined;
+    function onKey(ev) {
+      if (ev.key === "Escape") shell.closeOverlay();
+    }
+    window.addEventListener("keydown", onKey);
+    return function () { window.removeEventListener("keydown", onKey); };
+  }, [currentName]);
+
   if (!overlay || !overlay.name) return null;
   var name = overlay.name;
   var mount = SH_OVERLAY_MOUNTS[name];

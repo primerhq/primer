@@ -459,10 +459,9 @@ function SH_saveTriage(username, triage) {
 function SH_AttentionEngine() {
   var shell = SH_useShell();
   var pending = window.primerApi.useResource(
-    "shell-pending-all",
+    "shell-pending-all:" + shell.wid,
     function (signal) {
-      return SH_api.workspaces(signal).then(function (ws) {
-        var wids = ((ws && ws.items) || []).map(function (w) { return w.id; });
+      function fan(wids) {
         return Promise.all(wids.map(function (wid) {
           return SH_api.pendingYields(wid, signal).then(function (out) {
             var items = (out && out.items) || [];
@@ -474,9 +473,18 @@ function SH_AttentionEngine() {
         })).then(function (lists) {
           return { items: [].concat.apply([], lists) };
         });
-      });
+      }
+      return SH_api.workspaces(signal).then(function (ws) {
+        var wids = ((ws && ws.items) || []).map(function (w) { return w.id; });
+        // The ACTIVE workspace is always in the fan, and it is the
+        // whole fan when the list read fails: the surface an operator
+        // is looking at must never lose its own attention feed to a
+        // cross-workspace listing hiccup.
+        if (shell.wid && wids.indexOf(shell.wid) < 0) wids.push(shell.wid);
+        return fan(wids.length ? wids : [shell.wid]);
+      }, function () { return fan(shell.wid ? [shell.wid] : []); });
     },
-    { pollMs: 10000 }
+    { pollMs: 10000, deps: [shell.wid] }
   );
   var records = window.primerApi.useResource(
     SH_api.keys.records(),
