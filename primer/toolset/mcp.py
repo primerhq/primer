@@ -8,6 +8,7 @@ request-translation logic in this file.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
@@ -21,7 +22,7 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from primer.common.mcp_errors import classify_mcp_exception
 from primer.int.toolset import ToolsetProvider
 from primer.model.chat import Tool, ToolCallResult
-from primer.model.except_ import AuthRequiredError, ConfigError
+from primer.model.except_ import AuthRequiredError, ConfigError, PrimerError
 from primer.model.provider import (
     HttpConfig,
     McpConfig,
@@ -160,11 +161,24 @@ class McpToolsetProvider(ToolsetProvider):
         error hierarchy so a broken toolset degrades (502 / ``available:false``)
         instead of escaping as an unhandled 500.
         """
-        async with self._open_session(principal=principal) as session:
-            try:
-                result = await session.list_tools()
-            except Exception as exc:
-                raise classify_mcp_exception(exc) from exc
+        try:
+            async with self._open_session(principal=principal) as session:
+                try:
+                    result = await session.list_tools()
+                except Exception as exc:
+                    raise classify_mcp_exception(exc) from exc
+        except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
+            raise
+        except PrimerError:
+            raise
+        except Exception as exc:
+            # Session ENTER failures (launch, handshake) classify too:
+            # exactly which exception a dead-on-arrival stdio server
+            # produces is timing- and loop-dependent (McpError
+            # "Connection closed" on one box, a scope cancel on
+            # another), and the docstring's promise is that every one
+            # of them degrades instead of escaping as an unhandled 500.
+            raise classify_mcp_exception(exc) from exc
 
         # Refresh the task-tools cache off the latest list. Server may
         # have added / removed task-style annotations between calls;
@@ -497,8 +511,39 @@ class McpToolsetProvider(ToolsetProvider):
                 f"{stdio_cfg.command[0]!r} could not be launched "
                 f"(permission denied)"
             ) from exc
-        except Exception:
-            await stack.aclose()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            # BaseException on purpose. A launched process that is not
+            # an MCP server (or dies mid-handshake) makes the mcp
+            # client's OWN task group cancel ``initialize()``, so the
+            # failure arrives as CancelledError - a BaseException. The
+            # old ``except Exception`` missed it: the half-entered
+            # stack leaked, the event loop finalized its generators in
+            # a DIFFERENT task, and anyio's cancel-scope wreckage then
+            # cancelled the CALLER at a later await - every consumer of
+            # this provider (the /v1/tools catalogue first among them)
+            # answered a blanket 500 for one broken toolset.
+            try:
+                await stack.aclose()
+            except BaseException:  # noqa: BLE001 - teardown wreckage
+                logger.debug(
+                    "stdio teardown wreckage for toolset %r",
+                    self._toolset_id, exc_info=True,
+                )
+            if isinstance(exc, asyncio.CancelledError):
+                # Absorb the scope's leaked cancel (it would re-fire at
+                # the caller's next await) and surface a real error.
+                current = asyncio.current_task()
+                if current is not None:
+                    while current.cancelling() > 0:
+                        current.uncancel()
+                raise ConfigError(
+                    f"toolset {self._toolset_id!r}: stdio command "
+                    f"{stdio_cfg.command[0]!r} did not complete the MCP "
+                    "handshake (not an MCP server, or it exited "
+                    "immediately)"
+                ) from exc
             raise
 
         logger.info(

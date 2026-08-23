@@ -143,7 +143,7 @@ def test_graph_session_liveness_pill_replaces_executor_missing_stub(
         # NOT pinned to "created": a seeded session does not reliably sit
         # there to be observed, since the scheduler may claim it between
         # the seed and the assertion.
-        row = page.get_by_test_id(f"rail-session:{sid}")
+        row = page.get_by_test_id(f"nv-session:{sid}")
         expect(row).to_be_visible(timeout=10_000)
         chip = row.locator('[data-testid="session-status-dot"]')
         expect(chip).to_be_visible(timeout=10_000)

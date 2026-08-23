@@ -264,7 +264,7 @@ function NV_DecisionCard(props) {
         : item.approvers.users) || []).join(", "))
     : "anyone may decide";
   return (
-    <div className="nv-card nv-card-attention"
+    <div className="nv-card nv-card-attention" data-kind="approval"
       data-testid={"nv-decision:" + item.toolCallId}>
       <div className="nv-card-head">
         <span className="nv-dot-attention" />
@@ -316,8 +316,22 @@ function NV_AskCard(props) {
   var valState = React.useState("");
   var val = valState[0];
   var setVal = valState[1];
+  var errState = React.useState(null);
+  var err = errState[0];
+  var setErr = errState[1];
+  function submit() {
+    setErr(null);
+    SH_api.answer(item.sessionId, item.toolCallId, val).then(
+      props.onResolved,
+      // INLINE, never a toast: the operator sees the failure exactly
+      // where the submission happened, and the card stays to retry.
+      function (e) {
+        setErr(e.detail || e.title || e.message || "Respond failed");
+      }
+    );
+  }
   return (
-    <div className="nv-card nv-card-attention"
+    <div className="nv-card nv-card-attention" data-kind="question"
       data-testid={"nv-ask:" + item.toolCallId}>
       <div className="nv-card-head">
         <span className="nv-dot-attention" />
@@ -329,16 +343,21 @@ function NV_AskCard(props) {
         <textarea className="nv-card-reason" value={val}
           data-testid="nv-ask-answer"
           placeholder="Your answer — the agent resumes with it"
-          onChange={function (ev) { setVal(ev.target.value); }} />
+          onChange={function (ev) { setVal(ev.target.value); }}
+          onKeyDown={function (ev) {
+            // Enter submits, like the composer; Shift+Enter breaks a line.
+            if (ev.key === "Enter" && !ev.shiftKey) {
+              ev.preventDefault();
+              submit();
+            }
+          }} />
+        {err ? (
+          <div className="nv-form-error" data-testid="nv-ask-error">{err}</div>
+        ) : null}
         <div className="nv-card-actions">
           <button type="button" className="nv-btn-primary"
             data-testid="nv-ask-submit"
-            onClick={function () {
-              SH_api.answer(item.sessionId, item.toolCallId, val).then(
-                props.onResolved,
-                function (err) { con.toast("Answer failed: " + err.message); }
-              );
-            }}>Answer & resume</button>
+            onClick={submit}>Answer & resume</button>
         </div>
       </div>
     </div>

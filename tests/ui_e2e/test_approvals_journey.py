@@ -421,7 +421,7 @@ def test_u0109_approvals_operator_journey(
         # card is the one carrying the approve control; a question card
         # renders an answer input instead.
         approval_item = page.locator("[data-kind='approval']").filter(
-            has=page.get_by_test_id("shell-decision-approve")
+            has=page.get_by_test_id("nv-approve")
         ).first
         expect(approval_item).to_be_visible(timeout=30_000)
 
@@ -429,7 +429,7 @@ def test_u0109_approvals_operator_journey(
         # The Studio approve handler POSTs /tool_approval/respond and
         # optimistically REMOVES the item on success (the shell rail's attention list
         # ``hide()`` — no toast). Pin the item clearing as the success signal.
-        approve_btn = approval_item.get_by_test_id("shell-decision-approve")
+        approve_btn = approval_item.get_by_test_id("nv-approve")
         expect(approve_btn).to_be_enabled(timeout=5_000)
         approve_btn.click()
         # The approved item is optimistically removed — no approval-controls
@@ -437,7 +437,7 @@ def test_u0109_approvals_operator_journey(
         # the only pending approval in the workspace).
         expect(
             page.locator("[data-kind='approval']").filter(
-                has=page.get_by_test_id("shell-decision-approve")
+                has=page.get_by_test_id("nv-approve")
             )
         ).to_have_count(0, timeout=10_000)
     finally:

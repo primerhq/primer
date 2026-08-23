@@ -285,7 +285,7 @@ def test_u0080_workspace_files_dir_drilldown_renders_children(
 
         # The Studio is full-screen since the 2026-08-23 revamp, so the
         # rail beneath is unreachable until it closes.
-        page.get_by_test_id("shell-overlay-close").click()
+        page.get_by_test_id("nv-overlay-close").click()
 
         # v1 stacked Files under Sessions so the tree was always on screen; the
         # revamp's single rail defaults to Runs, so ask for Files first. No-op

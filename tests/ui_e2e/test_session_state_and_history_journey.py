@@ -111,7 +111,7 @@ def test_cancelled_session_shows_outcome_banner(
     # the session is DOING and is empty once nothing is running -- so an
     # ended session says nothing there, by design.
     expect(
-        page.get_by_test_id(f"rail-session:{sid}").filter(has_text="ended")
+        page.get_by_test_id(f"nv-session:{sid}").filter(has_text="ended")
     ).to_be_visible(timeout=20_000)
     # Interrupting an ended session is meaningless, so the shell stops
     # offering it: the verb is gone from the document once terminal.

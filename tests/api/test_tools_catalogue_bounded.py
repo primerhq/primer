@@ -140,6 +140,65 @@ async def test_a_taskgroup_wrapped_error_is_unwrapped_to_its_leaf() -> None:
     assert "TaskGroup" not in reason
 
 
+class _BaseGroupRaisingProvider:
+    """A broken STDIO MCP server: its client teardown escapes as a
+    BaseExceptionGroup whose leaves include GeneratorExit - a
+    BaseException, which an ``except Exception`` lets straight through."""
+
+    async def list_tools(self, *, principal=None):  # noqa: ANN001
+        raise BaseExceptionGroup(  # noqa: TRY003
+            "unhandled errors in a TaskGroup",
+            [GeneratorExit(), BrokenPipeError("broken pipe")],
+        )
+        yield  # pragma: no cover
+
+
+@pytest.mark.asyncio
+async def test_a_base_exception_group_degrades_instead_of_escaping() -> None:
+    # Regression (2026-08-23): seeding one stdio MCP toolset whose
+    # command was not an MCP server made GET /v1/tools answer 500 -
+    # the teardown's BaseExceptionGroup(GeneratorExit, ...) escaped the
+    # Exception-only catch and killed the whole catalogue.
+    _tools, reason = await providers_mod._catalogue_tools(
+        _Registry(_BaseGroupRaisingProvider()), "stdio-broken", None,
+    )
+    assert reason is not None
+    assert "TaskGroup" not in reason
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_dies_cancelled_degrades() -> None:
+    # The poisoned stdio teardown kills the probe task with a bare
+    # CancelledError; that is a toolset failure, not our cancellation.
+    class _CancelledProvider:
+        async def list_tools(self, *, principal=None):  # noqa: ANN001
+            raise asyncio.CancelledError()
+            yield  # pragma: no cover
+
+    _tools, reason = await providers_mod._catalogue_tools(
+        _Registry(_CancelledProvider()), "cancelled", None,
+    )
+    assert reason is not None
+
+
+@pytest.mark.asyncio
+async def test_an_external_cancel_mid_probe_is_absorbed(fast_bound: float) -> None:
+    # Deliberate trade (see _catalogue_tools): the poisoned stdio
+    # teardown cancels the CALLING task in a way indistinguishable from
+    # an outer cancel, so the probe absorbs cancellation and degrades.
+    # A cancelled caller therefore gets a bounded degraded answer, not
+    # a propagated CancelledError - the cost is the remaining probe
+    # bound, the win is a catalogue that can never 500 on one bad
+    # toolset.
+    task = asyncio.create_task(providers_mod._catalogue_tools(
+        _Registry(_HangingProvider()), "hang", None,
+    ))
+    await asyncio.sleep(0.05)
+    task.cancel()
+    _tools, reason = await task
+    assert reason is not None
+
+
 @pytest.mark.asyncio
 async def test_one_wedged_toolset_does_not_stop_the_others(
     fast_bound: float,

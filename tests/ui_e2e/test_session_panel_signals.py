@@ -141,10 +141,10 @@ def test_u0052_ask_user_panel_hidden_on_terminal_session(
         page.wait_for_timeout(2_500)
 
         # No decision card for a terminal session.
-        assert page.locator("[data-testid^='shell-decision:']").count() == 0, (
+        assert page.locator("[data-testid^='nv-ask:'], [data-testid^='nv-decision:']").count() == 0, (
             "Action Required surfaced an item for a terminal session"
         )
-        assert page.get_by_test_id("shell-decision-answer").count() == 0
+        assert page.get_by_test_id("nv-ask-answer").count() == 0
         # The retired panel copy must not appear anywhere.
         assert page.get_by_text("Input requested").count() == 0
         assert page.locator("[data-testid='ask-user-panel']").count() == 0
@@ -202,7 +202,7 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
     try:
         # Open the session in the Studio — the agent panel + Composer mount.
         open_session_in_studio(page, console_url, wid, sid, kind="agent")
-        composer = page.locator("textarea[placeholder='Send a message…']")
+        composer = page.get_by_test_id("nv-composer").locator("input")
         composer.wait_for(state="visible", timeout=10_000)
 
         # The rail row carries a status before anything is sent. NOT
@@ -210,13 +210,15 @@ def test_u0031_session_pause_resume_buttons_toggle_status(
         # there to be observed, since the scheduler may claim it between
         # the seed and the assertion, and what this test is about is the
         # transition a send causes.
-        initial_chip = page.locator('[data-testid="session-status-dot"]').first
-        expect(initial_chip).to_be_visible(timeout=10_000)
+        # The band row is the visible pre-send state (bands re-sort as
+        # the status moves; the send is what this test is about).
+        initial_row = page.locator(f'[data-testid="nv-session:{sid}"]').first
+        expect(initial_row).to_be_visible(timeout=10_000)
 
         # Send a message via the Composer — this is the resume/steer/invoke
         # signal now (POST .../steer, session-adapter.jsx sendMessage).
         composer.fill("please resume")
-        page.locator("[data-testid='chat-send-btn']").click()
+        page.get_by_test_id("nv-send").click()
 
         # Status moves off CREATED within ~12s (poll cadence 2s + worker
         # claim cycle + LLM fail path). Accept any non-CREATED status.
@@ -317,7 +319,7 @@ def test_u0027_empty_collection_search_renders_no_matches(
         # own, and the composer is earlier in the DOM, so a page-wide
         # search found that instead and pressing Enter steered the
         # session rather than running the grep.
-        overlay = page.get_by_test_id("shell-overlay-body")
+        overlay = page.get_by_test_id("nv-overlay-body")
         search_inputs = overlay.get_by_role("textbox").all()
         assert len(search_inputs) >= 1, "no textbox visible on collection detail"
         # Use the first visible textbox (the per-collection grep box).

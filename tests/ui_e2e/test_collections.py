@@ -111,7 +111,7 @@ def test_u0025_new_collection_modal_creates_row_and_refreshes_list(
         # shows the new collection's document browser, so what proves the
         # create landed is the breadcrumb naming it, not a row in a table
         # that is no longer on screen.
-        page.get_by_test_id("shell-overlay-body").get_by_text(
+        page.get_by_test_id("nv-overlay-body").get_by_text(
             collection_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
         assert "overlay=collections" in page.url, (

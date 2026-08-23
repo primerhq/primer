@@ -11,7 +11,7 @@ have to bridge:
 
 * One workspace URL (``#/w/<wid>``) rather than ``#/workspaces/<wid>``.
 * Documents, not panels: a session opens as a TAB
-  (``shell-tab:session:<sid>``) whose body is one uniform session
+  (``nv-tab:session:<sid>``) whose body is one uniform session
   document for every binding kind. There is no agent/graph panel split,
   so the ``kind`` argument is accepted and ignored.
 * Attention is always mounted (``rail-attention``) instead of hiding
@@ -76,7 +76,7 @@ def session_row(page: Page, sid: str):
     the rail stamps the id into the testid instead. The rail is
     per-workspace, so navigate to the session's OWN workspace first.
     """
-    return page.get_by_test_id(f"rail-session:{sid}")
+    return page.get_by_test_id(f"nv-session:{sid}")
 
 
 def studio_url(console_url: str, wid: str) -> str:
@@ -91,7 +91,7 @@ def is_studio_v2(page: Page) -> bool:
     to ask which one they got. Only one shell ships now, so this waits
     for it rather than choosing between two vocabularies.
     """
-    page.get_by_test_id("shell-root").wait_for(state="attached", timeout=20_000)
+    page.get_by_test_id("nv-root").wait_for(state="attached", timeout=20_000)
     return True
 
 
@@ -112,26 +112,28 @@ def kind_text(page: Page, kind: str) -> str:
 
 
 def sessions_list(page: Page):
-    """The rail's session list."""
-    return page.get_by_test_id("rail-sessions")
+    """The rail's session list (bands; attention leads)."""
+    return page.get_by_test_id("nv-sessions")
 
 
 def files_list(page: Page, *, timeout: int = 10_000):
-    """The rail's file tree."""
-    files = page.get_by_test_id("rail-files")
+    """The rail's file tree. The console tabs the rail (Sessions |
+    Files), so reaching the tree means selecting its tab first."""
+    tab = page.get_by_test_id("nv-rail-tab-files")
+    expect(tab).to_be_visible(timeout=timeout)
+    tab.click()
+    files = page.get_by_test_id("nv-files")
     expect(files).to_be_visible(timeout=timeout)
     return files
 
 
 def open_studio(page: Page, console_url: str, wid: str, *, timeout: int = 20_000) -> None:
-    """Navigate to a workspace and wait for the shell to mount.
+    """Navigate to a workspace and wait for the console to mount.
 
     Confirms the region wrappers render so callers can immediately reach
-    the rail and the center. Attention is part of the rail and is mounted
-    even when empty -- "nothing needs you" is a state worth showing.
-    """
+    the rail and the center."""
     open_shell(page, console_url, wid, timeout=timeout)
-    for region in ("shell-rail", "shell-center"):
+    for region in ("nv-rail", "nv-center"):
         expect(page.get_by_test_id(region)).to_be_visible(timeout=10_000)
 
 
@@ -152,7 +154,7 @@ def open_session_in_studio(
     """
     del kind
     open_doc(page, console_url, wid, "session", sid, timeout=timeout)
-    expect(page.get_by_test_id(f"shell-session:{sid}")).to_be_visible(timeout=timeout)
+    expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible(timeout=timeout)
 
 
 def open_session_via_sidebar(
@@ -170,11 +172,11 @@ def open_session_via_sidebar(
     """
     del kind
     open_studio(page, console_url, wid, timeout=timeout)
-    rows = page.locator('[data-testid^="rail-session:"]')
+    rows = page.locator('[data-testid^="nv-session:"]')
     row = rows.first
     expect(row).to_be_visible(timeout=timeout)
     row.click()
-    expect(page.locator('[data-testid^="shell-tab:session:"]').first).to_be_visible(
+    expect(page.locator('[data-testid^="nv-tab:session:"]').first).to_be_visible(
         timeout=timeout
     )
     return row
@@ -202,7 +204,7 @@ def open_workspace_settings(
     Link-channel / Destroy-confirm modals rendered on top).
     """
     page.goto(f"{console_url}#/w/{wid}?overlay=workspaces:detail:{wid}")
-    body = page.get_by_test_id("shell-overlay-body")
+    body = page.get_by_test_id("nv-overlay-body")
     expect(body).to_be_visible(timeout=timeout)
     tab = page.get_by_test_id(f"workspace-tab:{section}")
     expect(tab).to_be_visible(timeout=timeout)
@@ -211,29 +213,24 @@ def open_workspace_settings(
 
 
 def expand_debug_sidebar(page: Page, *, timeout: int = 10_000) -> None:
-    """Open the attention surface.
+    """Assert the attention surface is mounted.
 
-    The 2026-08-23 revamp moved triage into the INBOX tab (the rail's
-    pinned row opens it); interrupts additionally toast globally. Open
-    the Inbox so ambient items are in the DOM too, then assert it.
+    The three-view console retired the Inbox tab: attention is the
+    "Needs you" BAND at the top of the always-mounted sessions rail,
+    so there is nothing to expand - only to assert.
     """
-    page.get_by_test_id("rail-inbox").click()
-    expect(page.get_by_test_id("shell-inbox")).to_be_visible(timeout=timeout)
+    expect(page.get_by_test_id("nv-sessions")).to_be_visible(timeout=timeout)
 
 
 def action_item_for_session(page: Page, sid: str):
-    """The attention item for a session id.
+    """The attention affordance for a session id.
 
-    Interrupt-tier parks (ask_user / approval) toast globally and keep
-    the attention-item testid; ambient items render as Inbox rows with
-    the inbox-item testid. Match either, keyed by session so the match
-    stays scoped to THIS session even when the shared DB left other
-    parks around.
+    A park puts the session's band row in "Needs you" with the
+    attention dot; clicking it opens the session whose inline card
+    carries the decision. Keyed by session id so the match stays scoped
+    to THIS session even when the shared DB left other parks around.
     """
-    return page.locator(
-        f'[data-testid="attention-item:{sid}"],'
-        f' [data-testid="inbox-item:{sid}"]'
-    ).first
+    return page.locator(f'[data-testid="nv-session:{sid}"]').first
 
 
 def open_provider_catalog(
@@ -269,6 +266,6 @@ def open_provider_catalog(
             page.goto(f"{console_url}#/w/?overlay={target}")
     else:
         run_verb(page, "Open Providers Catalog")
-    body = page.get_by_test_id("shell-overlay-body")
+    body = page.get_by_test_id("nv-overlay-body")
     expect(body).to_be_visible(timeout=timeout)
     return body

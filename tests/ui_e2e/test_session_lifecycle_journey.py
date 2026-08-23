@@ -185,48 +185,28 @@ def test_u0103_sessions_full_lifecycle_journey(
 
         # --- 2. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="nv-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
+        expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(
             timeout=15_000,
         )
 
-        # Sanity: the ctrl-end control is enabled (session non-terminal).
-        # Re-pointed: the agent panel's cancel affordance is now ``ctrl-end``
-        # (SessionAgentPanel's End button, POST .../cancel via
-        # SA_useSessionConversation's end()) — ``ctrl-cancel`` no longer
-        # exists on the agent panel (Task 13 moved it to the graph panel).
-        end_btn = page.locator('[data-testid="ctrl-end"]').first
-        expect(end_btn).to_be_enabled(timeout=10_000)
+        # --- 3. End the session from its row's context menu -----------------
+        # Re-pointed (flag day): the console's End affordance is the
+        # session verbs on the row's right-click menu (POST .../cancel);
+        # the old panel's ctrl-end button died with it.
+        row_locator.first.click(button="right")
+        menu = page.get_by_test_id(f"nv-session-menu:{sid}")
+        expect(menu).to_be_visible(timeout=10_000)
+        menu.get_by_text("End", exact=True).click()
 
-        # --- 3. Click ctrl-end (fires directly, no confirm modal) -----------
-        end_btn.click()
-        # Toast from SessionAgentPanel's endMut has title "Session ended".
-        expect(page.get_by_text("Session ended")).to_be_visible(
-            timeout=10_000,
+        # --- 4. The doc reflects the terminal state --------------------------
+        # The transcript folds with "session ended" and the composer's
+        # placeholder flips to the reopen copy.
+        expect(page.get_by_text("session ended", exact=False).first).to_be_visible(
+            timeout=30_000,
         )
-
-        # --- 4. The session's status polls off CREATED ----------------------
-        # The rail's row for a session carries its status and polls while
-        # the session is non-terminal. Pin "left CREATED" (30s budget).
-        #
-        # NOT the composer's status line: that describes what a session is
-        # DOING and is empty whenever nothing is running, so it says
-        # nothing at all about a created-then-cancelled session.
-        status_pill = page.get_by_test_id(f"rail-session:{sid}")
-        deadline = time.time() + 30.0
-        last_seen = None
-        while time.time() < deadline:
-            txt = status_pill.text_content(timeout=2_000) or ""
-            last_seen = txt.strip().lower()
-            if last_seen and "created" not in last_seen:
-                break
-            page.wait_for_timeout(500)
-        else:
-            raise AssertionError(
-                f"status pill never left CREATED within 30s; last seen: {last_seen!r}"
-            )
 
         # --- 5. The session is still listed in the Studio sidebar -----------
         row_after = session_row(page, sid)
@@ -344,10 +324,10 @@ def test_u0104_workspace_sessions_tab_reflects_api_seeded_session(
 
         # --- 5. Click the row → center tab + agent panel --------------------
         row_locator.first.click()
-        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="nv-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
+        expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(
             timeout=15_000,
         )
     finally:

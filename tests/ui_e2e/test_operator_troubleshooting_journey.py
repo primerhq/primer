@@ -157,7 +157,7 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
         # S8 retired the Studio's sub-header workspace-selector; the
         # shell states the workspace id in the topbar instead.
         expect(
-            page.get_by_test_id("shell-workspace").get_by_text(
+            page.get_by_test_id("nv-ws-btn").get_by_text(
                 wid, exact=False,
             ).first
         ).to_be_visible(timeout=15_000)
@@ -170,21 +170,22 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
 
         # ----- 4. Click the row → center tab + agent panel ----------
         row.first.click()
-        expect(page.locator('[data-testid^="shell-tab:"]').first).to_be_visible(
+        expect(page.locator('[data-testid^="nv-tab:"]').first).to_be_visible(
             timeout=15_000,
         )
-        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
+        expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(
             timeout=15_000,
         )
 
         # ----- 5. Workspace settings surface the workspace ----------
-        # The Studio's gear + settings modal became an overlay: the
-        # topbar workspace name opens overlay=workspaces:detail:<wid>,
-        # which carries the same config / channels / log / destroy tabs.
-        # Opening it in place (no re-navigation) is the point: the open
-        # session tab has to survive, which is the coherence check below.
-        page.get_by_test_id("shell-workspace").click()
-        overlay = page.get_by_test_id("shell-overlay-body")
+        # The workspace menu's "Workspace settings…" opens
+        # overlay=workspaces:detail:<wid>, which carries the same
+        # config / channels / log / destroy tabs. Opening it in place
+        # (no re-navigation) is the point: the open session tab has to
+        # survive, which is the coherence check below.
+        page.get_by_test_id("nv-ws-btn").click()
+        page.get_by_test_id("nv-ws-settings").click()
+        overlay = page.get_by_test_id("nv-overlay-body")
         expect(overlay).to_be_visible(timeout=10_000)
         assert f"overlay=workspaces:detail:{wid}" in page.url, (
             f"expected the workspace-detail overlay, got {page.url}"
@@ -193,11 +194,11 @@ def test_u0105_operator_troubleshooting_cross_page_journey(
         expect(page.get_by_text(wid, exact=False).first).to_be_visible(
             timeout=10_000,
         )
-        page.get_by_test_id("shell-overlay-close").click()
+        page.get_by_test_id("nv-overlay-close").click()
         expect(overlay).to_have_count(0, timeout=5_000)
 
         # ----- 6. The session tab survived the settings hop ---------
-        expect(page.locator('[data-testid^="shell-session:"]')).to_be_visible(
+        expect(page.locator('[data-testid^="nv-session-doc:"]')).to_be_visible(
             timeout=10_000,
         )
     finally:

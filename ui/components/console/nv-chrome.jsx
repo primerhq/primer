@@ -83,6 +83,17 @@ function NV_WorkspaceMenu() {
         );
       })}
       <div className="nv-menu-sep" />
+      <button type="button" className="nv-menu-row"
+        data-testid="nv-ws-settings"
+        onClick={function () {
+          con.toggleMenu(null);
+          // The workspace's own tabs (config / channels / log / destroy)
+          // open IN PLACE as the shared overlay: the open session tab
+          // survives underneath.
+          con.openOverlay("workspaces", "detail", con.wid);
+        }}>
+        <span>Workspace settings…</span>
+      </button>
       <button type="button" className="nv-menu-row nv-menu-new"
         data-verb="workspace.create" data-testid="nv-ws-new"
         onClick={function () {

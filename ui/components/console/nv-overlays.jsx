@@ -40,7 +40,11 @@ function NV_OverlayPanel(props) {
         data-testid={props.testid || "nv-overlay-panel"}
         onClick={function (ev) { ev.stopPropagation(); }}>
         <div className="nv-overlay-head">
-          <span className="nv-overlay-title">{props.title}</span>
+          {/* THE one title (one-title rule), and the page's h1: the
+              re-hosted pages render action bars, never headings, and
+              the e2e suite addresses surfaces by h1.page-title. */}
+          <h1 className="nv-overlay-title page-title"
+            data-testid="nv-overlay-title">{props.title}</h1>
           {props.verb ? (
             <span className="nv-verb-chip">verb: {props.verb}</span>
           ) : null}
@@ -49,7 +53,9 @@ function NV_OverlayPanel(props) {
             data-testid="nv-overlay-close" title="Close (Esc)"
             onClick={function () { onClose(); }}>×</button>
         </div>
-        <div className="nv-overlay-body">{props.children}</div>
+        <div className="nv-overlay-body" data-testid="nv-overlay-body">
+          {props.children}
+        </div>
         {props.footer ? (
           <div className="nv-overlay-foot">{props.footer}</div>
         ) : null}

@@ -729,7 +729,11 @@ class TestStdioSessionLifecycle:
                 config=StdioConfig(command=["fake-mcp"]),
             ),
         )
-        with pytest.raises(RuntimeError, match="boom"):
+        # Since the 2026-08-23 catalogue fix, session ENTER failures
+        # classify onto the primer hierarchy like listing failures do -
+        # a raw RuntimeError escaping here is what let a broken toolset
+        # 500 the whole /v1/tools catalogue.
+        with pytest.raises(PrimerError, match="boom"):
             async for _ in provider.list_tools():
                 pass
         # Even when initialize fails, the half-built subprocess is closed.
@@ -847,3 +851,51 @@ class TestMcpOAuthIntegration:
         with pytest.raises(AuthRequiredError):
             async for _ in provider.list_tools(principal="u-1"):
                 pass
+
+
+class TestBrokenStdioHandshake:
+    """Regression (2026-08-23): a stdio command that is not an MCP server.
+
+    ``echo`` launches fine, prints nothing JSONRPC, and exits; the mcp
+    client's own task group then CANCELS ``initialize()``, so the failure
+    arrived as CancelledError - a BaseException the old
+    ``except Exception`` missed. The half-entered AsyncExitStack leaked,
+    the event loop finalized its generators in a different task, and
+    anyio's cancel-scope wreckage cancelled the CALLER at a later await:
+    GET /v1/tools answered a blanket 500 for one broken toolset.
+    """
+
+    @pytest.mark.asyncio
+    async def test_handshake_failure_is_a_config_error_not_a_cancel(self) -> None:
+        provider = McpToolsetProvider(
+            toolset_id="broken-stdio",
+            config=McpConfig(
+                transport=TransportType.STDIO,
+                config=StdioConfig(command=["echo"]),
+            ),
+        )
+        with pytest.raises(PrimerError) as ei:
+            async for _tool in provider.list_tools():
+                pass  # pragma: no cover - the handshake must fail first
+        assert not isinstance(ei.value, asyncio.CancelledError)
+
+    @pytest.mark.asyncio
+    async def test_the_caller_survives_the_failure(self) -> None:
+        # The leaked pending-cancel used to re-fire at the caller's next
+        # await; prove the calling task keeps running normally.
+        provider = McpToolsetProvider(
+            toolset_id="broken-stdio-2",
+            config=McpConfig(
+                transport=TransportType.STDIO,
+                config=StdioConfig(command=["echo"]),
+            ),
+        )
+        try:
+            async for _tool in provider.list_tools():
+                pass  # pragma: no cover
+        except PrimerError:
+            pass
+        # A poisoned task would die on any of these awaits.
+        for _ in range(3):
+            await asyncio.sleep(0)
+        assert True

@@ -5,7 +5,7 @@ parks now surface in the Studio's RIGHT sidebar ``action-required`` list
 (the shell rail's attention list): one decision card per
 pending yield, driven by ``GET /v1/workspaces/{wid}/yields/pending``. An
 ``ask_user`` item renders a ``respond`` text input inside
-``shell-decision-answer`` (Enter-to-send → POST
+``nv-ask-answer`` (Enter-to-send → POST
 ``/sessions/{sid}/ask_user/respond``).
 
 Strategy (unchanged in spirit): rather than drive a real agent through an
@@ -32,7 +32,11 @@ import json
 import httpx
 from playwright.sync_api import expect
 
-from tests.ui_e2e._studio_helpers import expand_debug_sidebar, open_studio
+from tests.ui_e2e._studio_helpers import (
+    expand_debug_sidebar,
+    open_session_in_studio,
+    open_studio,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -168,6 +172,9 @@ def _route_pending_items(page, wid: str, items: list[dict]) -> list[str]:
         )
 
     page.route(f"**/v1/workspaces/{wid}/yields/pending*", _handler)
+    # The console renders the cards INLINE in the session doc, whose
+    # gates ride the session-scoped route; mock it with the same items.
+    page.route(f"**/v1/workspaces/{wid}/sessions/*/yields/pending*", _handler)
     return seen
 
 
@@ -217,7 +224,7 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
     """U0048 - With the workspace ``/yields/pending`` snapshot carrying an
     ``ask_user`` item, the Studio's RIGHT sidebar Action Required list
     renders a decision card for it: the prompt text, the question
-    kind, and a ``shell-decision-answer`` input. Pins the
+    kind, and a ``nv-ask-answer`` input. Pins the
     render contract from the shell rail's attention list.
     """
     wid, sid, cleanup_urls = _seed_ladder(base_url, unique_suffix, tmp_path)
@@ -225,10 +232,10 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
         polled = _route_pending_items(
             page, wid, [_ask_item(sid, prompt="What is your name?")],
         )
-        open_studio(page, console_url, wid)
-        # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for the decision card.
-        expand_debug_sidebar(page)
+        # The console renders decision cards INLINE in the session doc
+        # (the band row is the workspace-level affordance), so open the
+        # session the mocked park belongs to.
+        open_session_in_studio(page, console_url, wid, sid)
 
         # The rail has to have ASKED before anything it renders means
         # something.
@@ -238,13 +245,13 @@ def test_u0048_ask_user_panel_renders_when_pending_returns_200(
         # old Studio's action-item/respond/action-required-count testids
         # went with it; the shell renders this card in the rail and again
         # inline in the transcript, from one component.
-        card = page.get_by_test_id("shell-decision:tc-ui-1")
+        card = page.get_by_test_id("nv-ask:tc-ui-1")
         expect(card).to_be_visible(timeout=10_000)
         expect(card).to_contain_text("What is your name?")
         expect(card).to_have_attribute("data-kind", "question")
-        expect(card.get_by_test_id("shell-decision-answer")).to_be_visible()
+        expect(card.get_by_test_id("nv-ask-answer")).to_be_visible()
         # The rail badge reflects the single pending item.
-        expect(page.get_by_test_id("rail-inbox-badge")).to_contain_text("1")
+        expect(page.get_by_test_id("nv-band:attention")).to_contain_text("1")
     finally:
         _cleanup(base_url, cleanup_urls)
 
@@ -283,16 +290,16 @@ def test_u0049_ask_user_panel_submit_collapses_and_toasts(
 
         page.route(f"**/v1/sessions/{sid}/ask_user/respond", _on_respond)
 
-        open_studio(page, console_url, wid)
-        # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for the decision card.
-        expand_debug_sidebar(page)
+        # The console renders decision cards INLINE in the session doc
+        # (the band row is the workspace-level affordance), so open the
+        # session the mocked park belongs to.
+        open_session_in_studio(page, console_url, wid, sid)
         _assert_polled(page, polled)
-        card = page.get_by_test_id("shell-decision:tc-ui-1")
+        card = page.get_by_test_id("nv-ask:tc-ui-1")
         expect(card).to_be_visible(timeout=10_000)
 
         # Fill the answer input + press Enter (the submit affordance).
-        respond = card.get_by_test_id("shell-decision-answer")
+        respond = card.get_by_test_id("nv-ask-answer")
         respond.fill("Alice")
         # Flip the snapshot to empty so the post-hide reconcile keeps it gone.
         page.unroute(f"**/v1/workspaces/{wid}/yields/pending")
@@ -300,7 +307,7 @@ def test_u0049_ask_user_panel_submit_collapses_and_toasts(
         respond.press("Enter")
 
         # The item is optimistically removed + the respond endpoint was hit.
-        expect(page.get_by_test_id("shell-decision:tc-ui-1")).to_have_count(
+        expect(page.get_by_test_id("nv-ask:tc-ui-1")).to_have_count(
             0, timeout=8_000,
         )
         assert len(respond_calls) >= 1, "respond endpoint was not called"
@@ -362,15 +369,15 @@ def test_u0051_ask_user_panel_renders_422_inline_for_schema_violation(
             ),
         )
 
-        open_studio(page, console_url, wid)
-        # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for the decision card.
-        expand_debug_sidebar(page)
+        # The console renders decision cards INLINE in the session doc
+        # (the band row is the workspace-level affordance), so open the
+        # session the mocked park belongs to.
+        open_session_in_studio(page, console_url, wid, sid)
         _assert_polled(page, polled)
-        card = page.get_by_test_id("shell-decision:tc-ui-1")
+        card = page.get_by_test_id("nv-ask:tc-ui-1")
         expect(card).to_be_visible(timeout=10_000)
 
-        respond = card.get_by_test_id("shell-decision-answer")
+        respond = card.get_by_test_id("nv-ask-answer")
         respond.fill("something")
         respond.press("Enter")
 

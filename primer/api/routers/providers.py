@@ -1036,18 +1036,72 @@ async def _catalogue_tools(
     """
     import asyncio
 
-    tools: list[dict] = []
-    try:
-        async with asyncio.timeout(_CATALOGUE_PROBE_TIMEOUT_S):
-            provider = await registry.get_toolset(tid)
-            async for tool in provider.list_tools(principal=principal):
-                tools.append({
+    async def _drain() -> list[dict]:
+        drained: list[dict] = []
+        provider = await registry.get_toolset(tid)
+        agen = provider.list_tools(principal=principal)
+        try:
+            async for tool in agen:
+                drained.append({
                     "id": tool.id,
                     "scoped_id": f"{tid}__{tool.id}",
                     "description": tool.description or "",
                     "input_schema": tool.args_schema or {},
                 })
-    except Exception as exc:  # noqa: BLE001
+        finally:
+            # Finalize the generator HERE, in the probe task, never via
+            # the event loop's deferred asyncgen finalizer. A failing
+            # STDIO MCP provider leaves the generator holding the mcp
+            # client's cancel scope; garbage finalization runs the
+            # athrow in a FRESH task, anyio then detects "cancel scope
+            # exited in a different task" and its wreckage cancels the
+            # route task at some later await - the whole catalogue
+            # answered 500 for one broken toolset.
+            try:
+                await agen.aclose()
+            except BaseException:  # noqa: BLE001 - teardown wreckage
+                pass
+        return drained
+
+    # The probe runs in its OWN task (asyncio.wait_for wraps the coro),
+    # and that isolation is load-bearing, not style: anyio cancel scopes
+    # are task-local, and a broken STDIO MCP server dies during the mcp
+    # client's task-group teardown in ways that poison the entering
+    # task - a leaked cancellation, or a cancel-scope RuntimeError at
+    # the NEXT await. Probing inline let that kill the route task after
+    # our except had already run, so the whole catalogue answered 500
+    # ("No response returned") the moment ONE stdio toolset was
+    # misconfigured. In a dedicated task the wreckage dies with the
+    # probe and arrives here as an ordinary awaited exception.
+    try:
+        tools = await asyncio.wait_for(_drain(), _CATALOGUE_PROBE_TIMEOUT_S)
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except asyncio.CancelledError:
+        # The broken-stdio teardown does not merely fail - the mcp
+        # client's anyio scope CANCELS THE CALLING TASK (observed:
+        # "Cancelled via cancel scope ..." raised right here), and the
+        # leaked pending-cancel re-fires at every later await, so even
+        # a swallowed CancelledError still killed the route ("No
+        # response returned" 500). Absorb it: uncancel down to zero and
+        # report the toolset as unavailable.
+        #
+        # The trade: a GENUINE outer cancellation (client gone,
+        # shutdown) caught mid-probe is absorbed too and the request
+        # runs to its (bounded) end before the response is discarded.
+        # That costs at most the remaining probe bounds; the
+        # alternative was a whole catalogue that 500s whenever one
+        # stdio toolset is misconfigured.
+        current = asyncio.current_task()
+        if current is not None:
+            while current.cancelling() > 0:
+                current.uncancel()
+        return [], "cancelled during probe (broken toolset teardown)"
+    except BaseException as exc:  # noqa: BLE001
+        # BaseException on purpose, not Exception: the teardown wreck
+        # includes BaseExceptionGroup whose leaves are GeneratorExit
+        # (a BaseException).
+        #
         # HTTP MCP runs in anyio task groups, so the useful error is a leaf of
         # a BaseExceptionGroup; reporting the group renders an unreadable
         # "unhandled errors in a TaskGroup (1 sub-exception)" in the console.

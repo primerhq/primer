@@ -1506,7 +1506,11 @@ input, textarea, select { font: inherit; color: inherit; }
 .modal-overlay {
   position: fixed; inset: 0;
   background: oklch(0 0 0 / 0.5);
-  z-index: 50;
+  /* Above the nv overlay scrim (80): the re-hosted pages open shared
+     Modals (ConfirmHost, create dialogs) FROM INSIDE overlays, and at
+     50 those rendered behind the panel - a Delete confirm nobody could
+     click. Below the lightbox (90). */
+  z-index: 85;
   display: grid;
   place-items: center;
   animation: fadeIn 0.15s;
@@ -5098,7 +5102,7 @@ input, textarea, select { font: inherit; color: inherit; }
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
 }
-.nv-overlay-title { font-weight: 600; font-size: 14px; }
+.nv-overlay-title { font-weight: 600; font-size: 14px; margin: 0; }
 .nv-verb-chip {
   font-family: var(--font-mono);
   font-size: 9.5px;

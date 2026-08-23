@@ -113,7 +113,7 @@ def test_collection_document_path_browser_full_journey(
         # "Documents" button that used to raise a path-browser modal is
         # gone along with the modal. The tree, the grep box and the header
         # actions are all on the page.
-        browser = page.get_by_test_id("shell-overlay-body")
+        browser = page.get_by_test_id("nv-overlay-body")
 
         # ---- create ----
         # A document is addressed by parent + slug now, not by typing a

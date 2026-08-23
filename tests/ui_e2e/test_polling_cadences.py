@@ -103,10 +103,10 @@ def test_u0002_sessions_sidebar_count_polls_after_api_create(
             """Number of session rows currently rendered in the rail.
 
             The rail keys each row by its session id
-            (``rail-session:<sid>``); the flat ``session-row`` handle
+            (``nv-session:<sid>``); the flat ``session-row`` handle
             belonged to the sidebar it replaced.
             """
-            return page.locator('[data-testid^="rail-session:"]').count()
+            return page.locator('[data-testid^="nv-session:"]').count()
 
         # Baseline: a brand-new workspace has zero session rows. Wait for
         # the Sessions section to have finished its first poll (the empty

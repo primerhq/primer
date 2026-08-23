@@ -178,7 +178,7 @@ def test_multi_page_operator_journey_no_llm(
         # ----- 1. The shell itself (initial nav done by `page` fixture)
         # There is no dashboard page any more, and no page-title outside
         # an overlay: landing on the console lands you in a workspace.
-        page.get_by_test_id("shell-root").wait_for(
+        page.get_by_test_id("nv-root").wait_for(
             state="visible", timeout=10_000,
         )
 
@@ -257,7 +257,7 @@ def test_multi_page_operator_journey_no_llm(
         # overlay, same as step 1: landing on the console lands you in a
         # workspace.
         page.goto(f"{console_url}#/", wait_until="domcontentloaded")
-        page.get_by_test_id("shell-root").wait_for(
+        page.get_by_test_id("nv-root").wait_for(
             state="visible", timeout=10_000,
         )
 

@@ -177,14 +177,14 @@ def _ask_item(sid, *, tool_call_id, prompt):
 
 
 def _route_pending_items(page, wid, items):
-    """Route GET /v1/workspaces/{wid}/yields/pending → {items}."""
-    page.route(
-        f"**/v1/workspaces/{wid}/yields/pending*",
-        lambda route: route.fulfill(
+    """Route the pending-yield feeds (aggregated + session-scoped) → {items}."""
+    def _fulfill(route):
+        route.fulfill(
             status=200, content_type="application/json",
             body=json.dumps({"items": items}),
-        ),
-    )
+        )
+    page.route(f"**/v1/workspaces/{wid}/yields/pending*", _fulfill)
+    page.route(f"**/v1/workspaces/{wid}/sessions/*/yields/pending*", _fulfill)
 
 
 # ===========================================================================
@@ -213,24 +213,23 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
             )
 
         page.route(f"**/v1/workspaces/{wid}/yields/pending*", _on_pending)
+        page.route(f"**/v1/workspaces/{wid}/sessions/*/yields/pending*", _on_pending)
 
-        open_studio(page, console_url, wid)
-        # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for the decision card.
-        expand_debug_sidebar(page)
-        item = page.get_by_test_id("shell-decision:tc-A")
+        # The console renders the cards INLINE in the session doc.
+        open_session_in_studio(page, console_url, wid, sid)
+        item = page.get_by_test_id("nv-ask:tc-A")
         expect(item).to_be_visible(timeout=10_000)
         expect(item).to_contain_text("What is your name?")
 
         # Type a draft into card A's answer input.
-        inp = item.get_by_test_id("shell-decision-answer")
+        inp = item.get_by_test_id("nv-ask-answer")
         inp.fill("partial draft text")
         assert (inp.input_value() or "") == "partial draft text"
 
         # Swap the pending snapshot to a DIFFERENT yield (new tcid + prompt);
         # the next reconcile poll (15s) or a manual wait surfaces item B.
         state["items"] = [_ask_item(sid, tool_call_id="tc-B", prompt="Pick a color?")]
-        item_b = page.get_by_test_id("shell-decision:tc-B")
+        item_b = page.get_by_test_id("nv-ask:tc-B")
         # Two full poll periods. The pending snapshot polls every 15s on both
         # shells, woken early by a workspace tap - but the tap never fires here
         # because /yields/pending is route-mocked, so the backstop poll is the
@@ -240,7 +239,7 @@ def test_u0058_draft_clears_when_new_tool_call_id_arrives(
         # phase and one period is no longer reliably enough.
         expect(item_b).to_be_visible(timeout=35_000)
         # Item B's respond input is empty — the draft was scoped to item A.
-        inp_b = item_b.get_by_test_id("shell-decision-answer")
+        inp_b = item_b.get_by_test_id("nv-ask-answer")
         assert (inp_b.input_value() or "") == "", (
             f"draft bled into the new pending item: {inp_b.input_value()!r}"
         )
@@ -278,14 +277,12 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
             ),
         )
 
-        open_studio(page, console_url, wid)
-        # The right-sidebar debug panel (Action Required) starts collapsed;
-        # expand it before looking for the decision card.
-        expand_debug_sidebar(page)
-        item = page.get_by_test_id("shell-decision:tc-500")
+        # The console renders the cards INLINE in the session doc.
+        open_session_in_studio(page, console_url, wid, sid)
+        item = page.get_by_test_id("nv-ask:tc-500")
         expect(item).to_be_visible(timeout=10_000)
 
-        respond = item.get_by_test_id("shell-decision-answer")
+        respond = item.get_by_test_id("nv-ask-answer")
         respond.fill("Alice")
         respond.press("Enter")
 
@@ -315,28 +312,21 @@ def test_u0060_respond_500_renders_inline_error_not_toast(
 def test_u0070_pause_button_disabled_when_status_not_running(
     page, base_url, console_url, unique_suffix, tmp_path,
 ) -> None:
-    """U0070 — Re-pointed to the Studio's ``ctrl-pause`` on the GRAPH
-    panel. Task 13 moved Pause (and Cancel) off the agent panel onto
-    SessionGraphPanel — the agent panel (SessionAgentPanel) has no Pause
-    control at all now (Stop/End/Restart only). Per the shell session document
-    SessionGraphPanel the Pause button is still
-    ``disabled={!wid || status !== "running" || pauseMut.loading}`` with
-    a title "Enabled only when running" for a non-running (CREATED)
-    session — same logic as the retired ST_SessionControls cluster, now
-    pinned against a graph-bound session. Pins both the disabled attr AND
-    the title affordance.
+    """U0070 — Re-pointed twice (Studio → shell → console): the
+    status-gated control is now the composer's Stop/Send swap. Stop (the
+    interrupt affordance) renders ONLY while a run is live; a CREATED
+    graph session shows Send. The park/interrupt verbs additionally
+    live on the session row's context menu, gated by the ended state.
     """
     wid, sid, cleanup_urls = _seed_graph_ladder(base_url, unique_suffix, tmp_path)
     try:
         open_session_in_studio(page, console_url, wid, sid, kind="graph")
 
-        pause = page.locator("[data-testid='ctrl-pause']").first
-        expect(pause).to_be_visible(timeout=10_000)
-        expect(pause).to_be_disabled()
-        # Title affordance explains why.
-        title = pause.get_attribute("title") or ""
-        assert "Enabled only when running" in title, (
-            f"expected disabled-reason title, got {title!r}"
+        send = page.get_by_test_id("nv-send")
+        expect(send).to_be_visible(timeout=10_000)
+        # No live run: the interrupt affordance must not be offered.
+        assert page.get_by_test_id("nv-interrupt").count() == 0, (
+            "Stop/interrupt rendered for a session that is not running"
         )
     finally:
         _cleanup(base_url, cleanup_urls)
@@ -369,9 +359,9 @@ def test_u0067_resume_re_toasts_on_repeat_click(
     try:
         open_session_in_studio(page, console_url, wid, sid, kind="agent")
 
-        composer = page.locator("textarea[placeholder='Send a message…']")
+        composer = page.get_by_test_id("nv-composer").locator("input")
         composer.wait_for(state="visible", timeout=10_000)
-        send_btn = page.locator("[data-testid='chat-send-btn']")
+        send_btn = page.get_by_test_id("nv-send")
 
         # First send — invokes the CREATED session (steer semantics). The
         # persisted USER_INPUT is the surviving positive signal (no

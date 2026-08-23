@@ -160,7 +160,7 @@ def test_open_file_delivery_opens_the_file_tab(
         )
         assert verdict == "executed"
         expect(
-            page.locator('[data-testid^="shell-tab:"]').filter(has_text=file_name)
+            page.locator('[data-testid^="nv-tab:"]').filter(has_text=file_name)
         ).to_have_count(1, timeout=10_000)
 
         # A replayed record (at or below the fence) renders only: no second
@@ -184,7 +184,7 @@ def test_open_file_delivery_opens_the_file_tab(
         )
         assert replayed == "rendered"
         expect(
-            page.locator('[data-testid^="shell-tab:"]').filter(has_text=file_name)
+            page.locator('[data-testid^="nv-tab:"]').filter(has_text=file_name)
         ).to_have_count(1)
     finally:
         _cleanup(base_url, ids)

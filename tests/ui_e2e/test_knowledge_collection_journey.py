@@ -124,7 +124,7 @@ def test_knowledge_collection_create_via_ui_then_traverse_pages(
         # Creating a collection OPENS it, so the list is no longer on
         # screen; the browser for the new collection is.
         expect(
-            page.get_by_test_id("shell-overlay-body").get_by_text(
+            page.get_by_test_id("nv-overlay-body").get_by_text(
                 coll_id, exact=False,
             ).first
         ).to_be_visible(timeout=10_000)

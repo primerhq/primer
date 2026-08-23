@@ -78,7 +78,7 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
 
     Re-pointed: ``#/workspaces/<id>`` now renders the console shell (not
     the old workspace-detail page), so the post-create assertion pins the
-    shell mounting for the new workspace (shell-root + the topbar naming
+    shell mounting for the new workspace (nv-root + the topbar naming
     the new id) instead of an ``h1.page-title``.
 
     Priority 1 — mutation feedback. Sister to U0006 (agents) for the
@@ -142,10 +142,10 @@ def test_u0023_new_workspace_modal_creates_row_toasts_and_navigates(
         # The new workspace's shell mounts, and the topbar names it.
         # S8 retired the Studio's workspace selector; the shell states
         # the workspace id in the topbar instead.
-        page.get_by_test_id("shell-root").wait_for(
+        page.get_by_test_id("nv-root").wait_for(
             state="visible", timeout=15_000,
         )
-        page.get_by_test_id("shell-workspace").get_by_text(
+        page.get_by_test_id("nv-ws-btn").get_by_text(
             created_ws_id, exact=False,
         ).first.wait_for(state="visible", timeout=10_000)
 

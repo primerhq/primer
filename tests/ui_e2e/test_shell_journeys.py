@@ -169,7 +169,7 @@ def test_landing_mounts_the_shell_and_lists_the_workspace(
     open_shell(page, console_url, wid)
     # Three regions since the 2026-08-23 revamp: the statusbar retired
     # (status lives on the composer strip, rail chips and tab labels).
-    for region in ("shell-topbar", "shell-rail", "shell-center"):
+    for region in ("nv-topbar", "nv-rail", "nv-center"):
         expect(page.get_by_test_id(region)).to_be_visible(timeout=15_000)
     expect(session_row(page, sid)).to_be_visible(timeout=20_000)
 
@@ -187,10 +187,10 @@ def test_a_session_opens_as_a_tab_and_the_url_restores_it(
     rather than back at the workspace's default."""
     wid, sid = seeded["workspace"], seeded["session"]
     open_doc(page, console_url, wid, "session", sid)
-    expect(page.get_by_test_id(f"shell-session:{sid}")).to_be_visible(timeout=20_000)
+    expect(page.get_by_test_id(f"nv-session-doc:{sid}")).to_be_visible(timeout=20_000)
 
     page.reload()
-    expect(page.get_by_test_id(f"shell-tab:session:{sid}")).to_be_visible(
+    expect(page.get_by_test_id(f"nv-tab:session:{sid}")).to_be_visible(
         timeout=20_000
     )
     assert sid in page.evaluate("window.location.hash")
@@ -210,12 +210,12 @@ def test_send_and_steer_keep_the_composer_writable(
     wid, sid = seeded["workspace"], seeded["session"]
     open_doc(page, console_url, wid, "session", sid)
 
-    composer = page.get_by_test_id("shell-composer").locator("textarea")
+    composer = page.get_by_test_id("nv-composer").locator("input, textarea")
     expect(composer).to_be_visible(timeout=20_000)
     composer.fill("start the job")
     composer.press("Enter")
 
-    expect(page.get_by_test_id("shell-composer-status")).to_be_visible()
+    expect(page.get_by_test_id("nv-status-strip")).to_be_visible()
     assert composer.is_editable(), "the composer must never lock"
 
 
@@ -233,7 +233,7 @@ def test_the_palette_opens_a_verbs_surface(
     wid, sid = seeded["workspace"], seeded["session"]
     open_doc(page, console_url, wid, "session", sid)
     open_palette(page)
-    expect(page.get_by_test_id("shell-palette-row").first).to_be_visible(
+    expect(page.get_by_test_id("nv-palette-row").first).to_be_visible(
         timeout=10_000
     )
 
@@ -242,11 +242,13 @@ def test_the_palette_opens_a_verbs_surface(
 def test_binding_switch_runs_from_the_palette(
     page, console_url: str, seeded: dict[str, str]
 ) -> None:
-    """Section 5: rebinding a session is a verb, not a settings page."""
+    """Section 5: rebinding a session is one gesture from the session
+    itself, never a settings page. The console's affordance is the
+    header's binding chip, whose menu lists agents AND graphs."""
     wid, sid = seeded["workspace"], seeded["session"]
     open_doc(page, console_url, wid, "session", sid)
-    run_verb(page, "Switch Binding")
-    expect(page.get_by_test_id("shell-overlay:agents")).to_be_visible(timeout=15_000)
+    page.get_by_test_id("nv-binding-chip").click()
+    expect(page.get_by_test_id("nv-binding-menu")).to_be_visible(timeout=15_000)
 
 
 # ===========================================================================
@@ -267,7 +269,7 @@ def test_a_file_opens_as_a_preview_tab(
         pytest.skip("the container cannot write to the provider path")
 
     open_doc(page, console_url, wid, "file", name)
-    tab = page.locator('[data-testid^="shell-tab:file:"]').first
+    tab = page.locator('[data-testid^="nv-tab:file:"]').first
     expect(tab).to_be_visible(timeout=20_000)
     assert tab.get_attribute("data-preview") == "true"
 
@@ -285,7 +287,7 @@ def test_a_management_surface_opens_as_an_overlay(
     """Section 3: there is no nav tree; a management surface is an
     overlay the URL can name."""
     open_overlay(page, console_url, seeded["workspace"], name)
-    expect(page.get_by_test_id("shell-overlay-body")).to_be_visible(timeout=15_000)
+    expect(page.get_by_test_id("nv-overlay-body")).to_be_visible(timeout=15_000)
 
 
 # ===========================================================================
@@ -301,7 +303,7 @@ def test_voice_affordances_are_absent_when_speech_is_unconfigured(
     have is worse than none, because it fails only once pressed."""
     wid, sid = seeded["workspace"], seeded["session"]
     open_doc(page, console_url, wid, "session", sid)
-    expect(page.get_by_test_id("shell-session:" + sid)).to_be_visible(timeout=20_000)
+    expect(page.get_by_test_id("nv-session-doc:" + sid)).to_be_visible(timeout=20_000)
     # The seeding ladder configures no STT/TTS provider, so neither
     # affordance should exist at all.
-    expect(page.get_by_test_id("shell-voice-toggle")).to_have_count(0)
+    expect(page.get_by_test_id("nv-voice-toggle")).to_have_count(0)
