@@ -5051,3 +5051,316 @@ input, textarea, select { font: inherit; color: inherit; }
   font-weight: 500;
   cursor: pointer;
 }
+
+/* =========================================================================
+   nv- OVERLAYS (wiring plan P3 T9): scrim, panel, form primitives, the
+   binding picker, template rows, env override editor, legacy page host.
+   Extracted from the designer prototype's OVERLAYS region inline styles.
+   ========================================================================= */
+
+.nv-scrim {
+  position: fixed;
+  inset: 0;
+  background: var(--scrim);
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+}
+@keyframes nvPopIn {
+  from { opacity: 0; transform: scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+.nv-overlay-panel {
+  width: min(560px, 94vw);
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-10);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+  animation: nvPopIn 0.14s ease-out;
+}
+.nv-overlay-panel[data-wide="true"] {
+  width: min(1100px, 96vw);
+  height: 90vh;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nv-overlay-panel { animation: none; }
+}
+.nv-overlay-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.nv-overlay-title { font-weight: 600; font-size: 14px; }
+.nv-verb-chip {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-4);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.nv-overlay-close {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--r-4);
+  color: var(--text-3);
+  cursor: pointer;
+  font-size: 14px;
+}
+.nv-overlay-close:hover { background: var(--bg-hover); color: var(--text); }
+.nv-overlay-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 16px;
+}
+.nv-overlay-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* --- form primitives ---------------------------------------------------- */
+.nv-field { margin-bottom: 14px; }
+.nv-field-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-2);
+  margin-bottom: 5px;
+}
+.nv-field-hint { font-weight: 400; color: var(--text-4); margin-left: 6px; }
+.nv-input,
+.nv-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-6);
+  padding: 7px 10px;
+  font-size: 13px;
+  color: var(--text);
+  outline: none;
+  font-family: inherit;
+}
+.nv-textarea { resize: vertical; }
+.nv-input:focus,
+.nv-textarea:focus { border-color: var(--accent-border); }
+.nv-form-error {
+  border: 1px solid var(--red);
+  border-radius: var(--r-6);
+  color: var(--red);
+  padding: 8px 10px;
+  font-size: 12px;
+  margin-bottom: 12px;
+}
+
+/* --- binding picker ------------------------------------------------------ */
+.nv-bind-picker { position: relative; }
+.nv-bind-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 11px;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  color: var(--text);
+  font-size: 12.5px;
+  cursor: pointer;
+  min-height: var(--hit);
+}
+.nv-bind-btn:hover { border-color: var(--accent-border); }
+.nv-bind-name {
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.nv-bind-desc {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-4);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+.nv-bind-btn .nv-bind-name { flex: 1; min-width: 0; text-align: left; }
+.nv-kind-tag {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--text-4);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+.nv-bind-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  background: var(--bg-elev);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-8);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.nv-bind-search {
+  border: none;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  padding: 9px 12px;
+}
+.nv-bind-search:focus { border-color: var(--border); }
+.nv-bind-rows { max-height: 260px; overflow-y: auto; padding: 4px; }
+.nv-bind-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border-radius: var(--r-6);
+  cursor: pointer;
+  font-size: 12.5px;
+  min-height: var(--hit);
+}
+.nv-bind-row:hover { background: var(--bg-hover); }
+.nv-bind-row .nv-bind-name { flex-shrink: 0; }
+.nv-bind-empty {
+  padding: 14px;
+  font-size: 12px;
+  color: var(--text-4);
+  text-align: center;
+}
+
+/* --- advanced fold + segmented ------------------------------------------ */
+.nv-adv-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  cursor: pointer;
+  padding: 4px 0;
+  min-height: var(--hit);
+}
+.nv-adv-toggle:hover { color: var(--text); }
+.nv-adv-toggle svg { transition: transform 0.12s ease; }
+.nv-adv-toggle[data-open="true"] svg { transform: rotate(90deg); }
+.nv-adv-body {
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  padding: 12px;
+  margin-top: 8px;
+}
+.nv-adv-body .nv-field:last-child { margin-bottom: 0; }
+.nv-seg {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--r-6);
+  overflow: hidden;
+}
+.nv-seg-btn {
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--text-3);
+  font-size: 11.5px;
+  cursor: pointer;
+  min-height: calc(var(--hit) - 8px);
+}
+.nv-seg-btn + .nv-seg-btn { border-left: 1px solid var(--border); }
+.nv-seg-btn[data-active="true"] {
+  background: var(--bg-hover);
+  color: var(--text);
+}
+
+/* --- template rows + env overrides --------------------------------------- */
+.nv-pick-list { display: flex; flex-direction: column; gap: 6px; }
+.nv-pick-row {
+  padding: 8px 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  cursor: pointer;
+  font-size: 12.5px;
+  font-family: var(--font-mono);
+  min-height: var(--hit);
+  display: flex;
+  align-items: center;
+}
+.nv-pick-row:hover { border-color: var(--border-strong); }
+.nv-pick-row[data-active="true"] {
+  border-color: var(--accent-border);
+  background: var(--bg-hover);
+}
+.nv-kv-box {
+  border: 1px solid var(--border);
+  border-radius: var(--r-8);
+  background: var(--bg-1);
+  padding: 10px 12px;
+}
+.nv-kv-row {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  margin-bottom: 6px;
+}
+.nv-kv-key { width: 130px; flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; padding: 4px 8px; }
+.nv-kv-label {
+  text-align: right;
+  color: var(--text-4);
+  border: none;
+  background: transparent;
+}
+.nv-kv-val { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; padding: 4px 8px; }
+.nv-kv-eq { color: var(--text-4); }
+.nv-kv-del {
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  border: none;
+  background: transparent;
+  border-radius: var(--r-4);
+  color: var(--text-4);
+  cursor: pointer;
+  padding: 0;
+}
+.nv-kv-del:hover { color: var(--red); }
+.nv-kv-add { margin-top: 4px; }
+.nv-kv-note { font-size: 10px; color: var(--text-4); margin-top: 8px; }
+
+/* --- legacy page host ---------------------------------------------------- */
+.nv-overlay-crumb {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  margin-bottom: 10px;
+}
+.nv-overlay-crumb a { color: var(--accent); cursor: pointer; }
+.nv-overlay-crumb a:hover { text-decoration: underline; }
+.nv-crumb-sep { color: var(--text-4); }
+.nv-overlay-crumb span:last-child { font-family: var(--font-mono); }
+.nv-legacy-host { min-height: 0; }

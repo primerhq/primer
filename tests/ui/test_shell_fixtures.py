@@ -19,6 +19,8 @@ OVERLAYS = [
     "providers", "collections", "agents", "graphs", "triggers",
     "toolsets", "tools", "workers", "approvals", "admin",
     "harnesses", "services", "channels", "workspaces", "new-session",
+    # Create-workspace (wiring plan P3).
+    "new-workspace",
     "internal-collections",
     # The Activity events console (2026-08-23 revamp).
     "activity",

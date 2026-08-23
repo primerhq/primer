@@ -47,6 +47,14 @@ def test_toggle_order_terminal_before_events():
     assert t < e, "terminal toggle sits before the events toggle"
 
 
+def test_registered_chords_are_live_bindings():
+    # One dispatcher walks the registry: a verb's chord can never be
+    # declared and then silently dead (Ctrl+N was exactly that once).
+    assert "chordMatches" in SHELL
+    assert "registry.all()" in SHELL
+    assert 'v.id === "palette.open"' in SHELL, "the palette owns Ctrl+K"
+
+
 def test_view_switch_rides_the_url():
     assert "SH_buildUrl" in SHELL and "SH_parseUrl" in SHELL
     assert "pushState" in SHELL

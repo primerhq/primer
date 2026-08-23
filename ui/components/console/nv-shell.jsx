@@ -118,6 +118,37 @@ function NV_Shell() {
     return function () { document.removeEventListener("click", onDocClick); };
   }, []);
 
+  // A registered chord is a live binding, not a palette label. One
+  // dispatcher walks the registry so a verb's chord can never be
+  // declared and then silently dead. The palette owns Ctrl+K itself
+  // (it also handles Esc); everything else resolves here.
+  React.useEffect(function () {
+    function chordMatches(chord, ev) {
+      var bits = String(chord).split("+");
+      var key = bits[bits.length - 1].toLowerCase();
+      var wantCtrl = bits.indexOf("Ctrl") >= 0;
+      var wantShift = bits.indexOf("Shift") >= 0;
+      if ((ev.ctrlKey || ev.metaKey) !== wantCtrl) return false;
+      if (!!ev.shiftKey !== wantShift) return false;
+      return String(ev.key).toLowerCase() === key;
+    }
+    function onKey(ev) {
+      if (ev.defaultPrevented) return;
+      var verbs = registry.all();
+      for (var i = 0; i < verbs.length; i++) {
+        var v = verbs[i];
+        if (!v.chord || v.id === "palette.open") continue;
+        if (chordMatches(v.chord, ev)) {
+          ev.preventDefault();
+          v.run();
+          return;
+        }
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return function () { window.removeEventListener("keydown", onKey); };
+  }, [registry]);
+
   function goView(name, nav) {
     setView({ name: name, nav: nav || null });
     setOpenMenu(null);
@@ -155,29 +186,17 @@ function NV_Shell() {
     reg({
       id: "session.create", label: "Create Session", chord: "Ctrl+n",
       surfaces: ["rail", "palette"],
-      // The overlay lands in P3; the verb is the shared entry point
-      // from day one (rail "+", empty state, palette).
+      // The shared entry point (rail "+", empty state, palette) opens
+      // the SAME overlay a pasted overlay=new-session link opens.
       run: function () {
-        if (window.primerApi.toastPush) {
-          window.primerApi.toastPush({
-            kind: "info",
-            text: "Create Session lands with the overlay set (P3).",
-          });
-        }
+        setOverlay({ name: "new-session", section: null, id: null });
       },
     });
     reg({
       id: "workspace.create", label: "Create Workspace",
       surfaces: ["topbar", "palette"],
-      // Real overlay lands in P3; the verb exists from day one so the
-      // palette and the workspace menu share the entry point.
       run: function () {
-        if (window.primerApi.toastPush) {
-          window.primerApi.toastPush({
-            kind: "info",
-            text: "Create Workspace lands with the overlay set (P3).",
-          });
-        }
+        setOverlay({ name: "new-workspace", section: null, id: null });
       },
     });
     reg({
@@ -224,6 +243,10 @@ function NV_Shell() {
     paletteRef: paletteRef,
     goView: goView,
     setDoc: setDoc,
+    openOverlay: function (name, section, id) {
+      setOverlay({ name: name, section: section || null, id: id || null });
+    },
+    closeOverlay: function () { setOverlay(null); },
     bump: function () { setTick(function (v) { return v + 1; }); },
     toast: function (msg) {
       if (window.primerApi.toastPush) {
@@ -259,6 +282,9 @@ function NV_Shell() {
               ) : null}
           </div>
         </div>
+        {typeof window.NV_OverlayHost === "function"
+          ? <window.NV_OverlayHost />
+          : null}
         {typeof window.NV_Palette === "function" ? <window.NV_Palette /> : null}
       </div>
     </NV_ConsoleContext.Provider>

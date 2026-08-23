@@ -23,6 +23,9 @@ var SH_OVERLAYS = [
   "providers", "collections", "agents", "graphs", "triggers",
   "toolsets", "tools", "workers", "approvals", "admin",
   "harnesses", "services", "channels", "workspaces", "new-session",
+  // Create-workspace (wiring plan P3): the designer's instantiation
+  // form, distinct from "workspaces" (the management surface).
+  "new-workspace",
   // The internal-collections SUBSYSTEM: its config, bootstrap and the
   // search it powers. Distinct from "collections", which is the
   // knowledge browser; the two were conflated and the subsystem ended up
