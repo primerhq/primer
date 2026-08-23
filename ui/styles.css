@@ -3192,6 +3192,28 @@ input, textarea, select { font: inherit; color: inherit; }
   white-space: pre-wrap;
 }
 
+/* File management: header verbs + the hover-revealed row menu. */
+.sh-files-verbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  list-style: none;
+  padding: 0 var(--sp-1) var(--sp-1);
+}
+.sh-file-menu { position: relative; display: inline-block; }
+.sh-file-menu > summary {
+  list-style: none;
+  user-select: none;
+  padding: 0 5px;
+}
+.sh-file-menu > summary::-webkit-details-marker { display: none; }
+.sh-rail-row .sh-file-menu { visibility: hidden; }
+.sh-rail-row:hover .sh-file-menu,
+.sh-rail-row:focus-within .sh-file-menu,
+.sh-file-menu[open] { visibility: visible; }
+.sh-file-menu .sh-topbar-menu-panel { left: 0; right: auto; min-width: 150px; }
+.sh-file-menu a.sh-verb { text-decoration: none; }
+
 /* Other-workspace groups in the cross-workspace sessions list. */
 .sh-rail-group { list-style: none; margin-top: var(--sp-2); }
 .sh-rail-group > details > summary {

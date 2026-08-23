@@ -271,8 +271,63 @@ function SH_FilesList() {
     });
   }
 
+  // Full file management (revamp section 6): create, rename, delete,
+  // download, copy path - per-row via a hover "..." menu, plus header
+  // verbs and drag-drop upload handled by SH_FileRowMenu / the ul's
+  // drop handlers below. Every mutation refetches the tree.
+  function refetchTree() { tree.refetch(); }
+
+  function uploadFiles(fileList, dirPath) {
+    var files = Array.prototype.slice.call(fileList || []);
+    files.forEach(function (f) {
+      var reader = new FileReader();
+      reader.onload = function () {
+        var b64 = String(reader.result).split(",")[1] || "";
+        var dest = (dirPath ? dirPath + "/" : "") + f.name;
+        SH_api.fileUpload(shell.wid, dest, b64).then(function () {
+          shell.toast("Uploaded " + dest);
+          refetchTree();
+        }, function (err) { shell.toast("Upload failed: " + err.message); });
+      };
+      reader.readAsDataURL(f);
+    });
+  }
+
   return (
-    <ul className="sh-rail-list" data-testid="rail-files">
+    <ul className="sh-rail-list" data-testid="rail-files"
+      onDragOver={function (ev) { ev.preventDefault(); }}
+      onDrop={function (ev) {
+        ev.preventDefault();
+        if (ev.dataTransfer && ev.dataTransfer.files.length) {
+          uploadFiles(ev.dataTransfer.files, "");
+        }
+      }}>
+      <li className="sh-files-verbs">
+        <button type="button" className="sh-verb" data-testid="files-new-file"
+          onClick={function () {
+            window.promptDialog({ title: "New file path" }).then(function (p) {
+              if (!p) return;
+              SH_api.fileWrite(shell.wid, p, "").then(refetchTree);
+            });
+          }}>New File</button>
+        <button type="button" className="sh-verb" data-testid="files-new-folder"
+          onClick={function () {
+            window.promptDialog({ title: "New folder path" }).then(function (p) {
+              if (!p) return;
+              SH_api.makeDir(shell.wid, p).then(refetchTree);
+            });
+          }}>New Folder</button>
+        <button type="button" className="sh-verb" data-testid="files-upload"
+          onClick={function () {
+            var input = document.createElement("input");
+            input.type = "file";
+            input.multiple = true;
+            input.onchange = function () { uploadFiles(input.files, ""); };
+            input.click();
+          }}>Upload Files</button>
+        <button type="button" className="sh-verb" data-testid="files-refresh"
+          onClick={refetchTree}>Refresh Files</button>
+      </li>
       {entries.map(function (entry) {
         return (
           <li key={entry.path} className="sh-rail-row">
@@ -288,6 +343,7 @@ function SH_FilesList() {
                 shell.openDoc({ kind: "file", ref: entry.path, preview: true });
               }}
             >{entry.path}</button>
+            <SH_FileRowMenu entry={entry} onChanged={refetchTree} />
             {entry.is_dir && open[entry.path]
               ? <SH_FilesSubtree path={entry.path} />
               : null}
@@ -313,6 +369,57 @@ function SH_FilesList() {
         </li>
       )}
     </ul>
+  );
+}
+
+// Per-row file management menu (revamp section 6): a hover-revealed
+// "..." details menu with Rename / Delete / Download / Copy Path.
+// Delete confirms; rename prompts with the current path prefilled.
+function SH_FileRowMenu(props) {
+  var shell = SH_useShell();
+  var entry = props.entry;
+  var onChanged = props.onChanged;
+  return (
+    <details className="sh-file-menu"
+      data-testid={"file-menu:" + entry.path}>
+      <summary className="sh-verb" aria-label={"Manage " + entry.path}>
+        &#8943;
+      </summary>
+      <div className="sh-topbar-menu-panel">
+        <button type="button" className="sh-verb"
+          onClick={function () {
+            window.promptDialog({
+              title: "Rename " + entry.path, defaultValue: entry.path,
+            }).then(function (dst) {
+              if (!dst || dst === entry.path) return;
+              SH_api.fileMove(shell.wid, entry.path, dst).then(onChanged);
+            });
+          }}>Rename</button>
+        <button type="button" className="sh-verb"
+          onClick={function () {
+            window.confirmDialog({
+              title: "Delete " + entry.path,
+              message: entry.is_dir
+                ? "Delete this folder and everything in it?"
+                : "Delete this file?",
+              danger: true,
+            }).then(function (ok) {
+              if (!ok) return;
+              SH_api.fileDelete(shell.wid, entry.path).then(onChanged);
+            });
+          }}>Delete</button>
+        {!entry.is_dir ? (
+          <a className="sh-verb"
+            href={SH_api.fileDownloadUrl(shell.wid, entry.path)}
+            download>Download</a>
+        ) : null}
+        <button type="button" className="sh-verb"
+          onClick={function () {
+            try { navigator.clipboard.writeText(entry.path); } catch (_e) { /* noop */ }
+            shell.toast("Copied " + entry.path);
+          }}>Copy Path</button>
+      </div>
+    </details>
   );
 }
 
@@ -597,3 +704,4 @@ window.SH_loadTriage = SH_loadTriage;
 window.SH_saveTriage = SH_saveTriage;
 window.SH_AttentionEngine = SH_AttentionEngine;
 window.SH_TriageVerbs = SH_TriageVerbs;
+window.SH_FileRowMenu = SH_FileRowMenu;

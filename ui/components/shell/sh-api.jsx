@@ -69,14 +69,45 @@ var SH_api = {
       null, { signal: signal });
   },
 
-  // PUT /v1/workspaces/{wid}/files?path= with {content, encoding}
-  // (primer/api/routers/workspaces.py:1511-1530; body FileWriteBody at
-  // :161-177). 204 on success, so there is no response body to read.
-  fileWrite: function (wid, path, content) {
+  // PUT /v1/workspaces/{wid}/files?path= with {content, encoding}.
+  // 204 on success. `etag` (from a prior read) makes the write
+  // conditional: the route answers 412 when the file changed on disk,
+  // which is the file doc's changed-on-disk banner (revamp section 6).
+  fileWrite: function (wid, path, content, etag) {
+    var url = "/workspaces/" + encodeURIComponent(wid) + "/files?path="
+      + encodeURIComponent(path);
+    if (etag) url += "&etag=" + encodeURIComponent(etag);
+    return window.primerApi.apiFetch(
+      "PUT", url, { content: content, encoding: "text" });
+  },
+
+  // ---- file management (revamp section 6; routes pre-existing) -----------
+  fileDelete: function (wid, path) {
+    return window.primerApi.apiFetch(
+      "DELETE", "/workspaces/" + encodeURIComponent(wid) + "/files?path="
+        + encodeURIComponent(path));
+  },
+  makeDir: function (wid, path) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/files/dir?path="
+        + encodeURIComponent(path));
+  },
+  fileMove: function (wid, src, dst) {
+    return window.primerApi.apiFetch(
+      "POST", "/workspaces/" + encodeURIComponent(wid) + "/files/move?src="
+        + encodeURIComponent(src) + "&dst=" + encodeURIComponent(dst));
+  },
+  // Dropped File objects arrive as base64 so binaries survive.
+  fileUpload: function (wid, path, base64Content) {
     return window.primerApi.apiFetch(
       "PUT", "/workspaces/" + encodeURIComponent(wid) + "/files?path="
         + encodeURIComponent(path),
-      { content: content, encoding: "text" });
+      { content: base64Content, encoding: "base64" });
+  },
+  // Raw-bytes download rides the browser, not apiFetch: an <a href>.
+  fileDownloadUrl: function (wid, path) {
+    return "/v1/workspaces/" + encodeURIComponent(wid)
+      + "/files/download?path=" + encodeURIComponent(path);
   },
 
   collections: function (signal) {
